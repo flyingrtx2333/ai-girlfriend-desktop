@@ -1,0 +1,63 @@
+{
+  "afterConfigurationChange" : {
+    "asrStarts" : 0,
+    "captureRestarts" : 1,
+    "captureStarts" : 2,
+    "enabled" : 1,
+    "engineRunning" : 1,
+    "keywordHits" : 0,
+    "lastBufferAgeMs" : 26,
+    "micBuffers" : 30,
+    "peakInputDb" : -29
+  },
+  "afterDisable" : {
+    "asrStarts" : 0,
+    "captureRestarts" : 2,
+    "captureStarts" : 3,
+    "enabled" : 0,
+    "engineRunning" : 0,
+    "keywordHits" : 0,
+    "lastBufferAgeMs" : 1130,
+    "micBuffers" : 88,
+    "peakInputDb" : -29
+  },
+  "afterSilentStop" : {
+    "asrStarts" : 0,
+    "captureRestarts" : 2,
+    "captureStarts" : 3,
+    "enabled" : 1,
+    "engineRunning" : 1,
+    "keywordHits" : 0,
+    "lastBufferAgeMs" : 98,
+    "micBuffers" : 88,
+    "peakInputDb" : -29
+  },
+  "checks" : {
+    "configurationChangeRecovers" : true,
+    "disabledStaysStopped" : true,
+    "realMicrophoneBuffers" : true,
+    "silentEngineStopRecovers" : true
+  },
+  "events" : [
+    "等待授权",
+    "等待唤醒",
+    "恢复麦克风",
+    "等待唤醒",
+    "恢复麦克风",
+    "等待唤醒",
+    "未开启"
+  ],
+  "initial" : {
+    "asrStarts" : 0,
+    "captureRestarts" : 0,
+    "captureStarts" : 1,
+    "enabled" : 1,
+    "engineRunning" : 1,
+    "keywordHits" : 0,
+    "lastBufferAgeMs" : 27,
+    "micBuffers" : 21,
+    "peakInputDb" : -29
+  },
+  "scope" : "Real default microphone capture. Stop the actual engine with\/without a configuration notification and verify new live buffers after automatic recovery. No audio files, transcripts, chat or TTS requests.",
+  "success" : true
+}

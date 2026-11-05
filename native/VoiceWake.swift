@@ -37,6 +37,10 @@ final class VoiceWake: @unchecked Sendable {
     @MainActor private var configuredPhrase = ""
     @MainActor private var permissionTask: Task<Void, Never>?
     private var engine: AVAudioEngine?
+    private var engineChange: NSObjectProtocol?
+    private var inputWatchdog: DispatchSourceTimer?
+    private var micBuffers = 0, captureStarts = 0, captureRestarts = 0, restartAttempts = 0
+    private var lastMicAt = 0.0, peakRMS: Float = 0
     private var recognizer: SFSpeechRecognizer?
     private var keywordSpotter: SherpaWake?
     private var keywordRunning = false, keywordStarted = 0.0
@@ -54,7 +58,7 @@ final class VoiceWake: @unchecked Sendable {
     @MainActor func configure(enabled: Bool, phrase: String) {
         guard enabled != requested || phrase != configuredPhrase else { return }
         requested = enabled; configuredPhrase = phrase; permissionTask?.cancel()
-        queue.async { self.stopCapture(notify: !enabled) }
+        queue.async { self.restartAttempts = 0; self.stopCapture(notify: !enabled) }
         guard enabled else { return }
         emit(.state("等待授权"))
         permissionTask = Task {
@@ -124,13 +128,46 @@ final class VoiceWake: @unchecked Sendable {
             let source = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
             let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
             for i in source.indices { if let src = source[i].mData, let dst = target[i].mData { memcpy(dst, src, Int(source[i].mDataByteSize)); target[i].mDataByteSize = source[i].mDataByteSize } }
-            self.queue.async { if self.enabled && self.epoch == captureEpoch { self.consume(copy) } }
+            self.queue.async {
+                if self.enabled && self.epoch == captureEpoch {
+                    self.micBuffers += 1; self.lastMicAt = ProcessInfo.processInfo.systemUptime; self.restartAttempts = 0
+                    self.consume(copy)
+                }
+            }
         }
-        do { engine.prepare(); try engine.start(); self.engine = engine; emit(.state("等待唤醒")) }
+        do {
+            engine.prepare(); try engine.start(); self.engine = engine
+            captureStarts += 1; lastMicAt = ProcessInfo.processInfo.systemUptime
+            engineChange = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self, weak engine] _ in
+                // The notification arrives on Core Audio's internal queue.
+                // Rebuild asynchronously after the route has settled.
+                self?.queue.asyncAfter(deadline: .now() + 0.35) { [weak self, weak engine] in
+                    guard let self, let engine, self.engine === engine, self.enabled else { return }
+                    self.recoverCapture()
+                }
+            }
+            let watchdog = DispatchSource.makeTimerSource(queue: queue)
+            watchdog.schedule(deadline: .now() + 1, repeating: 2, leeway: .milliseconds(400))
+            watchdog.setEventHandler { [weak self] in
+                guard let self, self.enabled, let engine = self.engine else { return }
+                if !engine.isRunning || ProcessInfo.processInfo.systemUptime - self.lastMicAt > 4 { self.recoverCapture() }
+            }
+            inputWatchdog = watchdog; watchdog.resume(); emit(.state("等待唤醒"))
+        }
         catch { engine.inputNode.removeTap(onBus: 0); stopCapture(); emit(.failure("麦克风启动失败")) }
+    }
+    private func recoverCapture() {
+        guard enabled else { return }
+        guard restartAttempts < 3 else { stopCapture(); emit(.failure("麦克风无输入，请检查输入设备后重新开启。")); return }
+        restartAttempts += 1; captureRestarts += 1
+        let busy = outputBusy, text = phrase.text
+        emit(.state("恢复麦克风")); startCapture(phrase: text)
+        if enabled && busy { outputBusy = true; emit(.state("回复中")) }
     }
     private func stopCapture(notify: Bool = true) {
         epoch += 1; enabled = false; cancelRecognition()
+        if let engineChange { NotificationCenter.default.removeObserver(engineChange); self.engineChange = nil }
+        inputWatchdog?.cancel(); inputWatchdog = nil
         engine?.inputNode.removeTap(onBus: 0); engine?.stop(); engine = nil; recognizer = nil
         keywordSpotter = nil; keywordRunning = false; keywordStarted = 0
         preRoll.removeAll(); awake = false; conversation = false; outputBusy = false; loudDuration = 0; noise = 0.0005
@@ -142,6 +179,7 @@ final class VoiceWake: @unchecked Sendable {
         let count = Int(buffer.frameLength); var sum: Float = 0
         for i in 0..<count { sum += samples[i] * samples[i] }
         let rms = sqrt(sum / Float(max(1, count))), duration = Double(count) / buffer.format.sampleRate
+        peakRMS = max(peakRMS, rms)
         // Skip near-silence only; the acoustic keyword model decides the wake.
         let loud = rms > max(0.002, min(0.006, noise * 2.8))
         if !awake { noise = noise * 0.995 + min(rms, 0.015) * 0.005 }
@@ -234,7 +272,22 @@ final class VoiceWake: @unchecked Sendable {
         command = ""; lastPartial = ""; ending = 0
     }
     @MainActor func diagnosticsForCheck() async -> [String: Int] {
-        await withCheckedContinuation { c in queue.async { c.resume(returning: ["keywordHits": self.keywordHits, "asrStarts": self.asrStarts]) } }
+        await withCheckedContinuation { c in queue.async {
+            c.resume(returning: ["keywordHits": self.keywordHits, "asrStarts": self.asrStarts,
+                "micBuffers": self.micBuffers, "captureStarts": self.captureStarts, "captureRestarts": self.captureRestarts,
+                "engineRunning": self.engine?.isRunning == true ? 1 : 0, "enabled": self.enabled ? 1 : 0,
+                "lastBufferAgeMs": self.lastMicAt == 0 ? -1 : Int((ProcessInfo.processInfo.systemUptime - self.lastMicAt) * 1000),
+                "peakInputDb": Int(20 * log10(max(0.000001, self.peakRMS)))])
+        } }
+    }
+    @MainActor func interruptInputForCheck(notify: Bool) async {
+        await withCheckedContinuation { c in queue.async {
+            if let engine = self.engine {
+                engine.stop()
+                if notify { NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine) }
+            }
+            c.resume()
+        } }
     }
     // Feed a real spoken fixture through the same KWS, local recognizer and turn
     // assembly as the microphone. Only the native --voice-check uses this path.

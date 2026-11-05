@@ -43,6 +43,7 @@ npm run native:open
 | 原生编译或打包 | `npm run native:build` |
 | 原生拖动、释放和回稳 | 构建后运行 `npm run native:check-drag`，需解锁且窗口可见 |
 | 唤醒与转写 | 构建后运行 `npm run native:check-voice`，需系统权限；不调用在线对话或 TTS |
+| 真实麦克风与断流恢复 | 构建后运行 `npm run native:check-microphone`；需解锁和已有权限，不保存音频或转写，不调用在线服务 |
 | 气泡与唤醒提示音 | 构建后运行 `npm run native:check-feedback`；额外传入 `-- --live-tts` 才使用已保存的 MiniMax 配置发出一次短语音请求 |
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
@@ -64,6 +65,14 @@ npm run native:open
 [原生反馈记录](verification/feedback.json)验证了短气泡 101×42 点、长句气泡 268×72 点，以及本地提示音播放和结束。一次实际 MiniMax `speech-02-hd`／`female-shaonv` 请求返回 2.88 秒音频，经原生播放器播放并驱动口型。测试使用固定短句，不发送私人聊天历史；这不是实时麦克风、声学回声或完整语音对话验收。
 
 唤醒音由 `scripts/prepare-wake-chime.mjs` 离线合成并随应用打包，没有复制系统提示音。它使用独立播放器，不改动正在进行的转写任务。MiniMax 请求采用[官方同步语音接口](https://platform.minimax.cn/docs/api-reference/speech-t2a-http)。
+
+## 麦克风断流恢复
+
+0.6.1 的现场日志在 19:44:04 记录了 Core Audio 输入转为 Stopped，随后出现引擎配置变化通知；应用没有监听此事件，界面一直保留「聆听中」。重启唤醒后恢复了音频 I/O 线程，用户确认喊「小鲸小鲸」重新有反应。
+
+0.6.2 在原有语音串行队列异步重建采集，符合 Apple 对 [AVAudioEngineConfigurationChange](https://developer.apple.com/documentation/foundation/nsnotification/name-swift.struct/avaudioengineconfigurationchange) 的处理要求：不在内部通知回调中同步释放引擎。仅唤醒开启时以低频检查引擎和音频帧；连续三次恢复仍没有输入则停止并报告原因。实际音频帧重置重试次数；关闭、锁屏和休眠会移除观察者并取消监测。
+
+[真实麦克风检查](verification/microphone.json)中，初始收到 21 个音频缓冲，实际停止引擎并发送配置变化通知后恢复到 30 个，再停止引擎而不显式发通知后恢复到 88 个；恢复后最近音频帧分别为 26／98 ms 前。关闭后引擎保持停止。测试只记录计数和电平，不保存声音、转写或调用在线模型。现场问题与重启后用户确认恢复的记录见[故障记录](verification/wake-recovery-case.json)。
 
 ## Git 约定
 

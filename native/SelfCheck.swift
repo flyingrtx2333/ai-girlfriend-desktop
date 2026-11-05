@@ -32,6 +32,7 @@ import WebKit
         if CommandLine.arguments.contains("--voice-check") { await runVoiceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--drag-check") { await runDragCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--feedback-check") { await runFeedbackCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--mic-check") { await runMicrophoneCheck(output); NSApp.terminate(nil); return }
         await wait(2.0)
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         let profiling = CommandLine.arguments.contains("--profile")
@@ -248,6 +249,37 @@ import WebKit
         report["scope"] = "Actual native bubble layout and local cue playback; --live-tts additionally makes one short MiniMax request and plays it through the production player/mouth bridge. No chat request or live microphone test."
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: output.appendingPathComponent("feedback-report.json"))
+        }
+    }
+    func runMicrophoneCheck(_ output: URL) async {
+        let wake = VoiceWake(); var events: [String] = []
+        wake.onEvent = { event in
+            switch event {
+            case .state(let state): events.append(state)
+            case .woke: events.append("woke")
+            case .failure(let error): events.append(error)
+            default: break // Never persist microphone audio or recognized speech.
+            }
+        }
+        wake.configure(enabled: true, phrase: "小鲸小鲸"); await wait(2.5)
+        let initial = await wake.diagnosticsForCheck()
+        await wake.interruptInputForCheck(notify: true); await wait(1.6)
+        let changed = await wake.diagnosticsForCheck()
+        await wake.interruptInputForCheck(notify: false); await wait(6.5)
+        let stalled = await wake.diagnosticsForCheck()
+        wake.stop(); await wait(0.5)
+        NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: nil)
+        await wait(0.5); let stopped = await wake.diagnosticsForCheck()
+        func active(_ values: [String: Int]) -> Bool { values["engineRunning"] == 1 && (values["micBuffers"] ?? 0) > 4 && (0..<1000).contains(values["lastBufferAgeMs"] ?? -1) }
+        let checks = ["realMicrophoneBuffers": active(initial),
+            "configurationChangeRecovers": active(changed) && (changed["captureRestarts"] ?? 0) > (initial["captureRestarts"] ?? 0),
+            "silentEngineStopRecovers": active(stalled) && (stalled["captureRestarts"] ?? 0) > (changed["captureRestarts"] ?? 0),
+            "disabledStaysStopped": stopped["enabled"] == 0 && stopped["engineRunning"] == 0 && stopped["captureStarts"] == stalled["captureStarts"]]
+        let report: [String: Any] = ["success": checks.values.allSatisfy { $0 }, "checks": checks, "initial": initial,
+            "afterConfigurationChange": changed, "afterSilentStop": stalled, "afterDisable": stopped, "events": events,
+            "scope": "Real default microphone capture. Stop the actual engine with/without a configuration notification and verify new live buffers after automatic recovery. No audio files, transcripts, chat or TTS requests."]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: output.appendingPathComponent("microphone-report.json"))
         }
     }
     func checkResize() async -> [String: Double] {

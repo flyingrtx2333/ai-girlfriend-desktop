@@ -1,0 +1,10 @@
+{
+  "installedVersion": "0.6.1",
+  "inputStoppedAt": "2026-11-05 19:44:04 +08:00",
+  "configurationNotificationObserved": true,
+  "staleUI": "聆听中",
+  "audioIOThreadAbsentBeforeRestart": true,
+  "audioIOThreadReturnedAfterRestart": true,
+  "userConfirmedWakeAfterRestart": true,
+  "noRecordingsSaved": true
+}
