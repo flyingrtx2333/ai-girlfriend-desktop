@@ -312,7 +312,7 @@ export async function loadPortrait(onProgress, { compact = false } = {}) {
   const suspension = { angle: 0, velocity: 0, hold: 0, stretch: 0 };
   const grabPoint = new THREE.Vector2(0, .65), dragVelocity = new THREE.Vector2();
   let opening = 0, lift = 0, roll = 0, yaw = 0, pitch = 0, bodyRoll = 0, smile = 0, blush = 0, started = 0, reaction = false;
-  const allowedMotions = new Set(['nod', 'shake', 'bow', 'jump', 'curious', 'glance', 'shy', 'doze', 'listen', 'pet', 'tailWag', 'sway']);
+  const allowedMotions = new Set(['nod', 'shake', 'bow', 'jump', 'curious', 'glance', 'shy', 'doze', 'listen', 'pet', 'tailWag', 'sway', 'screenObserve', 'screenThink']);
   const inverse = new THREE.Matrix4(), localRay = new THREE.Ray(), point = new THREE.Vector3();
   return {
     root, allowedMotions, get lift() { return lift; },

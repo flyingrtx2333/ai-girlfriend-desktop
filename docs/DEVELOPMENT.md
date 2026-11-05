@@ -10,6 +10,7 @@
 | `src/motions.js`、`src/idle.js` | 互动轨道、表情轨道和 AIRI 待机采样 |
 | `native/ChatViews.swift`、`native/ControlWindow.swift` | 原生侧栏、消息行、输入框和设置 |
 | `native/SpeechAnimation.swift`、`src/speech.js` | 在内存解码音频、分析开合和频谱、按播放时钟插值口型 |
+| `native/ScreenCompanion.swift` | 闲置调度、单帧窗口截图、相似画面过滤、取消与免打扰 |
 | `public/portraits/`、`public/audio/`、`public/animations/` | 当前原生应用运行素材、来源和许可 |
 | `public/models/whale-maid-v2/` | 网页「立体」模式仍引用的模型和贴图；不打包进原生应用 |
 | `design/references/`、`design/portrait19/` | 重建当前原画贴图需要的原图、透明度引导和提示词 |
@@ -43,6 +44,7 @@ npm run native:open
 | --- | --- |
 | 互动和原画动画 | 启动开发服务器后运行 `npm run check:companion` |
 | 原生编译或打包 | `npm run native:build` |
+| 屏幕陪伴 | `npm run native:check-screen`；真实抓屏与在线服务需显式加 `-- --installed --capture-fixture --live-vision` |
 | 原生拖动、释放和回稳 | 构建后运行 `npm run native:check-drag`，需解锁且窗口可见 |
 | 唤醒与转写 | 构建后运行 `npm run native:check-voice`，需系统权限；不调用在线对话或 TTS |
 | 真实麦克风与断流恢复 | 构建后运行 `npm run native:check-microphone`；需解锁和已有权限，不保存音频或转写，不调用在线服务 |
@@ -92,6 +94,18 @@ npm run native:open
 设置使用 AppKit 侧栏、搜索框、开关和可滚动的分组卡片。分类与搜索复用已有控件，保留未保存的输入；不增加 WebView、定时刷新或运行依赖。搜索只筛选设置，不会使模型连接检测状态失效。
 
 `npm run native:check-settings` 使用独立配置检查分类、跨分类搜索、草稿保留和 980×700／780×540 排版，并输出原生截图。[验证记录](verification/settings.json)与公开截图不含用户配置或凭据。该检查不启用麦克风，不调用在线模型或 TTS，也不重复运行上一版语音与口型测试。
+
+## v0.8.0 的屏幕陪伴
+
+使用系统 [SCScreenshotManager 单帧接口](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager/captureimage(contentfilter:configuration:completionhandler:))，按前台应用 PID 和窗口层级选择当前窗口；手动从设置触发时观察最近的外部应用窗口。缩略图最长边 1280 像素，JPEG 质量 0.68。截图只在内存中存在；不采集系统音频，也不启动持续视频流。
+
+启用时每 15 秒低成本检查一次截止时间，定时器允许 5 秒合并唤醒；请求间隔至少 60 秒，默认 300 秒。角色交互后至少等待 20 秒，聆听、对话、语音播放、拖动、收起、暂停、锁屏和休眠会阻止观察。外部应用切换会取消尚未完成的观察或模型请求；重试最长退避到 30 分钟。
+
+同一应用的 32×18 缩略采样在本地比较，变化不足时跳过模型请求；仅保留采样和最近三条评论。单帧视觉请求不附带私人聊天历史，提示模型将截图文字视为数据，忽略其中指令，并可返回 `[安静]`。这是一帧图像的近似理解，不代表视频剧情、音频理解或敏感信息识别保证。
+
+`screenState` 驱动观察扫视、循环思考和评论点头。头发、衣服与尾巴继续走现有弹簧，不增加绘制调用。MiniMax 与音频口型复用原路径，主动评论传入 `followUp: false`，避免结束后自动开启续聊转写。系统日志的 `ScreenCompanion` 分类只记阶段、尺寸和计数，不记截图、窗口标题、评论或 Token。
+
+[验证记录](verification/screen-companion.json)包含真实 ScreenCaptureKit 固定窗口截图、已配置视觉模型的实际输出与 MiniMax 实播。固定画面是原生绘制的橙色三节小车、桥、河流、绿山与白云；这些事实没有写入视觉请求。检查专用配置与公开画面允许输出到 `evidence/edition30/`，正常功能不会保存截图。界面窄窗口检查另行复用现有原生设置检查，不重复运行无关语音回归。
 
 ## Git 约定
 

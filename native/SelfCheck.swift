@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--screen-check") { await runScreenCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-check") {
             let report = await control.checkSettings(output)
             let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])

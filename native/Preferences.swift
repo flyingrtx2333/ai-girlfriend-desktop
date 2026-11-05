@@ -17,6 +17,9 @@ struct PetPreferences: Codable {
     var wakeEnabled = false
     var wakePhrase = "小鲸小鲸"
     var voicePauseSeconds = 3.0
+    var screenObservationEnabled = false
+    var screenObservationInterval = 300.0
+    var screenQuietUntil: Date?
     var alwaysOnTop = true
     var performance = "auto"
     var scale = 1.0

@@ -28,7 +28,7 @@ run('xcrun', ['swiftc', '-O', '-whole-module-optimization', '-swift-version', '5
   ...files, '-import-objc-header', 'native/SherpaBridge.h', '-I', path.join(sherpaRoot, 'include'),
   '-L', frameworks, '-lsherpa-onnx-c-api', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
   '-framework', 'AppKit', '-framework', 'WebKit', '-framework', 'AVFAudio', '-framework', 'Security',
-  '-framework', 'UniformTypeIdentifiers', '-framework', 'Speech', '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Accelerate', '-o', path.join(contents, 'MacOS', 'BlueFatFish')]);
+  '-framework', 'UniformTypeIdentifiers', '-framework', 'Speech', '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Accelerate', '-framework', 'ScreenCaptureKit', '-o', path.join(contents, 'MacOS', 'BlueFatFish')]);
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 await writeFile(path.join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

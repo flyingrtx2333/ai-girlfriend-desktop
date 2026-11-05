@@ -11,6 +11,8 @@ if (nativeDesktop) document.documentElement.classList.add('desktop-pet');
 let nativeVisible = true, nativePerformance = 'auto', nativeLowPower = false;
 let nativeSpeaking = false, nativeVolume = 0, nativePeakVolume = 0, nativeHit = null;
 let nativeSpeechFrames = [], nativeAudioPosition = 0, nativeAudioClock = 0, nativeSpeechShape = null;
+let nativeScreenPhase = 'idle', nativeScreenSince = 0, nativeScreenDirection = -.65;
+const nativeScreenGaze = new THREE.Vector2();
 let nativeFrames = 0, nativeFPS = 0, fpsFrames = 0, fpsStarted = performance.now();
 const nativeTranslation = new THREE.Vector2();
 const nativeGrab = new THREE.Vector2(0, .65);
@@ -144,7 +146,7 @@ const audio = new Audio('/audio/whale-maid/companion-minimax.mp3');
 audio.preload = 'auto';
 function showError(message) { error.textContent = message; error.hidden = false; }
 function updateStatus() {
-  status.textContent = drag?.moved ? '被拎起来了' : reaction ? (reaction === 'happy' ? '摸摸头' : '吓一跳') : activeMotion ? motionSpec(activeMotion.name).label : mode === 'speak' ? '正在说话' : mode === 'look' ? '在看你' : '自在摸鱼';
+  status.textContent = drag?.moved ? '被拎起来了' : reaction ? (reaction === 'happy' ? '摸摸头' : '吓一跳') : nativeScreenPhase === 'observing' ? '看看屏幕' : nativeScreenPhase === 'thinking' ? '想一想' : activeMotion ? motionSpec(activeMotion.name).label : mode === 'speak' ? '正在说话' : mode === 'look' ? '在看你' : '自在摸鱼';
   buttons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.action === mode)));
   motionButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.motion === activeMotion?.name)));
 }
@@ -326,7 +328,7 @@ function frame(now) {
     nextIdleMotion = elapsed + (nativeDesktop ? 12 + Math.random() * 8 : 8 + Math.random() * 5);
     updateStatus();
   }
-  if (!reducedMotion && nativePerformance !== 'paused' && !activeMotion && !reaction && !drag && mode === 'idle' && elapsed >= nextIdleMotion) {
+  if (!reducedMotion && nativePerformance !== 'paused' && nativeScreenPhase === 'idle' && !activeMotion && !reaction && !drag && mode === 'idle' && elapsed >= nextIdleMotion) {
     const available = idleMotions.filter(supportsMotion);
     playMotion(available[idleMotionIndex++ % available.length]);
   }
@@ -387,9 +389,16 @@ function frame(now) {
     const total = aa + ee + ou;
     vowels = { aa: aa / total, ee: ee / total, ou: ou / total };
   }
-  const activity = activeMotion ? { name: activeMotion.name, time: elapsed - activeMotion.started }
+  const screenTime = elapsed - nativeScreenSince;
+  const attending = nativeScreenPhase === 'observing' || nativeScreenPhase === 'thinking';
+  if (attending) nativeScreenGaze.set(nativeScreenPhase === 'observing' ? nativeScreenDirection + Math.sin(screenTime * 2.2) * .13 : .17 + Math.sin(screenTime * .6) * .12,
+    nativeScreenPhase === 'observing' ? .28 + Math.sin(screenTime * 1.4) * .08 : .42 + Math.sin(screenTime * .7) * .04);
+  const screenMotion = nativeScreenPhase === 'observing' ? 'screenObserve' : nativeScreenPhase === 'thinking' ? 'screenThink' : null;
+  const activity = screenMotion && !reducedMotion ? { name: screenMotion, time: screenTime % motionSpec(screenMotion).duration }
+    : nativeScreenPhase === 'commenting' ? { name: 'nod', time: Math.min(screenTime * .6, MOTIONS.nod.duration - .01) }
+    : activeMotion ? { name: activeMotion.name, time: elapsed - activeMotion.started }
     : happy ? { name: happyMotion, time: elapsed - reactionStarted } : null;
-  character.update(dt, { time: elapsed, motion, happy, shock, blinking, blinkAmount, volume, vowels, looking: pointerPresent && (nativeDesktop || mode === 'look' || !!drag || elapsed - lastPointerMove < 3), pointer, dragging: !!drag?.moved,
+  character.update(dt, { time: elapsed, motion, happy, shock, blinking, blinkAmount, volume, vowels, looking: attending || pointerPresent && (nativeDesktop || mode === 'look' || !!drag || elapsed - lastPointerMove < 3), pointer: attending ? nativeScreenGaze : pointer, dragging: !!drag?.moved,
     held: nativeDesktop ? nativeHeld : !!drag, grab: nativeDesktop ? nativeGrab : drag?.anchor,
     activity, touch, speechShape: nativeSpeaking ? nativeSpeechShape : null, translation: nativeDesktop ? nativeTranslation : offset });
   renderer.render(scene, camera);
@@ -404,7 +413,7 @@ function frame(now) {
 let nativeTimer = 0, nativeRaf = 0, nativeDeadline = 0;
 function targetFPS() {
   if (!nativeVisible || document.hidden || nativePerformance === 'paused') return 0;
-  const interactive = nativeSpeaking || nativeHeld || !!drag || !!reaction || !!activeMotion || (character?.root.userData.expression?.suspension?.settling ?? false) || (pointerPresent && elapsed - lastPointerMove < 1.5);
+  const interactive = nativeSpeaking || nativeScreenPhase !== 'idle' || nativeHeld || !!drag || !!reaction || !!activeMotion || (character?.root.userData.expression?.suspension?.settling ?? false) || (pointerPresent && elapsed - lastPointerMove < 1.5);
   return nativeLowPower ? (interactive ? 30 : 15) : nativePerformance === 'smooth' || interactive ? 60 : 30;
 }
 function nativeTick(now) {
@@ -437,6 +446,12 @@ if (nativeDesktop) {
     else if (type === 'speechLevel') { if (!nativeSpeechFrames.length) nativeVolume = Math.max(0, Math.min(1, Number(payload.volume) || 0)); nativeAudioPosition = payload.position ?? nativeAudioPosition; nativeAudioClock = performance.now(); nativePeakVolume = Math.max(nativePeakVolume, nativeVolume); }
     else if (type === 'speechEnd') { nativeSpeaking = false; nativeVolume = 0; nativeSpeechFrames = []; nativeSpeechShape = null; if (mode === 'speak') mode = 'idle'; updateStatus(); }
     else if (type === 'voiceListen') playMotion('listen');
+    else if (type === 'screenState') {
+      nativeScreenPhase = ['observing', 'thinking', 'commenting'].includes(payload.phase) ? payload.phase : 'idle';
+      nativeScreenSince = elapsed; nativeScreenDirection = payload.direction ?? -.65;
+      if (nativeScreenPhase !== 'idle') cancelMotion();
+      updateStatus();
+    }
     else if (type === 'dragState') { nativeHeld = !!payload.held; if (nativeHeld) { nativeMotionEvents = 0; dragPeakAngle = 0; dragPeakInertia = 0; } }
     else if (type === 'translation') {
       nativeTranslation.set(payload.x, payload.y); nativeHeld = payload.held !== false; nativeMotionEvents++;
@@ -451,7 +466,7 @@ if (nativeDesktop) {
     visible: nativeVisible, speaking: nativeSpeaking, volume: nativeVolume, peakVolume: nativePeakVolume, compact: true,
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     drawingBuffer: [renderer.domElement.width, renderer.domElement.height], pixelRatio: renderer.getPixelRatio(),
-    pointer: pointer.toArray(), expression: character.root.userData.expression, speech: { curveFrames: nativeSpeechFrames.length, position: nativeAudioPosition, playhead: nativeSpeaking ? nativeAudioPosition + (performance.now() - nativeAudioClock) / 1000 : 0, shape: nativeSpeechShape },
+    pointer: pointer.toArray(), screen: { phase: nativeScreenPhase, time: elapsed - nativeScreenSince, gaze: nativeScreenGaze.toArray() }, expression: character.root.userData.expression, speech: { curveFrames: nativeSpeechFrames.length, position: nativeAudioPosition, playhead: nativeSpeaking ? nativeAudioPosition + (performance.now() - nativeAudioClock) / 1000 : 0, shape: nativeSpeechShape },
     interaction: { count: interactionCount, kind: reaction, zone: touch.zone, side: touch.side },
     drag: { held: nativeHeld, motionEvents: nativeMotionEvents, translation: nativeTranslation.toArray(), peakAngle: dragPeakAngle, peakInertia: dragPeakInertia } });
 }

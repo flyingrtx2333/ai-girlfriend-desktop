@@ -30,7 +30,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -56,6 +56,10 @@ final class FormDocumentView: NSView {
     private let voiceEnabled = NSSwitch(), onTop = NSSwitch(), wakeEnabled = NSSwitch()
     private let wakePhrase = NSTextField(), wakeStatus = NSTextField(labelWithString: "未开启")
     private let pauseWait = NSPopUpButton()
+    private let screenEnabled = NSSwitch(), screenInterval = NSPopUpButton()
+    private let screenStatus = NSTextField(labelWithString: ""), screenTarget = NSTextField(labelWithString: "")
+    private let screenPermission = NSButton(title: "授权", target: nil, action: nil)
+    private let screenNow = NSButton(title: "看看屏幕", target: nil, action: nil), screenQuiet = NSButton(title: "免打扰30分钟", target: nil, action: nil)
     private let performance = NSPopUpButton(), scale = NSSlider(value: 1, minValue: 0.5, maxValue: 1.5, target: nil, action: nil)
     private var removeChatKey = false, removeVoiceKey = false, busy = false
     private var pendingRender: DispatchWorkItem?
@@ -78,6 +82,7 @@ final class FormDocumentView: NSView {
             self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
             self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.isEnabled = enabled
         }
+        companion.screenCompanion.onChange = { [weak self] in self?.updateScreenStatus($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -165,7 +170,7 @@ final class FormDocumentView: NSView {
         settingsSidebar.addSubview(column)
         NSLayoutConstraint.activate([column.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), column.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
     }
-    @objc private func returnToChat() { selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
+    @objc private func returnToChat() { companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections()
@@ -299,6 +304,21 @@ final class FormDocumentView: NSView {
         row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
         pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
         wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor; row("状态", wakeStatus)
+        group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
+        screenEnabled.setAccessibilityLabel("闲置时观察屏幕"); row("自动观察", screenEnabled)
+        screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"]); row("观察间隔", screenInterval)
+        screenTarget.font = .systemFont(ofSize: 12); screenTarget.textColor = .secondaryLabelColor
+        screenTarget.lineBreakMode = .byTruncatingMiddle; screenTarget.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        row("图像发送至", screenTarget)
+        screenStatus.font = .systemFont(ofSize: 12); screenStatus.textColor = .secondaryLabelColor
+        screenStatus.lineBreakMode = .byTruncatingTail
+        row("状态", screenStatus)
+        for (button, action) in [(screenPermission, #selector(grantScreenPermission)), (screenNow, #selector(lookAtScreen)), (screenQuiet, #selector(quietScreen))] {
+            button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 12); button.target = self; button.action = action
+        }
+        row("", stack([screenNow, screenPermission, screenQuiet], spacing: 8))
+        let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
+        screenScope.font = .systemFont(ofSize: 12); screenScope.textColor = .secondaryLabelColor; row("", screenScope)
         group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放")
         row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"]); row("动画", performance)
         sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = .secondaryLabelColor
@@ -326,7 +346,7 @@ final class FormDocumentView: NSView {
         renderMessages(); showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if tab != "settings" { window?.makeFirstResponder(composer) }
     }
-    @objc private func selectTab(_ sender: NSButton) { selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
+    @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
     private func changeTab() {
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
         let configuring = selectedTab == "settings"
@@ -361,7 +381,20 @@ final class FormDocumentView: NSView {
         performance.selectItem(at: ["auto", "smooth", "paused"].firstIndex(of: p.performance) ?? 0)
         scale.doubleValue = p.scale
         sizeValue.stringValue = "\(Int((p.scale * 100).rounded()))%"
+        screenEnabled.state = p.screenObservationEnabled ? .on : .off
+        screenInterval.selectItem(at: [60.0, 180.0, 300.0, 600.0, 900.0].firstIndex(of: p.screenObservationInterval) ?? 2)
+        screenTarget.stringValue = (try? CompanionService.endpoint(p.endpoint).host) ?? "未配置"
+        screenTarget.toolTip = p.model
+        updateScreenStatus(companion.screenCompanion.status)
     }
+    private func updateScreenStatus(_ value: String) {
+        screenStatus.stringValue = value; screenStatus.toolTip = value
+        screenPermission.isEnabled = !CGPreflightScreenCaptureAccess()
+        screenQuiet.title = (companion?.store.preferences.screenQuietUntil ?? .distantPast) > Date() ? "继续观察" : "免打扰30分钟"
+    }
+    @objc private func grantScreenPermission() { companion?.screenCompanion.requestPermission() }
+    @objc private func lookAtScreen() { companion?.screenCompanion.observe() }
+    @objc private func quietScreen() { companion?.pauseScreenObservation() }
     private func refreshToken(_ input: NSSecureTextField, preview: NSButton, replace: NSButton, account: String) {
         input.stringValue = ""; input.placeholderString = "API Key"
         let text = companion?.store.keychain.preview(account)
@@ -484,6 +517,9 @@ final class FormDocumentView: NSView {
             p.voiceID = voiceID.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             p.wakeEnabled = wakeEnabled.state == .on; p.wakePhrase = wakePhrase.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             p.voicePauseSeconds = [2.0, 3.0, 5.0][max(0, pauseWait.indexOfSelectedItem)]
+            p.screenObservationEnabled = screenEnabled.state == .on
+            p.screenObservationInterval = [60.0, 180.0, 300.0, 600.0, 900.0][max(0, screenInterval.indexOfSelectedItem)]
+            if p.screenObservationEnabled && p.visionSupported != true { throw PetError("请在模型页确认视觉理解能力") }
             guard (2...12).contains(p.wakePhrase.filter({ $0.isLetter || $0.isNumber }).count) else { throw PetError("唤醒词请用 2–12 个字") }
             if p.wakeEnabled, let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") {
                 _ = try SherpaWake.tokenLine(p.wakePhrase, directory: directory)

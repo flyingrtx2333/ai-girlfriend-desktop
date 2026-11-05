@@ -1,0 +1,85 @@
+{
+  "version": "0.8.0",
+  "capture": {
+    "height": 392,
+    "jpegBytes": 30467,
+    "method": "ScreenCaptureKit single-frame screenshot of the controlled fixture window",
+    "width": 800
+  },
+  "checks": {
+    "automaticObservationDefaultsOff": true,
+    "commentingKeepsRenderBudget": true,
+    "commentingReachesRenderer": true,
+    "listeningBlocksManualObservation": true,
+    "liveVisionReturnsComment": true,
+    "observationAndThinkingHaveDistinctPoses": true,
+    "observingKeepsRenderBudget": true,
+    "observingReachesRenderer": true,
+    "pausedBlocksManualObservation": true,
+    "quietBlocksAutomaticObservation": true,
+    "realMiniMaxPlayback": true,
+    "realScreenCaptureKitFrame": true,
+    "smallInMemoryJPEG": true,
+    "spontaneousCommentDoesNotOpenFollowUpMic": true,
+    "thinkingKeepsRenderBudget": true,
+    "thinkingReachesRenderer": true,
+    "unchangedFrameDetectedLocally": true
+  },
+  "poses": {
+    "commenting": [
+      -0.044182724737134645,
+      -0.6712711199910721,
+      -0.5813527555097818
+    ],
+    "observing": [
+      -0.024060386087691215,
+      -1.0274506547512001,
+      0.22363657915265883
+    ],
+    "thinking": [
+      0.07081478620465638,
+      0.28273189129005805,
+      0.12813011002067157
+    ]
+  },
+  "scope": "Independent profile and a fixed public scene; no private screen content, transcript or credentials in this report. Online vision/TTS and real ScreenCaptureKit capture run only with their explicit flags.",
+  "success": true,
+  "vision": {
+    "independentSceneFacts": "Orange three-car train on a bridge over a blue river, green mountains and white clouds. The model prompt contains none of these facts.",
+    "model": "deepseek-flash",
+    "reply": "三辆橙色小车在桥上排成一排，配上尖顶绿山和椭圆云朵，画面特别像小朋友画的。"
+  },
+  "voice": {
+    "audioSeconds": 7.847999999999999,
+    "curveFrames": 393,
+    "model": "speech-02-hd"
+  },
+  "settingsUI": {
+    "narrowScreenCategory": true,
+    "searchAcrossCategories": true
+  },
+  "installedFlow": {
+    "manualButtonCompleted": true,
+    "automaticCaptureObserved": true,
+    "automaticVoiceCommentObserved": true,
+    "playbackReturnedToIdle": true,
+    "events": [
+      "phase=observing",
+      "capture manual=false width=1280 height=822 bytes=108796",
+      "phase=thinking",
+      "comment-ready voice=true",
+      "phase=commenting",
+      "phase=idle",
+      "phase=observing",
+      "capture manual=false width=1280 height=822 bytes=123096",
+      "phase=thinking",
+      "phase=idle"
+    ],
+    "finalIntervalSeconds": 300,
+    "enabledForUser": true,
+    "stableSigningIdentity": true,
+    "scope": "UI-triggered and timer-triggered flows in the installed app; only phase/size metadata is retained. Actual screen content and comments from these runs are not included.",
+    "existingModelAndVoiceSettingsUnchanged": true,
+    "installedMatchesFinalBuild": true
+  }
+}

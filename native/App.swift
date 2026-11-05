@@ -53,6 +53,7 @@ final class PetWebView: WKWebView {
     var scheme: AssetScheme!
     var statusItem: NSStatusItem!
     lazy var control = ControlWindow(companion: self)
+    lazy var screenCompanion = ScreenCompanion(host: self)
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
     var bubbleTimer: Timer?
@@ -62,6 +63,7 @@ final class PetWebView: WKWebView {
     var meterTimer: Timer?
     var lastVolume = 0.0
     var voiceGeneration = 0
+    var speechFollowUp = true
     var speechTask: Task<Void, Never>?
     var chatTask: Task<Void, Never>?
     var undoMessages: [ChatMessage]?
@@ -105,12 +107,13 @@ final class PetWebView: WKWebView {
         }
         workspace.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
         workspace.addObserver(self, selector: #selector(didWake), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(frontApplicationChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(powerChanged), name: .NSProcessInfoPowerStateDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         if checkDirectory == nil && !store.keychain.contains("chat") { control.show(tab: "settings") }
     }
     func applicationWillTerminate(_ notification: Notification) {
-        closing = true; chatTask?.cancel(); stopSpeech()
+        closing = true; screenCompanion.suspend(); chatTask?.cancel(); stopSpeech()
         voiceWake.stop(); scaleSaveTimer?.invalidate()
         if let globalMouse { NSEvent.removeMonitor(globalMouse) }
         if let localMouse { NSEvent.removeMonitor(localMouse) }
@@ -143,6 +146,8 @@ final class PetWebView: WKWebView {
             if let checked { item.state = checked ? .on : .off }; m.addItem(item)
         }
         add("聊天", #selector(openChat)); add("设置", #selector(openSettings))
+        add("看看屏幕", #selector(observeScreen))
+        if store.preferences.screenObservationEnabled { add("免打扰30分钟", #selector(pauseScreenObservation), checked: (store.preferences.screenQuietUntil ?? .distantPast) > Date()) }
         add("语音唤醒", #selector(toggleWake), checked: store.preferences.wakeEnabled)
         m.items.last?.identifier = NSUserInterfaceItemIdentifier("wake-toggle")
         if store.preferences.wakeEnabled {
@@ -159,6 +164,7 @@ final class PetWebView: WKWebView {
         return m
     }
     func menuWillOpen(_ menu: NSMenu) {
+        screenCompanion.interaction()
         for item in menu.items {
             (item.view as? SizeMenuView)?.setValue(store.preferences.scale)
             if item.identifier?.rawValue == "wake-toggle" { item.state = store.preferences.wakeEnabled ? .on : .off }
@@ -217,6 +223,7 @@ final class PetWebView: WKWebView {
         bubble?.level = NSWindow.Level(rawValue: pet.level.rawValue + 1)
         updateBubblePosition(); updateVisibility(); statusItem?.menu = menu()
         syncWakePreference()
+        screenCompanion.configure()
     }
     func resizePet(_ value: Double) {
         guard pet != nil else { return }
@@ -259,6 +266,7 @@ final class PetWebView: WKWebView {
             wakeStatus = wakeError ?? state
             if state == "等待唤醒" && (chatTask != nil || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
         case .woke:
+            screenCompanion.interaction()
             wakeStatus = "聆听中"; playWakeChime(); emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
         case .partial(let text): showBubble(text, duration: 12)
         case .utterance(let text):
@@ -285,14 +293,18 @@ final class PetWebView: WKWebView {
     }
     func updateVisibility() {
         guard pet != nil else { return }
+        let wasVisible = renderVisible
         renderVisible = pet.isVisible && pet.occlusionState.contains(.visible) && !sleeping
         emit("preferences", ["visible": renderVisible, "performance": store.preferences.performance,
                              "lowPower": ProcessInfo.processInfo.isLowPowerModeEnabled])
         if renderVisible && ready { updatePointer(at: NSEvent.mouseLocation) }
+        if !renderVisible { screenCompanion.suspend() }
+        else if !wasVisible && ready { screenCompanion.configure() }
     }
-    @objc func willSleep() { endDrag(); sleeping = true; wakePlayer?.stop(); voiceWake.stop(); updateVisibility() }
+    @objc func willSleep() { screenCompanion.suspend(); endDrag(); sleeping = true; wakePlayer?.stop(); voiceWake.stop(); updateVisibility() }
     @objc func didWake() { sleeping = false; appliedWake = nil; syncWakePreference(); updateVisibility() }
     @objc func powerChanged() { updateVisibility() }
+    @objc func frontApplicationChanged() { screenCompanion.applicationChanged() }
     @objc func screensChanged() { pet.setFrame(clamp(pet.frame), display: true); updateBubblePosition() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateVisibility() }
 
@@ -348,6 +360,7 @@ final class PetWebView: WKWebView {
         }
     }
     func beginDrag() {
+        screenCompanion.interaction()
         // WebKit can deliver pointerdown after a short physical drag has ended.
         // Keep the native press and its maximum travel until the bridge arrives.
         let press = pendingPress; pendingPress = nil
@@ -400,8 +413,10 @@ final class PetWebView: WKWebView {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         diagnostics.append(error.localizedDescription); control.setStatus("角色加载失败，请重新打开应用。", error: true)
     }
-    @objc func openChat() { control.show(tab: "chat") }
-    @objc func openSettings() { control.show(tab: "settings") }
+    @objc func openChat() { screenCompanion.interaction(); control.show(tab: "chat") }
+    @objc func openSettings() { screenCompanion.interaction(); control.show(tab: "settings") }
+    @objc func observeScreen() { screenCompanion.observe() }
+    @objc func pauseScreenObservation() { screenCompanion.toggleQuiet(); statusItem.menu = menu() }
     @objc func accessibilityChat() -> Bool { openChat(); return true }
     @objc func accessibilitySettings() -> Bool { openSettings(); return true }
     @objc func togglePet() {
@@ -421,6 +436,7 @@ final class PetWebView: WKWebView {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, chatTask == nil else { return false }
         guard text.count <= 8000 else { control.setStatus("消息过长，请缩短后重试。", error: true); return false }
+        screenCompanion.interaction()
         do {
             let preferences = store.preferences, url = try CompanionService.endpoint(preferences.endpoint, chat: true)
             let key = try store.keychain.read("chat")
@@ -463,7 +479,7 @@ final class PetWebView: WKWebView {
         else { undoMessages = store.messages; store.messages = [] }
         try? store.saveHistory(); control.renderMessages()
     }
-    func synthesize(_ text: String, preferences: PetPreferences) {
+    func synthesize(_ text: String, preferences: PetPreferences, followUp: Bool = true) {
         stopSpeech(); let generation = voiceGeneration
         speechTask = Task { [weak self] in
             guard let self else { return }
@@ -471,14 +487,15 @@ final class PetWebView: WKWebView {
                 let key = try self.store.keychain.read("voice")
                 let data = try await CompanionService.speech(text: text, preferences: preferences, key: key)
                 guard !Task.isCancelled, generation == self.voiceGeneration else { return }
-                try self.beginAudio(data, text: text)
+                try self.beginAudio(data, text: text, followUp: followUp)
             } catch {
                 if !Task.isCancelled {
                     self.control.setStatus(error.localizedDescription, error: true)
                     self.showBubble("语音未播放：\(error.localizedDescription)")
+                    self.screenCompanion.speechEnded()
                 }
             }
-            if generation == self.voiceGeneration { self.speechTask = nil; self.refreshVoiceBusy(followUp: true) }
+            if generation == self.voiceGeneration { self.speechTask = nil; self.refreshVoiceBusy(followUp: followUp) }
         }
         refreshVoiceBusy()
     }
@@ -499,7 +516,8 @@ final class PetWebView: WKWebView {
         // A short nonverbal cue has its own player: do not close the active ASR
         // turn, mark speech as busy, or animate the mouth for this sound.
     }
-    func beginAudio(_ data: Data, text: String) throws {
+    func beginAudio(_ data: Data, text: String, followUp: Bool = true) throws {
+        speechFollowUp = followUp
         player = try AVAudioPlayer(data: data); player?.delegate = self; player?.isMeteringEnabled = true
         speechAnimation = try? SpeechAnimation(data: data, duration: player?.duration ?? 0)
         player?.prepareToPlay()
@@ -515,11 +533,12 @@ final class PetWebView: WKWebView {
         player.updateMeters(); lastVolume = min(1, pow(10, Double(player.averagePower(forChannel: 0)) / 20) * 5)
         if renderVisible { emit("speechLevel", ["volume": lastVolume, "position": player.currentTime]) }
     }
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { stopSpeech(followUp: true) }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { stopSpeech(followUp: speechFollowUp) }
     func stopSpeech(followUp: Bool = false) {
         voiceGeneration += 1; speechTask?.cancel(); speechTask = nil
         player?.stop(); player = nil; speechAnimation = nil; meterTimer?.invalidate(); meterTimer = nil; lastVolume = 0
         emit("speechEnd")
+        screenCompanion.speechEnded()
         refreshVoiceBusy(followUp: followUp)
     }
     func showBubble(_ text: String, duration: TimeInterval? = nil) {
