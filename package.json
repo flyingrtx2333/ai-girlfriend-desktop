@@ -22,6 +22,7 @@
     "native:check-context": "node scripts/check-native-agent.mjs --context",
     "native:check-git": "node scripts/check-native-agent.mjs --git",
     "native:check-index": "node scripts/check-native-agent.mjs --index",
+    "native:check-documents": "node scripts/check-native-documents.mjs",
     "check": "node scripts/check.mjs",
     "check:eyes": "node scripts/check-eyes.mjs",
     "check:portrait": "node scripts/check-portrait.mjs",

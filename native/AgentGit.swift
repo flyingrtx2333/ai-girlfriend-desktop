@@ -45,7 +45,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         return url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
     }
     func cancel() { command?.cancel() }
-    static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     private func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000) async throws -> AgentToolResult {
         let process = AgentCommand(); command = process; defer { command = nil }
         let flags = [try Self.executablePath(), "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]

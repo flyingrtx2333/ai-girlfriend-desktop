@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--document-check") { await runAgentDocumentCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-ui-check") {
             ensureAgent(); var checks: [String: Bool] = [:]
             if let tasks = agentStore, let task = tasks.tasks.first(where: { $0.kind == "wiki" && $0.status == .completed }) {

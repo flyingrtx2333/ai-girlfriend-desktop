@@ -110,6 +110,6 @@ final class AgentCommand: @unchecked Sendable {
         text += "\n[exit=\(code)\(timedOut ? ", timeout" : "")]"
         let continuation = self.continuation; self.continuation = nil
         if cancelled { continuation?.resume(throwing: CancellationError()) }
-        else { continuation?.resume(returning: AgentToolResult(text: text, failed: code != 0 || timedOut, stdout: stdout, stderr: stderr, exitCode: Int(code), truncated: discarded > 0)) }
+        else { continuation?.resume(returning: AgentToolResult(text: text, failed: code != 0 || timedOut, stdout: stdout, stdoutData: standardOutput, stderr: stderr, exitCode: Int(code), truncated: discarded > 0)) }
     }
 }

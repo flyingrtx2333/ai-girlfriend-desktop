@@ -45,7 +45,7 @@ import Foundation
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []
-        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.summary = String(value.summary.prefix(240))
+        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
         return value
     }
     func task(_ id: String) -> AgentTaskRecord? {
@@ -100,6 +100,8 @@ import Foundation
     @discardableResult func fork(_ id: String) -> String? {
         guard var original = task(id), original.status != .running else { return nil }
         original.parentID = id; original.id = UUID().uuidString; original.title += " · 分支"
+        do { try AgentAttachments.copyForFork(store: self, sourceID: id, targetID: original.id, files: original.attachments ?? []) }
+        catch { writeError = error.localizedDescription; return nil }
         for call in original.pendingCalls { original.messages.append(AgentMessage(role: "tool", content: "原任务在此处中断，分支尚未执行该操作。", toolCallID: call.id)) }
         original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
         original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.kind = nil

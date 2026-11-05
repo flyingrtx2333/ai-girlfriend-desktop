@@ -28,6 +28,7 @@ struct AgentMessage: Codable, Identifiable {
     var reasoning: String?
     var toolCalls: [AgentToolCall]?
     var toolCallID: String?
+    var attachmentIDs: [String]?
     var wire: [String: Any] {
         var value: [String: Any] = ["role": role, "content": content]
         if let reasoning { value["reasoning_content"] = reasoning }
@@ -102,6 +103,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var gitDirectory: String?
     var gitReview: AgentGitReview?
     var wikiRevision: String?
+    var attachments: [AgentAttachment]?
+    var draftAttachmentIDs: [String]?
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
 }
@@ -117,6 +120,7 @@ struct AgentToolResult {
     var artifacts: [String] = []
     var sources: [String] = []
     var stdout: String?
+    var stdoutData: Data?
     var stderr: String?
     var exitCode: Int?
     var truncated: Bool?
