@@ -14,10 +14,24 @@ import AppKit
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
         runtime.onComplete = { [weak self] id, text in
-            guard let self, tasks.selectedID == id, !text.isEmpty else { return }
-            self.showBubble(String(text.prefix(320)))
-            if self.store.preferences.voiceEnabled { self.synthesize(text, preferences: self.store.preferences) }
+            guard let self else { return }
+            if tasks.task(id)?.kind == "wiki" {
+                let messageID = tasks.task(id)?.messages.last?.id
+                Task { [weak self] in
+                    do { try await AgentWiki.finalize(store: tasks, taskID: id) }
+                    catch {
+                        if tasks.task(id)?.status == .completed, tasks.task(id)?.messages.last?.id == messageID { tasks.update(id) { $0.status = .failed; $0.goalAccepted = nil; $0.events.append(AgentEvent(kind: "wiki", title: "Wiki 校验未通过", detail: error.localizedDescription, status: "failed")) } }
+                    }
+                    self?.control.scheduleRender(); self?.refreshAgentAnimation(); self?.refreshVoiceBusy()
+                    if tasks.task(id)?.status == .completed { self?.completeAgentResponse(id: id, text: text) }
+                }
+            } else { self.completeAgentResponse(id: id, text: text) }
         }
+    }
+    private func completeAgentResponse(id: String, text: String) {
+        guard agentStore?.selectedID == id, !text.isEmpty else { return }
+        showBubble(String(text.prefix(320)))
+        if store.preferences.voiceEnabled { synthesize(text, preferences: store.preferences) }
     }
     func refreshAgentAnimation() {
         let status = agentStore?.selected?.status

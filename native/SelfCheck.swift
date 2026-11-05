@@ -24,6 +24,16 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--wiki-ui-check") {
+            ensureAgent(); var checks: [String: Bool] = [:]
+            if let tasks = agentStore, let task = tasks.tasks.first(where: { $0.kind == "wiki" && $0.status == .completed }) {
+                let records = AgentRecordWindow(store: tasks, taskID: task.id, section: 6); checks.merge(records.checkWiki(output)) { _, value in value }; records.close()
+                let knowledge = AgentKnowledgeWindow(store: tasks, taskID: task.id); checks.merge(await knowledge.checkLayout(query: "海盐", output: output)) { _, value in value }; knowledge.close()
+            } else { checks["existingVerifiedWikiFixture"] = false }
+            let report: [String: Any] = ["success": !checks.isEmpty && checks.values.allSatisfy { $0 }, "checks": checks, "scope": "Native readers use the previous real-model public Wiki fixture. No model, microphone or TTS calls."]
+            try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("wiki-ui-report.json")); NSApp.terminate(nil); return
+        }
+        if CommandLine.arguments.contains("--index-check") { await runAgentIndexCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-check") { await runAgentGitCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--context-check") { await runAgentContextCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--agent-ui-check") {

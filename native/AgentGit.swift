@@ -46,15 +46,21 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     func cancel() { command?.cancel() }
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    private func run(_ args: [String], write: Bool = false) async throws -> AgentToolResult {
+    private func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000) async throws -> AgentToolResult {
         let process = AgentCommand(); command = process; defer { command = nil }
         let flags = [try Self.executablePath(), "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
-        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: write ? 90 : 15, readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, protectedData: store.directory.deletingLastPathComponent())
+        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: write ? 90 : 15, readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent())
     }
     private func output(_ args: [String]) async throws -> String {
         let result = try await run(args)
         guard !result.failed else { throw PetError(String(result.text.prefix(3000))) }
         guard result.truncated != true else { throw PetError("Git 输出较大，请缩小文件范围") }; return result.stdout ?? ""
+    }
+    func filePaths() async throws -> [String] {
+        let result = try await run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], maximumOutput: 1_000_000)
+        guard !result.failed else { throw PetError(result.text) }
+        guard result.truncated != true else { throw PetError("项目文件过多，请选择较小的项目目录") }
+        return Array(Set((result.stdout ?? "").components(separatedBy: "\0").filter { !$0.isEmpty })).sorted()
     }
     func status() async throws -> AgentGitStatus {
         let raw = try await output(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"])

@@ -75,6 +75,7 @@ final class FormDocumentView: NSView {
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
     private var gitWindow: AgentGitWindow?
+    private var knowledgeWindow: AgentKnowledgeWindow?
 
     init(companion: AppDelegate) {
         self.companion = companion
@@ -147,7 +148,9 @@ final class FormDocumentView: NSView {
         sidebarWake.font = .systemFont(ofSize: 11); sidebarWake.textColor = .secondaryLabelColor
         clearButton.isBordered = false; clearButton.font = .systemFont(ofSize: 12); clearButton.alignment = .left
         clearButton.target = self; clearButton.action = #selector(clear)
-        let sideFooter = stack([listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
+        let knowledge = NSButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge)); knowledge.isBordered = false; knowledge.font = .systemFont(ofSize: 12); knowledge.alignment = .left
+        knowledge.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: nil); knowledge.imagePosition = .imageLeading; knowledge.isHidden = companion?.usesAgent != true
+        let sideFooter = stack([knowledge, listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
         chatSidebarViews = [brand, navigation, sideFooter]
         if companion?.usesAgent == true {
             taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar); chatSidebarViews.append(taskSidebar)
@@ -803,6 +806,12 @@ final class FormDocumentView: NSView {
         gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next) }
         gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
     }
+    @objc func showAgentKnowledge() {
+        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        knowledgeWindow?.window?.performClose(nil); knowledgeWindow = AgentKnowledgeWindow(store: store, taskID: id)
+        knowledgeWindow?.onOpenWiki = { [weak self] in self?.selectAgentTask(id); self?.presentAgentRecords(section: 6) }
+        knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
+    }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
     func presentAgentRecords(section: Int) {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
@@ -810,7 +819,16 @@ final class FormDocumentView: NSView {
             existing.window?.performClose(nil)
             if existing.window?.isVisible == true { return }
         }
-        recordWindow = AgentRecordWindow(store: store, taskID: id, section: section); recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+        recordWindow = AgentRecordWindow(store: store, taskID: id, section: section)
+        recordWindow?.enableWikiGeneration { [weak self] in self?.generateAgentWiki(sourceID: id) }
+        recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    func generateAgentWiki(sourceID: String) {
+        guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
+        do {
+            let id = try AgentWiki.start(store: store, runtime: runtime, sourceID: sourceID)
+            recordWindow?.window?.close(); knowledgeWindow?.window?.close(); selectAgentTask(id)
+        } catch { setStatus(error.localizedDescription, error: true) }
     }
     func configureApprovalPanel() {
         approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true

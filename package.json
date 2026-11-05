@@ -1,6 +1,6 @@
 {
   "name": "blue-fat-fish",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,6 +21,7 @@
     "native:check-agent": "node scripts/check-native-agent.mjs",
     "native:check-context": "node scripts/check-native-agent.mjs --context",
     "native:check-git": "node scripts/check-native-agent.mjs --git",
+    "native:check-index": "node scripts/check-native-agent.mjs --index",
     "check": "node scripts/check.mjs",
     "check:eyes": "node scripts/check-eyes.mjs",
     "check:portrait": "node scripts/check-portrait.mjs",

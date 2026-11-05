@@ -101,6 +101,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var contextSize: Int?
     var gitDirectory: String?
     var gitReview: AgentGitReview?
+    var wikiRevision: String?
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
 }

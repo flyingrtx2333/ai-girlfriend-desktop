@@ -2,9 +2,11 @@ import AppKit
 
 @MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
-    private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆"], trackingMode: .selectOne, target: nil, action: nil)
+    private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
+    private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
+    var onGenerateWiki: (() -> Void)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0
     init(store: AgentStore, taskID: String, section: Int = 0) {
@@ -14,7 +16,7 @@ import AppKit
         window.appearance = NSAppearance(named: .aqua); window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; text.delegate = self
         let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
-        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = min(5, max(0, section)); activeSection = sections.selectedSegment
+        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = min(6, max(0, section)); activeSection = sections.selectedSegment
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
@@ -25,7 +27,8 @@ import AppKit
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
-        let actions = NSStackView(views: [state, NSView(), undo, open, save]); actions.spacing = 8
+        generate.target = self; generate.action = #selector(generateWiki)
+        let actions = NSStackView(views: [state, NSView(), generate, undo, open, save]); actions.spacing = 8
         for view in [sections, list, viewer, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
@@ -35,6 +38,7 @@ import AppKit
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false
         save.isHidden = true; undo.isHidden = true; open.isHidden = true
+        generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
         guard let task = store.task(taskID) else { return }
         switch sections.selectedSegment {
         case 0:
@@ -43,13 +47,18 @@ import AppKit
         case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
         case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
+        case 6:
+            do { items = try AgentWiki.pages(workspace: task.workspace).map { (URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent, $0) }; state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
+            catch { items = []; state.stringValue = error.localizedDescription }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
         }
-        if [1, 2, 3, 5].contains(sections.selectedSegment) { text.string = "" }
+        if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
+    @objc private func generateWiki() { if canLeave() { onGenerateWiki?() } }
+    func enableWikiGeneration(_ action: @escaping () -> Void) { onGenerateWiki = action; generate.isEnabled = true }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let label = NSTextField(labelWithString: items[row].title); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = items[row].value; return label
@@ -83,7 +92,7 @@ import AppKit
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value), data = try files.readData(file)
             guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
             text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = task.status != .running
-            save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = files.relative(file)
+            save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = (sections.selectedSegment == 6 ? "按上次索引：" + (try AgentWiki.status(store: store, taskID: taskID)) + " · " : "") + files.relative(file)
         } catch { text.string = ""; state.stringValue = error.localizedDescription }
     }
     @objc private func saveFile() {
@@ -124,6 +133,16 @@ import AppKit
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
+    func checkWiki(_ output: URL) -> [String: Bool] {
+        sections.selectedSegment = 6; enableWikiGeneration {}; refresh()
+        var checks: [String: Bool] = ["nativeWikiListsFourActualPages": items.count == 4, "nativeWikiGenerationControlVisible": !generate.isHidden && generate.isEnabled]
+        if let path = selection, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let data = try? files.readData(files.resolve(path)) {
+            checks["nativeWikiEditorMatchesActualMarkdown"] = text.string == String(data: data, encoding: .utf8) && openedHash == AgentFiles.hash(data) && !save.isHidden
+        } else { checks["nativeWikiEditorMatchesActualMarkdown"] = false }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("wiki-reader.png")) }
+        return checks
+    }
     func checkPreview(_ output: URL) async -> [String: Bool] {
         showWindow(nil); window?.makeKeyAndOrderFront(nil)
         sections.selectedSegment = 1; refresh()

@@ -26,7 +26,7 @@ for (const name of ['libsherpa-onnx-c-api.dylib', 'libonnxruntime.dylib']) {
 const files = (await readdir(path.join(root, 'native'))).filter(f => f.endsWith('.swift')).map(f => path.join('native', f));
 run('xcrun', ['swiftc', '-O', '-whole-module-optimization', '-swift-version', '5', '-target', 'arm64-apple-macosx14.0',
   ...files, '-import-objc-header', 'native/SherpaBridge.h', '-I', path.join(sherpaRoot, 'include'),
-  '-L', frameworks, '-lsherpa-onnx-c-api', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
+  '-L', frameworks, '-lsherpa-onnx-c-api', '-lsqlite3', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
   '-framework', 'AppKit', '-framework', 'WebKit', '-framework', 'AVFAudio', '-framework', 'Security',
   '-framework', 'UniformTypeIdentifiers', '-framework', 'Speech', '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Accelerate', '-framework', 'ScreenCaptureKit', '-o', path.join(contents, 'MacOS', 'BlueFatFish')]);
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;

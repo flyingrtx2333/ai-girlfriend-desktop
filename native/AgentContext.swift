@@ -3,7 +3,7 @@ import Foundation
 @MainActor enum AgentContext {
     // No provider tokenizer is bundled. Keep headroom around this estimate;
     // actual usage from the provider remains the authoritative accounting.
-    static func estimate(_ text: String) -> Int {
+    nonisolated static func estimate(_ text: String) -> Int {
         var ascii = 0, other = 0
         for scalar in text.unicodeScalars {
             if scalar.isASCII { ascii += 1 }

@@ -6,7 +6,7 @@ import Darwin
 final class AgentCommand: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.command.\(UUID().uuidString)", qos: .utility)
     private var pid: pid_t = 0, descriptor: Int32 = -1, errorDescriptor: Int32 = -1
-    private var output = Data(), standardOutput = Data(), errorOutput = Data(), discarded = 0
+    private var output = Data(), standardOutput = Data(), errorOutput = Data(), discarded = 0, maximumOutput = 100_000
     private var processSource: DispatchSourceProcess?, readSource: DispatchSourceRead?, errorSource: DispatchSourceRead?
     private var deadline: DispatchWorkItem?, killDeadline: DispatchWorkItem?
     private var cancelled = false, timedOut = false
@@ -14,11 +14,12 @@ final class AgentCommand: @unchecked Sendable {
 
     func cancel() { queue.sync { self.cancelled = true; if self.pid > 0 { kill(-self.pid, SIGKILL) } } }
     func snapshot() -> (running: Bool, output: String) { queue.sync { (self.pid > 0, String(decoding: self.output, as: UTF8.self)) } }
-    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, protectedData: URL? = nil) async throws -> AgentToolResult {
+    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil) async throws -> AgentToolResult {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     self.continuation = continuation
+                    self.maximumOutput = min(2_000_000, max(1000, maximumOutput))
                     do { try self.launch(command: command, workspace: workspace, scratch: scratch, network: network, timeout: timeout, readOnly: readOnly, gitDirectory: gitDirectory, gitWrite: gitWrite, gitConfiguration: gitConfiguration, protectedData: protectedData) }
                     catch { self.continuation = nil; continuation.resume(throwing: error) }
                 }
@@ -86,7 +87,7 @@ final class AgentCommand: @unchecked Sendable {
             guard descriptor >= 0 else { return }
             let count = read(descriptor, &buffer, buffer.count)
             if count <= 0 { return }
-            let remaining = max(0, 100_000 - output.count), kept = min(remaining, count)
+            let remaining = max(0, maximumOutput - output.count), kept = min(remaining, count)
             let bytes = buffer.prefix(kept); output.append(contentsOf: bytes)
             if isError { errorOutput.append(contentsOf: bytes) } else { standardOutput.append(contentsOf: bytes) }
             discarded += count - kept

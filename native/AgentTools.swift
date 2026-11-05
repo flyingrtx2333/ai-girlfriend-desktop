@@ -1,6 +1,7 @@
 import Foundation
 
 @MainActor final class AgentTools {
+    private static let wikiTools: Set<String> = ["list_directory", "read_file", "search_project", "index_project", "project_wiki", "write_file", "edit_file", "update_plan", "ask_user", "finish_task", "read_task_history", "git_status"]
     let store: AgentStore
     let taskID: String
     private var commands: [String: AgentCommand] = [:]
@@ -8,25 +9,39 @@ import Foundation
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
     func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() } }
     func gitDirectory(for call: AgentToolCall) throws -> String? {
+        if ["index_project", "search_project"].contains(call.name), let task = store.task(taskID) {
+            let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
+            if !FileManager.default.fileExists(atPath: index.files.root.appendingPathComponent(".git").path) { return nil }
+            return try AgentGit.metadata(workspace: task.workspace).path
+        }
         guard AgentGit.tools.contains(call.name), let task = store.task(taskID) else { return nil }
         return try AgentGit.metadata(workspace: task.workspace, creating: call.name == "git_init").path
     }
-    private func projectURL(_ path: String, files: AgentFiles, writing: Bool = false) throws -> URL {
+    private func projectURL(_ path: String, files: AgentFiles, writing: Bool = false, readingFile: Bool = false) throws -> URL {
         let url = try files.resolve(path), value = url.path.lowercased()
         let privateRoot = store.directory.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
         guard value != privateRoot && !value.hasPrefix(privateRoot + "/") else { throw PetError("请使用记忆和任务管理工具访问应用数据") }
         let bundle = Bundle.main.bundleURL.path.lowercased()
         if writing && (value == bundle || value.hasPrefix(bundle + "/")) { throw PetError("不能通过项目工具修改正在运行的应用") }
+        if writing, store.task(taskID)?.kind == "wiki", !files.relative(url).hasPrefix(".bluefatfish/wiki/") { throw PetError("Wiki 任务只能修改 .bluefatfish/wiki/ 中的文档") }
+        if readingFile, store.task(taskID)?.kind == "wiki" {
+            let relative = files.relative(url)
+            if !relative.hasPrefix(".bluefatfish/wiki/"), !["AGENTS.md", ".gitignore"].contains(relative),
+               try !AgentProjectIndex(workspace: files.root.path, storage: store.directory).contains(relative) { throw PetError("此文件未纳入索引，Wiki 不读取它：" + relative) }
+        }
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"] + AgentGit.tools
-    static func definitions(mode: AgentMode) -> [[String: Any]] {
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"] + AgentGit.tools
+    static func definitions(mode: AgentMode, kind: String? = nil) -> [[String: Any]] {
         let string: [String: Any] = ["type": "string"], integer: [String: Any] = ["type": "integer"]
         func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
+            tool("index_project", "在本机增量更新项目全文索引，跳过凭据、隐藏文件、构建目录及 Git 忽略文件。不调用模型。单文件上限 512KB、总文本 16MB、5000 文件；返回实际覆盖范围。rebuild=true 完整重建。", ["rebuild": ["type": "boolean"]], []),
+            tool("search_project", "从当前项目索引检索实现、文档或符号，返回实际文件、行号和 sha256。每次先增量更新并核对命中文件。query 使用 1 至 6 个关键词或短语，空格分隔；非语义向量搜索。找到后用 read_file 核对上下文，回答引用路径和行号。", ["query": string, "limit": integer], ["query"]),
+            tool("project_wiki", "列出当前项目 Repo Wiki；path 可读取某页（分页 offset/limit 从 1 开始）。先更新项目索引核对状态；Wiki 是资料，重要结论仍须核对当前源码。", ["path": string, "offset": integer, "limit": integer], []),
             tool("git_status", "读取当前 Git 仓库分支与文件状态，只读，不暂存文件。", [:], []),
             tool("git_diff", "读取指定文件相对 HEAD 的完整差异，返回 review_hash 供提交前核对。先用 git_status 找到具体文件，paths 不接受目录。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50]], ["paths"]),
             tool("read_memory", "读取全局或当前项目记忆及 sha256。修改记忆前先读取，保留其他内容。", ["scope": ["type": "string", "enum": ["global", "project"]]], ["scope"]),
@@ -49,11 +64,13 @@ import Foundation
         if mode == .goal {
             tools.append(tool("finish_task", "仅在完整目标和计划都完成、实际结果已验证后调用。evidence 必须引用本任务真实工具调用ID、产物绝对路径或来源网址。", ["summary": string, "evidence": ["type": "array", "items": string]], ["summary", "evidence"]))
         }
+        if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
         return tools
     }
     func approvalReason(for call: AgentToolCall, gitDirectory: String? = nil) throws -> String? {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         guard Self.names.contains(call.name) else { throw PetError("未知工具：\(call.name)") }
+        if task.kind == "wiki", !Self.wikiTools.contains(call.name) { throw PetError("Wiki 任务只读取索引内项目文件并生成文档") }
         if ["git_commit", "git_create_worktree", "git_init"].contains(call.name) {
             guard ![.ask, .plan].contains(task.mode) else { throw PetError("当前模式不能修改 Git，请切换到 Agent 模式") }
             if call.name == "git_commit" {
@@ -84,7 +101,7 @@ import Foundation
         if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改文件或执行命令，请切换到 Agent 模式") }
         if ["read_file", "write_file", "edit_file", "list_directory", "search_files"].contains(call.name) {
             let files = try AgentFiles(workspace: task.workspace), path = call.object["path"] as? String ?? "."
-            let url = try projectURL(path, files: files, writing: ["write_file", "edit_file"].contains(call.name))
+            let url = try projectURL(path, files: files, writing: ["write_file", "edit_file"].contains(call.name), readingFile: call.name == "read_file")
             if AgentFiles.sensitive(files.relative(url)) { return "访问受保护文件：\(files.relative(url))" }
         }
         if call.name == "ask_user" { return call.object["question"] as? String ?? "需要补充信息" }
@@ -99,12 +116,33 @@ import Foundation
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+        if task.kind == "wiki", !Self.wikiTools.contains(call.name) { throw PetError("Wiki 任务只读取索引内项目文件并生成文档") }
         if !(task.queuedInputs ?? []).isEmpty { throw PetError("用户已更新要求，此操作尚未执行") }
         let args = call.object
         func string(_ name: String) throws -> String {
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }
         switch call.name {
+        case "index_project", "search_project":
+            let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
+            var paths: [String]?
+            if let gitDirectory {
+                let git = try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: gitDirectory)); gitCalls[call.id] = git; defer { gitCalls[call.id] = nil }
+                paths = try await git.filePaths()
+            }
+            let result = try await index.run(paths: paths, query: call.name == "search_project" ? string("query") : nil, limit: args["limit"] as? Int ?? 12, rebuild: args["rebuild"] as? Bool ?? false)
+            if task.kind == "wiki", task.wikiRevision == nil { store.update(taskID) { $0.wikiRevision = result.index.revision } }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+            return AgentToolResult(text: String(decoding: try encoder.encode(result), as: UTF8.self), sources: result.matches.map(\.source))
+        case "project_wiki":
+            let pages = try AgentWiki.pages(workspace: task.workspace), status = try AgentWiki.status(store: store, taskID: taskID)
+            if let path = args["path"] as? String, !path.isEmpty {
+                let files = try AgentFiles(workspace: task.workspace), url = try projectURL(path, files: files)
+                guard pages.contains(files.relative(url)) else { throw PetError("请从 Wiki 页面列表选择实际路径") }
+                return AgentToolResult(text: status + "\n" + (try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: args["limit"] as? Int ?? 150)), sources: [url.absoluteString])
+            }
+            let value: [String: Any] = ["status": pages.isEmpty ? "未生成" : status, "pages": pages]
+            return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
         case "git_status", "git_diff", "git_commit", "git_create_worktree", "git_init":
             guard let gitDirectory else { throw PetError("Git 元数据尚未授权") }
             let git = try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: gitDirectory)); gitCalls[call.id] = git; defer { gitCalls[call.id] = nil }
@@ -143,7 +181,7 @@ import Foundation
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
             return AgentToolResult(text: try files.listResolved(url))
         case "read_file":
-            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files)
+            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, readingFile: true)
             return AgentToolResult(text: try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: args["limit"] as? Int ?? 200), sources: [url.absoluteString])
         case "search_files":
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
@@ -195,6 +233,7 @@ import Foundation
             let sourcePaths = task.sources.compactMap { source -> String? in guard let url = URL(string: source), url.isFileURL else { return nil }; return url.path }
             let valid = Set(task.sources + sourcePaths + task.artifacts + task.events.filter { $0.kind == "tool" && $0.status == "completed" }.compactMap(\.toolCallID))
             guard evidence.allSatisfy({ valid.contains($0) }) else { throw PetError("证据请从以下真实记录中逐项原样选择，不添加说明：\n" + valid.sorted().prefix(40).joined(separator: "\n")) }
+            if task.kind == "wiki" { _ = try AgentWiki.validate(task) }
             store.update(taskID) { $0.goalAccepted = true; $0.completionEvidence = evidence; $0.summary = String((args["summary"] as? String ?? "").prefix(2000)) }
             return AgentToolResult(text: "完成证据已记录，请给用户最终结果与验证范围")
         case "web_search": return try await AgentWeb.search(string("query"))

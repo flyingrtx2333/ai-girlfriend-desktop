@@ -21,7 +21,7 @@ struct AgentFiles: Sendable {
     static func sensitive(_ path: String) -> Bool {
         path.split(separator: "/").contains { part in
             let name = part.lowercased()
-            return name == ".env" || name.hasPrefix(".env.") || name == ".ssh" || name == ".gnupg" || name == ".git"
+            return name == ".env" || name.hasPrefix(".env.") || name == ".ssh" || name == ".gnupg" || name == ".git" || ["credentials.py", "credentials.json"].contains(name)
                 || ["pem", "p12", "pfx", "key", "keychain-db"].contains((name as NSString).pathExtension)
         }
     }
