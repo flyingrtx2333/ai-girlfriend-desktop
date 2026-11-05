@@ -141,39 +141,25 @@ final class PetWebView: WKWebView {
         editItem.submenu = edit; main.addItem(editItem); NSApp.mainMenu = main
     }
     func menu() -> NSMenu {
-        let m = NSMenu(); m.delegate = self; m.autoenablesItems = false
+        let m = NSMenu(); m.delegate = self; m.autoenablesItems = false; m.showsStateColumn = false; m.minimumWidth = 208
         let size = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
         size.view = SizeMenuView(value: store.preferences.scale) { [weak self] value in self?.setPetScale(value) ?? value }
         m.addItem(size); m.addItem(.separator())
-        func add(_ title: String, _ action: Selector, checked: Bool? = nil) {
+        func add(_ title: String, _ action: Selector) {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self
-            if let checked { item.state = checked ? .on : .off }; m.addItem(item)
+            m.addItem(item)
         }
         add("聊天", #selector(openChat)); add("设置", #selector(openSettings))
-        add("看看屏幕", #selector(observeScreen))
-        if store.preferences.screenObservationEnabled { add("免打扰30分钟", #selector(pauseScreenObservation), checked: (store.preferences.screenQuietUntil ?? .distantPast) > Date()) }
-        add("语音唤醒", #selector(toggleWake), checked: store.preferences.wakeEnabled)
-        m.items.last?.identifier = NSUserInterfaceItemIdentifier("wake-toggle")
-        if store.preferences.wakeEnabled {
-            let state = NSMenuItem(title: wakeStatus, action: nil, keyEquivalent: ""); state.isEnabled = false
-            state.identifier = NSUserInterfaceItemIdentifier("wake-status"); m.addItem(state)
-            add("立即聆听", #selector(listenNow))
-            add("停止录音", #selector(stopRecording))
-        }
+        if store.preferences.wakeEnabled { add("停止录音", #selector(stopRecording)) }
         m.addItem(.separator())
         add(pet?.isVisible == true ? "收起角色" : "显示角色", #selector(togglePet))
-        add("窗口置顶", #selector(toggleTop), checked: store.preferences.alwaysOnTop)
-        add("暂停动画", #selector(toggleMotion), checked: store.preferences.performance == "paused")
-        add("说话示例", #selector(playDemo)); add("复位位置", #selector(resetPosition))
-        m.addItem(.separator()); add("退出", #selector(quit))
+        add("退出", #selector(quit))
         return m
     }
     func menuWillOpen(_ menu: NSMenu) {
         screenCompanion.interaction()
         for item in menu.items {
             (item.view as? SizeMenuView)?.setValue(store.preferences.scale)
-            if item.identifier?.rawValue == "wake-toggle" { item.state = store.preferences.wakeEnabled ? .on : .off }
-            if item.identifier?.rawValue == "wake-status" { item.title = wakeStatus }
         }
     }
     func setupPet() {

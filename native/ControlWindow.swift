@@ -325,11 +325,13 @@ final class FormDocumentView: NSView {
         row("", stack([screenNow, screenPermission, screenQuiet], spacing: 8))
         let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
         screenScope.font = .systemFont(ofSize: 12); screenScope.textColor = .secondaryLabelColor; row("", screenScope)
-        group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放")
+        group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放 复位 位置")
         row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"]); row("动画", performance)
         sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = .secondaryLabelColor
         sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
         scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
+        let resetPosition = NSButton(title: "复位位置", target: companion, action: #selector(AppDelegate.resetPosition))
+        row("", stack([resetPosition, NSView()], spacing: 8))
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
