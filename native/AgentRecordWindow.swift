@@ -1,0 +1,129 @@
+import AppKit
+
+@MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
+    private let store: AgentStore, taskID: String
+    private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志"], trackingMode: .selectOne, target: nil, action: nil)
+    private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
+    private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
+    private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
+    private var dirty = false, activeSection = 0
+    init(store: AgentStore, taskID: String) {
+        self.store = store; self.taskID = taskID
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua); window.backgroundColor = .windowBackgroundColor
+        super.init(window: window); window.delegate = self; text.delegate = self
+        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = 0
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
+        table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
+        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        text.isRichText = false; text.isEditable = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
+        text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
+        let viewer = NSScrollView(); viewer.documentView = text; viewer.hasVerticalScroller = true
+        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
+        let actions = NSStackView(views: [state, NSView(), undo, open, save]); actions.spacing = 8
+        for view in [sections, list, viewer, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+        refresh()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    @objc private func refresh() {
+        guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
+        load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false
+        save.isHidden = true; undo.isHidden = true; open.isHidden = true
+        guard let task = store.task(taskID) else { return }
+        switch sections.selectedSegment {
+        case 0:
+            items = []; text.string = task.plan.enumerated().map { index, step in "\(step.status == "completed" ? "✓" : step.status == "in_progress" ? "◉" : "○") \(index + 1). \(step.title)" }.joined(separator: "\n\n")
+        case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) }
+        case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
+        case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
+        default:
+            items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
+        }
+        if [1, 2, 3].contains(sections.selectedSegment) { text.string = "" }
+        table.reloadData(); if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+    }
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let label = NSTextField(labelWithString: items[row].title); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = items[row].value; return label
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard items.indices.contains(table.selectedRow), let task = store.task(taskID) else { return }
+        guard canLeave() else {
+            table.delegate = nil
+            if let previous = items.firstIndex(where: { $0.value == selection }) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
+            table.delegate = self; return
+        }
+        load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""
+        save.isHidden = true; undo.isHidden = true; open.isHidden = true
+        do {
+            if sections.selectedSegment == 2 { text.string = value; open.isHidden = false; return }
+            if sections.selectedSegment == 3 {
+                guard let change = task.changes.first(where: { $0.id == value }) else { return }
+                undo.isHidden = change.restoredAt != nil; undo.isEnabled = task.status != .running; text.string = "读取差异…"
+                load = Task { [weak self] in
+                    guard let self else { return }
+                    do { let diff = try await AgentChanges.diff(change, taskID: taskID, store: store); guard !Task.isCancelled else { return }; text.string = diff }
+                    catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+                }; return
+            }
+            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value), data = try files.readData(file)
+            guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
+            text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = task.status != .running
+            save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = files.relative(file)
+        } catch { text.string = ""; state.stringValue = error.localizedDescription }
+    }
+    @objc private func saveFile() {
+        guard let path = selection, let task = store.task(taskID), task.status != .running else { return }
+        do {
+            let files = try AgentFiles(workspace: task.workspace), current = try files.readData(files.resolve(path))
+            guard AgentFiles.hash(current) == openedHash else { throw PetError("文件已更改，请重新打开后编辑") }
+            let content = text.string, args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content])
+            load = Task { [weak self] in
+                guard let self else { return }
+                do { _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self))); openedHash = AgentFiles.hash(Data(content.utf8)); dirty = text.string != content; state.stringValue = "已保存" }
+                catch { state.stringValue = error.localizedDescription }
+            }
+        } catch { state.stringValue = error.localizedDescription }
+    }
+    @objc private func restoreFile() {
+        guard let task = store.task(taskID), let change = task.changes.first(where: { $0.id == selection }) else { return }
+        do { try AgentChanges.restore(change, taskID: taskID, store: store); refresh(); state.stringValue = "已撤回" }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    @objc private func openItem() {
+        guard let value = selection else { return }
+        if sections.selectedSegment == 2 {
+            if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
+            else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let safe = try? files.resolve(url.path) { NSWorkspace.shared.open(safe) }
+        }
+        else if let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }
+    }
+    func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存" }
+    private func canLeave() -> Bool {
+        guard dirty else { return true }
+        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
+    func checkPreview(_ output: URL) async -> [String: Bool] {
+        showWindow(nil); window?.makeKeyAndOrderFront(nil)
+        sections.selectedSegment = 1; refresh()
+        var checks: [String: Bool] = [:]
+        if let path = selection, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let data = try? files.readData(files.resolve(path)) {
+            checks["nativePreviewMatchesActualFile"] = text.string == String(data: data, encoding: .utf8) && text.string.contains("49")
+        } else { checks["nativePreviewMatchesActualFile"] = false }
+        sections.selectedSegment = 3; refresh(); await load?.value
+        try? await Task.sleep(nanoseconds: 100_000_000); window?.displayIfNeeded()
+        checks["nativeDiffShowsActualChanges"] = text.string.contains("+") && text.string.contains("49") && text.string.contains("[exit=1]")
+        if let view = window?.contentView {
+            view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("agent-records.png")) }
+        }
+        return checks
+    }
+}

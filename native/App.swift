@@ -54,6 +54,11 @@ final class PetWebView: WKWebView {
     var statusItem: NSStatusItem!
     lazy var control = ControlWindow(companion: self)
     lazy var screenCompanion = ScreenCompanion(host: self)
+    var agentStore: AgentStore?
+    var agentRuntime: AgentRuntime?
+    var agentAnimationPhase = "idle"
+    var usesAgent: Bool { checkDirectory == nil || CommandLine.arguments.contains("--agent-check") || CommandLine.arguments.contains("--agent-ui-check") }
+    var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
     var bubbleStopButton: NSButton?
@@ -115,7 +120,8 @@ final class PetWebView: WKWebView {
         if checkDirectory == nil && !store.keychain.contains("chat") { control.show(tab: "settings") }
     }
     func applicationWillTerminate(_ notification: Notification) {
-        closing = true; screenCompanion.suspend(); chatTask?.cancel(); stopSpeech()
+        if agentStore != nil { control.persistAgentDraft() }
+        closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); stopSpeech()
         voiceWake.stop(); scaleSaveTimer?.invalidate()
         if let globalMouse { NSEvent.removeMonitor(globalMouse) }
         if let localMouse { NSEvent.removeMonitor(localMouse) }
@@ -251,15 +257,15 @@ final class PetWebView: WKWebView {
         appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
     }
     @objc func listenNow() {
-        screenCompanion.interaction(); chatTask?.cancel(); stopSpeech(); pendingVoiceListen = true
+        screenCompanion.interaction(); cancelConversation(); pendingVoiceListen = true
         if !store.preferences.wakeEnabled {
             store.preferences.wakeEnabled = true; wakeError = nil; wakeStatus = "等待授权"
             try? store.savePreferences(); appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
         }
         startPendingVoiceListen()
     }
-    private func startPendingVoiceListen() {
-        guard pendingVoiceListen, store.preferences.wakeEnabled, chatTask == nil, speechTask == nil,
+    func startPendingVoiceListen() {
+        guard pendingVoiceListen, store.preferences.wakeEnabled, chatTask == nil, !selectedAgentBusy, speechTask == nil,
               !["等待授权", "恢复麦克风"].contains(wakeStatus) else { return }
         pendingVoiceListen = false; voiceWake.listenNow()
     }
@@ -277,7 +283,7 @@ final class PetWebView: WKWebView {
         switch event {
         case .state(let state):
             wakeStatus = wakeError ?? state
-            if state == "等待唤醒" && (chatTask != nil || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
+            if state == "等待唤醒" && (chatTask != nil || selectedAgentBusy || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
             if state == "等待唤醒" { startPendingVoiceListen() }
         case .woke:
             screenCompanion.interaction()
@@ -306,7 +312,7 @@ final class PetWebView: WKWebView {
     }
     func refreshVoiceBusy(followUp: Bool = false) {
         guard store.preferences.wakeEnabled else { return }
-        voiceWake.setOutputBusy(chatTask != nil || speechTask != nil || player?.isPlaying == true || sleeping, followUp: followUp)
+        voiceWake.setOutputBusy(chatTask != nil || selectedAgentBusy || speechTask != nil || player?.isPlaying == true || sleeping, followUp: followUp)
     }
     func emit(_ type: String, _ payload: [String: Any] = [:]) {
         guard ready, !closing, let data = try? JSONSerialization.data(withJSONObject: ["type": type, "payload": payload]),
@@ -456,6 +462,14 @@ final class PetWebView: WKWebView {
 
     func send(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if usesAgent {
+            ensureAgent(); screenCompanion.interaction()
+            guard !text.isEmpty, let runtime = agentRuntime else { return false }
+            stopSpeech()
+            let accepted = runtime.submit(text)
+            if accepted { control.scheduleRender(); refreshVoiceBusy() }
+            return accepted
+        }
         guard !text.isEmpty, chatTask == nil else { return false }
         guard text.count <= 8000 else { control.setStatus("消息过长，请缩短后重试。", error: true); return false }
         screenCompanion.interaction()
@@ -495,7 +509,11 @@ final class PetWebView: WKWebView {
             return true
         } catch { control.setStatus(error.localizedDescription, error: true); return false }
     }
-    func cancelConversation() { chatTask?.cancel(); stopSpeech() }
+    func cancelConversation() {
+        chatTask?.cancel()
+        if let id = agentStore?.selectedID { agentRuntime?.cancel(id) }
+        stopSpeech(); refreshVoiceBusy(); startPendingVoiceListen()
+    }
     func clearConversation() {
         guard chatTask == nil else { return }
         if let undo = undoMessages { store.messages = undo; undoMessages = nil }

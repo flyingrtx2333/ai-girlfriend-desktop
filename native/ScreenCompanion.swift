@@ -92,7 +92,7 @@ struct ScreenFrame {
     private var interval: TimeInterval { min(900, max(60, host?.store.preferences.screenObservationInterval ?? 300)) }
     func isAvailable(manual: Bool) -> Bool {
         guard let host, host.ready, host.renderVisible, !host.sleeping, !host.closing,
-              host.store.preferences.performance != "paused", host.chatTask == nil, host.speechTask == nil,
+              host.store.preferences.performance != "paused", host.chatTask == nil, host.agentRuntime?.isWorking != true, host.speechTask == nil,
               host.player?.isPlaying != true, host.dragOrigin == nil, host.pendingPress == nil, host.wakeStatus != "聆听中" else { return false }
         return manual || (!isQuiet && host.store.preferences.screenObservationEnabled
             && NSWorkspace.shared.frontmostApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier && Date().timeIntervalSince(lastInteraction) >= 20)
@@ -174,7 +174,7 @@ struct ScreenFrame {
                 self.comments += 1; self.recentComments = Array((self.recentComments + [reply]).suffix(3))
                 self.logger.notice("comment-ready voice=\(preferences.voiceEnabled)")
                 host.undoMessages = nil; host.store.messages.append(ChatMessage(role: "assistant", content: reply))
-                try? host.store.saveHistory(); host.control.scheduleRender(); host.showBubble(reply)
+                try? host.store.saveHistory(); host.recordCompanionComment(reply); host.control.scheduleRender(); host.showBubble(reply)
                 if preferences.voiceEnabled { host.synthesize(reply, preferences: preferences, followUp: false) }
                 self.setPhase("commenting"); self.setStatus("刚刚看过")
                 if !preferences.voiceEnabled { try await Task.sleep(nanoseconds: 3_000_000_000) }

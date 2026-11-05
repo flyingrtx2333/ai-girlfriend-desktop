@@ -30,7 +30,7 @@ enum CompanionService {
         || (host.split(separator: ".").count == 4 && host.hasPrefix("172.")
             && (16...31).contains(Int(host.split(separator: ".")[1]) ?? 0))
     }
-    private static func request(url: URL, key: String, body: [String: Any]) throws -> URLRequest {
+    static func request(url: URL, key: String, body: [String: Any]) throws -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -38,7 +38,7 @@ enum CompanionService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
-    private static func serverError(_ data: Data, status: Int, key: String) -> PetError {
+    static func serverError(_ data: Data, status: Int, key: String) -> PetError {
         if status == 401 { return PetError("鉴权失败，请检查 Token 与接口。") }
         if status == 403 { return PetError("Token 无权限或服务拒绝访问。") }
         if status == 429 { return PetError("服务繁忙或额度不足，请稍后重试。") }

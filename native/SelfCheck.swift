@@ -24,6 +24,22 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--agent-ui-check") {
+            var checks = await control.checkAgentLayout(output)
+            var result: [String: Any] = [:]
+            if CommandLine.arguments.contains("--live-web") {
+                do {
+                    let fetched = try await AgentWeb.fetch("https://docs.qoder.com/qoder/overview")
+                    checks["realWebFetchWithSource"] = fetched.text.contains("Qoder") && fetched.sources.contains("https://docs.qoder.com/qoder/overview")
+                    let search = try await AgentWeb.search("DeepSeek")
+                    checks["realWebSearchWithSources"] = search.sources.contains { URL(string: $0)?.host == "www.deepseek.com" || URL(string: $0)?.host == "api-docs.deepseek.com" }
+                    result["webSources"] = fetched.sources + search.sources
+                } catch { result["webError"] = error.localizedDescription; checks["realWebTools"] = false }
+            }
+            result["success"] = checks.values.allSatisfy { $0 }; result["checks"] = checks
+            try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("agent-ui-report.json")); NSApp.terminate(nil); return
+        }
+        if CommandLine.arguments.contains("--agent-check") { await runAgentCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--screen-check") { await runScreenCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--stop-check") { await runStopCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-check") {

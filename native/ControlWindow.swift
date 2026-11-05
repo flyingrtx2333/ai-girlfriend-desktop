@@ -2,7 +2,8 @@ import AppKit
 
 final class ComposerView: NSTextView {
     var onSend: (() -> Void)?
-    override func didChangeText() { super.didChangeText(); needsDisplay = true }
+    var onInputChanged: (() -> Void)?
+    override func didChangeText() { super.didChangeText(); needsDisplay = true; onInputChanged?() }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if string.isEmpty {
@@ -64,6 +65,14 @@ final class FormDocumentView: NSView {
     private let performance = NSPopUpButton(), scale = NSSlider(value: 1, minValue: 0.5, maxValue: 1.5, target: nil, action: nil)
     private var removeChatKey = false, removeVoiceKey = false, busy = false
     private var pendingRender: DispatchWorkItem?
+    private let taskSidebar = AgentTaskSidebar(), projectButton = NSButton(), modePopup = NSPopUpButton(), permissionPopup = NSPopUpButton()
+    private let resumeButton = NSButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
+    private let approvalPanel = NSStackView(), approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView()
+    private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
+    private var visibleApproval: (task: String, call: String)?
+    private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
+    private var draftSave: DispatchWorkItem?
+    private var recordWindow: AgentRecordWindow?
 
     init(companion: AppDelegate) {
         self.companion = companion
@@ -75,8 +84,10 @@ final class FormDocumentView: NSView {
         window.backgroundColor = NSColor(red: 0.97, green: 0.96, blue: 0.95, alpha: 1)
         window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
+        if companion.usesAgent { companion.ensureAgent() }
         build()
         refreshPreferences()
+        if let task = companion.agentStore?.selected { displayedTask = task.id; composer.string = task.draft ?? "" }
         renderMessages()
         companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
         companion.onWakeChange = { [weak self] enabled, status in
@@ -136,9 +147,17 @@ final class FormDocumentView: NSView {
         clearButton.target = self; clearButton.action = #selector(clear)
         let sideFooter = stack([listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
         chatSidebarViews = [brand, navigation, sideFooter]
+        if companion?.usesAgent == true {
+            taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar); chatSidebarViews.append(taskSidebar)
+            NSLayoutConstraint.activate([taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 184), taskSidebar.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 18), taskSidebar.bottomAnchor.constraint(equalTo: sideFooter.topAnchor, constant: -20)])
+            taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
+            taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
+            taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
+        }
         let main = contentSurface; main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
         main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; main.layer?.masksToBounds = true; content.addSubview(main)
         pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = .secondaryLabelColor
+        pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle)
         settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; settingsPageIcon.wantsLayer = true
         settingsPageIcon.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor; settingsPageIcon.layer?.cornerRadius = 10
@@ -150,7 +169,7 @@ final class FormDocumentView: NSView {
             navigation.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 28), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 166),
             sideFooter.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 27), sideFooter.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 182), sideFooter.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -26),
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading,
+            pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
             settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
         for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
@@ -209,6 +228,7 @@ final class FormDocumentView: NSView {
         composer.isRichText = false; composer.isAutomaticQuoteSubstitutionEnabled = false
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
+        composer.onInputChanged = { [weak self] in self?.composerChanged() }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true
         input.drawsBackground = false; input.borderType = .noBorder
         sendButton.isBordered = false; sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送")
@@ -229,11 +249,26 @@ final class FormDocumentView: NSView {
         status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
         status.isHidden = true
-        let column = stack([history, status, entry], vertical: true, spacing: 14)
+        var contents: [NSView] = [history, status, entry]
+        if companion?.usesAgent == true {
+            projectButton.title = "选择项目"; projectButton.target = self; projectButton.action = #selector(chooseProject)
+            projectButton.bezelStyle = .inline; projectButton.font = .systemFont(ofSize: 11)
+            projectButton.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); projectButton.imagePosition = .imageLeading
+            projectButton.cell?.lineBreakMode = .byTruncatingMiddle; projectButton.widthAnchor.constraint(lessThanOrEqualToConstant: 145).isActive = true
+            for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }
+            for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
+            for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 11); popup.target = self; popup.action = #selector(agentOptionsChanged) }
+            modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
+            for button in [resumeButton, resultsButton] { button.bezelStyle = .inline; button.font = .systemFont(ofSize: 11); button.target = self }
+            resumeButton.action = #selector(resumeAgentTask); resultsButton.action = #selector(showAgentRecords)
+            let toolbar = stack([projectButton, modePopup, permissionPopup, NSView(), resumeButton, resultsButton], spacing: 6)
+            configureApprovalPanel(); contents = [toolbar, history, approvalPanel, status, entry]
+        }
+        let column = stack(contents, vertical: true, spacing: 14)
         chat.addSubview(column); pin(column, to: chat)
-        for row in [history, status, entry] { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for row in contents { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         history.setContentHuggingPriority(.defaultLow, for: .vertical)
-        history.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        history.heightAnchor.constraint(greaterThanOrEqualToConstant: companion?.usesAgent == true ? 60 : 160).isActive = true
     }
     private func buildSettings() {
         settingsScroll.hasVerticalScroller = true; settingsScroll.drawsBackground = false; settingsScroll.scrollerStyle = .overlay
@@ -363,7 +398,7 @@ final class FormDocumentView: NSView {
         titleLeading.constant = configuring ? 80 : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : 14, weight: .semibold)
         pageTitle.textColor = configuring ? .labelColor : .secondaryLabelColor
-        if configuring { updateSettingsSections() } else { pageTitle.stringValue = "对话" }
+        if configuring { updateSettingsSections() } else { pageTitle.stringValue = companion?.agentStore?.selected?.title ?? "对话" }
         chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
     }
@@ -549,17 +584,19 @@ final class FormDocumentView: NSView {
     }
     @objc private func send() {
         guard let companion else { return }
-        if busy { companion.cancelConversation(); return }
-        if companion.send(composer.string) { composer.string = ""; composer.didChangeText() }
+        if busy && (companion.usesAgent == false || composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { companion.cancelConversation(); return }
+        if companion.send(composer.string) { composer.string = ""; composer.didChangeText(); saveAgentDraft() }
     }
-    @objc private func clear() { companion?.clearConversation(); renderMessages() }
+    @objc private func clear() {
+        if let id = companion?.agentStore?.selectedID { agentTaskAction(id, action: "archive") }
+        else { companion?.clearConversation(); renderMessages() }
+    }
     func keepVoiceDraft(_ text: String) { composer.string = text; composer.didChangeText() }
     func keepInterruptedVoiceDraft(_ text: String) {
         composer.string = composer.string.isEmpty ? text : composer.string + "\n" + text; composer.didChangeText()
     }
     func setBusy(_ value: Bool) {
-        busy = value; sendButton.image = NSImage(systemSymbolName: value ? "stop.fill" : "arrow.up", accessibilityDescription: value ? "停止" : "发送")
-        sendButton.setAccessibilityLabel(value ? "停止" : "发送"); clearButton.isEnabled = !value
+        busy = value; updateSendButton(); clearButton.isEnabled = !value
     }
     func setStatus(_ text: String, error: Bool = false) {
         status.stringValue = text; status.textColor = error ? .systemRed : .secondaryLabelColor
@@ -576,6 +613,7 @@ final class FormDocumentView: NSView {
     func renderMessages() {
         pendingRender?.cancel(); pendingRender = nil
         guard let companion else { return }
+        if companion.agentStore != nil { renderAgentMessages(); return }
         let shouldFollow = messageRows.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 60
         let messages = companion.store.messages, ids = messages.map(\.id)
         if ids != renderedIDs {
@@ -600,6 +638,7 @@ final class FormDocumentView: NSView {
         messageRows.values.forEach { $0.fit(width: width) }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        saveAgentDraft()
         if modelCheck != nil { invalidateModelCheck() }
         sender.orderOut(nil); return false
     }
@@ -668,5 +707,190 @@ final class FormDocumentView: NSView {
             && messageRows.values.allSatisfy { $0.frame.height >= 20 && !$0.hasAmbiguousLayout }
         return ["normalLayout": normal, "settingsReachable": settingsWork, "narrowLayout": compact,
                 "messageCount": messageRows.count, "renderedRows": messageRows.values.map { ["width": $0.frame.width, "height": $0.frame.height, "labelWidth": $0.label.bounds.width] }]
+    }
+}
+
+@MainActor private extension ControlWindow {
+    func updateSendButton() {
+        let stopping = busy && (companion?.usesAgent != true || composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        sendButton.image = NSImage(systemSymbolName: stopping ? "stop.fill" : "arrow.up", accessibilityDescription: stopping ? "停止任务" : busy ? "补充要求" : "发送")
+        sendButton.setAccessibilityLabel(stopping ? "停止任务" : busy ? "补充要求" : "发送")
+    }
+    func composerChanged() {
+        updateSendButton(); draftSave?.cancel()
+        guard companion?.agentStore != nil else { return }
+        let work = DispatchWorkItem { [weak self] in self?.saveAgentDraft() }
+        draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+    func saveAgentDraft() {
+        draftSave?.cancel(); draftSave = nil
+        guard let tasks = companion?.agentStore, let id = displayedTask, tasks.task(id)?.draft != composer.string else { return }
+        tasks.update(id) { $0.draft = composer.string }
+    }
+    func selectAgentTask(_ id: String) {
+        guard let tasks = companion?.agentStore, tasks.task(id) != nil else { return }
+        saveAgentDraft(); tasks.selectedID = id; displayedTask = id
+        composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
+        renderedIDs = []; messageRows = [:]; toolRows = [:]
+        selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
+    }
+    @objc func newAgentTask() {
+        guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
+        let previous = tasks.selected
+        let id = tasks.create(workspace: previous?.workspace, mode: .agent)
+        selectAgentTask(id)
+    }
+    func agentTaskAction(_ id: String, action: String) {
+        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running else { return }
+        switch action {
+        case "rename":
+            let alert = NSAlert(); alert.messageText = "重命名任务"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
+            let input = NSTextField(string: task.title); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); alert.accessoryView = input
+            alert.window.initialFirstResponder = input
+            if alert.runModal() == .alertFirstButtonReturn {
+                let title = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !title.isEmpty { tasks.update(id) { $0.title = String(title.prefix(120)) } }
+            }
+        case "pin": tasks.update(id) { $0.pinned.toggle() }
+        case "fork": saveAgentDraft(); if let next = tasks.fork(id) { selectAgentTask(next) }
+        case "archive":
+            saveAgentDraft(); tasks.update(id) { $0.archived.toggle() }
+            if tasks.task(id)?.archived == true && tasks.selectedID == id {
+                let next = tasks.tasks.first(where: { !$0.archived && $0.id != id })?.id ?? tasks.create()
+                selectAgentTask(next)
+            }
+        default: break
+        }
+        renderAgentMessages()
+    }
+    @objc func chooseProject() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.status != .running && task.status != .waiting else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择项目"
+        if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
+        guard let window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            if !task.messages.isEmpty && task.workspace != url.path {
+                self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode)
+                self.selectAgentTask(id)
+            } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }; self.renderAgentMessages() }
+        }
+    }
+    @objc func agentOptionsChanged() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.status != .running && task.status != .waiting else { return }
+        tasks.update(task.id) { $0.mode = AgentMode.allCases[max(0, modePopup.indexOfSelectedItem)]; $0.permission = AgentPermissionMode.allCases[max(0, permissionPopup.indexOfSelectedItem)] }
+        renderAgentMessages()
+    }
+    @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
+    @objc func showAgentRecords() {
+        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        if let existing = recordWindow {
+            existing.window?.performClose(nil)
+            if existing.window?.isVisible == true { return }
+        }
+        recordWindow = AgentRecordWindow(store: store, taskID: id); recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    func configureApprovalPanel() {
+        approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true
+        approvalTitle.font = .systemFont(ofSize: 12, weight: .medium); approvalTitle.textColor = .systemOrange; approvalTitle.lineBreakMode = .byTruncatingTail
+        approvalText.isEditable = false; approvalText.isRichText = false; approvalText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        approvalText.isVerticallyResizable = true; approvalText.autoresizingMask = [.width]; approvalText.textContainer?.widthTracksTextView = true
+        let scroll = NSScrollView(); scroll.documentView = approvalText; scroll.hasVerticalScroller = true
+        scroll.heightAnchor.constraint(equalToConstant: 92).isActive = true
+        approveButton.target = self; approveButton.action = #selector(allowAgentAction)
+        denyButton.target = self; denyButton.action = #selector(denyAgentAction)
+        let actions = stack([NSView(), denyButton, approveButton], spacing: 8)
+        for view in [approvalTitle, scroll, actions] { approvalPanel.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: approvalPanel.widthAnchor).isActive = true }
+    }
+    @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
+    @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
+    func renderAgentMessages() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected else { return }
+        if displayedTask != task.id { selectAgentTask(task.id); return }
+        taskSidebar.refresh(tasks.tasks, selected: task.id)
+        if selectedTab == "chat" { pageTitle.stringValue = task.title }
+        projectButton.title = task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "选择项目"; projectButton.toolTip = task.workspace
+        modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
+        permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
+        let running = companion?.agentRuntime?.isRunning(task.id) == true
+        let locked = running || task.status == .waiting
+        for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived }
+        resumeButton.isHidden = running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
+        resultsButton.title = task.plan.isEmpty ? "记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
+        resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
+        setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
+        let queueCount = task.queuedInputs?.count ?? 0
+        let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
+        setStatus(state, error: task.status == .failed || tasks.writeError != nil)
+        modelCaption.stringValue = (task.model.isEmpty ? companion?.store.preferences.model ?? "" : task.model) + (task.inputTokens > 0 ? " · \(task.inputTokens + task.outputTokens) tokens" : "")
+        let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
+        let messages = task.messages.filter { ["user", "assistant"].contains($0.role) }
+        var ids: [String] = []
+        for message in messages {
+            if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
+            ids += (message.toolCalls ?? []).map { "tool:" + $0.id }
+        }
+        if ids != renderedIDs {
+            messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
+            var next: [String: ChatMessageRow] = [:], nextTools: [String: AgentToolRow] = [:]
+            for message in messages {
+                if ids.contains(message.id) {
+                    let row = messageRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: message.id, role: message.role, content: message.content)); next[message.id] = row
+                    row.fit(width: (window?.contentView?.bounds.width ?? 980) - 272); messageColumn.addArrangedSubview(row)
+                    row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                }
+                for call in message.toolCalls ?? [] {
+                    let row = toolRows[call.id] ?? AgentToolRow(); nextTools[call.id] = row
+                    messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                    messageColumn.setCustomSpacing(8, after: row)
+                }
+            }
+            messageRows = next; toolRows = nextTools; renderedIDs = ids
+        }
+        let events = Dictionary(task.events.compactMap { event in event.toolCallID.map { ($0, event) } }, uniquingKeysWith: { _, latest in latest })
+        for message in messages {
+            messageRows[message.id]?.update(message.content)
+            for call in message.toolCalls ?? [] { toolRows[call.id]?.update(call: call, event: events[call.id]) }
+        }
+        if task.status == .waiting, let call = task.pendingCalls.first, let approval = task.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
+            if visibleApproval?.task != task.id || visibleApproval?.call != call.id {
+                visibleApproval = (task.id, call.id)
+                approvalTitle.stringValue = approval.reason
+                approvalText.string = (try? JSONSerialization.data(withJSONObject: call.object, options: [.prettyPrinted, .sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
+                approvalTitle.toolTip = approval.reason
+            }
+            approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !task.archived; denyButton.isEnabled = !task.archived; approvalPanel.isHidden = false
+        } else { visibleApproval = nil; approvalPanel.isHidden = true }
+        composer.isEditable = !task.archived
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if follow, let document = history.documentView {
+            history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
+        }
+    }
+}
+
+extension ControlWindow {
+    func persistAgentDraft() { saveAgentDraft() }
+    func checkAgentLayout(_ output: URL) async -> [String: Bool] {
+        guard let tasks = companion?.agentStore, let originalID = tasks.selectedID else { return ["nativeAgentLayout": false] }
+        let draft = composer.string
+        composer.string = "尚未发送的 Agent 草稿"; composer.didChangeText(); saveAgentDraft()
+        let second = tasks.create(title: "另一项任务"); selectAgentTask(second); composer.string = "另一份草稿"; composer.didChangeText()
+        selectAgentTask(originalID)
+        var checks = ["draftsAreIsolatedAndPersistent": composer.string == "尚未发送的 Agent 草稿" && tasks.task(second)?.draft == "另一份草稿"]
+        selectedTab = "settings"; changeTab(); selectedTab = "chat"; changeTab()
+        checks["settingsReturnPreservesTaskDraft"] = composer.string == "尚未发送的 Agent 草稿" && tasks.selectedID == originalID
+        func capture(_ name: String) {
+            guard let view = window?.contentView else { return }; view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png")) }
+        }
+        for (name, size) in [("normal", NSSize(width: 980, height: 700)), ("narrow", NSSize(width: 780, height: 540))] {
+            window?.setContentSize(size); renderAgentMessages(); try? await Task.sleep(nanoseconds: 100_000_000); capture("agent-" + name)
+            checks["nativeAgentLayout-" + name] = taskSidebar.bounds.width > 150 && taskSidebar.bounds.height > 100 && composer.bounds.width > 350 && sendButton.bounds.width == 34 && !chat.hasAmbiguousLayout && !modePopup.hasAmbiguousLayout && messageRows.values.allSatisfy { !$0.hasAmbiguousLayout && $0.label.bounds.width > 100 }
+        }
+        window?.setContentSize(NSSize(width: 980, height: 700)); composer.string = draft; composer.didChangeText(); saveAgentDraft(); renderAgentMessages()
+        let records = AgentRecordWindow(store: tasks, taskID: originalID)
+        checks.merge(await records.checkPreview(output)) { _, value in value }; records.close()
+        return checks
     }
 }
