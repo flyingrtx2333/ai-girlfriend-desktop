@@ -1,0 +1,48 @@
+{
+  "version": "0.7.1",
+  "checks": {
+    "backPreservesDraft": true,
+    "desktopFitsNarrowWindow": true,
+    "emptySearch": true,
+    "modelFitsNarrowWindow": true,
+    "modelGroups": true,
+    "nativeSettings": true,
+    "personaFitsNarrowWindow": true,
+    "scaleShowsPercent": true,
+    "searchAcrossCategories": true,
+    "searchFindsListening": true,
+    "searchKeepsConnectionStatus": true,
+    "unsavedInputSurvivesNavigation": true,
+    "voiceFitsNarrowWindow": true,
+    "voiceGroups": true
+  },
+  "narrowScrollSizes": {
+    "desktop": [
+      516,
+      382
+    ],
+    "model": [
+      516,
+      382
+    ],
+    "persona": [
+      516,
+      382
+    ],
+    "voice": [
+      516,
+      382
+    ]
+  },
+  "scope": "Independent profile; native settings navigation, cross-category search, draft retention and normal/narrow layout. No keychain writes, microphone, online model or TTS calls.",
+  "success": true,
+  "installedVerification": {
+    "version": "0.7.1",
+    "stableSigningIdentity": true,
+    "settingsFileUnchanged": true,
+    "historyFileUnchanged": true,
+    "originalComposerDraftRestored": true,
+    "cuaSearchAndReturnNavigation": true,
+    "previousVersionBackupRetained": true
+  }
+}

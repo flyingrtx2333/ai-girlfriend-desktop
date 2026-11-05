@@ -20,13 +20,20 @@ final class FormDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-@MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
+@MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let chat = NSView(), settings = NSView()
+    private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
+    private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
+    private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle")]
+    private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
+    private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
+    private var titleLeading: NSLayoutConstraint!
     private let composer = ComposerView(), history = NSScrollView(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
     private let status = NSTextField(labelWithString: "")
@@ -46,9 +53,7 @@ final class FormDocumentView: NSView {
     private var updatingModelChoices = false
     private let effortValues = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
     private let voiceEndpoint = NSTextField(), voiceID = NSTextField(), voiceModel = NSTextField()
-    private let voiceEnabled = NSButton(checkboxWithTitle: "语音回复", target: nil, action: nil)
-    private let onTop = NSButton(checkboxWithTitle: "窗口置顶", target: nil, action: nil)
-    private let wakeEnabled = NSButton(checkboxWithTitle: "启用语音唤醒", target: nil, action: nil)
+    private let voiceEnabled = NSSwitch(), onTop = NSSwitch(), wakeEnabled = NSSwitch()
     private let wakePhrase = NSTextField(), wakeStatus = NSTextField(labelWithString: "未开启")
     private let pauseWait = NSPopUpButton()
     private let performance = NSPopUpButton(), scale = NSSlider(value: 1, minValue: 0.5, maxValue: 1.5, target: nil, action: nil)
@@ -68,7 +73,7 @@ final class FormDocumentView: NSView {
         build()
         refreshPreferences()
         renderMessages()
-        companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0 }
+        companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
         companion.onWakeChange = { [weak self] enabled, status in
             self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
             self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.isEnabled = enabled
@@ -89,9 +94,15 @@ final class FormDocumentView: NSView {
             view.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -inset)])
     }
     private func field(_ field: NSTextField) {
-        field.font = .systemFont(ofSize: 14); field.lineBreakMode = .byTruncatingTail
+        field.font = .systemFont(ofSize: 13); field.lineBreakMode = .byTruncatingTail
         field.translatesAutoresizingMaskIntoConstraints = false
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+    }
+    private func styleNavigation(_ button: NSButton, symbol: String) {
+        button.isBordered = false; button.font = .systemFont(ofSize: 14, weight: .medium); button.alignment = .left
+        button.imagePosition = .imageLeading; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.image?.size = NSSize(width: 17, height: 17); button.contentTintColor = NSColor(white: 0.18, alpha: 1)
+        button.wantsLayer = true; button.layer?.cornerRadius = 9; button.heightAnchor.constraint(equalToConstant: 38).isActive = true
     }
     private func build() {
         guard let window else { return }
@@ -102,11 +113,8 @@ final class FormDocumentView: NSView {
         icon.widthAnchor.constraint(equalToConstant: 26).isActive = true; icon.heightAnchor.constraint(equalToConstant: 26).isActive = true
         let brand = stack([icon, title], spacing: 10); content.addSubview(brand)
         for (index, button) in [chatNav, settingsNav].enumerated() {
-            button.tag = index; button.target = self; button.action = #selector(selectTab(_:)); button.isBordered = false
-            button.font = .systemFont(ofSize: 14, weight: .medium); button.alignment = .left; button.imagePosition = .imageLeading
-            button.image = NSImage(systemSymbolName: index == 0 ? "bubble.left.and.bubble.right" : "slider.horizontal.3", accessibilityDescription: nil)
-            button.image?.size = NSSize(width: 17, height: 17); button.contentTintColor = NSColor(white: 0.18, alpha: 1)
-            button.wantsLayer = true; button.layer?.cornerRadius = 9; button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+            button.tag = index; button.target = self; button.action = #selector(selectTab(_:))
+            styleNavigation(button, symbol: index == 0 ? "bubble.left.and.bubble.right" : "slider.horizontal.3")
         }
         let navigation = stack([chatNav, settingsNav], vertical: true, spacing: 6); content.addSubview(navigation)
         for button in [chatNav, settingsNav] { button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true }
@@ -117,20 +125,68 @@ final class FormDocumentView: NSView {
         clearButton.isBordered = false; clearButton.font = .systemFont(ofSize: 12); clearButton.alignment = .left
         clearButton.target = self; clearButton.action = #selector(clear)
         let sideFooter = stack([listenButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
-        let main = NSView(); main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
-        main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; content.addSubview(main)
+        chatSidebarViews = [brand, navigation, sideFooter]
+        let main = contentSurface; main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
+        main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; main.layer?.masksToBounds = true; content.addSubview(main)
         pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = .secondaryLabelColor
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle)
+        settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; settingsPageIcon.wantsLayer = true
+        settingsPageIcon.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor; settingsPageIcon.layer?.cornerRadius = 10
+        settingsPageIcon.contentTintColor = NSColor(white: 0.25, alpha: 1); main.addSubview(settingsPageIcon)
+        titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28)
         let panels = NSView(); main.addSubview(panels); panels.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 65), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 25),
             navigation.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 28), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 166),
             sideFooter.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 27), sideFooter.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 182), sideFooter.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -26),
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28),
+            pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading,
+            settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
         for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
-        buildChat(); buildSettings(); changeTab()
+        buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
+    }
+    private func buildSettingsSidebar(in content: NSView) {
+        content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebar.widthAnchor.constraint(equalToConstant: 200), settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
+        back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
+        back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
+        back.contentTintColor = .secondaryLabelColor
+        settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
+        let caption = NSTextField(labelWithString: "偏好设置"); caption.font = .systemFont(ofSize: 11); caption.textColor = .tertiaryLabelColor
+        let navigation = stack([], vertical: true, spacing: 5)
+        for (index, item) in settingsCategories.enumerated() {
+            let button = NSButton(title: item.1, target: self, action: #selector(selectSettingsCategory(_:)))
+            button.tag = index; styleNavigation(button, symbol: item.2); navigation.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true; categoryButtons.append(button)
+        }
+        let column = stack([back, settingsSearch, caption, navigation], vertical: true, spacing: 18)
+        settingsSidebar.addSubview(column)
+        NSLayoutConstraint.activate([column.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), column.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
+    }
+    @objc private func returnToChat() { selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
+    @objc private func selectSettingsCategory(_ sender: NSButton) {
+        window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
+        settingsSearch.stringValue = ""; updateSettingsSections()
+    }
+    private func updateSettingsSections() {
+        let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
+        pageTitle.stringValue = query.isEmpty ? selected.1 : "搜索结果"
+        settingsPageIcon.image = NSImage(systemSymbolName: query.isEmpty ? selected.2 : "magnifyingglass", accessibilityDescription: nil)
+        settingsPageIcon.image?.size = NSSize(width: 21, height: 21)
+        for (index, button) in categoryButtons.enumerated() {
+            let active = query.isEmpty && settingsCategories[index].0 == settingsCategory
+            button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
+        }
+        let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
+        settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
+        for group in matches {
+            settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
+        }
+        if matches.isEmpty { settingsForm.addArrangedSubview(noSettings) }
+        settingsScroll.contentView.scroll(to: .zero); settingsScroll.reflectScrolledClipView(settingsScroll.contentView)
     }
     private func buildChat() {
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
@@ -170,79 +226,100 @@ final class FormDocumentView: NSView {
         history.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
     }
     private func buildSettings() {
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        settingsScroll.hasVerticalScroller = true; settingsScroll.drawsBackground = false; settingsScroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false
-        let form = stack([], vertical: true, spacing: 12)
-        document.addSubview(form); pin(form, to: document, inset: 4)
-        scroll.documentView = document
-        document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-        func heading(_ text: String) {
-            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 16, weight: .semibold)
-            form.addArrangedSubview(label)
+        settingsForm.orientation = .vertical; settingsForm.alignment = .leading; settingsForm.spacing = 22
+        document.addSubview(settingsForm); pin(settingsForm, to: document, inset: 4); settingsScroll.documentView = document
+        document.widthAnchor.constraint(equalTo: settingsScroll.contentView.widthAnchor).isActive = true
+        var body: NSStackView!
+        func group(_ category: String, _ title: String, _ keywords: String) {
+            let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = .secondaryLabelColor
+            let card = NSView(); card.translatesAutoresizingMaskIntoConstraints = false; card.wantsLayer = true
+            card.layer?.backgroundColor = NSColor.white.cgColor; card.layer?.cornerRadius = 12
+            card.layer?.borderColor = NSColor(white: 0.9, alpha: 1).cgColor; card.layer?.borderWidth = 1
+            body = stack([], vertical: true, spacing: 0); body.alignment = .centerX
+            card.addSubview(body); pin(body, to: card)
+            let section = stack([heading, card], vertical: true, spacing: 9)
+            card.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+            settingGroups.append((category, title, keywords, section))
         }
         func row(_ text: String, _ control: NSView) {
-            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 14)
-            label.widthAnchor.constraint(equalToConstant: 80).isActive = true
-            let line = stack([label, control], spacing: 12)
-            form.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
+            if !body.arrangedSubviews.isEmpty {
+                let rule = NSBox(); rule.boxType = .separator; body.addArrangedSubview(rule)
+                rule.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            }
+            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 13); label.textColor = NSColor(white: 0.32, alpha: 1)
+            label.widthAnchor.constraint(equalToConstant: 88).isActive = true
+            let items: [NSView] = text.isEmpty ? [control] : control is NSSwitch ? [label, NSView(), control] : [label, control]
+            let line = stack(items, spacing: 12), wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
+            wrap.addSubview(line); body.addArrangedSubview(wrap)
+            NSLayoutConstraint.activate([wrap.widthAnchor.constraint(equalTo: body.widthAnchor),
+                line.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 16), line.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -16),
+                line.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10), line.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10), line.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)])
         }
         func secret(_ input: NSSecureTextField, preview: NSButton, replace: NSButton, copy: Selector, edit: Selector, action: Selector) -> NSView {
             preview.target = self; preview.action = copy; preview.bezelStyle = .inline
-            preview.font = .monospacedSystemFont(ofSize: 13, weight: .regular); preview.alignment = .left
+            preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular); preview.alignment = .left
             preview.toolTip = "点击复制"; preview.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            preview.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             input.setContentHuggingPriority(.defaultLow, for: .horizontal)
             replace.title = "更换"; replace.target = self; replace.action = edit; replace.bezelStyle = .inline
             let remove = NSButton(title: "移除", target: self, action: action); remove.bezelStyle = .inline
-            remove.widthAnchor.constraint(equalToConstant: 48).isActive = true
+            remove.widthAnchor.constraint(equalToConstant: 42).isActive = true
             return stack([input, preview, replace, remove], spacing: 8)
         }
         for value in [endpoint, model, persona, apiKey, voiceKey, voiceEndpoint, voiceID, voiceModel, wakePhrase] { field(value) }
-        heading("对话")
+        for (control, label) in [(voiceEnabled, "语音回复"), (wakeEnabled, "启用语音唤醒"), (onTop, "窗口置顶")] { control.setAccessibilityLabel(label) }
+        group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
         model.completes = false; model.numberOfVisibleItems = 8
         checkModelButton.bezelStyle = .rounded; checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
         modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = .secondaryLabelColor
         row("接口", endpoint); row("模型", stack([model, checkModelButton], spacing: 8))
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
-        row("连接", modelStatus)
+        row("状态", modelStatus)
+        group("model", "能力与预算", "模型 视觉 图片 理解 思考 上下文 tokens 回复 上限 预算")
         vision.addItems(withTitles: ["自动（未知）", "支持", "不支持"])
         vision.toolTip = "自动读取服务声明；手动设置不会改变模型本身的能力。"
         reasoning.addItems(withTitles: ["默认", "关闭", "最少", "低", "中", "高", "很高", "最高"])
-        reasoning.menu?.autoenablesItems = false
-        reasoning.target = self; reasoning.action = #selector(reasoningChanged)
+        reasoning.menu?.autoenablesItems = false; reasoning.target = self; reasoning.action = #selector(reasoningChanged)
         contextTokens.addItems(withObjectValues: ["自动", "4096", "8192", "16384", "32768", "65536", "131072", "262144", "524288", "1048576"])
         replyTokens.addItems(withObjectValues: ["512", "1024", "2048", "4096", "8192", "16384", "32768"])
-        for value in [contextTokens, replyTokens] { field(value); value.delegate = self; value.widthAnchor.constraint(equalToConstant: 136).isActive = true }
+        for value in [contextTokens, replyTokens] { field(value); value.delegate = self; value.widthAnchor.constraint(equalToConstant: 118).isActive = true }
         contextTokens.toolTip = "Token 预算；按 UTF-8 字节保守估算，超出时裁剪较早的完整对话轮次。"
-        for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 12); label.textColor = .secondaryLabelColor }
+        for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor }
         row("视觉理解", vision); row("思考程度", reasoning)
-        row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 8))
-        row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 8))
-        persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
-        persona.heightAnchor.constraint(equalToConstant: 72).isActive = true
-        row("角色", persona)
-        heading("MiniMax 语音")
-        row("", voiceEnabled); row("接口", voiceEndpoint)
+        row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 6))
+        row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 6))
+        group("voice", "MiniMax", "语音 声音 回复 接口 Token 密钥 模型 音色 MiniMax API")
+        row("语音回复", voiceEnabled); row("接口", voiceEndpoint)
         row("Token", secret(voiceKey, preview: voicePreview, replace: voiceReplace, copy: #selector(copyVoice), edit: #selector(replaceVoice), action: #selector(removeVoice)))
         row("模型", voiceModel); row("音色", voiceID)
-        heading("语音唤醒")
-        row("", wakeEnabled); row("唤醒词", wakePhrase)
-        wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor
-        row("状态", wakeStatus)
+        group("voice", "唤醒与聆听", "语音 唤醒 关键词 麦克风 聆听 停顿 等待 状态")
+        row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
         pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
-        heading("桌面")
-        row("", onTop)
-        performance.addItems(withTitles: ["自动节能", "流畅", "暂停"])
-        row("动画", performance); row("大小", scale)
-        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.bezelStyle = .rounded
-        save.controlSize = .large
+        wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor; row("状态", wakeStatus)
+        group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放")
+        row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"]); row("动画", performance)
+        sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = .secondaryLabelColor
+        sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
+        group("persona", "人设", "角色 人设 性格 提示词 persona")
+        persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
+        persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
+        noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
+        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
+        save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
+        save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
+        save.widthAnchor.constraint(equalToConstant: 76).isActive = true; save.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = .secondaryLabelColor
-        let fill = NSView(), bottom = stack([savedStatus, fill, save])
-        let column = stack([scroll, bottom], vertical: true, spacing: 16)
+        let bottom = stack([savedStatus, NSView(), save]), column = stack([settingsScroll, bottom], vertical: true, spacing: 18)
         settings.addSubview(column); pin(column, to: settings)
-        scroll.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        settingsScroll.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
+
     func show(tab: String) {
         if window?.isVisible != true { refreshPreferences() }
         selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
@@ -252,7 +329,13 @@ final class FormDocumentView: NSView {
     @objc private func selectTab(_ sender: NSButton) { selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
     private func changeTab() {
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
-        pageTitle.stringValue = selectedTab == "chat" ? "对话" : "设置"
+        let configuring = selectedTab == "settings"
+        settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
+        contentSurface.showsSettings = configuring; settingsPageIcon.isHidden = !configuring
+        titleLeading.constant = configuring ? 80 : 28
+        pageTitle.font = .systemFont(ofSize: configuring ? 22 : 14, weight: .semibold)
+        pageTitle.textColor = configuring ? .labelColor : .secondaryLabelColor
+        if configuring { updateSettingsSections() } else { pageTitle.stringValue = "对话" }
         chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
     }
@@ -277,6 +360,7 @@ final class FormDocumentView: NSView {
         modelCaption.stringValue = p.model; pauseWait.selectItem(at: [2.0, 3.0, 5.0].firstIndex(of: p.voicePauseSeconds) ?? 1)
         performance.selectItem(at: ["auto", "smooth", "paused"].firstIndex(of: p.performance) ?? 0)
         scale.doubleValue = p.scale
+        sizeValue.stringValue = "\(Int((p.scale * 100).rounded()))%"
     }
     private func refreshToken(_ input: NSSecureTextField, preview: NSButton, replace: NSButton, account: String) {
         input.stringValue = ""; input.placeholderString = "API Key"
@@ -329,7 +413,11 @@ final class FormDocumentView: NSView {
         modelStatus.stringValue = "未检测"; modelStatus.textColor = .secondaryLabelColor; modelStatus.toolTip = nil
         updateModelOptions()
     }
-    func controlTextDidChange(_ obj: Notification) { invalidateModelCheck() }
+    func controlTextDidChange(_ obj: Notification) {
+        if let search = obj.object as? NSSearchField, search === settingsSearch { updateSettingsSections(); return }
+        invalidateModelCheck()
+    }
+    @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
     func comboBoxSelectionDidChange(_ notification: Notification) { if !updatingModelChoices { invalidateModelCheck() } }
     @objc private func reasoningChanged() { invalidateModelCheck() }
 
@@ -466,6 +554,52 @@ final class FormDocumentView: NSView {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if modelCheck != nil { invalidateModelCheck() }
         sender.orderOut(nil); return false
+    }
+    func checkSettings(_ output: URL) async -> [String: Any] {
+        guard companion?.checkDirectory != nil else { return ["success": false] }
+        var checks: [String: Bool] = [:], sizes: [String: [Double]] = [:]
+        func titles() -> [String] { settingGroups.filter { $0.view.superview === settingsForm }.map(\.title) }
+        func capture(_ name: String) async {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let view = window?.contentView else { return }; view.layoutSubtreeIfNeeded()
+            if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png"))
+            }
+        }
+        window?.setContentSize(NSSize(width: 980, height: 700)); show(tab: "settings")
+        await capture("settings-model")
+        checks["modelGroups"] = titles() == ["服务", "能力与预算"] && pageTitle.stringValue == "模型"
+        let originalEndpoint = endpoint.stringValue
+        endpoint.stringValue = "https://example.invalid/unsaved"; composer.string = "尚未发送的草稿"
+        selectSettingsCategory(categoryButtons[1])
+        await capture("settings-voice")
+        checks["voiceGroups"] = titles() == ["MiniMax", "唤醒与聆听"] && pageTitle.stringValue == "语音"
+        let generation = modelCheckGeneration
+        settingsSearch.stringValue = "停顿"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        checks["searchFindsListening"] = titles() == ["唤醒与聆听"]
+        settingsSearch.stringValue = "Token"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        checks["searchAcrossCategories"] = titles() == ["服务", "能力与预算", "MiniMax"] && pageTitle.stringValue == "搜索结果"
+        checks["searchKeepsConnectionStatus"] = modelCheckGeneration == generation
+        settingsSearch.stringValue = "不存在的设置"; updateSettingsSections()
+        checks["emptySearch"] = titles().isEmpty && noSettings.superview === settingsForm
+        selectSettingsCategory(categoryButtons[0])
+        checks["unsavedInputSurvivesNavigation"] = endpoint.stringValue == "https://example.invalid/unsaved"
+        endpoint.stringValue = originalEndpoint
+        window?.setContentSize(NSSize(width: 780, height: 540))
+        for (index, item) in settingsCategories.enumerated() {
+            selectSettingsCategory(categoryButtons[index]); await capture("settings-\(item.0)-narrow")
+            let groups = settingGroups.filter { $0.view.superview === settingsForm }
+            checks[item.0 + "FitsNarrowWindow"] = groups.allSatisfy { $0.view.bounds.width > 450 && $0.view.frame.maxX <= settingsForm.bounds.width + 1 }
+                && settingsScroll.bounds.height > 300 && !settingsForm.hasAmbiguousLayout
+            sizes[item.0] = [settingsScroll.bounds.width, settingsScroll.bounds.height]
+        }
+        scale.doubleValue = 0.75; scaleChanged(); checks["scaleShowsPercent"] = sizeValue.stringValue == "75%"
+        returnToChat()
+        checks["backPreservesDraft"] = composer.string == "尚未发送的草稿" && !chat.isHidden && settingsSidebar.isHidden
+        checks["nativeSettings"] = settingsSidebar.subviews.count == 1 && settingsScroll.documentView != nil
+        return ["success": checks.values.allSatisfy { $0 }, "checks": checks, "narrowScrollSizes": sizes,
+                "scope": "Independent profile; native settings navigation, cross-category search, draft retention and normal/narrow layout. No keychain writes, microphone, online model or TTS calls."]
     }
     func checkLayout(_ output: URL) async -> [String: Any] {
         func capture(_ name: String) {

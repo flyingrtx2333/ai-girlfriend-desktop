@@ -7,6 +7,22 @@ final class SidebarBackground: NSView {
     }
 }
 
+final class ContentSurface: NSView {
+    var showsSettings = false { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        (showsSettings ? NSColor(white: 0.988, alpha: 1) : .white).setFill(); bounds.fill()
+        guard showsSettings else { return }
+        for offset in stride(from: CGFloat(8), through: min(180, bounds.height), by: 8) {
+            NSColor(white: 0.42, alpha: 0.075 * (1 - offset / 190)).setFill()
+            let dots = NSBezierPath()
+            for x in stride(from: CGFloat(8), through: bounds.width, by: 8) {
+                dots.appendOval(in: NSRect(x: x, y: bounds.maxY - offset, width: 1, height: 1))
+            }
+            dots.fill()
+        }
+    }
+}
+
 final class ChatMessageRow: NSView {
     let label = NSTextField(wrappingLabelWithString: "")
     private(set) var text = ""
