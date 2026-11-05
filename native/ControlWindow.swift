@@ -861,7 +861,7 @@ final class FormDocumentView: NSView {
         resultsButton.title = task.plan.isEmpty ? "记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
         setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
-        let queueCount = task.queuedInputs?.count ?? 0
+        let queueCount = task.queuedCount
         let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
         setStatus(state, error: task.status == .failed || tasks.writeError != nil)
         let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""

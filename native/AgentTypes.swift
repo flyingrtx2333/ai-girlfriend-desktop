@@ -29,8 +29,11 @@ struct AgentMessage: Codable, Identifiable {
     var toolCalls: [AgentToolCall]?
     var toolCallID: String?
     var attachmentIDs: [String]?
+    var nativeContext: Bool?
+    var isHumanInput: Bool { role == "user" && nativeContext != true }
     var wire: [String: Any] {
-        var value: [String: Any] = ["role": role, "content": content]
+        let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
+        var value: [String: Any] = ["role": role, "content": content + references]
         if let reasoning { value["reasoning_content"] = reasoning }
         if let toolCalls, !toolCalls.isEmpty { value["tool_calls"] = toolCalls.map(\.wire) }
         if let toolCallID { value["tool_call_id"] = toolCallID }
@@ -71,6 +74,7 @@ struct AgentApproval: Codable, Identifiable {
     var gitDirectory: String?
     var intentID: String?
     var decision: String?
+    var answerAttachments: [String]?
     var created = Date()
 }
 struct AgentTaskRecord: Codable, Identifiable {
@@ -95,6 +99,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var draft: String?
     var kind: String?
     var queuedInputs: [String]?
+    var queuedMessages: [AgentMessage]?
     var goalAccepted: Bool?
     var completionEvidence: [String]?
     var contextSummary: String?
@@ -107,6 +112,12 @@ struct AgentTaskRecord: Codable, Identifiable {
     var draftAttachmentIDs: [String]?
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
+    var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
+    var submittedAttachmentIDs: Set<String> { Set(messages.filter(\.isHumanInput).flatMap { $0.attachmentIDs ?? [] }) }
+    mutating func flushQueuedInputs() {
+        messages += (queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) } + (queuedMessages ?? [])
+        queuedInputs = []; queuedMessages = []
+    }
 }
 struct AgentTurn {
     var content = "", reasoning = ""

@@ -45,7 +45,7 @@ import Foundation
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []
-        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
+        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.queuedMessages = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
         return value
     }
     func task(_ id: String) -> AgentTaskRecord? {
@@ -69,7 +69,7 @@ import Foundation
             if !task.events.contains(where: { $0.toolCallID == call.id }) { task.events.append(AgentEvent(kind: "tool", title: call.name, detail: "应用中断，执行结果未知", status: "stopped", toolCallID: call.id)) }
         }
         task.pendingCalls = []
-        task.messages += (task.queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) }; task.queuedInputs = []
+        task.flushQueuedInputs()
         task.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
         for i in task.events.indices where task.events[i].status == "running" { task.events[i].status = "stopped" }
         task.events.append(AgentEvent(kind: "state", title: "应用中断，检查后可继续", detail: "未确认的操作不会自动重放。", status: "stopped"))
@@ -103,8 +103,9 @@ import Foundation
         do { try AgentAttachments.copyForFork(store: self, sourceID: id, targetID: original.id, files: original.attachments ?? []) }
         catch { writeError = error.localizedDescription; return nil }
         for call in original.pendingCalls { original.messages.append(AgentMessage(role: "tool", content: "原任务在此处中断，分支尚未执行该操作。", toolCallID: call.id)) }
+        original.flushQueuedInputs()
         original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
-        original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.kind = nil
+        original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
         original.created = Date(); original.updated = Date(); tasks.insert(Self.metadata(original), at: 0); cache[original.id] = original; selectedID = original.id
         do { try save(original.id) } catch { writeError = error.localizedDescription }
         trimCache(keeping: original.id); return original.id

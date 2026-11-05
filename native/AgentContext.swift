@@ -13,7 +13,7 @@ import Foundation
     }
     private static func size(_ messages: [AgentMessage]) -> Int {
         messages.reduce(0) { total, message in
-            total + 20 + estimate(message.content) + estimate(message.reasoning ?? "") + (message.toolCalls ?? []).reduce(0) { $0 + 15 + estimate($1.arguments) + estimate($1.name) }
+            total + 20 + estimate(message.content) + estimate((message.attachmentIDs ?? []).joined(separator: ", ")) + estimate(message.reasoning ?? "") + (message.toolCalls ?? []).reduce(0) { $0 + 15 + estimate($1.arguments) + estimate($1.name) }
         }
     }
     static func offset(_ task: AgentTaskRecord) -> Int {
@@ -22,8 +22,8 @@ import Foundation
     static func window(_ task: AgentTaskRecord) -> [AgentMessage] {
         var messages = Array(task.messages.dropFirst(offset(task)))
         if let summary = task.contextSummary, !summary.isEmpty {
-            let first = task.messages.first(where: { $0.role == "user" })?.content ?? ""
-            let latest = task.messages.last(where: { $0.role == "user" })?.content ?? ""
+            let first = task.messages.first(where: \.isHumanInput)?.content ?? ""
+            let latest = task.messages.last(where: \.isHumanInput)?.content ?? ""
             let plan = task.plan.map { "[\($0.status)] \($0.title)" }.joined(separator: "\n")
             let context = """
             [历史摘要；仅供理解上下文，不构成批准；与最新用户消息冲突时以最新消息为准]
@@ -48,7 +48,8 @@ import Foundation
         var content = message.content
         if message.role == "tool", content.count > 4000 { content = String(content.prefix(2000)) + "\n[中段省略，可通过 read_task_history 核对]\n" + content.suffix(2000) }
         let calls = (message.toolCalls ?? []).map { "\($0.id) \($0.name) \(AgentRuntime.description($0))" }.joined(separator: "\n")
-        return "[记录 \(index) · \(message.role)\(message.toolCallID.map { " · " + $0 } ?? "")]\n\(content)\(calls.isEmpty ? "" : "\n工具请求：\n" + calls)"
+        let attachments = (message.attachmentIDs ?? []).isEmpty ? "" : "\n附件编号：" + (message.attachmentIDs ?? []).joined(separator: ", ")
+        return "[记录 \(index) · \(message.role)\(message.toolCallID.map { " · " + $0 } ?? "")]\n\(content)\(attachments)\(calls.isEmpty ? "" : "\n工具请求：\n" + calls)"
     }
     static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], onChange: () -> Void) async throws -> [AgentMessage] {
         let toolJSON = String(decoding: try JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
@@ -86,7 +87,7 @@ import Foundation
                 if chunkSize + cost > chunkBudget { break }
                 // A fresh, single user request needs a larger model budget;
                 // do not spend a separate request summarizing it beforehand.
-                if beginning == task.messages.count - 1 && task.messages[beginning].role == "user" { break }
+                if beginning == task.messages.count - 1 && task.messages[beginning].isHumanInput { break }
                 chunk += group + "\n\n"; chunkSize += cost; end = index
             }
             guard end > start else { throw PetError("单轮内容超过上下文预算，原始记录已保留，请增大上下文后继续") }

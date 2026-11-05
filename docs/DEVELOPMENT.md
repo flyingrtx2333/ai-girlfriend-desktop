@@ -56,6 +56,7 @@ npm run native:open
 | Agent Git 状态、审阅、提交和工作树 | `npm run native:check-git`；独立公开仓库和已配置真实模型，实际核对提交、其他暂存内容、Hook 与工作树，不访问生产仓库 |
 | 项目检索与 Repo Wiki | `npm run native:check-index`；实际 SQLite、公开退款规则和已配置真实模型，核对增量更新、业务回答、Wiki 生成、跨任务引用及读写范围 |
 | 文档解析与附件存储 | `npm run native:check-documents`；需要测试用 Python 的 python-docx 1.2.0、openpyxl 3.1.5、python-pptx 1.0.2；可用 `BLUEFATFISH_DOCUMENT_PYTHON` 指定解释器。这些库仅创建/回读公开测试文件，不进入应用，也不验证 AI 对话效果 |
+| 附件连续对话后端 | 在上述检查后加 `-- --live-attachments`，使用已配置真实模型读取三类 Office 文件、执行中追加、回答提问并保护未发送草稿；视觉和原生输入界面单独验收 |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
 
 浏览器检查使用本机 Google Chrome，运行前需安装该浏览器。脚本输出写入被忽略的 `evidence/`。不默认运行全部历史脚本或 GitHub Actions。

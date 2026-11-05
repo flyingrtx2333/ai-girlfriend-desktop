@@ -4,6 +4,8 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     var id = UUID().uuidString
     var name: String; var fileExtension: String; var bytes: Int; var sha256: String; var modified: Date
     var totalParts: Int; var partial: Bool; var width: Int?; var height: Int?
+    var partTitles: [String]?
+    var notes: [String]?
 }
 
 @MainActor enum AgentAttachments {
@@ -60,7 +62,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }
             let modified = try local.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
             try fm.moveItem(at: stage, to: destination); moved = true
-            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height)
+            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes)
         }
         let file = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         do {
@@ -82,6 +84,23 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         do { try store.save(taskID) }
         catch { store.update(taskID, persist: false) { $0.attachments = task.attachments; $0.draftAttachmentIDs = task.draftAttachmentIDs }; throw error }
         if !used { try FileManager.default.removeItem(at: directory(store: store, taskID: taskID, id: id)) }
+    }
+    static func part(store: AgentStore, taskID: String, id: String, number: Int) async throws -> AgentDocumentPart {
+        let file = try record(store: store, taskID: taskID, id: id), document = try content(store: store, taskID: taskID, id: id)
+        guard number > 0, number <= file.totalParts else { throw PetError("附件页码或工作表编号无效") }
+        if document.parts.indices.contains(number - 1), !document.parts[number - 1].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || document.parts[number - 1].ocr == true { return document.parts[number - 1] }
+        guard file.fileExtension == "pdf" else {
+            guard document.parts.indices.contains(number - 1) else { throw PetError("该部分超出提取范围") }; return document.parts[number - 1]
+        }
+        let root = try directory(store: store, taskID: taskID, id: id), cache = root.appendingPathComponent("part-\(number).json"), files = try AgentFiles(workspace: root.path)
+        if FileManager.default.fileExists(atPath: cache.path) { return try JSONDecoder().decode(AgentDocumentPart.self, from: files.readData(cache, maximum: 500_000)) }
+        let url = try source(store: store, taskID: taskID, id: id)
+        let job = Task.detached(priority: .utility) { try AgentDocument.pdfPage(url, number: number, recognize: true) }
+        let result = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+        try Task.checkCancellation(); _ = try source(store: store, taskID: taskID, id: id)
+        try files.writeData(try JSONEncoder().encode(result.0), to: cache, permissions: 0o600)
+        if let image = result.1 { try files.writeData(image.jpeg, to: root.appendingPathComponent("page-\(number).jpg"), permissions: 0o400) }
+        return result.0
     }
     static func copyForFork(store: AgentStore, sourceID: String, targetID: String, files: [AgentAttachment]) throws {
         var created: [URL] = []

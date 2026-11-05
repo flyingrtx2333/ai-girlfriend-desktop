@@ -32,13 +32,16 @@ import Foundation
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"] + AgentGit.tools
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"] + AgentGit.tools
     static func definitions(mode: AgentMode, kind: String? = nil) -> [[String: Any]] {
         let string: [String: Any] = ["type": "string"], integer: [String: Any] = ["type": "integer"]
         func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
+            tool("list_attachments", "列出用户已提交给当前任务的附件、编号和页/工作表标题；offset 从 0 开始。草稿附件不可读。不需要项目文件夹。", ["offset": integer, "limit": integer], []),
+            tool("read_attachment", "读取用户已提交附件的指定页/工作表/幻灯片，part 从 1 开始，offset 为行号（从 1 开始）。返回实际文字、来源和提取范围；扫描 PDF 按页本机 OCR。图片在此仅返回 OCR 文字，不代表已理解非文字内容。", ["id": string, "part": integer, "offset": integer, "limit": integer], ["id"]),
+            tool("search_attachment", "在已提交附件的初始提取文字中查找关键词，返回页/工作表及实际行号。扫描页和额外页请用 read_attachment 按页读取，搜索不代表已经 OCR 全文。", ["id": string, "query": string], ["id", "query"]),
             tool("index_project", "在本机增量更新项目全文索引，跳过凭据、隐藏文件、构建目录及 Git 忽略文件。不调用模型。单文件上限 512KB、总文本 16MB、5000 文件；返回实际覆盖范围。rebuild=true 完整重建。", ["rebuild": ["type": "boolean"]], []),
             tool("search_project", "从当前项目索引检索实现、文档或符号，返回实际文件、行号和 sha256。每次先增量更新并核对命中文件。query 使用 1 至 6 个关键词或短语，空格分隔；非语义向量搜索。找到后用 read_file 核对上下文，回答引用路径和行号。", ["query": string, "limit": integer], ["query"]),
             tool("project_wiki", "列出当前项目 Repo Wiki；path 可读取某页（分页 offset/limit 从 1 开始）。先更新项目索引核对状态；Wiki 是资料，重要结论仍须核对当前源码。", ["path": string, "offset": integer, "limit": integer], []),
@@ -117,12 +120,52 @@ import Foundation
         try Task.checkCancellation()
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         if task.kind == "wiki", !Self.wikiTools.contains(call.name) { throw PetError("Wiki 任务只读取索引内项目文件并生成文档") }
-        if !(task.queuedInputs ?? []).isEmpty { throw PetError("用户已更新要求，此操作尚未执行") }
+        if task.queuedCount > 0 { throw PetError("用户已更新要求，此操作尚未执行") }
         let args = call.object
         func string(_ name: String) throws -> String {
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }
         switch call.name {
+        case "list_attachments":
+            let files = (task.attachments ?? []).filter { task.submittedAttachmentIDs.contains($0.id) }
+            let offset = min(files.count, max(0, args["offset"] as? Int ?? 0)), count = min(20, max(1, args["limit"] as? Int ?? 10))
+            let entries: [[String: Any]] = files.dropFirst(offset).prefix(count).map { file in
+                ["id": file.id, "name": file.name, "format": file.fileExtension, "total_parts": file.totalParts, "partial": file.partial, "notes": file.notes ?? [], "parts": (file.partTitles ?? []).prefix(50).enumerated().map { ["number": $0.offset + 1, "title": $0.element] }]
+            }
+            let data = try JSONSerialization.data(withJSONObject: ["count": files.count, "offset": offset, "attachments": entries], options: [.prettyPrinted, .sortedKeys])
+            return AgentToolResult(text: String(decoding: data, as: UTF8.self))
+        case "read_attachment", "search_attachment":
+            let id = try string("id")
+            guard task.submittedAttachmentIDs.contains(id) else { throw PetError("只能读取用户已发送给当前任务的附件，请使用 list_attachments 查看编号") }
+            let file = try AgentAttachments.record(store: store, taskID: taskID, id: id)
+            if call.name == "read_attachment" {
+                let number = args["part"] as? Int ?? 1, part = try await AgentAttachments.part(store: store, taskID: taskID, id: id, number: number)
+                let lines = part.text.components(separatedBy: "\n"), start = min(lines.count, max(1, args["offset"] as? Int ?? 1) - 1), count = min(150, max(1, args["limit"] as? Int ?? 80))
+                var text = file.name + " · " + part.title + " · \(lines.count) 行\n", used = 0, next = start
+                for i in start..<min(lines.count, start + count) {
+                    let line = "\(i + 1): " + String(lines[i].prefix(1200)) + "\n", cost = AgentContext.estimate(line)
+                    if used + cost > 3500 { break }; text += line; used += cost; next = i + 1
+                    if lines[i].count > 1200 { text += "[长行已截断]\n" }
+                }
+                if next < lines.count { text += "[继续 offset=\(next + 1)]\n" }
+                if part.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { text += "[未提取到文字]\n" }
+                if file.partial || part.partial { text += "[提取范围不完整]\n" }
+                if part.ocr == true { text += "[本机 OCR，需核对原图]\n" }
+                text += (file.notes ?? []).map { "[\($0)]" }.joined(separator: "\n")
+                let source = "attachment://\(id)/part/\(number)#L\(start + 1)"
+                return AgentToolResult(text: text, sources: [source])
+            }
+            let query = try string("query"); guard !query.isEmpty, query.count <= 500 else { throw PetError("请输入有效关键词") }
+            let document = try AgentAttachments.content(store: store, taskID: taskID, id: id)
+            var rows: [String] = [], sources: [String] = [], tokens = 0
+            for (index, part) in document.parts.enumerated() {
+                for (line, value) in part.text.components(separatedBy: "\n").enumerated() where value.localizedCaseInsensitiveContains(query) {
+                    let text = "第 \(index + 1) 部分 · \(part.title):\(line + 1): " + String(value.prefix(800)), cost = AgentContext.estimate(text)
+                    if tokens + cost > 3500 || rows.count >= 30 { break }; tokens += cost; rows.append(text); sources.append("attachment://\(id)/part/\(index + 1)#L\(line + 1)")
+                }
+                if tokens >= 3000 || rows.count >= 30 { break }
+            }
+            return AgentToolResult(text: rows.isEmpty ? "初始提取文字中未找到匹配；扫描页和额外页请按页读取。" : rows.joined(separator: "\n") + "\n[只搜索初始提取文字，不代表已 OCR 全文]", sources: sources)
         case "index_project", "search_project":
             let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
             var paths: [String]?
@@ -170,7 +213,8 @@ import Foundation
             for i in start..<end {
                 let message = task.messages[i]
                 let calls = (message.toolCalls ?? []).map { "\($0.id) \($0.name) \($0.arguments)" }.joined(separator: "\n")
-                let body = message.content + (calls.isEmpty ? "" : "\n" + calls)
+                let references = (message.attachmentIDs ?? []).isEmpty ? "" : "\n附件编号：" + (message.attachmentIDs ?? []).joined(separator: ", ")
+                let body = message.content + references + (calls.isEmpty ? "" : "\n" + calls)
                 let position = min(body.count, max(0, args["content_offset"] as? Int ?? 0)), count = min(8000, max(1, args["content_limit"] as? Int ?? 4000))
                 let slice = String(body.dropFirst(position).prefix(count)), next = position + slice.count
                 output += "[\(i) · \(message.role) · \(message.id) · 字符 \(position)...\(next)/\(body.count)]\n" + slice + (next < body.count ? "\n[本条未结束，继续 content_offset=\(next)]" : "") + "\n\n"

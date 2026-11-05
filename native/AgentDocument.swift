@@ -4,7 +4,7 @@ import ImageIO
 import Vision
 import AppKit
 
-struct AgentDocumentPart: Codable, Sendable { var title: String; var text: String; var partial = false }
+struct AgentDocumentPart: Codable, Sendable { var title: String; var text: String; var partial = false; var ocr: Bool? }
 struct AgentDocumentContent: Codable, Sendable {
     var format: String; var parts: [AgentDocumentPart]; var totalParts: Int; var partial = false; var notes: [String] = []
 }
@@ -61,12 +61,14 @@ enum AgentDocument {
         let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !text.isEmpty { return (AgentDocumentPart(title: "第 \(number) 页", text: String(text.prefix(100_000)), partial: text.count > 100_000), nil) }
         guard recognize else { return (AgentDocumentPart(title: "第 \(number) 页", text: ""), nil) }
-        let box = page.bounds(for: .mediaBox), scale = min(2, 1536 / max(1, max(box.width, box.height)))
+        let box = page.bounds(for: .mediaBox)
+        guard box.width.isFinite, box.height.isFinite, box.minX.isFinite, box.minY.isFinite, box.width > 0, box.height > 0 else { throw PetError("PDF 页面尺寸无效") }
+        let scale = min(2, 1536 / max(box.width, box.height))
         let width = max(1, Int(box.width * scale)), height = max(1, Int(box.height * scale))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw PetError("PDF 页面无法绘制") }
         context.setFillColor(NSColor.white.cgColor); context.fill(CGRect(x: 0, y: 0, width: width, height: height)); context.scaleBy(x: scale, y: scale); context.translateBy(x: -box.minX, y: -box.minY); page.draw(with: .mediaBox, to: context)
         guard let image = context.makeImage(), let jpeg = NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else { throw PetError("PDF 页面无法读取") }
-        return (AgentDocumentPart(title: "第 \(number) 页 · OCR", text: try ocr(image)), AgentDocumentImage(jpeg: jpeg, width: width, height: height))
+        return (AgentDocumentPart(title: "第 \(number) 页 · OCR", text: try ocr(image), ocr: true), AgentDocumentImage(jpeg: jpeg, width: width, height: height))
     }
     static func extract(_ url: URL, scratch: URL) async throws -> AgentDocumentContent {
         let type = url.pathExtension.lowercased(), size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -84,7 +86,7 @@ enum AgentDocument {
         if imageTypes.contains(type) {
             let normalized = try image(url)
             guard let source = CGImageSourceCreateWithData(normalized.jpeg as CFData, nil), let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw PetError("图片无法解码") }
-            return AgentDocumentContent(format: "image", parts: [AgentDocumentPart(title: "图片文字 · OCR", text: try ocr(image))], totalParts: normalized.frames, partial: normalized.frames > 1, notes: ["OCR 只识别文字，不代表图片已完成视觉理解"] + (normalized.frames > 1 ? ["仅第一帧"] : []))
+            return AgentDocumentContent(format: "image", parts: [AgentDocumentPart(title: "图片文字 · OCR", text: try ocr(image), ocr: true)], totalParts: normalized.frames, partial: normalized.frames > 1, notes: ["OCR 只识别文字，不代表图片已完成视觉理解"] + (normalized.frames > 1 ? ["仅第一帧"] : []))
         }
         if ["docx", "xlsx", "pptx"].contains(type) { return try await office(url, scratch: scratch) }
         guard textTypes.contains(type), size <= 2_000_000 else { throw PetError("暂不支持此格式，请使用 PDF、DOCX、XLSX、PPTX、图片或文本") }
