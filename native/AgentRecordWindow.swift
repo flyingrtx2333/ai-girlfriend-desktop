@@ -2,28 +2,29 @@ import AppKit
 
 @MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
-    private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志"], trackingMode: .selectOne, target: nil, action: nil)
+    private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0
-    init(store: AgentStore, taskID: String) {
+    init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua); window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; text.delegate = self
         let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
-        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = 0
+        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = min(5, max(0, section)); activeSection = sections.selectedSegment
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        text.isRichText = false; text.isEditable = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.isRichText = false; text.isEditable = false; text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
         let viewer = NSScrollView(); viewer.documentView = text; viewer.hasVerticalScroller = true
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let actions = NSStackView(views: [state, NSView(), undo, open, save]); actions.spacing = 8
         for view in [sections, list, viewer, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
@@ -41,11 +42,13 @@ import AppKit
         case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) }
         case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
+        case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
         }
-        if [1, 2, 3].contains(sections.selectedSegment) { text.string = "" }
-        table.reloadData(); if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if [1, 2, 3, 5].contains(sections.selectedSegment) { text.string = "" }
+        table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
+        if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -59,8 +62,14 @@ import AppKit
             table.delegate = self; return
         }
         load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""
+        text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true
         do {
+            if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
+                let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
+                text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
+                text.isEditable = task.status != .running; save.isHidden = false; save.isEnabled = text.isEditable; return
+            }
             if sections.selectedSegment == 2 { text.string = value; open.isHidden = false; return }
             if sections.selectedSegment == 3 {
                 guard let change = task.changes.first(where: { $0.id == value }) else { return }
@@ -78,8 +87,13 @@ import AppKit
         } catch { text.string = ""; state.stringValue = error.localizedDescription }
     }
     @objc private func saveFile() {
-        guard let path = selection, let task = store.task(taskID), task.status != .running else { return }
+        guard let path = selection, let task = store.task(taskID) else { return }
+        guard task.status != .running else { state.stringValue = "请先停止任务"; return }
         do {
+            if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: path), let hash = openedHash {
+                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID)
+                openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
+            }
             let files = try AgentFiles(workspace: task.workspace), current = try files.readData(files.resolve(path))
             guard AgentFiles.hash(current) == openedHash else { throw PetError("文件已更改，请重新打开后编辑") }
             let content = text.string, args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content])
@@ -124,6 +138,10 @@ import AppKit
             view.layoutSubtreeIfNeeded()
             if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("agent-records.png")) }
         }
+        sections.selectedSegment = 5; refresh()
+        if let memory = try? AgentMemory.snapshot(.global, store: store, taskID: taskID) {
+            checks["nativeMemoryEditorMatchesStoredText"] = text.string == memory.content && openedHash == memory.hash && !save.isHidden
+        } else { checks["nativeMemoryEditorMatchesStoredText"] = false }
         return checks
     }
 }

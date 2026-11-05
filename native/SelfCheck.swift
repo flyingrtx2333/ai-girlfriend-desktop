@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--context-check") { await runAgentContextCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--agent-ui-check") {
             var checks = await control.checkAgentLayout(output)
             var result: [String: Any] = [:]

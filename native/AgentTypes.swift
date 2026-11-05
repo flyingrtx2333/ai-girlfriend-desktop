@@ -95,6 +95,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var queuedInputs: [String]?
     var goalAccepted: Bool?
     var completionEvidence: [String]?
+    var contextSummary: String?
+    var contextThroughID: String?
+    var contextSize: Int?
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
 }

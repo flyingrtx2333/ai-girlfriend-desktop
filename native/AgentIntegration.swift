@@ -10,11 +10,7 @@ import AppKit
         runtime.onChange = { [weak self] id in
             guard let self else { return }
             self.control.scheduleRender(); self.refreshVoiceBusy()
-            if tasks.selectedID == id {
-                let phase = tasks.task(id)?.status
-                let next = phase == .running ? "thinking" : phase == .waiting ? "observing" : "idle"
-                if self.agentAnimationPhase != next { self.agentAnimationPhase = next; self.emit("screenState", ["phase": next, "direction": 0.4]) }
-            }
+            self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
         runtime.onComplete = { [weak self] id, text in
@@ -22,6 +18,11 @@ import AppKit
             self.showBubble(String(text.prefix(320)))
             if self.store.preferences.voiceEnabled { self.synthesize(text, preferences: self.store.preferences) }
         }
+    }
+    func refreshAgentAnimation() {
+        let status = agentStore?.selected?.status
+        let next = status == .running ? "thinking" : status == .waiting ? "observing" : "idle"
+        if agentAnimationPhase != next { agentAnimationPhase = next; emit("screenState", ["phase": next, "direction": 0.4]) }
     }
     func recordCompanionComment(_ text: String) {
         guard let tasks = agentStore else { return }

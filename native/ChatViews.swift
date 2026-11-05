@@ -26,6 +26,7 @@ final class ContentSurface: NSView {
 final class ChatMessageRow: NSView {
     let label = NSTextField(wrappingLabelWithString: "")
     private(set) var text = ""
+    private var renderedMarkdown = true
     private let isUser: Bool
     init(message: ChatMessage) {
         isUser = message.role == "user"
@@ -34,7 +35,7 @@ final class ChatMessageRow: NSView {
         container.translatesAutoresizingMaskIntoConstraints = false; container.wantsLayer = true
         container.layer?.backgroundColor = user ? NSColor(white: 0.95, alpha: 1).cgColor : NSColor.clear.cgColor
         container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(label)
-        label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true
+        label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
         label.font = .systemFont(ofSize: 15); label.textColor = NSColor(white: 0.12, alpha: 1)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let inset: CGFloat = user ? 15 : 0
@@ -47,11 +48,12 @@ final class ChatMessageRow: NSView {
         update(message.content)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func update(_ value: String) {
-        guard text != value || label.stringValue.isEmpty else { return }; text = value
+    func update(_ value: String, markdown: Bool = true) {
+        guard text != value || renderedMarkdown != markdown || label.stringValue.isEmpty else { return }; text = value; renderedMarkdown = markdown
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
-        label.attributedStringValue = NSAttributedString(string: value.isEmpty ? "…" : value,
-            attributes: [.font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor(white: 0.12, alpha: 1), .paragraphStyle: paragraph])
+        let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: 15), color = NSColor(white: 0.12, alpha: 1)
+        label.attributedStringValue = isUser || !markdown ? NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+            : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
         label.invalidateIntrinsicContentSize()
     }
     func fit(width: CGFloat) {

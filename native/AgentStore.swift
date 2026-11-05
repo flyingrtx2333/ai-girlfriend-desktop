@@ -23,8 +23,7 @@ import Foundation
         for file in files where file.pathExtension == "json" && !indexedIDs.contains(file.deletingPathExtension().lastPathComponent) {
             guard let data = try? Data(contentsOf: file), let task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data),
                   UUID(uuidString: task.id) != nil, file.deletingPathExtension().lastPathComponent == task.id else { continue }
-            var recovered = task
-            if recovered.status == .running { recovered.status = .stopped; recovered.events.append(AgentEvent(kind: "state", title: "应用重启，任务可继续", status: "stopped")) }
+            var recovered = task; Self.recover(&recovered)
             tasks.append(Self.metadata(recovered))
         }
         tasks.sort { $0.updated > $1.updated }
@@ -46,17 +45,33 @@ import Foundation
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []
-        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.summary = String(value.summary.prefix(240))
+        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.summary = String(value.summary.prefix(240))
         return value
     }
     func task(_ id: String) -> AgentTaskRecord? {
         if let cached = cache[id] { return cached }
         guard UUID(uuidString: id) != nil, let data = try? Data(contentsOf: directory.appendingPathComponent(id + ".json")),
               var task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data), task.id == id else { return nil }
-        if task.status == .running { task.status = .stopped; task.events.append(AgentEvent(kind: "state", title: "应用重启，任务可继续", status: "stopped")) }
+        let interrupted = task.status == .running; Self.recover(&task)
         cache[id] = task
+        if interrupted {
+            if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = Self.metadata(task) }
+            do { try save(id) } catch { writeError = error.localizedDescription }
+        }
         trimCache(keeping: id)
         return task
+    }
+    private static func recover(_ task: inout AgentTaskRecord) {
+        guard task.status == .running else { return }
+        task.status = .stopped; task.goalAccepted = nil; task.completionEvidence = nil
+        for call in task.pendingCalls {
+            task.messages.append(AgentMessage(role: "tool", content: "应用中断，此操作的执行结果未知。继续前检查实际状态，不直接重放。", toolCallID: call.id))
+        }
+        task.pendingCalls = []
+        task.messages += (task.queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) }; task.queuedInputs = []
+        task.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
+        for i in task.events.indices where task.events[i].status == "running" { task.events[i].status = "stopped" }
+        task.events.append(AgentEvent(kind: "state", title: "应用中断，检查后可继续", detail: "未确认的操作不会自动重放。", status: "stopped"))
     }
     private func trimCache(keeping id: String) {
         while cache.count > 4, let old = cache.keys.first(where: { $0 != id && $0 != selectedID && cache[$0]?.status != .running }) { cache[old] = nil }

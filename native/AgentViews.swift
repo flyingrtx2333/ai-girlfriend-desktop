@@ -116,7 +116,7 @@ private final class AgentTaskTable: NSTableView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func update(call: AgentToolCall, event: AgentEvent?) {
-        let names = ["read_file": "读取", "list_directory": "浏览", "search_files": "搜索文件", "write_file": "写入", "edit_file": "编辑", "run_command": "终端", "web_search": "联网搜索", "fetch_url": "读取网页", "update_plan": "更新计划", "ask_user": "需要你", "finish_task": "核对结果"]
+        let names = ["read_file": "读取", "list_directory": "浏览", "search_files": "搜索文件", "write_file": "写入", "edit_file": "编辑", "run_command": "终端", "web_search": "联网搜索", "fetch_url": "读取网页", "update_plan": "更新计划", "ask_user": "需要你", "finish_task": "核对结果", "read_task_history": "查回历史", "read_memory": "读取记忆", "write_memory": "保存记忆"]
         let state = event?.status ?? "running"
         let symbol = state == "completed" ? "checkmark.circle" : state == "failed" ? "exclamationmark.circle" : state == "waiting" ? "hand.raised" : state == "stopped" ? "stop.circle" : "circle.dotted"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: state)

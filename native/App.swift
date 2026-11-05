@@ -57,7 +57,7 @@ final class PetWebView: WKWebView {
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || CommandLine.arguments.contains("--agent-check") || CommandLine.arguments.contains("--agent-ui-check") }
+    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -417,6 +417,7 @@ final class PetWebView: WKWebView {
         switch action {
         case "ready":
             ready = true; pet.orderFrontRegardless(); updateVisibility(); statusItem.menu = menu()
+            if selectedAgentBusy || agentStore?.selected?.status == .waiting { agentAnimationPhase = ""; refreshAgentAnimation() }
             if checkDirectory != nil { Task { await runSelfCheck() } }
         case "hit": if dragOrigin == nil { pet.ignoresMouseEvents = !(payload["hit"] as? Bool ?? false) }
         case "dragBegin":

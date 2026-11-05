@@ -32,7 +32,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -225,7 +225,7 @@ final class FormDocumentView: NSView {
         document.widthAnchor.constraint(equalTo: history.contentView.widthAnchor).isActive = true
         composer.font = .systemFont(ofSize: 15); composer.textContainerInset = NSSize(width: 2, height: 8)
         composer.drawsBackground = false; composer.setAccessibilityLabel("消息")
-        composer.isRichText = false; composer.isAutomaticQuoteSubstitutionEnabled = false
+        composer.isRichText = false; composer.allowsUndo = true; composer.isAutomaticQuoteSubstitutionEnabled = false
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
         composer.onInputChanged = { [weak self] in self?.composerChanged() }
@@ -370,6 +370,9 @@ final class FormDocumentView: NSView {
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
+        group("agent", "记忆与指令", "Agent 记忆 全局 项目 指令 AGENTS 摘要 上下文")
+        let memory = NSButton(title: "管理记忆", target: self, action: #selector(openAgentMemory))
+        row("", stack([memory, NSView()], spacing: 8))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
@@ -585,7 +588,7 @@ final class FormDocumentView: NSView {
     @objc private func send() {
         guard let companion else { return }
         if busy && (companion.usesAgent == false || composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { companion.cancelConversation(); return }
-        if companion.send(composer.string) { composer.string = ""; composer.didChangeText(); saveAgentDraft() }
+        if companion.send(composer.string) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft() }
     }
     @objc private func clear() {
         if let id = companion?.agentStore?.selectedID { agentTaskAction(id, action: "archive") }
@@ -731,8 +734,10 @@ final class FormDocumentView: NSView {
         guard let tasks = companion?.agentStore, tasks.task(id) != nil else { return }
         saveAgentDraft(); tasks.selectedID = id; displayedTask = id
         composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
+        composer.undoManager?.removeAllActions()
         renderedIDs = []; messageRows = [:]; toolRows = [:]
         selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
+        companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
     @objc func newAgentTask() {
         guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
@@ -782,13 +787,15 @@ final class FormDocumentView: NSView {
         renderAgentMessages()
     }
     @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
-    @objc func showAgentRecords() {
+    @objc func showAgentRecords() { presentAgentRecords(section: 0) }
+    @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
+    func presentAgentRecords(section: Int) {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
         if let existing = recordWindow {
             existing.window?.performClose(nil)
             if existing.window?.isVisible == true { return }
         }
-        recordWindow = AgentRecordWindow(store: store, taskID: id); recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+        recordWindow = AgentRecordWindow(store: store, taskID: id, section: section); recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func configureApprovalPanel() {
         approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true
@@ -822,7 +829,8 @@ final class FormDocumentView: NSView {
         let queueCount = task.queuedInputs?.count ?? 0
         let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
         setStatus(state, error: task.status == .failed || tasks.writeError != nil)
-        modelCaption.stringValue = (task.model.isEmpty ? companion?.store.preferences.model ?? "" : task.model) + (task.inputTokens > 0 ? " · \(task.inputTokens + task.outputTokens) tokens" : "")
+        let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""
+        modelCaption.stringValue = (task.model.isEmpty ? companion?.store.preferences.model ?? "" : task.model) + context
         let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) }
         var ids: [String] = []
@@ -849,7 +857,8 @@ final class FormDocumentView: NSView {
         }
         let events = Dictionary(task.events.compactMap { event in event.toolCallID.map { ($0, event) } }, uniquingKeysWith: { _, latest in latest })
         for message in messages {
-            messageRows[message.id]?.update(message.content)
+            let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
+            messageRows[message.id]?.update(message.content, markdown: !streaming)
             for call in message.toolCalls ?? [] { toolRows[call.id]?.update(call: call, event: events[call.id]) }
         }
         if task.status == .waiting, let call = task.pendingCalls.first, let approval = task.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {

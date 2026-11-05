@@ -78,7 +78,7 @@ struct AgentFiles: Sendable {
         guard (attributes[.size] as? Int ?? 0) <= 4_000_000 else { throw PetError("文件较大，请用搜索定位内容或通过终端分段读取") }
         let data = try readData(url)
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw PetError("这是二进制或非 UTF-8 文件，请使用对应文档工具") }
-        let lines = text.components(separatedBy: "\n"), start = min(max(0, offset - 1), lines.count), end = min(lines.count, start + min(500, max(1, limit)))
+        let lines = text.components(separatedBy: "\n"), start = min(max(1, offset) - 1, lines.count), end = min(lines.count, start + min(500, max(1, limit)))
         var result = "\(relative(url)) · \(lines.count) 行\n"
         for i in start..<end {
             let line = "\(i + 1): \(lines[i])\n"
