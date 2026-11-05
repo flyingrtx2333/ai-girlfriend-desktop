@@ -56,6 +56,7 @@ final class PetWebView: WKWebView {
     lazy var screenCompanion = ScreenCompanion(host: self)
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
+    var bubbleStopButton: NSButton?
     var bubbleTimer: Timer?
     var player: AVAudioPlayer?
     var speechAnimation: SpeechAnimation?
@@ -81,6 +82,7 @@ final class PetWebView: WKWebView {
     var scaleSaveTimer: Timer?
     var wakeStatus = "未开启", wakeError: String?
     var appliedWake: (Bool, String, Double)?
+    var pendingVoiceListen = false
     lazy var voiceWake: VoiceWake = {
         let wake = VoiceWake(); wake.onEvent = { [weak self] event in self?.voiceEvent(event) }; return wake
     }()
@@ -128,6 +130,8 @@ final class PetWebView: WKWebView {
         statusItem.button?.toolTip = "蓝色大肥鱼"
         statusItem.menu = menu()
         let main = NSMenu(), appMenu = NSMenu(), item = NSMenuItem()
+        appMenu.addItem(withTitle: "停止录音", action: #selector(stopRecording), keyEquivalent: "\u{1b}").target = self
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出蓝色大肥鱼", action: #selector(quit), keyEquivalent: "q").target = self
         item.submenu = appMenu; main.addItem(item)
         let edit = NSMenu(title: "编辑"), editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
@@ -154,6 +158,7 @@ final class PetWebView: WKWebView {
             let state = NSMenuItem(title: wakeStatus, action: nil, keyEquivalent: ""); state.isEnabled = false
             state.identifier = NSUserInterfaceItemIdentifier("wake-status"); m.addItem(state)
             add("立即聆听", #selector(listenNow))
+            add("停止录音", #selector(stopRecording))
         }
         m.addItem(.separator())
         add(pet?.isVisible == true ? "收起角色" : "显示角色", #selector(togglePet))
@@ -253,34 +258,65 @@ final class PetWebView: WKWebView {
         appliedWake = (p.wakeEnabled, p.wakePhrase, p.voicePauseSeconds)
         if p.wakeEnabled { wakeError = nil }
         voiceWake.configure(enabled: p.wakeEnabled && !sleeping, phrase: p.wakePhrase, pauseSeconds: p.voicePauseSeconds)
-        onWakeChange?(p.wakeEnabled, wakeStatus)
+        publishVoiceState()
     }
     @objc func toggleWake() {
         store.preferences.wakeEnabled.toggle(); wakeError = nil; try? store.savePreferences()
         appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
     }
-    @objc func listenNow() { if store.preferences.wakeEnabled { voiceWake.listenNow() } }
+    @objc func listenNow() {
+        screenCompanion.interaction(); chatTask?.cancel(); stopSpeech(); pendingVoiceListen = true
+        if !store.preferences.wakeEnabled {
+            store.preferences.wakeEnabled = true; wakeError = nil; wakeStatus = "等待授权"
+            try? store.savePreferences(); appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
+        }
+        startPendingVoiceListen()
+    }
+    private func startPendingVoiceListen() {
+        guard pendingVoiceListen, store.preferences.wakeEnabled, chatTask == nil, speechTask == nil,
+              !["等待授权", "恢复麦克风"].contains(wakeStatus) else { return }
+        pendingVoiceListen = false; voiceWake.listenNow()
+    }
+    @objc func stopRecording() { endVoiceInput("已停止录音") }
+    private func endVoiceInput(_ message: String, draft: String = "") {
+        pendingVoiceListen = false; store.preferences.wakeEnabled = false; wakeError = nil; wakeStatus = "未开启"
+        voiceWake.stop(); appliedWake = nil; screenCompanion.interaction(); cancelConversation()
+        if !draft.isEmpty { control.keepInterruptedVoiceDraft(draft) }
+        try? store.savePreferences(); publishVoiceState(); statusItem.menu = menu(); showBubble(message, duration: 2.5)
+    }
     func voiceEvent(_ event: VoiceWake.Event) {
+        if !store.preferences.wakeEnabled {
+            switch event { case .state("未开启"), .stopped: break; default: return }
+        }
         switch event {
         case .state(let state):
             wakeStatus = wakeError ?? state
             if state == "等待唤醒" && (chatTask != nil || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
+            if state == "等待唤醒" { startPendingVoiceListen() }
         case .woke:
             screenCompanion.interaction()
             wakeStatus = "聆听中"; playWakeChime(); emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
         case .partial(let text): showBubble(text, duration: 12)
         case .utterance(let text):
             if !send(text) { control.keepVoiceDraft(text); voiceWake.resetConversation() }
+        case .stopped(let message, let draft): endVoiceInput(message, draft: draft)
         case .failure(let error):
             wakeError = error; wakeStatus = error; store.preferences.wakeEnabled = false
             try? store.savePreferences(); appliedWake = nil; syncWakePreference()
             control.setStatus(error, error: true); showBubble(error)
             statusItem.menu = menu()
         }
+        publishVoiceState()
+    }
+    private func publishVoiceState() {
         onWakeChange?(store.preferences.wakeEnabled, wakeStatus)
         statusItem.button?.toolTip = store.preferences.wakeEnabled ? "语音唤醒：\(wakeStatus)" : "蓝色大肥鱼"
         statusItem.button?.image = NSImage(systemSymbolName: wakeStatus == "聆听中" ? "mic.fill" : "fish.fill", accessibilityDescription: wakeStatus)
         statusItem.button?.image?.isTemplate = true
+        let listening = store.preferences.wakeEnabled && wakeStatus == "聆听中"
+        if bubble?.isVisible == true, let button = bubbleStopButton, button.isHidden != !listening, let text = bubbleLabel?.stringValue {
+            showBubble(text)
+        }
     }
     func refreshVoiceBusy(followUp: Bool = false) {
         guard store.preferences.wakeEnabled else { return }
@@ -468,6 +504,7 @@ final class PetWebView: WKWebView {
                 self.control.setBusy(false); self.control.renderMessages()
                 if !answered { self.voiceWake.resetConversation() }
                 self.refreshVoiceBusy(followUp: answered)
+                self.startPendingVoiceListen()
             }
             return true
         } catch { control.setStatus(error.localizedDescription, error: true); return false }
@@ -548,23 +585,34 @@ final class PetWebView: WKWebView {
         let label = bubbleLabel ?? NSTextField(wrappingLabelWithString: text); label.stringValue = text; label.font = .systemFont(ofSize: 13)
         label.textColor = NSColor(red: 0.17, green: 0.23, blue: 0.29, alpha: 1)
         let attributes: [NSAttributedString.Key: Any] = [.font: label.font!]
+        let listening = store.preferences.wakeEnabled && wakeStatus == "聆听中", controlSpace: CGFloat = listening ? 64 : 0
         let available = (pet.screen ?? NSScreen.main)?.visibleFrame.width ?? 268
-        let width = min(268, max(56, min(available - 24, ceil((text as NSString).size(withAttributes: attributes).width) + 36)))
-        let bounds = (text as NSString).boundingRect(with: NSSize(width: width - 36, height: 220), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes)
+        let width = min(268, max(56 + controlSpace, min(available - 24, ceil((text as NSString).size(withAttributes: attributes).width) + 36 + controlSpace)))
+        let bounds = (text as NSString).boundingRect(with: NSSize(width: width - 36 - controlSpace, height: 220), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes)
         let size = NSSize(width: width, height: min(240, max(42, ceil(bounds.height) + 24)))
         let panel = bubble ?? PetPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.setContentSize(size)
         panel.isReleasedWhenClosed = false
-        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true; panel.ignoresMouseEvents = true
+        panel.title = "小鲸 · 语音"; panel.setAccessibilityRole(.window); panel.setAccessibilitySubrole(.standardWindow)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true; panel.ignoresMouseEvents = !listening
         panel.hidesOnDeactivate = false; panel.level = NSWindow.Level(rawValue: pet.level.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         let content = panel.contentView ?? NSView(frame: NSRect(origin: .zero, size: panel.frame.size))
         content.wantsLayer = true; content.layer?.backgroundColor = NSColor.white.cgColor; content.layer?.cornerRadius = 12
-        label.frame = content.bounds.insetBy(dx: 16, dy: 12); label.autoresizingMask = [.width, .height]
+        label.frame = NSRect(x: 16, y: 12, width: width - 32 - controlSpace, height: size.height - 24); label.autoresizingMask = [.width, .height]
         if label.superview == nil { content.addSubview(label) }
+        let stop = bubbleStopButton ?? NSButton(title: "停止", target: self, action: #selector(stopRecording))
+        stop.isBordered = false; stop.font = .systemFont(ofSize: 11, weight: .medium); stop.contentTintColor = .systemRed
+        stop.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: nil); stop.imagePosition = .imageLeading
+        stop.wantsLayer = true; stop.layer?.cornerRadius = 7; stop.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08).cgColor
+        stop.setAccessibilityLabel("停止录音"); stop.toolTip = "停止录音"; stop.isHidden = !listening
+        stop.frame = NSRect(x: width - 68, y: (size.height - 26) / 2, width: 52, height: 26)
+        if stop.superview == nil { content.addSubview(stop) }; bubbleStopButton = stop
         panel.contentView = content; bubble = panel; bubbleLabel = label; updateBubblePosition(); panel.orderFrontRegardless()
-        bubbleTimer = Timer.scheduledTimer(withTimeInterval: duration ?? max(6, min(14, Double(text.count) * 0.08)), repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.bubble?.orderOut(nil) }
+        if !listening {
+            bubbleTimer = Timer.scheduledTimer(withTimeInterval: duration ?? max(6, min(14, Double(text.count) * 0.08)), repeats: false) { [weak self] _ in
+                Task { @MainActor in self?.bubble?.orderOut(nil) }
+            }
         }
     }
     func updateBubblePosition() {

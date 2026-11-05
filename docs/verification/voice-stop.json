@@ -1,0 +1,109 @@
+{
+  "version": "0.8.1",
+  "checks": {
+    "buttonReleasesMicrophoneAndModels": true,
+    "lateEventsCannotSubmitOrRestart": true,
+    "listeningBubbleHasStopButton": true,
+    "ordinarySpeechAndNegationIgnored": true,
+    "realMicrophoneWasRunning": true,
+    "realSpokenStopBeforeNoiseEnds": true,
+    "stopAliases": true,
+    "stopCommandNotSentAsChat": true,
+    "timeoutReleasesMicrophone": true
+  },
+  "microphone": {
+    "afterButton": {
+      "asrStarts": 0,
+      "awake": 0,
+      "captureRestarts": 0,
+      "captureStarts": 1,
+      "enabled": 0,
+      "engineRunning": 0,
+      "keywordHits": 0,
+      "keywordLoaded": 0,
+      "lastBufferAgeMs": 486,
+      "micBuffers": 11,
+      "peakInputDb": -59,
+      "recognizerRebases": 0,
+      "recognizing": 0
+    },
+    "afterDeadline": {
+      "asrStarts": 0,
+      "awake": 0,
+      "captureRestarts": 0,
+      "captureStarts": 2,
+      "enabled": 0,
+      "engineRunning": 0,
+      "keywordHits": 0,
+      "keywordLoaded": 0,
+      "lastBufferAgeMs": 437,
+      "micBuffers": 19,
+      "peakInputDb": -58,
+      "recognizerRebases": 0,
+      "recognizing": 0
+    },
+    "afterLateEvents": {
+      "asrStarts": 0,
+      "awake": 0,
+      "captureRestarts": 0,
+      "captureStarts": 1,
+      "enabled": 0,
+      "engineRunning": 0,
+      "keywordHits": 0,
+      "keywordLoaded": 0,
+      "lastBufferAgeMs": 1330,
+      "micBuffers": 11,
+      "peakInputDb": -59,
+      "recognizerRebases": 0,
+      "recognizing": 0
+    },
+    "before": {
+      "asrStarts": 0,
+      "awake": 0,
+      "captureRestarts": 0,
+      "captureStarts": 1,
+      "enabled": 1,
+      "engineRunning": 1,
+      "keywordHits": 0,
+      "keywordLoaded": 1,
+      "lastBufferAgeMs": 93,
+      "micBuffers": 8,
+      "peakInputDb": -59,
+      "recognizerRebases": 0,
+      "recognizing": 0
+    }
+  },
+  "scope": "Independent profile, one real spoken command fixture and real microphone capture. The deadline clock is advanced for the 60-second limit check. No private audio/transcripts recorded; no online model or TTS calls.",
+  "spokenStop": {
+    "errors": [],
+    "fixture": "小鲸小鲸，请停止录音。 followed immediately by six seconds of continuous noise; real local KWS and Apple ASR.",
+    "seconds": 3.765246666735038,
+    "stats": {
+      "asrStarts": 1,
+      "awake": 0,
+      "captureRestarts": 0,
+      "captureStarts": 0,
+      "enabled": 0,
+      "engineRunning": 0,
+      "keywordHits": 1,
+      "keywordLoaded": 0,
+      "lastBufferAgeMs": -1,
+      "micBuffers": 0,
+      "peakInputDb": -14,
+      "recognizerRebases": 0,
+      "recognizing": 0
+    }
+  },
+  "success": true,
+  "installedUI": {
+    "escapeStopsRecording": true,
+    "reEnableWorks": true,
+    "sidebarStopWorks": true,
+    "wakeDisabled": true,
+    "screenObservationEnabled": true,
+    "screenIntervalSeconds": 300,
+    "historyUnchanged": true,
+    "otherSettingsUnchanged": true,
+    "installedMatchesBuild": true
+  }
+}

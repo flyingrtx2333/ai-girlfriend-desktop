@@ -27,10 +27,18 @@ struct WakePhrase {
     }
 }
 
+enum VoiceStopCommand {
+    static func matches(_ text: String) -> Bool {
+        let last = text.components(separatedBy: .punctuationCharacters).last(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? text
+        let words = last.filter { $0.isLetter || $0.isNumber }
+        return words.range(of: "^(?:请|麻烦你|帮我|先|马上|立刻|小鲸){0,3}(?:停止录音|停止聆听|关闭麦克风|关闭语音|不要听了|别听了)(?:一下|吧|呀|啊|谢谢)?$", options: .regularExpression) != nil
+    }
+}
+
 // One native microphone tap. Sherpa handles acoustic wake words; Apple ASR
 // only starts after a keyword hit or explicit listen/follow-up. No audio files.
 final class VoiceWake: @unchecked Sendable {
-    enum Event: Sendable { case state(String), woke, partial(String), utterance(String), failure(String) }
+    enum Event: Sendable { case state(String), woke, partial(String), utterance(String), stopped(String, draft: String), failure(String) }
     @MainActor var onEvent: ((Event) -> Void)?
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.voice", qos: .utility)
     @MainActor private var requested = false
@@ -57,6 +65,7 @@ final class VoiceWake: @unchecked Sendable {
     private var transcriptionStart: TimeInterval?, recognizerRebases = 0
     private var noise: Float = 0.0005
     private var loudDuration = 0.0, lastLoud = 0.0, started = 0.0, ending = 0.0, deadline = 0.0, cooldown = 0.0
+    private var listeningStarted = 0.0
 
     @MainActor func configure(enabled: Bool, phrase: String, pauseSeconds: Double = 3) {
         let pause = min(6, max(1.5, pauseSeconds))
@@ -82,7 +91,7 @@ final class VoiceWake: @unchecked Sendable {
             if busy { self.outputBusy = true; self.clearTurn(); self.resetKeyword(); self.preRoll.removeAll(); self.emit(.state("回复中")); return }
             let wasBusy = self.outputBusy; self.outputBusy = false
             if wasBusy { self.cooldown = ProcessInfo.processInfo.systemUptime + 0.6 }
-            if followUp && self.conversation { self.awake = true; self.deadline = ProcessInfo.processInfo.systemUptime + 12 }
+            if followUp && self.conversation { self.awake = true; self.listeningStarted = ProcessInfo.processInfo.systemUptime; self.deadline = self.listeningStarted + 12 }
             self.emit(.state(self.awake ? "聆听中" : "等待唤醒"))
         }
     }
@@ -90,7 +99,7 @@ final class VoiceWake: @unchecked Sendable {
         queue.async {
             guard self.enabled else { return }
             self.clearTurn(); self.resetKeyword(); self.preRoll.removeAll(); self.outputBusy = false; self.conversation = true; self.awake = true
-            self.deadline = ProcessInfo.processInfo.systemUptime + 10; self.emit(.woke)
+            self.listeningStarted = ProcessInfo.processInfo.systemUptime; self.deadline = self.listeningStarted + 10; self.emit(.woke)
         }
     }
     func resetConversation() {
@@ -154,7 +163,9 @@ final class VoiceWake: @unchecked Sendable {
             watchdog.schedule(deadline: .now() + 1, repeating: 2, leeway: .milliseconds(400))
             watchdog.setEventHandler { [weak self] in
                 guard let self, self.enabled, let engine = self.engine else { return }
-                if !engine.isRunning || ProcessInfo.processInfo.systemUptime - self.lastMicAt > 4 { self.recoverCapture() }
+                let now = ProcessInfo.processInfo.systemUptime
+                if self.enforceListeningLimit(now: now) { return }
+                if !engine.isRunning || now - self.lastMicAt > 4 { self.recoverCapture() }
             }
             inputWatchdog = watchdog; watchdog.resume(); emit(.state("等待唤醒"))
         }
@@ -175,10 +186,13 @@ final class VoiceWake: @unchecked Sendable {
         engine?.inputNode.removeTap(onBus: 0); engine?.stop(); engine = nil; recognizer = nil
         keywordSpotter = nil; keywordRunning = false; keywordStarted = 0
         preRoll.removeAll(); awake = false; conversation = false; outputBusy = false; loudDuration = 0; noise = 0.0005
+        listeningStarted = 0
         if notify { emit(.state("未开启")) }
     }
     private func consume(_ buffer: AVAudioPCMBuffer) {
+        guard enabled else { return }
         let now = ProcessInfo.processInfo.systemUptime
+        if enforceListeningLimit(now: now) { return }
         guard !outputBusy, now >= cooldown, let samples = buffer.floatChannelData?[0] else { return }
         let count = Int(buffer.frameLength); var sum: Float = 0
         for i in 0..<count { sum += samples[i] * samples[i] }
@@ -201,7 +215,7 @@ final class VoiceWake: @unchecked Sendable {
                 for previous in preRoll { if acceptKeyword(previous) { hit = true; break } }
             } else if keywordRunning { hit = acceptKeyword(buffer) }
             if hit {
-                keywordHits += 1; awake = true; conversation = true; deadline = now + 10
+                keywordHits += 1; awake = true; conversation = true; listeningStarted = now; deadline = now + 10
                 emit(.woke); resetKeyword(); beginRecognition(now: now, includesWake: true)
                 preRoll.forEach { request?.append($0) }; preRoll.removeAll()
             } else if keywordRunning && (now - lastLoud > 0.85 || now - keywordStarted > 20) { resetKeyword() }
@@ -238,7 +252,7 @@ final class VoiceWake: @unchecked Sendable {
         session += 1; let id = session
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true; request.shouldReportPartialResults = true
-        request.contextualStrings = [phrase.text]; request.taskHint = .dictation
+        request.contextualStrings = [phrase.text, "停止录音", "停止聆听", "别听了", "关闭麦克风"]; request.taskHint = .dictation
         self.request = request; started = now; ending = 0; command = ""; lastPartial = ""; sessionHasWake = includesWake
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
@@ -261,6 +275,9 @@ final class VoiceWake: @unchecked Sendable {
         if sessionHasWake {
             if let suffix = phrase.command(in: text) { next = suffix }
             else if WakePhrase.key(phrase.text).hasPrefix(WakePhrase.key(text)) { next = "" }
+        }
+        if VoiceStopCommand.matches(next) {
+            stopCapture(notify: false); emit(.stopped("已停止录音", draft: "")); return
         }
         let priorWords = command.filter { $0.isLetter || $0.isNumber }, nextWords = next.filter { $0.isLetter || $0.isNumber }
         // On-device Speech may replace its formattedString after a pause without
@@ -287,11 +304,17 @@ final class VoiceWake: @unchecked Sendable {
         cancelRecognition(); loudDuration = 0
     }
     private func clearTurn() { cancelRecognition(); turnText = ""; lastTextAt = 0; lastPartial = "" }
+    @discardableResult private func enforceListeningLimit(now: Double) -> Bool {
+        guard awake, listeningStarted > 0, now - listeningStarted >= 60 else { return false }
+        let draft = [turnText, command].filter { !$0.isEmpty }.joined(separator: " ")
+        stopCapture(notify: false); emit(.stopped("录音超时，已停止", draft: draft)); return true
+    }
     private func finishSession() {
         closeSegment(); let text = turnText.trimmingCharacters(in: .whitespacesAndNewlines)
         clearTurn(); preRoll.removeAll(); loudDuration = 0
         guard awake, !text.isEmpty else { return }
-        if ["停止聆听", "别听了", "休息吧", "取消"].contains(text.trimmingCharacters(in: .punctuationCharacters)) {
+        if VoiceStopCommand.matches(text) { stopCapture(notify: false); emit(.stopped("已停止录音", draft: "")); return }
+        if ["休息吧", "取消"].contains(text.trimmingCharacters(in: .punctuationCharacters)) {
             awake = false; conversation = false; emit(.state("等待唤醒")); return
         }
         awake = false; outputBusy = true; emit(.state("回复中")); emit(.utterance(text))
@@ -305,6 +328,8 @@ final class VoiceWake: @unchecked Sendable {
             c.resume(returning: ["keywordHits": self.keywordHits, "asrStarts": self.asrStarts, "recognizerRebases": self.recognizerRebases,
                 "micBuffers": self.micBuffers, "captureStarts": self.captureStarts, "captureRestarts": self.captureRestarts,
                 "engineRunning": self.engine?.isRunning == true ? 1 : 0, "enabled": self.enabled ? 1 : 0,
+                "recognizing": self.request != nil ? 1 : 0, "awake": self.awake ? 1 : 0,
+                "keywordLoaded": self.keywordSpotter != nil ? 1 : 0,
                 "lastBufferAgeMs": self.lastMicAt == 0 ? -1 : Int((ProcessInfo.processInfo.systemUptime - self.lastMicAt) * 1000),
                 "peakInputDb": Int(20 * log10(max(0.000001, self.peakRMS)))])
         } }
@@ -316,6 +341,12 @@ final class VoiceWake: @unchecked Sendable {
                 if notify { NotificationCenter.default.post(name: .AVAudioEngineConfigurationChange, object: engine) }
             }
             c.resume()
+        } }
+    }
+    @MainActor func expireListeningForCheck() async {
+        await withCheckedContinuation { c in queue.async {
+            self.listeningStarted = ProcessInfo.processInfo.systemUptime - 61
+            self.enforceListeningLimit(now: ProcessInfo.processInfo.systemUptime); c.resume()
         } }
     }
     // Feed a real spoken fixture through the same KWS, local recognizer and turn

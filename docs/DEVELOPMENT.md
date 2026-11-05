@@ -47,6 +47,7 @@ npm run native:open
 | 屏幕陪伴 | `npm run native:check-screen`；真实抓屏与在线服务需显式加 `-- --installed --capture-fixture --live-vision` |
 | 原生拖动、释放和回稳 | 构建后运行 `npm run native:check-drag`，需解锁且窗口可见 |
 | 唤醒与转写 | 构建后运行 `npm run native:check-voice`，需系统权限；不调用在线对话或 TTS |
+| 停止录音与超时 | `npm run native:check-stop -- --installed`，真实本机语音指令与麦克风释放，不调用在线模型 |
 | 真实麦克风与断流恢复 | 构建后运行 `npm run native:check-microphone`；需解锁和已有权限，不保存音频或转写，不调用在线服务 |
 | 气泡与唤醒提示音 | 构建后运行 `npm run native:check-feedback`；额外传入 `-- --live-tts` 才使用已保存的 MiniMax 配置发出一次短语音请求 |
 | 聊天排版、停顿与口型 | 构建后运行 `npm run native:check-conversation`；独立示例配置，真实本机转写与已有 MiniMax 音频，无在线调用 |
@@ -106,6 +107,16 @@ npm run native:open
 `screenState` 驱动观察扫视、循环思考和评论点头。头发、衣服与尾巴继续走现有弹簧，不增加绘制调用。MiniMax 与音频口型复用原路径，主动评论传入 `followUp: false`，避免结束后自动开启续聊转写。系统日志的 `ScreenCompanion` 分类只记阶段、尺寸和计数，不记截图、窗口标题、评论或 Token。
 
 [验证记录](verification/screen-companion.json)包含真实 ScreenCaptureKit 固定窗口截图、已配置视觉模型的实际输出与 MiniMax 实播。固定画面是原生绘制的橙色三节小车、桥、河流、绿山与白云；这些事实没有写入视觉请求。检查专用配置与公开画面允许输出到 `evidence/edition30/`，正常功能不会保存截图。界面窄窗口检查另行复用现有原生设置检查，不重复运行无关语音回归。
+
+## v0.8.1 的停止录音
+
+旧实现只在 `finishSession()` 收尾时匹配停止指令，而背景声会持续刷新 `lastLoud`；原来的 10 秒期限仅覆盖尚未识别文字的情况，有文字后会不断续接片段。即使返回「等待唤醒」，声学关键词检测仍占用麦克风。
+
+停止指令现在在 `receive()` 的局部识别结果上处理，立即取消识别并释放输入引擎；按钮和语音命令都汇入同一个宿主停止方法，关闭已保存的唤醒开关、取消当前回复并过滤迟到事件。输入缓冲路径也检查启用状态。现有低频输入看门狗同时检查整轮 60 秒期限，不因识别器换段而重置；超时草稿保留在原有输入之后。
+
+聆听气泡只在采音时接受按钮点击，其他气泡继续点击穿透；聆听时不设气泡隐藏定时器。Escape 是应用内快捷键，不拦截其他应用的 Escape。
+
+[验证记录](verification/voice-stop.json)使用本机中文语音「小鲸小鲸，请停止录音」，紧接六秒连续噪声，检查在噪声结束前停止且不提交聊天。按钮测试实际启动麦克风并检查引擎、识别器与唤醒模型释放；60 秒上限通过推进期限检查点验证，麦克风仍为真实采集。只记录计数和固定夹具，不保存私人声音或转写，也不重跑屏幕视觉与 TTS 检查。
 
 ## Git 约定
 

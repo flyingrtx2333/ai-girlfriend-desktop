@@ -26,6 +26,7 @@ final class FormDocumentView: NSView {
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
+    private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
     private let chat = NSView(), settings = NSView()
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
@@ -80,7 +81,8 @@ final class FormDocumentView: NSView {
         companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
         companion.onWakeChange = { [weak self] enabled, status in
             self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
-            self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.isEnabled = enabled
+            self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.title = enabled ? "立即聆听" : "开启语音"
+            self?.stopRecordingButton.isEnabled = enabled; self?.voiceStopButton.isEnabled = enabled
         }
         companion.screenCompanion.onChange = { [weak self] in self?.updateScreenStatus($0) }
     }
@@ -126,10 +128,13 @@ final class FormDocumentView: NSView {
         listenButton.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil); listenButton.imagePosition = .imageLeading
         listenButton.isBordered = false; listenButton.font = .systemFont(ofSize: 13); listenButton.alignment = .left
         listenButton.target = self; listenButton.action = #selector(listen)
+        stopRecordingButton.image = NSImage(systemSymbolName: "stop.circle", accessibilityDescription: nil); stopRecordingButton.imagePosition = .imageLeading
+        stopRecordingButton.isBordered = false; stopRecordingButton.font = .systemFont(ofSize: 13); stopRecordingButton.alignment = .left
+        for button in [stopRecordingButton, voiceStopButton] { button.target = companion; button.action = #selector(AppDelegate.stopRecording); button.contentTintColor = .systemRed }
         sidebarWake.font = .systemFont(ofSize: 11); sidebarWake.textColor = .secondaryLabelColor
         clearButton.isBordered = false; clearButton.font = .systemFont(ofSize: 12); clearButton.alignment = .left
         clearButton.target = self; clearButton.action = #selector(clear)
-        let sideFooter = stack([listenButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
+        let sideFooter = stack([listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
         chatSidebarViews = [brand, navigation, sideFooter]
         let main = contentSurface; main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
         main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; main.layer?.masksToBounds = true; content.addSubview(main)
@@ -304,6 +309,7 @@ final class FormDocumentView: NSView {
         row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
         pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
         wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor; row("状态", wakeStatus)
+        row("", voiceStopButton)
         group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
         screenEnabled.setAccessibilityLabel("闲置时观察屏幕"); row("自动观察", screenEnabled)
         screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"]); row("观察间隔", screenInterval)
@@ -376,7 +382,8 @@ final class FormDocumentView: NSView {
         voiceEnabled.state = p.voiceEnabled ? .on : .off; onTop.state = p.alwaysOnTop ? .on : .off
         wakeEnabled.state = p.wakeEnabled ? .on : .off; wakePhrase.stringValue = p.wakePhrase
         wakeStatus.stringValue = companion.wakeStatus
-        sidebarWake.stringValue = p.wakeEnabled ? companion.wakeStatus : "语音未开启"; listenButton.isEnabled = p.wakeEnabled
+        sidebarWake.stringValue = p.wakeEnabled ? companion.wakeStatus : "语音未开启"; listenButton.title = p.wakeEnabled ? "立即聆听" : "开启语音"
+        stopRecordingButton.isEnabled = p.wakeEnabled; voiceStopButton.isEnabled = p.wakeEnabled
         modelCaption.stringValue = p.model; pauseWait.selectItem(at: [2.0, 3.0, 5.0].firstIndex(of: p.voicePauseSeconds) ?? 1)
         performance.selectItem(at: ["auto", "smooth", "paused"].firstIndex(of: p.performance) ?? 0)
         scale.doubleValue = p.scale
@@ -545,6 +552,9 @@ final class FormDocumentView: NSView {
     }
     @objc private func clear() { companion?.clearConversation(); renderMessages() }
     func keepVoiceDraft(_ text: String) { composer.string = text; composer.didChangeText() }
+    func keepInterruptedVoiceDraft(_ text: String) {
+        composer.string = composer.string.isEmpty ? text : composer.string + "\n" + text; composer.didChangeText()
+    }
     func setBusy(_ value: Bool) {
         busy = value; sendButton.image = NSImage(systemSymbolName: value ? "stop.fill" : "arrow.up", accessibilityDescription: value ? "停止" : "发送")
         sendButton.setAccessibilityLabel(value ? "停止" : "发送"); clearButton.isEnabled = !value

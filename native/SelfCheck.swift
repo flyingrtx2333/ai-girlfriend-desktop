@@ -25,6 +25,7 @@ import WebKit
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         if CommandLine.arguments.contains("--screen-check") { await runScreenCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--stop-check") { await runStopCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-check") {
             let report = await control.checkSettings(output)
             let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
@@ -179,6 +180,7 @@ import WebKit
             case .utterance(let text): utterances.append(text)
             case .partial(let text): events.append("partial: " + text)
             case .state(let text): events.append("state: " + text)
+            case .stopped(let text, _): events.append("stopped: " + text)
             case .failure(let text): events.append("error: " + text)
             }
         }
@@ -288,6 +290,53 @@ import WebKit
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: output.appendingPathComponent("microphone-report.json"))
         }
+    }
+    func runStopCheck(_ output: URL) async {
+        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        checks["stopAliases"] = ["停止录音", "请停止聆听。", "别听了", "关闭麦克风", "先关闭语音吧"].allSatisfy(VoiceStopCommand.matches)
+        checks["ordinarySpeechAndNegationIgnored"] = ["不要停止录音", "怎么停止录音", "解释一下停止录音是什么意思", "取消订单"].allSatisfy { !VoiceStopCommand.matches($0) }
+        let replay = VoiceWake(); var stops: [Double] = [], utterances = 0, errors: [String] = []
+        let started = ProcessInfo.processInfo.systemUptime
+        replay.onEvent = { event in
+            switch event {
+            case .stopped: stops.append(ProcessInfo.processInfo.systemUptime - started)
+            case .utterance: utterances += 1
+            case .failure(let text): errors.append(text)
+            default: break
+            }
+        }
+        do {
+            let fixture = output.deletingLastPathComponent().appendingPathComponent("stop-with-noise.aiff")
+            try await replay.replayForCheck(fixture, phrase: "小鲸小鲸")
+            checks["realSpokenStopBeforeNoiseEnds"] = stops.count == 1 && stops[0] < 7
+            checks["stopCommandNotSentAsChat"] = utterances == 0
+            report["spokenStop"] = ["seconds": stops.first ?? -1, "stats": await replay.diagnosticsForCheck(), "errors": errors,
+                "fixture": "小鲸小鲸，请停止录音。 followed immediately by six seconds of continuous noise; real local KWS and Apple ASR."]
+        } catch { checks["realSpokenStopBeforeNoiseEnds"] = false; report["speechError"] = error.localizedDescription }
+        store.preferences.wakeEnabled = true; voiceWake.configure(enabled: true, phrase: "小鲸小鲸"); await wait(1.5)
+        let before = await voiceWake.diagnosticsForCheck()
+        voiceWake.listenNow(); await wait(0.25)
+        checks["listeningBubbleHasStopButton"] = bubbleStopButton?.isHidden == false && bubble?.ignoresMouseEvents == false && bubbleTimer?.isValid != true
+        if let view = bubble?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("stop-bubble.png"))
+        }
+        bubbleStopButton?.performClick(nil); await wait(0.3)
+        let stopped = await voiceWake.diagnosticsForCheck(), messageCount = store.messages.count
+        voiceEvent(.partial("旧转写")); voiceEvent(.utterance("旧识别结果")); voiceEvent(.woke)
+        refreshVoiceBusy(followUp: true); await wait(0.8)
+        let later = await voiceWake.diagnosticsForCheck()
+        checks["realMicrophoneWasRunning"] = before["engineRunning"] == 1 && (before["micBuffers"] ?? 0) > 3
+        checks["buttonReleasesMicrophoneAndModels"] = stopped["engineRunning"] == 0 && stopped["enabled"] == 0 && stopped["recognizing"] == 0 && stopped["keywordLoaded"] == 0
+        checks["lateEventsCannotSubmitOrRestart"] = store.messages.count == messageCount && chatTask == nil && later["captureStarts"] == stopped["captureStarts"] && later["engineRunning"] == 0
+        store.preferences.wakeEnabled = true; voiceWake.configure(enabled: true, phrase: "小鲸小鲸"); await wait(1)
+        voiceWake.listenNow(); await wait(0.2); await voiceWake.expireListeningForCheck(); await wait(0.3)
+        let timeout = await voiceWake.diagnosticsForCheck()
+        checks["timeoutReleasesMicrophone"] = timeout["engineRunning"] == 0 && timeout["enabled"] == 0 && !store.preferences.wakeEnabled
+        report["microphone"] = ["before": before, "afterButton": stopped, "afterLateEvents": later, "afterDeadline": timeout]
+        report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }
+        report["scope"] = "Independent profile, one real spoken command fixture and real microphone capture. The deadline clock is advanced for the 60-second limit check. No private audio/transcripts recorded; no online model or TTS calls."
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: output.appendingPathComponent("stop-report.json")) }
     }
     func checkResize() async -> [String: Double] {
         let old = store.preferences.scale, before = pet.frame.width

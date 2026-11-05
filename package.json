@@ -1,6 +1,6 @@
 {
   "name": "blue-fat-fish",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
     "native:check-conversation": "node scripts/check-native-conversation.mjs",
     "native:check-settings": "node scripts/check-native-settings.mjs",
     "native:check-screen": "node scripts/check-native-screen.mjs",
+    "native:check-stop": "node scripts/check-native-stop.mjs",
     "check": "node scripts/check.mjs",
     "check:eyes": "node scripts/check-eyes.mjs",
     "check:portrait": "node scripts/check-portrait.mjs",
