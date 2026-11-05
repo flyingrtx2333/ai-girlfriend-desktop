@@ -1,0 +1,19 @@
+{
+  "provider": "Tripo 3D",
+  "region": "cn",
+  "taskId": "5f8c3aff-5d40-4db2-9a5b-01c7da474566",
+  "model": "v3.1-20260211",
+  "input": "design/model-input/whale-maid-front-a-pose.png",
+  "appearance": "User-approved whale-maid look development",
+  "bytes": 5296336,
+  "sha256": "90e72c0c9a35b70e40b46ca3e566d7dcf0ec0b51605cc1618d175204fe321338",
+  "triangles": 79020,
+  "textureSize": [
+    4096,
+    4096
+  ],
+  "creditsConsumed": 60,
+  "rigged": false,
+  "morphTargets": false,
+  "proportions": "Source geometry preserved with uniform scale only."
+}

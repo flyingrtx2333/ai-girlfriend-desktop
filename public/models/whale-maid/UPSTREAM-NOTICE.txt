@@ -1,0 +1,88 @@
+Deep Whale Maid v0.5.0 — 2026-10-10
+
+2026-10-10：在10月9日候选上仅调整1个尾部网格的前后坐标，其余184个网格与材质不变。相较已发布v0.4也包含10月9日的尾部姿态改动。尾根隐藏重叠仍存在；金边交点对41→43，不能视为无穿插或可打印。v0.4原始文件完整保留。
+
+2026-10-10: changed only the fore/aft coordinates of one tail mesh from the October 9 candidate; the other 184 meshes and materials are unchanged. Relative to published v0.4, this also includes the October 9 tail-pose changes. Hidden root overlaps remain; gold-piping intersection pairs changed from 41 to 43. This is not intersection-free or print-ready. All v0.4 files are preserved.
+
+2026-10-10：10月9日候補から尾の1メッシュの前後座標のみ変更。他の184メッシュとマテリアルは維持。公開済みv0.4との比較では10月9日の尾の姿勢変更も含みます。付け根の隠れた重なりは残り、金の縁取りの交差ペアは41から43へ増加。交差のないモデルや印刷用モデルではありません。v0.4の全ファイルを保存しています。
+
+Correction to the historical English notice: the October 10 change modifies fore/aft (Y) coordinates, preserving X and Z, not preserving fore/aft coordinates.
+
+Deep Whale Maid — stylized full-body 3D prototype v0.4.0
+深海女仆鲸鱼娘 — 风格化全身 3D 原型 v0.4.0
+深海メイドのクジラ娘 — デフォルメ全身3D試作 v0.4.0
+
+License / 许可 / ライセンス: CC BY-NC-SA 4.0
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+Non-commercial use only; preserve complete attribution and changes; share
+adaptations under the same license. No endorsement by the original creators.
+The website code's MIT license DOES NOT cover this 3D mesh or its renders.
+
+Attribution / 署名 / クレジット
+1. 上善无形 (上善): original whale-girl character / 原角色 / キャラクター原案
+   https://www.bilibili.com/opus/1231977657712771073
+   https://www.pixiv.net/users/62155430
+2. ZipZipPipe: DeepSeek maid redesign / 女仆二创设计 / メイド二次デザイン
+   https://t.bilibili.com/1231980045693616162
+   https://www.pixiv.net/users/18604994
+3. Small-tailqwq: published reference adaptation / 参考图发布与加工 / 参考素材公開・加工
+   https://github.com/Small-tailqwq/dsh-deep-whale/tree/825d02b0e569c370ae15ceed12d9393559b3e4f4/maid-atelier
+4. AI Moe Atlas: new AI-assisted procedural 3D reconstruction / 全新 AI 辅助程序化 3D 重建 / 新規AI支援プロシージャル3D再構成
+   https://github.com/SelinLee/ai-moe-atlas
+
+Source artwork (existing bytes preserved separately)
+https://github.com/Small-tailqwq/dsh-deep-whale/blob/825d02b0e569c370ae15ceed12d9393559b3e4f4/maid-atelier/assets/icons/delighted-cutout.png
+Source-specific permission and attribution:
+https://github.com/Small-tailqwq/dsh-deep-whale/blob/825d02b0e569c370ae15ceed12d9393559b3e4f4/maid-atelier/LICENSE-ARTWORK
+https://github.com/Small-tailqwq/dsh-deep-whale/blob/825d02b0e569c370ae15ceed12d9393559b3e4f4/maid-atelier/NOTICE
+
+Changes / 修改 / 変更 (2026-10-02)
+
+Rebuilt the head as a section-shaped cranium and jaw with integrated cheek,
+nose, mouth and chin transitions; refined eye/lid joins and coordinated upper
+lids/brows, shortened and rounded the lower face, and narrowed facial width.
+Refined the longer omega smile, lifted nose/mouth, widened eye spacing, and
+painted tilted blue irises with a deep upper / light lower gradient, small
+pupils and highlights. Increased torso/garment
+depth locally, re-seated accessories and softened long-hair curves. The two legs
+and the user-requested plump whale tail are retained from v0.3. Final rear-only
+scalp/root fitting covers a skin intersection without changing the accepted face.
+
+Guided by a newly generated multi-view reference sheet derived from the same
+licensed design and the user's reference. The sheet is AI-generated illustrative
+design guidance, not original creator art or calibrated orthographic measurement.
+Side/back anatomy, facial depth, hidden construction, legs and footwear remain
+interpretations. This is not a claim of exact reference reproduction.
+
+Generated reference and provenance:
+https://github.com/SelinLee/ai-moe-atlas/blob/28b2101e56f967ffa94af7de3ebfad2fa733a069/public/models/deep-whale-maid/references/whale-maid-multiview-reference-v2.png
+https://github.com/SelinLee/ai-moe-atlas/blob/28b2101e56f967ffa94af7de3ebfad2fa733a069/public/models/deep-whale-maid/references/whale-maid-multiview-reference-v2.provenance.json
+
+以截面塑形重建颅骨、脸颊、鼻口、下巴与颌部，改善侧面深度；细修眼睛与眼睑交界，
+协调眉眼，并缩短、收窄和圆润下半脸；加长 ω 微笑、微调鼻口高度、增大眼距，
+细修略倾斜的蓝色虹膜、上深下浅的渐变、小瞳孔与高光。躯干和服装局部加深、配饰贴合修正、
+长发曲线变柔和；保留双腿与饱满鲸尾。最终修正后脑发壳与发根的穿插，已确认的脸部不变。
+本版参考新生成的多视图设计图。该图是基于同一已授权形象的 AI 衍生参考，不是原作者
+原图或精确正交测量。侧背面、面部厚度、隐藏结构及腿部鞋袜仍属推断；不声称完全还原。
+
+断面を用いた頭蓋・頬・鼻口・顎の形状で横顔の深みを改善。目とまぶたの境界を整え、
+上まぶたと眉を整え、下顔面を短く丸め、顔幅を細くしました。ω形の微笑みを長くし、
+鼻口の高さと目の間隔を調整。少し傾いた青い虹彩に上部が濃く下部が明るいグラデーション、
+小さな瞳孔とハイライトを加えました。胴体と服の
+厚み、アクセサリーの接触、髪の曲線も改良。両脚と丸く太い尾は維持しています。
+最後に後頭部の髪と頭皮の交差を修正し、承認済みの顔は変更していません。
+新しい多視点図は許諾済みデザインからの AI 派生参考で、原作者の原画や正確な正投影
+測定図ではありません。側背面・顔の奥行き・隠れた構造・脚と靴は推測で、完全な再現
+を主張するものではありません。
+
+Static mesh only. No rig, skeleton, expression morph system, physics or animation.
+No existing MMD/Warudo mesh was copied or converted. Built with Blender 4.3.2.
+The original user-uploaded reference image is not redistributed.
+无绑定、骨骼、表情变形、物理或动画；未复制或转换现成 MMD/Warudo 网格。
+不包含用户上传的原始参考图。リグ・骨格・表情モーフ・物理・アニメーションは未実装。
+既存MMD/Warudoメッシュは未使用で、ユーザー提供の元画像は再配布しません。
+
+Build source: scripts/modeling/build-whale-maid-volume.py
+License: CC BY-NC-SA 4.0. Keep this notice, upstream credit and license with reuse.
+
+Publication packaging / 发布打包 / 公開時の処理: GLB内仅补全作者原文姓名“上善无形”；几何、材质不变。 Only asset.copyright gains the original-script author name; all other JSON and BIN bytes are unchanged. GLBの著者名表記のみ補完し、形状・マテリアルは変更していません。

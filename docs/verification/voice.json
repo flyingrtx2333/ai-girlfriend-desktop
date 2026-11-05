@@ -1,0 +1,60 @@
+{
+  "backend" : "sherpa-onnx 2.0.1 keyword spotting + Apple on-device ASR after wake",
+  "checks" : {
+    "homophoneWake" : true,
+    "near-wakeSuppressesASR" : true,
+    "no-wakeSuppressesASR" : true,
+    "realOfflineSpeechCommand" : true,
+    "realOfflineSpeechWake" : true,
+    "unaddressedSpeechIgnored" : true,
+    "wakePhraseStripsPrefix" : true
+  },
+  "fixtures" : [
+    {
+      "events" : [
+        "state: 未开启"
+      ],
+      "name" : "no-wake",
+      "stats" : {
+        "asrStarts" : 0,
+        "keywordHits" : 0
+      },
+      "utterances" : [
+
+      ]
+    },
+    {
+      "events" : [
+        "state: 未开启"
+      ],
+      "name" : "near-wake",
+      "stats" : {
+        "asrStarts" : 0,
+        "keywordHits" : 0
+      },
+      "utterances" : [
+
+      ]
+    },
+    {
+      "events" : [
+        "woke",
+        "partial: 今天",
+        "partial: 今天星",
+        "partial: 今天星期几",
+        "state: 回复中",
+        "state: 未开启"
+      ],
+      "name" : "wake-command",
+      "stats" : {
+        "asrStarts" : 1,
+        "keywordHits" : 1
+      },
+      "utterances" : [
+        "今天星期几"
+      ]
+    }
+  ],
+  "scope" : "Real keyword and speech inference on local Chinese spoken fixtures, through production audio gating and turn assembly; no live model\/TTS provider calls. Microphone capture is verified separately in the installed app.",
+  "success" : true
+}

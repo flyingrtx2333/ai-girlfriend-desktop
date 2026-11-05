@@ -1,0 +1,17 @@
+* text=auto
+*.md text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.swift text eol=lf
+*.json text eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.glb binary
+*.vrma binary
+*.mp3 binary
+*.wav binary
+
+# Preserve upstream license/model documentation verbatim.
+public/models/whale-maid/LICENSE.txt -whitespace
+vendor/sherpa-onnx/model/MODEL-README.md -whitespace

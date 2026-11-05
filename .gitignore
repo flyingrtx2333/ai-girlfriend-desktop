@@ -1,0 +1,39 @@
+# Dependencies, build products and local reports
+node_modules/
+/dist/
+/build/
+/evidence/
+*.log
+*.download
+.DS_Store
+
+# Credentials and per-user state
+.env*
+!.env.example
+.tripo/
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+/settings.json
+/history.json
+/credentials.json
+
+# Historical generations and private service records stay local
+/assets/
+/reference-assets/
+/tripo-out/
+/归档/
+/design/*
+!/design/references/
+!/design/portrait19/
+/public/models/deepseek-chan/
+/public/models/whale-maid/*.glb
+/public/models/whale-maid-generated/*.glb
+/public/models/whale-maid-v2/*.vrm
+
+# Fetched from pinned URLs in vendor/sherpa-onnx/manifest.json
+/vendor/sherpa-onnx/runtime.nupkg
+/vendor/sherpa-onnx/lib/
+/vendor/sherpa-onnx/model/*.onnx

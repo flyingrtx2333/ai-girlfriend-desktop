@@ -1,0 +1,16 @@
+{
+  "edition": 19,
+  "source": "design/references/whale-maid-finish-target.png",
+  "guide": "design/portrait19/extraction-guide.png",
+  "sourceSha256": "4fb19639c186c3d13f810be6447254a51b3578f1fe1ab9d73b4544023acdd1df",
+  "guideSha256": "36d904ddbc30d884c0581aedb6a98b963f8877ec4a97143644825a5bb80fb674",
+  "outputSha256": "43a3686df7bd03e3c7f06c2fbe7e4d506c3dbf80d61df4a423006b32fac74fbc",
+  "skinSha256": "c0309dd5b8cec7d36e8211703d428bfa13767fb9912aa18dbe2a91d276bc655e",
+  "width": 1254,
+  "height": 1254,
+  "visiblePixels": 568274,
+  "cleanedEdges": 15770,
+  "method": "Reference RGB with the intersected alpha of a saved imagegen extraction guide; local foreground color extension on antialiased edges.",
+  "limitation": "Front-facing deforming portrait, not a full 3D or Cubism model.",
+  "rebuildCallsExternalServices": false
+}

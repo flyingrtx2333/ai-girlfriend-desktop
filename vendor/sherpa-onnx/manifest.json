@@ -1,0 +1,65 @@
+{
+  "version": "2.0.1",
+  "runtime": {
+    "file": "runtime.nupkg",
+    "url": "https://api.nuget.org/v3-flatcontainer/org.k2fsa.sherpa.onnx.runtime.osx-arm64/2.0.1/org.k2fsa.sherpa.onnx.runtime.osx-arm64.2.0.1.nupkg",
+    "sha256": "9944605af98d3306837e4208d0ae42c0526c2e28db38eb7512969babdfc6a259"
+  },
+  "libraries": [
+    {
+      "file": "libsherpa-onnx-c-api.dylib",
+      "sha256": "97d6d1d646549896b2cc596a7be8f7ff7e766da5f0828d55f7b098857d497bc6"
+    },
+    {
+      "file": "libonnxruntime.dylib",
+      "sha256": "b0613d0ae53199a83b05fa48e169211498e9d40d54beaa372068ebe5ec5b0929"
+    }
+  ],
+  "files": [
+    {
+      "file": "model/MODEL-README.md",
+      "sha256": "71232d79d8655c83903ebe89d490bdba45a5a9772e98e8d6296b6bf91ff91b70",
+      "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/afc4a534ef85f2db4f84f05ed78eaac385b3387e/README.md"
+    },
+    {
+      "file": "model/tokens.txt",
+      "sha256": "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0",
+      "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/data/lang_phone/tokens.txt"
+    },
+    {
+      "file": "model/decoder.onnx",
+      "sha256": "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21",
+      "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/decoder-epoch-13-avg-2-chunk-16-left-64.onnx"
+    },
+    {
+      "file": "model/encoder.onnx",
+      "sha256": "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48",
+      "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+    },
+    {
+      "file": "model/joiner.onnx",
+      "sha256": "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1",
+      "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+    },
+    {
+      "file": "include/sherpa-onnx-c-api.h",
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v2.0.1/sherpa-onnx/c-api/c-api.h",
+      "sha256": "5698f38ba09ad2bdf085c56a6cbbd7741acf15e25f4ce5c7097b9702cadf437f"
+    },
+    {
+      "file": "LICENSE-sherpa.txt",
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v2.0.1/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "file": "LICENSE-onnxruntime.txt",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/LICENSE",
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+    },
+    {
+      "file": "THIRD-PARTY-NOTICES-onnxruntime.txt",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/ThirdPartyNotices.txt",
+      "sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2"
+    }
+  ]
+}

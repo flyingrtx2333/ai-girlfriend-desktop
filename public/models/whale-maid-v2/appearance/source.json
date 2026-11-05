@@ -1,0 +1,11 @@
+{
+  "edition": 14,
+  "date": "2026-11-05",
+  "source": "design/model-input/whale-maid-front-a-pose.png",
+  "sha256": "4ec29762002bc8762d843c654be2f8e80c968392462542b891d8411622693bc9",
+  "paidTripoTasks": [],
+  "additionalTripoCredits": 0,
+  "additionalTtsGeneration": 0,
+  "method": "Local curved face and eyelid geometry; reference color projection; limited headdress smoothing",
+  "limits": "Optimized for a front-facing companion. Lace geometry and wide side views remain below the supplied visual target."
+}

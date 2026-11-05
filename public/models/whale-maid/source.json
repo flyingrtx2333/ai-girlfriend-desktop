@@ -1,0 +1,11 @@
+{
+  "source": "https://github.com/SelinLee/ai-moe-atlas/tree/main/public/models/deep-whale-maid/v0.5.0",
+  "license": "CC BY-NC-SA 4.0",
+  "sourceSha256": "91a7fdc50aecc65685c81075afd9d0bcf6923c75ee5d09067013706052ac3a4f",
+  "outputSha256": "6453fb831cbd212b954ba15d28998a8eb3f4f7587923a2cbaa0b4e99884bdba6",
+  "sourceBytes": 9478676,
+  "outputBytes": 3692492,
+  "sourceTriangles": 482944,
+  "outputTriangles": 132992,
+  "proportions": "Original chibi geometry preserved; no nonuniform body scaling."
+}

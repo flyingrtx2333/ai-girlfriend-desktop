@@ -1,0 +1,27 @@
+[
+  {
+    "file": "MODEL-README.md",
+    "sha256": "71232d79d8655c83903ebe89d490bdba45a5a9772e98e8d6296b6bf91ff91b70",
+    "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/afc4a534ef85f2db4f84f05ed78eaac385b3387e/README.md"
+  },
+  {
+    "file": "tokens.txt",
+    "sha256": "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0",
+    "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/data/lang_phone/tokens.txt"
+  },
+  {
+    "file": "decoder.onnx",
+    "sha256": "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21",
+    "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/decoder-epoch-13-avg-2-chunk-16-left-64.onnx"
+  },
+  {
+    "file": "encoder.onnx",
+    "sha256": "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48",
+    "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+  },
+  {
+    "file": "joiner.onnx",
+    "sha256": "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1",
+    "url": "https://modelscope.cn/models/pkufool/icefall-kws-zipformer-zh-en-3M-2025-12-20/resolve/541d04e28be57efc6fdf46a341da09e043a37b52/onnx/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"
+  }
+]

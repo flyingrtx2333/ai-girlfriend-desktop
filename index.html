@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="DeepSeek 鲸鱼娘，原画与立体角色互动样片。" />
+    <meta name="robots" content="noindex" />
+    <title>蓝色大肥鱼 · 互动样片</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='29' cy='32' rx='25' ry='22' fill='%235caef5'/%3E%3Cpath d='M49 32 63 18v28z' fill='%232781d1'/%3E%3Ccircle cx='20' cy='27' r='4' fill='%231d365a'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <a class="skip" href="#controls">跳到操作</a>
+    <main id="app" data-view="close">
+      <header>
+        <div class="identity"><span class="brand-dot" aria-hidden="true"></span><h1>蓝色大肥鱼</h1><span class="edition">鲸鱼娘 · 18</span></div>
+        <div class="view-controls"><button id="appearance" class="quiet" disabled>立体</button><button id="framing" class="quiet" disabled>全身</button><button id="background" class="quiet" aria-pressed="false">棋盘背景</button></div>
+      </header>
+      <div id="stage" role="img" aria-label="可触摸和拖动的蓝发女仆鲸鱼娘角色"></div>
+      <p id="speech" class="speech" hidden>我在呢。今天也陪你一起摸鱼。要是累了，就休息一会儿吧。嗯？你刚刚是不是在叫我？</p>
+      <p id="error" role="alert" hidden></p>
+      <footer id="controls">
+        <div class="presence"><span aria-hidden="true"></span><output id="status" aria-live="polite">正在加载</output></div>
+        <div class="actions" role="group" aria-label="角色互动">
+          <button data-action="idle" aria-pressed="true" disabled>待机</button>
+          <button data-action="look" aria-pressed="false" disabled>看向鼠标</button>
+          <button data-action="blink" aria-pressed="false" disabled>眨眼</button>
+          <button id="motions" popovertarget="motion-menu" disabled>动作</button>
+          <button data-action="poke" aria-pressed="false" disabled>戳一下</button>
+          <button data-action="speak" aria-pressed="false" disabled>说话演示</button>
+        </div>
+        <button id="reset" class="quiet">复位</button>
+      </footer>
+      <div id="motion-menu" popover aria-label="角色动作"></div>
+        <div class="caption"><span>DeepSeek 娘 · 非官方同人</span><details class="credits"><summary>角色来源</summary><div>原画：已提供的角色图<br>立体：Tripo H3.1<br><a href="/portraits/whale-maid/source.json" target="_blank" rel="noreferrer">原画记录</a> · <a href="/models/whale-maid-v2/source.json" target="_blank" rel="noreferrer">立体记录</a></div></details></div>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "provider": "MiniMax",
+  "model": "speech-02-hd",
+  "voiceId": "female-shaonv",
+  "speed": 0.98,
+  "pitch": 0,
+  "emotion": "happy",
+  "text": "我在呢。今天也陪你一起摸鱼。要是累了，就休息一会儿吧。嗯？你刚刚是不是在叫我？",
+  "runtime": "/audio/whale-maid/companion-minimax.mp3",
+  "durationSeconds": 7.4,
+  "generatedWith": "minimax-tts skill",
+  "sha256": "c533e7db6d88395d90e09d9125dd975856969e1aee5df4cde17ca9ff21c90ded"
+}

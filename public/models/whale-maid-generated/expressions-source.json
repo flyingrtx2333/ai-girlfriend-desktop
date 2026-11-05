@@ -1,0 +1,31 @@
+{
+  "provider": "Tripo 3D",
+  "region": "cn",
+  "taskId": "5f8c3aff-5d40-4db2-9a5b-01c7da474566",
+  "model": "v3.1-20260211",
+  "input": "design/model-input/whale-maid-front-a-pose.png",
+  "appearance": "User-approved whale-maid look development",
+  "bytes": 5639520,
+  "sha256": "1b748c4e401b0a6507408e8eafb68651edb62b12538d8f79b1c207efbfa442c5",
+  "triangles": 84124,
+  "textureSize": [
+    4096,
+    4096
+  ],
+  "creditsConsumed": 60,
+  "rigged": false,
+  "morphTargets": [
+    "blinkLeft",
+    "blinkRight",
+    "aa",
+    "ee",
+    "ou"
+  ],
+  "proportions": "Source geometry preserved with uniform scale only.",
+  "file": "public/models/whale-maid-generated/whale-maid-expressions.glb",
+  "baseGeometryPreserved": true,
+  "localProcessing": "Model-specific 3D eyelids, lashes, recessed mouth, tongue and glTF morph targets.",
+  "script": "scripts/prepare-expressions.mjs",
+  "additionalCreditsConsumed": 0,
+  "riggingStatus": "Free check passed; paid auto-rigging awaiting approval for 25 additional credits."
+}

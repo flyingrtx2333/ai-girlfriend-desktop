@@ -1,0 +1,79 @@
+{
+  "input": "assets/whale-maid-v2-rigged/tripo-out/whale-maid-v2-rig-rig-6cff3b31/model.glb",
+  "output": "public/models/whale-maid-v2/whale-maid-rigged.glb",
+  "referencePath": "assets/whale-maid-v2/tripo-out/whale-maid-v2-c1-c7453015/model.glb",
+  "profile": {
+    "eyes": [
+      -0.094,
+      0.044
+    ],
+    "eyeMode": "fitted",
+    "eyeRadius": 0.061,
+    "upperEdge": 0.2,
+    "upperCurve": 0.036,
+    "lowerEdge": 0.085,
+    "lowerCurve": 0.045,
+    "closedY": 0.124,
+    "closedCurve": 0.01,
+    "openUpper": 0.156,
+    "openUpperCurve": 0.026,
+    "openLower": 0.102,
+    "openLowerCurve": 0.031,
+    "skin": [
+      246,
+      207,
+      192
+    ],
+    "blush": [
+      246,
+      190,
+      179
+    ],
+    "mouthX": -0.027,
+    "mouthY": 0.0765,
+    "eyeColors": [
+      {
+        "skin": [
+          240,
+          203,
+          191
+        ],
+        "blush": [
+          237,
+          182,
+          181
+        ]
+      },
+      {
+        "skin": [
+          242,
+          205,
+          193
+        ],
+        "blush": [
+          237,
+          184,
+          180
+        ]
+      }
+    ],
+    "lashThickness": 0.0024,
+    "lidDepth": 0.19,
+    "lidSlope": 0.26,
+    "lashOffset": 0.006
+  },
+  "names": [
+    "blinkLeft",
+    "blinkRight",
+    "aa",
+    "ee",
+    "ou"
+  ],
+  "facialVertices": 2951,
+  "skinned": true,
+  "sourceFrameOffset": [
+    -0.0003556162118911743,
+    0.48992499709129333,
+    -0.00010994076728820801
+  ]
+}

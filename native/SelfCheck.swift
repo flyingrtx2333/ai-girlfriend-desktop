@@ -1,0 +1,212 @@
+import AppKit
+import WebKit
+
+@MainActor extension AppDelegate {
+    func evaluate(_ script: String) async -> Any? {
+        await withCheckedContinuation { continuation in
+            web.evaluateJavaScript(script) { value, error in
+                if let error { self.diagnostics.append(error.localizedDescription) }
+                continuation.resume(returning: value)
+            }
+        }
+    }
+    func wait(_ seconds: Double) async { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+    func capturePet(_ file: URL) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            web.takeSnapshot(with: nil) { image, error in
+                if let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                   let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: file) }
+                if let error { self.diagnostics.append(error.localizedDescription) }
+                continuation.resume()
+            }
+        }
+    }
+    func runSelfCheck() async {
+        guard let output = checkDirectory else { return }
+        try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--size-check") {
+            let resize = await checkResize()
+            let data = try? JSONSerialization.data(withJSONObject: resize, options: [.prettyPrinted, .sortedKeys])
+            try? data?.write(to: output.appendingPathComponent("resize-report.json")); NSApp.terminate(nil); return
+        }
+        if CommandLine.arguments.contains("--voice-check") { await runVoiceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--drag-check") { await runDragCheck(output); NSApp.terminate(nil); return }
+        await wait(2.0)
+        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        let profiling = CommandLine.arguments.contains("--profile")
+        func phase(_ name: String) {
+            if profiling { try? Data(name.utf8).write(to: output.appendingPathComponent("phase"), options: .atomic) }
+        }
+        phase("idle"); if profiling { await wait(7) }
+        let before = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        checks["rendererReady"] = (before["frames"] as? Int ?? 0) > 10
+        checks["nativeCompactMesh"] = before["compact"] as? Bool == true && (before["triangles"] as? Int ?? 999999) < 60_000
+        checks["transparentWindow"] = !pet.isOpaque && pet.backgroundColor?.alphaComponent == 0
+        let css = await evaluate("getComputedStyle(document.documentElement).backgroundColor") as? String ?? ""
+        checks["transparentPage"] = css == "rgba(0, 0, 0, 0)"
+        checks["mouseMonitorAvailable"] = globalMouse != nil && localMouse != nil
+        checks["opaqueHit"] = await evaluate("window.petPointerAt(170, 240)") as? Bool == true
+        checks["transparentPassThrough"] = await evaluate("window.petPointerAt(2, 2)") as? Bool == false
+        _ = await evaluate("window.petPointerLeave()")
+        lastPointerQuery = 0
+        updatePointer(at: NSPoint(x: pet.frame.minX - 360, y: pet.frame.maxY + 80))
+        await wait(0.65)
+        let outside = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        let gaze = outside["pointer"] as? [Double] ?? []
+        let expression = outside["expression"] as? [String: Any] ?? [:]
+        let head = expression["head"] as? [Double] ?? []
+        checks["desktopGazeOutsideWindow"] = gaze.count == 2 && gaze[0] < -0.3 && gaze[1] > 0.2
+            && head.count == 3 && head[1] < -0.2 && pet.ignoresMouseEvents
+        report["desktopPointer"] = outside
+        await capturePet(output.appendingPathComponent("pet.png"))
+        playDemo(); phase("speaking"); await wait(profiling ? 5 : 1.4)
+        let speaking = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        checks["nativeAudioPlayback"] = player?.isPlaying == true
+        checks["audioDrivenMouth"] = speaking["speaking"] as? Bool == true && (speaking["peakVolume"] as? Double ?? 0) > 0.03
+        await capturePet(output.appendingPathComponent("speaking.png")); stopSpeech(); bubble?.orderOut(nil)
+        pet.orderOut(nil); updateVisibility(); await wait(0.3)
+        phase("hidden")
+        let hiddenA = await evaluate("window.whaleDiagnostics().frames") as? Int ?? -1
+        await wait(profiling ? 7 : 0.7)
+        phase("verification")
+        let hiddenB = await evaluate("window.whaleDiagnostics().frames") as? Int ?? -2
+        checks["hiddenStopsRendering"] = hiddenA == hiddenB
+        pet.orderFrontRegardless(); updateVisibility(); await wait(0.6)
+        let resumed = await evaluate("window.whaleDiagnostics().frames") as? Int ?? 0
+        checks["showResumesRendering"] = resumed > hiddenB
+        do {
+            try store.savePreferences()
+            let data = try Data(contentsOf: store.directory.appendingPathComponent("settings.json"))
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            checks["settingsPersistWithoutSecrets"] = json["model"] as? String == store.preferences.model
+                && !json.keys.contains(where: { $0.lowercased().contains("key") })
+        } catch { diagnostics.append(error.localizedDescription); checks["settingsPersistWithoutSecrets"] = false }
+        control.show(tab: "settings"); await wait(0.3)
+        if let view = control.window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            if let png = bitmap.representation(using: .png, properties: [:]) { try? png.write(to: output.appendingPathComponent("settings.png")) }
+        }
+        report["success"] = checks.values.allSatisfy { $0 } && diagnostics.isEmpty
+        report["checks"] = checks; report["render"] = before; report["speech"] = speaking
+        report["errors"] = diagnostics; report["architecture"] = "AppKit + system WKWebView; one web view, native controls and audio"
+        report["liveAI"] = "Not tested: no user provider key configured. Demo uses existing MiniMax audio."
+        phase("finished")
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: output.appendingPathComponent("report.json"), options: .atomic)
+        }
+        NSApp.terminate(nil)
+    }
+    func runDragCheck(_ output: URL) async {
+        // Isolate the controlled trajectory from the user's real cursor.
+        if let globalMouse { NSEvent.removeMonitor(globalMouse); self.globalMouse = nil }
+        if let localMouse { NSEvent.removeMonitor(localMouse); self.localMouse = nil }
+        store.preferences.scale = 0.7587016672327899; applyPreferences(); await wait(1.0)
+        let initialFrame = pet.frame
+        let initial = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        guard initial["visible"] as? Bool == true, (initial["frames"] as? Int ?? 0) > 5 else {
+            let blocked: [String: Any] = ["success": false, "blocked": "Window is not visible; unlock the Mac and uncover the pet before native drag verification.", "initial": initial]
+            if let data = try? JSONSerialization.data(withJSONObject: blocked, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: output.appendingPathComponent("drag-report.json"), options: .atomic)
+            }
+            return
+        }
+        let mouse = NSEvent.mouseLocation
+        pendingPress = (NSPoint(x: mouse.x - 36, y: mouse.y), initialFrame.origin, motionTranslation, true)
+        beginDrag(); moveDrag(to: mouse)
+        let latePress = dragged && abs(pet.frame.minX - initialFrame.minX - 36) < 1
+        endDrag(); pet.setFrame(initialFrame, display: true); motionTranslation = .zero
+        pendingPress = (mouse, initialFrame.origin, .zero, true)
+        beginDrag(); moveDrag(to: mouse)
+        let returnedPress = dragged
+        endDrag()
+        beginDrag(); let origin = dragOrigin!.mouse
+        var peakAngle = 0.0, peakInertia = 0.0
+        for i in 1...60 {
+            let t = Double(i) / 60
+            moveDrag(to: NSPoint(x: origin.x - 150 * (1 - cos(t * .pi)) / 2,
+                                y: origin.y + 45 * sin(t * .pi)))
+            await wait(1.0 / 60)
+            if i % 6 == 0 {
+                let values = await evaluate("window.whaleDiagnostics().drag") as? [String: Any] ?? [:]
+                peakAngle = max(peakAngle, values["peakAngle"] as? Double ?? 0)
+                peakInertia = max(peakInertia, values["peakInertia"] as? Double ?? 0)
+            }
+        }
+        let held = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        await capturePet(output.appendingPathComponent("held.png")); endDrag()
+        await wait(0.18); await capturePet(output.appendingPathComponent("release.png"))
+        await wait(2.2)
+        let released = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+        let drag = held["drag"] as? [String: Any] ?? [:]
+        let end = released["drag"] as? [String: Any] ?? [:]
+        let expression = released["expression"] as? [String: Any] ?? [:]
+        let suspension = expression["suspension"] as? [String: Any] ?? [:]
+        let checks: [String: Bool] = [
+            "lateBridgeRetainsPhysicalPress": latePress,
+            "returningToPressStillCountsAsDrag": returnedPress,
+            "nativeWindowMoved": abs(pet.frame.minX - initialFrame.minX) > 80,
+            "nativeMotionReachedRenderer": (drag["motionEvents"] as? Int ?? 0) >= 40,
+            "heldReachesAnimation": drag["held"] as? Bool == true,
+            "visibleSuspension": peakAngle > 0.035,
+            "visibleHairInertia": peakInertia > 0.06,
+            "physicalReleaseClearsHold": dragOrigin == nil && end["held"] as? Bool == false,
+            "recoilSettles": abs(suspension["angle"] as? Double ?? 1) < 0.01 && abs(suspension["inertia"] as? Double ?? 1) < 0.01,
+            "renderBudgetUnchanged": held["drawCalls"] as? Int == 2 && (held["triangles"] as? Int ?? 999999) < 60000,
+        ]
+        let report: [String: Any] = ["success": checks.values.allSatisfy { $0 } && diagnostics.isEmpty,
+            "checks": checks, "scale": store.preferences.scale, "initial": initial, "held": held, "released": released,
+            "peakAngle": peakAngle, "peakInertia": peakInertia, "errors": diagnostics,
+            "scope": "Controlled native window movement through the production host/renderer bridge, at the user's small size; no synthetic OS mouse events."]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: output.appendingPathComponent("drag-report.json"), options: .atomic)
+        }
+    }
+    func runVoiceCheck(_ output: URL) async {
+        var events: [String] = [], utterances: [String] = [], checks: [String: Bool] = [:]
+        let wake = VoiceWake()
+        wake.onEvent = { event in
+            switch event {
+            case .woke: events.append("woke")
+            case .utterance(let text): utterances.append(text)
+            case .partial(let text): events.append("partial: " + text)
+            case .state(let text): events.append("state: " + text)
+            case .failure(let text): events.append("error: " + text)
+            }
+        }
+        let phrase = WakePhrase(text: "小鲸小鲸")
+        checks["wakePhraseStripsPrefix"] = phrase.command(in: "小鲸，小鲸，今天星期几？") == "今天星期几？"
+        checks["homophoneWake"] = phrase.command(in: "小精小精，今天天气如何") == "今天天气如何"
+        checks["unaddressedSpeechIgnored"] = phrase.command(in: "今天星期几？") == nil
+        var fixtures: [[String: Any]] = []
+        for name in ["no-wake", "near-wake", "wake-command"] {
+            events = []; utterances = []
+            do {
+                let fixture = output.deletingLastPathComponent().appendingPathComponent(name + ".aiff")
+                try await wake.replayForCheck(fixture, phrase: phrase.text)
+                let stats = await wake.diagnosticsForCheck()
+                if name == "wake-command" {
+                    checks["realOfflineSpeechWake"] = events.contains("woke") && stats["keywordHits"] == 1
+                    checks["realOfflineSpeechCommand"] = utterances.count == 1 && utterances[0].contains("星期几")
+                        && !utterances[0].contains("小鲸") && stats["asrStarts"] == 1
+                } else {
+                    checks[name + "SuppressesASR"] = !events.contains("woke") && utterances.isEmpty && stats["asrStarts"] == 0
+                }
+                fixtures.append(["name": name, "stats": stats, "events": events, "utterances": utterances])
+            } catch { checks[name + "AudioProcessed"] = false; fixtures.append(["name": name, "error": error.localizedDescription]) }
+        }
+        let report: [String: Any] = ["success": checks.values.allSatisfy { $0 } && checks["realOfflineSpeechCommand"] == true,
+            "checks": checks, "fixtures": fixtures, "backend": "sherpa-onnx 2.0.1 keyword spotting + Apple on-device ASR after wake",
+            "scope": "Real keyword and speech inference on local Chinese spoken fixtures, through production audio gating and turn assembly; no live model/TTS provider calls. Microphone capture is verified separately in the installed app."]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: output.appendingPathComponent("voice-report.json"), options: .atomic)
+        }
+    }
+    func checkResize() async -> [String: Double] {
+        let old = store.preferences.scale, before = pet.frame.width
+        let actual = setPetScale(1.1); await wait(0.4)
+        let result = ["requestedScale": 1.1, "appliedScale": actual, "beforeWidth": before,
+            "actualWidth": Double(pet.frame.width), "expectedWidth": 340 * actual,
+            "widthError": Double(pet.frame.width) - 340 * actual]
+        _ = setPetScale(old); return result
+    }
+}

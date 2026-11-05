@@ -1,0 +1,57 @@
+{
+  "provider": "Tripo 3D",
+  "region": "cn",
+  "model": "v3.1-20260211",
+  "textureVersion": "v3.5-20260815",
+  "taskId": "c7453015-baec-4089-8042-9b684bfe0900",
+  "rigTaskId": "6cff3b31-2cec-49b9-88d1-3d42fc42e27c",
+  "input": "design/model-input/whale-maid-front-a-pose.png",
+  "finishReference": "design/references/whale-maid-finish-target.png",
+  "triangles": 244494,
+  "baseColorSize": [
+    8192,
+    8192
+  ],
+  "normalSize": [
+    4096,
+    4096
+  ],
+  "ormSize": [
+    4096,
+    4096
+  ],
+  "pbr": true,
+  "delight": true,
+  "bytes": 23194248,
+  "sha256": "296518939f885a6164a47074052b5a40541db694c75716c7a00e2416138e83b6",
+  "cost": {
+    "candidateA": 70,
+    "candidateB": 70,
+    "rigCheck": 0,
+    "rig": 25,
+    "total": 165
+  },
+  "sourceBones": 65,
+  "expressions": [
+    "blinkLeft",
+    "blinkRight",
+    "aa",
+    "ee",
+    "ou"
+  ],
+  "runtimeSecondaryBones": 15,
+  "runtimeTotalBones": 80,
+  "runtimeIdleAnimation": "/animations/airi/idle_loop.vrma",
+  "runtimeIdleLicense": "MIT — AIRI repository",
+  "balanceAfter": 350,
+  "bodyTriangles": 239390,
+  "runtimeEdition": 14,
+  "runtimeEyeProfile": "design/model-v2/face-profile.json",
+  "runtimeAppearance": {
+    "module": "src/appearance.js",
+    "reference": "/models/whale-maid-v2/appearance/reference-front.png",
+    "face": "Curved face with separate eyeballs and eyelids, attached to the existing Head bone",
+    "color": "Front-projected approved artwork; original generated PBR retained outside the repair",
+    "additionalPaidCredits": 0
+  }
+}

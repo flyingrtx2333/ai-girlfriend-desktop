@@ -1,0 +1,9 @@
+Use case: background-extraction.
+Edit target: the existing 1254x1254 transparent cutout character.png, blue-haired chibi whale maid.
+Clean only the extraction boundary: remove pale peach/white background slivers in curled hair openings, detached light pixels and matte halos along hair, tail, lace and shoes. All negative space must have true alpha. Preserve fine hair and white lace as character material. Preserve face, pose, proportions, colors, lighting, square framing and pixel positions. Do not redesign, redraw, crop, zoom or shift the character. No floor shadow, background, stroke or glow. Output a transparent PNG.
+
+Mode: built-in imagegen, transparent_background=true.
+Edit source: public/portraits/whale-maid/character.png (edition 18; archived under evidence/edition19/before/).
+Saved output: design/portrait19/extraction-guide.png.
+Final production cutout: public/portraits/whale-maid/character.png.
+Production use: alpha only, intersected with the original local matte. The reference RGB and animation anchors remain original. Local edge color extension removes pale matte contamination. The guide's RGB is not used.

@@ -1,0 +1,28 @@
+{
+  "backend" : "sherpa-onnx 2.0.1 CPU, 1 thread, zh-en 3M int8",
+  "rows" : [
+    {
+      "durationSeconds" : 2.9167800453514738,
+      "fixture" : "wake-command",
+      "hits" : 1,
+      "processingSeconds" : 0.040647041751071811,
+      "realTimeFactor" : 0.013935586886591517
+    },
+    {
+      "durationSeconds" : 3.8016326530612243,
+      "fixture" : "no-wake",
+      "hits" : 0,
+      "processingSeconds" : 0.047268749913200736,
+      "realTimeFactor" : 0.012433802586143634
+    },
+    {
+      "durationSeconds" : 4.0661678004535151,
+      "fixture" : "near-wake",
+      "hits" : 0,
+      "processingSeconds" : 0.050328041659668088,
+      "realTimeFactor" : 0.012377266293352382
+    }
+  ],
+  "scope" : "Actual keyword inference on Chinese spoken fixtures. Not microphone or conversation-provider validation.",
+  "success" : true
+}

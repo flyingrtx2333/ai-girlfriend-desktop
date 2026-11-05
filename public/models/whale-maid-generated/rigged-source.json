@@ -1,0 +1,37 @@
+{
+  "provider": "Tripo 3D",
+  "region": "cn",
+  "taskId": "5f8c3aff-5d40-4db2-9a5b-01c7da474566",
+  "model": "v3.1-20260211",
+  "input": "design/model-input/whale-maid-front-a-pose.png",
+  "appearance": "User-approved whale-maid look development",
+  "bytes": 6240396,
+  "sha256": "60ab8fb084125fb117d9c2032ddaaf7a088b33ffa66787f53644a02cf1bb3c76",
+  "triangles": 84124,
+  "textureSize": [
+    4096,
+    4096
+  ],
+  "creditsConsumed": 60,
+  "rigged": true,
+  "morphTargets": [
+    "blinkLeft",
+    "blinkRight",
+    "aa",
+    "ee",
+    "ou"
+  ],
+  "proportions": "Source geometry preserved with uniform scale only.",
+  "file": "public/models/whale-maid-generated/whale-maid-rigged.glb",
+  "baseGeometryPreserved": true,
+  "localProcessing": "Source UV correspondence verified, rig origin calibrated, rigid head weights corrected, 3D eyelids and mouth morphs attached to the skeleton.",
+  "script": "scripts/prepare-expressions.mjs",
+  "riggingStatus": "Completed; expressions share the head joint. Facial body weights corrected to preserve attachment.",
+  "bones": 65,
+  "rigTaskId": "1247bb5d-b892-4d82-ab8a-c94afe22cb3c",
+  "rigModel": "v3.0-20260909",
+  "rigSpecification": "mixamo",
+  "rigCreditsConsumed": 25,
+  "totalProjectCreditsConsumed": 85,
+  "remainingCredits": 515
+}
