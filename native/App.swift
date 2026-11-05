@@ -57,6 +57,7 @@ final class PetWebView: WKWebView {
     var bubbleLabel: NSTextField?
     var bubbleTimer: Timer?
     var player: AVAudioPlayer?
+    var speechAnimation: SpeechAnimation?
     var wakePlayer: AVAudioPlayer?
     var meterTimer: Timer?
     var lastVolume = 0.0
@@ -77,7 +78,7 @@ final class PetWebView: WKWebView {
     var onWakeChange: ((Bool, String) -> Void)?
     var scaleSaveTimer: Timer?
     var wakeStatus = "未开启", wakeError: String?
-    var appliedWake: (Bool, String)?
+    var appliedWake: (Bool, String, Double)?
     lazy var voiceWake: VoiceWake = {
         let wake = VoiceWake(); wake.onEvent = { [weak self] event in self?.voiceEvent(event) }; return wake
     }()
@@ -241,10 +242,10 @@ final class PetWebView: WKWebView {
     func syncWakePreference() {
         guard checkDirectory == nil else { return }
         let p = store.preferences
-        if let last = appliedWake, last.0 == p.wakeEnabled && last.1 == p.wakePhrase { return }
-        appliedWake = (p.wakeEnabled, p.wakePhrase)
+        if let last = appliedWake, last.0 == p.wakeEnabled && last.1 == p.wakePhrase && last.2 == p.voicePauseSeconds { return }
+        appliedWake = (p.wakeEnabled, p.wakePhrase, p.voicePauseSeconds)
         if p.wakeEnabled { wakeError = nil }
-        voiceWake.configure(enabled: p.wakeEnabled && !sleeping, phrase: p.wakePhrase)
+        voiceWake.configure(enabled: p.wakeEnabled && !sleeping, phrase: p.wakePhrase, pauseSeconds: p.voicePauseSeconds)
         onWakeChange?(p.wakeEnabled, wakeStatus)
     }
     @objc func toggleWake() {
@@ -500,23 +501,24 @@ final class PetWebView: WKWebView {
     }
     func beginAudio(_ data: Data, text: String) throws {
         player = try AVAudioPlayer(data: data); player?.delegate = self; player?.isMeteringEnabled = true
+        speechAnimation = try? SpeechAnimation(data: data, duration: player?.duration ?? 0)
         player?.prepareToPlay()
         guard player?.play() == true else { throw PetError("语音无法播放。") }
-        emit("speechStart"); showBubble(text, duration: (player?.duration ?? 6) + 1)
+        emit("speechStart", ["frames": speechAnimation?.frames ?? [], "position": player?.currentTime ?? 0]); showBubble(text, duration: (player?.duration ?? 6) + 1)
         refreshVoiceBusy()
         meterTimer?.invalidate()
-        meterTimer = Timer(timeInterval: 1 / 30, target: self, selector: #selector(updateMeter), userInfo: nil, repeats: true)
+        meterTimer = Timer(timeInterval: 1 / 15, target: self, selector: #selector(updateMeter), userInfo: nil, repeats: true)
         meterTimer?.tolerance = 0.004; RunLoop.main.add(meterTimer!, forMode: .common)
     }
     @objc func updateMeter() {
         guard let player, player.isPlaying else { return }
         player.updateMeters(); lastVolume = min(1, pow(10, Double(player.averagePower(forChannel: 0)) / 20) * 5)
-        if renderVisible { emit("speechLevel", ["volume": lastVolume]) }
+        if renderVisible { emit("speechLevel", ["volume": lastVolume, "position": player.currentTime]) }
     }
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { stopSpeech(followUp: true) }
     func stopSpeech(followUp: Bool = false) {
         voiceGeneration += 1; speechTask?.cancel(); speechTask = nil
-        player?.stop(); player = nil; meterTimer?.invalidate(); meterTimer = nil; lastVolume = 0
+        player?.stop(); player = nil; speechAnimation = nil; meterTimer?.invalidate(); meterTimer = nil; lastVolume = 0
         emit("speechEnd")
         refreshVoiceBusy(followUp: followUp)
     }

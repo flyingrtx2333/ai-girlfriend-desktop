@@ -1,0 +1,73 @@
+{
+  "version": "0.7.0",
+  "success": true,
+  "checks": {
+    "audioCurveDecoded": true,
+    "mouthOpensAndCloses": true,
+    "narrowLayout": true,
+    "normalLayout": true,
+    "playbackClockAligned": true,
+    "settingsReachable": true,
+    "thinkingPauseKeepsOneTurn": true,
+    "vowelsVaryWithAudio": true
+  },
+  "layout": {
+    "messageCount": 4,
+    "narrowLayout": true,
+    "normalLayout": true,
+    "renderedRows": [
+      {
+        "height": 99,
+        "labelWidth": 512,
+        "width": 508
+      },
+      {
+        "height": 51,
+        "labelWidth": 512,
+        "width": 508
+      },
+      {
+        "height": 41,
+        "labelWidth": 86.5,
+        "width": 508
+      },
+      {
+        "height": 41,
+        "labelWidth": 220.5,
+        "width": 508
+      }
+    ],
+    "settingsReachable": true
+  },
+  "turn": {
+    "utterances": [
+      {
+        "text": "我想问你一件事 这个周末去哪里散步比较好",
+        "time": 11.909492624923587
+      }
+    ],
+    "asrStarts": 1,
+    "keywordHits": 1,
+    "recognizerRebases": 1,
+    "silenceInsideUtteranceSeconds": 1.8,
+    "pauseWaitSeconds": 3
+  },
+  "speech": {
+    "curveFrames": 371,
+    "capturedFrames": 61,
+    "analysisSeconds": 0.015485666692256927,
+    "maxClockErrorSeconds": 0.003,
+    "quietSamples": 11,
+    "maxQuietMouthOpening": 0.00013099942299645112,
+    "vowelWideRange": [
+      0,
+      1
+    ],
+    "vowelRoundRange": [
+      0,
+      0.985091723356009
+    ]
+  },
+  "errors": [],
+  "scope": "Native AppKit UI at normal/narrow sizes with fixed sample messages; real on-device speech recognition of two clauses with an internal pause; existing MiniMax audio decoded in memory and played through production audio/WebGL mouth. Clock error measures native/render clocks, not complete acoustic or phoneme alignment. No live microphone conversation, private history or provider requests."
+}

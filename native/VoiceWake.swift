@@ -35,6 +35,7 @@ final class VoiceWake: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.voice", qos: .utility)
     @MainActor private var requested = false
     @MainActor private var configuredPhrase = ""
+    @MainActor private var configuredPause = 3.0
     @MainActor private var permissionTask: Task<Void, Never>?
     private var engine: AVAudioEngine?
     private var engineChange: NSObjectProtocol?
@@ -52,13 +53,16 @@ final class VoiceWake: @unchecked Sendable {
     private var epoch = 0, session = 0, consecutiveErrors = 0
     private var preRoll: [AVAudioPCMBuffer] = []
     private var command = "", lastPartial = ""
+    private var turnText = "", lastTextAt = 0.0, pauseSeconds = 3.0
+    private var transcriptionStart: TimeInterval?, recognizerRebases = 0
     private var noise: Float = 0.0005
     private var loudDuration = 0.0, lastLoud = 0.0, started = 0.0, ending = 0.0, deadline = 0.0, cooldown = 0.0
 
-    @MainActor func configure(enabled: Bool, phrase: String) {
-        guard enabled != requested || phrase != configuredPhrase else { return }
-        requested = enabled; configuredPhrase = phrase; permissionTask?.cancel()
-        queue.async { self.restartAttempts = 0; self.stopCapture(notify: !enabled) }
+    @MainActor func configure(enabled: Bool, phrase: String, pauseSeconds: Double = 3) {
+        let pause = min(6, max(1.5, pauseSeconds))
+        guard enabled != requested || phrase != configuredPhrase || pause != configuredPause else { return }
+        requested = enabled; configuredPhrase = phrase; configuredPause = pause; permissionTask?.cancel()
+        queue.async { self.pauseSeconds = pause; self.restartAttempts = 0; self.stopCapture(notify: !enabled) }
         guard enabled else { return }
         emit(.state("等待授权"))
         permissionTask = Task {
@@ -75,7 +79,7 @@ final class VoiceWake: @unchecked Sendable {
     func setOutputBusy(_ busy: Bool, followUp: Bool = false) {
         queue.async {
             guard self.enabled else { return }
-            if busy { self.outputBusy = true; self.cancelRecognition(); self.resetKeyword(); self.preRoll.removeAll(); self.emit(.state("回复中")); return }
+            if busy { self.outputBusy = true; self.clearTurn(); self.resetKeyword(); self.preRoll.removeAll(); self.emit(.state("回复中")); return }
             let wasBusy = self.outputBusy; self.outputBusy = false
             if wasBusy { self.cooldown = ProcessInfo.processInfo.systemUptime + 0.6 }
             if followUp && self.conversation { self.awake = true; self.deadline = ProcessInfo.processInfo.systemUptime + 12 }
@@ -85,13 +89,13 @@ final class VoiceWake: @unchecked Sendable {
     func listenNow() {
         queue.async {
             guard self.enabled else { return }
-            self.cancelRecognition(); self.resetKeyword(); self.preRoll.removeAll(); self.outputBusy = false; self.conversation = true; self.awake = true
+            self.clearTurn(); self.resetKeyword(); self.preRoll.removeAll(); self.outputBusy = false; self.conversation = true; self.awake = true
             self.deadline = ProcessInfo.processInfo.systemUptime + 10; self.emit(.woke)
         }
     }
     func resetConversation() {
         queue.async {
-            self.cancelRecognition(); self.resetKeyword(); self.preRoll.removeAll(); self.awake = false; self.conversation = false; self.outputBusy = false
+            self.clearTurn(); self.resetKeyword(); self.preRoll.removeAll(); self.awake = false; self.conversation = false; self.outputBusy = false
             if self.enabled { self.emit(.state("等待唤醒")) }
         }
     }
@@ -113,7 +117,7 @@ final class VoiceWake: @unchecked Sendable {
         guard let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") else { emit(.failure("唤醒模型缺失。")); return false }
         do { keywordSpotter = try SherpaWake(phrase: phrase, directory: directory) }
         catch { emit(.failure(error.localizedDescription)); return false }
-        asrStarts = 0; keywordHits = 0
+        asrStarts = 0; keywordHits = 0; recognizerRebases = 0
         self.phrase = WakePhrase(text: phrase); enabled = true
         return true
     }
@@ -165,7 +169,7 @@ final class VoiceWake: @unchecked Sendable {
         if enabled && busy { outputBusy = true; emit(.state("回复中")) }
     }
     private func stopCapture(notify: Bool = true) {
-        epoch += 1; enabled = false; cancelRecognition()
+        epoch += 1; enabled = false; clearTurn()
         if let engineChange { NotificationCenter.default.removeObserver(engineChange); self.engineChange = nil }
         inputWatchdog?.cancel(); inputWatchdog = nil
         engine?.inputNode.removeTap(onBus: 0); engine?.stop(); engine = nil; recognizer = nil
@@ -185,7 +189,7 @@ final class VoiceWake: @unchecked Sendable {
         if !awake { noise = noise * 0.995 + min(rms, 0.015) * 0.005 }
         loudDuration = loud ? min(1, loudDuration + duration) : max(0, loudDuration - duration * 2)
         if loud { lastLoud = now }
-        if awake && now > deadline && command.isEmpty { awake = false; conversation = false; cancelRecognition(); resetKeyword(); emit(.state("等待唤醒")) }
+        if awake && now > deadline && command.isEmpty && turnText.isEmpty { awake = false; conversation = false; clearTurn(); resetKeyword(); emit(.state("等待唤醒")) }
         if !awake {
             // A cheap sound gate suspends keyword inference during quiet gaps.
             // Two seconds of RAM pre-roll retain the wake phrase and a command
@@ -203,6 +207,8 @@ final class VoiceWake: @unchecked Sendable {
             } else if keywordRunning && (now - lastLoud > 0.85 || now - keywordStarted > 20) { resetKeyword() }
             return
         }
+        let quietFor = now - max(lastLoud, lastTextAt)
+        if request == nil && !turnText.isEmpty && quietFor >= pauseSeconds { finishSession(); return }
         if request == nil {
             appendPreRoll(buffer, seconds: 0.4)
             if loudDuration > 0.06 { beginRecognition(now: now); preRoll.forEach { request?.append($0) }; preRoll.removeAll() }
@@ -210,8 +216,8 @@ final class VoiceWake: @unchecked Sendable {
         }
         if ending == 0 {
             request?.append(buffer)
-            if now - lastLoud > 0.85 || now - started > 15 { ending = now; request?.endAudio() }
-        } else if now - ending > 1.2 { finishSession() }
+            if quietFor >= pauseSeconds || now - started > 15 { ending = now; request?.endAudio() }
+        } else if now - ending > 1.2 { closeSegment() }
     }
     private func appendPreRoll(_ buffer: AVAudioPCMBuffer, seconds: Double) {
         preRoll.append(buffer)
@@ -238,29 +244,52 @@ final class VoiceWake: @unchecked Sendable {
             guard let self else { return }
             self.queue.async {
                 guard self.enabled, self.session == id, !self.outputBusy else { return }
-                if let result { self.receive(result.bestTranscription.formattedString, final: result.isFinal) }
+                if let result { self.receive(result.bestTranscription.formattedString, final: result.isFinal, firstSegment: result.bestTranscription.segments.first?.timestamp) }
                 if error != nil && self.session == id {
                     if (error as NSError?)?.code != 1110 { self.consecutiveErrors += 1 }
-                    self.finishSession()
+                    self.closeSegment()
                     if self.consecutiveErrors >= 4 { self.stopCapture(); self.emit(.failure("本机语音识别暂不可用")) }
                 }
             }
         }
     }
-    private func receive(_ text: String, final: Bool) {
+    private func receive(_ text: String, final: Bool, firstSegment: TimeInterval?) {
         guard awake else { return }
         if !text.isEmpty { consecutiveErrors = 0 }
+        let now = ProcessInfo.processInfo.systemUptime
+        var next = text
         if sessionHasWake {
-            if let suffix = phrase.command(in: text) { command = suffix }
-            else if WakePhrase.key(phrase.text).hasPrefix(WakePhrase.key(text)) { command = "" }
-            else { command = text }
-        } else { command = text }
-        if !command.isEmpty && command != lastPartial { lastPartial = command; emit(.partial(command)) }
-        if final { finishSession() }
+            if let suffix = phrase.command(in: text) { next = suffix }
+            else if WakePhrase.key(phrase.text).hasPrefix(WakePhrase.key(text)) { next = "" }
+        }
+        let priorWords = command.filter { $0.isLetter || $0.isNumber }, nextWords = next.filter { $0.isLetter || $0.isNumber }
+        // On-device Speech may replace its formattedString after a pause without
+        // setting isFinal. Preserve the preceding clause before accepting that
+        // new audio segment, while allowing ordinary partial-word corrections.
+        let shifted = firstSegment.map { $0 > (transcriptionStart ?? $0) + 0.35 } ?? false
+        let disjointAfterPause = now - lastTextAt > 0.9 && !priorWords.hasPrefix(nextWords)
+        if !priorWords.isEmpty && !nextWords.isEmpty && !nextWords.hasPrefix(priorWords) && (shifted || disjointAfterPause) {
+            turnText = [turnText, command].filter { !$0.isEmpty }.joined(separator: " ")
+            recognizerRebases += 1; sessionHasWake = false
+        }
+        transcriptionStart = firstSegment; command = next
+        let combined = [turnText, command].filter { !$0.isEmpty }.joined(separator: " ")
+        if !combined.isEmpty && combined != lastPartial {
+            if combined.filter({ $0.isLetter || $0.isNumber }) != lastPartial.filter({ $0.isLetter || $0.isNumber }) { lastTextAt = now }
+            lastPartial = combined; emit(.partial(combined))
+        }
+        // A recognizer's final result closes a segment, not the user's turn.
+        if final { closeSegment() }
     }
-    private func finishSession() {
+    private func closeSegment() {
         let text = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        cancelRecognition(); preRoll.removeAll(); loudDuration = 0
+        if !text.isEmpty { turnText = [turnText, text].filter { !$0.isEmpty }.joined(separator: " ") }
+        cancelRecognition(); loudDuration = 0
+    }
+    private func clearTurn() { cancelRecognition(); turnText = ""; lastTextAt = 0; lastPartial = "" }
+    private func finishSession() {
+        closeSegment(); let text = turnText.trimmingCharacters(in: .whitespacesAndNewlines)
+        clearTurn(); preRoll.removeAll(); loudDuration = 0
         guard awake, !text.isEmpty else { return }
         if ["停止聆听", "别听了", "休息吧", "取消"].contains(text.trimmingCharacters(in: .punctuationCharacters)) {
             awake = false; conversation = false; emit(.state("等待唤醒")); return
@@ -269,11 +298,11 @@ final class VoiceWake: @unchecked Sendable {
     }
     private func cancelRecognition() {
         session += 1; request?.endAudio(); task?.cancel(); request = nil; task = nil; recognizer = nil
-        command = ""; lastPartial = ""; ending = 0
+        command = ""; lastPartial = ""; ending = 0; transcriptionStart = nil
     }
     @MainActor func diagnosticsForCheck() async -> [String: Int] {
         await withCheckedContinuation { c in queue.async {
-            c.resume(returning: ["keywordHits": self.keywordHits, "asrStarts": self.asrStarts,
+            c.resume(returning: ["keywordHits": self.keywordHits, "asrStarts": self.asrStarts, "recognizerRebases": self.recognizerRebases,
                 "micBuffers": self.micBuffers, "captureStarts": self.captureStarts, "captureRestarts": self.captureRestarts,
                 "engineRunning": self.engine?.isRunning == true ? 1 : 0, "enabled": self.enabled ? 1 : 0,
                 "lastBufferAgeMs": self.lastMicAt == 0 ? -1 : Int((ProcessInfo.processInfo.systemUptime - self.lastMicAt) * 1000),
@@ -301,7 +330,7 @@ final class VoiceWake: @unchecked Sendable {
             try file.read(into: buffer); queue.async { self.consume(buffer) }
             try await Task.sleep(nanoseconds: UInt64(Double(buffer.frameLength) / format.sampleRate * 1_000_000_000))
         }
-        for _ in 0..<Int(format.sampleRate * 2.5 / 1024) {
+        for _ in 0..<Int(format.sampleRate * (pauseSeconds + 2) / 1024) {
             let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)!; silence.frameLength = 1024
             for b in UnsafeMutableAudioBufferListPointer(silence.mutableAudioBufferList) { if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) } }
             queue.async { self.consume(silence) }

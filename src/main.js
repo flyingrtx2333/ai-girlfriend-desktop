@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { loadPortrait } from './portrait.js';
 import { MOTIONS, COMPANION_MOTIONS } from './motions.js';
+import { sampleSpeech } from './speech.js';
 import { lightCharacter } from './lighting.js';
 import './style.css';
 
@@ -9,6 +10,7 @@ const nativeDesktop = !!nativeHost;
 if (nativeDesktop) document.documentElement.classList.add('desktop-pet');
 let nativeVisible = true, nativePerformance = 'auto', nativeLowPower = false;
 let nativeSpeaking = false, nativeVolume = 0, nativePeakVolume = 0, nativeHit = null;
+let nativeSpeechFrames = [], nativeAudioPosition = 0, nativeAudioClock = 0, nativeSpeechShape = null;
 let nativeFrames = 0, nativeFPS = 0, fpsFrames = 0, fpsStarted = performance.now();
 const nativeTranslation = new THREE.Vector2();
 const nativeGrab = new THREE.Vector2(0, .65);
@@ -359,8 +361,10 @@ function frame(now) {
   character.root.scale.setScalar(1);
   let volume = 0, vowels = { aa: 1, ee: 0, ou: 0 };
   if (nativeDesktop && nativeSpeaking) {
-    volume = nativeVolume;
-    vowels = { aa: .6, ee: .15, ou: .25 };
+    nativeSpeechShape = nativeSpeechFrames.length ? sampleSpeech(nativeSpeechFrames, nativeAudioPosition + (performance.now() - nativeAudioClock) / 1000) : null;
+    if (nativeSpeechShape) nativeVolume = nativeSpeechShape.open;
+    nativePeakVolume = Math.max(nativePeakVolume, nativeVolume); volume = nativeVolume;
+    vowels = nativeSpeechShape ? { aa: Math.max(0, 1 - nativeSpeechShape.ee - nativeSpeechShape.ou), ee: nativeSpeechShape.ee, ou: nativeSpeechShape.ou } : { aa: 1, ee: 0, ou: 0 };
   } else if (mode === 'speak' && analyser) {
     analyser.getByteTimeDomainData(samples);
     let sum = 0;
@@ -387,7 +391,7 @@ function frame(now) {
     : happy ? { name: happyMotion, time: elapsed - reactionStarted } : null;
   character.update(dt, { time: elapsed, motion, happy, shock, blinking, blinkAmount, volume, vowels, looking: pointerPresent && (nativeDesktop || mode === 'look' || !!drag || elapsed - lastPointerMove < 3), pointer, dragging: !!drag?.moved,
     held: nativeDesktop ? nativeHeld : !!drag, grab: nativeDesktop ? nativeGrab : drag?.anchor,
-    activity, touch, translation: nativeDesktop ? nativeTranslation : offset });
+    activity, touch, speechShape: nativeSpeaking ? nativeSpeechShape : null, translation: nativeDesktop ? nativeTranslation : offset });
   renderer.render(scene, camera);
   if (nativeDesktop) {
     const suspension = character.root.userData.expression?.suspension;
@@ -429,9 +433,9 @@ if (nativeDesktop) {
       nativeVisible = payload.visible !== false; nativePerformance = payload.performance || 'auto'; nativeLowPower = !!payload.lowPower;
       if (nativePerformance === 'paused') cancelMotion();
       visibility();
-    } else if (type === 'speechStart') { nativeSpeaking = true; nativeVolume = 0; nativePeakVolume = 0; mode = 'speak'; updateStatus(); }
-    else if (type === 'speechLevel') { nativeVolume = Math.max(0, Math.min(1, Number(payload.volume) || 0)); nativePeakVolume = Math.max(nativePeakVolume, nativeVolume); }
-    else if (type === 'speechEnd') { nativeSpeaking = false; nativeVolume = 0; if (mode === 'speak') mode = 'idle'; updateStatus(); }
+    } else if (type === 'speechStart') { nativeSpeaking = true; nativeVolume = 0; nativePeakVolume = 0; nativeSpeechFrames = payload.frames || []; nativeAudioPosition = payload.position || 0; nativeAudioClock = performance.now(); mode = 'speak'; updateStatus(); }
+    else if (type === 'speechLevel') { if (!nativeSpeechFrames.length) nativeVolume = Math.max(0, Math.min(1, Number(payload.volume) || 0)); nativeAudioPosition = payload.position ?? nativeAudioPosition; nativeAudioClock = performance.now(); nativePeakVolume = Math.max(nativePeakVolume, nativeVolume); }
+    else if (type === 'speechEnd') { nativeSpeaking = false; nativeVolume = 0; nativeSpeechFrames = []; nativeSpeechShape = null; if (mode === 'speak') mode = 'idle'; updateStatus(); }
     else if (type === 'voiceListen') playMotion('listen');
     else if (type === 'dragState') { nativeHeld = !!payload.held; if (nativeHeld) { nativeMotionEvents = 0; dragPeakAngle = 0; dragPeakInertia = 0; } }
     else if (type === 'translation') {
@@ -447,7 +451,7 @@ if (nativeDesktop) {
     visible: nativeVisible, speaking: nativeSpeaking, volume: nativeVolume, peakVolume: nativePeakVolume, compact: true,
     drawCalls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
     drawingBuffer: [renderer.domElement.width, renderer.domElement.height], pixelRatio: renderer.getPixelRatio(),
-    pointer: pointer.toArray(), expression: character.root.userData.expression,
+    pointer: pointer.toArray(), expression: character.root.userData.expression, speech: { curveFrames: nativeSpeechFrames.length, position: nativeAudioPosition, playhead: nativeSpeaking ? nativeAudioPosition + (performance.now() - nativeAudioClock) / 1000 : 0, shape: nativeSpeechShape },
     interaction: { count: interactionCount, kind: reaction, zone: touch.zone, side: touch.side },
     drag: { held: nativeHeld, motionEvents: nativeMotionEvents, translation: nativeTranslation.toArray(), peakAngle: dragPeakAngle, peakInertia: dragPeakInertia } });
 }

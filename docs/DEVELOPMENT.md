@@ -8,6 +8,8 @@
 | `src/main.js` | 场景、点击分区、动作调度、原生桥接和帧率管理 |
 | `src/portrait.js`、`src/portrait-tail.js` | 原画网格变形、分部位弹簧和独立鲸尾 |
 | `src/motions.js`、`src/idle.js` | 互动轨道、表情轨道和 AIRI 待机采样 |
+| `native/ChatViews.swift`、`native/ControlWindow.swift` | 原生侧栏、消息行、输入框和设置 |
+| `native/SpeechAnimation.swift`、`src/speech.js` | 在内存解码音频、分析开合和频谱、按播放时钟插值口型 |
 | `public/portraits/`、`public/audio/`、`public/animations/` | 当前原生应用运行素材、来源和许可 |
 | `public/models/whale-maid-v2/` | 网页「立体」模式仍引用的模型和贴图；不打包进原生应用 |
 | `design/references/`、`design/portrait19/` | 重建当前原画贴图需要的原图、透明度引导和提示词 |
@@ -45,6 +47,7 @@ npm run native:open
 | 唤醒与转写 | 构建后运行 `npm run native:check-voice`，需系统权限；不调用在线对话或 TTS |
 | 真实麦克风与断流恢复 | 构建后运行 `npm run native:check-microphone`；需解锁和已有权限，不保存音频或转写，不调用在线服务 |
 | 气泡与唤醒提示音 | 构建后运行 `npm run native:check-feedback`；额外传入 `-- --live-tts` 才使用已保存的 MiniMax 配置发出一次短语音请求 |
+| 聊天排版、停顿与口型 | 构建后运行 `npm run native:check-conversation`；独立示例配置，真实本机转写与已有 MiniMax 音频，无在线调用 |
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
@@ -73,6 +76,16 @@ npm run native:open
 0.6.2 在原有语音串行队列异步重建采集，符合 Apple 对 [AVAudioEngineConfigurationChange](https://developer.apple.com/documentation/foundation/nsnotification/name-swift.struct/avaudioengineconfigurationchange) 的处理要求：不在内部通知回调中同步释放引擎。仅唤醒开启时以低频检查引擎和音频帧；连续三次恢复仍没有输入则停止并报告原因。实际音频帧重置重试次数；关闭、锁屏和休眠会移除观察者并取消监测。
 
 [真实麦克风检查](verification/microphone.json)中，初始收到 21 个音频缓冲，实际停止引擎并发送配置变化通知后恢复到 30 个，再停止引擎而不显式发通知后恢复到 88 个；恢复后最近音频帧分别为 26／98 ms 前。关闭后引擎保持停止。测试只记录计数和电平，不保存声音、转写或调用在线模型。现场问题与重启后用户确认恢复的记录见[故障记录](verification/wake-recovery-case.json)。
+
+## v0.7.0 的界面、语音轮次与口型
+
+用户提供的第二张图作为布局参考，在现有 AppKit 中实现侧栏、白色主区、右侧用户气泡、底部输入框；没有引入 Electron、第二个 WebView 或图片化界面。公开截图只含固定示例对话，私人聊天与参考截图不进入版本库。
+
+旧代码在 0.85 秒静音或识别器 `isFinal` 时收尾。现在由整轮静音时长决定提交，识别器结束一个片段不代表用户说完；本机识别器也可能不发 `isFinal` 就替换前半段文字，代码结合音频分段时间和停顿保留旧片段。默认等待 3 秒，设置可选 2／3／5 秒。测试音频包含「我想问你一件事」与「这个周末去哪里散步比较好」两段，中间 1.8 秒静音，实际转写保留两段并只提交一次。
+
+口型曲线以 20 ms 步长分析音频开合及频带，在 `AVAudioPlayer.currentTime` 的时间线上由渲染端插值。音频在内存中经系统 AudioToolbox 解码，Accelerate 分析，播放期间用 15 Hz 时钟校正替代原来的 30 Hz 音量驱动；无需新模型。它仍是频谱估算的近似口型，不是文本强制对齐或音素识别。
+
+[验证记录](verification/conversation.json)覆盖正常／窄窗口、设置切换、真实本机停顿转写，以及已有 MiniMax 音频的实际播放和 WebGL 口型。完整截图、音频时钟采样及带声音的实播保留在本地 `evidence/edition28/`。记录中的时钟误差只比较原生播放位置与渲染时钟，不能当作声学输出或音素对齐误差。
 
 ## Git 约定
 

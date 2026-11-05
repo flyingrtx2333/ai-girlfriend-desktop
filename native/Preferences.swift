@@ -16,6 +16,7 @@ struct PetPreferences: Codable {
     var voiceID = "female-shaonv"
     var wakeEnabled = false
     var wakePhrase = "小鲸小鲸"
+    var voicePauseSeconds = 3.0
     var alwaysOnTop = true
     var performance = "auto"
     var scale = 1.0

@@ -443,9 +443,9 @@ export async function loadPortrait(onProgress, { compact = false } = {}) {
           ? THREE.MathUtils.damp(eyes[i], target, target > eyes[i] ? 65 : 40, dt)
           : Math.max(blinkAmount, THREE.MathUtils.damp(eyes[i], expressionEye, 40, dt));
       }
-      opening = THREE.MathUtils.damp(opening, Math.max(THREE.MathUtils.clamp((volume - .035) * 1.5, 0, 1), expression?.mouth?.[0] ?? 0), volume > .06 ? 26 : 34, dt);
-      vowelsSmoothed.x = THREE.MathUtils.damp(vowelsSmoothed.x, vowels?.ee ?? 0, 15, dt);
-      vowelsSmoothed.y = THREE.MathUtils.damp(vowelsSmoothed.y, volume > .05 ? vowels?.ou ?? 0 : Math.max(vowels?.ou ?? 0, surprise * .85), 15, dt);
+      opening = THREE.MathUtils.damp(opening, state.speechShape?.open ?? Math.max(THREE.MathUtils.clamp((volume - .035) * 1.5, 0, 1), expression?.mouth?.[0] ?? 0), state.speechShape ? 55 : volume > .06 ? 26 : 34, dt);
+      vowelsSmoothed.x = THREE.MathUtils.damp(vowelsSmoothed.x, vowels?.ee ?? 0, state.speechShape ? 35 : 15, dt);
+      vowelsSmoothed.y = THREE.MathUtils.damp(vowelsSmoothed.y, volume > .05 ? vowels?.ou ?? 0 : Math.max(vowels?.ou ?? 0, surprise * .85), state.speechShape ? 35 : 15, dt);
       uniforms.uTime.value = time;
       uniforms.uPose.value.set(roll, yaw, pitch, motion);
       uniforms.uFlow.value.set(-inertia * 14, -(expression?.balance?.[1] ?? 0) / SCALE * .4, breath * 1.1, suspension.stretch);

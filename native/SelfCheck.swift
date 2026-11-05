@@ -33,6 +33,7 @@ import WebKit
         if CommandLine.arguments.contains("--drag-check") { await runDragCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--feedback-check") { await runFeedbackCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mic-check") { await runMicrophoneCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--conversation-check") { await runConversationCheck(output); NSApp.terminate(nil); return }
         await wait(2.0)
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         let profiling = CommandLine.arguments.contains("--profile")

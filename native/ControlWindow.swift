@@ -2,6 +2,14 @@ import AppKit
 
 final class ComposerView: NSTextView {
     var onSend: (() -> Void)?
+    override func didChangeText() { super.didChangeText(); needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if string.isEmpty {
+            ("发消息…" as NSString).draw(at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height),
+                withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.placeholderTextColor])
+        }
+    }
     override func insertNewline(_ sender: Any?) {
         if !hasMarkedText() && !NSEvent.modifierFlags.contains(.shift) { onSend?() }
         else { super.insertNewline(sender) }
@@ -14,9 +22,13 @@ final class FormDocumentView: NSView {
 
 @MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
-    private let tabs = NSSegmentedControl(labels: ["对话", "设置"], trackingMode: .selectOne, target: nil, action: nil)
+    private var selectedTab = "chat"
+    private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
+    private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
+    private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let chat = NSView(), settings = NSView()
-    private let transcript = NSTextView(), composer = ComposerView()
+    private let composer = ComposerView(), history = NSScrollView(), messageColumn = NSStackView()
+    private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
     private let status = NSTextField(labelWithString: "")
     private let savedStatus = NSTextField(labelWithString: "")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
@@ -38,15 +50,17 @@ final class FormDocumentView: NSView {
     private let onTop = NSButton(checkboxWithTitle: "窗口置顶", target: nil, action: nil)
     private let wakeEnabled = NSButton(checkboxWithTitle: "启用语音唤醒", target: nil, action: nil)
     private let wakePhrase = NSTextField(), wakeStatus = NSTextField(labelWithString: "未开启")
+    private let pauseWait = NSPopUpButton()
     private let performance = NSPopUpButton(), scale = NSSlider(value: 1, minValue: 0.5, maxValue: 1.5, target: nil, action: nil)
     private var removeChatKey = false, removeVoiceKey = false, busy = false
     private var pendingRender: DispatchWorkItem?
 
     init(companion: AppDelegate) {
         self.companion = companion
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 660),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 580, height: 520)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
+        window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = NSColor(red: 0.97, green: 0.96, blue: 0.95, alpha: 1)
         window.center(); window.isReleasedWhenClosed = false
@@ -57,6 +71,7 @@ final class FormDocumentView: NSView {
         companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0 }
         companion.onWakeChange = { [weak self] enabled, status in
             self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
+            self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.isEnabled = enabled
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -79,53 +94,80 @@ final class FormDocumentView: NSView {
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
     }
     private func build() {
-        guard let content = window?.contentView else { return }
-        content.wantsLayer = true; content.layer?.backgroundColor = window?.backgroundColor.cgColor
-        let title = NSTextField(labelWithString: "小鲸"); title.font = .systemFont(ofSize: 20, weight: .semibold)
+        guard let window else { return }
+        let content = SidebarBackground(); window.contentView = content
+        let title = NSTextField(labelWithString: "小鲸"); title.font = .systemFont(ofSize: 19, weight: .semibold)
         let icon = NSImageView(image: NSImage(systemSymbolName: "fish.fill", accessibilityDescription: nil)!)
         icon.contentTintColor = NSColor(red: 0.28, green: 0.52, blue: 0.78, alpha: 1)
-        icon.widthAnchor.constraint(equalToConstant: 32).isActive = true; icon.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        let space = NSView(); space.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        tabs.target = self; tabs.action = #selector(changeTab); tabs.selectedSegment = 0
-        tabs.setWidth(72, forSegment: 0); tabs.setWidth(72, forSegment: 1)
-        let header = stack([icon, title, space, tabs]); content.addSubview(header)
-        let panels = NSView(); content.addSubview(panels); panels.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([header.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            panels.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 24),
-            panels.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            panels.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            panels.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24)])
+        icon.widthAnchor.constraint(equalToConstant: 26).isActive = true; icon.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        let brand = stack([icon, title], spacing: 10); content.addSubview(brand)
+        for (index, button) in [chatNav, settingsNav].enumerated() {
+            button.tag = index; button.target = self; button.action = #selector(selectTab(_:)); button.isBordered = false
+            button.font = .systemFont(ofSize: 14, weight: .medium); button.alignment = .left; button.imagePosition = .imageLeading
+            button.image = NSImage(systemSymbolName: index == 0 ? "bubble.left.and.bubble.right" : "slider.horizontal.3", accessibilityDescription: nil)
+            button.image?.size = NSSize(width: 17, height: 17); button.contentTintColor = NSColor(white: 0.18, alpha: 1)
+            button.wantsLayer = true; button.layer?.cornerRadius = 9; button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        }
+        let navigation = stack([chatNav, settingsNav], vertical: true, spacing: 6); content.addSubview(navigation)
+        for button in [chatNav, settingsNav] { button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true }
+        listenButton.image = NSImage(systemSymbolName: "mic", accessibilityDescription: nil); listenButton.imagePosition = .imageLeading
+        listenButton.isBordered = false; listenButton.font = .systemFont(ofSize: 13); listenButton.alignment = .left
+        listenButton.target = self; listenButton.action = #selector(listen)
+        sidebarWake.font = .systemFont(ofSize: 11); sidebarWake.textColor = .secondaryLabelColor
+        clearButton.isBordered = false; clearButton.font = .systemFont(ofSize: 12); clearButton.alignment = .left
+        clearButton.target = self; clearButton.action = #selector(clear)
+        let sideFooter = stack([listenButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
+        let main = NSView(); main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
+        main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; content.addSubview(main)
+        pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = .secondaryLabelColor
+        pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle)
+        let panels = NSView(); main.addSubview(panels); panels.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 65), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 25),
+            navigation.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 28), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 166),
+            sideFooter.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 27), sideFooter.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 182), sideFooter.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -26),
+            main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
+            pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28),
+            panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
         for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
         buildChat(); buildSettings(); changeTab()
     }
     private func buildChat() {
-        transcript.isEditable = false; transcript.isSelectable = true
-        transcript.textContainerInset = NSSize(width: 16, height: 16)
-        transcript.drawsBackground = true; transcript.backgroundColor = .textBackgroundColor
-        transcript.isHorizontallyResizable = false; transcript.autoresizingMask = [.width]
-        let history = NSScrollView(); history.documentView = transcript; history.hasVerticalScroller = true
-        history.wantsLayer = true; history.layer?.cornerRadius = 12
-        composer.font = .systemFont(ofSize: 14); composer.textContainerInset = NSSize(width: 12, height: 12)
+        history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
+        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
+        messageColumn.orientation = .vertical; messageColumn.alignment = .leading; messageColumn.spacing = 25
+        document.addSubview(messageColumn); pin(messageColumn, to: document, inset: 4)
+        document.widthAnchor.constraint(equalTo: history.contentView.widthAnchor).isActive = true
+        composer.font = .systemFont(ofSize: 15); composer.textContainerInset = NSSize(width: 2, height: 8)
+        composer.drawsBackground = false; composer.setAccessibilityLabel("消息")
         composer.isRichText = false; composer.isAutomaticQuoteSubstitutionEnabled = false
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true
-        input.wantsLayer = true; input.layer?.cornerRadius = 8
-        sendButton.bezelStyle = .rounded; sendButton.controlSize = .large
+        input.drawsBackground = false; input.borderType = .noBorder
+        sendButton.isBordered = false; sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送")
+        sendButton.imagePosition = .imageOnly; sendButton.contentTintColor = .white; sendButton.wantsLayer = true
+        sendButton.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor; sendButton.layer?.cornerRadius = 11
+        sendButton.setAccessibilityLabel("发送")
         sendButton.target = self; sendButton.action = #selector(send)
-        sendButton.widthAnchor.constraint(equalToConstant: 72).isActive = true
-        let entry = stack([input, sendButton]); entry.heightAnchor.constraint(equalToConstant: 88).isActive = true
-        clearButton.bezelStyle = .inline; clearButton.target = self; clearButton.action = #selector(clear)
+        sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        modelCaption.font = .systemFont(ofSize: 11); modelCaption.textColor = .secondaryLabelColor
+        let fill = NSView(); let entryBar = stack([modelCaption, fill, sendButton], spacing: 8)
+        let entry = NSView(); entry.translatesAutoresizingMaskIntoConstraints = false; entry.wantsLayer = true
+        entry.layer?.backgroundColor = NSColor(white: 0.995, alpha: 1).cgColor; entry.layer?.cornerRadius = 16
+        entry.layer?.borderWidth = 1; entry.layer?.borderColor = NSColor(white: 0.90, alpha: 1).cgColor
+        entry.addSubview(input); entry.addSubview(entryBar); input.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.heightAnchor.constraint(equalToConstant: 60),
+            entryBar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 16), entryBar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryBar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4), entryBar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
-        let fill = NSView(); let footer = stack([status, fill, clearButton], spacing: 8)
-        let column = stack([history, entry, footer], vertical: true, spacing: 12)
+        status.isHidden = true
+        let column = stack([history, status, entry], vertical: true, spacing: 14)
         chat.addSubview(column); pin(column, to: chat)
-        for row in [history, entry, footer] { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for row in [history, status, entry] { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         history.setContentHuggingPriority(.defaultLow, for: .vertical)
-        history.heightAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        history.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
     }
     private func buildSettings() {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
@@ -187,6 +229,7 @@ final class FormDocumentView: NSView {
         row("", wakeEnabled); row("唤醒词", wakePhrase)
         wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor
         row("状态", wakeStatus)
+        pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
         heading("桌面")
         row("", onTop)
         performance.addItems(withTitles: ["自动节能", "流畅", "暂停"])
@@ -202,13 +245,18 @@ final class FormDocumentView: NSView {
     }
     func show(tab: String) {
         if window?.isVisible != true { refreshPreferences() }
-        tabs.selectedSegment = tab == "settings" ? 1 : 0; changeTab()
+        selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
         renderMessages(); showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if tab != "settings" { window?.makeFirstResponder(composer) }
     }
-    @objc private func changeTab() {
-        chat.isHidden = tabs.selectedSegment != 0; settings.isHidden = tabs.selectedSegment != 1
+    @objc private func selectTab(_ sender: NSButton) { selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
+    private func changeTab() {
+        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
+        pageTitle.stringValue = selectedTab == "chat" ? "对话" : "设置"
+        chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
+        settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
     }
+    @objc private func listen() { companion?.listenNow() }
     func refreshPreferences() {
         guard let companion else { return }
         let p = companion.store.preferences
@@ -225,6 +273,8 @@ final class FormDocumentView: NSView {
         voiceEnabled.state = p.voiceEnabled ? .on : .off; onTop.state = p.alwaysOnTop ? .on : .off
         wakeEnabled.state = p.wakeEnabled ? .on : .off; wakePhrase.stringValue = p.wakePhrase
         wakeStatus.stringValue = companion.wakeStatus
+        sidebarWake.stringValue = p.wakeEnabled ? companion.wakeStatus : "语音未开启"; listenButton.isEnabled = p.wakeEnabled
+        modelCaption.stringValue = p.model; pauseWait.selectItem(at: [2.0, 3.0, 5.0].firstIndex(of: p.voicePauseSeconds) ?? 1)
         performance.selectItem(at: ["auto", "smooth", "paused"].firstIndex(of: p.performance) ?? 0)
         scale.doubleValue = p.scale
     }
@@ -345,6 +395,7 @@ final class FormDocumentView: NSView {
             p.voiceModel = voiceModel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             p.voiceID = voiceID.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             p.wakeEnabled = wakeEnabled.state == .on; p.wakePhrase = wakePhrase.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            p.voicePauseSeconds = [2.0, 3.0, 5.0][max(0, pauseWait.indexOfSelectedItem)]
             guard (2...12).contains(p.wakePhrase.filter({ $0.isLetter || $0.isNumber }).count) else { throw PetError("唤醒词请用 2–12 个字") }
             if p.wakeEnabled, let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") {
                 _ = try SherpaWake.tokenLine(p.wakePhrase, directory: directory)
@@ -366,15 +417,17 @@ final class FormDocumentView: NSView {
     @objc private func send() {
         guard let companion else { return }
         if busy { companion.cancelConversation(); return }
-        if companion.send(composer.string) { composer.string = "" }
+        if companion.send(composer.string) { composer.string = ""; composer.didChangeText() }
     }
     @objc private func clear() { companion?.clearConversation(); renderMessages() }
-    func keepVoiceDraft(_ text: String) { composer.string = text }
+    func keepVoiceDraft(_ text: String) { composer.string = text; composer.didChangeText() }
     func setBusy(_ value: Bool) {
-        busy = value; sendButton.title = value ? "停止" : "发送"; clearButton.isEnabled = !value
+        busy = value; sendButton.image = NSImage(systemSymbolName: value ? "stop.fill" : "arrow.up", accessibilityDescription: value ? "停止" : "发送")
+        sendButton.setAccessibilityLabel(value ? "停止" : "发送"); clearButton.isEnabled = !value
     }
     func setStatus(_ text: String, error: Bool = false) {
         status.stringValue = text; status.textColor = error ? .systemRed : .secondaryLabelColor
+        status.isHidden = text.isEmpty
         if settings.isHidden == false {
             savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : .secondaryLabelColor
         }
@@ -387,22 +440,51 @@ final class FormDocumentView: NSView {
     func renderMessages() {
         pendingRender?.cancel(); pendingRender = nil
         guard let companion else { return }
-        let text = NSMutableAttributedString(string: "")
-        let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4
-        if companion.store.messages.isEmpty {
-            text.append(NSAttributedString(string: "小鲸在这里。", attributes: [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.secondaryLabelColor]))
+        let shouldFollow = messageRows.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 60
+        let messages = companion.store.messages, ids = messages.map(\.id)
+        if ids != renderedIDs {
+            messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
+            var next: [String: ChatMessageRow] = [:]
+            for message in messages {
+                let row = messageRows[message.id] ?? ChatMessageRow(message: message); next[message.id] = row
+                row.fit(width: (window?.contentView?.bounds.width ?? 980) - 272)
+                messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+            }
+            messageRows = next; renderedIDs = ids
         }
-        for message in companion.store.messages {
-            let color = message.role == "assistant" ? NSColor(red: 0.22, green: 0.43, blue: 0.64, alpha: 1) : .secondaryLabelColor
-            text.append(NSAttributedString(string: (message.role == "assistant" ? "小鲸" : "你") + "\n", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: color]))
-            text.append(NSAttributedString(string: message.content + "\n\n", attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]))
+        for message in messages { messageRows[message.id]?.update(message.content) }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if shouldFollow, let document = history.documentView {
+            history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
         }
-        transcript.textStorage?.setAttributedString(text)
-        transcript.scrollToEndOfDocument(nil)
         clearButton.title = companion.undoMessages == nil ? "清空" : "撤销清空"
+    }
+    func windowDidResize(_ notification: Notification) {
+        let width = (window?.contentView?.bounds.width ?? 980) - 272
+        messageRows.values.forEach { $0.fit(width: width) }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if modelCheck != nil { invalidateModelCheck() }
         sender.orderOut(nil); return false
+    }
+    func checkLayout(_ output: URL) async -> [String: Any] {
+        func capture(_ name: String) {
+            guard let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png"))
+        }
+        window?.setContentSize(NSSize(width: 980, height: 700)); show(tab: "chat")
+        composer.string = "周末想出去走走"; composer.didChangeText()
+        try? await Task.sleep(nanoseconds: 250_000_000); window?.contentView?.layoutSubtreeIfNeeded(); capture("chat")
+        let normal = composer.bounds.width > 500 && messageRows.count == companion?.store.messages.count
+            && messageRows.values.allSatisfy { $0.frame.height >= 20 && $0.label.bounds.width > 10 }
+        show(tab: "settings"); try? await Task.sleep(nanoseconds: 100_000_000); capture("settings")
+        let settingsWork = !settings.isHidden && chat.isHidden && pauseWait.indexOfSelectedItem == 1
+        window?.setContentSize(NSSize(width: 780, height: 540)); show(tab: "chat")
+        try? await Task.sleep(nanoseconds: 200_000_000); window?.contentView?.layoutSubtreeIfNeeded(); capture("chat-narrow")
+        let compact = composer.bounds.width > 350 && sendButton.bounds.width == 34
+            && messageRows.values.allSatisfy { $0.frame.height >= 20 && !$0.hasAmbiguousLayout }
+        return ["normalLayout": normal, "settingsReachable": settingsWork, "narrowLayout": compact,
+                "messageCount": messageRows.count, "renderedRows": messageRows.values.map { ["width": $0.frame.width, "height": $0.frame.height, "labelWidth": $0.label.bounds.width] }]
     }
 }
