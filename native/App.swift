@@ -57,6 +57,7 @@ final class PetWebView: WKWebView {
     var bubbleLabel: NSTextField?
     var bubbleTimer: Timer?
     var player: AVAudioPlayer?
+    var wakePlayer: AVAudioPlayer?
     var meterTimer: Timer?
     var lastVolume = 0.0
     var voiceGeneration = 0
@@ -256,7 +257,8 @@ final class PetWebView: WKWebView {
         case .state(let state):
             wakeStatus = wakeError ?? state
             if state == "等待唤醒" && (chatTask != nil || speechTask != nil || player?.isPlaying == true) { refreshVoiceBusy() }
-        case .woke: wakeStatus = "聆听中"; emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
+        case .woke:
+            wakeStatus = "聆听中"; playWakeChime(); emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
         case .partial(let text): showBubble(text, duration: 12)
         case .utterance(let text):
             if !send(text) { control.keepVoiceDraft(text); voiceWake.resetConversation() }
@@ -287,7 +289,7 @@ final class PetWebView: WKWebView {
                              "lowPower": ProcessInfo.processInfo.isLowPowerModeEnabled])
         if renderVisible && ready { updatePointer(at: NSEvent.mouseLocation) }
     }
-    @objc func willSleep() { endDrag(); sleeping = true; voiceWake.stop(); updateVisibility() }
+    @objc func willSleep() { endDrag(); sleeping = true; wakePlayer?.stop(); voiceWake.stop(); updateVisibility() }
     @objc func didWake() { sleeping = false; appliedWake = nil; syncWakePreference(); updateVisibility() }
     @objc func powerChanged() { updateVisibility() }
     @objc func screensChanged() { pet.setFrame(clamp(pet.frame), display: true); updateBubblePosition() }
@@ -469,7 +471,12 @@ final class PetWebView: WKWebView {
                 let data = try await CompanionService.speech(text: text, preferences: preferences, key: key)
                 guard !Task.isCancelled, generation == self.voiceGeneration else { return }
                 try self.beginAudio(data, text: text)
-            } catch { if !Task.isCancelled { self.control.setStatus(error.localizedDescription, error: true) } }
+            } catch {
+                if !Task.isCancelled {
+                    self.control.setStatus(error.localizedDescription, error: true)
+                    self.showBubble("语音未播放：\(error.localizedDescription)")
+                }
+            }
             if generation == self.voiceGeneration { self.speechTask = nil; self.refreshVoiceBusy(followUp: true) }
         }
         refreshVoiceBusy()
@@ -480,6 +487,16 @@ final class PetWebView: WKWebView {
               let data = try? Data(contentsOf: url) else { return }
         do { try beginAudio(data, text: "我在呢。今天也陪你一起摸鱼。要是累了，就休息一会儿吧。嗯？你刚刚是不是在叫我？") }
         catch { control.setStatus("示例音频无法播放。", error: true) }
+    }
+    func playWakeChime() {
+        guard wakePlayer?.isPlaying != true,
+              let url = Bundle.main.resourceURL?.appendingPathComponent("web/audio/whale-maid/wake-chime.wav") else { return }
+        do {
+            wakePlayer = try AVAudioPlayer(contentsOf: url); wakePlayer?.volume = 0.7
+            wakePlayer?.prepareToPlay(); wakePlayer?.play()
+        } catch { diagnostics.append("唤醒提示音无法播放。") }
+        // A short nonverbal cue has its own player: do not close the active ASR
+        // turn, mark speech as busy, or animate the mouth for this sound.
     }
     func beginAudio(_ data: Data, text: String) throws {
         player = try AVAudioPlayer(data: data); player?.delegate = self; player?.isMeteringEnabled = true
@@ -509,9 +526,13 @@ final class PetWebView: WKWebView {
         let text = String(text.prefix(160)) + (text.count > 160 ? "…" : "")
         let label = bubbleLabel ?? NSTextField(wrappingLabelWithString: text); label.stringValue = text; label.font = .systemFont(ofSize: 13)
         label.textColor = NSColor(red: 0.17, green: 0.23, blue: 0.29, alpha: 1)
-        let bounds = (text as NSString).boundingRect(with: NSSize(width: 236, height: 220), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: label.font!])
-        let panel = bubble ?? PetPanel(contentRect: NSRect(x: 0, y: 0, width: 268, height: min(240, ceil(bounds.height) + 24)), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.setContentSize(NSSize(width: 268, height: min(240, ceil(bounds.height) + 24)))
+        let attributes: [NSAttributedString.Key: Any] = [.font: label.font!]
+        let available = (pet.screen ?? NSScreen.main)?.visibleFrame.width ?? 268
+        let width = min(268, max(56, min(available - 24, ceil((text as NSString).size(withAttributes: attributes).width) + 36)))
+        let bounds = (text as NSString).boundingRect(with: NSSize(width: width - 36, height: 220), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes)
+        let size = NSSize(width: width, height: min(240, max(42, ceil(bounds.height) + 24)))
+        let panel = bubble ?? PetPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.setContentSize(size)
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true; panel.ignoresMouseEvents = true
         panel.hidesOnDeactivate = false; panel.level = NSWindow.Level(rawValue: pet.level.rawValue + 1)

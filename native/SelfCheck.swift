@@ -31,6 +31,7 @@ import WebKit
         }
         if CommandLine.arguments.contains("--voice-check") { await runVoiceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--drag-check") { await runDragCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--feedback-check") { await runFeedbackCheck(output); NSApp.terminate(nil); return }
         await wait(2.0)
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         let profiling = CommandLine.arguments.contains("--profile")
@@ -199,6 +200,54 @@ import WebKit
             "scope": "Real keyword and speech inference on local Chinese spoken fixtures, through production audio gating and turn assembly; no live model/TTS provider calls. Microphone capture is verified separately in the installed app."]
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: output.appendingPathComponent("voice-report.json"), options: .atomic)
+        }
+    }
+    func runFeedbackCheck(_ output: URL) async {
+        await wait(0.8)
+        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        func captureBubble(_ name: String) {
+            if let view = bubble?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png"))
+            }
+        }
+        showBubble("我在，讲吧"); captureBubble("short-bubble")
+        let short = bubble?.frame.size ?? .zero
+        showBubble("好"); let tiny = bubble?.frame.size ?? .zero
+        showBubble("我在呢。今天也陪你一起摸鱼，累了就歇一会儿吧。窗外的天气看起来不错，要不要先喝口水，再继续刚才的事情？")
+        captureBubble("wrapped-bubble"); let long = bubble?.frame.size ?? .zero
+        checks["shortBubbleFitsText"] = short.width > tiny.width && short.width < 140 && short.height <= 44
+        checks["longBubbleWraps"] = long.width <= 268 && long.height > short.height
+        checks["bubbleStaysOnScreen"] = bubble.map { panel in NSScreen.screens.contains { $0.visibleFrame.insetBy(dx: -1, dy: -1).contains(panel.frame) } } ?? false
+        report["bubbleSizes"] = ["tiny": [tiny.width, tiny.height], "short": [short.width, short.height], "long": [long.width, long.height]]
+        voiceEvent(.woke); await wait(0.06)
+        checks["wakeChimePlaysLocally"] = wakePlayer?.isPlaying == true
+        checks["cueDoesNotStartMouth"] = await evaluate("window.whaleDiagnostics().speaking") as? Bool == false
+        report["chimeSeconds"] = wakePlayer?.duration ?? 0
+        await wait(0.5); checks["wakeChimeStops"] = wakePlayer?.isPlaying == false
+        if CommandLine.arguments.contains("--live-tts") {
+            do {
+                let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                    .appendingPathComponent("BlueFatFish/settings.json")
+                let p = try JSONDecoder().decode(PetPreferences.self, from: Data(contentsOf: file))
+                let key = try PetKeychain(service: "com.xjs.bluefatfish.credentials").read("voice")
+                let text = "我在呢，现在可以听到我的声音啦。"
+                let data = try await CompanionService.speech(text: text, preferences: p, key: key)
+                try data.write(to: output.appendingPathComponent("live-minimax.mp3"))
+                try beginAudio(data, text: text); await wait(0.9)
+                let state = await evaluate("window.whaleDiagnostics()") as? [String: Any] ?? [:]
+                checks["liveMiniMaxPlayback"] = player?.isPlaying == true && (player?.duration ?? 0) > 1
+                checks["liveSpeechDrivesMouth"] = state["speaking"] as? Bool == true && (state["peakVolume"] as? Double ?? 0) > 0.035
+                report["liveSpeech"] = ["provider": "MiniMax", "model": p.voiceModel, "voice": p.voiceID,
+                                       "seconds": player?.duration ?? 0, "bytes": data.count]
+                await capturePet(output.appendingPathComponent("speaking.png")); stopSpeech()
+            } catch { checks["liveMiniMaxPlayback"] = false; diagnostics.append(error.localizedDescription) }
+        }
+        report["checks"] = checks; report["errors"] = diagnostics
+        report["success"] = checks.values.allSatisfy { $0 } && diagnostics.isEmpty
+        report["scope"] = "Actual native bubble layout and local cue playback; --live-tts additionally makes one short MiniMax request and plays it through the production player/mouth bridge. No chat request or live microphone test."
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: output.appendingPathComponent("feedback-report.json"))
         }
     }
     func checkResize() async -> [String: Double] {

@@ -1,6 +1,6 @@
 {
   "name": "blue-fat-fish",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
     "native:check-service": "node scripts/check-native-service.mjs",
     "native:check-drag": "node scripts/check-native-drag.mjs",
     "native:check-voice": "node scripts/check-native-voice.mjs",
+    "native:check-feedback": "node scripts/check-native-feedback.mjs",
     "check": "node scripts/check.mjs",
     "check:eyes": "node scripts/check-eyes.mjs",
     "check:portrait": "node scripts/check-portrait.mjs",

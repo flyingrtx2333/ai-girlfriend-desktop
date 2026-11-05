@@ -1,0 +1,39 @@
+{
+  "bubbleSizes" : {
+    "long" : [
+      268,
+      72
+    ],
+    "short" : [
+      101,
+      42
+    ],
+    "tiny" : [
+      56,
+      42
+    ]
+  },
+  "checks" : {
+    "bubbleStaysOnScreen" : true,
+    "cueDoesNotStartMouth" : true,
+    "liveMiniMaxPlayback" : true,
+    "liveSpeechDrivesMouth" : true,
+    "longBubbleWraps" : true,
+    "shortBubbleFitsText" : true,
+    "wakeChimePlaysLocally" : true,
+    "wakeChimeStops" : true
+  },
+  "chimeSeconds" : 0.41999999999999998,
+  "errors" : [
+
+  ],
+  "liveSpeech" : {
+    "bytes" : 47796,
+    "model" : "speech-02-hd",
+    "provider" : "MiniMax",
+    "seconds" : 2.8799999999999999,
+    "voice" : "female-shaonv"
+  },
+  "scope" : "Actual native bubble layout and local cue playback; --live-tts additionally makes one short MiniMax request and plays it through the production player\/mouth bridge. No chat request or live microphone test.",
+  "success" : true
+}

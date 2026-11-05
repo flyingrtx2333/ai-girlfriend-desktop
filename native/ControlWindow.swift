@@ -351,6 +351,10 @@ final class FormDocumentView: NSView {
             }
             guard !p.model.isEmpty, p.model.count < 200, p.persona.count < 8000,
                   !p.voiceID.isEmpty, !p.voiceModel.isEmpty else { throw PetError("请检查模型、音色和角色设置。") }
+            if p.voiceEnabled && voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (removeVoiceKey || !companion.store.keychain.contains("voice")) {
+                throw PetError("请先填写 MiniMax 密钥。")
+            }
             p.alwaysOnTop = onTop.state == .on; p.performance = ["auto", "smooth", "paused"][max(0, performance.indexOfSelectedItem)]
             p.scale = scale.doubleValue
             if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }

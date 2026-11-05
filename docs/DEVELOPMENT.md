@@ -43,6 +43,7 @@ npm run native:open
 | 原生编译或打包 | `npm run native:build` |
 | 原生拖动、释放和回稳 | 构建后运行 `npm run native:check-drag`，需解锁且窗口可见 |
 | 唤醒与转写 | 构建后运行 `npm run native:check-voice`，需系统权限；不调用在线对话或 TTS |
+| 气泡与唤醒提示音 | 构建后运行 `npm run native:check-feedback`；额外传入 `-- --live-tts` 才使用已保存的 MiniMax 配置发出一次短语音请求 |
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
@@ -57,6 +58,12 @@ npm run native:open
 - 在已安装原生应用中，CUA 点击头部、身体分别看到了眯眼歪头与缩肩圆口。CUA 坐标拖动调用未造成窗口位移，不能记录为真实拖拽通过。
 
 这些记录是基线证据，不代表所有设备的持续帧率、耗电量、AI 回答质量或已经达到 AIRI 的精细角色表现。
+
+## v0.6.1 的气泡与声音
+
+[原生反馈记录](verification/feedback.json)验证了短气泡 101×42 点、长句气泡 268×72 点，以及本地提示音播放和结束。一次实际 MiniMax `speech-02-hd`／`female-shaonv` 请求返回 2.88 秒音频，经原生播放器播放并驱动口型。测试使用固定短句，不发送私人聊天历史；这不是实时麦克风、声学回声或完整语音对话验收。
+
+唤醒音由 `scripts/prepare-wake-chime.mjs` 离线合成并随应用打包，没有复制系统提示音。它使用独立播放器，不改动正在进行的转写任务。MiniMax 请求采用[官方同步语音接口](https://platform.minimax.cn/docs/api-reference/speech-t2a-http)。
 
 ## Git 约定
 
