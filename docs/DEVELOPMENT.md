@@ -53,6 +53,7 @@ npm run native:open
 | 聊天排版、停顿与口型 | 构建后运行 `npm run native:check-conversation`；独立示例配置，真实本机转写与已有 MiniMax 音频，无在线调用 |
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
+| Agent Git 状态、审阅、提交和工作树 | `npm run native:check-git`；独立公开仓库和已配置真实模型，实际核对提交、其他暂存内容、Hook 与工作树，不访问生产仓库 |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
 
 浏览器检查使用本机 Google Chrome，运行前需安装该浏览器。脚本输出写入被忽略的 `evidence/`。不默认运行全部历史脚本或 GitHub Actions。

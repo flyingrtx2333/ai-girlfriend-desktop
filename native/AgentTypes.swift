@@ -67,6 +67,7 @@ struct AgentApproval: Codable, Identifiable {
     var call: AgentToolCall
     var reason: String
     var workspace: String?
+    var gitDirectory: String?
     var intentID: String?
     var decision: String?
     var created = Date()
@@ -98,6 +99,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var contextSummary: String?
     var contextThroughID: String?
     var contextSize: Int?
+    var gitDirectory: String?
+    var gitReview: AgentGitReview?
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
 }
@@ -112,4 +115,8 @@ struct AgentToolResult {
     var failed = false
     var artifacts: [String] = []
     var sources: [String] = []
+    var stdout: String?
+    var stderr: String?
+    var exitCode: Int?
+    var truncated: Bool?
 }

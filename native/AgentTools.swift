@@ -4,16 +4,31 @@ import Foundation
     let store: AgentStore
     let taskID: String
     private var commands: [String: AgentCommand] = [:]
+    private var gitCalls: [String: AgentGit] = [:]
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
-    func cancel() { commands.values.forEach { $0.cancel() } }
+    func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() } }
+    func gitDirectory(for call: AgentToolCall) throws -> String? {
+        guard AgentGit.tools.contains(call.name), let task = store.task(taskID) else { return nil }
+        return try AgentGit.metadata(workspace: task.workspace, creating: call.name == "git_init").path
+    }
+    private func projectURL(_ path: String, files: AgentFiles, writing: Bool = false) throws -> URL {
+        let url = try files.resolve(path), value = url.path.lowercased()
+        let privateRoot = store.directory.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path.lowercased()
+        guard value != privateRoot && !value.hasPrefix(privateRoot + "/") else { throw PetError("请使用记忆和任务管理工具访问应用数据") }
+        let bundle = Bundle.main.bundleURL.path.lowercased()
+        if writing && (value == bundle || value.hasPrefix(bundle + "/")) { throw PetError("不能通过项目工具修改正在运行的应用") }
+        return url
+    }
 
-    static let names = ["list_directory", "read_file", "search_files", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"]
+    static let names = ["list_directory", "read_file", "search_files", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory"] + AgentGit.tools
     static func definitions(mode: AgentMode) -> [[String: Any]] {
         let string: [String: Any] = ["type": "string"], integer: [String: Any] = ["type": "integer"]
         func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
+            tool("git_status", "读取当前 Git 仓库分支与文件状态，只读，不暂存文件。", [:], []),
+            tool("git_diff", "读取指定文件相对 HEAD 的完整差异，返回 review_hash 供提交前核对。先用 git_status 找到具体文件，paths 不接受目录。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50]], ["paths"]),
             tool("read_memory", "读取全局或当前项目记忆及 sha256。修改记忆前先读取，保留其他内容。", ["scope": ["type": "string", "enum": ["global", "project"]]], ["scope"]),
             tool("write_memory", "用户明确要求记住/更正信息时保存记忆，必须使用 read_memory 返回的 sha256 作为 expected_hash。需要用户批准；问答/计划模式只能保存全局记忆。不要保存密钥。", ["scope": ["type": "string", "enum": ["global", "project"]], "content": string, "expected_hash": string], ["scope", "content", "expected_hash"]),
             tool("read_task_history", "按记录索引读取原始历史。offset 从 0 开始；单条内容较长时用 limit=1、content_offset 和 content_limit 分段查回。", ["offset": integer, "limit": integer, "content_offset": integer, "content_limit": integer], ["offset"]),
@@ -26,16 +41,39 @@ import Foundation
         if mode == .agent || mode == .goal {
             tools += [tool("write_file", "创建或完整写入项目文件，自动保存修改前检查点。", ["path": string, "content": string], ["path", "content"]),
                 tool("edit_file", "精确替换文件中的唯一文本片段；旧文本必须存在且唯一。", ["path": string, "old_text": string, "new_text": string], ["path", "old_text", "new_text"]),
-                tool("run_command", "在项目隔离环境运行 shell 命令，返回实际输出与退出码。停止会结束进程组。不要启动脱离进程组的守护进程。需要网络时明确 network=true。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"])]
+                tool("run_command", "在项目隔离环境运行 shell 命令，返回实际输出与退出码。停止会结束进程组。不要启动脱离进程组的守护进程。需要网络时明确 network=true。Git 元数据不可写；提交、初始化和工作树使用专用 Git 工具。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"]),
+                tool("git_commit", "只提交用户要求的具体文件，不推送。必须先 git_diff 审阅相同 paths，再原样传 review_hash。每次提交都需要用户批准，保留其他已暂存文件；文件变化后必须重新审阅。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50], "message": string, "review_hash": string], ["paths", "message", "review_hash"]),
+                tool("git_create_worktree", "从当前 HEAD 创建新分支和独立工作树，返回独立任务 ID 和路径，原项目不切换分支。需要批准。branch 必须是尚不存在的分支。", ["branch": string], ["branch"]),
+                tool("git_init", "用户要求将当前项目纳入 Git 时初始化本地仓库。需要批准，不自动提交或推送。", [:], [])]
         }
         if mode == .goal {
             tools.append(tool("finish_task", "仅在完整目标和计划都完成、实际结果已验证后调用。evidence 必须引用本任务真实工具调用ID、产物绝对路径或来源网址。", ["summary": string, "evidence": ["type": "array", "items": string]], ["summary", "evidence"]))
         }
         return tools
     }
-    func approvalReason(for call: AgentToolCall) throws -> String? {
+    func approvalReason(for call: AgentToolCall, gitDirectory: String? = nil) throws -> String? {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         guard Self.names.contains(call.name) else { throw PetError("未知工具：\(call.name)") }
+        if ["git_commit", "git_create_worktree", "git_init"].contains(call.name) {
+            guard ![.ask, .plan].contains(task.mode) else { throw PetError("当前模式不能修改 Git，请切换到 Agent 模式") }
+            if call.name == "git_commit" {
+                guard let requested = call.object["paths"] as? [String], let hash = call.object["review_hash"] as? String, let review = task.gitReview,
+                      review.hash == hash, let directory = gitDirectory,
+                      try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: directory)).paths(requested) == review.paths else { throw PetError("请先用 git_diff 审阅相同文件，再提交其 review_hash") }
+                return "提交 \(review.paths.count) 个文件" + (directory.hasPrefix((task.workspace ?? "") + "/") ? "" : " · Git 元数据：" + directory)
+            }
+            return (call.name == "git_init" ? "初始化本地 Git 仓库" : "创建分支工作树：" + (call.object["branch"] as? String ?? "")) + (gitDirectory.map { "\n" + $0 } ?? "")
+        }
+        if let gitDirectory {
+            let files = try AgentFiles(workspace: task.workspace)
+            if gitDirectory != files.root.path && !gitDirectory.hasPrefix(files.root.path + "/"), task.gitDirectory != gitDirectory { return "连接 Git 仓库元数据：" + gitDirectory }
+            if call.name == "git_diff", let paths = call.object["paths"] as? [String] {
+                for path in paths {
+                    let relative = files.relative(try files.resolve(path))
+                    if AgentFiles.sensitive(relative) { return "读取受保护文件差异：" + relative }
+                }
+            }
+        }
         if call.name == "write_memory" {
             guard let value = call.object["scope"] as? String, let scope = AgentMemoryScope(rawValue: value), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
             if scope == .project && [.ask, .plan].contains(task.mode) { throw PetError("当前模式不能修改项目记忆") }
@@ -46,7 +84,7 @@ import Foundation
         if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改文件或执行命令，请切换到 Agent 模式") }
         if ["read_file", "write_file", "edit_file", "list_directory", "search_files"].contains(call.name) {
             let files = try AgentFiles(workspace: task.workspace), path = call.object["path"] as? String ?? "."
-            let url = try files.resolve(path)
+            let url = try projectURL(path, files: files, writing: ["write_file", "edit_file"].contains(call.name))
             if AgentFiles.sensitive(files.relative(url)) { return "访问受保护文件：\(files.relative(url))" }
         }
         if call.name == "ask_user" { return call.object["question"] as? String ?? "需要补充信息" }
@@ -58,7 +96,7 @@ import Foundation
         if mutating && task.permission == .review { return "修改项目文件" }
         return nil
     }
-    func execute(_ call: AgentToolCall) async throws -> AgentToolResult {
+    func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         if !(task.queuedInputs ?? []).isEmpty { throw PetError("用户已更新要求，此操作尚未执行") }
@@ -67,6 +105,20 @@ import Foundation
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }
         switch call.name {
+        case "git_status", "git_diff", "git_commit", "git_create_worktree", "git_init":
+            guard let gitDirectory else { throw PetError("Git 元数据尚未授权") }
+            let git = try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: gitDirectory)); gitCalls[call.id] = git; defer { gitCalls[call.id] = nil }
+            let data: Data
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if call.name == "git_status" { data = try encoder.encode(await git.status()) }
+            else if call.name == "git_commit" {
+                guard let paths = args["paths"] as? [String] else { throw PetError("请选择具体文件") }
+                data = try encoder.encode(await git.commit(paths: paths, message: string("message"), reviewHash: string("review_hash")))
+            }
+            else if call.name == "git_create_worktree" { data = try encoder.encode(await git.createWorktree(branch: string("branch"))) }
+            else if call.name == "git_init" { data = try encoder.encode(await git.initialize()) }
+            else { guard let paths = args["paths"] as? [String] else { throw PetError("请选择具体文件") }; data = try encoder.encode(await git.diff(paths)) }
+            return AgentToolResult(text: String(decoding: data, as: UTF8.self))
         case "read_memory", "write_memory":
             guard let scope = AgentMemoryScope(rawValue: try string("scope")), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
             let memory = call.name == "read_memory" ? try AgentMemory.snapshot(scope, store: store, taskID: taskID)
@@ -87,13 +139,17 @@ import Foundation
                 if output.utf8.count > 24_000 { output += "[请增大 offset 继续读取]"; break }
             }
             return AgentToolResult(text: output)
-        case "list_directory": return AgentToolResult(text: try AgentFiles(workspace: task.workspace).list(args["path"] as? String ?? "."))
+        case "list_directory":
+            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
+            return AgentToolResult(text: try files.listResolved(url))
         case "read_file":
-            let files = try AgentFiles(workspace: task.workspace), path = try string("path"), url = try files.resolve(path)
-            return AgentToolResult(text: try files.read(path, offset: args["offset"] as? Int ?? 1, limit: args["limit"] as? Int ?? 200), sources: [url.absoluteString])
-        case "search_files": return AgentToolResult(text: try await AgentFiles(workspace: task.workspace).search(path: args["path"] as? String ?? ".", pattern: string("pattern"), namesOnly: args["names_only"] as? Bool ?? false))
+            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files)
+            return AgentToolResult(text: try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: args["limit"] as? Int ?? 200), sources: [url.absoluteString])
+        case "search_files":
+            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
+            return AgentToolResult(text: try await files.search(path: url.path, pattern: string("pattern"), namesOnly: args["names_only"] as? Bool ?? false, excluding: [store.directory.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path.lowercased()]))
         case "write_file", "edit_file":
-            let files = try AgentFiles(workspace: task.workspace), url = try files.resolve(string("path"))
+            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, writing: true)
             let existing = FileManager.default.fileExists(atPath: url.path), before = existing ? try files.readData(url) : nil
             guard (before?.count ?? 0) < 4_000_000 else { throw PetError("文件过大，请分解操作") }
             let content: String
@@ -126,7 +182,8 @@ import Foundation
             let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("tmp", isDirectory: true)
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
             let process = AgentCommand(); commands[call.id] = process; defer { commands[call.id] = nil }
-            return try await process.run(command: command, workspace: files.root, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60))
+            let git = task.gitDirectory.flatMap { candidate -> URL? in guard (try? AgentGit.metadata(workspace: task.workspace).path) == candidate else { return nil }; return URL(fileURLWithPath: candidate) }
+            return try await process.run(command: command, workspace: files.root, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60), gitDirectory: git, protectedData: store.directory.deletingLastPathComponent())
         case "update_plan":
             guard let steps = args["steps"] as? [[String: String]], !steps.isEmpty, steps.count <= 30,
                   steps.allSatisfy({ !($0["title"] ?? "").isEmpty && ["pending", "in_progress", "completed"].contains($0["status"] ?? "") }) else { throw PetError("计划格式无效") }

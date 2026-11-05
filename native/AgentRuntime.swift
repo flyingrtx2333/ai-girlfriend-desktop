@@ -64,8 +64,7 @@ import Foundation
         run?.task?.cancel(); run?.tools.cancel()
         store.update(id) { record in
             record.status = .stopped
-            for call in record.pendingCalls { record.messages.append(AgentMessage(role: "tool", content: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。", toolCallID: call.id)) }
-            record.pendingCalls = []
+            Self.skipPending(&record, reason: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。")
             record.messages += (record.queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) }; record.queuedInputs = []
             record.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
             for i in record.events.indices where ["running", "waiting"].contains(record.events[i].status) { record.events[i].status = "stopped" }
@@ -78,7 +77,10 @@ import Foundation
               let task = store.task(taskID), task.status == .waiting,
               task.pendingCalls.first?.id == callID else { return }
         store.update(taskID) { record in
-            if let i = record.approvals.lastIndex(where: { $0.call.id == callID && $0.decision == nil }) { record.approvals[i].decision = decision }
+            if let i = record.approvals.lastIndex(where: { $0.call.id == callID && $0.decision == nil }) {
+                record.approvals[i].decision = decision
+                if decision == "allow", let directory = record.approvals[i].gitDirectory { record.gitDirectory = directory }
+            }
             record.status = .ready
         }
         start(taskID)
@@ -151,22 +153,23 @@ import Foundation
                     if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                     var result: AgentToolResult, humanAnswer: String?
                     do {
-                        guard let object = try JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any], !object.isEmpty else { throw PetError("工具参数不是完整 JSON，请读取后重试或拆小写入内容") }
+                        guard (try JSONSerialization.jsonObject(with: Data(call.arguments.utf8))) is [String: Any] else { throw PetError("工具参数不是完整 JSON，请读取后重试或拆小写入内容") }
+                        let gitDirectory = try run.tools.gitDirectory(for: call)
                         let intent = task.messages.last(where: { $0.role == "user" })?.id
-                        let approval = task.approvals.last { $0.call.id == call.id && $0.call.name == call.name && $0.call.arguments == call.arguments && $0.workspace == task.workspace }
-                        let denied = task.approvals.contains { $0.call.name == call.name && $0.call.arguments == call.arguments && $0.decision == "deny" && $0.intentID == intent }
+                        let approval = task.approvals.last { $0.call.id == call.id && $0.call.name == call.name && $0.call.arguments == call.arguments && $0.workspace == task.workspace && $0.gitDirectory == gitDirectory }
+                        let denied = task.approvals.contains { $0.call.name == call.name && $0.call.arguments == call.arguments && $0.decision == "deny" && $0.intentID == intent && $0.workspace == task.workspace && $0.gitDirectory == gitDirectory }
                         if denied || approval?.decision == "deny" { result = AgentToolResult(text: "用户已拒绝此操作，请改用其他方案，不要再次请求相同操作。", failed: true) }
                         else if call.name == "ask_user", let answer = approval?.decision, answer.hasPrefix("answer:") {
                             humanAnswer = String(answer.dropFirst(7)); result = AgentToolResult(text: "用户答复：" + answer.dropFirst(7))
                         }
-                        else if let reason = try run.tools.approvalReason(for: call), approval?.decision != "allow" {
+                        else if let reason = try run.tools.approvalReason(for: call, gitDirectory: gitDirectory), approval?.decision != "allow" {
                             store.update(id) { record in
-                                if approval == nil { record.approvals.append(AgentApproval(call: call, reason: reason, workspace: task.workspace, intentID: intent)) }
+                                if approval == nil { record.approvals.append(AgentApproval(call: call, reason: reason, workspace: task.workspace, gitDirectory: gitDirectory, intentID: intent)) }
                                 record.status = .waiting
                                 if let i = record.events.firstIndex(where: { $0.id == eventID }) { record.events[i].status = "waiting" }
                             }
                             onChange?(id); return
-                        } else { result = try await run.tools.execute(call) }
+                        } else { result = try await run.tools.execute(call, gitDirectory: gitDirectory) }
                     } catch {
                         if Task.isCancelled { throw CancellationError() }
                         result = AgentToolResult(text: error.localizedDescription, failed: true)

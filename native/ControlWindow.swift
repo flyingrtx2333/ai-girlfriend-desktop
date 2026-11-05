@@ -67,12 +67,14 @@ final class FormDocumentView: NSView {
     private var pendingRender: DispatchWorkItem?
     private let taskSidebar = AgentTaskSidebar(), projectButton = NSButton(), modePopup = NSPopUpButton(), permissionPopup = NSPopUpButton()
     private let resumeButton = NSButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
+    private let gitButton = NSButton(title: "Git", target: nil, action: nil)
     private let approvalPanel = NSStackView(), approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView()
     private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
     private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
+    private var gitWindow: AgentGitWindow?
 
     init(companion: AppDelegate) {
         self.companion = companion
@@ -259,9 +261,10 @@ final class FormDocumentView: NSView {
             for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
             for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 11); popup.target = self; popup.action = #selector(agentOptionsChanged) }
             modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
-            for button in [resumeButton, resultsButton] { button.bezelStyle = .inline; button.font = .systemFont(ofSize: 11); button.target = self }
+            for button in [resumeButton, gitButton, resultsButton] { button.bezelStyle = .inline; button.font = .systemFont(ofSize: 11); button.target = self }
             resumeButton.action = #selector(resumeAgentTask); resultsButton.action = #selector(showAgentRecords)
-            let toolbar = stack([projectButton, modePopup, permissionPopup, NSView(), resumeButton, resultsButton], spacing: 6)
+            gitButton.action = #selector(showAgentGit)
+            let toolbar = stack([projectButton, modePopup, permissionPopup, NSView(), resumeButton, gitButton, resultsButton], spacing: 6)
             configureApprovalPanel(); contents = [toolbar, history, approvalPanel, status, entry]
         }
         let column = stack(contents, vertical: true, spacing: 14)
@@ -769,14 +772,20 @@ final class FormDocumentView: NSView {
         renderAgentMessages()
     }
     @objc func chooseProject() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.status != .running && task.status != .waiting else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择项目"
         if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
         guard let window else { return }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            if !task.messages.isEmpty && task.workspace != url.path {
+            if task.workspace == nil {
+                self.companion?.agentRuntime?.cancel(task.id)
+                tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }
+                if !task.messages.isEmpty { self.companion?.agentRuntime?.submit("已选择项目：" + url.resolvingSymlinksInPath().path + "。继续原任务。", taskID: task.id) }
+                self.renderAgentMessages()
+            } else if !task.messages.isEmpty && task.workspace != url.path {
                 self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode)
+                tasks.update(id) { $0.draft = self.composer.string }
                 self.selectAgentTask(id)
             } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }; self.renderAgentMessages() }
         }
@@ -788,6 +797,12 @@ final class FormDocumentView: NSView {
     }
     @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
     @objc func showAgentRecords() { presentAgentRecords(section: 0) }
+    @objc func showAgentGit() {
+        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        gitWindow?.window?.performClose(nil)
+        gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next) }
+        gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
+    }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
     func presentAgentRecords(section: Int) {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
@@ -822,6 +837,8 @@ final class FormDocumentView: NSView {
         let running = companion?.agentRuntime?.isRunning(task.id) == true
         let locked = running || task.status == .waiting
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived }
+        projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived
+        gitButton.isEnabled = task.workspace != nil
         resumeButton.isHidden = running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
         resultsButton.title = task.plan.isEmpty ? "记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
@@ -866,6 +883,7 @@ final class FormDocumentView: NSView {
                 visibleApproval = (task.id, call.id)
                 approvalTitle.stringValue = approval.reason
                 approvalText.string = (try? JSONSerialization.data(withJSONObject: call.object, options: [.prettyPrinted, .sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
+                if call.name == "git_commit", let review = task.gitReview, review.hash == call.object["review_hash"] as? String { approvalText.string += "\n\n" + review.diff }
                 approvalTitle.toolTip = approval.reason
             }
             approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !task.archived; denyButton.isEnabled = !task.archived; approvalPanel.isHidden = false
@@ -880,7 +898,7 @@ final class FormDocumentView: NSView {
 
 extension ControlWindow {
     func persistAgentDraft() { saveAgentDraft() }
-    func checkAgentLayout(_ output: URL) async -> [String: Bool] {
+    func checkAgentLayout(_ output: URL, includeArtifacts: Bool = true) async -> [String: Bool] {
         guard let tasks = companion?.agentStore, let originalID = tasks.selectedID else { return ["nativeAgentLayout": false] }
         let draft = composer.string
         composer.string = "尚未发送的 Agent 草稿"; composer.didChangeText(); saveAgentDraft()
@@ -898,8 +916,10 @@ extension ControlWindow {
             checks["nativeAgentLayout-" + name] = taskSidebar.bounds.width > 150 && taskSidebar.bounds.height > 100 && composer.bounds.width > 350 && sendButton.bounds.width == 34 && !chat.hasAmbiguousLayout && !modePopup.hasAmbiguousLayout && messageRows.values.allSatisfy { !$0.hasAmbiguousLayout && $0.label.bounds.width > 100 }
         }
         window?.setContentSize(NSSize(width: 980, height: 700)); composer.string = draft; composer.didChangeText(); saveAgentDraft(); renderAgentMessages()
-        let records = AgentRecordWindow(store: tasks, taskID: originalID)
-        checks.merge(await records.checkPreview(output)) { _, value in value }; records.close()
+        if includeArtifacts {
+            let records = AgentRecordWindow(store: tasks, taskID: originalID)
+            checks.merge(await records.checkPreview(output)) { _, value in value }; records.close()
+        }
         return checks
     }
 }

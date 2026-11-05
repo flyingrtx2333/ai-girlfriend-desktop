@@ -73,7 +73,9 @@ struct AgentFiles: Sendable {
         guard unlinkat(parent, name, 0) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
     func read(_ path: String, offset: Int, limit: Int) throws -> String {
-        let url = try resolve(path)
+        try readResolved(resolve(path), offset: offset, limit: limit)
+    }
+    func readResolved(_ url: URL, offset: Int, limit: Int) throws -> String {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         guard (attributes[.size] as? Int ?? 0) <= 4_000_000 else { throw PetError("文件较大，请用搜索定位内容或通过终端分段读取") }
         let data = try readData(url)
@@ -87,7 +89,9 @@ struct AgentFiles: Sendable {
         return result
     }
     func list(_ path: String) throws -> String {
-        let directory = try resolve(path)
+        try listResolved(resolve(path))
+    }
+    func listResolved(_ directory: URL) throws -> String {
         let (fd, _) = try parentDescriptor(directory.appendingPathComponent(".directory"), create: false)
         guard let iterator = fdopendir(fd) else { close(fd); throw PetError("目录无法读取") }; defer { closedir(iterator) }
         var entries: [String] = [], count = 0
@@ -99,7 +103,7 @@ struct AgentFiles: Sendable {
         }
         return entries.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.prefix(300).joined(separator: "\n") + (count > 300 ? "\n[仅显示前 300 项]" : "")
     }
-    func search(path: String, pattern: String, namesOnly: Bool) async throws -> String {
+    func search(path: String, pattern: String, namesOnly: Bool, excluding: [String] = []) async throws -> String {
         let directory = try resolve(path), root = self.root
         guard !pattern.isEmpty, pattern.count <= 1000 else { throw PetError("请输入有效搜索内容") }
         let job = Task.detached(priority: .utility) { () throws -> String in
@@ -109,6 +113,7 @@ struct AgentFiles: Sendable {
             var output: [String] = [], visited = 0, bytes = 0
             while let url = iterator.nextObject() as? URL {
                 try Task.checkCancellation(); visited += 1
+                if excluding.contains(where: { url.path.lowercased() == $0 || url.path.lowercased().hasPrefix($0 + "/") }) { iterator.skipDescendants(); continue }
                 if Self.sensitive(self.relative(url)) { iterator.skipDescendants(); continue }
                 if visited > 20_000 { output.append("[达到扫描上限，请缩小目录]"); break }
                 let value = try url.resourceValues(forKeys: Set(keys))

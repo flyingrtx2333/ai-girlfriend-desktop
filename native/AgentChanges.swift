@@ -32,7 +32,7 @@ import Foundation
             try Data().write(to: empty, options: .atomic); before = empty.path
         }
         let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let result = try await AgentCommand().run(command: "/usr/bin/diff -u -- " + quote(before) + " " + quote(current.path), workspace: files.root, scratch: scratch, network: false, timeout: 10)
+        let result = try await AgentCommand().run(command: "/usr/bin/diff -u -- " + quote(before) + " " + quote(current.path), workspace: files.root, scratch: scratch, network: false, timeout: 10, protectedData: store.directory.deletingLastPathComponent())
         return result.text
     }
 }

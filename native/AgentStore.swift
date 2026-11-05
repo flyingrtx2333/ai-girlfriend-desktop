@@ -45,7 +45,7 @@ import Foundation
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []
-        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.summary = String(value.summary.prefix(240))
+        value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.summary = String(value.summary.prefix(240))
         return value
     }
     func task(_ id: String) -> AgentTaskRecord? {
@@ -66,6 +66,7 @@ import Foundation
         task.status = .stopped; task.goalAccepted = nil; task.completionEvidence = nil
         for call in task.pendingCalls {
             task.messages.append(AgentMessage(role: "tool", content: "应用中断，此操作的执行结果未知。继续前检查实际状态，不直接重放。", toolCallID: call.id))
+            if !task.events.contains(where: { $0.toolCallID == call.id }) { task.events.append(AgentEvent(kind: "tool", title: call.name, detail: "应用中断，执行结果未知", status: "stopped", toolCallID: call.id)) }
         }
         task.pendingCalls = []
         task.messages += (task.queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) }; task.queuedInputs = []
