@@ -30,6 +30,7 @@ struct AgentMessage: Codable, Identifiable {
     var toolCallID: String?
     var attachmentIDs: [String]?
     var nativeContext: Bool?
+    var visuals: [AgentVisualPart]?
     var isHumanInput: Bool { role == "user" && nativeContext != true }
     var wire: [String: Any] {
         let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
@@ -135,4 +136,5 @@ struct AgentToolResult {
     var stderr: String?
     var exitCode: Int?
     var truncated: Bool?
+    var visuals: [AgentVisualPart]?
 }

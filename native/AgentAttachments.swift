@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct AgentAttachment: Codable, Identifiable, Sendable {
     var id = UUID().uuidString
@@ -45,7 +46,8 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             let files = try AgentFiles(workspace: selected.deletingLastPathComponent().path), local = stage.appendingPathComponent("source." + type)
             let copied: (Int, String) = try {
                 let data = try files.readData(selected, maximum: 20_000_000)
-                try data.write(to: local, options: .atomic); try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: local.path)
+                try data.write(to: local, options: .atomic); try preserveQuarantine(from: selected, to: local)
+                try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: local.path)
                 return (data.count, AgentFiles.hash(data))
             }()
             let scratch = stage.appendingPathComponent("parser-tmp", isDirectory: true)
@@ -116,5 +118,29 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
                 }
             }
         } catch { for url in created { try? FileManager.default.removeItem(at: url) }; throw error }
+    }
+    static func copyDraft(store: AgentStore, sourceID: String, targetID: String) throws {
+        guard let source = store.task(sourceID), let target = store.task(targetID) else { throw PetError("任务不存在") }
+        let ids = source.draftAttachmentIDs ?? [], files = (source.attachments ?? []).filter { ids.contains($0.id) }
+        guard !files.isEmpty else { return }
+        try copyForFork(store: store, sourceID: sourceID, targetID: targetID, files: files)
+        store.update(targetID, persist: false) { $0.attachments = files; $0.draftAttachmentIDs = ids }
+        do { try store.save(targetID) }
+        catch {
+            store.update(targetID, persist: false) { $0.attachments = target.attachments; $0.draftAttachmentIDs = target.draftAttachmentIDs }
+            for file in files { if let url = try? directory(store: store, taskID: targetID, id: file.id) { try? FileManager.default.removeItem(at: url) } }
+            throw error
+        }
+    }
+    private nonisolated static func preserveQuarantine(from source: URL, to target: URL) throws {
+        let name = "com.apple.quarantine"
+        let size = getxattr(source.path, name, nil, 0, 0, XATTR_NOFOLLOW)
+        if size < 0 { if errno == ENOATTR || errno == ENOTSUP { return }; throw PetError("无法读取文件来源标记") }
+        guard size <= 16_384 else { throw PetError("文件来源标记过大") }
+        var data = Data(count: size)
+        let read = data.withUnsafeMutableBytes { getxattr(source.path, name, $0.baseAddress, size, 0, XATTR_NOFOLLOW) }
+        guard read == size else { throw PetError("文件来源标记已变化") }
+        let result = data.withUnsafeBytes { setxattr(target.path, name, $0.baseAddress, size, 0, XATTR_NOFOLLOW) }
+        guard result == 0 else { throw PetError("无法保留文件来源标记") }
     }
 }

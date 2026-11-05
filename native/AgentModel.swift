@@ -1,13 +1,13 @@
 import Foundation
 
 enum AgentModel {
-    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]],
+    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:],
                                 onText: @escaping (String) -> Void) async throws -> AgentTurn {
         let url = try CompanionService.endpoint(preferences.endpoint, chat: true)
         guard !key.isEmpty || CompanionService.isLocal(url.host ?? "") else { throw PetError("请先填写对话 Token") }
         var p = preferences; p.persona = system
         var body = try p.requestBody(messages: [], stream: true)
-        body["messages"] = [["role": "system", "content": system]] + messages.map(\.wire)
+        body["messages"] = [["role": "system", "content": system]] + AgentAttachmentVisuals.wire(messages: messages, inputs: visuals)
         if !tools.isEmpty { body["tools"] = tools; body["tool_choice"] = "auto"; body["parallel_tool_calls"] = false }
         body["stream_options"] = ["include_usage": true]
         let request = try CompanionService.request(url: url, key: key, body: body)

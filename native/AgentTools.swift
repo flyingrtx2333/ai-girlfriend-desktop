@@ -40,7 +40,7 @@ import Foundation
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
             tool("list_attachments", "列出用户已提交给当前任务的附件、编号和页/工作表标题；offset 从 0 开始。草稿附件不可读。不需要项目文件夹。", ["offset": integer, "limit": integer], []),
-            tool("read_attachment", "读取用户已提交附件的指定页/工作表/幻灯片，part 从 1 开始，offset 为行号（从 1 开始）。返回实际文字、来源和提取范围；扫描 PDF 按页本机 OCR。图片在此仅返回 OCR 文字，不代表已理解非文字内容。", ["id": string, "part": integer, "offset": integer, "limit": integer], ["id"]),
+            tool("read_attachment", "读取已提交附件，part 为页/工作表/幻灯片编号（从 1 开始），offset 为行号。返回文字、来源和范围；扫描 PDF 按页本机 OCR。视觉模型启用时，同时附图片或该 PDF 页的实际图片；否则仅返回文字。Office 图表和图片不作视觉解读。", ["id": string, "part": integer, "offset": integer, "limit": integer], ["id"]),
             tool("search_attachment", "在已提交附件的初始提取文字中查找关键词，返回页/工作表及实际行号。扫描页和额外页请用 read_attachment 按页读取，搜索不代表已经 OCR 全文。", ["id": string, "query": string], ["id", "query"]),
             tool("index_project", "在本机增量更新项目全文索引，跳过凭据、隐藏文件、构建目录及 Git 忽略文件。不调用模型。单文件上限 512KB、总文本 16MB、5000 文件；返回实际覆盖范围。rebuild=true 完整重建。", ["rebuild": ["type": "boolean"]], []),
             tool("search_project", "从当前项目索引检索实现、文档或符号，返回实际文件、行号和 sha256。每次先增量更新并核对命中文件。query 使用 1 至 6 个关键词或短语，空格分隔；非语义向量搜索。找到后用 read_file 核对上下文，回答引用路径和行号。", ["query": string, "limit": integer], ["query"]),
@@ -153,7 +153,8 @@ import Foundation
                 if part.ocr == true { text += "[本机 OCR，需核对原图]\n" }
                 text += (file.notes ?? []).map { "[\($0)]" }.joined(separator: "\n")
                 let source = "attachment://\(id)/part/\(number)#L\(start + 1)"
-                return AgentToolResult(text: text, sources: [source])
+                let visuals = file.fileExtension == "pdf" || AgentDocument.imageTypes.contains(file.fileExtension) ? [AgentVisualPart(id: id, part: number)] : nil
+                return AgentToolResult(text: text, sources: [source], visuals: visuals)
             }
             let query = try string("query"); guard !query.isEmpty, query.count <= 500 else { throw PetError("请输入有效关键词") }
             let document = try AgentAttachments.content(store: store, taskID: taskID, id: id)

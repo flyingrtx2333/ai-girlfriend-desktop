@@ -76,6 +76,8 @@ final class FormDocumentView: NSView {
     private var recordWindow: AgentRecordWindow?
     private var gitWindow: AgentGitWindow?
     private var knowledgeWindow: AgentKnowledgeWindow?
+    private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
+    private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
 
     init(companion: AppDelegate) {
         self.companion = companion
@@ -243,13 +245,17 @@ final class FormDocumentView: NSView {
         sendButton.target = self; sendButton.action = #selector(send)
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
         modelCaption.font = .systemFont(ofSize: 11); modelCaption.textColor = .secondaryLabelColor
-        let fill = NSView(); let entryBar = stack([modelCaption, fill, sendButton], spacing: 8)
+        attachmentButton.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: "添加附件"); attachmentButton.isBordered = false
+        attachmentButton.target = self; attachmentButton.action = #selector(addAttachments); attachmentButton.toolTip = "添加附件"
+        attachmentButton.widthAnchor.constraint(equalToConstant: 24).isActive = true; attachmentButton.isHidden = companion?.usesAgent != true
+        let fill = NSView(); let entryBar = stack([attachmentButton, modelCaption, fill, sendButton], spacing: 8)
         let entry = NSView(); entry.translatesAutoresizingMaskIntoConstraints = false; entry.wantsLayer = true
         entry.layer?.backgroundColor = NSColor(white: 0.995, alpha: 1).cgColor; entry.layer?.cornerRadius = 16
         entry.layer?.borderWidth = 1; entry.layer?.borderColor = NSColor(white: 0.90, alpha: 1).cgColor
-        entry.addSubview(input); entry.addSubview(entryBar); input.translatesAutoresizingMaskIntoConstraints = false
+        entry.addSubview(draftAttachments); entry.addSubview(input); entry.addSubview(entryBar); input.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.heightAnchor.constraint(equalToConstant: 60),
+            draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8),
+            input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor, constant: 0), input.heightAnchor.constraint(equalToConstant: 60),
             entryBar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 16), entryBar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryBar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4), entryBar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
@@ -593,8 +599,10 @@ final class FormDocumentView: NSView {
     }
     @objc private func send() {
         guard let companion else { return }
-        if busy && (companion.usesAgent == false || composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { companion.cancelConversation(); return }
-        if companion.send(composer.string) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft() }
+        guard importTaskID != companion.agentStore?.selectedID || attachmentImport == nil else { return }
+        let files = companion.agentStore?.selected?.draftAttachmentIDs ?? []
+        if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(); return }
+        if companion.send(composer.string, attachmentIDs: files) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
     }
     @objc private func clear() {
         if let id = companion?.agentStore?.selectedID { agentTaskAction(id, action: "archive") }
@@ -721,9 +729,58 @@ final class FormDocumentView: NSView {
 
 @MainActor private extension ControlWindow {
     func updateSendButton() {
-        let stopping = busy && (companion?.usesAgent != true || composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        let files = companion?.agentStore?.selected?.draftAttachmentIDs ?? []
+        let stopping = busy && (companion?.usesAgent != true || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty))
         sendButton.image = NSImage(systemSymbolName: stopping ? "stop.fill" : "arrow.up", accessibilityDescription: stopping ? "停止任务" : busy ? "补充要求" : "发送")
         sendButton.setAccessibilityLabel(stopping ? "停止任务" : busy ? "补充要求" : "发送")
+        sendButton.isEnabled = importTaskID != companion?.agentStore?.selectedID || attachmentImport == nil
+    }
+    @objc func addAttachments() {
+        guard let store = companion?.agentStore, let task = store.selected, !task.archived, task.kind != "wiki", let window else { return }
+        if attachmentImport != nil { if importTaskID == task.id { attachmentImport?.cancel() }; return }
+        guard (task.draftAttachmentIDs?.count ?? 0) < 6 else { setStatus("每条消息最多 6 个附件", error: true); return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = true; panel.prompt = "添加"
+        let owner = task.id
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let self, self.attachmentImport == nil else { return }
+            let urls = panel.urls
+            guard urls.count + (store.task(owner)?.draftAttachmentIDs?.count ?? 0) <= 6 else { self.setStatus("每条消息最多 6 个附件", error: true); return }
+            self.beginAttachmentImport(urls, store: store, taskID: owner)
+        }
+    }
+    func beginAttachmentImport(_ urls: [URL], store: AgentStore, taskID: String) {
+        importTaskID = taskID
+        attachmentImport = Task { [weak self] in
+            guard let self else { return }; var failure: String?
+            do {
+                for url in urls {
+                    try Task.checkCancellation(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    _ = try await AgentAttachments.importFile(url, store: store, taskID: taskID)
+                }
+            } catch { failure = Task.isCancelled ? "已取消添加" : error.localizedDescription }
+            attachmentImport = nil; importTaskID = nil; renderMessages()
+            if let failure { setStatus(failure, error: true) }
+        }
+        renderMessages()
+    }
+    func renderDraftAttachments(_ task: AgentTaskRecord) {
+        let owner = task.id, importing = importTaskID == owner && attachmentImport != nil
+        let ids = task.draftAttachmentIDs ?? [], values = (task.attachments ?? []).filter { ids.contains($0.id) }
+        draftAttachments.onOpen = { [weak self] id in self?.openAttachment(taskID: owner, id: id) }
+        draftAttachments.onRemove = { [weak self] id in
+            guard let self, let store = companion?.agentStore else { return }
+            do { try AgentAttachments.removeDraft(store: store, taskID: owner, id: id); renderMessages() }
+            catch { setStatus(error.localizedDescription, error: true) }
+        }
+        draftAttachments.update(values, removable: true, enabled: !importing)
+        attachmentButton.image = NSImage(systemSymbolName: importing ? "xmark.circle" : "paperclip", accessibilityDescription: importing ? "取消添加" : "添加附件")
+        attachmentButton.toolTip = importing ? "取消添加" : "添加附件"
+        attachmentButton.isEnabled = !task.archived && task.kind != "wiki" && (attachmentImport == nil || importing)
+    }
+    func openAttachment(taskID: String, id: String, part: Int = 1) {
+        guard let store = companion?.agentStore else { return }
+        do { attachmentWindow?.window?.performClose(nil); attachmentWindow = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, part: part); attachmentWindow?.showWindow(nil); attachmentWindow?.window?.makeKeyAndOrderFront(nil) }
+        catch { setStatus(error.localizedDescription, error: true) }
     }
     func composerChanged() {
         updateSendButton(); draftSave?.cancel()
@@ -788,6 +845,8 @@ final class FormDocumentView: NSView {
                 self.renderAgentMessages()
             } else if !task.messages.isEmpty && task.workspace != url.path {
                 self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode)
+                do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
+                catch { self.selectAgentTask(task.id); self.setStatus(error.localizedDescription, error: true); return }
                 tasks.update(id) { $0.draft = self.composer.string }
                 self.selectAgentTask(id)
             } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }; self.renderAgentMessages() }
@@ -860,14 +919,14 @@ final class FormDocumentView: NSView {
         resumeButton.isHidden = running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
         resultsButton.title = task.plan.isEmpty ? "记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
-        setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
+        renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
         let queueCount = task.queuedCount
         let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
         setStatus(state, error: task.status == .failed || tasks.writeError != nil)
         let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""
         modelCaption.stringValue = (task.model.isEmpty ? companion?.store.preferences.model ?? "" : task.model) + context
         let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
-        let messages = task.messages.filter { ["user", "assistant"].contains($0.role) }
+        let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         var ids: [String] = []
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
@@ -891,9 +950,11 @@ final class FormDocumentView: NSView {
             messageRows = next; toolRows = nextTools; renderedIDs = ids
         }
         let events = Dictionary(task.events.compactMap { event in event.toolCallID.map { ($0, event) } }, uniquingKeysWith: { _, latest in latest })
+        let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }), owner = task.id
         for message in messages {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             messageRows[message.id]?.update(message.content, markdown: !streaming)
+            messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             for call in message.toolCalls ?? [] { toolRows[call.id]?.update(call: call, event: events[call.id]) }
         }
         if task.status == .waiting, let call = task.pendingCalls.first, let approval = task.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
@@ -915,7 +976,31 @@ final class FormDocumentView: NSView {
 }
 
 extension ControlWindow {
-    func persistAgentDraft() { saveAgentDraft() }
+    func persistAgentDraft() { attachmentImport?.cancel(); saveAgentDraft() }
+    func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
+        guard let store = companion?.agentStore else { return ["attachmentUI": false] }
+        selectAgentTask(taskID); showWindow(nil); composer.string = "附件草稿"; composer.didChangeText(); saveAgentDraft()
+        beginAttachmentImport([output.appendingPathComponent("sample.pdf"), output.appendingPathComponent("cached.xlsx")], store: store, taskID: taskID)
+        let another = store.create(title: "另一份附件草稿", mode: .ask); selectAgentTask(another)
+        await attachmentImport?.value; selectAgentTask(taskID)
+        var checks = ["nativeImportStaysWithOriginalTask": store.task(taskID)?.draftAttachmentIDs?.count == 2 && (store.task(another)?.attachments ?? []).isEmpty,
+                      "nativeAttachmentDraftSurvivesTaskSwitch": composer.string == "附件草稿" && !draftAttachments.isHidden,
+                      "nativeSubmittedAttachmentHasHistoryRow": messageRows.values.contains { $0.text == "公开附件" }]
+        composer.string = ""; setBusy(true)
+        checks["fileOnlyInputDoesNotBecomeStopAction"] = sendButton.accessibilityLabel() == "补充要求"
+        setBusy(false)
+        for (name, size) in [("normal", NSSize(width: 980, height: 700)), ("narrow", NSSize(width: 780, height: 540))] {
+            window?.setContentSize(size); renderAgentMessages(); window?.contentView?.layoutSubtreeIfNeeded()
+            checks["nativeAttachmentLayout-" + name] = draftAttachments.bounds.width > 350 && draftAttachments.bounds.height > 40 && !draftAttachments.hasAmbiguousLayout && composer.bounds.width > 350
+            if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("attachments-" + name + ".png")) }
+        }
+        do {
+            let preview = try AgentAttachmentWindow(store: store, taskID: taskID, id: fileID)
+            await preview.captureQuickLook(output)
+            checks["nativePreviewReadsActualWordCopy"] = await preview.checkText("1499.00", output: output); preview.close()
+        } catch { checks["nativePreviewReadsActualWordCopy"] = false }
+        return checks
+    }
     func checkAgentLayout(_ output: URL, includeArtifacts: Bool = true) async -> [String: Bool] {
         guard let tasks = companion?.agentStore, let originalID = tasks.selectedID else { return ["nativeAgentLayout": false] }
         let draft = composer.string

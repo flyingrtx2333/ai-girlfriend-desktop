@@ -57,6 +57,7 @@ npm run native:open
 | 项目检索与 Repo Wiki | `npm run native:check-index`；实际 SQLite、公开退款规则和已配置真实模型，核对增量更新、业务回答、Wiki 生成、跨任务引用及读写范围 |
 | 文档解析与附件存储 | `npm run native:check-documents`；需要测试用 Python 的 python-docx 1.2.0、openpyxl 3.1.5、python-pptx 1.0.2；可用 `BLUEFATFISH_DOCUMENT_PYTHON` 指定解释器。这些库仅创建/回读公开测试文件，不进入应用，也不验证 AI 对话效果 |
 | 附件连续对话后端 | 在上述检查后加 `-- --live-attachments`，使用已配置真实模型读取三类 Office 文件、执行中追加、回答提问并保护未发送草稿；视觉和原生输入界面单独验收 |
+| 附件界面与真实视觉 | 文档检查加 `-- --attachment-ui --live-visuals`；原生导入、切换任务、窄窗口、QuickLook/文字预览，以及真实模型读取两张不同布局的无字图形。仅公开夹具，不开启麦克风或 TTS；当前模型须已声明视觉能力 |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
 
 浏览器检查使用本机 Google Chrome，运行前需安装该浏览器。脚本输出写入被忽略的 `evidence/`。不默认运行全部历史脚本或 GitHub Actions。

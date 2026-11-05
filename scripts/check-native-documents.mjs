@@ -43,11 +43,11 @@ proof={'docxText':Document(root/'sample.docx').paragraphs[1].text,'sheetOrder':l
 (root/'independent.json').write_text(json.dumps(proof,ensure_ascii=False),encoding='utf-8')
 `, output], { encoding: 'utf8' });
 if (fixture.status !== 0) throw Error(fixture.stderr || 'Office fixture libraries are unavailable; set BLUEFATFISH_DOCUMENT_PYTHON to a Python with python-docx, openpyxl and python-pptx.');
-const live = process.argv.includes('--live-attachments');
-const launched = spawnSync('/usr/bin/open', ['-n', path.join(root, 'build/蓝色大肥鱼.app'), '--args', '--check', output, '--document-check', ...(live ? ['--live-agent', '--live-attachments'] : [])], { encoding: 'utf8' });
+const live = process.argv.includes('--live-attachments'), visual = process.argv.includes('--live-visuals');
+const launched = spawnSync('/usr/bin/open', ['-n', path.join(root, 'build/蓝色大肥鱼.app'), '--args', '--check', output, '--document-check', ...(process.argv.includes('--attachment-ui') ? ['--attachment-ui'] : []), ...(live || visual ? ['--live-agent'] : []), ...(live ? ['--live-attachments'] : []), ...(visual ? ['--live-visuals'] : [])], { encoding: 'utf8' });
 if (launched.status !== 0) throw Error(launched.stderr || '文档检查未启动');
 let report;
-for (let i = 0; i < (live ? 480 : 160); i++) {
+for (let i = 0; i < (live || visual ? 480 : 160); i++) {
   report = await readFile(path.join(output, 'document-report.json'), 'utf8').then(JSON.parse).catch(() => null);
   if (report) break; await new Promise(resolve => setTimeout(resolve, 500));
 }

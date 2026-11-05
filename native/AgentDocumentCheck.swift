@@ -53,15 +53,21 @@ import AppKit
             checks["forkKeepsIndependentAttachmentAfterParentRemoval"] = forkContent.parts[0].text.contains("1499.00")
             try AgentAttachments.removeDraft(store: tasks, taskID: fork, id: attachment.id)
             checks["removingDraftPreservesAttachmentUsedByHistory"] = tasks.task(fork)?.draftAttachmentIDs?.isEmpty == true && (try? AgentAttachments.source(store: tasks, taskID: fork, id: attachment.id)) != nil
+            if CommandLine.arguments.contains("--attachment-ui") { checks.merge(await control.checkAttachmentUI(output, taskID: fork, fileID: attachment.id)) { _, value in value } }
             report["actual"] = ["word": word.parts, "spreadsheet": sheet.parts, "cached": cached.parts, "slides": slides.parts].mapValues { $0.map { ["title": $0.title, "text": $0.text] } }
             report["ocr"] = ["image": photo.parts[0].text, "pdfPage": scanned.0.text]
             if CommandLine.arguments.contains("--live-attachments") {
                 let live = try await checkAttachmentConversation(output); report["live"] = live
                 checks["actualAttachmentConversation"] = live["success"] as? Bool == true
             }
+            if CommandLine.arguments.contains("--live-visuals") {
+                let visual = try await checkAttachmentVision(output); report["visual"] = visual; checks["actualAttachmentVision"] = visual["success"] as? Bool == true
+            }
         } catch { report["error"] = error.localizedDescription }
         report["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 } && report["error"] == nil; report["checks"] = checks
-        report["scope"] = CommandLine.arguments.contains("--live-attachments") ? "Native formats/storage plus actual configured-model attachment conversation (see live). Public fixtures only; image visual input and UI are not covered here. No microphone or TTS." : "Native format-reader and attachment-storage verification only. Actual python-docx, openpyxl and python-pptx files with independent library readback; actual generated PDF/image pixels and local OCR; private copies, task boundaries and fork retention. No AI acceptance claim, model calls, microphone or TTS."
+        report["scope"] = CommandLine.arguments.contains("--live-attachments") ? "Native formats/storage plus actual configured-model attachment conversation (see live). Public fixtures only; image visual input is not covered here. No microphone or TTS." : "Native format-reader and attachment-storage verification only. Actual python-docx, openpyxl and python-pptx files with independent library readback; actual generated PDF/image pixels and local OCR; private copies, task boundaries and fork retention. No AI acceptance claim, model calls, microphone or TTS."
+        if CommandLine.arguments.contains("--attachment-ui") { report["uiScope"] = "Actual native import, task switching, file-only composer action, normal/narrow layout and exact text preview of the private Word copy. QuickLook pixels and real model vision are not covered." }
+        if CommandLine.arguments.contains("--live-visuals") { report["scope"] = "Native formats/storage plus actual configured-model visual understanding (see visual). Public fixtures only. No microphone or TTS." }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) { try? data.write(to: output.appendingPathComponent("document-report.json")) }
     }
 }

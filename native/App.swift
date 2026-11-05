@@ -57,7 +57,7 @@ final class PetWebView: WKWebView {
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -461,13 +461,13 @@ final class PetWebView: WKWebView {
     }
     @objc func quit() { NSApp.terminate(nil) }
 
-    func send(_ text: String) -> Bool {
+    func send(_ text: String, attachmentIDs: [String] = []) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if usesAgent {
             ensureAgent(); screenCompanion.interaction()
-            guard !text.isEmpty, let runtime = agentRuntime else { return false }
+            guard !text.isEmpty || !attachmentIDs.isEmpty, let runtime = agentRuntime else { return false }
             stopSpeech()
-            let accepted = runtime.submit(text)
+            let accepted = runtime.submit(text, attachmentIDs: attachmentIDs)
             if accepted { control.scheduleRender(); refreshVoiceBusy() }
             return accepted
         }

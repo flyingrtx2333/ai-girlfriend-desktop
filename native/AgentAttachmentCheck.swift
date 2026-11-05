@@ -1,6 +1,51 @@
-import Foundation
+import AppKit
 
 @MainActor extension AppDelegate {
+    func checkAttachmentVision(_ output: URL) async throws -> [String: Any] {
+        ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("Agent 未初始化") }
+        let profile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish")
+        var p = PreferencesStore(directory: profile).preferences
+        guard p.visionSupported == true else { throw PetError("当前配置没有声明视觉能力，未发起视觉模型验证") }
+        p.voiceEnabled = false; p.wakeEnabled = false; p.screenObservationEnabled = false; p.replyTokens = 2048; p.contextTokens = max(32768, p.contextTokens); store.preferences = p
+        func draw(_ context: CGContext, pdf: Bool) {
+            context.setFillColor(NSColor.white.cgColor); context.fill(CGRect(x: 0, y: 0, width: 800, height: 600))
+            let x: CGFloat = pdf ? 480 : 70
+            context.setFillColor(NSColor.systemBlue.cgColor); context.fillEllipse(in: CGRect(x: x, y: 200, width: 230, height: 230))
+            context.setFillColor(NSColor.systemRed.cgColor)
+            for i in 0..<(pdf ? 3 : 2) { context.fill(CGRect(x: (pdf ? 60 : 430) + CGFloat(i * 95), y: 300, width: 65, height: 65)) }
+            let y: CGFloat = pdf ? 480 : 65
+            context.setFillColor(NSColor.systemGreen.cgColor); context.beginPath(); context.move(to: CGPoint(x: x + 115, y: y + 70)); context.addLine(to: CGPoint(x: x + 65, y: y)); context.addLine(to: CGPoint(x: x + 165, y: y)); context.closePath(); context.fillPath()
+        }
+        guard let bitmap = CGContext(data: nil, width: 800, height: 600, bitsPerComponent: 8, bytesPerRow: 3200, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw PetError("图形无法绘制") }
+        draw(bitmap, pdf: false)
+        guard let image = bitmap.makeImage(), let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { throw PetError("图形无法保存") }
+        let pngURL = output.appendingPathComponent("shapes.png"), pdfURL = output.appendingPathComponent("shapes.pdf"); try png.write(to: pngURL)
+        var box = CGRect(x: 0, y: 0, width: 800, height: 600)
+        guard let consumer = CGDataConsumer(url: pdfURL as CFURL), let pdf = CGContext(consumer: consumer, mediaBox: &box, nil) else { throw PetError("PDF 无法绘制") }
+        pdf.beginPDFPage(nil); draw(pdf, pdf: true); pdf.endPDFPage(); pdf.closePDF()
+        let id = tasks.create(title: "真实附件视觉理解", mode: .ask)
+        let photo = try await AgentAttachments.importFile(pngURL, store: tasks, taskID: id), document = try await AgentAttachments.importFile(pdfURL, store: tasks, taskID: id)
+        let extracted = try AgentAttachments.content(store: tasks, taskID: id, id: photo.id)
+        var checks = ["visualFixtureDoesNotExposeAnswersAsOCR": extracted.parts.first?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true]
+        runtime.submit("分别查看 shapes.png 与 shapes.pdf 第1页。每个文件中有几个红色方块？蓝色圆在左侧还是右侧？绿色三角在蓝色圆的上方还是下方？只依据实际图像，不能用 OCR 猜。最后严格用两行回答：PNG：红色X个，蓝圆在左/右，绿三角在上/下；PDF：红色X个，蓝圆在左/右，绿三角在上/下。", taskID: id, attachmentIDs: [photo.id, document.id])
+        defer { if runtime.isRunning(id) { runtime.cancel(id) } }
+        let deadline = Date().addingTimeInterval(150)
+        while Date() < deadline, let task = tasks.task(id), [.ready, .running].contains(task.status) { await wait(0.1) }
+        guard let task = tasks.task(id) else { throw PetError("视觉任务丢失") }
+        let lines = task.summary.components(separatedBy: "\n"), pngLine = lines.first { $0.contains("PNG") } ?? "", pdfLine = lines.first { $0.contains("PDF") } ?? ""
+        checks["realModelReadsNonTextPNGGeometry"] = task.status == .completed && pngLine.contains("2") && pngLine.contains("左") && pngLine.contains("下")
+        checks["realModelReadsDifferentPDFGeometry"] = task.status == .completed && pdfLine.contains("3") && pdfLine.contains("右") && pdfLine.contains("上")
+        checks["realRuntimeSentBothActualVisualInputs"] = task.events.contains { $0.kind == "vision" && $0.detail.contains("shapes.png") && $0.detail.contains("shapes.pdf") } && Set(task.messages.flatMap { $0.visuals ?? [] }.map(\.id)) == Set([photo.id, document.id])
+        let inputs = try await AgentAttachmentVisuals.prepare(messages: task.messages, store: tasks, taskID: id, preferences: p)
+        let savedHistory = String(decoding: try JSONEncoder().encode(task), as: UTF8.self)
+        checks["imagesAreBoundedAndNotPersistedInHistory"] = inputs.values.flatMap { $0 }.allSatisfy { $0.image.width <= 1536 && $0.image.height <= 1536 && $0.image.jpeg.count <= 2_000_000 } && !savedHistory.contains("data:image/")
+        var off = p; off.visionMode = "off"
+        checks["visionOffDoesNotTransmitImages"] = try await AgentAttachmentVisuals.prepare(messages: task.messages, store: tasks, taskID: id, preferences: off).isEmpty
+        let other = tasks.create(title: "无附件任务", mode: .ask)
+        do { _ = try await AgentAttachmentVisuals.prepare(messages: task.messages, store: tasks, taskID: other, preferences: p); checks["visualReferencesCannotCrossTaskBoundary"] = false } catch { checks["visualReferencesCannotCrossTaskBoundary"] = true }
+        let groundTruth = ["PNG": ["redSquares": "2", "blueCircle": "left", "greenTriangle": "below"], "PDF": ["redSquares": "3", "blueCircle": "right", "greenTriangle": "above"]]
+        return ["success": checks.values.allSatisfy { $0 }, "checks": checks, "groundTruth": groundTruth, "result": task.summary, "status": task.status.rawValue, "model": p.model, "events": task.events.map { ["title": $0.title, "status": $0.status, "detail": $0.detail] }, "scope": "Actual configured visual model, two public native-drawn fixtures with different color/geometry layouts and no text answers. Production attachment tools, native rasterization, real image payloads and API reply; no microphone or TTS."]
+    }
     func checkAttachmentConversation(_ output: URL) async throws -> [String: Any] {
         ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("Agent 未初始化") }
         let profile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish")

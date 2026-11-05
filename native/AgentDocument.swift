@@ -43,9 +43,9 @@ private final class AgentDocumentXML: NSObject, XMLParserDelegate {
 enum AgentDocument {
     static let imageTypes: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "gif"]
     static let textTypes: Set<String> = ["txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "htm", "log", "swift", "py", "js", "jsx", "ts", "tsx", "css", "sql", "sh", "rs", "go", "java", "c", "h", "cpp"]
-    static func image(_ url: URL) throws -> AgentDocumentImage {
+    static func image(_ url: URL, maximumDimension: Int = 1536) throws -> AgentDocumentImage {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1536, kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: min(1536, max(128, maximumDimension)), kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
               let jpeg = NSBitmapImageRep(cgImage: thumbnail).representation(using: .jpeg, properties: [.compressionFactor: 0.82]), jpeg.count <= 2_000_000 else { throw PetError("图片无法读取或过大") }
         return AgentDocumentImage(jpeg: jpeg, width: thumbnail.width, height: thumbnail.height, frames: CGImageSourceGetCount(source))
     }
@@ -56,19 +56,21 @@ enum AgentDocument {
         let rows = (request.results ?? []).sorted { a, b in abs(a.boundingBox.midY - b.boundingBox.midY) < 0.01 ? a.boundingBox.minX < b.boundingBox.minX : a.boundingBox.midY > b.boundingBox.midY }
         return String(rows.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n").prefix(100_000))
     }
-    static func pdfPage(_ url: URL, number: Int, recognize: Bool) throws -> (AgentDocumentPart, AgentDocumentImage?) {
+    static func pdfPage(_ url: URL, number: Int, recognize: Bool, render: Bool = false, maximumDimension: Int = 1536) throws -> (AgentDocumentPart, AgentDocumentImage?) {
         guard let pdf = PDFDocument(url: url), !pdf.isLocked, number > 0, number <= pdf.pageCount, let page = pdf.page(at: number - 1) else { throw PetError("PDF 页码无效或文件已加密") }
         let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !text.isEmpty { return (AgentDocumentPart(title: "第 \(number) 页", text: String(text.prefix(100_000)), partial: text.count > 100_000), nil) }
-        guard recognize else { return (AgentDocumentPart(title: "第 \(number) 页", text: ""), nil) }
+        let extracted = AgentDocumentPart(title: "第 \(number) 页", text: String(text.prefix(100_000)), partial: text.count > 100_000)
+        if !text.isEmpty && !render { return (extracted, nil) }
+        guard recognize || render else { return (extracted, nil) }
         let box = page.bounds(for: .mediaBox)
         guard box.width.isFinite, box.height.isFinite, box.minX.isFinite, box.minY.isFinite, box.width > 0, box.height > 0 else { throw PetError("PDF 页面尺寸无效") }
-        let scale = min(2, 1536 / max(box.width, box.height))
+        let scale = min(2, CGFloat(min(1536, max(128, maximumDimension))) / max(box.width, box.height))
         let width = max(1, Int(box.width * scale)), height = max(1, Int(box.height * scale))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw PetError("PDF 页面无法绘制") }
         context.setFillColor(NSColor.white.cgColor); context.fill(CGRect(x: 0, y: 0, width: width, height: height)); context.scaleBy(x: scale, y: scale); context.translateBy(x: -box.minX, y: -box.minY); page.draw(with: .mediaBox, to: context)
         guard let image = context.makeImage(), let jpeg = NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]) else { throw PetError("PDF 页面无法读取") }
-        return (AgentDocumentPart(title: "第 \(number) 页 · OCR", text: try ocr(image), ocr: true), AgentDocumentImage(jpeg: jpeg, width: width, height: height))
+        let part = text.isEmpty && recognize ? AgentDocumentPart(title: "第 \(number) 页 · OCR", text: try ocr(image), ocr: true) : extracted
+        return (part, AgentDocumentImage(jpeg: jpeg, width: width, height: height))
     }
     static func extract(_ url: URL, scratch: URL) async throws -> AgentDocumentContent {
         let type = url.pathExtension.lowercased(), size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0

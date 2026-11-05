@@ -9,6 +9,7 @@ import AppKit
     var onGenerateWiki: (() -> Void)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0
+    private var attachmentWindow: AgentAttachmentWindow?
     init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -121,7 +122,14 @@ import AppKit
     @objc private func openItem() {
         guard let value = selection else { return }
         if sections.selectedSegment == 2 {
-            if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
+            if let url = URL(string: value), url.scheme == "attachment", let host = url.host, let id = UUID(uuidString: host)?.uuidString {
+                do {
+                    let parts = url.pathComponents, part = parts.count > 2 && parts[1] == "part" ? Int(parts[2]) ?? 1 : 1
+                    attachmentWindow?.window?.performClose(nil); attachmentWindow = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, part: part)
+                    attachmentWindow?.showWindow(nil); attachmentWindow?.window?.makeKeyAndOrderFront(nil)
+                } catch { state.stringValue = error.localizedDescription }
+            }
+            else if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
             else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let safe = try? files.resolve(url.path) { NSWorkspace.shared.open(safe) }
         }
         else if let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }

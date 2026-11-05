@@ -28,23 +28,28 @@ final class ChatMessageRow: NSView {
     private(set) var text = ""
     private var renderedMarkdown = true
     private let isUser: Bool
+    private let attachments = AgentAttachmentStrip()
+    private var attachmentGap: NSLayoutConstraint!
     init(message: ChatMessage) {
         isUser = message.role == "user"
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
         let user = message.role == "user", container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false; container.wantsLayer = true
         container.layer?.backgroundColor = user ? NSColor(white: 0.95, alpha: 1).cgColor : NSColor.clear.cgColor
-        container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(label)
+        container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(label); container.addSubview(attachments)
+        attachments.maximumRows = 6
         label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
         label.font = .systemFont(ofSize: 15); label.textColor = NSColor(white: 0.12, alpha: 1)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let inset: CGFloat = user ? 15 : 0
+        attachmentGap = attachments.topAnchor.constraint(equalTo: label.bottomAnchor)
         NSLayoutConstraint.activate([
             container.topAnchor.constraint(equalTo: topAnchor), container.bottomAnchor.constraint(equalTo: bottomAnchor),
             user ? container.trailingAnchor.constraint(equalTo: trailingAnchor) : container.leadingAnchor.constraint(equalTo: leadingAnchor),
             user ? container.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.86) : container.widthAnchor.constraint(equalTo: widthAnchor),
             label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset), label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: user ? 11 : 4), label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: user ? -11 : -4)])
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: user ? 11 : 4), attachmentGap,
+            attachments.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset), attachments.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset), attachments.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: user ? -11 : -4)])
         update(message.content)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -62,4 +67,5 @@ final class ChatMessageRow: NSView {
             label.preferredMaxLayoutWidth = maximum; label.invalidateIntrinsicContentSize()
         }
     }
+    func setAttachments(_ files: [AgentAttachment], onOpen: @escaping (String) -> Void) { attachments.onOpen = onOpen; attachments.update(files, removable: false); attachmentGap.constant = files.isEmpty ? 0 : 6 }
 }

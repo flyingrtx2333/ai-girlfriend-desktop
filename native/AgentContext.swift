@@ -11,8 +11,9 @@ import Foundation
         }
         return (ascii + 2) / 3 + other
     }
-    private static func size(_ messages: [AgentMessage]) -> Int {
-        messages.reduce(0) { total, message in
+    private static func size(_ messages: [AgentMessage], vision: Bool) -> Int {
+        let images = vision ? AgentAttachmentVisuals.references(messages).values.reduce(0) { $0 + $1.count } : 0
+        return images * 2048 + messages.reduce(0) { total, message in
             total + 20 + estimate(message.content) + estimate((message.attachmentIDs ?? []).joined(separator: ", ")) + estimate(message.reasoning ?? "") + (message.toolCalls ?? []).reduce(0) { $0 + 15 + estimate($1.arguments) + estimate($1.name) }
         }
     }
@@ -49,7 +50,8 @@ import Foundation
         if message.role == "tool", content.count > 4000 { content = String(content.prefix(2000)) + "\n[中段省略，可通过 read_task_history 核对]\n" + content.suffix(2000) }
         let calls = (message.toolCalls ?? []).map { "\($0.id) \($0.name) \(AgentRuntime.description($0))" }.joined(separator: "\n")
         let attachments = (message.attachmentIDs ?? []).isEmpty ? "" : "\n附件编号：" + (message.attachmentIDs ?? []).joined(separator: ", ")
-        return "[记录 \(index) · \(message.role)\(message.toolCallID.map { " · " + $0 } ?? "")]\n\(content)\(attachments)\(calls.isEmpty ? "" : "\n工具请求：\n" + calls)"
+        let images = (message.visuals ?? []).map { "\($0.id) 第\($0.part)部分" }.joined(separator: ", ")
+        return "[记录 \(index) · \(message.role)\(message.toolCallID.map { " · " + $0 } ?? "")]\n\(content)\(attachments)\(images.isEmpty ? "" : "\n图片来源：" + images)\(calls.isEmpty ? "" : "\n工具请求：\n" + calls)"
     }
     static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], onChange: () -> Void) async throws -> [AgentMessage] {
         let toolJSON = String(decoding: try JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
@@ -60,7 +62,7 @@ import Foundation
             try Task.checkCancellation()
             if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
             guard let task = store.task(taskID) else { throw PetError("任务不存在") }
-            let current = window(task), used = overhead + size(current)
+            let current = window(task), used = overhead + size(current, vision: preferences.visionSupported == true)
             store.update(taskID, persist: false) { $0.contextSize = used }
             if used + output < Int(Double(limit) * 0.86) { return current }
             let start = offset(task)
