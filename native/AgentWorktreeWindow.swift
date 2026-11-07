@@ -6,10 +6,12 @@ import AppKit
     private let scope = NSSegmentedControl(labels: ["工作树", "回收记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let refreshButton = NSButton(title: "刷新", target: nil, action: nil), openButton = NSButton(title: "打开任务", target: nil, action: nil)
     private let revealButton = NSButton(title: "在访达中显示", target: nil, action: nil), recycleButton = NSButton(title: "回收…", target: nil, action: nil), restoreButton = NSButton(title: "恢复…", target: nil, action: nil)
-    private var entries: [AgentWorktreeEntry] = [], backups: [AgentWorktreeBackup] = [], job: Task<Void, Never>?, busy = false
-    init(store: AgentStore, taskID: String, onSelectTask: @escaping (String) -> Void) throws {
+    private var entries: [AgentWorktreeEntry] = [], backups: [AgentWorktreeBackup] = [], job: Task<Void, Never>?
+    private let activityOwner = UUID()
+    private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: git.taskID, busy: busy) } } }
+    init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, onSelectTask: @escaping (String) -> Void) throws {
         self.store = store; self.onSelectTask = onSelectTask
-        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace))
+        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 400); window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua); window.center(); super.init(window: window); window.delegate = self
@@ -38,7 +40,7 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel() }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel(); busy = false }
     private var showingBackups: Bool { scope.selectedSegment == 1 }
     func numberOfRows(in tableView: NSTableView) -> Int { showingBackups ? backups.count : entries.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

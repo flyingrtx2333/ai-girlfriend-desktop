@@ -79,6 +79,7 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 | 暂存版本提交、并排差异与来源统计 | `npm run native:check-git-review-flow`；实际暂存／工作区分层、选定文件提交、原索引字节、Hook、签名失败、修订变化、二进制、行号与长行布局。加 `-- --live-agent --hold-ui` 保持已保存模型预算跑真实审批，并在原生窗口完成暂存提交与推送到独立本机裸仓库；完成后写入 `finish-ui`。全程不提交或推送用户项目 |
 | 工作树管理、回收与恢复 | `npm run native:check-worktrees`；独立真实 Git 仓库核对文件／索引字节、实际 GC 后暂存对象、忽略及未跟踪内容、链接、任务归档、锁定、项目变化、原分支及恢复分支。加 `-- --live-agent` 使用已保存预算执行真实模型检查、回收、恢复和报告回读；加 `--hold-ui` 后在实际窗口完成一次回收／恢复，再写入输出目录的 `finish-ui`。不清理用户项目 |
 | 工作树起点、修改预览与任务执行 | `npm run native:check-worktree-creation`；独立真实仓库验证所选分支、带入后的未暂存内容、原始索引、冲突、过期预览及 Hook 范围。加 `-- --live-agent` 使用已保存模型与预算，实际创建后在新工作树任务读写并回读；加 `--hold-ui` 从输入区创建分支 `ui-from-release`，以 release 为起点并带入修改，检查后写入输出目录的 `finish-ui` |
+| 工作树保留设置与实际计时回收 | `npm run native:check-worktree-retention`；独立真实仓库、真实等待与文件修改，核对默认关闭、归档范围、当前／固定／锁定任务、实际长 Git 操作、双实例锁、配置冲突、完整备份及 GC 后恢复，不改写时间戳。加 `-- --live-agent` 验证真实模型等待答复时保留、完成后的报告随备份回收；加 `--hold-ui` 从全局设置恢复报告指定的工作树并关闭自动回收，再写入输出目录的 `finish-ui` |
 | Git 推送与提交并推送 | `npm run native:check-git-push`；实际 TCP Git 服务与独立裸仓库，核对提交快照、远端变化、精确引用更新、项目／接收端 Hook、取消和超时结果。加 `-- --live-agent --probe-ssh --hold-ui` 使用已保存模型预算跑审批与远端回读、沿用现有 SSH 身份只读连接 GitHub，并保留窗口验收提交并推送；不向项目 GitHub 远端发布。界面完成后写入输出目录 `finish-ui` |
 | 项目检索与 Repo Wiki | `npm run native:check-index`；实际 SQLite、公开退款规则和已配置真实模型，核对增量更新、业务回答、Wiki 生成、跨任务引用及读写范围 |
 | 文档解析与附件存储 | `npm run native:check-documents`；需要测试用 Python 的 python-docx 1.2.0、openpyxl 3.1.5、python-pptx 1.0.2；可用 `BLUEFATFISH_DOCUMENT_PYTHON` 指定解释器。这些库仅创建/回读公开测试文件，不进入应用，也不验证 AI 对话效果 |

@@ -41,7 +41,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -92,6 +92,8 @@ final class FormDocumentView: NSView {
     private var gitWindow: AgentGitWindow?
     private var worktreeWindow: AgentWorktreeWindow?
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
+    private var worktreePolicyPanel: AgentWorktreePolicyView?
+    private var generalSettingsSave: NSButton?
     private let executionLocation = AgentWorkbenchButton()
     private var knowledgeWindow: AgentKnowledgeWindow?
     private var extensionWindow: AgentExtensionWindow?
@@ -484,6 +486,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { $0.category == "worktrees" }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -666,8 +669,14 @@ final class FormDocumentView: NSView {
         let extensions = NSButton(title: "管理扩展", target: self, action: #selector(showAgentExtensions))
         let worktrees = NSButton(title: "工作树", target: self, action: #selector(showWorktrees))
         row("", stack([memory, extensions, worktrees, NSView()], spacing: 8))
+        if let store = companion?.agentStore {
+            group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
+            let panel = AgentWorktreePolicyView(store: store) { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
+            worktreePolicyPanel = panel; row("", panel)
+        }
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
+        generalSettingsSave = save
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
         save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
         save.widthAnchor.constraint(equalToConstant: 76).isActive = true; save.heightAnchor.constraint(equalToConstant: 34).isActive = true
@@ -1386,10 +1395,10 @@ final class FormDocumentView: NSView {
 
 @MainActor extension ControlWindow {
     @objc private func showWorktrees() {
-        guard let store = companion?.agentStore, let id = store.selectedID else { return }
-        do { let manager = try AgentWorktreeWindow(store: store, taskID: id) { [weak self] in self?.showAgentTask($0); self?.show(tab: "chat") }; worktreeWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
-        catch { savedStatus.stringValue = error.localizedDescription }
+        showWorktreePolicySettings()
     }
+    func showWorktreePolicySettings() { settingsCategory = "worktrees"; show(tab: "settings") }
+    func refreshWorktreeRetention() { worktreePolicyPanel?.refreshState(); if companion?.usesAgent == true { scheduleRender() } }
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
     @objc func showAutomations() {
         guard let store = companion?.agentStore else { return }; saveAgentDraft()

@@ -34,9 +34,12 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     var pushTransport: AgentGitTransport?
     var pushHookCommand: AgentCommand?
     var worktreeCopy: AgentCommand?
-    init(store: AgentStore, taskID: String, directory: URL) throws {
+    let allowsArchivedWorktreeSource: Bool
+    var worktreeEligibilityCheck: ((AgentWorktreeEntry, Date) throws -> Void)?
+    init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         self.store = store; self.taskID = taskID; files = try AgentFiles(workspace: task.workspace); self.directory = directory
+        self.allowsArchivedWorktreeSource = allowsArchivedWorktreeSource
         scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
@@ -65,7 +68,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         guard result.truncated != true else { throw PetError("Git 输出较大，请缩小文件范围") }; return result.stdout ?? ""
     }
     func validateWorkspace() throws {
-        guard let task = store.task(taskID), !task.archived else { throw PetError("任务不存在或已归档") }
+        guard let task = store.task(taskID), !task.archived || allowsArchivedWorktreeSource else { throw PetError("任务不存在或已归档") }
         let current = try AgentFiles(workspace: task.workspace), metadata = try Self.metadata(workspace: task.workspace, creating: true)
         guard current.root == files.root, metadata.standardizedFileURL.resolvingSymlinksInPath() == directory.standardizedFileURL.resolvingSymlinksInPath() else { throw PetError("任务项目已变化，请重新打开 Git 后审阅") }
     }

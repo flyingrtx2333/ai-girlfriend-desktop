@@ -16,7 +16,9 @@ import AppKit
     private let stageButton = NSButton(title: "暂存文件", target: nil, action: nil), unstageButton = NSButton(title: "取消暂存", target: nil, action: nil)
     private let restoreButton = NSButton(title: "恢复未暂存", target: nil, action: nil), undoRestoreButton = NSButton(title: "撤销恢复", target: nil, action: nil)
     private var source: AgentGitSource = .uncommitted, inspection: AgentGitInspection?, restoreID: String?
-    private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, busy = false, lastResult = "", displayedBranchRef = ""
+    private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, lastResult = "", displayedBranchRef = ""
+    private let activityOwner = UUID()
+    private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     init(store: AgentStore, taskID: String, onSelectTask: @escaping (String) -> Void) {
         self.store = store; self.taskID = taskID; self.onSelectTask = onSelectTask
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -66,7 +68,7 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel() }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); busy = false }
     private func writable() -> Bool {
         guard let task = store.task(taskID) else { return false }
         return !task.archived && ![.running, .waiting].contains(task.status)

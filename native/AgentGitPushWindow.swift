@@ -7,7 +7,9 @@ import AppKit
     private let add = NSButton(title: "添加远端", target: nil, action: nil), prepare = NSButton(title: "检查远端", target: nil, action: nil), push = NSButton(title: "推送", target: nil, action: nil)
     private let refresh = NSButton(title: "刷新", target: nil, action: nil)
     private let stop = NSButton(title: "停止", target: nil, action: nil), verify = NSButton(title: "核对上次结果", target: nil, action: nil), state = NSTextField(labelWithString: ""), text = NSTextView()
-    private var remotes: [AgentGitRemote] = [], remoteHash = "", review: AgentGitPushReview?, job: Task<Void, Never>?, busy = false, sending = false
+    private var remotes: [AgentGitRemote] = [], remoteHash = "", review: AgentGitPushReview?, job: Task<Void, Never>?, sending = false
+    private let activityOwner = UUID()
+    private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     var onReceipt: ((AgentGitPushReceipt) -> Void)?
     init(store: AgentStore, taskID: String, directory: URL) throws {
         self.store = store; self.taskID = taskID; git = try AgentGit(store: store, taskID: taskID, directory: directory)
@@ -57,7 +59,7 @@ import AppKit
         stop.isHidden = !busy
     }
     func windowDidBecomeKey(_ notification: Notification) { controls() }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel() }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel(); busy = false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sending else { return true }
         let alert = NSAlert(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭"); alert.addButton(withTitle: "继续等待")

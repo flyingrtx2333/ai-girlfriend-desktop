@@ -55,7 +55,8 @@
     "native:check-task-models": "node scripts/check-native-task-models.mjs",
     "native:check-mcp-content": "node scripts/check-native-mcp-content.mjs",
     "native:check-worktrees": "node scripts/check-native-worktrees.mjs",
-    "native:check-worktree-creation": "node scripts/check-native-worktree-creation.mjs"
+    "native:check-worktree-creation": "node scripts/check-native-worktree-creation.mjs",
+    "native:check-worktree-retention": "node scripts/check-native-worktree-retention.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.5",

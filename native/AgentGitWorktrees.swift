@@ -23,7 +23,7 @@ struct AgentWorktreeRecycleReview: Codable {
 
 enum AgentWorktreeSnapshot {
     struct Item: Codable { var path: String; var kind: String; var mode: UInt16; var hash: String }
-    struct Value { var hash: String; var count: Int; var bytes: UInt64 }
+    struct Value { var hash: String; var count: Int; var bytes: UInt64; var modified: Date }
     static func read(_ root: URL) throws -> Value {
         let fm = FileManager.default
         guard let resolved = realpath(root.path, nil) else { throw PetError("工作树目录不可用") }
@@ -32,6 +32,7 @@ enum AgentWorktreeSnapshot {
         var enumerationError: Error?
         guard let walk = fm.enumerator(at: physicalRoot, includingPropertiesForKeys: nil, errorHandler: { _, error in enumerationError = error; return false }) else { throw PetError("不能读取工作树") }
         var items: [Item] = [], bytes: UInt64 = 0
+        var modified = (try fm.attributesOfItem(atPath: physicalRoot.path)[.modificationDate] as? Date) ?? .distantPast
         for case let file as URL in walk {
             try Task.checkCancellation()
             guard file.path.hasPrefix(physicalPath + "/") else { throw PetError("工作树目录枚举越界") }
@@ -39,6 +40,7 @@ enum AgentWorktreeSnapshot {
             if path == ".git" { walk.skipDescendants(); continue }
             guard file.lastPathComponent != ".git" else { throw PetError("工作树包含子仓库，请先在本地 Git 处理：" + path) }
             let attributes = try fm.attributesOfItem(atPath: file.path), type = attributes[.type] as? FileAttributeType
+            modified = max(modified, attributes[.modificationDate] as? Date ?? .distantPast)
             let mode = (attributes[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
             let kind: String, digest: String
             if type == .typeSymbolicLink { kind = "link"; digest = try fm.destinationOfSymbolicLink(atPath: file.path) }
@@ -53,11 +55,18 @@ enum AgentWorktreeSnapshot {
         }
         if let enumerationError { throw enumerationError }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return Value(hash: AgentFiles.hash(try encoder.encode(items.sorted { $0.path < $1.path })), count: items.count, bytes: bytes)
+        return Value(hash: AgentFiles.hash(try encoder.encode(items.sorted { $0.path < $1.path })), count: items.count, bytes: bytes, modified: modified)
     }
 }
 
 @MainActor extension AgentGit {
+    private var worktreeReviewName: String { "review-" + taskID + (worktreeEligibilityCheck == nil ? "" : "-automatic") + ".json" }
+    private func validateWorktreeEligibility(_ entry: AgentWorktreeEntry, tree: AgentWorktreeSnapshot.Value, metadata: URL) throws {
+        if let check = worktreeEligibilityCheck {
+            let indexModified = try FileManager.default.attributesOfItem(atPath: metadata.appendingPathComponent("index").path)[.modificationDate] as? Date ?? .distantPast
+            try check(entry, max(tree.modified, indexModified))
+        }
+    }
     private var worktreeStorage: URL { store.directory.appendingPathComponent("worktrees", isDirectory: true) }
     private func worktreeFile(_ name: String) throws -> URL {
         try FileManager.default.createDirectory(at: worktreeStorage, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -140,12 +149,13 @@ enum AgentWorktreeSnapshot {
     }
     func prepareWorktreeRecycle(path: String) async throws -> AgentWorktreeRecycleReview {
         let entry = try await recyclable(path), metadata = try await worktreeMetadata(path), tree = try await worktreeSnapshot(path)
+        try validateWorktreeEligibility(entry, tree: tree, metadata: metadata)
         let index = try worktreeIndex(metadata), fingerprint = fingerprint(entry, tree: tree.hash, index: index)
         let review = AgentWorktreeRecycleReview(taskID: taskID, path: entry.path, hash: UUID().uuidString, fingerprint: fingerprint, head: entry.head!, branch: entry.branch, files: tree.count, bytes: tree.bytes, taskIDs: entry.taskIDs)
-        try saveWorktree(review, worktreeFile("review-" + taskID + ".json")); return review
+        try saveWorktree(review, worktreeFile(worktreeReviewName)); return review
     }
     func storedWorktreeReview(hash: String) throws -> AgentWorktreeRecycleReview {
-        let value = try JSONDecoder().decode(AgentWorktreeRecycleReview.self, from: Data(contentsOf: worktreeFile("review-" + taskID + ".json")))
+        let value = try JSONDecoder().decode(AgentWorktreeRecycleReview.self, from: Data(contentsOf: worktreeFile(worktreeReviewName)))
         guard value.taskID == taskID, value.processID == AgentWorktreeRecycleReview.processID, value.hash == hash, Date().timeIntervalSince(value.created) < 900 else { throw PetError("工作树审阅已失效，请重新检查") }; return value
     }
     func worktreeBackups() throws -> [AgentWorktreeBackup] {
@@ -177,6 +187,7 @@ enum AgentWorktreeSnapshot {
         let review = try storedWorktreeReview(hash: reviewHash), entry = try await recyclable(review.path)
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-recycle", name: "git_recycle_worktree", arguments: "{}"), task: task, store: store) }
         let metadata = try await worktreeMetadata(entry.path), index = try worktreeIndex(metadata), tree = try await worktreeSnapshot(entry.path)
+        try validateWorktreeEligibility(entry, tree: tree, metadata: metadata)
         guard fingerprint(entry, tree: tree.hash, index: index) == review.fingerprint else { throw PetError("工作树内容、分支或关联任务已变化，请重新审阅") }
         let id = UUID().uuidString, folder = try worktreeFile(id), copy = folder.appendingPathComponent("files"), meta = folder.appendingPathComponent("metadata")
         try FileManager.default.createDirectory(at: meta, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -192,16 +203,18 @@ enum AgentWorktreeSnapshot {
         var backup = AgentWorktreeBackup(id: id, origin: AgentWorktreeOrigin(root: files.root.path, metadata: directory.path, path: entry.path), head: entry.head!, branch: entry.branch, treeHash: tree.hash, indexHash: AgentFiles.hash(index), tasks: Dictionary(uniqueKeysWithValues: entry.taskIDs.compactMap { id in store.task(id).map { (id, $0.archived) } }))
         try saveWorktree(backup, folder.appendingPathComponent("record.json"))
         let current = try await recyclable(entry.path), finalTree = try await worktreeSnapshot(entry.path), finalIndex = try worktreeIndex(metadata)
+        try validateWorktreeEligibility(current, tree: finalTree, metadata: metadata)
         guard fingerprint(current, tree: finalTree.hash, index: finalIndex) == review.fingerprint else { throw PetError("备份期间工作树已变化，原工作树保留，请重新审阅") }
         try Task.checkCancellation(); try validateWorkspace()
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-recycle", name: "git_recycle_worktree", arguments: "{}"), task: task, store: store) }
         try await retainWorktreeObjects(&backup, index: index)
         try saveWorktree(backup, folder.appendingPathComponent("record.json"))
         let pinned = try await recyclable(entry.path), pinnedTree = try await worktreeSnapshot(entry.path), pinnedIndex = try worktreeIndex(metadata)
+        try validateWorktreeEligibility(pinned, tree: pinnedTree, metadata: metadata)
         guard fingerprint(pinned, tree: pinnedTree.hash, index: pinnedIndex) == review.fingerprint else { throw PetError("保存快照期间工作树已变化，原工作树保留") }
         try Task.checkCancellation(); try validateWorkspace()
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-recycle", name: "git_recycle_worktree", arguments: "{}"), task: task, store: store) }
-        try FileManager.default.removeItem(at: worktreeFile("review-" + taskID + ".json"))
+        try FileManager.default.removeItem(at: worktreeFile(worktreeReviewName))
         let removed = try await run(["worktree", "remove", "--force", "--", entry.path], write: true)
         guard !removed.failed else { throw PetError("Git 未完成回收，备份已保留（" + id + "）：" + removed.text) }
         backup.state = "recycled"; try saveWorktree(backup, folder.appendingPathComponent("record.json"))

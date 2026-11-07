@@ -101,6 +101,14 @@ import AppKit
             checks["originalProjectHeadIndexAndFilesRemainExact"] = try afterHead == mainHead && Data(contentsOf: repo.appendingPathComponent(".git/index")) == mainIndex && Data(contentsOf: repo.appendingPathComponent("public.txt")) == mainPublic
             checks["askModeHidesMutatingWorktreeTools"] = !AgentTools.definitions(mode: .ask, groups: ["worktrees"]).contains { ["git_recycle_worktree", "git_restore_worktree"].contains(($0["function"] as? [String: Any])?["name"] as? String ?? "") }
             guard checks.values.allSatisfy({ $0 }) else { throw PetError("工作树回收或恢复检查失败") }
+            if CommandLine.arguments.contains("--retention-check") {
+                let result = try await checkWorktreeRetention(output, parentID: id, initialPath: child.workspace, associated: [child.taskID, fork, nested])
+                checks.merge(result.checks) { _, value in value }; report.merge(result.values) { _, value in value }
+                report["success"] = checks.values.allSatisfy { $0 }; report["checks"] = checks; report["workspace"] = repo.path; report["mainHead"] = mainHead.trimmingCharacters(in: .whitespacesAndNewlines); report["foreign"] = foreign.path
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("worktree-report.json"))
+                if CommandLine.arguments.contains("--hold-ui") { let deadline = Date().addingTimeInterval(1200); while Date() < deadline && !fm.fileExists(atPath: output.appendingPathComponent("finish-ui").path) { await wait(0.25) } }
+                tasks.worktreeRetention.stop(); return
+            }
             if CommandLine.arguments.contains("--live-agent") {
                 let liveRepo = output.appendingPathComponent("live-repo"); try await initialize(liveRepo)
                 let liveID = tasks.create(title: "真实模型回收与恢复", workspace: liveRepo.path), liveGit = try AgentGit(store: tasks, taskID: liveID, directory: AgentGit.metadata(workspace: liveRepo.path))

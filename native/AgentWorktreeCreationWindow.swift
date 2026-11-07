@@ -6,7 +6,9 @@ import AppKit
     private let include = NSButton(checkboxWithTitle: "带入当前修改", target: nil, action: nil)
     private let preview = NSButton(title: "预览", target: nil, action: nil), create = NSButton(title: "创建任务", target: nil, action: nil)
     private let state = NSTextField(wrappingLabelWithString: ""), diff = AgentGitDiffView()
-    private var points: [AgentWorktreeStart] = [], review: AgentWorktreeCreationReview?, job: Task<Void, Never>?, busy = false
+    private var points: [AgentWorktreeStart] = [], review: AgentWorktreeCreationReview?, job: Task<Void, Never>?
+    private let activityOwner = UUID()
+    private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     init(store: AgentStore, taskID: String, directory: URL, onCreated: @escaping (String) -> Void) throws {
         self.store = store; self.taskID = taskID; self.onCreated = onCreated; git = try AgentGit(store: store, taskID: taskID, directory: directory)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 550), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -40,7 +42,7 @@ import AppKit
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel() }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel(); busy = false }
     func controlTextDidChange(_ obj: Notification) { changed() }
     @objc private func changed() { review = nil; create.isEnabled = false; state.stringValue = ""; diff.show("", oldTitle: "起点", newTitle: "当前修改") }
     private func setBusy(_ value: Bool) {

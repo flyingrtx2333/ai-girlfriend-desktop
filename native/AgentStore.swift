@@ -10,11 +10,12 @@ import Foundation
     let teams: AgentTeams
     let automations: AgentAutomations
     let models: AgentTaskModels
+    let worktreeRetention: AgentWorktreeRetention
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
-    var selectedID: String? { didSet { do { try saveIndex() } catch { writeError = error.localizedDescription } } }
+    var selectedID: String? { didSet { do { try saveIndex() } catch { writeError = error.localizedDescription }; worktreeRetention.tasksChanged() } }
     var selected: AgentTaskRecord? { selectedID.flatMap(task) }
     private struct Index: Codable { var selectedID: String?; var tasks: [AgentTaskRecord] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]; return e }()
@@ -28,6 +29,7 @@ import Foundation
         teams = AgentTeams(profile: directory)
         automations = AgentAutomations(profile: directory)
         models = AgentTaskModels(profile: directory)
+        worktreeRetention = AgentWorktreeRetention(profile: directory)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var previousSelection: String?
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {
@@ -117,6 +119,8 @@ import Foundation
             do { try save(id) } catch { writeError = error.localizedDescription; tasks[index].status = .failed }
         }
         if value.archived && !wasArchived { onArchive?(id) }
+        let hookChanged = (previous.events.last?.hook != nil || value.events.last?.hook != nil) && (previous.events.last?.id != value.events.last?.id || previous.events.last?.status != value.events.last?.status)
+        if coreScopeChanged || previous.status != value.status || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
     }
     func save(_ id: String) throws {
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }
