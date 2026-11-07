@@ -61,6 +61,10 @@ try {
     const task = tasks.find(task => task.id === report.live?.taskID), calls = task?.messages.flatMap(message => message.toolCalls ?? []) ?? [], receipts = task?.modelReceipts ?? [];
     const rows = (await readFile(path.join(output, 'repo/sales.csv'), 'utf8')).trim().split('\n').slice(1), cents = rows.reduce((sum, row) => sum + Math.round(Number(row.split(',')[1]) * 100), 0);
     const code = await readFile(path.join(output, 'actual-model.canvas.tsx')), record = task?.canvases?.find(canvas => canvas.id === report.live?.canvasID);
+    const exportedHTML = await readFile(path.join(output, 'actual-model-canvas.html'), 'utf8');
+    const licenseJSON = exportedHTML.match(/<script type="application\/json" id="canvas-third-party-notices">([\s\S]*?)<\/script>/)?.[1];
+    const bundledNotices = await readFile(path.join(root, 'build/蓝色大肥鱼.app/Contents/Resources/web/canvas/THIRD-PARTY-NOTICES.txt'), 'utf8');
+    report.independent.actualExportCarriesBundledLicenseNotices = !!licenseJSON && JSON.parse(licenseJSON).notices === bundledNotices;
     report.independent.actualRenderedSumMatchesIndependentCsvCalculation = report.live.rendered.text.includes((cents / 100).toFixed(2)) && rows.length === 3;
     report.independent.actualModelSourceAndRecordMatch = hash(code) === record?.hash && record?.hash === report.afterUI?.sourceHash;
     report.independent.modelUsedOnlyScopedReadAndCanvasTools = calls.length > 0 && calls.every(call => ['load_tools', 'read_file', 'list_directory', 'read_task_history', 'update_plan', 'canvas_list', 'canvas_create', 'canvas_read', 'canvas_update', 'canvas_edit', 'canvas_restore', 'canvas_inspect', 'canvas_screenshot'].includes(call.name));

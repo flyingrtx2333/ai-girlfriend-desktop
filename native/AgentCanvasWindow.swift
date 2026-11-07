@@ -209,10 +209,12 @@ import Darwin
     func exportHTML(_ source: String) throws -> Data {
         guard let resources = Bundle.main.resourceURL else { throw PetError("画布运行资源不可用") }
         let root = resources.appendingPathComponent("web/canvas"), runtime = try String(contentsOf: root.appendingPathComponent("runtime.js"), encoding: .utf8), css = try String(contentsOf: root.appendingPathComponent("style.css"), encoding: .utf8)
+        let notices = try String(contentsOf: root.appendingPathComponent("THIRD-PARTY-NOTICES.txt"), encoding: .utf8)
+        let licenseJSON = String(decoding: try JSONSerialization.data(withJSONObject: ["notices": notices]), as: UTF8.self)
         let data = try JSONSerialization.data(withJSONObject: [source]), encoded = String(decoding: data, as: UTF8.self).dropFirst().dropLast()
         func escape(_ text: String) -> String { text.replacingOccurrences(of: "</script", with: "<\\/script", options: .caseInsensitive) }
         let policy = Self.policy.replacingOccurrences(of: "script-src appcanvas:", with: "script-src 'unsafe-inline'").replacingOccurrences(of: "style-src appcanvas:", with: "style-src")
-        return Data(("<!doctype html><html lang=zh-CN><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta http-equiv=Content-Security-Policy content=\"" + policy + "\"><style>" + css + "</style></head><body><div id=canvas-root></div><script>" + escape(runtime) + "</script><script>BlueFatFishCanvas.render(" + escape(String(encoded)) + ")</script></body></html>").utf8)
+        return Data(("<!doctype html><html lang=zh-CN><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta http-equiv=Content-Security-Policy content=\"" + policy + "\"><style>" + css + "</style></head><body><div id=canvas-root></div><script>" + escape(runtime) + "</script><script type=\"application/json\" id=\"canvas-third-party-notices\">" + escape(licenseJSON) + "</script><script>BlueFatFishCanvas.render(" + escape(String(encoded)) + ")</script></body></html>").utf8)
     }
     private func run(_ action: @escaping @MainActor () async throws -> Void) {
         uiTask?.cancel(); uiTask = Task { [weak self] in do { try await action() } catch { if !Task.isCancelled { self?.state.stringValue = error.localizedDescription } } }
