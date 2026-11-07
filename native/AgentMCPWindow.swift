@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
     private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), access = NSTextField(labelWithString: "")
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
+    private var items: [AgentMCPServer] = []
     var onBrowseContent: ((String?) -> Void)? { didSet { browse.isHidden = onBrowseContent == nil } }
     private let browse = NSButton(title: "资料与提示词", target: nil, action: nil)
     init(service: AgentMCP, workspace: String?) {
@@ -47,25 +48,33 @@ import UniformTypeIdentifiers
             tabs.leadingAnchor.constraint(equalTo: header.leadingAnchor), tabs.trailingAnchor.constraint(equalTo: header.trailingAnchor), tabs.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10), tabs.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.leadingAnchor.constraint(equalTo: tabs.leadingAnchor), footer.trailingAnchor.constraint(equalTo: tabs.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28)
         ])
-        service.onChange = { [weak self] in self?.refreshState() }
+        service.onChange = { [weak self] in self?.refreshCatalog() }
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
-    func numberOfRows(in tableView: NSTableView) -> Int { service.servers.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let server = service.servers[row], name = NSTextField(labelWithString: server.name + (server.enabled ? "" : " · 已停用"))
+        guard items.indices.contains(row) else { return nil }
+        let server = items[row], suffix = server.pluginEnabled == false ? " · 插件已停用" : server.configured == false ? " · 待配置" : server.enabled ? "" : " · 已停用"
+        let name = NSTextField(labelWithString: server.name + suffix)
         name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: server.type == "stdio" ? "本机程序" : "HTTP"); type.font = .systemFont(ofSize: 11); type.textColor = .secondaryLabelColor
+        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · 插件 " + $0.name } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = .secondaryLabelColor; type.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [name, type]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard service.servers.indices.contains(table.selectedRow) else { return }
-        if !canLeave() { select(selected?.id); return }; open(service.servers[table.selectedRow])
+        guard items.indices.contains(table.selectedRow) else { return }
+        if !canLeave() { select(selected?.id); return }; open(items[table.selectedRow])
     }
-    private func select(_ id: String?) { table.delegate = nil; if let row = service.servers.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }
+    func selectServer(_ id: String) { guard canLeave() else { return }; reload(id) }
+    private func select(_ id: String?) { table.delegate = nil; if let row = items.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }
+    private func refreshCatalog() {
+        let id = selected?.id; items = service.servers; table.delegate = nil; table.reloadData(); table.delegate = self; select(id)
+        if !dirty, !creating { selected = items.first { $0.id == id }; if selected == nil { editor.string = ""; tools.string = "" } }
+        refreshState()
+    }
     private func reload(_ id: String? = nil) {
-        table.reloadData(); let next = service.servers.first { $0.id == (id ?? selected?.id) } ?? service.servers.first
+        items = service.servers; table.delegate = nil; table.reloadData(); table.delegate = self; let next = items.first { $0.id == (id ?? selected?.id) } ?? items.first
         select(next?.id); if let next { open(next) } else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
     }
     private func open(_ server: AgentMCPServer) {
@@ -81,13 +90,14 @@ import UniformTypeIdentifiers
         } catch { tools.string = error.localizedDescription }
     }
     private func refreshState() {
+        let current = items.first { $0.id == selected?.id }
         let connected = selected.map { service.connected($0.id, owner: sessionOwner) } ?? false
         editor.isEditable = (creating || selected != nil) && job == nil
-        enabled.isEnabled = selected != nil && !dirty && job == nil; enabled.state = selected?.enabled == true ? .on : .off
-        connect.isEnabled = selected?.enabled == true && !dirty && job == nil && !connected
+        enabled.isEnabled = current != nil && current?.configured != false && current?.pluginEnabled != false && !dirty && job == nil; enabled.state = current?.enabled == true ? .on : .off
+        connect.isEnabled = current?.enabled == true && !dirty && job == nil && !connected
         disconnect.isEnabled = selected != nil && (connected || job != nil)
-        remove.isEnabled = selected != nil && job == nil; save.isEnabled = dirty && job == nil; table.isEnabled = job == nil
-        access.stringValue = selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限"
+        remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
+        access.stringValue = (selected?.plugin.map { "插件 " + $0.name + " · " } ?? "") + (selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }

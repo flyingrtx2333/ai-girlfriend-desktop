@@ -43,7 +43,7 @@ native={'.qoder-plugin/plugin.json':json.dumps({'name':'native-plugin','version'
 archive('native-plugin.zip',native)
 archive('traversal.zip',{**native,'../outside.txt':'must-not-escape'})
 archive('duplicate.zip',{**native,'skills/check/references/CHECK.txt':'alias'})
-archive('unsupported.zip',{**native,'.mcp.json':'{"mcpServers":{}}'})
+archive('unsupported.zip',{**native,'hooks/hook.json':'{}'})
 missing={**native,'.qoder-plugin/plugin.json':json.dumps({'name':'missing-plugin','skills':'missing','commands':'commands'})};archive('missing.zip',missing)
 archive('ordinary.skill',{'SKILL.md':'---\nname: ordinary-check\ndescription: 原有单项 Skill ZIP\n---\n\n读取实际输入。','references/plain.txt':'ordinary-reference'},'ordinary-check/')
 plugin={'.qoder-plugin/plugin.json':json.dumps({'name':'sales-workbench','displayName':'销售工作台','version':'1.0.0','description':'按实际销售数据生成核对结果。','author':{'name':'BlueFatFish acceptance'}},ensure_ascii=False),'README.md':'# 销售工作台\n\n包含销售核对 Skill、交接命令及输出格式。\n','skills/review-sales/SKILL.md':'---\nname: review-sales\ndescription: 核对当前销售 CSV，按已有约定生成实际结果。\n---\n\n先通过 read_skill_resource 读取 references/report.json，再读取当前项目 sales.csv。用整数分计算合计，将符合 review_minimum 的 item 放入 review 数组。按参考约定创建 summary.json，total 必须是两位小数字符串，rows 是数据行数，currency 取参考约定。仅使用现有文件和工具。保存后必须 read_file 回读 summary.json 并核对实际内容。不要修改 CSV，不运行命令、不联网。\n','skills/review-sales/references/report.json':json.dumps({'currency':'CNY','review_minimum':'20.00','fields':['total','rows','review','currency']}),'commands/handoff.md':'---\ndescription: 根据已完成工作整理交接。\n---\n\n根据本任务实际文件与执行记录整理交接，保留来源。$ARGUMENTS\n'}

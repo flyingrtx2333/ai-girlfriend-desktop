@@ -26,7 +26,7 @@ import Foundation
     init(directory: URL, legacy: [ChatMessage], extensionHome: URL? = FileManager.default.homeDirectoryForCurrentUser, mcpKeychain: PetKeychain? = nil, hookKeychain: PetKeychain? = nil) {
         self.directory = directory.appendingPathComponent("agent", isDirectory: true)
         extensions = AgentExtensions(profile: directory, sharedHome: extensionHome)
-        mcp = AgentMCP(profile: directory, keychain: mcpKeychain)
+        mcp = AgentMCP(profile: directory, keychain: mcpKeychain, plugins: extensions.plugins)
         hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain)
         agents = AgentProfiles(profile: directory)
         teams = AgentTeams(profile: directory)

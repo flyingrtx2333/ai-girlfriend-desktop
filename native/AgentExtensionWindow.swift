@@ -72,11 +72,14 @@ import UniformTypeIdentifiers
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showMCP() {
-        if let window = mcpWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        openMCP(nil)
+    }
+    private func openMCP(_ id: String?) {
+        if let manager = mcpWindow, let window = manager.window, window.isVisible { if let id { manager.selectServer(id) }; window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; if let id { manager.selectServer(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showHooks() {
         if let window = hookWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }

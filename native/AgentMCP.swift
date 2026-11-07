@@ -6,6 +6,9 @@ struct AgentMCPServer: Codable, Identifiable {
     var name: String, type: String, command: String? = nil, args: [String] = [], url: String? = nil
     var enabled = true, timeoutSeconds: Double = 60
     var environmentKeys: [String] = [], hasBearerToken = false
+    var headerKeys: [String]? = nil, workingDirectory: String? = nil
+    var plugin: AgentPluginMCPReference? = nil
+    var credentialRevision: String? = nil, configured: Bool? = nil, pluginEnabled: Bool? = nil
     var destination: String { type == "stdio" ? ([command ?? ""] + args).map(AgentGit.quote).joined(separator: " ") : url ?? "" }
 }
 
@@ -15,7 +18,13 @@ struct AgentMCPServer: Codable, Identifiable {
     static let placeholder = "${KEYCHAIN}"
     let profile: URL
     private let keychain: PetKeychain
-    private(set) var servers: [AgentMCPServer] = [], loadError: String?
+    private let plugins: AgentPlugins?
+    private var savedServers: [AgentMCPServer] = [], pluginObserver: UUID?
+    private(set) var loadError: String?
+    var servers: [AgentMCPServer] {
+        guard let plugins else { return savedServers.filter { $0.plugin == nil } }
+        return (try? plugins.mcpServers(saved: savedServers)) ?? savedServers.filter { $0.plugin == nil }
+    }
     var onChange: (() -> Void)?
     private var contentObservers: [UUID: () -> Void] = [:]
     func observeContent(_ action: @escaping () -> Void) -> UUID { let id = UUID(); contentObservers[id] = action; return id }
@@ -36,22 +45,28 @@ struct AgentMCPServer: Codable, Identifiable {
         }
     }
     private var sessions: [String: Session] = [:], states: [String: String] = [:]
-    init(profile: URL, keychain: PetKeychain? = nil) {
-        self.profile = profile
+    init(profile: URL, keychain: PetKeychain? = nil, plugins: AgentPlugins? = nil) {
+        self.profile = profile; self.plugins = plugins
         self.keychain = keychain ?? PetKeychain(service: "com.xjs.bluefatfish.mcp.credentials")
         do {
             let file = profile.appendingPathComponent("extensions/mcp.json")
             if FileManager.default.fileExists(atPath: file.path) {
                 let files = try AgentFiles(workspace: profile.path), data = try files.readData(files.resolve("extensions/mcp.json"), maximum: 256_000)
-                servers = try JSONDecoder().decode([AgentMCPServer].self, from: data)
-                guard servers.count <= 64, Set(servers.map(\.id)).count == servers.count, servers.allSatisfy({ UUID(uuidString: $0.id) != nil && UUID(uuidString: $0.revision) != nil }) else { throw PetError("MCP 配置无效") }
+                savedServers = try JSONDecoder().decode([AgentMCPServer].self, from: data)
+                guard savedServers.count <= 128, Set(savedServers.map(\.id)).count == savedServers.count, savedServers.allSatisfy({ UUID(uuidString: $0.id) != nil && UUID(uuidString: $0.revision) != nil }) else { throw PetError("MCP 配置无效") }
             }
-        } catch { loadError = error.localizedDescription; servers = [] }
+        } catch { loadError = error.localizedDescription; savedServers = [] }
+        pluginObserver = plugins?.observeChanges { [weak self] name in
+            guard let self else { return }
+            for id in self.savedServers.filter({ $0.plugin?.name == name }).map(\.id) { self.disconnect(serverID: id) }; self.notify()
+        }
     }
     func server(_ id: String, revision: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
-        guard let server = servers.first(where: { $0.id == id }), server.enabled else { throw PetError("MCP 连接器不存在或已停用") }
-        guard server.timeoutSeconds.isFinite, (5...600).contains(server.timeoutSeconds), server.environmentKeys.count <= 64 else { throw PetError("MCP 配置无效，请重新保存") }
+        guard let server = servers.first(where: { $0.id == id }) else { throw PetError("MCP 连接器不存在或已移除") }
+        guard server.configured != false else { throw PetError("请先在 MCP 管理器中保存插件连接器配置") }
+        guard server.pluginEnabled != false, server.enabled else { throw PetError("MCP 连接器或所属插件已停用") }
+        guard server.timeoutSeconds.isFinite, (5...600).contains(server.timeoutSeconds), server.environmentKeys.count <= 64, (server.headerKeys ?? []).count <= 64 else { throw PetError("MCP 配置无效，请重新保存") }
         if server.type == "stdio" {
             guard let command = server.command, command.hasPrefix("/"), !command.contains("\0"), server.args.count <= 100, server.args.allSatisfy({ !$0.contains("\0") }) else { throw PetError("本机 MCP 程序配置无效") }
         } else {
@@ -60,30 +75,50 @@ struct AgentMCPServer: Codable, Identifiable {
         if let revision, revision != server.revision { throw PetError("连接器配置已变化，请重新读取并批准") }
         return server
     }
+    static func validateHeaders(_ headers: [String: String]) throws {
+        let forbidden: Set<String> = ["host", "content-length", "connection", "transfer-encoding", "upgrade", "content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]
+        guard headers.count <= 64, Set(headers.keys.map { $0.lowercased() }).count == headers.count,
+              headers.allSatisfy({ key, value in key.utf8.count <= 128 && key.range(of: "^[A-Za-z0-9!#$%&'*+.^_`|~-]+\\z", options: .regularExpression) != nil && !forbidden.contains(key.lowercased()) && value.utf8.count <= 16_000 && !value.unicodeScalars.contains(where: { [0, 10, 13].contains($0.value) }) }) else { throw PetError("HTTP 请求头无效、重复或包含保留字段") }
+    }
     func document(_ server: AgentMCPServer?) throws -> String {
+        if let server, let reference = server.plugin, server.configured == false, let plugins {
+            return String(decoding: try JSONSerialization.data(withJSONObject: plugins.mcpConfiguration(reference), options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        }
         var value: [String: Any] = ["name": server?.name ?? "新的连接器", "type": server?.type ?? "stdio", "timeoutSeconds": server?.timeoutSeconds ?? 60]
-        if server?.type == "http" { value["url"] = server?.url ?? "https://example.com/mcp"; value["bearerToken"] = server?.hasBearerToken == true ? Self.placeholder : "" }
-        else { value["command"] = server?.command ?? "/opt/homebrew/bin/node"; value["args"] = server?.args ?? []; value["env"] = Dictionary(uniqueKeysWithValues: (server?.environmentKeys ?? []).map { ($0, Self.placeholder) }) }
+        if server?.type == "http" { value["url"] = server?.url ?? "https://example.com/mcp"; value["bearerToken"] = server?.hasBearerToken == true ? Self.placeholder : ""; if let keys = server?.headerKeys, !keys.isEmpty { value["headers"] = Dictionary(uniqueKeysWithValues: keys.map { ($0, Self.placeholder) }) } }
+        else { value["command"] = server?.command ?? "/opt/homebrew/bin/node"; value["args"] = server?.args ?? []; value["env"] = Dictionary(uniqueKeysWithValues: (server?.environmentKeys ?? []).map { ($0, Self.placeholder) }); value["cwd"] = server?.workingDirectory }
         return String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
     }
     @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
         guard text.utf8.count <= 64_000, let value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw PetError("请输入有效的 MCP JSON 配置") }
-        let keys: Set<String> = ["name", "type", "command", "args", "env", "url", "bearerToken", "timeoutSeconds"]
+        let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
-        guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 80,
+        guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !name.contains("\0"), name.count <= 160,
               let type = value["type"] as? String, ["stdio", "http"].contains(type) else { throw PetError("需要名称和 type（stdio 或 http）") }
         let old = id.flatMap { id in servers.first { $0.id == id } }
         if id != nil && (old == nil || old?.revision != expectedRevision) { throw PetError("配置已由其他窗口更新，请重新打开后编辑") }
-        guard !servers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }), old != nil || servers.count < 64 else { throw PetError("连接器重名或数量超过 64") }
+        guard !servers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }), savedServers.count < 128 || savedServers.contains(where: { $0.id == id }), old != nil || savedServers.filter({ $0.plugin == nil }).count < 64 else { throw PetError("连接器重名或数量超过限制") }
+        if let old, let reference = old.plugin {
+            guard name == old.name, type == old.type, let plugins else { throw PetError("插件连接器的名称和类型由插件声明") }
+            let template = try plugins.mcpConfiguration(reference)
+            for field in ["env", "headers"] {
+                for (key, initial) in template[field] as? [String: String] ?? [:] where initial.isEmpty {
+                    guard let supplied = (value[field] as? [String: String])?[key], !supplied.isEmpty else { throw PetError("请填写 \(field).\(key)") }
+                }
+            }
+            for field in ["command", "url", "cwd"] { if let text = value[field] as? String, text.contains("${") { throw PetError("请填写 \(field) 中的变量") } }
+            guard !(value["args"] as? [String] ?? []).contains(where: { $0.contains("${") }) else { throw PetError("请填写 args 中的变量") }
+        }
         let timeout = value["timeoutSeconds"] as? Double ?? 60
         guard timeout.isFinite, (5...600).contains(timeout) else { throw PetError("超时范围为 5 至 600 秒") }
-        var server = AgentMCPServer(name: name, type: type); server.id = old?.id ?? server.id; server.enabled = old?.enabled ?? true; server.timeoutSeconds = timeout
+        var server = AgentMCPServer(name: name, type: type); server.id = old?.id ?? server.id; server.plugin = old?.plugin
+        server.enabled = savedServers.first(where: { $0.id == old?.id })?.enabled ?? (old?.plugin == nil); server.timeoutSeconds = timeout
         var secrets: [String: String] = [:], previous: [String: String]?
         func resolve(_ value: String, key: String) throws -> String {
             guard value.utf8.count <= 16_000, !value.contains("\0") else { throw PetError("凭据值无效或过长") }
             if value != Self.placeholder { return value }
-            if previous == nil, let old { previous = try credentials(old) }
+            if previous == nil, let old, old.configured != false { previous = try credentials(old) }
             guard let existing = previous?[key] else { throw PetError("没有已保存的凭据：" + key) }; return existing
         }
         if type == "stdio" {
@@ -91,67 +126,85 @@ struct AgentMCPServer: Codable, Identifiable {
                   let args = value["args"] as? [String], args.count <= 100, args.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4000 }),
                   let env = value["env"] as? [String: String], env.count <= 64, env.keys.allSatisfy({ $0.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil }) else { throw PetError("stdio 需要本机可执行文件的绝对路径、args 数组和 env 对象") }
             guard !env.keys.contains(where: { $0.hasPrefix("DYLD_") || $0.hasPrefix("LD_") }) else { throw PetError("不能通过环境变量注入动态库") }
+            if let directory = value["cwd"] {
+                guard let path = directory as? String, path.hasPrefix("/"), path.utf8.count <= 4000, !path.contains("\0"), (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw PetError("cwd 需要本机现有文件夹的绝对路径") }; server.workingDirectory = path
+            }
             server.command = command; server.args = args; server.environmentKeys = env.keys.sorted()
             for (key, value) in env { secrets[key] = try resolve(value, key: key) }
         } else {
             guard let address = value["url"] as? String, let url = URL(string: address), let host = url.host?.lowercased(), !host.isEmpty, url.user == nil, url.password == nil, url.fragment == nil,
                   url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else { throw PetError("HTTP 连接器需要 HTTPS 地址；本机可用 HTTP") }
             let token = try resolve(value["bearerToken"] as? String ?? "", key: "bearerToken")
-            guard !token.contains("\n"), !token.contains("\r") else { throw PetError("Token 不能包含换行") }
+            guard !token.unicodeScalars.contains(where: { $0.value == 10 || $0.value == 13 }) else { throw PetError("Token 不能包含换行") }
             server.url = url.absoluteString; server.hasBearerToken = !token.isEmpty
             if !token.isEmpty { secrets["bearerToken"] = token }
+            guard value["headers"] == nil || value["headers"] is [String: String] else { throw PetError("headers 必须是文字对象") }
+            let headers = value["headers"] as? [String: String] ?? [:]; try Self.validateHeaders(headers)
+            guard token.isEmpty || !headers.keys.contains(where: { $0.lowercased() == "authorization" }) else { throw PetError("Authorization 请求头和 bearerToken 只能配置一项") }
+            server.headerKeys = headers.keys.sorted()
+            var resolvedHeaders: [String: String] = [:]
+            for (key, value) in headers { let resolved = try resolve(value, key: "header:" + key); resolvedHeaders[key] = resolved; secrets["header:" + key] = resolved }
+            try Self.validateHeaders(resolvedHeaders)
         }
         let secretText = String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self)
         if !secrets.isEmpty { try keychain.write(secretText, account: account(server)) }
-        var updated = servers.filter { $0.id != server.id }; updated.append(server)
+        var updated = savedServers.filter { $0.id != server.id }; updated.append(server)
         do { try persist(updated) }
         catch { if !secrets.isEmpty { try? keychain.write("", account: account(server)) }; throw error }
-        servers = updated.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        savedServers = updated.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         disconnect(serverID: server.id)
-        if let old { try? keychain.write("", account: account(old)) }
-        notify(); return server
+        if let old, old.configured != false { try? keychain.write("", account: account(old)) }
+        notify(); return servers.first(where: { $0.id == server.id }) ?? server
     }
     func setEnabled(_ id: String, _ enabled: Bool) throws {
-        guard let index = servers.firstIndex(where: { $0.id == id }) else { throw PetError("连接器不存在") }
+        guard let index = savedServers.firstIndex(where: { $0.id == id }) else { throw PetError("请先保存连接器配置") }
+        if enabled, let reference = savedServers[index].plugin { guard let plugins else { throw PetError("所属插件不可用") }; try plugins.validateMCP(reference) }
         if !enabled {
-            var updated = servers; updated[index].enabled = false
-            try persist(updated); servers = updated; disconnect(serverID: id); notify(); return
+            var updated = savedServers; updated[index].enabled = false
+            try persist(updated); savedServers = updated; disconnect(serverID: id); notify(); return
         }
-        let old = servers[index], secrets = try credentials(old)
-        var updated = servers; updated[index].enabled = enabled; updated[index].revision = UUID().uuidString
+        let old = savedServers[index], secrets = try credentials(old)
+        var updated = savedServers; updated[index].enabled = enabled; updated[index].revision = UUID().uuidString
         if !secrets.isEmpty { try keychain.write(String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self), account: account(updated[index])) }
         do { try persist(updated) } catch { if !secrets.isEmpty { try? keychain.write("", account: account(updated[index])) }; throw error }
-        servers = updated; disconnect(serverID: id); try? keychain.write("", account: account(old)); notify()
+        savedServers = updated; disconnect(serverID: id); try? keychain.write("", account: account(old)); notify()
     }
     func remove(_ id: String, revision: String) throws {
         guard let old = servers.first(where: { $0.id == id }), old.revision == revision else { throw PetError("配置已变化，请重新打开后移除") }
-        let updated = servers.filter { $0.id != id }; try persist(updated); servers = updated
+        guard old.plugin == nil else { throw PetError("请在插件窗口移除所属插件") }
+        let updated = savedServers.filter { $0.id != id }; try persist(updated); savedServers = updated
         disconnect(serverID: id); try? keychain.write("", account: account(old)); notify()
     }
     private func persist(_ servers: [AgentMCPServer]) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let files = try AgentFiles(workspace: profile.path); try files.writeData(encoder.encode(servers), to: files.resolve("extensions/mcp.json"))
+        let data = try encoder.encode(servers); guard data.count <= 256_000 else { throw PetError("MCP 配置总量超过256KB") }
+        let files = try AgentFiles(workspace: profile.path); try files.writeData(data, to: files.resolve("extensions/mcp.json"))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: profile.appendingPathComponent("extensions/mcp.json").path)
     }
-    private func account(_ server: AgentMCPServer) -> String { "mcp-" + server.id + "-" + server.revision }
+    private func account(_ server: AgentMCPServer) -> String { "mcp-" + server.id + "-" + (server.credentialRevision ?? server.revision) }
     private func credentials(_ server: AgentMCPServer) throws -> [String: String] {
-        if server.environmentKeys.isEmpty && !server.hasBearerToken { return [:] }
+        if server.environmentKeys.isEmpty && !server.hasBearerToken && (server.headerKeys ?? []).isEmpty { return [:] }
         let value = try keychain.read(account(server))
         guard let secrets = try JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: String] else { throw PetError("连接器凭据不可用，请重新保存") }
         return secrets
     }
     private func key(_ owner: String, _ server: String) -> String { owner + "/" + server }
-    func status(_ id: String, owner: String) -> String { states[key(owner, id)] ?? (servers.first { $0.id == id }?.enabled == false ? "已停用" : "未连接") }
+    func status(_ id: String, owner: String) -> String {
+        guard let server = servers.first(where: { $0.id == id }) else { return "已移除" }
+        if server.pluginEnabled == false { return "所属插件已停用" }; if server.configured == false { return "待配置" }; if !server.enabled { return "已停用" }
+        return states[key(owner, id)] ?? "未连接"
+    }
     func disconnect(owner: String? = nil, serverID: String? = nil) {
         for (key, session) in sessions where (owner == nil || key.hasPrefix(owner! + "/")) && (serverID == nil || key.hasSuffix("/" + serverID!)) {
             sessions[key] = nil; states[key] = "已断开"
             Task { await session.client.disconnect() }
         }; notify()
     }
-    func connected(_ id: String, owner: String) -> Bool { sessions[key(owner, id)]?.connected == true }
-    func token(_ id: String, owner: String) -> String? { sessions[key(owner, id)].flatMap { $0.connected ? $0.token : nil } }
+    func connected(_ id: String, owner: String) -> Bool { guard let current = try? server(id), let session = sessions[key(owner, id)] else { return false }; return session.connected && session.revision == current.revision }
+    func token(_ id: String, owner: String) -> String? { connected(id, owner: owner) ? sessions[key(owner, id)]?.token : nil }
     @discardableResult func connect(_ id: String, revision: String, owner: String, workspace: String?) async throws -> [String: Any] {
         let server = try server(id, revision: revision), sessionKey = key(owner, id)
+        if let reference = server.plugin { try plugins?.validateMCP(reference) }
         if let current = sessions[sessionKey], current.connected, current.revision == revision {
             return ["server": server.name, "connection": current.token, "serverInfo": current.info, "tool_count": (try JSONSerialization.jsonObject(with: current.catalog) as? [Any])?.count ?? 0, "reused": true]
         }
@@ -174,8 +227,11 @@ struct AgentMCPServer: Codable, Identifiable {
             if server.type == "stdio" {
                 var env = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(), "LANG": "en_US.UTF-8"]
                 for name in server.environmentKeys { guard let value = secrets[name] else { throw PetError("连接器环境凭据缺失，请重新保存") }; env[name] = value }
-                info = try await session.client.connectProgram(command: server.command!, arguments: server.args, environment: env, directory: workspace ?? NSHomeDirectory(), timeout: server.timeoutSeconds)
-            } else { info = try await session.client.connectHTTP(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", timeout: server.timeoutSeconds) }
+                info = try await session.client.connectProgram(command: server.command!, arguments: server.args, environment: env, directory: server.workingDirectory ?? workspace ?? NSHomeDirectory(), timeout: server.timeoutSeconds)
+            } else {
+                let headers = try Dictionary(uniqueKeysWithValues: (server.headerKeys ?? []).map { name -> (String, String) in guard let value = secrets["header:" + name] else { throw PetError("请求头凭据缺失，请重新保存") }; return (name, value) }); try Self.validateHeaders(headers)
+                info = try await session.client.connectHTTP(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", headers: headers, timeout: server.timeoutSeconds)
+            }
             session.catalog = try await session.client.tools(timeout: server.timeoutSeconds)
             try Task.checkCancellation(); _ = try self.server(id, revision: revision)
             guard sessions[sessionKey] === session else { throw PetError("连接已被关闭") }
@@ -190,7 +246,9 @@ struct AgentMCPServer: Codable, Identifiable {
         }
     }
     private func session(_ id: String, owner: String, token: String) throws -> (AgentMCPServer, Session) {
-        let server = try self.server(id)
+        let server: AgentMCPServer
+        do { server = try self.server(id); if let reference = server.plugin { try plugins?.validateMCP(reference) } }
+        catch { disconnect(serverID: id); throw error }
         guard let session = sessions[key(owner, id)], session.connected, session.revision == server.revision, session.token == token else { throw PetError("MCP 连接或工具目录已变化，请重新连接/读取后批准；旧调用不会重放") }
         return (server, session)
     }
@@ -370,7 +428,10 @@ struct AgentMCPServer: Codable, Identifiable {
     func supportsSubscription(_ preview: AgentMCPContentPreview) -> Bool { (sessions[key(preview.owner, preview.server.id)]?.capabilities["resources"] as? [String: Any])?["subscribe"] as? Bool == true }
     func summary(owner: String, allowedServers: Set<String>? = nil) throws -> String {
         if let loadError { throw PetError(loadError) }
-        let rows: [[String: Any]] = servers.filter { allowedServers?.contains($0.id) ?? true }.map { ["id": $0.id, "name": $0.name, "type": $0.type, "enabled": $0.enabled, "configuration": $0.revision, "destination": $0.destination, "connection": token($0.id, owner: owner) as Any? ?? NSNull()] }
+        let rows: [[String: Any]] = servers.filter { allowedServers?.contains($0.id) ?? true }.map { server in
+            var value: [String: Any] = ["id": server.id, "name": server.name, "type": server.type, "enabled": server.enabled, "configured": server.configured != false, "configuration": server.revision, "destination": server.destination, "connection": token(server.id, owner: owner) as Any? ?? NSNull()]
+            if let plugin = server.plugin { value["plugin"] = plugin.name }; return value
+        }
         return String(decoding: try JSONSerialization.data(withJSONObject: ["servers": rows], options: [.sortedKeys]), as: UTF8.self)
     }
     func context(owner: String) -> String {

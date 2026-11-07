@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor extension AppDelegate {
     func runAgentExtensionCheck(_ output: URL) async {
+        if CommandLine.arguments.contains("--plugin-mcp-check") { await runAgentPluginMCPCheck(output); return }
         if CommandLine.arguments.contains("--plugin-check") { await runAgentPluginCheck(output); return }
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         func phase(_ value: String) { try? Data(value.utf8).write(to: output.appendingPathComponent("phase"), options: .atomic) }

@@ -23,12 +23,13 @@ public actor MCPConnection {
         program = transport
         return try await initialize(transport, timeout: timeout)
     }
-    public func connectHTTP(endpoint: URL, bearerToken: String, timeout: Double) async throws -> Data {
+    public func connectHTTP(endpoint: URL, bearerToken: String, headers: [String: String] = [:], timeout: Double) async throws -> Data {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = timeout; configuration.timeoutIntervalForResource = timeout + 5
         let transport = HTTPClientTransport(endpoint: endpoint, configuration: configuration, streaming: true, requestModifier: { request in
             var request = request
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
             if !bearerToken.isEmpty { request.setValue("Bearer " + bearerToken, forHTTPHeaderField: "Authorization") }
             return request
         })
