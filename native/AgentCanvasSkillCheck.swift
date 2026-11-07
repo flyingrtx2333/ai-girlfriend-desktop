@@ -93,12 +93,16 @@ import AppKit
                 checks["actualModelRegeneratesWithDifferentCurrentCsvValues"] = text.contains("49.50") && text.contains("7.65") && !text.contains("19.90") && (observed["bar_count"] as? Int) == 3 && (observed["table_row_count"] as? Int) == 3
                 checks["actualModelLoadsSkillAndReadsTemplateResource"] = task.activeSkills?.contains(where: { $0.id == selected.id }) == true && task.events.contains { $0.title == "read_skill_resource" && $0.status == "completed" }
                 checks["reusedCanvasHasActualInlineSnapshot"] = tasks.canvases.previewImage(canvas, taskID: id) != nil
+                let exportedHTML = try window.exportHTML(try tasks.canvases.source(canvas.id, taskID: id).code)
+                try exportedHTML.write(to: output.appendingPathComponent("reused-canvas.html"), options: .atomic)
+                report["export"] = ["file": "reused-canvas.html", "sha256": AgentFiles.hash(exportedHTML)]
                 tasks.canvases.closeAll(); control.showAgentTask(id); control.show(tab: "chat")
                 try write(["phase": "reused", "taskID": id, "canvasID": canvas.id, "sourceHash": canvas.hash, "appPID": getpid()], "canvas-skill-ui-ready.json")
                 if CommandLine.arguments.contains("--hold-ui") {
                     let deadline = Date().addingTimeInterval(1200)
                     while Date() < deadline, !fm.fileExists(atPath: output.appendingPathComponent("finish-canvas-skill-ui").path) { try approve(); await wait(0.1) }
                 }
+                if let currentWindow = tasks.canvases.windows[id] { report["renderedAfterUI"] = try await currentWindow.inspect() }
                 let final = tasks.task(id)!
                 report["live"] = ["taskID": id, "canvasID": canvas.id, "sourceHash": final.canvases?.first?.hash ?? "", "model": preferences.model, "requests": final.modelReceipts?.count ?? 0, "inputTokens": final.inputTokens, "outputTokens": final.outputTokens, "renderedBeforeUI": observed, "skillID": selected.id, "approvals": final.approvals.filter { $0.decision == "allow" }.count]
             }

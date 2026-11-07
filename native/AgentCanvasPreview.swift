@@ -44,6 +44,10 @@ struct AgentCanvasPreview: Codable {
     }
 }
 
+@MainActor private final class AgentCanvasSnapshotView: NSImageView {
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+}
+
 @MainActor final class AgentCanvasPreviewRow: NSView {
     var onOpen: (() -> Void)?
     init(record: AgentCanvasRecord, image: NSImage?, actionTitle: String = "打开画布") {
@@ -51,15 +55,16 @@ struct AgentCanvasPreview: Codable {
         wantsLayer = true; layer?.cornerRadius = 10; layer?.borderWidth = 1; layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
         let title = NSTextField(labelWithString: record.title), open = NSButton(title: actionTitle, target: self, action: #selector(openCanvas))
         title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        open.bezelStyle = .texturedRounded; open.controlSize = .small; open.setAccessibilityLabel(actionTitle + " · " + record.title)
+        open.bezelStyle = .texturedRounded; open.controlSize = .regular; open.font = .systemFont(ofSize: 12); open.setAccessibilityLabel(actionTitle + " · " + record.title)
         let header = NSStackView(views: [title, NSView(), open]); header.spacing = 8
         addSubview(header); header.translatesAutoresizingMaskIntoConstraints = false
         var layout = [header.topAnchor.constraint(equalTo: topAnchor, constant: 10), header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), header.heightAnchor.constraint(equalToConstant: 24)]
         if let image {
-            let snapshot = NSImageView(image: image); snapshot.imageScaling = .scaleProportionallyUpOrDown
+            let snapshot = AgentCanvasSnapshotView(image: image); snapshot.imageScaling = .scaleProportionallyUpOrDown
             snapshot.setAccessibilityLabel("画布快照 · " + record.title + " · " + String(record.hash.prefix(12))); snapshot.toolTip = "源码版本 " + record.hash
             addSubview(snapshot); snapshot.translatesAutoresizingMaskIntoConstraints = false
-            layout += [snapshot.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8), snapshot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), snapshot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), snapshot.heightAnchor.constraint(equalToConstant: 280), snapshot.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)]
+            let aspect = snapshot.heightAnchor.constraint(equalTo: snapshot.widthAnchor, multiplier: image.size.height / max(1, image.size.width)); aspect.priority = .defaultHigh
+            layout += [snapshot.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8), snapshot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), snapshot.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), snapshot.heightAnchor.constraint(lessThanOrEqualToConstant: 460), aspect, snapshot.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)]
         } else { layout.append(header.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10)) }
         NSLayoutConstraint.activate(layout)
     }

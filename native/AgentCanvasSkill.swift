@@ -72,7 +72,7 @@ struct AgentCanvasSkillSpecification {
     private let name = NSTextField(), trigger = NSTextField(), sources = NSTextField(), formatting = NSTextField(), state = NSTextField(labelWithString: "")
     init(canvas: AgentCanvas, taskID: String, record: AgentCanvasRecord) {
         self.canvas = canvas; self.taskID = taskID; id = record.id; sourceHash = record.hash
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 350), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 260), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "打包画布 Skill"; window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
         super.init(window: window); let content = NSView(); window.contentView = content
         name.stringValue = "canvas-" + record.id.prefix(8).lowercased(); trigger.stringValue = "需要生成与「" + record.title + "」相同结构的画布时使用"
