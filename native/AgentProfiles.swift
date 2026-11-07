@@ -67,7 +67,7 @@ struct AgentProfileAssignment: Codable {
     private struct Document: Codable { var agents: [AgentProfile] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     static let toolNames = Set(AgentTools.names).subtracting(["finish_task"])
-    static let mutating: Set<String> = ["write_file", "edit_file", "write_memory", "git_init", "git_commit", "git_create_worktree", "git_push", "git_recycle_worktree", "git_restore_worktree"]
+    static let mutating: Set<String> = ["write_file", "edit_file", "write_memory", "git_init", "git_commit", "git_create_worktree", "git_push", "git_recycle_worktree", "git_restore_worktree", "desktop_action"]
     nonisolated static let skillTools: Set<String> = ["list_skills", "read_skill", "read_skill_resource", "unload_skill"]
     static let unsupported = Set<String>()
     init(profile: URL) { directory = profile }
@@ -248,9 +248,9 @@ struct AgentProfileAssignment: Codable {
         }
         if [.ask, .plan].contains(binding.modeCeiling), Self.mutating.contains(call.name) || call.name == "run_command" { throw PetError("委派不能扩大主任务的只读模式") }
         if limits.readOnly {
-            guard !Self.mutating.contains(call.name), call.name != "browser_action" || !["click", "fill", "select"].contains(call.object["action"] as? String ?? "") else { throw PetError("此 Agent 只读，不能修改文件或执行网页动作") }
+            guard !Self.mutating.contains(call.name), call.name != "browser_action" || !["click", "fill", "select"].contains(call.object["action"] as? String ?? "") else { throw PetError("此 Agent 只读，不能修改项目或操作外部应用") }
         }
-        if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentGit.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此 Agent 未允许联网") }
+        if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此 Agent 未允许联网或外部应用连接") }
         for owner in try ancestors(task, store: store) {
             guard owner.workspace == task.workspace else { throw PetError("所属任务项目范围已改变，请重新发起委派") }
             if [.ask, .plan].contains(owner.mode), Self.mutating.contains(call.name) || call.name == "run_command" || AgentMCP.externalOperations.contains(call.name) { throw PetError("所属任务当前为只读模式") }
@@ -258,7 +258,7 @@ struct AgentProfileAssignment: Codable {
             let live = try profile(parent.profile.id)
             if !Self.skillTools.contains(call.name), !["load_tools", "update_plan", "ask_user", "read_task_history", "finish_task"].contains(call.name), !live.availableTools.contains(call.name) { throw PetError("所属 Agent 已收紧工具范围") }
             if parent.readOnly || live.readOnly, Self.mutating.contains(call.name) || AgentMCP.externalOperations.contains(call.name) { throw PetError("所属 Agent 为只读项目") }
-            if !parent.network || !live.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentMCP.externalOperations + AgentGit.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("所属 Agent 禁止外部连接") }
+            if !parent.network || !live.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentMCP.externalOperations + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("所属 Agent 禁止外部连接") }
             if AgentMCP.tools.contains(call.name), call.name != "list_mcp_servers", let id = call.object["server_id"] as? String, !(live.mcpServers ?? []).contains(id) { throw PetError("所属 Agent 已移除此 MCP") }
         }
     }

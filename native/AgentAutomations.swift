@@ -302,8 +302,8 @@ struct AgentAutomationAssignment: Codable {
         let live = values.first { $0.id == binding.automationID }
         guard task.workspace == binding.workspace, live == nil || live?.workspace == binding.workspace else { throw PetError("自动化项目范围已改变，请重新发起任务") }
         let limits = limits(owner)
-        if limits.readOnly, AgentProfiles.mutating.contains(call.name) || AgentMCP.externalOperations.contains(call.name) || (call.name == "browser_action" && ["click", "fill", "select"].contains(call.object["action"] as? String ?? "")) { throw PetError("此自动化只读，不能修改项目或执行外部 MCP") }
-        if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentMCP.externalOperations + AgentGit.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此自动化未允许联网与外部连接") }
+        if limits.readOnly, AgentProfiles.mutating.contains(call.name) || AgentMCP.externalOperations.contains(call.name) || (call.name == "browser_action" && ["click", "fill", "select"].contains(call.object["action"] as? String ?? "")) { throw PetError("此自动化只读，不能修改项目或操作外部服务／应用") }
+        if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentMCP.externalOperations + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此自动化未允许联网与外部连接") }
     }
     static func dateText(_ date: Date, zone: String) -> String { let formatter = DateFormatter(); formatter.locale = Locale(identifier: "zh_CN"); formatter.timeZone = TimeZone(identifier: zone); formatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"; return formatter.string(from: date) }
 }

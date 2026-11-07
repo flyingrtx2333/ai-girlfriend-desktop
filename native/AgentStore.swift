@@ -11,6 +11,7 @@ import Foundation
     let automations: AgentAutomations
     let models: AgentTaskModels
     let worktreeRetention: AgentWorktreeRetention
+    let desktop: AgentDesktop
     lazy var projectChanges = AgentProjectChanges(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
@@ -31,6 +32,7 @@ import Foundation
         automations = AgentAutomations(profile: directory)
         models = AgentTaskModels(profile: directory)
         worktreeRetention = AgentWorktreeRetention(profile: directory)
+        desktop = AgentDesktop(profile: directory)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var previousSelection: String?
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {
@@ -122,7 +124,7 @@ import Foundation
         let agentScopeChanged = previous.agent?.profile.id != value.agent?.profile.id || previous.agent?.ownerID != value.agent?.ownerID || previous.agent?.readOnly != value.agent?.readOnly || previous.agent?.network != value.agent?.network || previous.agent?.permissionCeiling != value.agent?.permissionCeiling
         let scheduleChanged = previous.automation?.runID != value.automation?.runID || previous.automation?.readOnly != value.automation?.readOnly || previous.automation?.network != value.automation?.network || previous.team?.team.id != value.team?.team.id
         if coreScopeChanged || agentScopeChanged || scheduleChanged { hooks.cancel(id) }
-        if value.archived { browser.close(id); mcp.disconnect(owner: id); hooks.cancel(id) }
+        if value.archived { browser.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id) }
         if persist {
             do { try save(id) } catch { writeError = error.localizedDescription; tasks[index].status = .failed }
         }

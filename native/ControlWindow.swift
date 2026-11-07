@@ -41,7 +41,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -78,6 +78,8 @@ final class FormDocumentView: NSView {
     private let resumeButton = NSButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
     private let gitButton = NSButton(title: "Git", target: nil, action: nil)
     private let browserButton = NSButton(title: "浏览器", target: nil, action: nil)
+    private let desktopButton = NSButton(title: "电脑操作", target: nil, action: nil)
+    private var desktopSettings: AgentDesktopSettingsView?
     private let approvalPanel = NSStackView(), approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView()
     private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
@@ -274,9 +276,10 @@ final class FormDocumentView: NSView {
         titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 94)
         projectButton.target = self; projectButton.action = #selector(chooseProject); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
         browserButton.target = self; browserButton.action = #selector(showAgentBrowser); AgentWorkbenchTheme.toolbar(browserButton, title: "浏览器", symbol: "rectangle.on.rectangle")
+        desktopButton.target = self; desktopButton.action = #selector(showDesktopSettings); AgentWorkbenchTheme.toolbar(desktopButton, title: "电脑操作", symbol: "computermouse")
         gitButton.target = self; gitButton.action = #selector(showAgentGit); AgentWorkbenchTheme.toolbar(gitButton, title: "Git", symbol: "arrow.triangle.branch")
         resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务记录", symbol: "sidebar.right")
-        let actions = stack([projectButton, browserButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
+        let actions = stack([projectButton, browserButton, desktopButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
         let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
         workbenchChrome = [navigation, actions, workbenchBadge]
         settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(settingsPageIcon)
@@ -486,7 +489,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { $0.category == "worktrees" }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer"].contains($0.category) }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -670,6 +673,8 @@ final class FormDocumentView: NSView {
         let worktrees = NSButton(title: "工作树", target: self, action: #selector(showWorktrees))
         row("", stack([memory, extensions, worktrees, NSView()], spacing: 8))
         if let store = companion?.agentStore {
+            group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
+            let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel)
             group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
             let panel = AgentWorktreePolicyView(store: store) { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
             worktreePolicyPanel = panel; row("", panel)
@@ -1366,7 +1371,7 @@ final class FormDocumentView: NSView {
                 var visibleCall = call
                 if call.name == "delegate_task", let child = (events[call.id]?.childTaskID).flatMap({ tasks.task($0) }) { visibleCall.displayName = "委派 · " + (child.team?.team.name ?? child.agent?.profile.name ?? child.title) }
                 toolRows[call.id]?.update(call: visibleCall, event: events[call.id])
-                let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil })
+                let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil || $0.desktopCapture != nil })
                 toolRows[call.id]?.setCapture(image) { [weak self] in if let image { self?.openAttachment(taskID: owner, id: image.id) } }
                 if let childID = events[call.id]?.childTaskID, let child = tasks.task(childID) { toolRows[call.id]?.setSubtask(child) { [weak self] in self?.selectAgentTask(childID) } }
             }
@@ -1398,6 +1403,7 @@ final class FormDocumentView: NSView {
         showWorktreePolicySettings()
     }
     func showWorktreePolicySettings() { settingsCategory = "worktrees"; show(tab: "settings") }
+    @objc func showDesktopSettings() { desktopSettings?.refreshState(); settingsCategory = "computer"; show(tab: "settings") }
     func refreshWorktreeRetention() { worktreePolicyPanel?.refreshState(); if companion?.usesAgent == true { scheduleRender() } }
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
     @objc func showAutomations() {

@@ -170,7 +170,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
     var submittedAttachmentIDs: Set<String> { Set(messages.filter(\.isHumanInput).flatMap { $0.attachmentIDs ?? [] }) }
     var availableAttachmentIDs: Set<String> {
-        let captures = Set((attachments ?? []).filter { $0.browserCapture != nil }.map(\.id))
+        let captures = Set((attachments ?? []).filter { $0.browserCapture != nil || $0.desktopCapture != nil }.map(\.id))
         let observed = Set(messages.filter { $0.role == "tool" }.flatMap { ($0.visuals ?? []).map(\.id) })
         let mcp = Set((attachments ?? []).filter { $0.mcpSource != nil }.map(\.id))
         let received = Set(messages.filter { $0.role == "tool" }.flatMap { $0.attachmentIDs ?? [] })
