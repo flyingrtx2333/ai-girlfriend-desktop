@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
     private var hookWindow: AgentHookWindow?
     private var agentWindow: AgentProfileWindow?
     private var teamWindow: AgentTeamWindow?
+    private var pluginWindow: AgentPluginWindow?
     var onStartAgent: ((String) -> Void)?
     var onBrowseMCP: ((String?) -> Void)?
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
@@ -35,7 +36,8 @@ import UniformTypeIdentifiers
         let hooks = NSButton(title: "Hooks", target: self, action: #selector(showHooks))
         let agents = NSButton(title: "自定义 Agent", target: self, action: #selector(showAgents))
         let teams = NSButton(title: "团队", target: self, action: #selector(showTeams))
-        let header = NSStackView(views: [kinds, search, refresh, mcp, hooks, agents, teams]); header.spacing = 8
+        let plugins = NSButton(title: "插件", target: self, action: #selector(showPlugins))
+        let header = NSStackView(views: [kinds, search, refresh, plugins, mcp, hooks, agents, teams]); header.spacing = 8
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("extension")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 48; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("扩展列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
@@ -67,6 +69,11 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    @objc private func showPlugins() {
+        guard canLeave() else { return }
+        if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+    }
     @objc private func showMCP() {
         if let window = mcpWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
@@ -124,7 +131,7 @@ import UniformTypeIdentifiers
     private func updateControls() {
         let idle = job == nil, managed = selected?.managed == true
         kinds.isEnabled = idle; search.isEnabled = idle; table.isEnabled = idle; add.isEnabled = idle; importButton.isEnabled = idle
-        enabled.isEnabled = idle && selected != nil; use.isEnabled = idle && selected?.enabled == true && onInsert != nil
+        enabled.isEnabled = idle && selected != nil && selected?.pluginName == nil; use.isEnabled = idle && selected?.enabled == true && onInsert != nil
         remove.isEnabled = idle && managed; save.isEnabled = idle && managed && dirty; reveal.isEnabled = idle && selected != nil
         editor.isEditable = idle && managed
     }

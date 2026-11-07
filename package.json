@@ -61,7 +61,8 @@
     "native:check-desktop": "node scripts/check-native-desktop.mjs",
     "build:canvas": "vite build --config vite.canvas.config.js",
     "native:check-canvas": "node scripts/check-native-canvas.mjs",
-    "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs"
+    "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs",
+    "native:check-plugins": "node scripts/check-native-plugins.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.5",

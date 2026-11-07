@@ -27,6 +27,7 @@ struct AgentExtensionItem: Identifiable, Sendable {
     var enabled: Bool
     var manualOnly: Bool
     var sha256: String
+    var pluginName: String? = nil
     var invocation: String { kind.rawValue + ":" + name }
 }
 
@@ -63,10 +64,12 @@ struct AgentExtensionDocument: Sendable {
 @MainActor final class AgentExtensions {
     let profile: URL
     let sharedHome: URL?
+    let plugins: AgentPlugins
     private(set) var warnings: [String] = []
     private struct Settings: Codable { var disabled: Set<String> = [] }
     init(profile: URL, sharedHome: URL? = FileManager.default.homeDirectoryForCurrentUser) {
-        self.profile = profile.standardizedFileURL.resolvingSymlinksInPath(); self.sharedHome = sharedHome
+        let root = profile.standardizedFileURL.resolvingSymlinksInPath()
+        self.profile = root; self.sharedHome = sharedHome; plugins = AgentPlugins(profile: root)
     }
     private var settingsFile: URL { profile.appendingPathComponent("extensions/settings.json") }
     private func settings() throws -> Settings {
@@ -134,6 +137,11 @@ struct AgentExtensionDocument: Sendable {
                 } catch { warnings.append(directory.path + "：" + error.localizedDescription) }
             }
         }
+        for item in try plugins.extensionItems() {
+            guard seen.insert(item.kind.rawValue + ":" + item.name.lowercased()).inserted else { warnings.append("插件组件与已有扩展同名：" + item.name); continue }
+            if includeDisabled || item.enabled { items.append(item) }
+        }
+        warnings += plugins.warnings
         return items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     func item(_ id: String, workspace: String?, enabled: Bool = true) throws -> AgentExtensionItem {
@@ -141,12 +149,14 @@ struct AgentExtensionDocument: Sendable {
         return item
     }
     func document(_ item: AgentExtensionItem) throws -> (String, AgentExtensionDocument) {
+        try plugins.validate(item)
         let files = try AgentFiles(workspace: item.root.path), data = try files.readData(files.resolve(item.file.path), maximum: 65_536)
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("扩展说明不是 UTF-8") }
         return (text, try AgentExtensionDocument(text))
     }
     func setEnabled(_ item: AgentExtensionItem, enabled: Bool, workspace: String?) throws {
-        _ = try self.item(item.id, workspace: workspace, enabled: false)
+        let current = try self.item(item.id, workspace: workspace, enabled: false)
+        guard current.pluginName == nil else { throw PetError("请在插件中启停整个插件") }
         var value = try settings(); if enabled { value.disabled.remove(item.id) } else { value.disabled.insert(item.id) }
         let files = try AgentFiles(workspace: profile.path)
         try files.writeData(JSONEncoder().encode(value), to: files.resolve(settingsFile.path), permissions: 0o600)
@@ -199,6 +209,7 @@ struct AgentExtensionDocument: Sendable {
         let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("tmp/extensions", isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let source = try AgentFiles(workspace: item.root.path), resources = try Self.resourceData(source)
+        try plugins.validate(item, resources: resources)
         let digest = Self.digest(resources), destination = scratch.appendingPathComponent(item.id + "-" + String(digest.prefix(16)), isDirectory: true)
         if !FileManager.default.fileExists(atPath: destination.path) {
             let temporary = scratch.appendingPathComponent(".import-" + UUID().uuidString, isDirectory: true)

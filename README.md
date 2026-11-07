@@ -145,6 +145,10 @@ Git 操作需要已安装的 Xcode 命令行工具。仓库初始化、模型预
 
 「扩展」管理本机 Skills 与自定义命令，可搜索、新建、导入、编辑、启停和移到废纸篓。Skill 支持 `SKILL.md`、资源文件夹、ZIP 与 `.skill`；命令使用 Markdown。输入 `/` 可筛选候选，用上下键和 Enter／Tab 选择，再补充要求并发送；从管理窗口使用扩展也只会加入草稿。命令支持 `$ARGUMENTS`，子目录以冒号分组，如 `audit/handoff.md` 对应 `/audit:handoff`；候选会加上 `skill:` 或 `command:` 前缀区分类型。
 
+「扩展 → 插件」可导入一个本地插件 ZIP，审阅作者、版本与组件后安装，再启用插件。支持 `.qoder-plugin/plugin.json` 或 `.claude-plugin/plugin.json`、Skills、命令与参考资料；组件使用插件名前缀，例如 `/skill:sales-workbench:review-sales`。从插件窗口使用组件只加入原任务草稿，发送后才调用模型。组件随父插件统一启停和移除，源码只读；停用后拒绝继续载入或读取该插件的 Skill 资源，已有任务记录保留。
+
+插件包与展开资源分别不超过 20MB，单个资源不超过 2MB。安装不覆盖同名插件，拒绝不安全路径、路径别名、过期或被修改的资源。当前插件内连接器、Agent、Hooks、规则、依赖及 SDK 权限尚未接入，包含这些要求的包会明确拒绝安装；市场、发布、更新及办公插件继续开发。
+
 全局扩展放在应用数据的 `extensions/skills` 和 `extensions/commands`，项目扩展放在 `.bluefatfish/skills` 和 `.bluefatfish/commands`。也会发现 `~/.qoder`、`~/.agents/skills` 及项目内 `.qoder`／`.agents` 的对应文件；共享来源可查看和停用，通过「打开来源」管理原件。应用管理的全局同名扩展优先，其次是共享全局，最后是项目；停用优先来源后不会自动启用另一份同名文件。
 
 Agent 可按描述查找并载入 Skill，`disable-model-invocation: true` 的 Skill 只允许用户手动选择。资源复制到任务私有临时目录，说明、来源与版本随记录保留；脚本仍通过终端工具遵循原有模式、审批、网络和项目边界。资源为只读副本，使用相应解释器运行脚本。Skill 单文件资源上限 2MB、总量 20MB；不导入凭据、隐藏文件或外部链接。
