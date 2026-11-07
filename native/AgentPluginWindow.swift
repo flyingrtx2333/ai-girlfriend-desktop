@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
     private let title = NSTextField(labelWithString: ""), metadata = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = NSButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let source = NSButton(title: "打开来源", target: nil, action: nil)
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
     var onChange: (() -> Void)?
@@ -18,7 +19,7 @@ import UniformTypeIdentifiers
         super.init(window: window); window.delegate = self; let content = NSView(); window.contentView = content
         search.placeholderString = "搜索插件"; search.delegate = self
         upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled); use.target = self; use.action = #selector(useComponent); remove.target = self; remove.action = #selector(removePackage)
-        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList)), source = NSButton(title: "打开来源", target: self, action: #selector(revealPackage))
+        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList)); source.target = self; source.action = #selector(revealPackage)
         let header = NSStackView(views: [search, refresh, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
@@ -74,7 +75,7 @@ import UniformTypeIdentifiers
         components.reloadData(); if !entries.isEmpty { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
     }
     private func updateControls() {
-        let idle = job == nil; list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil
+        let idle = job == nil; list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
         use.isEnabled = idle && selected?.receipt.enabled == true && entries.indices.contains(components.selectedRow) && onInsert != nil
     }
     @objc private func toggleEnabled() {
