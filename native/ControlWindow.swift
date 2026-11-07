@@ -1334,15 +1334,23 @@ final class FormDocumentView: NSView {
         updateWorkbenchLayout()
         let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
+        let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let snapshotCalls = Set(task.messages.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "canvas_screenshot" }.suffix(4).map(\.id))
+        var inlineSnapshots: [String: AgentAttachment] = [:]
+        for result in task.messages where result.role == "tool" {
+            if let callID = result.toolCallID, snapshotCalls.contains(callID), let file = result.visuals?.compactMap({ fileMap[$0.id] }).first(where: { $0.canvasCapture != nil }) { inlineSnapshots[callID] = file }
+        }
         var ids: [String] = []
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
         }
-        if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash } }
+        if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash + tasks.canvases.previewSignature($0, taskID: task.id) } }
+        ids += inlineSnapshots.keys.sorted().map { "snapshot:" + $0 + ":" + inlineSnapshots[$0]!.id }
         if ids != renderedIDs {
             messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
             var next: [String: ChatMessageRow] = [:], nextTools: [String: AgentToolRow] = [:]
+            var shownCanvases: Set<String> = []
             for message in messages {
                 if ids.contains(message.id) {
                     let row = messageRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: message.id, role: message.role, content: message.content), workbench: true); next[message.id] = row
@@ -1353,6 +1361,14 @@ final class FormDocumentView: NSView {
                     let row = toolRows[call.id] ?? AgentToolRow(); row.useWorkbenchStyle(); nextTools[call.id] = row
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                     messageColumn.setCustomSpacing(8, after: row)
+                    if let file = inlineSnapshots[call.id], let capture = file.canvasCapture {
+                        let image = AgentCanvas.capturePreviewImage(file, store: tasks, taskID: task.id)
+                        if image != nil { shownCanvases.insert(capture.canvasID + capture.sourceHash) }
+                        let record = AgentCanvasRecord(id: capture.canvasID, title: capture.title, hash: capture.sourceHash)
+                        let snapshot = AgentCanvasPreviewRow(record: record, image: image, actionTitle: "查看快照")
+                        snapshot.onOpen = { [weak self] in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openAttachment(taskID: task.id, id: file.id) }
+                        messageColumn.addArrangedSubview(snapshot); snapshot.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                    }
                 }
             }
             if task.status == .completed {
@@ -1362,15 +1378,15 @@ final class FormDocumentView: NSView {
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
                 for canvas in (task.canvases ?? []).prefix(4) {
-                    let row = AgentInspectorFileButton(title: canvas.title, value: canvas.reference, section: 1, symbol: "rectangle.3.group", inline: true)
-                    row.onOpen = { [weak self] _, value in self?.openCanvasReference(value, taskID: task.id) }
+                    let row = AgentCanvasPreviewRow(record: canvas, image: shownCanvases.contains(canvas.id + canvas.hash) ? nil : tasks.canvases.previewImage(canvas, taskID: task.id))
+                    row.onOpen = { [weak self] in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openCanvasReference(canvas.reference, taskID: task.id) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
             }
             messageRows = next; toolRows = nextTools; renderedIDs = ids
         }
         let events = Dictionary(task.events.compactMap { event in event.toolCallID.map { ($0, event) } }, uniquingKeysWith: { _, latest in latest })
-        let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }), owner = task.id
+        let owner = task.id
         for message in messages {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             messageRows[message.id]?.update(message.content, markdown: !streaming)

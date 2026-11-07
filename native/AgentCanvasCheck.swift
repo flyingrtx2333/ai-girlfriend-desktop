@@ -3,6 +3,7 @@ import ScreenCaptureKit
 
 @MainActor extension AppDelegate {
     func runAgentCanvasCheck(_ output: URL) async {
+        if CommandLine.arguments.contains("--canvas-skill-check") { await runAgentCanvasSkillCheck(output); return }
         let fm = FileManager.default
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]).write(to: output.appendingPathComponent(name), options: .atomic) }

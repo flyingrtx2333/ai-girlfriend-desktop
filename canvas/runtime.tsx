@@ -1,6 +1,7 @@
 import * as React from 'react';
 import * as JSXRuntime from 'react/jsx-runtime';
 import { createRoot, type Root } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import * as Charts from 'recharts';
 import { transform } from 'sucrase';
 import './style.css';
@@ -47,8 +48,11 @@ export async function render(source: string) {
     const Component = module.exports.default;
     if (typeof Component !== 'function' && typeof Component !== 'object') throw new Error('请用 export default 导出 React 组件');
     root = createRoot(element);
-    root.render(<CanvasBoundary><Component /></CanvasBoundary>);
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    flushSync(() => root!.render(<CanvasBoundary><Component /></CanvasBoundary>));
+    await Promise.race([
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      new Promise(resolve => setTimeout(resolve, 120)),
+    ]);
     const error = document.querySelector('[data-canvas-error]')?.textContent;
     if (error) throw new Error(error);
     return { rendered: true };

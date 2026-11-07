@@ -162,6 +162,10 @@ struct AgentCanvasCapture: Codable, Sendable {
                 return AgentToolResult(text: try json(["id": record.id, "hash": shot.capture.sourceHash, "attachment_id": file.id, "actual_viewport": true]), visuals: [AgentVisualPart(id: file.id, part: 1)])
             }
             let observed = try await window.inspect(); var result = metadata(try self.record(record.id, taskID: task.id)); result["rendered"] = observed
+            if observed["error"] == nil {
+                do { try cachePreview(try await window.screenshot(), taskID: task.id) }
+                catch { if Task.isCancelled { throw CancellationError() }; result["preview_error"] = error.localizedDescription }
+            }
             return AgentToolResult(text: try json(result), failed: observed["error"] as? String != nil)
         } catch {
             if Task.isCancelled { throw CancellationError() }

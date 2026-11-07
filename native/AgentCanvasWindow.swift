@@ -27,6 +27,7 @@ import Darwin
     private var renderTask: Task<Void, Error>?, uiTask: Task<Void, Never>?, timeout: Task<Void, Never>?, watcher: DispatchSourceFileSystemObject?, watchTask: Task<Void, Never>?
     private var pending: CheckedContinuation<Any, Error>?, generation = UUID(), annotationWindow: AgentBrowserAnnotationWindow?
     private var draftTask: Task<Void, Never>?
+    private var skillWindow: AgentCanvasSkillWindow?
     var onClose: (() -> Void)?
     init(canvas: AgentCanvas, taskID: String) {
         self.canvas = canvas; self.taskID = taskID
@@ -37,7 +38,7 @@ import Darwin
         picker.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true; picker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         mode.selectedSegment = 0; mode.target = self; mode.action = #selector(changeCanvasMode); mode.setAccessibilityLabel("画布视图")
         versions.setAccessibilityLabel("画布历史版本"); versions.target = self; versions.action = #selector(restoreVersion)
-        exports.setAccessibilityLabel("导出画布"); exports.addItems(withTitles: ["导出", "交互 HTML…", "TSX 源码…", "当前截图…"]); exports.target = self; exports.action = #selector(exportDocument)
+        exports.setAccessibilityLabel("导出画布"); exports.addItems(withTitles: ["导出", "交互 HTML…", "TSX 源码…", "当前截图…", "打包为 Skill…"]); exports.target = self; exports.action = #selector(exportDocument)
         versions.widthAnchor.constraint(equalToConstant: 64).isActive = true; exports.widthAnchor.constraint(equalToConstant: 68).isActive = true
         for popup in [picker, versions, exports] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 12) }
         for (button, action) in [(save, #selector(saveSource)), (annotate, #selector(beginAnnotation)), (reload, #selector(reloadDocument))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
@@ -95,7 +96,7 @@ import Darwin
         cancelRender(); requestedHash = value.record.hash; state.stringValue = "正在渲染…"; generation = UUID()
         let operationGeneration = generation
         let operation = Task { @MainActor [weak self] in
-            guard let self else { throw CancellationError() }; resetWeb(); nativeLoading = true
+            guard let self else { throw CancellationError() }; resetWeb(); content.layoutSubtreeIfNeeded(); nativeLoading = true
             _ = try await awaitResult { _ in self.web.loadHTMLString(Self.shell, baseURL: URL(string: "appcanvas://runtime/")) }
             _ = try await evaluate("return await BlueFatFishCanvas.render(source)", args: ["source": value.code], world: .page)
             try Task.checkCancellation(); loadedHash = value.record.hash; requestedHash = nil; state.stringValue = ""; refreshCatalog()
@@ -168,6 +169,15 @@ import Darwin
     func screenshot() async throws -> AgentCanvasShot {
         guard let id = selectedID else { throw PetError("未选择画布") }; try await open(id)
         mode.selectedSegment = 0; changeCanvasMode(); let source = try canvas.source(id, taskID: taskID)
+        _ = try await evaluate("""
+        await new Promise(resolve => {
+          const root=document.getElementById('canvas-root'); let quiet,limit;
+          const observer=new MutationObserver(arm);
+          function done(){observer.disconnect();clearTimeout(quiet);clearTimeout(limit);resolve();}
+          function arm(){clearTimeout(quiet);quiet=setTimeout(async()=>{const animations=root.getAnimations({subtree:true});if(animations.length){await Promise.race([Promise.all(animations.map(a=>a.finished.catch(()=>{}))),new Promise(r=>setTimeout(r,1000))]);}done();},140);}
+          observer.observe(root,{attributes:true,childList:true,characterData:true,subtree:true});limit=setTimeout(done,2500);arm();
+        }); return true;
+        """)
         let (image, _) = try await AgentBrowserShot.viewport(web)
         guard try canvas.source(id, taskID: taskID).record.hash == source.record.hash else { throw PetError("截图期间画布源码已变化，请重试") }
         return AgentCanvasShot(image: image, capture: AgentCanvasCapture(canvasID: id, title: source.record.title, sourceHash: source.record.hash))
@@ -196,6 +206,11 @@ import Darwin
     @objc private func exportDocument() {
         let kind = exports.indexOfSelectedItem; exports.selectItem(at: 0)
         guard kind > 0, let id = selectedID else { return }
+        if kind == 4 {
+            guard !dirty else { state.stringValue = "请先保存源码后打包"; return }
+            do { let record = try canvas.source(id, taskID: taskID).record; let manager = AgentCanvasSkillWindow(canvas: canvas, taskID: taskID, record: record); skillWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) } catch { state.stringValue = error.localizedDescription }
+            return
+        }
         run {
             let source = try self.canvas.source(id, taskID: self.taskID), data: Data, suffix: String
             if kind == 2 { data = Data((self.dirty ? self.editor.string : source.code).utf8); suffix = ".canvas.tsx" }
@@ -234,6 +249,6 @@ import Darwin
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }
     func windowWillClose(_ notification: Notification) {
         if dirty, let id = selectedID { canvas.saveDraft(editor.string, hash: editorHash, id: id, taskID: taskID) }
-        closed = true; draftTask?.cancel(); stop(); watcher?.cancel(); watchTask?.cancel(); annotationWindow?.close(); web.loadHTMLString("", baseURL: nil); onClose?()
+        closed = true; draftTask?.cancel(); stop(); watcher?.cancel(); watchTask?.cancel(); annotationWindow?.close(); skillWindow?.close(); web.loadHTMLString("", baseURL: nil); onClose?()
     }
 }
