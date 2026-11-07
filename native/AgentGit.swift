@@ -4,13 +4,17 @@ struct AgentGitChange: Codable { var status: String; var path: String; var previ
 struct AgentGitStatus: Codable { var branch: String; var head: String?; var changes: [AgentGitChange] }
 struct AgentGitReview: Codable {
     var paths: [String]; var head: String?; var hash: String; var diff: String; var created = Date()
-    enum CodingKeys: String, CodingKey { case paths, head, hash = "review_hash", diff, created }
+    var source: AgentGitSource? = nil
+    var branchRef: String? = nil
+    var commitSource: AgentGitSource { source ?? .uncommitted }
+    enum CodingKeys: String, CodingKey { case paths, head, hash = "review_hash", diff, created, source, branchRef }
 }
 struct AgentGitCommit: Codable { var commit: String; var branch: String; var output: String }
 struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; var branch: String }
 
 @MainActor final class AgentGit {
-    static let tools = ["git_status", "git_diff", "git_commit", "git_create_worktree", "git_init"]
+    static let externalTools = ["git_prepare_push", "git_push", "git_push_status"]
+    static let tools = ["git_status", "git_diff", "git_commit", "git_create_worktree", "git_init", "git_remotes"] + externalTools + AgentWorktreeEntry.tools
     private static let executable: Result<String, Error> = Result {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun"); process.arguments = ["--find", "git"]
@@ -24,8 +28,11 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     static func executablePath() throws -> String { try executable.get() }
     let store: AgentStore, taskID: String, files: AgentFiles, directory: URL
-    private let scratch: URL
+    let scratch: URL
     private var command: AgentCommand?
+    var pushTransport: AgentGitTransport?
+    var pushHookCommand: AgentCommand?
+    var worktreeCopy: AgentCommand?
     init(store: AgentStore, taskID: String, directory: URL) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         self.store = store; self.taskID = taskID; files = try AgentFiles(workspace: task.workspace); self.directory = directory
@@ -44,17 +51,22 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let raw = String(line.dropFirst(8)), url = URL(fileURLWithPath: raw, relativeTo: files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL.resolvingSymlinksInPath()
         return url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
     }
-    func cancel() { command?.cancel() }
+    func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel() }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    private func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000) async throws -> AgentToolResult {
+    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil) async throws -> AgentToolResult {
         let process = AgentCommand(); command = process; defer { command = nil }
         let flags = [try Self.executablePath(), "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
-        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: write ? 90 : 15, readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent())
+        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, environment: environment)
     }
-    private func output(_ args: [String]) async throws -> String {
+    func output(_ args: [String]) async throws -> String {
         let result = try await run(args)
         guard !result.failed else { throw PetError(String(result.text.prefix(3000))) }
         guard result.truncated != true else { throw PetError("Git 输出较大，请缩小文件范围") }; return result.stdout ?? ""
+    }
+    func validateWorkspace() throws {
+        guard let task = store.task(taskID), !task.archived else { throw PetError("任务不存在或已归档") }
+        let current = try AgentFiles(workspace: task.workspace), metadata = try Self.metadata(workspace: task.workspace, creating: true)
+        guard current.root == files.root, metadata.standardizedFileURL.resolvingSymlinksInPath() == directory.standardizedFileURL.resolvingSymlinksInPath() else { throw PetError("任务项目已变化，请重新打开 Git 后审阅") }
     }
     func filePaths() async throws -> [String] {
         let result = try await run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"], maximumOutput: 1_000_000)
@@ -80,13 +92,21 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         guard !requested.isEmpty, requested.count <= 50 else { throw PetError("请选择 1 至 50 个文件") }
         return try Array(Set(requested.map { path in
             let url = try files.resolve(path), value = files.relative(url)
+            let lexical = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : files.root.appendingPathComponent(path)).standardizedFileURL
+            guard lexical.path == url.path else { throw PetError("Git 文件路径包含符号链接，请直接选择实际文件") }
             guard value != ".", value != ".git", !value.hasPrefix(".git/") else { throw PetError("不能把 Git 元数据当作项目文件") }
             var directory: ObjCBool = false
             if FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue { throw PetError("请选择具体文件") }
             return value
         })).sorted()
     }
-    func diff(_ requested: [String]) async throws -> AgentGitReview {
+    func diff(_ requested: [String], source: AgentGitSource = .uncommitted) async throws -> AgentGitReview {
+        if source == .staged {
+            let inspection = try await inspect(source: .staged, revision: "", requested: requested)
+            guard let saved = store.task(taskID)?.gitReview, saved.hash == inspection.hash, store.writeError == nil else { throw PetError("无法保存暂存审阅") }
+            return saved
+        }
+        guard source == .uncommitted else { throw PetError("提交审阅请选择未提交或已暂存来源") }
         let state = try await status(), requested = try paths(requested)
         let renamed = state.changes.filter { requested.contains($0.path) }.compactMap(\.previousPath)
         let selected = try paths(requested + renamed); var diff = ""
@@ -103,7 +123,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let review = AgentGitReview(paths: selected, head: state.head, hash: AgentFiles.hash(fingerprint), diff: diff)
         store.update(taskID) { $0.gitReview = review }; return review
     }
-    private func validateHooks() async throws {
+    func validateHooks() async throws {
         let hook = try await run(["config", "--path", "--get", "core.hooksPath"])
         if hook.exitCode == 0, let raw = hook.stdout?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
             let path = URL(fileURLWithPath: raw, relativeTo: files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL.resolvingSymlinksInPath().path
@@ -111,9 +131,12 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         } else if hook.exitCode != 1 { throw PetError(hook.text) }
     }
     func commit(paths requested: [String], message: String, reviewHash: String) async throws -> AgentGitCommit {
+        try validateWorkspace()
         let selected = try paths(requested), message = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, message.utf8.count <= 4000, !message.contains("\0") else { throw PetError("请填写提交说明，最多 4000 字节") }
         guard let saved = store.task(taskID)?.gitReview, saved.paths == selected, saved.hash == reviewHash else { throw PetError("请先审阅这些文件的 Git 差异") }
+        if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "git-commit", name: "git_commit", arguments: "{}"), task: task, store: store) }
+        if saved.commitSource == .staged { return try await commitStaged(saved, message: message) }
         let current = try await diff(selected)
         guard current.hash == reviewHash else { throw PetError("文件或 HEAD 已变化，请重新审阅差异后提交") }
         guard !current.diff.isEmpty else { throw PetError("所选文件没有可提交的变化") }
@@ -134,11 +157,13 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         return AgentGitCommit(commit: head, branch: after.branch, output: result.text)
     }
     func initialize() async throws -> AgentGitStatus {
+        try validateWorkspace()
         guard !FileManager.default.fileExists(atPath: files.root.appendingPathComponent(".git").path) else { throw PetError("项目已有 Git 元数据") }
         let result = try await run(["init", "-b", "main"], write: true)
         guard !result.failed else { throw PetError(result.text) }; return try await status()
     }
     func createWorktree(branch: String) async throws -> AgentGitWorktree {
+        try validateWorkspace()
         guard !branch.isEmpty, branch.utf8.count <= 200, !branch.contains("\0"), !branch.hasPrefix("-") else { throw PetError("分支名称无效") }
         let check = try await run(["check-ref-format", "--branch", branch])
         guard !check.failed else { throw PetError("分支名称无效") }
@@ -161,6 +186,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let id = store.create(title: (source?.title ?? "任务") + " · " + branch, workspace: destination.path, mode: source?.mode ?? .agent)
         store.update(id) { record in
             record.parentID = taskID; record.permission = source?.permission ?? .workspace; record.gitDirectory = directory.path
+            record.worktreeOrigin = AgentWorktreeOrigin(root: files.root.path, metadata: directory.path, path: destination.path)
             record.events.append(AgentEvent(kind: "git", title: "已创建工作树", detail: branch + "\n" + destination.path, status: "completed"))
         }
         store.selectedID = selected

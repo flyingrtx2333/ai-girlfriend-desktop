@@ -56,8 +56,9 @@ final class PetWebView: WKWebView {
     lazy var screenCompanion = ScreenCompanion(host: self)
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
+    let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -117,11 +118,12 @@ final class PetWebView: WKWebView {
         workspace.addObserver(self, selector: #selector(frontApplicationChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(powerChanged), name: .NSProcessInfoPowerStateDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        if checkDirectory == nil && !store.keychain.contains("chat") { control.show(tab: "settings") }
+        if checkDirectory == nil { ensureAgent(); if !store.keychain.contains("chat") { control.show(tab: "settings") } }
     }
     func applicationWillTerminate(_ notification: Notification) {
         if agentStore != nil { control.persistAgentDraft() }
-        closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); stopSpeech()
+        closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); stopSpeech()
+        agentStore?.browser.closeAll()
         voiceWake.stop(); scaleSaveTimer?.invalidate()
         if let globalMouse { NSEvent.removeMonitor(globalMouse) }
         if let localMouse { NSEvent.removeMonitor(localMouse) }
@@ -218,9 +220,20 @@ final class PetWebView: WKWebView {
         pet.level = store.preferences.alwaysOnTop ? .floating : .normal
         resizePet(store.preferences.scale)
         bubble?.level = NSWindow.Level(rawValue: pet.level.rawValue + 1)
-        updateBubblePosition(); updateVisibility(); statusItem?.menu = menu()
+        updateBubblePosition(); updatePetWorkspaceOcclusion(); updateVisibility(); statusItem?.menu = menu()
         syncWakePreference()
         screenCompanion.configure()
+    }
+    func updatePetWorkspaceOcclusion() {
+        guard let pet else { return }
+        let work = NSApp.windows.filter { window in
+            NSApp.isActive && window !== pet && window !== bubble && window.isVisible && !window.isMiniaturized && window.level.rawValue >= NSWindow.Level.normal.rawValue
+        }
+        let obscuresWork = work.contains { window in pet.frame.intersects(window.frame) || (bubble?.isVisible == true && bubble!.frame.intersects(window.frame)) }
+        let level = obscuresWork ? NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1) : store.preferences.alwaysOnTop ? .floating : .normal
+        if pet.level != level { pet.level = level }
+        let bubbleLevel = obscuresWork ? level : NSWindow.Level(rawValue: level.rawValue + 1)
+        if bubble?.level != bubbleLevel { bubble?.level = bubbleLevel }
     }
     func resizePet(_ value: Double) {
         guard pet != nil else { return }
@@ -330,11 +343,13 @@ final class PetWebView: WKWebView {
         else if !wasVisible && ready { screenCompanion.configure() }
     }
     @objc func willSleep() { screenCompanion.suspend(); endDrag(); sleeping = true; wakePlayer?.stop(); voiceWake.stop(); updateVisibility() }
-    @objc func didWake() { sleeping = false; appliedWake = nil; syncWakePreference(); updateVisibility() }
+    @objc func didWake() { sleeping = false; appliedWake = nil; syncWakePreference(); updateVisibility(); agentStore?.automations.wake() }
     @objc func powerChanged() { updateVisibility() }
     @objc func frontApplicationChanged() { screenCompanion.applicationChanged() }
     @objc func screensChanged() { pet.setFrame(clamp(pet.frame), display: true); updateBubblePosition() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateVisibility() }
+    func applicationDidBecomeActive(_ notification: Notification) { updatePetWorkspaceOcclusion() }
+    func applicationDidResignActive(_ notification: Notification) { updatePetWorkspaceOcclusion() }
 
     func setupMouse() {
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
@@ -469,6 +484,7 @@ final class PetWebView: WKWebView {
             stopSpeech()
             let accepted = runtime.submit(text, attachmentIDs: attachmentIDs)
             if accepted { control.scheduleRender(); refreshVoiceBusy() }
+            else if let error = runtime.submissionError { control.setStatus(error, error: true) }
             return accepted
         }
         guard !text.isEmpty, chatTask == nil else { return false }
@@ -621,6 +637,7 @@ final class PetWebView: WKWebView {
         }
     }
     func updateBubblePosition() {
+        defer { updatePetWorkspaceOcclusion() }
         guard let bubble, pet != nil else { return }
         let visible = (NSScreen.screens.first { $0.visibleFrame.intersects(pet.frame) } ?? NSScreen.screens[0]).visibleFrame
         var x = pet.frame.midX - bubble.frame.width / 2, y = pet.frame.maxY - 8

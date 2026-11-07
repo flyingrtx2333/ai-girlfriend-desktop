@@ -1,5 +1,7 @@
 # Dependencies, build products and local reports
 node_modules/
+/native-mcp/.build/
+/native-mcp/.swiftpm/
 /dist/
 /build/
 /evidence/

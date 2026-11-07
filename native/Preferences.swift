@@ -110,7 +110,7 @@ struct PetKeychain {
             if changed == errSecItemNotFound {
                 var item = q; item[kSecValueData as String] = Data(value.utf8)
                 item[kSecAttrGeneric as String] = Data(TokenPreview.mask(value).utf8)
-                item[kSecAttrLabel as String] = "蓝色大肥鱼 · \(account == "chat" ? "对话" : "语音")"
+                item[kSecAttrLabel as String] = "蓝色大肥鱼 · \(account.hasPrefix("mcp-") ? "MCP" : account == "chat" ? "对话" : "语音")"
                 item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
                 status = SecItemAdd(item as CFDictionary, nil)
             } else { status = changed }

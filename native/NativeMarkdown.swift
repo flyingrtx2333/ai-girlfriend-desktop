@@ -2,17 +2,32 @@ import AppKit
 
 @MainActor enum NativeMarkdown {
     static func render(_ source: String, font: NSFont, color: NSColor, paragraph: NSParagraphStyle) -> NSAttributedString {
-        let output = NSMutableAttributedString(); var code = false
-        for (index, original) in source.components(separatedBy: "\n").enumerated() {
-            if index > 0 { output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: paragraph])) }
+        let output = NSMutableAttributedString(), lines = source.components(separatedBy: "\n")
+        var code = false, tableColumns = 0, renderedLines = 0
+        for (index, original) in lines.enumerated() {
             let trimmed = original.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { code.toggle(); continue }
-            var line = original, lineFont = font
+            if !code, isTableDivider(original) { continue }
+            if renderedLines > 0 { output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: paragraph])) }
+            renderedLines += 1
+            var line = original, lineFont = font, lineParagraph = paragraph
             if !code {
+                let header = index + 1 < lines.count && isTableDivider(lines[index + 1])
+                if header { tableColumns = tableCells(original).count }
+                let cells = tableCells(original)
+                if tableColumns > 1, cells.count == tableColumns {
+                    line = cells.joined(separator: "\t")
+                    lineFont = header ? .systemFont(ofSize: font.pointSize, weight: .semibold) : .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+                    let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                    style.tabStops = (1..<tableColumns).map { NSTextTab(textAlignment: .left, location: CGFloat($0) * 112) }
+                    style.defaultTabInterval = 112; style.paragraphSpacing = 4
+                    if tableColumns == 2 { style.headIndent = 112 }
+                    lineParagraph = style
+                } else { tableColumns = 0 }
                 if let range = line.range(of: "^#{1,6}\\s+", options: .regularExpression) { line.removeSubrange(range); lineFont = .systemFont(ofSize: font.pointSize + 1, weight: .semibold) }
                 if line.hasPrefix("- ") || line.hasPrefix("* ") { line = "• " + line.dropFirst(2) }
             }
-            let base: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: color, .paragraphStyle: paragraph]
+            let base: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: color, .paragraphStyle: lineParagraph]
             if code { output.append(NSAttributedString(string: line, attributes: [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular), .foregroundColor: color, .backgroundColor: NSColor(white: 0.96, alpha: 1), .paragraphStyle: paragraph])); continue }
             guard let parsed = try? AttributedString(markdown: line, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else { output.append(NSAttributedString(string: line, attributes: base)); continue }
             for run in parsed.runs {
@@ -29,5 +44,16 @@ import AppKit
             }
         }
         return output
+    }
+
+    private static func tableCells(_ line: String) -> [String] {
+        guard line.contains("|") else { return [] }
+        var value = line.trimmingCharacters(in: .whitespaces)
+        if value.hasPrefix("|") { value.removeFirst() }; if value.hasSuffix("|"), !value.hasSuffix("\\|") { value.removeLast() }
+        return value.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+    private static func isTableDivider(_ line: String) -> Bool {
+        let cells = tableCells(line)
+        return cells.count > 1 && cells.allSatisfy { $0.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }
     }
 }

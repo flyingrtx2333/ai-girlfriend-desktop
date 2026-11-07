@@ -7,6 +7,8 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     var totalParts: Int; var partial: Bool; var width: Int?; var height: Int?
     var partTitles: [String]?
     var notes: [String]?
+    var browserCapture: AgentBrowserCapture?
+    var mcpSource: AgentMCPAttachmentSource?
 }
 
 @MainActor enum AgentAttachments {
@@ -20,7 +22,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     }
     static func source(store: AgentStore, taskID: String, id: String) throws -> URL {
         let file = try record(store: store, taskID: taskID, id: id)
-        guard AgentDocument.textTypes.contains(file.fileExtension) || AgentDocument.imageTypes.contains(file.fileExtension) || ["pdf", "docx", "xlsx", "pptx"].contains(file.fileExtension) else { throw PetError("附件类型无效") }
+        guard AgentDocument.textTypes.contains(file.fileExtension) || AgentDocument.imageTypes.contains(file.fileExtension) || ["pdf", "docx", "xlsx", "pptx"].contains(file.fileExtension) || (file.mcpSource != nil && AgentMCPContent.opaqueTypes.contains(file.fileExtension)) else { throw PetError("附件类型无效") }
         let url = try directory(store: store, taskID: taskID, id: id).appendingPathComponent("source." + file.fileExtension)
         let metadata = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey])
         guard metadata.isSymbolicLink != true, metadata.fileSize == file.bytes, metadata.contentModificationDate == file.modified else { throw PetError("附件已被外部修改，请重新添加") }
@@ -31,11 +33,12 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         let root = try directory(store: store, taskID: taskID, id: id), files = try AgentFiles(workspace: root.path)
         return try JSONDecoder().decode(AgentDocumentContent.self, from: files.readData(root.appendingPathComponent("content.json"), maximum: 2_000_000))
     }
-    static func importFile(_ original: URL, store: AgentStore, taskID: String) async throws -> AgentAttachment {
+    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil) async throws -> AgentAttachment {
         guard let task = store.task(taskID), task.kind != "wiki", !task.archived else { throw PetError("当前任务不能添加附件") }
+        guard !draft || (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
         if let error = store.writeError { throw PetError("任务尚未保存：" + error) }
         let selected = original.standardizedFileURL.resolvingSymlinksInPath(), type = selected.pathExtension.lowercased()
-        guard !AgentFiles.sensitive(selected.lastPathComponent), AgentDocument.textTypes.contains(type) || AgentDocument.imageTypes.contains(type) || ["pdf", "docx", "xlsx", "pptx"].contains(type) else { throw PetError("不支持此类型或属于凭据文件") }
+        guard !AgentFiles.sensitive(selected.lastPathComponent), AgentDocument.textTypes.contains(type) || AgentDocument.imageTypes.contains(type) || ["pdf", "docx", "xlsx", "pptx"].contains(type) || (mcpSource != nil && AgentMCPContent.opaqueTypes.contains(type)) else { throw PetError("不支持此类型或属于凭据文件") }
         let id = UUID().uuidString, destination = try directory(store: store, taskID: taskID, id: id)
         let stage = destination.deletingLastPathComponent().appendingPathComponent(".import-" + id, isDirectory: true)
         let job = Task.detached(priority: .utility) { () async throws -> AgentAttachment in
@@ -52,7 +55,10 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }()
             let scratch = stage.appendingPathComponent("parser-tmp", isDirectory: true)
             try fm.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let document = try await AgentDocument.extract(local, scratch: scratch)
+            let document: AgentDocumentContent
+            if mcpSource != nil, AgentMCPContent.opaqueTypes.contains(type) {
+                document = AgentDocumentContent(format: type, parts: [.init(title: "文件", text: "")], totalParts: 1, notes: [type == "gz" ? "压缩数据未展开，不能据此推断文件内容" : ["wav", "mp3", "m4a", "ogg", "flac", "aac"].contains(type) ? "音频尚未转写或发送给模型，不能声称已经收听" : "二进制内容未解析，不能据此推断内容"])
+            } else { document = try await AgentDocument.extract(local, scratch: scratch) }
             try Task.checkCancellation()
             let cache = stage.appendingPathComponent("content.json")
             try JSONEncoder().encode(document).write(to: cache, options: .atomic); try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
@@ -64,15 +70,16 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }
             let modified = try local.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
             try fm.moveItem(at: stage, to: destination); moved = true
-            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes)
+            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, mcpSource: mcpSource)
         }
         let file = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         do {
             try Task.checkCancellation()
             guard let previous = store.task(taskID), previous.kind != "wiki", !previous.archived else { throw PetError("任务状态已变化，附件未添加") }
+            guard !draft || (previous.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
             store.update(taskID, persist: false) { record in
                 if record.attachments == nil { record.attachments = [] }; record.attachments?.append(file)
-                if record.draftAttachmentIDs == nil { record.draftAttachmentIDs = [] }; record.draftAttachmentIDs?.append(file.id)
+                if draft { if record.draftAttachmentIDs == nil { record.draftAttachmentIDs = [] }; record.draftAttachmentIDs?.append(file.id) }
             }
             do { try store.save(taskID) }
             catch { store.update(taskID, persist: false) { $0.attachments = previous.attachments; $0.draftAttachmentIDs = previous.draftAttachmentIDs }; throw error }
@@ -81,7 +88,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     }
     static func removeDraft(store: AgentStore, taskID: String, id: String) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
-        let used = task.messages.contains { $0.attachmentIDs?.contains(id) == true }
+        let used = task.messages.contains { $0.attachmentIDs?.contains(id) == true || $0.visuals?.contains(where: { $0.id == id }) == true }
         store.update(taskID, persist: false) { record in record.draftAttachmentIDs?.removeAll { $0 == id }; if !used { record.attachments?.removeAll { $0.id == id } } }
         do { try store.save(taskID) }
         catch { store.update(taskID, persist: false) { $0.attachments = task.attachments; $0.draftAttachmentIDs = task.draftAttachmentIDs }; throw error }

@@ -24,7 +24,43 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--worktree-check") { await runAgentWorktreeCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--git-review-check") { await runAgentGitReviewCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--git-push-check") { await runAgentGitPushCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--git-inspection-check") { await runAgentGitInspectionCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--mcp-content-check") { await runAgentMCPContentCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--task-model-check") { await runAgentTaskModelCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--automation-check") { await runAgentAutomationCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workbench-check") { await runAgentWorkbenchCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--custom-agent-check") { await runAgentProfileCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--hook-async-check") { await runAgentHookAsyncCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--hook-service-check") { await runAgentHookServiceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--hook-check") { await runAgentHookCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--mcp-check") { await runAgentMCPCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--extension-check") {
+            await runAgentExtensionCheck(output)
+            if CommandLine.arguments.contains("--extension-ui-hold") {
+                let deadline = Date().addingTimeInterval(240)
+                while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-ui").path) { await wait(0.25) }
+            }
+            NSApp.terminate(nil); return
+        }
+        if CommandLine.arguments.contains("--browser-check") {
+            if CommandLine.arguments.contains("--browser-visual") { await runAgentBrowserVisualCheck(output) }
+            else { await runAgentBrowserCheck(output) }
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--document-check") { await runAgentDocumentCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--live-visuals") {
+            var report: [String: Any]
+            do {
+                guard CommandLine.arguments.contains("--live-agent") else { throw PetError("真实双图验收需要 --live-agent") }
+                report = try await checkAttachmentVision(output)
+            } catch { report = ["success": false, "error": error.localizedDescription] }
+            report["validationContextLimit"] = store.preferences.contextLimit; report["validationOutputLimit"] = store.preferences.outputLimit
+            try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("visual-report.json"))
+            NSApp.terminate(nil); return
+        }
         if CommandLine.arguments.contains("--wiki-ui-check") {
             ensureAgent(); var checks: [String: Bool] = [:]
             if let tasks = agentStore, let task = tasks.tasks.first(where: { $0.kind == "wiki" && $0.status == .completed }) {

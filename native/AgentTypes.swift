@@ -18,6 +18,8 @@ struct AgentToolCall: Codable, Identifiable {
     var id: String
     var name: String
     var arguments: String
+    var displayName: String?
+    var originalArguments: String?
     var object: [String: Any] { (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:] }
     var wire: [String: Any] { ["id": id, "type": "function", "function": ["name": name, "arguments": arguments]] }
 }
@@ -31,10 +33,14 @@ struct AgentMessage: Codable, Identifiable {
     var attachmentIDs: [String]?
     var nativeContext: Bool?
     var visuals: [AgentVisualPart]?
-    var isHumanInput: Bool { role == "user" && nativeContext != true }
+    var visualsDelivered: Bool?
+    var extensionInstructions: String?
+    var extensionReferences: [AgentExtensionReference]?
+    var hookRejected: Bool?
+    var isHumanInput: Bool { role == "user" && nativeContext != true && hookRejected != true }
     var wire: [String: Any] {
         let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
-        var value: [String: Any] = ["role": role, "content": content + references]
+        var value: [String: Any] = ["role": role, "content": content + references + (extensionInstructions.map { "\n\n" + $0 } ?? "")]
         if let reasoning { value["reasoning_content"] = reasoning }
         if let toolCalls, !toolCalls.isEmpty { value["tool_calls"] = toolCalls.map(\.wire) }
         if let toolCallID { value["tool_call_id"] = toolCallID }
@@ -50,6 +56,9 @@ struct AgentEvent: Codable, Identifiable {
     var created = Date()
     var duration: Double?
     var toolCallID: String?
+    var hook: AgentHookExecution?
+    var childTaskID: String?
+    var statusTitle: String { ["running": "运行中", "completed": "已完成", "failed": "失败", "stopped": "已停止", "blocked": "已拦截", "waiting": "待确认"][status] ?? status }
 }
 struct AgentPlanStep: Codable, Identifiable {
     var id = UUID().uuidString
@@ -76,6 +85,7 @@ struct AgentApproval: Codable, Identifiable {
     var intentID: String?
     var decision: String?
     var answerAttachments: [String]?
+    var answerMessage: AgentMessage?
     var created = Date()
 }
 struct AgentTaskRecord: Codable, Identifiable {
@@ -97,6 +107,11 @@ struct AgentTaskRecord: Codable, Identifiable {
     var archived = false, pinned = false
     var parentID: String?
     var model = ""
+    var modelOverride: String?
+    var modelReceipts: [AgentModelReceipt]?
+    var contextSnapshot: AgentContextSnapshot?
+    var recap: AgentTaskRecap?
+    var toolGroups: [String]?
     var draft: String?
     var kind: String?
     var queuedInputs: [String]?
@@ -105,19 +120,60 @@ struct AgentTaskRecord: Codable, Identifiable {
     var completionEvidence: [String]?
     var contextSummary: String?
     var contextThroughID: String?
+    var contextManualThroughID: String?
     var contextSize: Int?
     var gitDirectory: String?
     var gitReview: AgentGitReview?
+    var worktreeOrigin: AgentWorktreeOrigin?
+    var gitTurn: AgentGitTurn?
+    var gitPushReview: AgentGitPushReview?
+    var gitPushReceipt: AgentGitPushReceipt?
+    var gitRemoteSnapshot: AgentGitRemoteSnapshot?
     var wikiRevision: String?
     var attachments: [AgentAttachment]?
     var draftAttachmentIDs: [String]?
+    var activeSkills: [AgentExtensionReference]?
+    var hookSession: String?, hookCwd: String?
+    var hookContexts: [String: String]?, hookRejectedAnswers: [AgentMessage]?
+    var hookStopBlocks: Int?
+    var hookRewakePromptID: String?, hookRewakeCount: Int?
+    var hookPromptIDs: [String]?, hookContextIDs: [String]?
+    var hookTools: [String]?, hookNetwork: Bool?
+    var agent: AgentProfileAssignment?
+    var team: AgentTeamAssignment?
+    var automation: AgentAutomationAssignment?
+    var canChooseExecutor: Bool {
+        status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && kind != "wiki"
+    }
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
+    var statusTitle: String {
+        if kind == "hook", status == .completed {
+            if summary.hasPrefix("未通过：") { return "校验未通过" }
+            if summary.hasPrefix("通过：") { return "校验通过" }
+        }
+        return status.title
+    }
     var queuedCount: Int { (queuedInputs?.count ?? 0) + (queuedMessages?.count ?? 0) }
     var submittedAttachmentIDs: Set<String> { Set(messages.filter(\.isHumanInput).flatMap { $0.attachmentIDs ?? [] }) }
+    var availableAttachmentIDs: Set<String> {
+        let captures = Set((attachments ?? []).filter { $0.browserCapture != nil }.map(\.id))
+        let observed = Set(messages.filter { $0.role == "tool" }.flatMap { ($0.visuals ?? []).map(\.id) })
+        let mcp = Set((attachments ?? []).filter { $0.mcpSource != nil }.map(\.id))
+        let received = Set(messages.filter { $0.role == "tool" }.flatMap { $0.attachmentIDs ?? [] })
+        return submittedAttachmentIDs.union(captures.intersection(observed)).union(mcp.intersection(received))
+    }
+    var hasUndeliveredVisuals: Bool { messages.contains { $0.role == "tool" && $0.visualsDelivered == false && $0.visuals?.isEmpty == false } }
     mutating func flushQueuedInputs() {
-        messages += (queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) } + (queuedMessages ?? [])
+        let pending = (queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) } + (queuedMessages ?? [])
+        for message in pending { activateExtensions(message) }; messages += pending
         queuedInputs = []; queuedMessages = []
+    }
+    mutating func activateExtensions(_ message: AgentMessage) {
+        for reference in message.extensionReferences ?? [] where reference.kind == .skill {
+            if activeSkills == nil { activeSkills = [] }
+            activeSkills?.removeAll { $0.id == reference.id }; activeSkills?.append(reference)
+        }
     }
 }
 struct AgentTurn {
@@ -125,6 +181,8 @@ struct AgentTurn {
     var calls: [AgentToolCall] = []
     var inputTokens = 0, outputTokens = 0
     var finishReason = ""
+    var returnedModel: String?
+    var inputTokensReported = false, outputTokensReported = false
 }
 struct AgentToolResult {
     var text: String
@@ -136,5 +194,8 @@ struct AgentToolResult {
     var stderr: String?
     var exitCode: Int?
     var truncated: Bool?
+    var timedOut = false
     var visuals: [AgentVisualPart]?
+    var extensionReferences: [AgentExtensionReference]?
+    var attachmentIDs: [String]?
 }

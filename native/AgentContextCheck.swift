@@ -18,7 +18,7 @@ import AppKit
             var fixture = [AgentMessage(role: "user", content: original)]
             let background = String(repeating: "潮涨潮落，海风掠过灯塔。这是公开的背景材料，不代表新的执行要求。", count: 28)
             for i in 0..<6 {
-                fixture.append(AgentMessage(role: "user", content: "公开历史背景 \(i + 1)：" + background))
+                fixture.append(AgentMessage(role: "user", content: "公开历史背景 \(i + 1)：" + background, nativeContext: true))
                 if i == 1 { fixture.append(AgentMessage(role: "user", content: "更正前面的约束：口令『珊瑚-7319』已作废，最终口令必须改为『潮汐-4086』，报告不得出现作废口令。其他要求不变，只写 retained.md。")) }
             }
             // This protocol fixture uses an actual native read, not a model
@@ -49,6 +49,7 @@ import AppKit
             let history = try await AgentTools(store: tasks, taskID: id).execute(AgentToolCall(id: UUID().uuidString, name: "read_task_history", arguments: "{\"offset\":0,\"limit\":1}"))
             checks["originalHistoryRemainsReadable"] = history.text.contains(original)
             let wire = AgentContext.window(task); var pending = Set<String>(), paired = true
+            checks["compactedUserRequirementsStayVerbatim"] = wire.filter(\.isHumanInput).map(\.id) == task.messages.filter(\.isHumanInput).map(\.id)
             for message in wire {
                 if let calls = message.toolCalls { if !pending.isEmpty { paired = false }; pending = Set(calls.map(\.id)) }
                 else if message.role == "tool" { if let id = message.toolCallID, pending.remove(id) != nil {} else { paired = false } }

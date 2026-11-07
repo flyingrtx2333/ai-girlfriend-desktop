@@ -16,7 +16,12 @@ struct AgentFiles: Sendable {
         guard candidate == root || candidate.path.hasPrefix(root.path + "/") else { throw PetError("路径超出项目范围，请在界面选择对应项目") }
         return candidate
     }
-    func relative(_ url: URL) -> String { url == root ? "." : String(url.path.dropFirst(root.path.count + 1)) }
+    func relative(_ url: URL) -> String {
+        // Directory enumeration returns /private/var while Foundation roots
+        // retain /var. Compare both in the same Foundation path form.
+        let normalized = url.standardizedFileURL.resolvingSymlinksInPath()
+        return normalized.path == root.path ? "." : String(normalized.path.dropFirst(root.path.count + 1))
+    }
     static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     static func sensitive(_ path: String) -> Bool {
         path.split(separator: "/").contains { part in
@@ -72,6 +77,10 @@ struct AgentFiles: Sendable {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
         guard unlinkat(parent, name, 0) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
+    func removeEmptyDirectory(_ url: URL) throws {
+        let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
+        guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
     func read(_ path: String, offset: Int, limit: Int) throws -> String {
         try readResolved(resolve(path), offset: offset, limit: limit)
     }
@@ -104,7 +113,7 @@ struct AgentFiles: Sendable {
         return entries.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.prefix(300).joined(separator: "\n") + (count > 300 ? "\n[仅显示前 300 项]" : "")
     }
     func search(path: String, pattern: String, namesOnly: Bool, excluding: [String] = []) async throws -> String {
-        let directory = try resolve(path), root = self.root
+        let directory = try resolve(path)
         guard !pattern.isEmpty, pattern.count <= 1000 else { throw PetError("请输入有效搜索内容") }
         let job = Task.detached(priority: .utility) { () throws -> String in
             let ignored = Set([".git", "node_modules", ".build", "build", "dist", ".next", ".venv", "vendor"])
@@ -119,7 +128,7 @@ struct AgentFiles: Sendable {
                 let value = try url.resourceValues(forKeys: Set(keys))
                 if value.isSymbolicLink == true || ignored.contains(url.lastPathComponent) { iterator.skipDescendants(); continue }
                 if value.isDirectory == true { continue }
-                let relative = String(url.path.dropFirst(root.path.count + 1))
+                let relative = self.relative(url)
                 if namesOnly {
                     if relative.localizedCaseInsensitiveContains(pattern) { output.append(relative) }
                 } else if !Self.sensitive(relative), (value.fileSize ?? 0) < 1_000_000,

@@ -15,20 +15,28 @@ function run(command, args) {
 }
 signingIdentity(); // Fail before replacing the build if no stable identity exists.
 await prepareSherpa();
+const mcpBuildArgs = ['swift', 'build', '--package-path', 'native-mcp', '--build-system', 'native', '-c', 'release'];
+run('xcrun', [...mcpBuildArgs, '--product', 'BlueFatFishMCP']);
+const mcpBin = spawnSync('xcrun', [...mcpBuildArgs, '--show-bin-path'], { cwd: root, encoding: 'utf8' });
+if (mcpBin.status !== 0) throw new Error(mcpBin.stderr || 'MCP build path unavailable');
+const mcpProducts = mcpBin.stdout.trim();
 run('npm', ['run', 'build']);
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(contents, 'MacOS'), { recursive: true });
 await mkdir(path.join(resources, 'web'), { recursive: true });
 const frameworks = path.join(contents, 'Frameworks'); await mkdir(frameworks, { recursive: true });
+const mcpLibrary = path.join(frameworks, 'libBlueFatFishMCP.dylib');
+await cp(path.join(mcpProducts, 'libBlueFatFishMCP.dylib'), mcpLibrary);
+run('/usr/bin/install_name_tool', ['-id', '@rpath/libBlueFatFishMCP.dylib', mcpLibrary]); signNative(mcpLibrary);
 for (const name of ['libsherpa-onnx-c-api.dylib', 'libonnxruntime.dylib']) {
   const destination = path.join(frameworks, name); await cp(path.join(sherpaRoot, 'lib', name), destination); signNative(destination);
 }
 const files = (await readdir(path.join(root, 'native'))).filter(f => f.endsWith('.swift')).map(f => path.join('native', f));
 run('xcrun', ['swiftc', '-O', '-whole-module-optimization', '-swift-version', '5', '-target', 'arm64-apple-macosx14.0',
-  ...files, '-import-objc-header', 'native/SherpaBridge.h', '-I', path.join(sherpaRoot, 'include'),
-  '-L', frameworks, '-lsherpa-onnx-c-api', '-lsqlite3', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
+  ...files, '-import-objc-header', 'native/SherpaBridge.h', '-I', path.join(sherpaRoot, 'include'), '-I', path.join(mcpProducts, 'Modules'), '-I', path.join(root, 'native-mcp/.build/checkouts/swift-system/Sources/CSystem/include'),
+  '-L', frameworks, '-lBlueFatFishMCP', '-lsherpa-onnx-c-api', '-lsqlite3', '-Xlinker', '-rpath', '-Xlinker', '@executable_path/../Frameworks',
   '-framework', 'AppKit', '-framework', 'WebKit', '-framework', 'Quartz', '-framework', 'PDFKit', '-framework', 'Vision', '-framework', 'ImageIO', '-framework', 'AVFAudio', '-framework', 'Security',
-  '-framework', 'UniformTypeIdentifiers', '-framework', 'Speech', '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Accelerate', '-framework', 'ScreenCaptureKit', '-o', path.join(contents, 'MacOS', 'BlueFatFish')]);
+  '-framework', 'UniformTypeIdentifiers', '-framework', 'Speech', '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Accelerate', '-framework', 'ScreenCaptureKit', '-framework', 'UserNotifications', '-o', path.join(contents, 'MacOS', 'BlueFatFish')]);
 const version = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version;
 await writeFile(path.join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -58,6 +66,9 @@ for (const item of ['index.html', 'assets', 'portraits/whale-maid', 'animations/
 await cp(path.join(sherpaRoot, 'model'), path.join(resources, 'wake-model'), { recursive: true });
 await mkdir(path.join(resources, 'licenses'), { recursive: true });
 for (const name of ['LICENSE-sherpa.txt', 'LICENSE-onnxruntime.txt', 'THIRD-PARTY-NOTICES-onnxruntime.txt']) await cp(path.join(sherpaRoot, name), path.join(resources, 'licenses', name));
+for (const [repo, license] of [['swift-sdk', 'LICENSE'], ['swift-system', 'LICENSE.txt'], ['swift-log', 'LICENSE.txt'], ['eventsource', 'LICENSE.md']]) {
+  await cp(path.join(root, 'native-mcp/.build/checkouts', repo, license), path.join(resources, 'licenses', `MCP-${repo}-LICENSE.txt`));
+}
 const iconset = path.join(root, 'build', 'AppIcon.iconset');
 await rm(iconset, { recursive: true, force: true });
 run(path.join(contents, 'MacOS', 'BlueFatFish'), ['--make-icons', iconset]);

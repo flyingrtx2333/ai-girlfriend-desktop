@@ -1,7 +1,8 @@
 import Foundation
 
 enum AgentModel {
-    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:],
+    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:], allowPartialContent: Bool = false,
+                                purpose: String = "conversation", messageID: String? = nil, onReceipt: ((AgentModelReceipt) -> Void)? = nil,
                                 onText: @escaping (String) -> Void) async throws -> AgentTurn {
         let url = try CompanionService.endpoint(preferences.endpoint, chat: true)
         guard !key.isEmpty || CompanionService.isLocal(url.host ?? "") else { throw PetError("请先填写对话 Token") }
@@ -11,6 +12,7 @@ enum AgentModel {
         if !tools.isEmpty { body["tools"] = tools; body["tool_choice"] = "auto"; body["parallel_tool_calls"] = false }
         body["stream_options"] = ["include_usage": true]
         let request = try CompanionService.request(url: url, key: key, body: body)
+        let started = Date()
         let (bytes, response) = try await CompanionService.session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw PetError("模型响应无法读取") }
         guard (200...299).contains(http.statusCode) else {
@@ -18,8 +20,19 @@ enum AgentModel {
             throw CompanionService.serverError(data, status: http.statusCode, key: key)
         }
         var result = AgentTurn(), calls: [Int: AgentToolCall] = [:]
+        var completed = false
+        defer {
+            onReceipt?(AgentModelReceipt(purpose: purpose, requestedModel: p.model, returnedModel: result.returnedModel,
+                inputTokens: result.inputTokensReported ? result.inputTokens : nil, outputTokens: result.outputTokensReported ? result.outputTokens : nil,
+                finishReason: result.finishReason.isEmpty ? "interrupted" : result.finishReason,
+                duration: Date().timeIntervalSince(started), completed: completed, messageID: messageID))
+        }
         func usage(_ object: [String: Any]) {
-            if let value = object["usage"] as? [String: Any] { result.inputTokens = value["prompt_tokens"] as? Int ?? 0; result.outputTokens = value["completion_tokens"] as? Int ?? 0 }
+            if let model = object["model"] as? String, AgentTaskModels.validID(model) { result.returnedModel = model }
+            if let value = object["usage"] as? [String: Any] {
+                if let count = value["prompt_tokens"] as? Int, count >= 0 { result.inputTokens = count; result.inputTokensReported = true }
+                if let count = value["completion_tokens"] as? Int, count >= 0 { result.outputTokens = count; result.outputTokensReported = true }
+            }
         }
         func consume(_ object: [String: Any], streamed: Bool) throws {
             if object["error"] != nil { throw CompanionService.serverError(try JSONSerialization.data(withJSONObject: object), status: 200, key: key) }
@@ -53,10 +66,11 @@ enum AgentModel {
         }
         result.calls = calls.keys.sorted().compactMap { calls[$0] }
         guard !result.finishReason.isEmpty else { throw PetError("模型响应中断，请继续任务") }
-        guard result.finishReason != "length" else { throw PetError("本轮回复预算已用尽，可提高回复上限后继续任务") }
+        guard result.finishReason != "length" || allowPartialContent else { throw PetError("本轮回复预算已用尽，可提高回复上限后继续任务") }
         guard result.calls.count <= 32, Set(result.calls.map(\.id)).count == result.calls.count,
               result.calls.allSatisfy({ !$0.id.isEmpty && !$0.name.isEmpty }) else { throw PetError("模型返回的工具调用无效") }
-        guard !result.content.isEmpty || !result.calls.isEmpty else { throw PetError(result.finishReason == "length" ? "模型预算已用尽，请提高回复上限" : "模型未返回文字或工具调用") }
+        guard !result.content.isEmpty || !result.calls.isEmpty || allowPartialContent && result.finishReason == "length" else { throw PetError(result.finishReason == "length" ? "模型预算已用尽，请提高回复上限" : "模型未返回文字或工具调用") }
+        completed = true
         return result
     }
 }

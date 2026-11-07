@@ -1,13 +1,22 @@
 import AppKit
 
 final class ComposerView: NSTextView {
+    var placeholder = "发消息…" { didSet { needsDisplay = true } }
     var onSend: (() -> Void)?
     var onInputChanged: (() -> Void)?
+    var onExtensionKey: ((UInt16) -> Bool)?
+    var onEditingEnded: (() -> Void)?
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder(); if result { onEditingEnded?() }; return result
+    }
+    override func keyDown(with event: NSEvent) {
+        if !hasMarkedText(), onExtensionKey?(event.keyCode) == true { return }; super.keyDown(with: event)
+    }
     override func didChangeText() { super.didChangeText(); needsDisplay = true; onInputChanged?() }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if string.isEmpty {
-            ("发消息…" as NSString).draw(at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height),
+            (placeholder as NSString).draw(at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height),
                 withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.placeholderTextColor])
         }
     }
@@ -68,20 +77,44 @@ final class FormDocumentView: NSView {
     private let taskSidebar = AgentTaskSidebar(), projectButton = NSButton(), modePopup = NSPopUpButton(), permissionPopup = NSPopUpButton()
     private let resumeButton = NSButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
     private let gitButton = NSButton(title: "Git", target: nil, action: nil)
+    private let browserButton = NSButton(title: "浏览器", target: nil, action: nil)
     private let approvalPanel = NSStackView(), approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView()
     private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
     private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
+    private var taskModelWindow: AgentTaskModelWindow?
+    private var contextWindow: AgentContextWindow?
+    private var mcpContentWindow: AgentMCPContentWindow?
+    private let taskMCPContext = AgentWorkbenchButton()
+    private let taskContext = AgentWorkbenchButton()
     private var gitWindow: AgentGitWindow?
+    private var worktreeWindow: AgentWorktreeWindow?
     private var knowledgeWindow: AgentKnowledgeWindow?
+    private var extensionWindow: AgentExtensionWindow?
+    private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
+    private var automationWindow: AgentAutomationWindow?
+    private let automationButton = AgentWorkbenchButton(title: "自动化", target: nil, action: nil)
+    private let extensionPanel = AgentExtensionPanel(), extensionPicker = AgentExtensionPicker()
+    private var extensionPickerTask: String?
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
+    private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
+    private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton()
+    private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
+    private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
+    private let workbenchLower = NSStackView()
+    private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = NSView(), headerInspectorRule = NSView()
+    private var inspectorWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
+    private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
+    private var workbenchChrome: [NSView] = [], inspectorRequested = true
+    private var taskNavigation: [String] = [], taskNavigationIndex = -1, navigatingTaskHistory = false
+    private var lastInspectorTransitionDuration: TimeInterval = 0
 
     init(companion: AppDelegate) {
         self.companion = companion
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: companion.usesAgent ? 1200 : 980, height: companion.usesAgent ? 774 : 700),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
         window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
@@ -91,18 +124,25 @@ final class FormDocumentView: NSView {
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         refreshPreferences()
-        if let task = companion.agentStore?.selected { displayedTask = task.id; composer.string = task.draft ?? "" }
+        if let task = companion.agentStore?.selected { displayedTask = task.id; composer.string = task.draft ?? ""; taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
         companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
         companion.onWakeChange = { [weak self] enabled, status in
             self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
             self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.title = enabled ? "立即聆听" : "开启语音"
             self?.stopRecordingButton.isEnabled = enabled; self?.voiceStopButton.isEnabled = enabled
+            self?.updateWorkbenchVoice()
         }
         companion.screenCompanion.onChange = { [weak self] in self?.updateScreenStatus($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    @objc private func accessibilityDisplayChanged() {
+        guard NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let root = window?.contentView else { return }
+        AgentWorkbenchTheme.cancelMotion(in: root); updateWorkbenchLayout()
+    }
 
     private func stack(_ views: [NSView], vertical: Bool = false, spacing: CGFloat = 12) -> NSStackView {
         let s = NSStackView(views: views); s.orientation = vertical ? .vertical : .horizontal
@@ -129,6 +169,7 @@ final class FormDocumentView: NSView {
     }
     private func build() {
         guard let window else { return }
+        if companion?.usesAgent == true { buildWorkbench(); return }
         let content = SidebarBackground(); window.contentView = content
         let title = NSTextField(labelWithString: "小鲸"); title.font = .systemFont(ofSize: 19, weight: .semibold)
         let icon = NSImageView(image: NSImage(systemSymbolName: "fish.fill", accessibilityDescription: nil)!)
@@ -152,7 +193,9 @@ final class FormDocumentView: NSView {
         clearButton.target = self; clearButton.action = #selector(clear)
         let knowledge = NSButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge)); knowledge.isBordered = false; knowledge.font = .systemFont(ofSize: 12); knowledge.alignment = .left
         knowledge.image = NSImage(systemSymbolName: "books.vertical", accessibilityDescription: nil); knowledge.imagePosition = .imageLeading; knowledge.isHidden = companion?.usesAgent != true
-        let sideFooter = stack([knowledge, listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
+        let extensions = NSButton(title: "扩展", target: self, action: #selector(showAgentExtensions)); extensions.isBordered = false; extensions.font = .systemFont(ofSize: 12); extensions.alignment = .left
+        extensions.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil); extensions.imagePosition = .imageLeading; extensions.isHidden = companion?.usesAgent != true
+        let sideFooter = stack([extensions, knowledge, listenButton, stopRecordingButton, sidebarWake, clearButton], vertical: true, spacing: 13); content.addSubview(sideFooter)
         chatSidebarViews = [brand, navigation, sideFooter]
         if companion?.usesAgent == true {
             taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar); chatSidebarViews.append(taskSidebar)
@@ -182,9 +225,229 @@ final class FormDocumentView: NSView {
         for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
+    private func buildWorkbench() {
+        guard let window else { return }
+        window.backgroundColor = AgentWorkbenchTheme.sidebar; window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = true
+        let content = SidebarBackground(); content.wantsLayer = true; window.contentView = content
+        let icon = NSImageView(image: NSImage(systemSymbolName: "fish", accessibilityDescription: "小鲸")!)
+        icon.contentTintColor = AgentWorkbenchTheme.accent; icon.imageScaling = .scaleProportionallyUpOrDown; icon.widthAnchor.constraint(equalToConstant: 33).isActive = true; icon.heightAnchor.constraint(equalToConstant: 25).isActive = true
+        let title = NSTextField(labelWithString: "小鲸"); title.font = .systemFont(ofSize: 16, weight: .semibold)
+        let brand = stack([icon, title], spacing: 9); content.addSubview(brand)
+        taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar)
+        taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
+        taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
+        taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProject() }
+        taskSidebar.onNewInWorkspace = { [weak self] path in
+            guard let self, let tasks = self.companion?.agentStore else { return }; self.saveAgentDraft(); self.selectAgentTask(tasks.create(workspace: path))
+        }
+        taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
+        let knowledge = AgentWorkbenchButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge))
+        let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
+        settingsNav.tag = 1; settingsNav.target = self; settingsNav.action = #selector(selectTab(_:))
+        automationButton.target = self; automationButton.action = #selector(showAutomations)
+        for (button, symbol) in [(automationButton as NSButton, "clock.arrow.circlepath"), (knowledge as NSButton, "books.vertical"), (extensions as NSButton, "puzzlepiece.extension"), (settingsNav, "gearshape")] {
+            AgentWorkbenchTheme.sidebarControl(button)
+            button.isBordered = false; button.alignment = .left; button.font = .systemFont(ofSize: 14)
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageLeading; button.contentTintColor = .labelColor
+            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        }
+        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, knowledge, extensions, settingsNav], vertical: true, spacing: 6); content.addSubview(footer)
+        for button in [automationButton as NSView, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
+        chatSidebarViews = [brand, taskSidebar, footer]
+        let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor; main.layer?.cornerRadius = 0
+        main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
+        sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 231)
+        let leftRule = NSView(); leftRule.wantsLayer = true; leftRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: main.leadingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -18), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -42)])
+        for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
+            AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
+        }
+        taskBack.keyEquivalent = "["; taskBack.keyEquivalentModifierMask = .command; taskForward.keyEquivalent = "]"; taskForward.keyEquivalentModifierMask = .command
+        let navigation = stack([taskBack, taskForward], spacing: 2); main.addSubview(navigation)
+        pageTitle.font = .systemFont(ofSize: 18, weight: .semibold); pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle); main.addSubview(workbenchBadge)
+        titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 94)
+        projectButton.target = self; projectButton.action = #selector(chooseProject); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
+        browserButton.target = self; browserButton.action = #selector(showAgentBrowser); AgentWorkbenchTheme.toolbar(browserButton, title: "浏览器", symbol: "rectangle.on.rectangle")
+        gitButton.target = self; gitButton.action = #selector(showAgentGit); AgentWorkbenchTheme.toolbar(gitButton, title: "Git", symbol: "arrow.triangle.branch")
+        resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务记录", symbol: "sidebar.right")
+        let actions = stack([projectButton, browserButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
+        let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
+        workbenchChrome = [navigation, actions, workbenchBadge]
+        settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(settingsPageIcon)
+        for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
+        buildWorkbenchConversation()
+        headerInspectorRule.wantsLayer = true; headerInspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
+        NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
+        NSLayoutConstraint.activate([navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18), navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 76), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24), settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36)])
+        buildSettingsSidebar(in: content); buildSettings(); changeTab()
+    }
+    private func buildWorkbenchConversation() {
+        let conversation = NSView(); conversation.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(conversation); chat.addSubview(workbenchInspector)
+        inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
+        inspectorRule.wantsLayer = true; inspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
+        NSLayoutConstraint.activate([conversation.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversation.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), conversation.topAnchor.constraint(equalTo: chat.topAnchor), conversation.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
+        workbenchInspector.onOpen = { [weak self] section, value in self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+        workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
+        history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
+        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
+        messageColumn.orientation = .vertical; messageColumn.alignment = .leading; messageColumn.spacing = 20; document.addSubview(messageColumn)
+        messageColumn.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: history.contentView.widthAnchor), messageColumn.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20), messageColumn.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20), messageColumn.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), messageColumn.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -4)])
+        composer.font = .systemFont(ofSize: 14); composer.textContainerInset = NSSize(width: 2, height: 8); composer.drawsBackground = false; composer.isRichText = false; composer.allowsUndo = true
+        composer.isAutomaticQuoteSubstitutionEnabled = false; composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]; composer.setAccessibilityLabel("消息")
+        composer.onSend = { [weak self] in self?.send() }; composer.onInputChanged = { [weak self] in self?.composerChanged() }; composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
+        composer.onExtensionKey = { [weak self] key in
+            guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
+            switch key { case 125: extensionPicker.move(1); case 126: extensionPicker.move(-1); case 36, 48, 76: extensionPicker.pick(); case 53: dismissExtensionCandidates(); default: return false }; return true
+        }
+        let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true; input.drawsBackground = false; input.borderType = .noBorder
+        for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }; for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
+        for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 13); popup.isBordered = false; popup.target = self; popup.action = #selector(agentOptionsChanged) }
+        modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
+        AgentWorkbenchTheme.toolbar(attachmentButton, title: "添加附件", symbol: "paperclip"); attachmentButton.target = self; attachmentButton.action = #selector(addAttachments)
+        AgentWorkbenchTheme.toolbar(taskMCPContext, title: "MCP 资料与提示词", symbol: "server.rack"); taskMCPContext.target = self; taskMCPContext.action = #selector(showTaskMCPContent); taskMCPContext.isHidden = true
+        taskModel.title = ""; taskModel.isBordered = false; taskModel.font = .systemFont(ofSize: 13); taskModel.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil); taskModel.imagePosition = .imageTrailing; taskModel.target = self; taskModel.action = #selector(showTaskModelMenu(_:)); taskModel.cell?.lineBreakMode = .byTruncatingMiddle
+        taskModel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); taskModel.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
+        sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil); sendButton.imagePosition = .imageOnly; sendButton.isBordered = false; sendButton.contentTintColor = .white; sendButton.wantsLayer = true; sendButton.layer?.backgroundColor = AgentWorkbenchTheme.accent.cgColor; sendButton.layer?.cornerRadius = 8; sendButton.setAccessibilityLabel("发送"); sendButton.target = self; sendButton.action = #selector(send)
+        sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
+        voiceInput.target = self; voiceInput.action = #selector(toggleWorkbenchVoice); AgentWorkbenchTheme.toolbar(voiceInput, title: "语音输入", symbol: "mic")
+        entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
+        for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        entryToolbarHeight = entryToolbar.heightAnchor.constraint(equalToConstant: 34)
+        NSLayoutConstraint.activate([entryToolbarHeight, entryLeading.leadingAnchor.constraint(equalTo: entryToolbar.leadingAnchor), entryLeading.topAnchor.constraint(equalTo: entryToolbar.topAnchor), entryTrailing.trailingAnchor.constraint(equalTo: entryToolbar.trailingAnchor), entryTrailing.bottomAnchor.constraint(equalTo: entryToolbar.bottomAnchor)])
+        let entry = NSView(); entry.wantsLayer = true; entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1; entry.layer?.borderColor = AgentWorkbenchTheme.line.cgColor; entry.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor
+        for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), input.heightAnchor.constraint(equalToConstant: 44), entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
+        let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
+        heading.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil); heading.imagePosition = .imageTrailing; heading.target = self; heading.action = #selector(chooseExecutor); heading.setAccessibilityLabel("任务执行者")
+        emptyProject.title = "选择项目"; emptyProject.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); emptyProject.imagePosition = .imageLeading; emptyProject.isBordered = false; emptyProject.target = self; emptyProject.action = #selector(chooseProject); emptyProject.font = .systemFont(ofSize: 12)
+        let add = AgentWorkbenchButton(title: "添加附件", target: self, action: #selector(addAttachments)); add.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil); add.imagePosition = .imageLeading; add.isBordered = false; add.font = .systemFont(ofSize: 12)
+        let browse = AgentWorkbenchButton(title: "浏览器", target: self, action: #selector(showAgentBrowser)); browse.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil); browse.imagePosition = .imageLeading; browse.isBordered = false; browse.font = .systemFont(ofSize: 12)
+        let shortcuts = stack([emptyProject, add, browse], spacing: 22); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
+        emptyBeforeHeight = emptyBefore.heightAnchor.constraint(equalToConstant: 90); emptyBeforeHeight.isActive = true
+        emptyAfter.setContentHuggingPriority(.defaultLow, for: .vertical)
+        modelCaption.font = .systemFont(ofSize: 10); modelCaption.textColor = .tertiaryLabelColor; modelCaption.alignment = .right; modelCaption.lineBreakMode = .byTruncatingTail
+        resumeButton.target = self; resumeButton.action = #selector(resumeAgentTask); resumeButton.bezelStyle = .inline; resumeButton.font = .systemFont(ofSize: 12)
+        taskContext.title = ""; taskContext.isBordered = false; taskContext.font = .systemFont(ofSize: 11); taskContext.contentTintColor = .secondaryLabelColor; taskContext.image = NSImage(systemSymbolName: "chart.pie", accessibilityDescription: nil); taskContext.image?.size = NSSize(width: 15, height: 15); taskContext.imagePosition = .imageOnly; taskContext.target = self; taskContext.action = #selector(showTaskContext)
+        taskContext.heightAnchor.constraint(equalToConstant: 28).isActive = true; taskContext.widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true; taskContext.setContentHuggingPriority(.required, for: .horizontal)
+        let lower = workbenchLower; lower.orientation = .horizontal; lower.spacing = 8; lower.addArrangedSubview(resumeButton); lower.addArrangedSubview(NSView()); lower.addArrangedSubview(modelCaption)
+        status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
+        configureApprovalPanel()
+        let column = stack([emptyBefore, workbenchEmpty, history, approvalPanel, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
+        conversation.addSubview(column)
+        workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
+        workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
+        NSLayoutConstraint.activate([workbenchColumnLeading, workbenchColumnTrailing, column.topAnchor.constraint(equalTo: conversation.topAnchor, constant: 28), column.bottomAnchor.constraint(equalTo: conversation.bottomAnchor, constant: -30)])
+        for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        history.setContentHuggingPriority(.defaultLow, for: .vertical); history.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+    }
+    private func updateWorkbenchLayout(animated: Bool = false) {
+        guard companion?.usesAgent == true, inspectorWidth != nil, let task = companion?.agentStore?.selected else { return }
+        let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
+        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
+        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
+        let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
+        let target: CGFloat = showInspector ? 281 : 0
+        sidebarWidth.constant = width < 900 ? 218 : 231
+        let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - target - 760) / 2)
+        workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
+        workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !showInspector; headerInspectorRule.isHidden = !showInspector
+        pageTitle.isHidden = !configuring && !hasMessages
+        workbenchBadge.isHidden = configuring || !hasMessages
+        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
+        emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
+        workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
+        workbenchEmptyTitle.isEnabled = task.canChooseExecutor
+        emptyProject.title = task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "选择项目"; emptyProject.toolTip = task.workspace
+        composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
+        workbenchBadge.update(task); workbenchInspector.update(task)
+        taskBack.isEnabled = taskNavigationIndex > 0; taskForward.isEnabled = taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
+        let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
+        taskModel.title = modelName; taskModel.setAccessibilityLabel("模型：" + modelName)
+        taskModel.isEnabled = task.kind != "hook" && !task.archived && companion?.agentRuntime?.isBusy(task.id) != true && task.pendingCalls.isEmpty
+        taskModel.toolTip = taskModel.isEnabled ? "选择任务模型" : "请先停止执行或处理待确认操作"
+        if let snapshot = task.contextSnapshot {
+            taskContext.title = "\(Int((Double(snapshot.estimatedTokens) / Double(max(1, snapshot.limit)) * 100).rounded(.up)))%"; taskContext.imagePosition = .imageLeading
+            taskContext.toolTip = "上次请求占用估算 · " + snapshot.model
+        } else { taskContext.title = ""; taskContext.imagePosition = .imageOnly; taskContext.toolTip = "查看上下文估算与任务回顾" }
+        taskContext.setAccessibilityLabel("上下文" + (taskContext.title.isEmpty ? "" : " " + taskContext.title))
+        workbenchLower.isHidden = resumeButton.isHidden && modelCaption.isHidden
+        let hasMCP = companion?.agentStore?.mcp.servers.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
+        taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
+        let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
+        let available = width - sidebarWidth.constant - target - columnInset * 2 - 22
+        entryToolbarHeight.constant = available < preferred ? 64 : 34
+        updateWorkbenchVoice()
+        lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target }
+        messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
+    }
+    @objc private func toggleTaskInspector() {
+        guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
+        inspectorRequested.toggle(); updateWorkbenchLayout(animated: true)
+    }
+    @objc private func previousAgentTask() {
+        guard taskNavigationIndex > 0 else { return }; taskNavigationIndex -= 1; navigatingTaskHistory = true; defer { navigatingTaskHistory = false }; selectAgentTask(taskNavigation[taskNavigationIndex])
+    }
+    @objc private func nextAgentTask() {
+        guard taskNavigationIndex + 1 < taskNavigation.count else { return }; taskNavigationIndex += 1; navigatingTaskHistory = true; defer { navigatingTaskHistory = false }; selectAgentTask(taskNavigation[taskNavigationIndex])
+    }
+    @objc private func showTaskMenu(_ sender: NSButton) {
+        guard let task = companion?.agentStore?.selected else { return }
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
+            let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
+        let recap = NSMenuItem(title: "任务回顾", action: #selector(showTaskRecap), keyEquivalent: ""); recap.target = self; menu.addItem(recap)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+    @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
+    @objc private func showTaskModelMenu(_ sender: NSButton) {
+        guard let runtime = companion?.agentRuntime, let id = companion?.agentStore?.selectedID else { return }
+        taskModelWindow?.window?.performClose(nil); taskModelWindow = AgentTaskModelWindow(runtime: runtime, taskID: id)
+        taskModelWindow?.showWindow(nil); taskModelWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    @objc private func showTaskContext() { presentTaskContext(section: 0) }
+    @objc private func showTaskRecap() { presentTaskContext(section: 1) }
+    private func presentTaskContext(section: Int) {
+        guard let runtime = companion?.agentRuntime, let id = companion?.agentStore?.selectedID else { return }
+        contextWindow?.window?.performClose(nil); contextWindow = AgentContextWindow(runtime: runtime, taskID: id, section: section)
+        contextWindow?.showWindow(nil); contextWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    @objc private func showTaskMCPContent() { if let id = companion?.agentStore?.selectedID { presentMCPContent(taskID: id) } }
+    func presentMCPContent(taskID: String, serverID: String? = nil) {
+        guard let store = companion?.agentStore, store.task(taskID) != nil else { return }
+        if store.selectedID == taskID { saveAgentDraft() }
+        mcpContentWindow?.window?.performClose(nil)
+        mcpContentWindow = AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
+            guard let self, let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
+            let visible = store.selectedID == taskID && self.displayedTask == taskID
+            let draft = visible ? self.composer.string : previous.draft ?? ""
+            let combined = draft + (text.isEmpty ? "" : (draft.isEmpty ? "" : "\n\n") + text)
+            guard combined.utf8.count <= 100_000, (previous.draftAttachmentIDs?.count ?? 0) + ids.count <= 6,
+                  ids.allSatisfy({ id in previous.attachments?.contains(where: { $0.id == id }) == true }) else { throw PetError("草稿超过 100KB 或附件超过 6 份，请先缩减草稿") }
+            store.update(taskID, persist: false) { record in record.draft = combined.isEmpty ? nil : combined; if !ids.isEmpty { if record.draftAttachmentIDs == nil { record.draftAttachmentIDs = [] }; record.draftAttachmentIDs?.append(contentsOf: ids) } }
+            do { try store.save(taskID) }
+            catch { store.update(taskID, persist: false) { $0.draft = previous.draft; $0.draftAttachmentIDs = previous.draftAttachmentIDs }; throw error }
+            if visible { self.composer.string = combined; self.composer.didChangeText() }; self.renderMessages()
+        }
+        mcpContentWindow?.showWindow(nil); mcpContentWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    @objc private func openTaskModelSettings() { saveAgentDraft(); selectedTab = "settings"; settingsCategory = "model"; settingsSearch.stringValue = ""; changeTab() }
+    @objc private func toggleWorkbenchVoice() { if companion?.store.preferences.wakeEnabled == true { companion?.stopRecording() } else { companion?.listenNow() } }
+    private func updateWorkbenchVoice() {
+        guard companion?.usesAgent == true else { return }
+        let enabled = companion?.store.preferences.wakeEnabled == true
+        voiceInput.image = NSImage(systemSymbolName: enabled ? "stop.circle" : "mic", accessibilityDescription: nil)
+        voiceInput.contentTintColor = enabled ? .systemRed : .secondaryLabelColor; voiceInput.toolTip = enabled ? "停止录音" : "语音输入"; voiceInput.setAccessibilityLabel(voiceInput.toolTip)
+    }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebar.widthAnchor.constraint(equalToConstant: 200), settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200), settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
         let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
         back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
         back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
@@ -236,6 +499,17 @@ final class FormDocumentView: NSView {
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
         composer.onInputChanged = { [weak self] in self?.composerChanged() }
+        composer.onExtensionKey = { [weak self] key in
+            guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
+            switch key {
+            case 125: extensionPicker.move(1)
+            case 126: extensionPicker.move(-1)
+            case 36, 48, 76: extensionPicker.pick()
+            case 53: dismissExtensionCandidates()
+            default: return false
+            }; return true
+        }
+        composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true
         input.drawsBackground = false; input.borderType = .noBorder
         sendButton.isBordered = false; sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送")
@@ -270,10 +544,11 @@ final class FormDocumentView: NSView {
             for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
             for popup in [modePopup, permissionPopup] { popup.controlSize = .small; popup.font = .systemFont(ofSize: 11); popup.target = self; popup.action = #selector(agentOptionsChanged) }
             modePopup.setAccessibilityLabel("任务模式"); permissionPopup.setAccessibilityLabel("审批方式")
-            for button in [resumeButton, gitButton, resultsButton] { button.bezelStyle = .inline; button.font = .systemFont(ofSize: 11); button.target = self }
+            for button in [resumeButton, browserButton, gitButton, resultsButton] { button.bezelStyle = .inline; button.font = .systemFont(ofSize: 11); button.target = self }
             resumeButton.action = #selector(resumeAgentTask); resultsButton.action = #selector(showAgentRecords)
             gitButton.action = #selector(showAgentGit)
-            let toolbar = stack([projectButton, modePopup, permissionPopup, NSView(), resumeButton, gitButton, resultsButton], spacing: 6)
+            browserButton.action = #selector(showAgentBrowser)
+            let toolbar = stack([projectButton, modePopup, permissionPopup, NSView(), resumeButton, browserButton, gitButton, resultsButton], spacing: 6)
             configureApprovalPanel(); contents = [toolbar, history, approvalPanel, status, entry]
         }
         let column = stack(contents, vertical: true, spacing: 14)
@@ -382,9 +657,11 @@ final class FormDocumentView: NSView {
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
-        group("agent", "记忆与指令", "Agent 记忆 全局 项目 指令 AGENTS 摘要 上下文")
+        group("agent", "记忆与指令", "Agent 记忆 全局 项目 指令 AGENTS 摘要 上下文 扩展 Skills 命令")
         let memory = NSButton(title: "管理记忆", target: self, action: #selector(openAgentMemory))
-        row("", stack([memory, NSView()], spacing: 8))
+        let extensions = NSButton(title: "管理扩展", target: self, action: #selector(showAgentExtensions))
+        let worktrees = NSButton(title: "工作树", target: self, action: #selector(showWorktrees))
+        row("", stack([memory, extensions, worktrees, NSView()], spacing: 8))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
@@ -403,19 +680,23 @@ final class FormDocumentView: NSView {
         selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
         renderMessages(); showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if tab != "settings" { window?.makeFirstResponder(composer) }
+        companion?.updatePetWorkspaceOcclusion()
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
     private func changeTab() {
+        if selectedTab != "chat" { dismissExtensionCandidates() }
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
         contentSurface.showsSettings = configuring; settingsPageIcon.isHidden = !configuring
-        titleLeading.constant = configuring ? 80 : 28
-        pageTitle.font = .systemFont(ofSize: configuring ? 22 : 14, weight: .semibold)
-        pageTitle.textColor = configuring ? .labelColor : .secondaryLabelColor
+        titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? 94 : 28
+        pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
+        pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : .secondaryLabelColor
+        workbenchChrome.forEach { $0.isHidden = configuring }
         if configuring { updateSettingsSections() } else { pageTitle.stringValue = companion?.agentStore?.selected?.title ?? "对话" }
         chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
+        updateWorkbenchLayout()
     }
     @objc private func listen() { companion?.listenNow() }
     func refreshPreferences() {
@@ -600,7 +881,19 @@ final class FormDocumentView: NSView {
     @objc private func send() {
         guard let companion else { return }
         guard importTaskID != companion.agentStore?.selectedID || attachmentImport == nil else { return }
+        if let task = companion.agentStore?.selected, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
         let files = companion.agentStore?.selected?.draftAttachmentIDs ?? []
+        if companion.usesAgent, files.isEmpty, composer.string.trimmingCharacters(in: .whitespacesAndNewlines) == "/compact" {
+            if companion.agentRuntime?.submit(composer.string) == true { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
+            presentTaskContext(section: 0); return
+        }
+        if extensionPickerTask != nil && extensionPanel.isVisible { extensionPicker.pick(); return }
+        if let pair = visibleApproval, pair.task != companion.agentStore?.selectedID,
+           companion.agentStore?.task(pair.task)?.pendingCalls.first?.name == "ask_user" {
+            guard files.isEmpty else { setStatus("请在子任务中添加答复附件", error: true); return }
+            if companion.agentRuntime?.submit(composer.string, taskID: pair.task) == true { composer.string = ""; composer.didChangeText(); saveAgentDraft(); renderMessages() }
+            return
+        }
         if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(); return }
         if companion.send(composer.string, attachmentIDs: files) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
     }
@@ -651,13 +944,20 @@ final class FormDocumentView: NSView {
         clearButton.title = companion.undoMessages == nil ? "清空" : "撤销清空"
     }
     func windowDidResize(_ notification: Notification) {
-        let width = (window?.contentView?.bounds.width ?? 980) - 272
+        dismissExtensionCandidates()
+        updateWorkbenchLayout(); companion?.updatePetWorkspaceOcclusion()
+        let width = companion?.usesAgent == true ? history.contentView.bounds.width - 40 : (window?.contentView?.bounds.width ?? 980) - 272
         messageRows.values.forEach { $0.fit(width: width) }
     }
+    func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidMiniaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidDeminiaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidBecomeKey(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        dismissExtensionCandidates()
         saveAgentDraft()
         if modelCheck != nil { invalidateModelCheck() }
-        sender.orderOut(nil); return false
+        sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
     }
     func checkSettings(_ output: URL) async -> [String: Any] {
         guard companion?.checkDirectory != nil else { return ["success": false] }
@@ -729,6 +1029,10 @@ final class FormDocumentView: NSView {
 
 @MainActor private extension ControlWindow {
     func updateSendButton() {
+        if companion?.agentStore?.selected?.kind == "hook" {
+            sendButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "停止校验")
+            sendButton.setAccessibilityLabel("停止校验"); sendButton.isEnabled = busy; return
+        }
         let files = companion?.agentStore?.selected?.draftAttachmentIDs ?? []
         let stopping = busy && (companion?.usesAgent != true || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty))
         sendButton.image = NSImage(systemSymbolName: stopping ? "stop.fill" : "arrow.up", accessibilityDescription: stopping ? "停止任务" : busy ? "补充要求" : "发送")
@@ -736,7 +1040,7 @@ final class FormDocumentView: NSView {
         sendButton.isEnabled = importTaskID != companion?.agentStore?.selectedID || attachmentImport == nil
     }
     @objc func addAttachments() {
-        guard let store = companion?.agentStore, let task = store.selected, !task.archived, task.kind != "wiki", let window else { return }
+        guard let store = companion?.agentStore, let task = store.selected, !task.archived, !["wiki", "hook"].contains(task.kind ?? ""), let window else { return }
         if attachmentImport != nil { if importTaskID == task.id { attachmentImport?.cancel() }; return }
         guard (task.draftAttachmentIDs?.count ?? 0) < 6 else { setStatus("每条消息最多 6 个附件", error: true); return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = true; panel.prompt = "添加"
@@ -783,21 +1087,27 @@ final class FormDocumentView: NSView {
         catch { setStatus(error.localizedDescription, error: true) }
     }
     func composerChanged() {
-        updateSendButton(); draftSave?.cancel()
+        updateSendButton(); draftSave?.cancel(); updateExtensionCandidates()
         guard companion?.agentStore != nil else { return }
         let work = DispatchWorkItem { [weak self] in self?.saveAgentDraft() }
         draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
     func saveAgentDraft() {
         draftSave?.cancel(); draftSave = nil
-        guard let tasks = companion?.agentStore, let id = displayedTask, tasks.task(id)?.draft != composer.string else { return }
+        guard let tasks = companion?.agentStore, let id = displayedTask, (tasks.task(id)?.draft ?? "") != composer.string else { return }
         tasks.update(id) { $0.draft = composer.string }
     }
     func selectAgentTask(_ id: String) {
+        dismissExtensionCandidates()
         guard let tasks = companion?.agentStore, tasks.task(id) != nil else { return }
+        if !navigatingTaskHistory, taskNavigationIndex < 0 || taskNavigation[taskNavigationIndex] != id {
+            if taskNavigationIndex + 1 < taskNavigation.count { taskNavigation.removeSubrange((taskNavigationIndex + 1)..<taskNavigation.count) }
+            taskNavigation.append(id); taskNavigationIndex = taskNavigation.count - 1
+        }
         saveAgentDraft(); tasks.selectedID = id; displayedTask = id
         composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
         composer.undoManager?.removeAllActions()
+        messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]
         selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
@@ -807,6 +1117,39 @@ final class FormDocumentView: NSView {
         let previous = tasks.selected
         let id = tasks.create(workspace: previous?.workspace, mode: .agent)
         selectAgentTask(id)
+    }
+    @objc private func chooseExecutor() {
+        guard let store = companion?.agentStore, let task = store.selected, task.canChooseExecutor else { return }
+        let menu = NSMenu()
+        func item(_ title: String, _ value: String, selected: Bool = false, available: Bool = true) {
+            let entry = NSMenuItem(title: title, action: #selector(selectExecutor(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = value; entry.state = selected ? .on : .off; entry.isEnabled = available; menu.addItem(entry)
+        }
+        item("小鲸", "default", selected: task.agent == nil)
+        do {
+            let profiles = try store.agents.list(enabledOnly: true), teams = try store.teams.list().filter(\.enabled)
+            if !profiles.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "自定义 Agent")) }
+            for value in profiles { item(value.name, "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
+            if !teams.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "Agent 团队")) }
+            for value in teams { let available = (try? store.teams.team(value.id, store: store)) != nil; item(value.name + (available ? "" : " · 成员不可用"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available) }
+        } catch { setStatus(error.localizedDescription, error: true) }
+        menu.addItem(.separator()); item("管理 Agent…", "manage-agents"); item("管理团队…", "manage-teams")
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workbenchEmptyTitle.bounds.height + 4), in: workbenchEmptyTitle)
+    }
+    @objc private func selectExecutor(_ sender: NSMenuItem) {
+        guard let store = companion?.agentStore, let task = store.selected, let value = sender.representedObject as? String else { return }
+        saveAgentDraft()
+        if value == "manage-agents" {
+            let manager = AgentProfileWindow(store: store, workspace: task.workspace); manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); return
+        }
+        if value == "manage-teams" {
+            let manager = AgentTeamWindow(store: store, workspace: task.workspace); manager.onUse = { [weak self] in self?.selectAgentTask($0) }; teamWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); return
+        }
+        do {
+            guard task.canChooseExecutor else { throw PetError("执行者只能在发送前选择") }
+            if value.hasPrefix("team:") { try store.teams.configureDraft(String(value.dropFirst(5)), taskID: task.id, store: store) }
+            else if value == "default" || value.hasPrefix("agent:") { try store.agents.configureDraft(value == "default" ? nil : String(value.dropFirst(6)), taskID: task.id, store: store) }
+            renderAgentMessages()
+        } catch { setStatus(error.localizedDescription, error: true) }
     }
     func agentTaskAction(_ id: String, action: String) {
         guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running else { return }
@@ -832,7 +1175,7 @@ final class FormDocumentView: NSView {
         renderAgentMessages()
     }
     @objc func chooseProject() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择项目"
         if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
         guard let window else { return }
@@ -853,16 +1196,21 @@ final class FormDocumentView: NSView {
         }
     }
     @objc func agentOptionsChanged() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.status != .running && task.status != .waiting else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.status != .running && task.status != .waiting else { return }
         tasks.update(task.id) { $0.mode = AgentMode.allCases[max(0, modePopup.indexOfSelectedItem)]; $0.permission = AgentPermissionMode.allCases[max(0, permissionPopup.indexOfSelectedItem)] }
         renderAgentMessages()
     }
     @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
     @objc func showAgentRecords() { presentAgentRecords(section: 0) }
+    @objc func showAgentBrowser() {
+        guard let store = companion?.agentStore, let task = store.selected else { return }
+        do { _ = try store.browser.show(taskID: task.id, title: task.title) }
+        catch { setStatus(error.localizedDescription, error: true) }
+    }
     @objc func showAgentGit() {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
         gitWindow?.window?.performClose(nil)
-        gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next) }
+        gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
         gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func showAgentKnowledge() {
@@ -905,46 +1253,63 @@ final class FormDocumentView: NSView {
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore, let task = tasks.selected else { return }
+        if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
+        if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
+        recordWindow?.refreshLiveHooks(task.id)
+        refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         taskSidebar.refresh(tasks.tasks, selected: task.id)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
-        projectButton.title = task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "选择项目"; projectButton.toolTip = task.workspace
+        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = task.workspace ?? "选择项目"
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
+        let managed = task.kind == "hook", delegated = task.agent?.ownerID != nil || task.automation != nil
         let locked = running || task.status == .waiting
-        for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived }
-        projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived
-        gitButton.isEnabled = task.workspace != nil
-        resumeButton.isHidden = running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
-        resultsButton.title = task.plan.isEmpty ? "记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
+        for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
+        projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
+        gitButton.isEnabled = task.workspace != nil && !managed
+        browserButton.isEnabled = !managed
+        resumeButton.isHidden = managed || running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
+        resultsButton.title = ""; resultsButton.imagePosition = .imageOnly; resultsButton.toolTip = task.plan.isEmpty ? "任务记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
         renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
+        composer.isEditable = !managed; attachmentButton.isEnabled = !managed
         let queueCount = task.queuedCount
-        let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
-        setStatus(state, error: task.status == .failed || tasks.writeError != nil)
+        let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : managed && task.status == .completed ? task.statusTitle : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
+        setStatus(task.status == .failed || tasks.writeError != nil || queueCount > 0 ? state : tasks.hooks.backgroundTitle(task.id) ?? "", error: task.status == .failed || tasks.writeError != nil || (managed && task.statusTitle == "校验未通过"))
         let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""
-        modelCaption.stringValue = (task.model.isEmpty ? companion?.store.preferences.model ?? "" : task.model) + context
+        modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
+        modelCaption.isHidden = true
+        updateWorkbenchLayout()
         let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         var ids: [String] = []
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
-            ids += (message.toolCalls ?? []).map { "tool:" + $0.id }
+            ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
         }
+        if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 } }
         if ids != renderedIDs {
             messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
             var next: [String: ChatMessageRow] = [:], nextTools: [String: AgentToolRow] = [:]
             for message in messages {
                 if ids.contains(message.id) {
-                    let row = messageRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: message.id, role: message.role, content: message.content)); next[message.id] = row
-                    row.fit(width: (window?.contentView?.bounds.width ?? 980) - 272); messageColumn.addArrangedSubview(row)
+                    let row = messageRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: message.id, role: message.role, content: message.content), workbench: true); next[message.id] = row
+                    row.fit(width: history.contentView.bounds.width - 40); messageColumn.addArrangedSubview(row)
                     row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
-                for call in message.toolCalls ?? [] {
-                    let row = toolRows[call.id] ?? AgentToolRow(); nextTools[call.id] = row
+                for call in (message.toolCalls ?? []).filter({ $0.name != "load_tools" }) {
+                    let row = toolRows[call.id] ?? AgentToolRow(); row.useWorkbenchStyle(); nextTools[call.id] = row
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                     messageColumn.setCustomSpacing(8, after: row)
+                }
+            }
+            if task.status == .completed {
+                for path in task.artifacts.prefix(4) {
+                    let row = AgentInspectorFileButton(title: URL(fileURLWithPath: path).lastPathComponent, value: path, section: 1, symbol: "doc", inline: true)
+                    row.onOpen = { [weak self] section, value in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+                    messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
             }
             messageRows = next; toolRows = nextTools; renderedIDs = ids
@@ -955,19 +1320,30 @@ final class FormDocumentView: NSView {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             messageRows[message.id]?.update(message.content, markdown: !streaming)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
-            for call in message.toolCalls ?? [] { toolRows[call.id]?.update(call: call, event: events[call.id]) }
+            for call in message.toolCalls ?? [] {
+                var visibleCall = call
+                if call.name == "delegate_task", let child = (events[call.id]?.childTaskID).flatMap({ tasks.task($0) }) { visibleCall.displayName = "委派 · " + (child.team?.team.name ?? child.agent?.profile.name ?? child.title) }
+                toolRows[call.id]?.update(call: visibleCall, event: events[call.id])
+                let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil })
+                toolRows[call.id]?.setCapture(image) { [weak self] in if let image { self?.openAttachment(taskID: owner, id: image.id) } }
+                if let childID = events[call.id]?.childTaskID, let child = tasks.task(childID) { toolRows[call.id]?.setSubtask(child) { [weak self] in self?.selectAgentTask(childID) } }
+            }
         }
-        if task.status == .waiting, let call = task.pendingCalls.first, let approval = task.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
-            if visibleApproval?.task != task.id || visibleApproval?.call != call.id {
-                visibleApproval = (task.id, call.id)
-                approvalTitle.stringValue = approval.reason
-                approvalText.string = (try? JSONSerialization.data(withJSONObject: call.object, options: [.prettyPrinted, .sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
-                if call.name == "git_commit", let review = task.gitReview, review.hash == call.object["review_hash"] as? String { approvalText.string += "\n\n" + review.diff }
+        if let review = companion?.agentRuntime?.pendingReview(task.id), let call = review.pendingCalls.first, let approval = review.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
+            if visibleApproval?.task != review.id || visibleApproval?.call != call.id {
+                visibleApproval = (review.id, call.id)
+                approvalTitle.stringValue = (review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : "") + (approval.reason.components(separatedBy: "\n").first ?? approval.reason)
+                let mcpCall = AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name)
+                let approvalArguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
+                approvalText.string = (try? JSONSerialization.data(withJSONObject: approvalArguments, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
+                if mcpCall { approvalText.string = approval.reason + (approvalArguments.isEmpty ? "" : "\n\n" + approvalText.string) }
+                else if AgentBrowser.tools.contains(call.name) { approvalText.string = approval.reason + "\n\n" + approvalText.string }
+                if call.name == "git_commit", let diff = review.gitReview, diff.hash == call.object["review_hash"] as? String { approvalText.string += "\n\n" + diff.diff }
                 approvalTitle.toolTip = approval.reason
             }
-            approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !task.archived; denyButton.isEnabled = !task.archived; approvalPanel.isHidden = false
+            approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived; approvalPanel.isHidden = false
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
-        composer.isEditable = !task.archived
+        composer.isEditable = !task.archived && !managed
         window?.contentView?.layoutSubtreeIfNeeded()
         if follow, let document = history.documentView {
             history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
@@ -975,7 +1351,137 @@ final class FormDocumentView: NSView {
     }
 }
 
+@MainActor extension ControlWindow {
+    @objc private func showWorktrees() {
+        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        do { let manager = try AgentWorktreeWindow(store: store, taskID: id) { [weak self] in self?.showAgentTask($0); self?.show(tab: "chat") }; worktreeWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
+        catch { savedStatus.stringValue = error.localizedDescription }
+    }
+    func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
+    @objc func showAutomations() {
+        guard let store = companion?.agentStore else { return }; saveAgentDraft()
+        if let window = automationWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentAutomationWindow(store: store)
+        manager.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat"); self?.refreshAutomationBadge() }
+        manager.onRequestNotifications = { [weak self] in guard let self else { throw PetError("应用已关闭") }; return try await self.companion?.automationNotifications.request() ?? false }
+        automationWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); refreshAutomationBadge()
+    }
+    private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
+    func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates() }
+    @objc func showAgentExtensions() {
+        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        extensionWindow?.window?.performClose(nil)
+        if extensionWindow?.window?.isVisible == true { return }
+        let manager = AgentExtensionWindow(store: store, taskID: id)
+        manager.onStartAgent = { [weak self] taskID in self?.selectAgentTask(taskID) }
+        manager.onBrowseMCP = { [weak self] server in self?.presentMCPContent(taskID: id, serverID: server) }
+        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) } }
+        extensionWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+    }
+    private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
+        guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook" else { throw PetError("原任务已归档或为独立校验任务") }
+        let current = try store.extensions.item(item.id, workspace: task.workspace)
+        dismissExtensionCandidates(); saveAgentDraft()
+        if displayedTask != taskID { selectAgentTask(taskID) }
+        let previous = composer.string
+        if previous.hasPrefix("/"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
+            let tail = String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            composer.string = "/" + current.invocation + " " + tail
+        } else { composer.string = "/" + current.invocation + " " + previous }
+        composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
+        show(tab: "chat"); window?.makeFirstResponder(composer)
+    }
+    private func updateExtensionCandidates() {
+        guard selectedTab == "chat", let store = companion?.agentStore, let task = store.selected, task.id == displayedTask, !["wiki", "hook"].contains(task.kind ?? ""),
+              composer.string.hasPrefix("/"), !composer.string.contains(where: { $0.isWhitespace }), !composer.hasMarkedText(), window?.isVisible == true else { dismissExtensionCandidates(); return }
+        do {
+            let query = String(composer.string.dropFirst())
+            let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false).filter { query.isEmpty || $0.invocation.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query) }.prefix(12)
+            guard !items.isEmpty else { dismissExtensionCandidates(); return }
+            extensionPickerTask = task.id; extensionPicker.setItems(Array(items))
+            extensionPicker.onPick = { [weak self] item in
+                guard let self, let id = extensionPickerTask, id == displayedTask else { return }
+                do { try insertExtension(item, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
+            }
+            guard let window else { dismissExtensionCandidates(); return }
+            extensionPanel.contentViewController = extensionPicker
+            let anchor = window.convertToScreen(composer.convert(composer.visibleRect, to: nil))
+            let bounds = window.screen?.visibleFrame ?? window.frame, width = min(420, bounds.width), height = CGFloat(min(264, items.count * 44 + 4))
+            let x = min(bounds.maxX - width, max(bounds.minX, anchor.minX)), y = min(bounds.maxY - height, max(bounds.minY, anchor.maxY + 6))
+            extensionPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+            extensionPanel.contentView?.wantsLayer = true; extensionPanel.contentView?.layer?.cornerRadius = 8; extensionPanel.contentView?.layer?.masksToBounds = true
+            if extensionPanel.parent !== window { window.addChildWindow(extensionPanel, ordered: .above) }; extensionPanel.orderFront(nil)
+        } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
+    }
+    func attachBrowserCapture(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
+        guard let tasks = companion?.agentStore, tasks.task(taskID) != nil else { throw PetError("任务不存在") }
+        saveAgentDraft()
+        _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks)
+        defer { renderMessages() }
+        try Task.checkCancellation()
+        // Preserve edits made in either composer while the image was imported.
+        saveAgentDraft()
+        if !note.isEmpty {
+            tasks.update(taskID) { record in
+                let previous = record.draft ?? ""
+                record.draft = previous + (previous.isEmpty ? "" : "\n") + note
+            }
+            if let error = tasks.writeError { throw PetError("标注要求未保存：" + error) }
+        }
+        if displayedTask == taskID { composer.string = tasks.task(taskID)?.draft ?? ""; composer.needsDisplay = true }
+        else { selectAgentTask(taskID) }
+        show(tab: "chat"); window?.makeFirstResponder(composer)
+    }
+}
+
 extension ControlWindow {
+    func prepareExtensionCheckWindow(taskID: String, manager: Bool) {
+        selectAgentTask(taskID); show(tab: "chat"); if manager { showAgentExtensions() }
+    }
+    func checkExtensionComposer(_ output: URL, taskID: String, item: AgentExtensionItem) async throws -> [String: Bool] {
+        guard let store = companion?.agentStore, companion?.checkDirectory != nil else { return ["extensionCheckProfile": false] }
+        selectAgentTask(taskID); show(tab: "chat"); composer.string = "/handoff"; composer.didChangeText()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        var checks = ["slashSearchShowsNativeCandidates": extensionPanel.isVisible && extensionPicker.items.contains(where: { $0.id == item.id }), "selectingEmptyTaskClearsRenderedHistory": messageColumn.arrangedSubviews.isEmpty]
+        checks["slashCandidatesKeepComposerKeyFocus"] = window?.isKeyWindow == true && window?.firstResponder === composer && !extensionPanel.isKeyWindow
+        _ = composer.onExtensionKey?(48)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let selectedText = composer.string
+        checks["tabSelectsWithoutSubmitting"] = selectedText == "/" + item.invocation + " " && store.task(taskID)?.messages.isEmpty == true && extensionPickerTask == nil && !extensionPanel.isVisible
+        composer.string = "保留原草稿"; saveAgentDraft()
+        let other = store.create(title: "另一个扩展草稿", workspace: store.task(taskID)?.workspace)
+        selectAgentTask(other); composer.string = "另一个原草稿"; saveAgentDraft()
+        try insertExtension(item, taskID: taskID); saveAgentDraft()
+        checks["managerInsertionPreservesBothTaskDrafts"] = store.selectedID == taskID && store.task(taskID)?.draft == "/" + item.invocation + " 保留原草稿" && store.task(other)?.draft == "另一个原草稿"
+        composer.string = "/"; composer.didChangeText(); selectAgentTask(other)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        checks["taskSwitchClosesSlashCandidates"] = extensionPickerTask == nil && !extensionPanel.isVisible
+        let observations: [String: Any] = ["selectedText": selectedText, "selectedTaskMessages": store.task(taskID)?.messages.count ?? -1, "candidateOwnerAfterSwitch": extensionPickerTask ?? "none", "panelShownAfterSwitch": extensionPanel.isVisible]
+        try JSONSerialization.data(withJSONObject: observations, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("extension-composer-report.json"))
+        selectAgentTask(taskID); composer.string = ""; composer.didChangeText(); saveAgentDraft()
+        if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("extension-entry.png")) }
+        return checks
+    }
+    func checkBrowserCaptureDraft(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws -> [String: Bool] {
+        guard let tasks = companion?.agentStore else { throw PetError("任务未初始化") }
+        selectAgentTask(taskID); composer.string = "保留的原有草稿"; saveAgentDraft()
+        let other = tasks.create(title: "另一个未发送草稿", mode: .ask)
+        selectAgentTask(other); composer.string = "独立草稿"; saveAgentDraft()
+        try await attachBrowserCapture(shot, marks: marks, note: note, taskID: taskID)
+        return ["captureReturnsToOwningTask": tasks.selectedID == taskID && displayedTask == taskID,
+                "capturePreservesBothComposerDrafts": tasks.task(taskID)?.draft == "保留的原有草稿\n" + note && tasks.task(other)?.draft == "独立草稿",
+                "captureAppearsInComposerBeforeSending": tasks.task(taskID)?.draftAttachmentIDs?.count == 1 && !draftAttachments.isHidden && !composer.string.isEmpty && tasks.task(taskID)?.messages.isEmpty == true]
+    }
+    func checkAgentBrowserEntry(_ output: URL, taskID: String) async -> [String: Bool] {
+        selectAgentTask(taskID); showWindow(nil)
+        var checks: [String: Bool] = [:]
+        for (name, size) in [("normal", NSSize(width: 980, height: 700)), ("narrow", NSSize(width: 780, height: 540))] {
+            window?.setContentSize(size); window?.contentView?.layoutSubtreeIfNeeded()
+            checks["browserEntryLayout-" + name] = browserButton.window != nil && !browserButton.isHidden && browserButton.bounds.width > 25 && !browserButton.hasAmbiguousLayout && !projectButton.hasAmbiguousLayout
+            if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("browser-entry-" + name + ".png")) }
+        }
+        return checks
+    }
     func persistAgentDraft() { attachmentImport?.cancel(); saveAgentDraft() }
     func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
         guard let store = companion?.agentStore else { return ["attachmentUI": false] }
@@ -1024,5 +1530,133 @@ extension ControlWindow {
             checks.merge(await records.checkPreview(output)) { _, value in value }; records.close()
         }
         return checks
+    }
+}
+
+@MainActor extension ControlWindow {
+    func showAgentTask(_ id: String) { selectAgentTask(id) }
+    func checkExecutorSelection(taskID: String, agentID: String, teamID: String) -> [String: Bool] {
+        guard let store = companion?.agentStore, let before = store.task(taskID) else { return ["executorDraftFound": false] }
+        selectAgentTask(taskID)
+        let count = store.tasks.count, draft = composer.string, files = before.draftAttachmentIDs
+        func select(_ value: String) { let item = NSMenuItem(); item.representedObject = value; selectExecutor(item) }
+        func preserved() -> Bool { store.tasks.count == count && composer.string == draft && store.task(taskID)?.draft == before.draft && store.task(taskID)?.draftAttachmentIDs == files && store.selectedID == taskID }
+        select("agent:" + agentID)
+        let agent = store.task(taskID)?.agent?.profile.id == agentID && preserved() && workbenchEmptyTitle.title == store.task(taskID)?.agent?.profile.name
+        select("team:" + teamID)
+        let team = store.task(taskID)?.team?.team.id == teamID && preserved() && workbenchEmptyTitle.title == store.task(taskID)?.team?.team.name
+        select("default")
+        return ["executorAgentSelectionPreservesDraftAndAttachment": agent, "executorTeamSelectionPreservesDraftAndAttachment": team,
+                "executorDefaultRestoresInSameDraft": preserved() && store.task(taskID)?.agent == nil && store.task(taskID)?.team == nil]
+    }
+    func checkWorkbenchMotion() -> [String: Any] {
+        guard let root = window?.contentView else { return ["success": false, "error": "原生工作台不可用"] }
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        var checks: [String: Bool] = [:], result: [String: Any] = ["systemReduceMotion": reduced]
+        taskMore.wantsLayer = true
+        if let layer = taskMore.layer {
+            let saved = layer.backgroundColor; layer.backgroundColor = NSColor.clear.cgColor
+            AgentWorkbenchTheme.color(layer, AgentWorkbenchTheme.selection)
+            let animation = layer.animation(forKey: "selection")
+            checks["selectionAnimationMatchesActualSystemSetting"] = reduced ? animation == nil : animation?.duration == 0.12
+            result["selectionAnimationDuration"] = animation?.duration ?? 0
+            if animation != nil { AgentWorkbenchTheme.cancelMotion(in: root); checks["cancellationClearsActualRunningSelection"] = layer.animation(forKey: "selection") == nil }
+            AgentWorkbenchTheme.color(layer, .clear, animated: false)
+            checks["immediateSelectionLeavesNoOldAnimation"] = layer.animation(forKey: "selection") == nil; layer.backgroundColor = saved
+        }
+        if root.bounds.width >= 1080 {
+            let original = inspectorRequested
+            toggleTaskInspector(); let duration = lastInspectorTransitionDuration; toggleTaskInspector()
+            checks["inspectorTransitionMatchesActualSystemSetting"] = duration == (reduced ? 0 : 0.16) && inspectorRequested == original
+            result["inspectorTransitionDuration"] = duration
+        }
+        if let row = toolRows.sorted(by: { $0.key < $1.key }).first?.value {
+            let original = row.expanded; row.setExpanded(!original)
+            let duration = row.lastTransitionDuration; row.setExpanded(original, animated: false)
+            checks["toolTransitionMatchesActualSystemSetting"] = duration == (reduced ? 0 : 0.14) && row.expanded == original
+            result["toolTransitionDuration"] = duration
+        }
+        AgentWorkbenchTheme.cancelMotion(in: root)
+        result["checks"] = checks; result["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 }
+        result["scope"] = "Actual NSWorkspace setting, live workbench layers, inspector actions and tool expansion; system setting is never overridden by this check."
+        return result
+    }
+    func checkWorkbench(_ output: URL, actualTask: String, stoppedTask: String?) async -> [String: Any] {
+        guard let tasks = companion?.agentStore, let window else { return ["success": false, "error": "原生窗口不可用"] }
+        var checks: [String: Bool] = [:], frames: [String: Any] = [:]
+        func capture(_ name: String) async {
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard let root = window.contentView else { return }
+            func rect(_ view: NSView) -> [Double] { let value = root.convert(view.bounds, from: view); return [value.minX, root.bounds.height - value.maxY, value.width, value.height].map(Double.init) }
+            let views: [String: Any] = ["root": [root.bounds.width, root.bounds.height], "history": rect(history), "inspector": rect(workbenchInspector), "composer": rect(entryToolbar.superview!), "leadingControls": rect(entryLeading), "trailingControls": rect(entryTrailing), "contextControl": rect(taskContext), "contextLabel": taskContext.accessibilityLabel() ?? "", "contextVisibleTitle": taskContext.title, "resumeRowVisible": !workbenchLower.isHidden, "systemReduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "inspectorVisible": !workbenchInspector.isHidden, "sidebarWidth": sidebarWidth.constant, "backingScale": window.backingScaleFactor, "windowFrame": NSStringFromRect(window.frame), "windowMinimum": NSStringFromSize(window.minSize), "contentMinimum": NSStringFromSize(window.contentMinSize), "rootFitting": NSStringFromSize(root.fittingSize), "chatFitting": NSStringFromSize(chat.fittingSize), "settingsFitting": NSStringFromSize(settings.fittingSize)]
+            frames[name] = views
+            if let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(root.bounds.width.rounded()), pixelsHigh: Int(root.bounds.height.rounded()), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
+                bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png"))
+            }
+        }
+        func setSize(_ size: NSSize) {
+            let screen = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1400, height: 1000)
+            window.setFrame(NSRect(x: max(screen.minX, screen.midX - size.width / 2), y: max(screen.minY, screen.maxY - size.height), width: size.width, height: size.height), display: true)
+            updateWorkbenchLayout(); renderAgentMessages()
+        }
+        show(tab: "chat"); setSize(NSSize(width: 1200, height: 800)); selectAgentTask(actualTask); inspectorRequested = true; updateWorkbenchLayout()
+        await capture("workbench-completed")
+        checks["wideMatchesReferenceViewport"] = abs(window.frame.width - 1200) < 1 && abs(window.frame.height - 800) < 1
+        checks["wideUsesSelectedThreeColumnLayout"] = abs(sidebarWidth.constant - 231) < 1 && abs(workbenchInspector.bounds.width - 281) < 1 && !workbenchInspector.isHidden
+        checks["completedShowsActualArtifactAndSources"] = !tasks.task(actualTask)!.artifacts.isEmpty && workbenchInspector.subviews.count >= 3 && messageColumn.arrangedSubviews.contains { $0 is AgentInspectorFileButton }
+        checks["actualToolRowsRetained"] = !toolRows.isEmpty
+        if tasks.task(actualTask)!.events.contains(where: { $0.childTaskID != nil }) { checks["actualChildRowsRetained"] = toolRows.values.contains { $0.subviews.contains { ($0 as? NSButton)?.title == "打开子任务" && !$0.isHidden } } }
+        checks["contextControlStaysInsideComposer"] = taskContext.superview === entryTrailing
+        checks["completedComposerDoesNotReserveBlankFooter"] = workbenchLower.isHidden
+        if let root = window.contentView {
+            let frame = root.convert(entryToolbar.superview!.bounds, from: entryToolbar.superview!)
+            checks["composerBottomMatchesSelectedReference"] = abs(frame.minY - 30) < 1
+        }
+        checks["composerControlsDoNotOverlapWide"] = !entryLeading.convert(entryLeading.bounds, to: entryToolbar).intersects(entryTrailing.convert(entryTrailing.bounds, to: entryToolbar))
+        if let pet = companion?.pet {
+            let saved = pet.frame
+            NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+            pet.setFrameOrigin(NSPoint(x: window.frame.maxX - 180, y: window.frame.minY + 40))
+            companion?.updatePetWorkspaceOcclusion()
+            let lowered = pet.level.rawValue
+            checks["petIsBelowOverlappingWorkbench"] = pet.frame.intersects(window.frame) && lowered < window.level.rawValue
+            window.orderOut(nil); companion?.updatePetWorkspaceOcclusion()
+            let restored = pet.level.rawValue, expected = companion?.store.preferences.alwaysOnTop == true ? NSWindow.Level.floating.rawValue : NSWindow.Level.normal.rawValue
+            checks["petLevelRestoresAfterWorkspaceHides"] = restored == expected
+            frames["petLayering"] = ["loweredLevel": lowered, "restoredLevel": restored, "expectedRestoredLevel": expected, "workbenchLevel": window.level.rawValue, "overlapWasForcedInIsolatedProfile": true]
+            pet.setFrame(saved, display: false); window.makeKeyAndOrderFront(nil); companion?.updatePetWorkspaceOcclusion()
+        }
+        toggleTaskInspector(); checks["recordPaneCanClose"] = workbenchInspector.isHidden
+        toggleTaskInspector(); checks["recordPaneCanReopen"] = !workbenchInspector.isHidden
+        newAgentTask(); let emptyID = tasks.selectedID!
+        composer.string = "尚未发送的工作台草稿"; composer.didChangeText(); saveAgentDraft()
+        await capture("workbench-empty")
+        checks["emptyTaskHasOwnStartingState"] = !workbenchEmpty.isHidden && history.isHidden && workbenchInspector.isHidden
+        checks["emptyTaskDoesNotDisplayPriorMessages"] = messageColumn.arrangedSubviews.isEmpty && tasks.task(emptyID)?.messages.isEmpty == true
+        selectAgentTask(actualTask); selectAgentTask(emptyID)
+        checks["draftSurvivesTaskSwitch"] = composer.string == "尚未发送的工作台草稿" && tasks.task(emptyID)?.messages.isEmpty == true
+        selectAgentTask(actualTask); previousAgentTask(); checks["backReturnsToPriorTask"] = tasks.selectedID == emptyID
+        nextAgentTask(); checks["forwardRestoresTask"] = tasks.selectedID == actualTask
+        setSize(NSSize(width: 900, height: 640)); await capture("workbench-narrow")
+        checks["narrowCollapsesInspector"] = workbenchInspector.isHidden && history.contentView.bounds.width > 550
+        checks["composerControlsDoNotOverlapNarrow"] = !entryLeading.convert(entryLeading.bounds, to: entryToolbar).intersects(entryTrailing.convert(entryTrailing.bounds, to: entryToolbar))
+        setSize(NSSize(width: 780, height: 540)); await capture("workbench-minimum")
+        checks["minimumActuallyReachesRequestedWidth"] = abs(window.frame.width - 780) < 1
+        checks["minimumKeepsUsableComposer"] = entryToolbar.bounds.width > 440 && !entryLeading.convert(entryLeading.bounds, to: entryToolbar).intersects(entryTrailing.convert(entryTrailing.bounds, to: entryToolbar))
+        if let stoppedTask, tasks.task(stoppedTask) != nil {
+            setSize(NSSize(width: 1200, height: 800)); selectAgentTask(stoppedTask); await capture("workbench-stopped")
+            checks["actualStoppedTaskHasResumeAndStoppedState"] = tasks.task(stoppedTask)?.status == .stopped && !resumeButton.isHidden && !workbenchBadge.isHidden
+            if let binding = tasks.task(stoppedTask)?.agent, (try? tasks.agents.profile(binding.profile.id)) == nil {
+                resumeAgentTask()
+                for _ in 0..<40 { if tasks.task(stoppedTask)?.status == .failed { break }; try? await Task.sleep(nanoseconds: 50_000_000) }
+                renderAgentMessages(); await capture("workbench-real-disabled-error")
+                checks["disabledAgentProducesActualActionableError"] = tasks.task(stoppedTask)?.status == .failed && !status.isHidden && status.stringValue.contains("未启用")
+            }
+        }
+        selectAgentTask(actualTask); setSize(NSSize(width: 1200, height: 800)); updateWorkbenchLayout()
+        await capture("workbench-final")
+        return ["success": !checks.isEmpty && checks.values.allSatisfy { $0 }, "checks": checks, "frames": frames, "actualTask": actualTask, "emptyTask": emptyID, "screen": NSScreen.screens.map { ["frame": NSStringFromRect($0.frame), "visibleFrame": NSStringFromRect($0.visibleFrame), "backingScale": $0.backingScaleFactor] }]
     }
 }

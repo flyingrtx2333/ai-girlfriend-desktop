@@ -9,6 +9,7 @@ import AppKit
     var onGenerateWiki: (() -> Void)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0
+    private var logSignature = ""
     private var attachmentWindow: AgentAttachmentWindow?
     init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
@@ -35,6 +36,11 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func selectItem(section: Int, value: String) {
+        guard canLeave() else { return }
+        sections.selectedSegment = min(6, max(0, section)); refresh()
+        if let index = items.firstIndex(where: { $0.value == value }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); table.scrollRowToVisible(index) }
+    }
     @objc private func refresh() {
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false
@@ -47,6 +53,8 @@ import AppKit
         case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) }
         case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
+        case 4:
+            items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
         case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         case 6:
             do { items = try AgentWiki.pages(workspace: task.workspace).map { (URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent, $0) }; state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
@@ -57,6 +65,15 @@ import AppKit
         if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+    }
+    func refreshLiveHooks(_ id: String) {
+        guard id == taskID, window?.isVisible == true, sections.selectedSegment == 4, !dirty, let task = store.task(taskID) else { return }
+        let next = task.events.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.detail.count)|\($0.hook?.delivery ?? "")" }.joined()
+        guard next != logSignature else { return }; logSignature = next
+        let previous = selection, clip = text.enclosingScrollView?.contentView, origin = text.enclosingScrollView?.contentView.bounds.origin
+        refresh()
+        if let index = items.firstIndex(where: { $0.value == previous }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
+        if let clip, let origin { clip.scroll(to: origin); text.enclosingScrollView?.reflectScrolledClipView(clip) }
     }
     @objc private func generateWiki() { if canLeave() { onGenerateWiki?() } }
     func enableWikiGeneration(_ action: @escaping () -> Void) { onGenerateWiki = action; generate.isEnabled = true }
@@ -75,6 +92,12 @@ import AppKit
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true
         do {
+            if sections.selectedSegment == 4 {
+                let events = value == "all-logs" ? task.events : task.events.filter { $0.id == value }
+                text.string = events.map { event in
+                    event.title + " · " + event.statusTitle + (event.hook?.asynchronous == true ? " · 后台" : "") + (event.duration.map { " · " + String(format: "%.1fs", $0) } ?? "") + "\n" + event.detail
+                }.joined(separator: "\n\n────────\n\n"); return
+            }
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
                 let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location

@@ -5,6 +5,7 @@
 | 路径 | 内容 |
 | --- | --- |
 | `native/` | AppKit 窗口、聊天、钥匙串、MiniMax 播放、sherpa 唤醒和 Apple 转写 |
+| `native-mcp/` | 官方 MCP Swift SDK 0.12.1、任务连接封装与事件驱动 stdio；通过独立 Swift 库衔接现有原生构建 |
 | `src/main.js` | 场景、点击分区、动作调度、原生桥接和帧率管理 |
 | `src/portrait.js`、`src/portrait-tail.js` | 原画网格变形、分部位弹簧和独立鲸尾 |
 | `src/motions.js`、`src/idle.js` | 互动轨道、表情轨道和 AIRI 待机采样 |
@@ -34,7 +35,27 @@ npm run native:build
 npm run native:open
 ```
 
-需 Apple 芯片、macOS 14+ 和 Xcode 工具链。构建要求本机有效的 Apple 签名证书；多证书时通过 `BLUEFATFISH_SIGN_IDENTITY` 选择。保持证书与 bundle identifier 稳定，避免更新后失去钥匙串身份。证书、私钥和签名配置不提交。
+需 Apple 芯片、macOS 14+ 和 Swift 6.1 及以上的 Xcode 工具链。构建要求本机有效的 Apple 签名证书；多证书时通过 `BLUEFATFISH_SIGN_IDENTITY` 选择。保持证书与 bundle identifier 稳定，避免更新后失去钥匙串身份。证书、私钥和签名配置不提交。
+
+构建脚本先构建 `native-mcp` 动态库，再构建原有 Swift 5 AppKit 入口及语音桥接，部署目标保持 macOS 14。Swift Package 使用原生构建后端以保留可直接链接的模块路径；产物包含 SDK、System、Logging、EventSource 的许可证。包内不携带 Node；用户配置的 stdio 服务使用本机运行环境。依赖升级时一并更新并核对 `Package.resolved`。
+
+MCP 相关改动使用 `npm run native:check-mcp -- --live-agent`：先显式在本机安装官方 `@modelcontextprotocol/server-filesystem@2.2.0`（默认检查位置为 `~/Library/Caches/bluefatfish-mcp-real`，可用 `BLUEFATFISH_MCP_CHECK_SERVER` 指定入口）。检查使用独立配置、实际仓库公开素材、真实官方文件服务、公开 DeepWiki HTTP 服务和已保存模型；Node 独立核对生成的 JSON、实际图片大小与 SHA-256。`-- --live-agent --hold-ui` 可保留检查窗口供原生交互验收；不调用麦克风或 TTS。该命令会产生实际 HTTP／模型调用，不能当作离线单元测试。
+
+可加 `--output-limit 2048` 仅调整独立验收配置的回复上限；报告同时记录实际与原有上限，不改生产配置。使用不同预算的验收必须明确标注，不能当作日常 512 上限已通过的证据。MCP schema 通过模型的实际工具定义提供；参数直接绑定到任务会话，避免让模型在另一层 JSON 中重复编码文件内容。
+
+Hooks 相关改动使用 `npm run native:check-hooks -- --live-agent`，使用独立配置、实际仓库公开素材、真实隔离命令及保存的模型预算。模型实际尝试被禁止的写入、询问审阅人、生成报告，并在结束 Hook 要求下补做文件核对；Node 独立检查实际文件大小、SHA-256 与报告。检查同时覆盖两种审批拒绝格式、改写参数后的审批、拒绝输入／答复、读取私有目录与联网限制、配置／资源变化、超时和进程取消。`-- --live-agent --hold-ui` 保留原生管理与任务窗口供检查；报告和配置副本放在本地 evidence，不提交个人数据。
+
+同一命令不加 `--live-agent` 时不调用模型，`hook-config-report.json` 另外记录实际 Exec 参数、带特殊字符的可执行路径、Bash、工具／参数筛选、环境与 Header 的钥匙串事务、本机 HTTP 文件哈希及父子进程清理。HTTP 服务实时读取原始来源文件；记录白名单允许、缺失／拒绝变量、非法控制字符与真实哈希不匹配，不以预制模型回复代替。Node 独立核对实际 argv、环境回执、HTTP 请求及生产九份文件哈希。真实模型模式的生命周期处理器也使用 Exec、env 和条件筛选，原有写入审批与输入拦截继续生效。
+
+环境值的遮蔽在协议判断后进行，不能改变 `block` 或 `false` 的实际含义；向工具参数回传受保护值会停止。HTTP 沿用旧版钥匙串账户绑定，命令凭据另绑定程序、Shell／args 与配置位置；修改目标不能复用原凭据。配置格式有误时仍可打开已遮蔽的原文修复。PowerShell 路径有安装诊断，但当前相关实际执行验收使用 Bash，不代表已验证 PowerShell。
+
+HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际本机 HTTP 规则服务，服务会读取实际输入和报告核对，而非返回预制模型响应。保存的模型执行主任务，并分别完成单轮内容筛查和只读工具校验；报告包含各自真实用量、子任务与父事件引用，Node 独立回读最终 JSON。检查凭据存储与地址绑定、重定向、无效响应、不重放、断开连接及只读工具边界。`-- --hold-ui` 保留服务与窗口；只需重看现有记录时，可用 `open -n <app> --args --check <已有目录> --hook-service-check --hook-service-ui-only`，不会重新调用模型或启动服务。
+
+模型校验取消可在独立验收目录运行 `open -n <app> --args --check <已有目录> --hook-service-check --hook-service-cancel-only`：使用已保存模型与原预算，收到真实输出后调用校验任务「停止」所用的同一入口，核对子任务、所属 Hook 与活动执行清理，结果写入 `hook-service-cancel-report.json`。这会调用一次真实模型；不用于生产配置，也不作为纯界面检查重复执行。
+
+后台 Hooks 使用 `npm run native:check-async-hooks`：30 项相关检查运行实际命令进程组、计算输入哈希的本机 HTTP 服务，并回读真实运行记录；不调用模型。加 `-- --live-agent` 使用原有模型与预算，完成两阶段素材报告、独立 `prompt`／只读 `agent` 校验、实际退出码 2 唤醒，以及后台运行期间的新要求，共 41 项并由 Node 独立核对文件。两次报告写入都必须经过原有审批。检查隔离目录、作用域、重复触发、恢复、取消、超时、配置变更和输入／转录清理；不把本机 HTTP 证据算成公网服务覆盖。
+
+加 `--hold-ui` 可观察实际后台进度与日志；真实模型模式先在 `ui-background-live` 阶段等待目录中的 `release-background-ui`，最终在 `ui-ready` 等待 `finish-ui`。非模型模式的界面辅助命令实际运行 180 秒，超过后按真实超时处理，不能把事后记录当成运行中观察。日志窗口应在保持打开时随真实状态与耗时更新。验收只复制公开素材，生产设置、历史、原任务、自动化／模型／MCP／Hooks 配置九项均做前后哈希比对。
 
 `npm run prepare:portrait` 从仓库内原图与已保存的透明度引导离线重建素材，不调用生成服务。旧模型处理脚本需要被忽略的历史原件，不能视为全新克隆后的默认流程。
 
@@ -54,13 +75,25 @@ npm run native:open
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
 | Agent Git 状态、审阅、提交和工作树 | `npm run native:check-git`；独立公开仓库和已配置真实模型，实际核对提交、其他暂存内容、Hook 与工作树，不访问生产仓库 |
+| Git 改动来源、逐文件暂存及可撤销恢复 | `npm run native:check-git-review -- --hold-ui`；真实本机 Git 仓库、索引、提交、分支与系统废纸篓，独立回读文件和检查点；不调用模型。界面观察后写入输出目录的 `finish-ui` 结束保持 |
+| 暂存版本提交、并排差异与来源统计 | `npm run native:check-git-review-flow`；实际暂存／工作区分层、选定文件提交、原索引字节、Hook、签名失败、修订变化、二进制、行号与长行布局。加 `-- --live-agent --hold-ui` 保持已保存模型预算跑真实审批，并在原生窗口完成暂存提交与推送到独立本机裸仓库；完成后写入 `finish-ui`。全程不提交或推送用户项目 |
+| 工作树管理、回收与恢复 | `npm run native:check-worktrees`；独立真实 Git 仓库核对文件／索引字节、实际 GC 后暂存对象、忽略及未跟踪内容、链接、任务归档、锁定、项目变化、原分支及恢复分支。加 `-- --live-agent` 使用已保存预算执行真实模型检查、回收、恢复和报告回读；加 `--hold-ui` 后在实际窗口完成一次回收／恢复，再写入输出目录的 `finish-ui`。不清理用户项目 |
+| Git 推送与提交并推送 | `npm run native:check-git-push`；实际 TCP Git 服务与独立裸仓库，核对提交快照、远端变化、精确引用更新、项目／接收端 Hook、取消和超时结果。加 `-- --live-agent --probe-ssh --hold-ui` 使用已保存模型预算跑审批与远端回读、沿用现有 SSH 身份只读连接 GitHub，并保留窗口验收提交并推送；不向项目 GitHub 远端发布。界面完成后写入输出目录 `finish-ui` |
 | 项目检索与 Repo Wiki | `npm run native:check-index`；实际 SQLite、公开退款规则和已配置真实模型，核对增量更新、业务回答、Wiki 生成、跨任务引用及读写范围 |
 | 文档解析与附件存储 | `npm run native:check-documents`；需要测试用 Python 的 python-docx 1.2.0、openpyxl 3.1.5、python-pptx 1.0.2；可用 `BLUEFATFISH_DOCUMENT_PYTHON` 指定解释器。这些库仅创建/回读公开测试文件，不进入应用，也不验证 AI 对话效果 |
 | 附件连续对话后端 | 在上述检查后加 `-- --live-attachments`，使用已配置真实模型读取三类 Office 文件、执行中追加、回答提问并保护未发送草稿；视觉和原生输入界面单独验收 |
 | 附件界面与真实视觉 | 文档检查加 `-- --attachment-ui --live-visuals`；原生导入、切换任务、窄窗口、QuickLook/文字预览，以及真实模型读取两张不同布局的无字图形。仅公开夹具，不开启麦克风或 TTS；当前模型须已声明视觉能力 |
+| 原生浏览器 | `npm run native:check-browser`；真实公开 Qoder 文档导航、本项目实际 Vite 开发预览、控件状态、任务隔离、页面引用冲突、停止和正常/窄窗口。测试配置放系统临时目录，再归档到 `evidence/agent/`，避免新签名应用因外置盘权限阻塞启动。不会调用模型 |
+| 浏览器真实 Agent | 上述检查加 `-- --live-agent`；使用应用已保存的真实模型，在逐次确认模式下打开本机预览、点击棋盘背景、重新读取并独立检查实际开关状态。没有模型配置时明确失败；不使用模拟回复，不开启麦克风或 TTS |
+| 多标签与公开表单 Agent | 浏览器检查加 `-- --extended --live-agent`；按应用已保存的上下文与回复预算，使用真实模型填写、选择并提交 Calculator.net 公开计算器演示数字，独立核算网站结果，再切换保留的本机预览标签。原生部分同时检查跨标签引用、关闭、网站数据共享与任务隔离；不登录或提交其他表单 |
+| 浏览器截图与标注视觉 | 浏览器检查加 `-- --visual --live-agent`；需解锁并配置视觉模型，保持已保存预算。真实模型读取本项目实际页面截图，再分别识别同一页面上两处不同红框按钮；答案独立取自实际 DOM。核对本应用窗口裁切、其他窗口排除、录屏权限前后状态、来源/分支保留、未发送草稿隔离和正常/窄标注窗口 |
+| 独立图片/PDF 视觉 | 构建后以 `--check <新建临时目录> --live-agent --live-visuals` 启动应用，不加 `--document-check`，可直接复用两张无字 PNG/PDF 的真实模型验收，不依赖 Office 夹具库；此项使用单独的 32768／2048 验证预算，不代表浏览器默认小预算 |
+| Skills 与命令 | `npm run native:check-extensions` 检查实际 ZIP 导入、目录与任务边界、命令展开、启停持久化、编辑冲突、资源分支和原生界面；加 `-- --live-agent` 使用保存的真实模型与原有预算，调用导入脚本为本项目现有角色图片、来源文件、样式文件生成清单，再用自定义命令生成交接。Node 独立核对实际文件大小和 SHA256；不联网、不改原素材、不调用麦克风或 TTS |
 | README／Git 管理 | 检查相对链接、暂存内容与 `git diff --cached --check` 即可 |
 
-浏览器检查使用本机 Google Chrome，运行前需安装该浏览器。脚本输出写入被忽略的 `evidence/`。不默认运行全部历史脚本或 GitHub Actions。
+原生浏览器检查使用系统 WebKit；网页角色的自动化检查使用本机 Google Chrome。脚本输出写入被忽略的 `evidence/`。不默认运行全部历史脚本或 GitHub Actions。
+
+页面截图在 macOS 14.4 及以上使用 `SCShareableContent.currentProcess`，匹配本进程拥有的具体浏览器窗口，再通过单窗口 `SCScreenshotManager` 捕获与裁切。模型只提供任务内标签编号，不能选择其他应用或窗口。软件快照仅用于 macOS 14.0—14.3，并向用户和模型说明 GPU 内容可能缺失。系统锁屏会暂停网页绘制，截图前后均检查锁屏状态，失败时不保存或发送空白图。
 
 ## v0.6.0 的实际验证范围
 
@@ -137,3 +170,14 @@ git commit -m "feat: add screen companion reactions"
 按功能拆提交，文档用 `docs:`，修复用 `fix:`，新增行为用 `feat:`。使用 `git add` 的明确路径，提交前检查 `git diff --cached --stat`，避免把本地记录或下载缓存带入仓库。
 
 `.gitignore` 排除构建、测试输出、环境变量、证书、服务配置与旧模型；当前运行所需的少量二进制素材直接跟踪，不引入 Git LFS 依赖。未配置远程仓库，也未上传任何内容。
+
+
+角色扩展与逐工具权限验证：`npm run native:check-agent-scopes -- --live-agent`。复用 `native:check-mcp` 已安装的官方 filesystem 服务；仅用独立临时项目的公开素材和应用中保存的模型配置，凭据不落到报告。`--hold-ui` 保留实际配置窗口；不传 `--live-agent` 时仅运行原生范围和实际 MCP/文件检查。`--facts-source <真实旧任务JSON>` 用于检查历史记录整理后实际协议、数值和完整哈希的保留；不得提供模拟模型回复。
+
+本机团队与执行者选择验证：`npm run native:check-agent-teams -- --live-agent --hold-ui`。独立临时项目使用公开的 source.json 与 character.png，真实主任务委派团队，负责人让两个成员分别读取来源与执行文件校验，再写出并回读实际报告；Node 独立核对五字段、输入文件哈希和生产配置哈希。不传 `--live-agent` 只运行与本次修改相关的原生配置、任务草稿/附件和权限范围检查；不产生替代模型回复。`--hold-ui` 保留团队窗口供实际操作验收。
+
+本机自动化验证：`npm run native:check-automations -- --live-agent --hold-ui`。原生部分覆盖时区和夏令时、真实单次定时触发与暂停、文件锁、项目失效失败、权限、系统实际防休眠断言及分页记录。真实模型由计划启动所选 Agent，再在同一任务中执行第二轮报告，独立核对计数和来源字段；待审批时尝试重复运行与分支，不允许覆盖原运行记录。使用独立配置和公开素材，不使用替代模型回复，不申请或更改系统通知权限。仅本机检查时省略 `--live-agent`。
+
+MCP 资源与提示词验证：`npm run native:check-mcp-content -- --live-agent --hold-ui`。需要先从官方 npm 注册表将 `@modelcontextprotocol/server-everything@2.2.1` 安装到 `~/Library/Caches/bluefatfish-mcp-everything-real`。检查实际服务器的静态文档、URI 模板、带参数提示词、目录与订阅通知和图片内容；Node 独立核对安装包的文档字节与报告。真实模型使用保存的配置、原有上下文与输出预算，读取用户选用的提示词附件，经审批读取 MCP 文档、写入并回读五字段报告，再描述实际工具图片。默认不传 `--live-agent` 只做相关原生与真实 MCP 进程检查，不返回替代模型回复。配置与公开输入哈希需保持一致。
+
+文档流程已有相同生产代码的实际完成证据时，可加 `--image-only` 仅复验图片模型流程，仍执行相关实际 MCP 原生检查。此模式不产生文档通过声明，需保留并单独核对先前真实文档结果及源码差异。

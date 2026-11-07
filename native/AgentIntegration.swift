@@ -3,13 +3,21 @@ import AppKit
 @MainActor extension AppDelegate {
     func ensureAgent() {
         guard agentStore == nil else { return }
-        let tasks = AgentStore(directory: store.directory, legacy: store.messages)
+        let extensionHome = checkDirectory != nil && ["--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
+        let mcpKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.mcp.check." + AgentFiles.hash(Data($0.path.utf8))) }
+        let hookKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.hooks.check." + AgentFiles.hash(Data($0.path.utf8))) }
+        let tasks = AgentStore(directory: store.directory, legacy: store.messages, extensionHome: extensionHome, mcpKeychain: mcpKeychain, hookKeychain: hookKeychain)
         let keychain = checkDirectory != nil && CommandLine.arguments.contains("--live-agent") ? PetKeychain(service: "com.xjs.bluefatfish.credentials") : store.keychain
         let runtime = AgentRuntime(store: tasks, keychain: keychain) { [weak self] in self?.store.preferences ?? PetPreferences() }
         agentStore = tasks; agentRuntime = runtime
+        _ = tasks.mcp.observeContent { [weak self] in self?.control.scheduleRender() }
+        tasks.browser.onDraftCapture = { [weak self] id, shot, marks, note in
+            guard let self else { throw PetError("任务窗口已关闭") }
+            try await self.control.attachBrowserCapture(shot, marks: marks, note: note, taskID: id)
+        }
         runtime.onChange = { [weak self] id in
             guard let self else { return }
-            self.control.scheduleRender(); self.refreshVoiceBusy()
+            self.control.scheduleRender(); self.control.refreshAutomationBadge(); self.refreshVoiceBusy()
             self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
@@ -27,9 +35,15 @@ import AppKit
                 }
             } else { self.completeAgentResponse(id: id, text: text) }
         }
+        tasks.automations.onNotice = { [weak self] run in
+            guard let self, !self.closing else { return }; self.control.refreshAutomationBadge()
+            if self.checkDirectory == nil { self.automationNotifications.post(run) }
+        }
+        automationNotifications.onOpen = { [weak self] id in self?.control.show(tab: "chat"); self?.control.showAgentTask(id) }
+        if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime) }
     }
     private func completeAgentResponse(id: String, text: String) {
-        guard agentStore?.selectedID == id, !text.isEmpty else { return }
+        guard agentStore?.selectedID == id, agentStore?.task(id)?.automation == nil, !text.isEmpty else { return }
         showBubble(String(text.prefix(320)))
         if store.preferences.voiceEnabled { synthesize(text, preferences: store.preferences) }
     }
