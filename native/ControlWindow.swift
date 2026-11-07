@@ -295,7 +295,10 @@ final class FormDocumentView: NSView {
         inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
         inspectorRule.wantsLayer = true; inspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
         NSLayoutConstraint.activate([conversation.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversation.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), conversation.topAnchor.constraint(equalTo: chat.topAnchor), conversation.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
-        workbenchInspector.onOpen = { [weak self] section, value in self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+        workbenchInspector.onOpen = { [weak self] section, value in
+            if value.hasPrefix("canvas://"), let id = self?.companion?.agentStore?.selectedID { self?.openCanvasReference(value, taskID: id) }
+            else { self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+        }
         workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
@@ -357,7 +360,7 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = companion?.agentStore?.selected else { return }
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
-        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
+        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
         let target: CGFloat = showInspector ? 281 : 0
         sidebarWidth.constant = width < 900 ? 218 : 231
@@ -1319,7 +1322,7 @@ final class FormDocumentView: NSView {
         browserButton.isEnabled = !managed
         resumeButton.isHidden = managed || running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
         resultsButton.title = ""; resultsButton.imagePosition = .imageOnly; resultsButton.toolTip = task.plan.isEmpty ? "任务记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
-        resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !task.plan.isEmpty
+        resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.plan.isEmpty
         renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
         composer.isEditable = !managed; attachmentButton.isEnabled = !managed
         let queueCount = task.queuedCount
@@ -1336,7 +1339,7 @@ final class FormDocumentView: NSView {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
         }
-        if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 } }
+        if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash } }
         if ids != renderedIDs {
             messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
             var next: [String: ChatMessageRow] = [:], nextTools: [String: AgentToolRow] = [:]
@@ -1358,6 +1361,11 @@ final class FormDocumentView: NSView {
                     row.onOpen = { [weak self] section, value in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
+                for canvas in (task.canvases ?? []).prefix(4) {
+                    let row = AgentInspectorFileButton(title: canvas.title, value: canvas.reference, section: 1, symbol: "rectangle.3.group", inline: true)
+                    row.onOpen = { [weak self] _, value in self?.openCanvasReference(value, taskID: task.id) }
+                    messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                }
             }
             messageRows = next; toolRows = nextTools; renderedIDs = ids
         }
@@ -1371,7 +1379,7 @@ final class FormDocumentView: NSView {
                 var visibleCall = call
                 if call.name == "delegate_task", let child = (events[call.id]?.childTaskID).flatMap({ tasks.task($0) }) { visibleCall.displayName = "委派 · " + (child.team?.team.name ?? child.agent?.profile.name ?? child.title) }
                 toolRows[call.id]?.update(call: visibleCall, event: events[call.id])
-                let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil || $0.desktopCapture != nil })
+                let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil || $0.desktopCapture != nil || $0.canvasCapture != nil })
                 toolRows[call.id]?.setCapture(image) { [weak self] in if let image { self?.openAttachment(taskID: owner, id: image.id) } }
                 if let childID = events[call.id]?.childTaskID, let child = tasks.task(childID) { toolRows[call.id]?.setSubtask(child) { [weak self] in self?.selectAgentTask(childID) } }
             }
@@ -1462,9 +1470,16 @@ final class FormDocumentView: NSView {
         } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
     }
     func attachBrowserCapture(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
+        try await attachTaskCapture(taskID: taskID, note: note) { tasks in _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks) }
+    }
+    func attachCanvasCapture(_ shot: AgentCanvasShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
+        let context = "画布「" + shot.capture.title + "」的批注（源码版本 " + String(shot.capture.sourceHash.prefix(12)) + "）：" + note
+        try await attachTaskCapture(taskID: taskID, note: context) { tasks in _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks) }
+    }
+    private func attachTaskCapture(taskID: String, note: String, importing: (AgentStore) async throws -> Void) async throws {
         guard let tasks = companion?.agentStore, tasks.task(taskID) != nil else { throw PetError("任务不存在") }
         saveAgentDraft()
-        _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks)
+        try await importing(tasks)
         defer { renderMessages() }
         try Task.checkCancellation()
         // Preserve edits made in either composer while the image was imported.
@@ -1479,6 +1494,10 @@ final class FormDocumentView: NSView {
         if displayedTask == taskID { composer.string = tasks.task(taskID)?.draft ?? ""; composer.needsDisplay = true }
         else { selectAgentTask(taskID) }
         show(tab: "chat"); window?.makeFirstResponder(composer)
+    }
+    private func openCanvasReference(_ value: String, taskID: String) {
+        guard let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }), let tasks = companion?.agentStore else { return }
+        Task { @MainActor [weak self] in do { _ = try await tasks.canvases.show(id, taskID: taskID) } catch { self?.setStatus(error.localizedDescription, error: true) } }
     }
 }
 

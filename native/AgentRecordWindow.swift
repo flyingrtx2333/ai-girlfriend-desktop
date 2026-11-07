@@ -50,7 +50,7 @@ import AppKit
         switch sections.selectedSegment {
         case 0:
             items = []; text.string = task.plan.enumerated().map { index, step in "\(step.status == "completed" ? "✓" : step.status == "in_progress" ? "◉" : "○") \(index + 1). \(step.title)" }.joined(separator: "\n\n")
-        case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) }
+        case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) } + (task.canvases ?? []).map { ($0.title, $0.reference) }
         case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
         case 4:
@@ -92,8 +92,11 @@ import AppKit
         }
         load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""
         text.undoManager?.removeAllActions()
-        save.isHidden = true; undo.isHidden = true; open.isHidden = true
+        save.isHidden = true; undo.isHidden = true; open.isHidden = true; open.title = "打开"
         do {
+            if sections.selectedSegment == 1, let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
+                let canvas = try store.canvases.source(id, taskID: taskID); text.string = canvas.code; open.isHidden = false; open.title = "打开画布"; state.stringValue = canvas.record.title; return
+            }
             if sections.selectedSegment == 4 {
                 let events = value == "all-logs" ? task.events : task.events.filter { $0.id == value }
                 text.string = events.map { event in
@@ -147,6 +150,11 @@ import AppKit
     }
     @objc private func openItem() {
         guard let value = selection else { return }
+        if let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
+            load = Task { [weak self] in
+                guard let self else { return }; do { _ = try await store.canvases.show(id, taskID: taskID) } catch { state.stringValue = error.localizedDescription }
+            }; return
+        }
         if sections.selectedSegment == 2 {
             if let url = URL(string: value), url.scheme == "attachment", let host = url.host, let id = UUID(uuidString: host)?.uuidString {
                 do {

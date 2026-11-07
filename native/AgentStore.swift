@@ -13,6 +13,7 @@ import Foundation
     let worktreeRetention: AgentWorktreeRetention
     let desktop: AgentDesktop
     lazy var projectChanges = AgentProjectChanges(store: self)
+    lazy var canvases = AgentCanvas(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
@@ -65,7 +66,7 @@ import Foundation
     }
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
-        value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []
+        value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []; value.canvases = nil
         value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.queuedMessages = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
         value.hookContexts = nil; value.hookRejectedAnswers = nil
         value.hookPromptIDs = nil; value.hookContextIDs = nil
@@ -124,7 +125,7 @@ import Foundation
         let agentScopeChanged = previous.agent?.profile.id != value.agent?.profile.id || previous.agent?.ownerID != value.agent?.ownerID || previous.agent?.readOnly != value.agent?.readOnly || previous.agent?.network != value.agent?.network || previous.agent?.permissionCeiling != value.agent?.permissionCeiling
         let scheduleChanged = previous.automation?.runID != value.automation?.runID || previous.automation?.readOnly != value.automation?.readOnly || previous.automation?.network != value.automation?.network || previous.team?.team.id != value.team?.team.id
         if coreScopeChanged || agentScopeChanged || scheduleChanged { hooks.cancel(id) }
-        if value.archived { browser.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id) }
+        if value.archived { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id) }
         if persist {
             do { try save(id) } catch { writeError = error.localizedDescription; tasks[index].status = .failed }
         }
@@ -151,6 +152,7 @@ import Foundation
         original.agent?.ownerID = nil
         do {
             try AgentAttachments.copyForFork(store: self, sourceID: id, targetID: original.id, files: original.attachments ?? [])
+            try canvases.copyForFork(sourceID: id, targetID: original.id, records: original.canvases ?? [])
             try extensions.copyForFork(store: self, sourceID: id, task: &original)
         }
         catch { writeError = error.localizedDescription; return nil }

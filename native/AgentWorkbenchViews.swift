@@ -135,7 +135,7 @@ class AgentWorkbenchButton: NSButton {
     func update(_ task: AgentTaskRecord) {
         let hooks = Array(task.events.filter { $0.kind == "hook" }.suffix(8))
         let hookSignature = hooks.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.hook?.delivery ?? "")" }.joined()
-        let next = task.id + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature
+        let next = task.id + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + (task.canvases ?? []).map { $0.id + $0.hash }.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature
         guard signature != next else { return }; signature = next
         column.arrangedSubviews.forEach { column.removeArrangedSubview($0); $0.removeFromSuperview() }
         if !task.plan.isEmpty {
@@ -148,6 +148,7 @@ class AgentWorkbenchButton: NSButton {
             }; section("计划", views: rows)
         }
         if !task.artifacts.isEmpty { section("产物", views: task.artifacts.prefix(8).map { file(URL(fileURLWithPath: $0).lastPathComponent, value: $0, section: 1) }) }
+        if let canvases = task.canvases, !canvases.isEmpty { section("画布", views: canvases.prefix(8).map { file($0.title, value: $0.reference, section: 1, symbol: "rectangle.3.group") }) }
         var seen = Set<String>(), sources: [NSView] = []
         for value in task.sources {
             let url = URL(string: value), key = url?.isFileURL == true ? url!.path : value

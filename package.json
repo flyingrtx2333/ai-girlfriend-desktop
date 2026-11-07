@@ -58,11 +58,17 @@
     "native:check-worktree-creation": "node scripts/check-native-worktree-creation.mjs",
     "native:check-worktree-retention": "node scripts/check-native-worktree-retention.mjs",
     "native:check-file-changes": "node scripts/check-native-file-changes.mjs",
-    "native:check-desktop": "node scripts/check-native-desktop.mjs"
+    "native:check-desktop": "node scripts/check-native-desktop.mjs",
+    "build:canvas": "vite build --config vite.canvas.config.js",
+    "native:check-canvas": "node scripts/check-native-canvas.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.5",
     "@pixiv/three-vrm-animation": "^3.5.5",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "recharts": "3.10.1",
+    "sucrase": "3.35.1",
     "three": "^0.187.0"
   },
   "devDependencies": {

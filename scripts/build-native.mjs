@@ -21,6 +21,7 @@ const mcpBin = spawnSync('xcrun', [...mcpBuildArgs, '--show-bin-path'], { cwd: r
 if (mcpBin.status !== 0) throw new Error(mcpBin.stderr || 'MCP build path unavailable');
 const mcpProducts = mcpBin.stdout.trim();
 run('npm', ['run', 'build']);
+run('npm', ['run', 'build:canvas']);
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(contents, 'MacOS'), { recursive: true });
 await mkdir(path.join(resources, 'web'), { recursive: true });
@@ -59,7 +60,7 @@ await writeFile(path.join(contents, 'Info.plist'), `<?xml version="1.0" encoding
 </dict></plist>`);
 // Bundle the approved portrait only. No browser engine, node_modules, source
 // archives or unused multi-megabyte 3D models are shipped in the application.
-for (const item of ['index.html', 'assets', 'portraits/whale-maid', 'animations/airi', 'audio/whale-maid']) {
+for (const item of ['index.html', 'assets', 'canvas', 'portraits/whale-maid', 'animations/airi', 'audio/whale-maid']) {
   const target = path.join(resources, 'web', item); await mkdir(path.dirname(target), { recursive: true });
   await cp(path.join(root, 'dist', item), target, { recursive: true });
 }

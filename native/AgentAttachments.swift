@@ -10,6 +10,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     var browserCapture: AgentBrowserCapture?
     var mcpSource: AgentMCPAttachmentSource?
     var desktopCapture: AgentDesktopCapture?
+    var canvasCapture: AgentCanvasCapture?
 }
 
 @MainActor enum AgentAttachments {
@@ -34,7 +35,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         let root = try directory(store: store, taskID: taskID, id: id), files = try AgentFiles(workspace: root.path)
         return try JSONDecoder().decode(AgentDocumentContent.self, from: files.readData(root.appendingPathComponent("content.json"), maximum: 2_000_000))
     }
-    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil) async throws -> AgentAttachment {
+    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil) async throws -> AgentAttachment {
         guard let task = store.task(taskID), task.kind != "wiki", !task.archived else { throw PetError("当前任务不能添加附件") }
         guard !draft || (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
         if let error = store.writeError { throw PetError("任务尚未保存：" + error) }
@@ -71,7 +72,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }
             let modified = try local.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
             try fm.moveItem(at: stage, to: destination); moved = true
-            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, mcpSource: mcpSource, desktopCapture: desktopCapture)
+            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, mcpSource: mcpSource, desktopCapture: desktopCapture, canvasCapture: canvasCapture)
         }
         let file = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         do {

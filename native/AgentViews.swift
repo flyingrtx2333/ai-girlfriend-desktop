@@ -212,7 +212,7 @@ private final class AgentTaskTable: NSTableView {
         else if workbench, call.name == "read_mcp_resource" { visibleDetail = call.object["uri"] as? String ?? "" }
         else if workbench, AgentMCP.tools.contains(call.name) { visibleDetail = call.object["query"] as? String ?? "" }
         else { visibleDetail = AgentMCP.isModelToolName(call.name) ? (call.object["path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? detail : detail }
-        let browserNames = ["browser_open": "打开网页", "browser_read": "读取页面", "browser_action": "网页操作", "browser_close": "关闭浏览器", "browser_tabs": "浏览器标签页", "browser_screenshot": "截取页面", "desktop_status": "电脑操作状态", "desktop_windows": "查找窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取窗口", "desktop_screenshot": "截取窗口", "desktop_action": "窗口操作", "desktop_disconnect": "断开窗口", "load_tools": "启用工具"]
+        let browserNames = ["browser_open": "打开网页", "browser_read": "读取页面", "browser_action": "网页操作", "browser_close": "关闭浏览器", "browser_tabs": "浏览器标签页", "browser_screenshot": "截取页面", "desktop_status": "电脑操作状态", "desktop_windows": "查找窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取窗口", "desktop_screenshot": "截取窗口", "desktop_action": "窗口操作", "desktop_disconnect": "断开窗口", "canvas_create": "生成画布", "canvas_read": "读取画布", "canvas_update": "更新画布", "canvas_edit": "编辑画布", "canvas_restore": "恢复画布版本", "canvas_inspect": "核对画布", "canvas_screenshot": "截取画布", "canvas_list": "任务画布", "load_tools": "启用工具"]
         button.title = (expanded ? "⌄ " : "› ") + (call.displayName ?? names[call.name] ?? browserNames[call.name] ?? call.name) + "  " + String(visibleDetail.prefix(85))
         button.cell?.lineBreakMode = .byTruncatingTail
         let content = (event?.detail ?? AgentRuntime.description(call))
