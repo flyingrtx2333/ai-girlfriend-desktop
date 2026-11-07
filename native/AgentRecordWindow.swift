@@ -66,9 +66,11 @@ import AppKit
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
-    func refreshLiveHooks(_ id: String) {
-        guard id == taskID, window?.isVisible == true, sections.selectedSegment == 4, !dirty, let task = store.task(taskID) else { return }
-        let next = task.events.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.detail.count)|\($0.hook?.delivery ?? "")" }.joined()
+    func refreshLiveRecords(_ id: String) {
+        guard id == taskID, window?.isVisible == true, [3, 4].contains(sections.selectedSegment), !dirty, let task = store.task(taskID) else { return }
+        let next = sections.selectedSegment == 3
+            ? task.changes.map { "\($0.id)|\($0.afterHash ?? "")|\($0.afterKind ?? "")|\($0.restoredAt?.description ?? "")" }.joined() + task.status.rawValue + (task.pendingFileCapture?.id ?? "")
+            : task.events.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.detail.count)|\($0.hook?.delivery ?? "")" }.joined()
         guard next != logSignature else { return }; logSignature = next
         let previous = selection, clip = text.enclosingScrollView?.contentView, origin = text.enclosingScrollView?.contentView.bounds.origin
         refresh()
@@ -106,7 +108,8 @@ import AppKit
             if sections.selectedSegment == 2 { text.string = value; open.isHidden = false; return }
             if sections.selectedSegment == 3 {
                 guard let change = task.changes.first(where: { $0.id == value }) else { return }
-                undo.isHidden = change.restoredAt != nil; undo.isEnabled = task.status != .running; text.string = "读取差异…"
+                undo.isHidden = change.restoredAt != nil; undo.isEnabled = task.status != .running && task.pendingFileCapture == nil && change.reviewOnly != true && change.afterState?.kind != "directory"
+                state.stringValue = (change.origin ?? "") + (change.reviewOnly == true ? " · 并行操作，需核对实际文件" : ""); text.string = "读取差异…"
                 load = Task { [weak self] in
                     guard let self else { return }
                     do { let diff = try await AgentChanges.diff(change, taskID: taskID, store: store); guard !Task.isCancelled else { return }; text.string = diff }

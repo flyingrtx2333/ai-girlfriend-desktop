@@ -11,6 +11,7 @@ import Foundation
     let automations: AgentAutomations
     let models: AgentTaskModels
     let worktreeRetention: AgentWorktreeRetention
+    lazy var projectChanges = AgentProjectChanges(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
@@ -75,7 +76,7 @@ import Foundation
         if let cached = cache[id] { return cached }
         guard UUID(uuidString: id) != nil, let data = try? Data(contentsOf: directory.appendingPathComponent(id + ".json")),
               var task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data), task.id == id else { return nil }
-        let interrupted = !hooks.isRunning(id) && (task.status == .running || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
+        let interrupted = !hooks.isRunning(id) && (task.status == .running || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
         if interrupted {
@@ -86,6 +87,13 @@ import Foundation
         return task
     }
     private static func recover(_ task: inout AgentTaskRecord) {
+        if let capture = task.pendingFileCapture {
+            let warning = "执行中断，文件归属尚未确认；请先在“未提交”中核对实际内容。执行前快照已保留：" + capture.manifest
+            task.events.append(AgentEvent(kind: "change", title: "变更记录中断", detail: warning, status: "stopped"))
+            if task.gitTurn?.id == capture.turnID { task.gitTurn?.warning = warning }
+            else { task.gitTurn = AgentGitTurn(id: capture.turnID, changes: [], warning: warning) }
+            task.pendingFileCapture = nil
+        }
         for i in task.events.indices where task.events[i].status == "running" && task.events[i].hook?.asynchronous == true {
             task.events[i].status = "stopped"; task.events[i].hook?.delivery = "interrupted"
             task.events[i].detail += "\n应用中断，后台结果未确认；未自动重放"
@@ -104,7 +112,7 @@ import Foundation
         task.events.append(AgentEvent(kind: "state", title: "应用中断，检查后可继续", detail: "未确认的操作不会自动重放。", status: "stopped"))
     }
     private func trimCache(keeping id: String) {
-        while cache.count > 4, let old = cache.keys.first(where: { $0 != id && $0 != selectedID && cache[$0]?.status != .running && !hooks.isRunning($0) }) { cache[old] = nil }
+        while cache.count > 4, let old = cache.keys.first(where: { $0 != id && $0 != selectedID && cache[$0]?.status != .running && cache[$0]?.pendingFileCapture == nil && !hooks.isRunning($0) }) { cache[old] = nil }
     }
     func update(_ id: String, persist: Bool = true, _ body: (inout AgentTaskRecord) -> Void) {
         guard let index = tasks.firstIndex(where: { $0.id == id }), var value = task(id) else { return }
@@ -120,7 +128,7 @@ import Foundation
         }
         if value.archived && !wasArchived { onArchive?(id) }
         let hookChanged = (previous.events.last?.hook != nil || value.events.last?.hook != nil) && (previous.events.last?.id != value.events.last?.id || previous.events.last?.status != value.events.last?.status)
-        if coreScopeChanged || previous.status != value.status || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
+        if coreScopeChanged || previous.status != value.status || previous.pendingFileCapture?.id != value.pendingFileCapture?.id || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
     }
     func save(_ id: String) throws {
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }
@@ -136,7 +144,7 @@ import Foundation
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
     @discardableResult func fork(_ id: String) -> String? {
-        guard var original = task(id), original.status != .running else { return nil }
+        guard var original = task(id), original.status != .running, original.pendingFileCapture == nil else { return nil }
         original.parentID = id; original.id = UUID().uuidString; original.title += " · 分支"
         original.agent?.ownerID = nil
         do {
@@ -148,7 +156,7 @@ import Foundation
         original.flushQueuedInputs()
         original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
         original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
-        original.recap = nil; original.gitTurn = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
+        original.recap = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
         original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
         original.hookRewakePromptID = nil; original.hookRewakeCount = nil
         for i in original.events.indices where original.events[i].status == "running" && original.events[i].hook?.asynchronous == true {

@@ -41,7 +41,7 @@ import AppKit
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
         sourcePopup.addItems(withTitles: AgentGitSource.allCases.map(\.title)); sourcePopup.selectItem(at: AgentGitSource.allCases.firstIndex(of: source)!)
         sourcePopup.target = self; sourcePopup.action = #selector(changeSource); sourcePopup.setAccessibilityLabel("Git 改动来源")
-        sourcePopup.item(at: 0)?.toolTip = "本轮文件工具的修改；终端和外部工具的改动请查看“未提交”。"
+        sourcePopup.item(at: 0)?.toolTip = "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。"
         revision.target = self; revision.action = #selector(refresh); revision.placeholderString = "提交或基准分支"; revision.setAccessibilityLabel("Git 比较修订"); revision.isHidden = true
         revision.widthAnchor.constraint(equalToConstant: 170).isActive = true
         statistics.font = .monospacedSystemFont(ofSize: 11, weight: .regular); statistics.textColor = .secondaryLabelColor
@@ -132,7 +132,7 @@ import AppKit
     @objc private func changeSource() {
         guard !busy, AgentGitSource.allCases.indices.contains(sourcePopup.indexOfSelectedItem) else { return }
         source = AgentGitSource.allCases[sourcePopup.indexOfSelectedItem]
-        sourcePopup.toolTip = source == .lastTurn ? "本轮文件工具的修改；终端和外部工具的改动请查看“未提交”。" : nil
+        sourcePopup.toolTip = source == .lastTurn ? "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。" : nil
         revision.isHidden = !source.usesRevision; revision.stringValue = source == .committed ? "HEAD" : ""
         lastResult = ""; refresh()
         if source == .branch { window?.makeFirstResponder(revision) }

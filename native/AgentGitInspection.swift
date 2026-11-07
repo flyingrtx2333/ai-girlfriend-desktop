@@ -1,6 +1,6 @@
 import Foundation
 
-struct AgentGitTurn: Codable { var id: String; var changes: [AgentChange] }
+struct AgentGitTurn: Codable { var id: String; var changes: [AgentChange]; var warning: String? = nil }
 enum AgentGitSource: String, CaseIterable, Codable {
     case lastTurn, uncommitted, unstaged, staged, committed, branch
     var title: String { [.lastTurn: "本轮修改", .uncommitted: "未提交", .unstaged: "未暂存", .staged: "已暂存", .committed: "已提交", .branch: "分支"][self]! }
@@ -38,7 +38,9 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         if source == .uncommitted { return try await status().changes }
         if source == .lastTurn {
             guard let task = store.task(taskID), let turn = task.gitTurn, turn.id == (task.messages.last(where: \.isHumanInput)?.id ?? task.id) else { return [] }
-            return try turn.changes.filter { $0.afterHash != nil }.map { AgentGitChange(status: $0.existed ? "M" : "A", path: try paths([$0.path])[0]) }
+            if let warning = turn.warning { throw PetError(warning) }
+            guard !turn.changes.contains(where: { $0.reviewOnly == true }) else { throw PetError("执行期间有其他任务操作此项目，请改选“未提交”核对实际文件") }
+            return try turn.changes.filter { $0.afterState != nil && $0.restoredAt == nil }.map { AgentGitChange(status: $0.changeStatus, path: try paths([$0.path], allowRecordedTypes: true)[0]) }
         }
         let range = try await diffArguments(source, revision: revision)
         let raw = try await output(range.arguments + ["--no-renames", "--name-status", "-z", "--"])
@@ -49,7 +51,7 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         return changes
     }
     func inspect(source: AgentGitSource, revision: String, requested: [String]) async throws -> AgentGitInspection {
-        let state = try await status(), selected = try paths(requested)
+        let state = try await status(), selected = try paths(requested, allowRecordedTypes: source == .lastTurn)
         let changes = try await inspectionChanges(source: source, revision: revision)
         guard selected.allSatisfy({ path in changes.contains { $0.path == path || $0.previousPath == path } }) else { throw PetError("所选文件或来源已变化，请刷新后重新审阅") }
         let options = ["--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--binary"]
@@ -57,33 +59,13 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         if source == .lastTurn {
             guard let turn = store.task(taskID)?.gitTurn else { throw PetError("本轮尚无文件修改记录") }
             identity = turn.id
-            let backups = try AgentFiles(workspace: store.backupDirectory(taskID).path)
-            let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
             for path in selected {
-                guard let change = turn.changes.first(where: { $0.path == files.root.appendingPathComponent(path).path }), let expected = change.afterHash else { throw PetError("本轮检查点不存在") }
-                let current = try files.readData(files.resolve(path))
-                guard AgentFiles.hash(current) == expected else { throw PetError("文件在本轮修改后又有变化，请改选“未提交”查看当前内容") }
-                let before: Data
-                if change.existed {
-                    guard let backup = change.backup else { throw PetError("本轮检查点不存在") }
-                    before = try backups.readData(backups.resolve(backup))
-                    guard AgentFiles.hash(before) == change.beforeHash else { throw PetError("本轮检查点校验失败") }
-                } else { before = Data() }
-                let left = scratch.appendingPathComponent("review-before-" + change.id), right = scratch.appendingPathComponent("review-after-" + change.id)
-                try before.write(to: left, options: .atomic); try current.write(to: right, options: .atomic)
-                let result = try await run(["diff", "--no-index"] + options + ["--", left.path, right.path])
+                guard let change = turn.changes.first(where: { $0.path == files.root.appendingPathComponent(path).path }), change.afterState != nil else { throw PetError("本轮检查点不存在") }
+                let comparison = try AgentChanges.comparison(change, taskID: taskID, store: store, strict: true)
+                defer { try? FileManager.default.removeItem(at: comparison.directory) }
+                let result = try await run(["diff", "--no-index"] + options + ["--", comparison.left.path, comparison.right.path], readRoots: [comparison.directory])
                 guard [0, 1].contains(result.exitCode ?? -1), result.truncated != true else { throw PetError("本轮差异较大或不可读取，请选择较小的文件") }
-                func label(_ value: String) -> String { value.rangeOfCharacter(from: .whitespacesAndNewlines) != nil || value.contains("\"") || value.contains("\\") ? value.debugDescription : value }
-                let old = label("a/" + path), new = label("b/" + path)
-                var header = true
-                diff += (result.stdout ?? "").components(separatedBy: "\n").map { line in
-                    if line.hasPrefix("@@") || line == "GIT binary patch" { header = false }
-                    guard header else { return line }
-                    if line.hasPrefix("diff --git ") { return "diff --git " + old + " " + new }
-                    if line.hasPrefix("--- ") { return "--- " + old }
-                    if line.hasPrefix("+++ ") { return "+++ " + new }
-                    return line
-                }.joined(separator: "\n"); fingerprint += change.id + expected
+                diff += AgentChanges.labels(result.stdout ?? "", path: path); fingerprint += change.id + comparison.fingerprint
             }
         } else if source == .uncommitted {
             let value = try await self.diff(selected); diff = value.diff
@@ -106,7 +88,7 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
         }
         if !source.usesRevision {
             fingerprint += try await output(["ls-files", "--stage", "-z", "--"] + selected)
-            for path in selected where source != .staged {
+            for path in selected where source != .staged && source != .lastTurn {
                 let url = try files.resolve(path)
                 if FileManager.default.fileExists(atPath: url.path) { fingerprint += path + AgentFiles.hash(try files.readData(url)) }
                 else { fingerprint += path + "<deleted>" }

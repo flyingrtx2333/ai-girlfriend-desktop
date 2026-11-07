@@ -272,9 +272,9 @@ import Foundation
         guard let task = store.task(id) else { return [] }
         return Set(([preferences().model, task.model, task.modelOverride ?? "", task.agent?.profile.model ?? ""] + store.models.models(preferences()).map(\.id) + (task.modelReceipts ?? []).map(\.requestedModel)).filter { AgentTaskModels.validID($0) }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
-    private func toolDefinitions(_ task: AgentTaskRecord, preferences: PetPreferences) throws -> [[String: Any]] {
+    func toolDefinitions(_ task: AgentTaskRecord, preferences: PetPreferences) throws -> [[String: Any]] {
         var definitions = AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.kind == "wiki" ? nil : task.toolGroups ?? [])
-        if task.kind != "wiki", task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 1 : 6) }
+        if task.kind != "wiki", task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6) }
         return try store.agents.filterDefinitions(definitions, task: task, store: store)
     }
     func contextEstimate(_ id: String) throws -> AgentContextSnapshot {

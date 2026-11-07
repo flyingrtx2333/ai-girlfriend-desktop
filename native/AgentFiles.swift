@@ -30,8 +30,16 @@ struct AgentFiles: Sendable {
                 || ["pem", "p12", "pfx", "key", "keychain-db"].contains((name as NSString).pathExtension)
         }
     }
-    private func parentDescriptor(_ url: URL, create: Bool) throws -> (Int32, String) {
-        let parts = relative(url).split(separator: "/").map(String.init)
+    func literalURL(_ path: String) throws -> URL {
+        guard !path.contains("\0"), path.utf8.count < 8192 else { throw PetError("文件路径无效") }
+        let raw = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)).standardizedFileURL
+        let candidate = raw.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(raw.lastPathComponent)
+        guard candidate.path.hasPrefix(root.path + "/") else { throw PetError("路径超出项目范围") }
+        return candidate
+    }
+    func parentDescriptor(_ url: URL, create: Bool) throws -> (Int32, String) {
+        let candidate = try literalURL(url.path)
+        let parts = String(candidate.path.dropFirst(root.path.count + 1)).split(separator: "/").map(String.init)
         guard let name = parts.last, name != ".", parts.allSatisfy({ $0 != ".." }) else { throw PetError("请选择项目中的文件") }
         var fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -46,6 +54,73 @@ struct AgentFiles: Sendable {
         }
         return (fd, name)
     }
+    static func signature(_ value: stat) -> String {
+        "\(value.st_dev):\(value.st_ino):\(value.st_mode):\(value.st_size):\(value.st_mtimespec.tv_sec):\(value.st_mtimespec.tv_nsec):\(value.st_ctimespec.tv_sec):\(value.st_ctimespec.tv_nsec)"
+    }
+    func entryMetadata(_ url: URL) throws -> (kind: String, permissions: Int?, signature: String) {
+        do {
+            let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
+            var info = stat()
+            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            let kind: String
+            switch info.st_mode & S_IFMT { case S_IFREG: kind = "file"; case S_IFLNK: kind = "link"; case S_IFDIR: kind = "directory"; default: kind = "special" }
+            return (kind, kind == "file" ? Int(info.st_mode & 0o7777) : nil, Self.signature(info))
+        } catch let error as POSIXError where error.code == .ENOENT { return ("missing", nil, "missing") }
+    }
+    private func streamFile(_ url: URL, copyingTo output: Int32? = nil) throws -> String {
+        let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
+        let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; defer { close(fd) }
+        var before = stat(); guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG else { throw PetError("不是普通文件") }
+        var digest = SHA256(), buffer = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            try Task.checkCancellation()
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            if count == 0 { break }
+            digest.update(data: Data(buffer.prefix(count)))
+            if let output {
+                try buffer.withUnsafeBytes { bytes in
+                    var offset = 0
+                    while offset < count {
+                        let written = Darwin.write(output, bytes.baseAddress!.advanced(by: offset), count - offset)
+                        if written < 0 && errno == EINTR { continue }
+                        guard written > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; offset += written
+                    }
+                }
+            }
+        }
+        var after = stat(); guard fstat(fd, &after) == 0, Self.signature(before) == Self.signature(after) else { throw PetError("读取期间文件已变化，请重新核对") }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+    func fileHash(_ url: URL) throws -> String { try streamFile(url) }
+    @discardableResult func copyFile(_ source: URL, from sourceFiles: AgentFiles, to url: URL, permissions: Int = 0o600, expectedHash: String? = nil, expectedTarget: String? = nil) throws -> String {
+        let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
+        let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; defer { close(fd); unlinkat(parent, temporary, 0) }
+        let hash = try sourceFiles.streamFile(source, copyingTo: fd)
+        guard expectedHash == nil || expectedHash == hash else { throw PetError("检查点校验失败") }
+        guard fchmod(fd, mode_t(permissions)) == 0, fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if let expectedTarget { guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") } }
+        guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return hash
+    }
+    func symbolicLink(_ url: URL) throws -> String {
+        let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
+        var bytes = [CChar](repeating: 0, count: 8192)
+        let count = readlinkat(parent, name, &bytes, bytes.count)
+        guard count >= 0, count < bytes.count else { throw PetError("符号链接不可读取") }
+        guard let value = String(data: Data(bytes.prefix(count).map { UInt8(bitPattern: $0) }), encoding: .utf8) else { throw PetError("符号链接不是 UTF-8 路径") }; return value
+    }
+    func writeSymbolicLink(_ value: String, to url: URL, expectedTarget: String) throws {
+        guard !value.contains("\0") else { throw PetError("符号链接无效") }
+        let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
+        let temporary = ".bluefatfish-\(UUID().uuidString).tmp"; defer { unlinkat(parent, temporary, 0) }
+        guard symlinkat(value, parent, temporary) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") }
+        guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    }
     func readData(_ url: URL, maximum: Int = 4_000_000) throws -> Data {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
         let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
@@ -58,7 +133,7 @@ struct AgentFiles: Sendable {
         }
         return data
     }
-    func writeData(_ data: Data, to url: URL, permissions: Int = 0o644) throws {
+    func writeData(_ data: Data, to url: URL, permissions: Int = 0o644, expectedTarget: String? = nil) throws {
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
         let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(permissions))
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
@@ -71,7 +146,9 @@ struct AgentFiles: Sendable {
                 guard count > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; offset += count
             }
         }
-        guard fsync(fd) == 0, renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard fchmod(fd, mode_t(permissions)) == 0, fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if let expectedTarget { guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") } }
+        guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
     func remove(_ url: URL) throws {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }

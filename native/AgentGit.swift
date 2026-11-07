@@ -57,10 +57,10 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel() }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil) async throws -> AgentToolResult {
+    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = []) async throws -> AgentToolResult {
         let process = AgentCommand(); command = process; defer { command = nil }
         let flags = [try Self.executablePath(), "--no-pager", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
-        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, environment: environment)
+        return try await process.run(command: (flags + args).map(Self.quote).joined(separator: " "), workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, readRoots: readRoots, environment: environment)
     }
     func output(_ args: [String]) async throws -> String {
         let result = try await run(args)
@@ -92,15 +92,16 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         }
         return AgentGitStatus(branch: branch.failed ? "分离状态" : (branch.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines), head: head.failed ? nil : (head.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines), changes: changes)
     }
-    func paths(_ requested: [String]) throws -> [String] {
+    func paths(_ requested: [String], allowRecordedTypes: Bool = false) throws -> [String] {
         guard !requested.isEmpty, requested.count <= 50 else { throw PetError("请选择 1 至 50 个文件") }
         return try Array(Set(requested.map { path in
-            let url = try files.resolve(path), value = files.relative(url)
+            let url = try allowRecordedTypes ? files.literalURL(path) : files.resolve(path)
+            let value = String(url.path.dropFirst(files.root.path.count + 1))
             let lexical = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : files.root.appendingPathComponent(path)).standardizedFileURL
             guard lexical.path == url.path else { throw PetError("Git 文件路径包含符号链接，请直接选择实际文件") }
             guard value != ".", value != ".git", !value.hasPrefix(".git/") else { throw PetError("不能把 Git 元数据当作项目文件") }
             var directory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue { throw PetError("请选择具体文件") }
+            if !allowRecordedTypes, FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue { throw PetError("请选择具体文件") }
             return value
         })).sorted()
     }

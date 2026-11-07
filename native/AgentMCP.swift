@@ -379,7 +379,7 @@ struct AgentMCPServer: Codable, Identifiable {
             return ["server_id": server.id, "name": server.name, "connection": session.token, "schemas_read": Array(session.schemaOrder.suffix(6))]
         }
         guard !rows.isEmpty, let data = try? JSONSerialization.data(withJSONObject: Array(rows.prefix(4)), options: [.sortedKeys, .withoutEscapingSlashes]) else { return "" }
-        return "\n[应用记录的本任务当前 MCP 连接；历史整理不改变此状态；已有 connection 直接用来查 schema/调用，无需重新连接]\n" + String(decoding: data, as: UTF8.self)
+        return "\n[应用记录的本任务当前 MCP 连接；历史整理不改变此状态。schemas_read 是已查看的目录，实际可调用函数以本轮工具列表为准；需要其他工具先用 list_mcp_tools 查询其原名。已有 connection 无需重新连接]\n" + String(decoding: data, as: UTF8.self)
     }
     func processID(_ id: String, owner: String) async -> Int32? { await sessions[key(owner, id)]?.client.processID() }
 }

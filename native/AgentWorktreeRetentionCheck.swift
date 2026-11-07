@@ -55,6 +55,16 @@ import AppKit
         await wait(0.5)
         checks["secondSchedulerCannotAcquireSameProfileLock"] = secondService.status.contains("另一个应用实例")
         secondService.stop()
+        let captureTools = AgentTools(store: tasks, taskID: active.taskID)
+        let captureCall = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: "{\"command\":\"printf actual-capture > capture-marker.txt; /bin/sleep 3\"}")
+        let captured = Task { try await captureTools.execute(captureCall) }
+        guard try await until(5, { tasks.task(active.taskID)?.pendingFileCapture != nil && fm.fileExists(atPath: activeURL.appendingPathComponent("capture-marker.txt").path) }) else { throw PetError("实际文件变更记录未开始") }
+        tasks.selectedID = local
+        await wait(2.3)
+        checks["actualFileCaptureProtectsUnselectedIdleCheckoutBeyondDeadline"] = fm.fileExists(atPath: active.workspace) && tasks.task(active.taskID)?.pendingFileCapture != nil
+        let captureResult = try await captured.value
+        checks["actualFileCaptureCompletesBeforeCheckoutBecomesEligibleAgain"] = !captureResult.failed && tasks.task(active.taskID)?.pendingFileCapture == nil && tasks.task(active.taskID)?.changes.contains { $0.path.hasSuffix("/capture-marker.txt") && $0.afterKind == "file" } == true
+        tasks.selectedID = active.taskID
         let operation = UUID(); service.setNativeOperation(operation, taskID: active.taskID, busy: true); tasks.selectedID = local
         let operationStarted = Date()
         let heldGit = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: activeURL, scratch: scratch, network: false, timeout: 10, readOnly: true, gitDirectory: helper.directory, protectedData: store.directory, arguments: ["-c", "alias.retention-hold=!/bin/sleep 3", "retention-hold"])

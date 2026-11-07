@@ -73,6 +73,11 @@ struct AgentChange: Codable, Identifiable {
     var beforeHash: String?
     var afterHash: String?
     var permissions: Int?
+    var beforeKind: String?
+    var afterKind: String?
+    var afterPermissions: Int?
+    var origin: String?
+    var reviewOnly: Bool?
     var restoredAt: Date?
     var created = Date()
 }
@@ -126,6 +131,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var gitReview: AgentGitReview?
     var worktreeOrigin: AgentWorktreeOrigin?
     var gitTurn: AgentGitTurn?
+    var pendingFileCapture: AgentFileCapture?
     var gitPushReview: AgentGitPushReview?
     var gitPushReceipt: AgentGitPushReceipt?
     var gitRemoteSnapshot: AgentGitRemoteSnapshot?

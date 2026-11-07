@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--file-change-check") { await runAgentProjectChangesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-creation-check") { await runAgentWorktreeCreationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-check") { await runAgentWorktreeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-review-check") { await runAgentGitReviewCheck(output); NSApp.terminate(nil); return }

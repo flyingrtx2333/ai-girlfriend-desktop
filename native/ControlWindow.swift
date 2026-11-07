@@ -1295,7 +1295,7 @@ final class FormDocumentView: NSView {
         guard let tasks = companion?.agentStore, let task = tasks.selected else { return }
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
-        recordWindow?.refreshLiveHooks(task.id)
+        recordWindow?.refreshLiveRecords(task.id)
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         taskSidebar.refresh(tasks.tasks, selected: task.id)

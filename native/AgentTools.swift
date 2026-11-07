@@ -230,6 +230,14 @@ import Foundation
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
         let call = try store.mcp.routedCall(call, owner: taskID) ?? call
+        if ["run_command", "call_mcp_tool", "git_commit", "git_push", "git_init"].contains(call.name), store.task(taskID)?.kind != "hook" {
+            let origin = call.name == "call_mcp_tool" ? "MCP 工具" : call.name == "run_command" ? "命令" : "Git 操作"
+            return try await store.projectChanges.observe(taskID: taskID, origin: origin) { try await self.executeCore(call, gitDirectory: gitDirectory) }
+        }
+        return try await executeCore(call, gitDirectory: gitDirectory)
+    }
+    private func executeCore(_ call: AgentToolCall, gitDirectory: String?) async throws -> AgentToolResult {
+        try Task.checkCancellation()
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
         task.permission = try store.agents.executionPermission(task, store: store)
         try checkHookTool(call, task: task)
@@ -447,36 +455,17 @@ import Foundation
                 content = text.replacingOccurrences(of: old, with: replacement)
             } else { content = try string("content") }
             guard content.utf8.count <= 2_000_000 else { throw PetError("写入内容过大") }
-            let turnID = task.messages.last(where: \.isHumanInput)?.id ?? task.id
-            if task.gitTurn?.id != turnID || task.gitTurn?.changes.contains(where: { $0.path == url.path }) != true {
-                var change = AgentChange(path: url.path, existed: existing, beforeHash: before.map(AgentFiles.hash))
-                change.permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? Int
-                if let before {
-                    let backup = try store.backupDirectory(taskID).appendingPathComponent(change.id)
-                    try before.write(to: backup, options: .atomic); change.backup = backup.path
-                }
-                store.update(taskID, persist: false) { record in
-                    if record.gitTurn?.id != turnID { record.gitTurn = AgentGitTurn(id: turnID, changes: []) }
-                    record.gitTurn?.changes.append(change)
-                }; try store.save(taskID)
+            return try await store.projectChanges.observe(taskID: taskID, origin: "文件工具", paths: [url.path]) {
+                try Task.checkCancellation()
+                guard let current = store.task(taskID), current.queuedCount == 0 else { throw PetError("用户已更新要求，此操作未执行") }
+                try store.agents.check(call, task: current, store: store)
+                let metadata = try files.entryMetadata(url)
+                if let before { guard metadata.kind == "file", try files.fileHash(url) == AgentFiles.hash(before) else { throw PetError("文件已变化，请重新读取后修改") } }
+                else { guard metadata.kind == "missing" else { throw PetError("文件已存在，请先重新读取") } }
+                let data = Data(content.utf8)
+                try files.writeData(data, to: url, permissions: metadata.permissions ?? 0o644, expectedTarget: metadata.signature)
+                return AgentToolResult(text: "已\(existing ? "更新" : "创建") \(files.relative(url))，\(data.count) 字节", artifacts: [url.path])
             }
-            if !task.changes.contains(where: { $0.path == url.path }) {
-                var change = AgentChange(path: url.path, existed: existing, beforeHash: before.map(AgentFiles.hash))
-                change.permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? Int
-                if let before {
-                    let backup = try store.backupDirectory(taskID).appendingPathComponent(change.id)
-                    try before.write(to: backup, options: .atomic); change.backup = backup.path
-                }
-                store.update(taskID, persist: false) { $0.changes.append(change) }; try store.save(taskID)
-            }
-            let permissions = (try? FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]) as? Int ?? 0o644
-            let data = Data(content.utf8); try files.writeData(data, to: url, permissions: permissions)
-            store.update(taskID) { record in
-                if let i = record.changes.firstIndex(where: { $0.path == url.path }) { record.changes[i].afterHash = AgentFiles.hash(data); record.changes[i].restoredAt = nil }
-                if let i = record.gitTurn?.changes.firstIndex(where: { $0.path == url.path }) { record.gitTurn?.changes[i].afterHash = AgentFiles.hash(data) }
-                if !record.artifacts.contains(url.path) { record.artifacts.append(url.path) }
-            }
-            return AgentToolResult(text: "已\(existing ? "更新" : "创建") \(files.relative(url))，\(data.count) 字节", artifacts: [url.path])
         case "run_command":
             let files = try AgentFiles(workspace: task.workspace), command = try string("command")
             guard !command.isEmpty, command.utf8.count <= 30_000 else { throw PetError("命令为空或过长") }

@@ -3,7 +3,7 @@ import AppKit
 @MainActor extension AppDelegate {
     func ensureAgent() {
         guard agentStore == nil else { return }
-        let extensionHome = checkDirectory != nil && ["--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
+        let extensionHome = checkDirectory != nil && ["--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
         let mcpKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.mcp.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let hookKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.hooks.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let tasks = AgentStore(directory: store.directory, legacy: store.messages, extensionHome: extensionHome, mcpKeychain: mcpKeychain, hookKeychain: hookKeychain)
@@ -21,6 +21,7 @@ import AppKit
             self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
+        tasks.projectChanges.onChange = { [weak runtime] id in runtime?.onChange?(id) }
         runtime.onComplete = { [weak self] id, text in
             guard let self else { return }
             if tasks.task(id)?.kind == "wiki" {
