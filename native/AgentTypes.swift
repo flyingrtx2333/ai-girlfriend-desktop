@@ -145,6 +145,13 @@ struct AgentTaskRecord: Codable, Identifiable {
     var canChooseExecutor: Bool {
         status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && kind != "wiki"
     }
+    var canChooseEnvironment: Bool {
+        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && kind != "wiki"
+    }
+    var workspaceDisplayName: String? {
+        if let origin = worktreeOrigin { return URL(fileURLWithPath: origin.root).lastPathComponent + " · 工作树" }
+        return workspace.map { URL(fileURLWithPath: $0).lastPathComponent }
+    }
     var inputTokens = 0, outputTokens = 0
     var created = Date(), updated = Date()
     var statusTitle: String {

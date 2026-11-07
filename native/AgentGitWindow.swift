@@ -9,6 +9,7 @@ import AppKit
     private let pushButton = NSButton(title: "推送…", target: nil, action: nil), commitPushButton = NSButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
     private var worktreeWindow: AgentWorktreeWindow?
+    private var creationWindow: AgentWorktreeCreationWindow?
     private let manageWorktrees = NSButton(title: "工作树…", target: nil, action: nil)
     private let sourcePopup = NSPopUpButton(), revision = NSTextField(string: "HEAD"), statistics = NSTextField(labelWithString: "")
     private let displayMode = NSSegmentedControl(labels: ["统一", "并排"], trackingMode: .selectOne, target: nil, action: nil), wrap = NSButton(checkboxWithTitle: "换行", target: nil, action: nil)
@@ -241,16 +242,10 @@ import AppKit
     }
     @objc private func createWorktree() {
         guard !busy, writable(), let git else { return }
-        let alert = NSAlert(); alert.messageText = "新建工作树"; alert.addButton(withTitle: "创建"); alert.addButton(withTitle: "取消")
-        let name = NSTextField(string: "agent/" + String(UUID().uuidString.lowercased().prefix(8))); name.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
-        alert.accessoryView = name; alert.window.initialFirstResponder = name
-        guard alert.runModal() == .alertFirstButtonReturn else { return }; setBusy(true); state.stringValue = "创建工作树…"
-        job = Task { [weak self] in
-            guard let self else { return }
-            do { let result = try await git.createWorktree(branch: name.stringValue); log("Git 工作树", result: result.branch + "\n" + result.workspace); onSelectTask(result.taskID); state.stringValue = "已创建 " + result.branch }
-            catch { log("工作树创建失败", result: error.localizedDescription, failed: true); state.stringValue = error.localizedDescription }
-            setBusy(false)
-        }
+        do {
+            let controller = try AgentWorktreeCreationWindow(store: store, taskID: taskID, directory: git.directory, onCreated: onSelectTask)
+            creationWindow = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
+        } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func openWorktrees() {
         do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }

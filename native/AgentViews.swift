@@ -107,7 +107,8 @@ private final class AgentTaskTable: NSTableView {
             return aSelected != bSelected ? aSelected : a.localizedCaseInsensitiveCompare(b) == .orderedAscending
         }
         for workspace in workspaces {
-            rows.append(.group(URL(fileURLWithPath: workspace).lastPathComponent, workspace))
+            let title = unpinned.first(where: { $0.workspace == workspace && $0.worktreeOrigin != nil })?.workspaceDisplayName ?? URL(fileURLWithPath: workspace).lastPathComponent
+            rows.append(.group(title, workspace))
             if !collapsed.contains(workspace) || visible.contains(where: { $0.id == selected && $0.workspace == workspace }) && !query.isEmpty { for task in unpinned where task.workspace == workspace { append(task) } }
         }
         let ungrouped = unpinned.filter { $0.workspace == nil }

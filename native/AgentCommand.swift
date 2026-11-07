@@ -14,19 +14,19 @@ final class AgentCommand: @unchecked Sendable {
 
     func cancel() { queue.sync { self.cancelled = true; if self.pid > 0 { kill(-self.pid, SIGKILL) } } }
     func snapshot() -> (running: Bool, output: String) { queue.sync { (self.pid > 0, String(decoding: self.output, as: UTF8.self)) } }
-    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil, inputFile: URL? = nil, readRoots: [URL] = [], writeRoots: [URL] = [], gitTransportAuth: Bool = false, environment: [String: String] = [:], arguments: [String]? = nil, shell: String? = nil, inheritEnvironment: Bool = false) async throws -> AgentToolResult {
+    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil, inputFile: URL? = nil, readRoots: [URL] = [], writeRoots: [URL] = [], protectedWrites: [URL] = [], gitTransportAuth: Bool = false, environment: [String: String] = [:], arguments: [String]? = nil, shell: String? = nil, inheritEnvironment: Bool = false) async throws -> AgentToolResult {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     self.continuation = continuation
                     self.maximumOutput = min(2_000_000, max(1000, maximumOutput))
-                    do { try self.launch(command: command, workspace: workspace, scratch: scratch, network: network, timeout: timeout, readOnly: readOnly, gitDirectory: gitDirectory, gitWrite: gitWrite, gitConfiguration: gitConfiguration, protectedData: protectedData, inputFile: inputFile, readRoots: readRoots, writeRoots: writeRoots, gitTransportAuth: gitTransportAuth, extraEnvironment: environment, arguments: arguments, shell: shell, inheritEnvironment: inheritEnvironment) }
+                    do { try self.launch(command: command, workspace: workspace, scratch: scratch, network: network, timeout: timeout, readOnly: readOnly, gitDirectory: gitDirectory, gitWrite: gitWrite, gitConfiguration: gitConfiguration, protectedData: protectedData, inputFile: inputFile, readRoots: readRoots, writeRoots: writeRoots, protectedWrites: protectedWrites, gitTransportAuth: gitTransportAuth, extraEnvironment: environment, arguments: arguments, shell: shell, inheritEnvironment: inheritEnvironment) }
                     catch { self.continuation = nil; continuation.resume(throwing: error) }
                 }
             }
         }, onCancel: { self.cancel() })
     }
-    private func launch(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool, gitDirectory: URL?, gitWrite: Bool, gitConfiguration: Bool, protectedData: URL?, inputFile: URL?, readRoots: [URL], writeRoots: [URL], gitTransportAuth: Bool, extraEnvironment: [String: String], arguments: [String]?, shell: String?, inheritEnvironment: Bool) throws {
+    private func launch(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool, gitDirectory: URL?, gitWrite: Bool, gitConfiguration: Bool, protectedData: URL?, inputFile: URL?, readRoots: [URL], writeRoots: [URL], protectedWrites: [URL], gitTransportAuth: Bool, extraEnvironment: [String: String], arguments: [String]?, shell: String?, inheritEnvironment: Bool) throws {
         if cancelled { throw CancellationError() }
         guard !command.contains("\0"), arguments?.contains(where: { $0.contains("\0") }) != true else { throw PetError("命令或参数不能包含空字符") }
         guard extraEnvironment.allSatisfy({ Self.validEnvironmentName($0.key) && !$0.value.contains("\0") && !Self.launcherEnvironment($0.key) }) else { throw PetError("环境变量名称无效或试图修改隔离启动器") }
@@ -47,6 +47,7 @@ final class AgentCommand: @unchecked Sendable {
         let gitConfig = gitConfiguration ? [".gitconfig", ".config/git/config", ".config/git/ignore"].map { "(literal \(quote(kernelPath(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent($0).path))))" }.joined(separator: " ") : ""
         let writes = ([scratchPath] + (readOnly ? [] : [workspacePath]) + writeRoots.map(\.path) + (gitWrite ? gitDirectory.map { [$0.path] } ?? [] : [])).map { "(subpath \(quote(kernelPath($0))))" }.joined(separator: " ")
         let protectedGit = gitWrite ? "" : "(deny file-write* (subpath \(quote(workspacePath + "/.git"))))"
+        let extraProtectedWrites = protectedWrites.map { "(deny file-write* (subpath \(quote(kernelPath($0.path)))))" }.joined(separator: " ")
         let readExceptions = ([scratchPath] + readRoots.map { kernelPath($0.path) }).map { "(require-not (subpath \(quote($0))))" }.joined(separator: " ")
         let privateData = protectedData.map { "(deny file-read-data (require-all (subpath \(quote(kernelPath($0.path)))) \(readExceptions))) (deny file-write* (require-all (subpath \(quote(kernelPath($0.path)))) (require-not (subpath \(quote(scratchPath))))))" } ?? ""
         let profile = """
@@ -57,6 +58,7 @@ final class AgentCommand: @unchecked Sendable {
         (allow file-read* \(reads) \(gitConfig) (literal "/") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom"))
         (allow file-write* \(writes) (literal "/dev/null"))
         \(protectedGit)
+        \(extraProtectedWrites)
         \(privateData)
         (deny file-write* (subpath \(quote(kernelPath(Bundle.main.bundleURL.path)))))
         \(network ? "(allow network*)" : "")

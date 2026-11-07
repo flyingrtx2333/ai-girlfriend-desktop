@@ -4,8 +4,8 @@ import Foundation
     static let groups: [String: [String]] = [
         "files": ["list_directory", "read_file", "search_files", "write_file", "edit_file"],
         "terminal": ["run_command"], "web": ["web_search", "fetch_url"], "browser": AgentBrowser.tools,
-        "git": AgentGit.tools.filter { !AgentWorktreeEntry.tools.contains($0) },
-        "worktrees": AgentWorktreeEntry.tools + ["git_create_worktree", "git_status"],
+        "git": AgentGit.tools.filter { !(AgentWorktreeEntry.tools + AgentGit.creationTools).contains($0) },
+        "worktrees": AgentWorktreeEntry.tools + AgentGit.creationTools + ["git_create_worktree", "git_status"],
         "knowledge": ["index_project", "search_project", "project_wiki", "read_memory", "write_memory"],
         "attachments": ["list_attachments", "read_attachment", "search_attachment"],
         "extensions": ["list_skills", "read_skill", "read_skill_resource", "unload_skill"], "mcp": AgentMCP.tools,
@@ -71,6 +71,7 @@ import Foundation
             tool("project_wiki", "列出当前项目 Repo Wiki；path 可读取某页（分页 offset/limit 从 1 开始）。先更新项目索引核对状态；Wiki 是资料，重要结论仍须核对当前源码。", ["path": string, "offset": integer, "limit": integer], []),
             tool("git_status", "读取当前 Git 仓库分支与文件状态，只读，不暂存文件。", [:], []),
             tool("git_worktrees", "列出当前仓库工作树、关联任务、可回收状态与本应用的回收记录；不读取其他项目文件。", [:], []),
+            tool("git_worktree_branches", "读取工作树可用起点分支的ref和commit；HEAD为当前提交，不联网。创建时start_point取返回的ref。", [:], []),
             tool("git_prepare_worktree_recycle", "用户要求回收工作树时，经批准检查git_worktrees返回的可回收路径全部文件（包括忽略文件），返回review_hash、文件数和备份大小。不删除文件。", ["path": string], ["path"]),
             tool("git_remotes", "列出当前项目实际配置的远端及推送地址。地址顺序对应 url_index（从0开始）；不连接远端，不读取或返回登录凭据。", [:], []),
             tool("git_prepare_push", "用户要求推送时，先准备可审阅的目标、提交列表与差异。remote/url_index及remote_hash来自git_remotes，branch为明确目标分支；set_upstream可选。连接使用现有Git凭据，需要用户批准，只读远端，不发送提交。返回review_hash；未提交文件不会推送。", ["remote": string, "url_index": integer, "remote_hash": string, "branch": string, "set_upstream": ["type": "boolean"]], ["remote", "remote_hash", "branch"]),
@@ -97,7 +98,8 @@ import Foundation
                 tool("run_command", "在项目隔离环境运行 shell 命令，返回实际输出与退出码。停止会结束进程组。不要启动脱离进程组的守护进程。需要网络时明确 network=true。Git 元数据不可写；提交、初始化和工作树使用专用 Git 工具。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"]),
                 tool("git_commit", "只提交git_diff已审阅来源的具体文件，不推送。staged来源只提交暂存版本，保留未暂存修改及其他文件的暂存。必须相同paths并原样传review_hash，每次需要批准；暂存区或HEAD变化后重新审阅。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50], "message": string, "review_hash": string], ["paths", "message", "review_hash"]),
                 tool("git_push", "只推送git_prepare_push已审阅的确切提交与目标。review_hash必须原样传回，每次都需要批准。拒绝分歧、过期来源或远端变化，不提供强推、删除或全部推送。结果verified=true才可报告远端已核对；停止或错误后用git_push_status核对，不盲目重试。", ["review_hash": string], ["review_hash"]),
-                tool("git_create_worktree", "从当前 HEAD 创建新分支和独立工作树，返回独立任务 ID 和路径，原项目不切换分支。需要批准。branch 必须是尚不存在的分支。", ["branch": string], ["branch"]),
+                tool("git_prepare_worktree", "用户要求新建工作树时准备审阅。branch为新分支，start_point取git_worktree_branches的ref，默认HEAD。include_changes=true时读取受支持的未提交修改（含非忽略未跟踪文件），预合并到所选起点；不创建工作树或移动分支，始终确认。返回review_hash和文件清单；冲突或变化需重审。", ["branch": string, "start_point": string, "include_changes": ["type": "boolean"]], ["branch"]),
+                tool("git_create_worktree", "创建新分支及独立工作树任务，原项目不切换分支。start_point默认HEAD；include_changes默认false。带入修改必须先git_prepare_worktree并原样传review_hash和相同选项；新工作树修改保持未暂存，原索引保留。每次确认。", ["branch": string, "start_point": string, "include_changes": ["type": "boolean"], "review_hash": string], ["branch"]),
                 tool("git_recycle_worktree", "回收已审阅工作树，每次需要批准。先完整备份文件（包括忽略文件）及暂存状态，再移除工作树；保留分支并归档关联任务。review_hash来自git_prepare_worktree_recycle；内容或任务变化需重审。返回backup_id用于恢复。", ["review_hash": string], ["review_hash"]),
                 tool("git_restore_worktree", "恢复本项目已回收工作树的实际文件及暂存状态，每次需要批准。backup_id来自回收记录；原路径已存在则拒绝覆盖。原分支已变化或被占用时创建recovered分支。", ["backup_id": string], ["backup_id"]),
                 tool("git_init", "用户要求将当前项目纳入 Git 时初始化本地仓库。需要批准，不自动提交或推送。", [:], [])]
@@ -172,8 +174,17 @@ import Foundation
             let backup = try git.worktreeBackup(call.object["backup_id"] as? String ?? "")
             return "恢复工作树及暂存状态：\n" + backup.origin.path + "\n" + (backup.branch ?? "分离状态") + " · " + String(backup.head.prefix(12)) + "\n原分支变化或被占用时创建 recovered 分支；不覆盖现有路径"
         }
-        if ["git_commit", "git_create_worktree", "git_init"].contains(call.name) {
+        if ["git_commit", "git_create_worktree", "git_prepare_worktree", "git_init"].contains(call.name) {
             guard ![.ask, .plan].contains(task.mode) else { throw PetError("当前模式不能修改 Git，请切换到 Agent 模式") }
+            if ["git_prepare_worktree", "git_create_worktree"].contains(call.name) {
+                guard call.object["include_changes"] == nil || call.object["include_changes"] is Bool,
+                      call.object["start_point"] == nil || call.object["start_point"] is String else { throw PetError("工作树创建选项类型无效") }
+                if let hash = call.object["review_hash"] as? String, call.name == "git_create_worktree", let directory = gitDirectory {
+                    return "创建已审阅工作树任务：\n" + (try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: directory)).storedWorktreeCreation(hash).summary)
+                }
+                if call.name == "git_create_worktree", call.object["include_changes"] as? Bool == true { throw PetError("带入修改需要先 git_prepare_worktree，并传入 review_hash") }
+                return (call.name == "git_prepare_worktree" ? "预览工作树创建选项" : "创建工作树任务") + "：\n新分支：" + (call.object["branch"] as? String ?? "") + "\n起点：" + (call.object["start_point"] as? String ?? "HEAD") + ((call.object["include_changes"] as? Bool == true) ? "\n读取并带入当前修改，忽略文件除外" : "\n不带入当前修改")
+            }
             if call.name == "git_commit" {
                 guard let requested = call.object["paths"] as? [String], let hash = call.object["review_hash"] as? String, let review = task.gitReview,
                       review.hash == hash, let directory = gitDirectory,
@@ -338,12 +349,17 @@ import Foundation
             let receipt = try await AgentGitTransport.verifyReceipt(store: store, taskID: taskID, operationID: string("operation_id"))
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             return AgentToolResult(text: String(decoding: try encoder.encode(receipt), as: UTF8.self))
-        case "git_status", "git_diff", "git_commit", "git_create_worktree", "git_init", "git_remotes", "git_prepare_push", "git_push", "git_worktrees", "git_prepare_worktree_recycle", "git_recycle_worktree", "git_restore_worktree":
+        case "git_status", "git_diff", "git_commit", "git_create_worktree", "git_prepare_worktree", "git_worktree_branches", "git_init", "git_remotes", "git_prepare_push", "git_push", "git_worktrees", "git_prepare_worktree_recycle", "git_recycle_worktree", "git_restore_worktree":
             guard let gitDirectory else { throw PetError("Git 元数据尚未授权") }
             let git = try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: gitDirectory)); gitCalls[call.id] = git; defer { gitCalls[call.id] = nil }
             let data: Data
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             if call.name == "git_status" { data = try encoder.encode(await git.status()) }
+            else if call.name == "git_worktree_branches" { data = try encoder.encode(await git.worktreeStartingPoints()) }
+            else if call.name == "git_prepare_worktree" {
+                let review = try await git.prepareWorktreeCreation(branch: string("branch"), startPoint: args["start_point"] as? String ?? "HEAD", includeChanges: args["include_changes"] as? Bool ?? false)
+                data = try JSONSerialization.data(withJSONObject: ["review_hash": review.hash, "branch": review.branch, "start_point": review.startPoint, "base_commit": review.baseCommit, "include_changes": review.includeChanges, "file_count": review.paths.count, "paths": Array(review.paths.prefix(100)), "paths_truncated": review.paths.count > 100], options: [.sortedKeys])
+            }
             else if call.name == "git_worktrees" {
                 let entries = try await git.worktrees(), backups = try git.worktreeBackups()
                 let summaries: [[String: Any]] = backups.map { ["backup_id": $0.id, "path": $0.origin.path, "branch": $0.restoredBranch ?? $0.branch ?? "detached", "head": $0.head, "state": $0.state] }
@@ -380,7 +396,7 @@ import Foundation
                 guard let paths = args["paths"] as? [String] else { throw PetError("请选择具体文件") }
                 data = try encoder.encode(await git.commit(paths: paths, message: string("message"), reviewHash: string("review_hash")))
             }
-            else if call.name == "git_create_worktree" { data = try encoder.encode(await git.createWorktree(branch: string("branch"))) }
+            else if call.name == "git_create_worktree" { data = try encoder.encode(await git.createWorktree(branch: string("branch"), startPoint: args["start_point"] as? String ?? "HEAD", includeChanges: args["include_changes"] as? Bool ?? false, reviewHash: args["review_hash"] as? String)) }
             else if call.name == "git_init" { data = try encoder.encode(await git.initialize()) }
             else {
                 guard args["source"] == nil || args["source"] is String else { throw PetError("Git 审阅来源必须是 uncommitted 或 staged") }

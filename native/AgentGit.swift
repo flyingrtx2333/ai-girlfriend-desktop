@@ -10,11 +10,12 @@ struct AgentGitReview: Codable {
     enum CodingKeys: String, CodingKey { case paths, head, hash = "review_hash", diff, created, source, branchRef }
 }
 struct AgentGitCommit: Codable { var commit: String; var branch: String; var output: String }
-struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; var branch: String }
+struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; var branch: String; var baseCommit: String? = nil; var includedChanges: Bool? = nil }
 
 @MainActor final class AgentGit {
     static let externalTools = ["git_prepare_push", "git_push", "git_push_status"]
-    static let tools = ["git_status", "git_diff", "git_commit", "git_create_worktree", "git_init", "git_remotes"] + externalTools + AgentWorktreeEntry.tools
+    static let creationTools = ["git_worktree_branches", "git_prepare_worktree"]
+    static let tools = ["git_status", "git_diff", "git_commit", "git_create_worktree", "git_init", "git_remotes"] + externalTools + AgentWorktreeEntry.tools + creationTools
     private static let executable: Result<String, Error> = Result {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun"); process.arguments = ["--find", "git"]
@@ -162,35 +163,16 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let result = try await run(["init", "-b", "main"], write: true)
         guard !result.failed else { throw PetError(result.text) }; return try await status()
     }
-    func createWorktree(branch: String) async throws -> AgentGitWorktree {
-        try validateWorkspace()
-        guard !branch.isEmpty, branch.utf8.count <= 200, !branch.contains("\0"), !branch.hasPrefix("-") else { throw PetError("分支名称无效") }
-        let check = try await run(["check-ref-format", "--branch", branch])
-        guard !check.failed else { throw PetError("分支名称无效") }
-        guard try await status().head != nil else { throw PetError("请先创建首次提交") }
-        try await validateHooks()
-        let relative = ".bluefatfish/worktrees/" + UUID().uuidString.lowercased(), destination = try files.resolve(relative)
-        let metadata = try AgentFiles(workspace: directory.path), exclude = try metadata.resolve("info/exclude")
-        let exists = FileManager.default.fileExists(atPath: exclude.path), before = exists ? try metadata.readData(exclude, maximum: 1_000_000) : Data()
-        guard let text = String(data: before, encoding: .utf8) else { throw PetError("Git 本地忽略文件不是 UTF-8 文本") }
-        let pattern = "/.bluefatfish/worktrees/"
-        if !text.components(separatedBy: "\n").contains(pattern) {
-            let now = FileManager.default.fileExists(atPath: exclude.path) ? try metadata.readData(exclude, maximum: 1_000_000) : Data()
-            guard now == before else { throw PetError("Git 本地忽略配置已变化，请重试") }
-            try metadata.writeData(Data((text + (text.hasSuffix("\n") || text.isEmpty ? "" : "\n") + pattern + "\n").utf8), to: exclude)
+    func createWorktree(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false, reviewHash: String? = nil) async throws -> AgentGitWorktree {
+        if let reviewHash {
+            let review = try storedWorktreeCreation(reviewHash)
+            let matches = try await worktreeStartingPoints().filter { $0.ref == startPoint || $0.title == startPoint }
+            guard review.branch == branch, review.includeChanges == includeChanges,
+                  matches.count == 1, matches.first?.ref == review.startPoint else { throw PetError("创建选项与审阅不一致，请重新预览") }
+            return try await createReviewedWorktree(reviewHash)
         }
-        let result = try await run(["worktree", "add", "-b", branch, destination.path, "HEAD"], write: true)
-        guard !result.failed else { throw PetError(result.text) }
-        guard try Self.metadata(workspace: destination.path) == directory else { throw PetError("工作树已创建，但 Git 元数据不匹配，请检查实际状态") }
-        let selected = store.selectedID, source = store.task(taskID)
-        let id = store.create(title: (source?.title ?? "任务") + " · " + branch, workspace: destination.path, mode: source?.mode ?? .agent)
-        store.update(id) { record in
-            record.parentID = taskID; record.permission = source?.permission ?? .workspace; record.gitDirectory = directory.path
-            record.worktreeOrigin = AgentWorktreeOrigin(root: files.root.path, metadata: directory.path, path: destination.path)
-            record.events.append(AgentEvent(kind: "git", title: "已创建工作树", detail: branch + "\n" + destination.path, status: "completed"))
-        }
-        store.selectedID = selected
-        guard store.writeError == nil else { throw PetError("工作树已创建，但任务未保存：" + (store.writeError ?? "")) }
-        return AgentGitWorktree(taskID: id, workspace: destination.path, branch: branch)
+        guard !includeChanges else { throw PetError("带入修改前请先使用 git_prepare_worktree 审阅，并传入 review_hash") }
+        let review = try await prepareWorktreeCreation(branch: branch, startPoint: startPoint)
+        return try await createReviewedWorktree(review.hash)
     }
 }

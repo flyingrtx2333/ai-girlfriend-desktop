@@ -91,6 +91,8 @@ final class FormDocumentView: NSView {
     private let taskContext = AgentWorkbenchButton()
     private var gitWindow: AgentGitWindow?
     private var worktreeWindow: AgentWorktreeWindow?
+    private var worktreeCreationWindow: AgentWorktreeCreationWindow?
+    private let executionLocation = AgentWorkbenchButton()
     private var knowledgeWindow: AgentKnowledgeWindow?
     private var extensionWindow: AgentExtensionWindow?
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
@@ -312,7 +314,9 @@ final class FormDocumentView: NSView {
         taskModel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); taskModel.widthAnchor.constraint(lessThanOrEqualToConstant: 160).isActive = true
         sendButton.title = ""; sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil); sendButton.imagePosition = .imageOnly; sendButton.isBordered = false; sendButton.contentTintColor = .white; sendButton.wantsLayer = true; sendButton.layer?.backgroundColor = AgentWorkbenchTheme.accent.cgColor; sendButton.layer?.cornerRadius = 8; sendButton.setAccessibilityLabel("发送"); sendButton.target = self; sendButton.action = #selector(send)
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
+        executionLocation.isBordered = false; executionLocation.font = .systemFont(ofSize: 13); executionLocation.target = self; executionLocation.action = #selector(showExecutionLocation); executionLocation.imagePosition = .imageTrailing; executionLocation.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        executionLocation.setAccessibilityLabel("执行位置")
+        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
         voiceInput.target = self; voiceInput.action = #selector(toggleWorkbenchVoice); AgentWorkbenchTheme.toolbar(voiceInput, title: "语音输入", symbol: "mic")
         entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -361,7 +365,7 @@ final class FormDocumentView: NSView {
         emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
-        emptyProject.title = task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "选择项目"; emptyProject.toolTip = task.workspace
+        emptyProject.title = task.workspaceDisplayName ?? "选择项目"; emptyProject.toolTip = task.workspace
         composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
         workbenchBadge.update(task); workbenchInspector.update(task)
         taskBack.isEnabled = taskNavigationIndex > 0; taskForward.isEnabled = taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
@@ -1186,7 +1190,7 @@ final class FormDocumentView: NSView {
                 tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }
                 if !task.messages.isEmpty { self.companion?.agentRuntime?.submit("已选择项目：" + url.resolvingSymlinksInPath().path + "。继续原任务。", taskID: task.id) }
                 self.renderAgentMessages()
-            } else if !task.messages.isEmpty && task.workspace != url.path {
+            } else if (!task.messages.isEmpty || task.worktreeOrigin != nil) && task.workspace != url.path {
                 self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode)
                 do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
                 catch { self.selectAgentTask(task.id); self.setStatus(error.localizedDescription, error: true); return }
@@ -1199,6 +1203,33 @@ final class FormDocumentView: NSView {
         guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.status != .running && task.status != .waiting else { return }
         tasks.update(task.id) { $0.mode = AgentMode.allCases[max(0, modePopup.indexOfSelectedItem)]; $0.permission = AgentPermissionMode.allCases[max(0, permissionPopup.indexOfSelectedItem)] }
         renderAgentMessages()
+    }
+    @objc private func showExecutionLocation() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.canChooseEnvironment else { return }
+        saveAgentDraft()
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let local = NSMenuItem(title: "本地", action: #selector(selectLocalEnvironment), keyEquivalent: ""); local.target = self; local.state = task.worktreeOrigin == nil ? .on : .off; local.isEnabled = task.worktreeOrigin != nil; menu.addItem(local)
+        let worktree = NSMenuItem(title: "工作树…", action: #selector(createTaskWorktree), keyEquivalent: ""); worktree.target = self; worktree.state = task.worktreeOrigin == nil ? .off : .on; worktree.isEnabled = task.workspace != nil && task.worktreeOrigin == nil; menu.addItem(worktree)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: executionLocation.bounds.height + 4), in: executionLocation)
+    }
+    @objc func createTaskWorktree() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.canChooseEnvironment, task.workspace != nil else { return }
+        saveAgentDraft()
+        do {
+            let directory = try AgentGit.metadata(workspace: task.workspace)
+            if !directory.path.hasPrefix((task.workspace ?? "") + "/"), task.gitDirectory != directory.path {
+                let alert = NSAlert(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
+                guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(task.id) { $0.gitDirectory = directory.path }
+            }
+            let controller = try AgentWorktreeCreationWindow(store: tasks, taskID: task.id, directory: directory) { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
+            worktreeCreationWindow = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    @objc private func selectLocalEnvironment() {
+        guard let tasks = companion?.agentStore, let source = tasks.selected, source.canChooseEnvironment, let origin = source.worktreeOrigin else { return }
+        saveAgentDraft(); let id = tasks.create(workspace: origin.root, mode: source.mode)
+        do { try tasks.copyEnvironmentDraft(sourceID: source.id, targetID: id); selectAgentTask(id) }
+        catch { tasks.selectedID = source.id; setStatus(error.localizedDescription, error: true) }
     }
     @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
     @objc func showAgentRecords() { presentAgentRecords(section: 0) }
@@ -1266,6 +1297,8 @@ final class FormDocumentView: NSView {
         let running = companion?.agentRuntime?.isRunning(task.id) == true
         let managed = task.kind == "hook", delegated = task.agent?.ownerID != nil || task.automation != nil
         let locked = running || task.status == .waiting
+        executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
+        executionLocation.toolTip = task.workspace ?? "未选择项目"; executionLocation.isEnabled = task.canChooseEnvironment && !running
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
         gitButton.isEnabled = task.workspace != nil && !managed
