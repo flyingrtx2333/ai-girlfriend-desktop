@@ -12,8 +12,21 @@ struct AgentMarkdownSelection {
 @MainActor final class AgentMarkdownTextView: NSTextView {
     var onSelectionSettled: (() -> Void)?
     var onDoubleClickAttachment: ((Int) -> Bool)?
+    var onPreviewEditClick: ((NSPoint) -> Bool)?
+    var previewUndoManager: UndoManager?
+    weak var previewEditor: NSView?
+    override var undoManager: UndoManager? { previewUndoManager ?? super.undoManager }
+    @objc func undo(_ sender: Any?) { if undoManager?.canUndo == true { undoManager?.undo() } }
+    @objc func redo(_ sender: Any?) { if undoManager?.canRedo == true { undoManager?.redo() } }
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) { return undoManager?.canUndo == true }
+        if item.action == #selector(redo(_:)) { return undoManager?.canRedo == true }
+        return super.validateUserInterfaceItem(item)
+    }
+    override func accessibilityChildren() -> [Any]? { if let previewEditor { return [previewEditor] }; return super.accessibilityChildren() }
     // NSTextView tracks selection inside mouseDown and consumes mouseUp.
     override func mouseDown(with event: NSEvent) {
+        if onPreviewEditClick?(convert(event.locationInWindow, from: nil)) == true { return }
         if event.clickCount == 2, let layout = layoutManager, let container = textContainer, let storage = textStorage {
             let local = convert(event.locationInWindow, from: nil), point = NSPoint(x: local.x - textContainerOrigin.x, y: local.y - textContainerOrigin.y)
             let glyph = layout.glyphIndex(for: point, in: container)

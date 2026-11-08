@@ -27,21 +27,27 @@ import AppKit
                 if let range = line.range(of: "^#{1,6}\\s+", options: .regularExpression) { line.removeSubrange(range); lineFont = .systemFont(ofSize: font.pointSize + 1, weight: .semibold) }
                 if line.hasPrefix("- ") || line.hasPrefix("* ") { line = "• " + line.dropFirst(2) }
             }
-            let base: [NSAttributedString.Key: Any] = [.font: lineFont, .foregroundColor: color, .paragraphStyle: lineParagraph]
             if code { output.append(NSAttributedString(string: line, attributes: [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular), .foregroundColor: color, .backgroundColor: NSColor(white: 0.96, alpha: 1), .paragraphStyle: paragraph])); continue }
-            guard let parsed = try? AttributedString(markdown: line, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else { output.append(NSAttributedString(string: line, attributes: base)); continue }
-            for run in parsed.runs {
-                var attributes = base, f = lineFont
-                if let intent = run.inlinePresentationIntent {
-                    if intent.contains(.stronglyEmphasized) { f = NSFontManager.shared.convert(f, toHaveTrait: .boldFontMask) }
-                    if intent.contains(.emphasized) { f = NSFontManager.shared.convert(f, toHaveTrait: .italicFontMask) }
-                    if intent.contains(.code) { f = .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular); attributes[.backgroundColor] = NSColor(white: 0.95, alpha: 1) }
-                    if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-                }
-                if let link = run.link, let target = resolveLink?(link) ?? (["https", "http"].contains(link.scheme) ? link : nil) { attributes[.link] = target; attributes[.foregroundColor] = NSColor.linkColor }
-                attributes[.font] = f
-                output.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
+            output.append(inline(line, font: lineFont, color: color, paragraph: lineParagraph, codeSize: font.pointSize - 1, resolveLink: resolveLink))
+        }
+        return output
+    }
+
+    static func inline(_ source: String, font: NSFont, color: NSColor, paragraph: NSParagraphStyle, codeSize: CGFloat? = nil, resolveLink: ((URL) -> URL?)? = nil) -> NSAttributedString {
+        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
+        guard let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else { return NSAttributedString(string: source, attributes: base) }
+        let output = NSMutableAttributedString()
+        for run in parsed.runs {
+            var attributes = base, f = font
+            if let intent = run.inlinePresentationIntent {
+                if intent.contains(.stronglyEmphasized) { f = NSFontManager.shared.convert(f, toHaveTrait: .boldFontMask) }
+                if intent.contains(.emphasized) { f = NSFontManager.shared.convert(f, toHaveTrait: .italicFontMask) }
+                if intent.contains(.code) { f = .monospacedSystemFont(ofSize: codeSize ?? (font.pointSize - 1), weight: .regular); attributes[.backgroundColor] = NSColor(white: 0.95, alpha: 1) }
+                if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             }
+            if let link = run.link, let target = resolveLink?(link) ?? (["https", "http"].contains(link.scheme) ? link : nil) { attributes[.link] = target; attributes[.foregroundColor] = NSColor.linkColor }
+            attributes[.font] = f
+            output.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
         }
         return output
     }

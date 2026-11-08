@@ -21,7 +21,9 @@ import UniformTypeIdentifiers
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
     var onGenerateWiki: (() -> Void)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
-    private var dirty = false, activeSection = 0
+    private var dirty = false, activeSection = 0, saving = false, fileBOM = false
+    private var openedFile: URL?
+    private var fileContent: String { (fileBOM ? "\u{FEFF}" : "") + text.string }
     private var logSignature = ""
     private var attachmentWindow: AgentAttachmentWindow?
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
@@ -36,12 +38,19 @@ import UniformTypeIdentifiers
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        text.isRichText = false; text.isEditable = false; text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.isRichText = false; text.isEditable = false; text.previewUndoManager = UndoManager(); text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
         viewer.documentView = text; viewer.hasVerticalScroller = true
         displayMode.target = self; displayMode.action = #selector(switchDocumentMode); displayMode.selectedSegment = 0; displayMode.setAccessibilityLabel("Markdown 显示方式")
         markdown.onLink = { [weak self] url in self?.openDocumentLink(url) }
+        markdown.canEdit = { [weak self] in guard let self, self.text.isEditable, let task = self.store.task(self.taskID), let file = self.markdownFile else { return false }; return self.fileIsEditable(task, file: file) }
+        markdown.onSourceChanged = { [weak self] value in
+            guard let self else { return }; self.text.string = value; self.text.undoManager?.removeAllActions()
+            self.dirty = AgentFiles.hash(Data(self.fileContent.utf8)) != self.openedHash
+            self.state.stringValue = self.dirty ? "未保存" : self.markdownFile?.lastPathComponent ?? ""
+        }
+        markdown.onEditError = { [weak self] message in self?.state.stringValue = message }
         let pane = NSView(), readingToolbar = NSStackView(views: [displayMode, NSView(), sourceAdd]); sourceSelection.update()
         for child in [viewer, markdown] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
         let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.spacing = 6
@@ -147,18 +156,26 @@ import UniformTypeIdentifiers
             if AgentOffice.supports(file.path) { text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "编辑"; return }
             let data = try files.readData(file)
             guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
-            text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = ![.running, .waiting].contains(task.status) && !task.archived
+            text.string = content; openedHash = AgentFiles.hash(data); openedFile = file; fileBOM = data.starts(with: [0xEF, 0xBB, 0xBF]); text.isEditable = data.count <= 2_000_000 && fileIsEditable(task, file: file)
             save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = (sections.selectedSegment == 6 ? "按上次索引：" + (try AgentWiki.status(store: store, taskID: taskID)) + " · " : "") + files.relative(file)
+            if !text.isEditable { state.stringValue = "只读 · " + files.relative(file) }
             if ["md", "markdown"].contains(file.pathExtension.lowercased()) { markdownFile = file; displayMode.isHidden = false; displayMode.selectedSegment = 0; switchDocumentMode() }
         } catch { text.string = ""; state.stringValue = error.localizedDescription }
     }
-    private func resetDocumentMode() { markdownFile = nil; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func fileIsEditable(_ task: AgentTaskRecord, file: URL) -> Bool {
+        guard !task.archived, ![.running, .waiting].contains(task.status), task.kind != "hook", task.kind != AgentKnowledgeCards.kind,
+              FileManager.default.isWritableFile(atPath: file.path), let files = try? AgentFiles(workspace: task.workspace), !AgentFiles.sensitive(files.relative(file)),
+              (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
+        return true
+    }
+    private func resetDocumentMode() { markdownFile = nil; openedFile = nil; fileBOM = false; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
     @objc private func switchDocumentMode() {
         guard let file = markdownFile, let workspace = store.task(taskID)?.workspace else { return }
+        do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; displayMode.selectedSegment = markdown.isHidden ? 1 : 0; return }
         let preview = displayMode.selectedSegment == 0
         markdown.isHidden = !preview; viewer.isHidden = preview
         sourceSelection.update(); sourceAdd.isHidden = preview || onAddSelection == nil
-        if preview { markdown.show(text.string, file: file, workspace: workspace) }
+        if preview { markdown.show(text.string, file: file, workspace: workspace, reuseIfUnchanged: true) }
     }
     private func openDocumentLink(_ url: URL) {
         do {
@@ -178,18 +195,23 @@ import UniformTypeIdentifiers
     }
     @objc private func saveFile() {
         guard let path = selection, let task = store.task(taskID) else { return }
-        guard task.status != .running else { state.stringValue = "请先停止任务"; return }
+        guard !saving else { return }
+        guard ![.running, .waiting].contains(task.status), !task.archived else { state.stringValue = "任务当前只读，草稿已保留"; return }
         do {
+            try markdown.finishEditing()
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: path), let hash = openedHash {
                 let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID)
                 openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
             }
-            let files = try AgentFiles(workspace: task.workspace), current = try files.readData(files.resolve(path))
-            guard AgentFiles.hash(current) == openedHash else { throw PetError("文件已更改，请重新打开后编辑") }
-            let content = text.string, args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content])
+            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path), current = try files.readData(file)
+            guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
+            guard let hash = openedHash, AgentFiles.hash(current) == hash else { throw PetError("文件已更改，请重新打开后编辑") }
+            let content = fileContent, args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": hash])
+            saving = true; save.isEnabled = false; state.stringValue = "正在保存…"
             load = Task { [weak self] in
                 guard let self else { return }
-                do { _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self))); openedHash = AgentFiles.hash(Data(content.utf8)); dirty = text.string != content; state.stringValue = "已保存" }
+                defer { saving = false; save.isEnabled = text.isEditable }
+                do { _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self))); openedHash = AgentFiles.hash(Data(content.utf8)); dirty = fileContent != content; state.stringValue = dirty ? "未保存" : "已保存" }
                 catch { state.stringValue = error.localizedDescription }
             }
         } catch { state.stringValue = error.localizedDescription }
@@ -238,14 +260,22 @@ import UniformTypeIdentifiers
         }
     }
     func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存" }
+    func undoManager(for view: NSTextView) -> UndoManager? { text.previewUndoManager }
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = viewer.isHidden || onAddSelection == nil }
     private func canLeave() -> Bool {
+        guard !saving else { state.stringValue = "正在保存…"; return false }
+        do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; return false }
         guard dirty else { return true }
         let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
     func windowWillClose(_ notification: Notification) { markdown.clear(); sourceWindow?.close(); sourceWindow = nil }
+    func markdownEditingReadback() async -> [String: Any] {
+        guard CommandLine.arguments.contains("--markdown-edit-check") else { return [:] }
+        await markdown.waitForDiagrams()
+        return ["draft": text.string, "encodedDraft": fileContent, "draftHash": AgentFiles.hash(Data(fileContent.utf8)), "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState]
+    }
     func checkMarkdown() -> [String: Bool] {
         let original = text.string, hash = openedHash
         var checks = ["wikiOpensInPreview": !markdown.isHidden && viewer.isHidden && !displayMode.isHidden && markdown.document?.headings.first?.title == "项目文档"]

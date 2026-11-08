@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--markdown-edit-check") { await runAgentMarkdownEditingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--markdown-check") { await runAgentMarkdownCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-cards-check") { await runAgentKnowledgeCardCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-check") { await runAgentKnowledgeCheck(output); NSApp.terminate(nil); return }

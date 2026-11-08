@@ -72,7 +72,8 @@
     "native:check-plugin-mcp": "node scripts/check-native-plugin-mcp.mjs",
     "native:check-knowledge-cards": "node scripts/check-native-knowledge-cards.mjs",
     "native:check-markdown": "node scripts/check-native-markdown.mjs",
-    "build:diagrams": "vite build --config vite.diagrams.config.js"
+    "build:diagrams": "vite build --config vite.diagrams.config.js",
+    "native:check-markdown-edit": "node scripts/check-native-markdown.mjs --editing"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

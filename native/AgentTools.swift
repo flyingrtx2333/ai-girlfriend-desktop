@@ -1,6 +1,11 @@
 import Foundation
 
 @MainActor final class AgentTools {
+    private struct FileTextArguments: Decodable {
+        var content: String?
+        var old_text: String?
+        var new_text: String?
+    }
     static let groups: [String: [String]] = [
         "files": ["list_directory", "read_file", "search_files", "write_file", "edit_file"],
         "terminal": ["run_command"], "web": ["web_search", "fetch_url"], "browser": AgentBrowser.tools, "desktop": AgentDesktop.tools, "canvas": AgentCanvas.tools, "office": AgentOffice.tools,
@@ -106,7 +111,7 @@ import Foundation
         }
         if mode == .agent || mode == .goal {
             tools.append(tool("edit_project_knowledge", "用户明确要求更正项目知识时，更新read_project_knowledge返回的一张卡片。必须原id及expected_hash，sources来自本任务实际read_file核对的源码和行号。先读原卡片，保留其他事实和引用；每次单独确认。最多4KB正文。记录旧版，不能借此创建新卡片或扩大工作区范围。", ["id": string, "title": string, "body": string, "sources": citations, "expected_hash": string], ["id", "body", "sources", "expected_hash"]))
-            tools += [tool("write_file", "创建或完整写入项目文件，自动保存修改前检查点。", ["path": string, "content": string], ["path", "content"]),
+            tools += [tool("write_file", "创建或完整写入项目文件，自动保存修改前检查点。可传 expected_hash 要求原文件哈希一致。", ["path": string, "content": string, "expected_hash": string], ["path", "content"]),
                 tool("edit_file", "精确替换文件中的唯一文本片段；旧文本必须存在且唯一。", ["path": string, "old_text": string, "new_text": string], ["path", "old_text", "new_text"]),
                 tool("git_commit", "只提交git_diff已审阅来源的具体文件，不推送。staged来源只提交暂存版本，保留未暂存修改及其他文件的暂存。必须相同paths并原样传review_hash，每次需要批准；暂存区或HEAD变化后重新审阅。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50], "message": string, "review_hash": string], ["paths", "message", "review_hash"]),
                 tool("git_push", "只推送git_prepare_push已审阅的确切提交与目标。review_hash必须原样传回，每次都需要批准。拒绝分歧、过期来源或远端变化，不提供强推、删除或全部推送。结果verified=true才可报告远端已核对；停止或错误后用git_push_status核对，不盲目重试。", ["review_hash": string], ["review_hash"]),
@@ -515,14 +520,19 @@ import Foundation
         case "write_file", "edit_file":
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, writing: true)
             let existing = FileManager.default.fileExists(atPath: url.path), before = existing ? try files.readData(url) : nil
+            if args.keys.contains("expected_hash") { guard let expected = args["expected_hash"] as? String, let before, AgentFiles.hash(before) == expected else { throw PetError("文件已更改或哈希无效，草稿未写入；请先比较当前文件") } }
             guard (before?.count ?? 0) < 4_000_000 else { throw PetError("文件过大，请分解操作") }
+            // JSONSerialization drops a leading U+FEFF from string values on
+            // macOS. File text must retain every scalar, including a UTF-8 BOM.
+            let exact = try JSONDecoder().decode(FileTextArguments.self, from: Data(call.arguments.utf8))
             let content: String
             if call.name == "edit_file" {
-                guard let before, let text = String(data: before, encoding: .utf8) else { throw PetError("文件不存在或不是 UTF-8 文本") }
-                let old = try string("old_text"), replacement = try string("new_text")
+                guard let before, String(data: before, encoding: .utf8) != nil else { throw PetError("文件不存在或不是 UTF-8 文本") }
+                let text = String(decoding: before, as: UTF8.self)
+                guard let old = exact.old_text, let replacement = exact.new_text else { throw PetError("缺少参数：old_text / new_text") }
                 guard !old.isEmpty, text.components(separatedBy: old).count == 2 else { throw PetError("旧文本必须存在且唯一，请重新读取文件定位") }
                 content = text.replacingOccurrences(of: old, with: replacement)
-            } else { content = try string("content") }
+            } else { guard let value = exact.content else { throw PetError("缺少参数：content") }; content = value }
             guard content.utf8.count <= 2_000_000 else { throw PetError("写入内容过大") }
             return try await store.projectChanges.observe(taskID: taskID, origin: "文件工具", paths: [url.path]) {
                 try Task.checkCancellation()

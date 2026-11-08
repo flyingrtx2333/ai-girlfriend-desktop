@@ -1663,9 +1663,10 @@ extension ControlWindow {
         guard companion?.checkDirectory != nil else { throw PetError("仅用于独立验收配置") }
         try addDocumentSelection(selection, taskID: taskID)
     }
-    func prepareMarkdownCheck(taskID: String) -> AgentRecordWindow? {
+    func prepareMarkdownCheck(taskID: String, section: Int = 6, value: String? = nil) -> AgentRecordWindow? {
         guard companion?.checkDirectory != nil else { return nil }
-        selectAgentTask(taskID); show(tab: "chat"); presentAgentRecords(section: 6); return recordWindow
+        selectAgentTask(taskID); show(tab: "chat"); presentAgentRecords(section: section)
+        if let value { recordWindow?.selectItem(section: section, value: value) }; return recordWindow
     }
     func prepareExtensionCheckWindow(taskID: String, manager: Bool) {
         selectAgentTask(taskID); show(tab: "chat"); if manager { showAgentExtensions() }

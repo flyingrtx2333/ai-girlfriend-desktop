@@ -8,6 +8,8 @@ import ImageIO
     let body: NSAttributedString
     let headings: [Heading]
     let diagrams: [Diagram]
+    let regions: [AgentMarkdownEditing.Region]
+    let images: [String: NSImage]
 
     static func fragment(_ url: URL) -> String? { URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment }
 
@@ -46,15 +48,16 @@ import ImageIO
         return result.url!
     }
 
-    static func render(_ source: String, document: URL, files: AgentFiles, width: CGFloat) -> Self {
+    static func render(_ source: String, document: URL, files: AgentFiles, width: CGFloat, cachedImages: [String: NSImage] = [:]) -> Self {
         let output = NSMutableAttributedString(), font = NSFont.systemFont(ofSize: 14)
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4; paragraph.paragraphSpacing = 9
-        let lines = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").components(separatedBy: "\n")
+        let sourceLines = AgentMarkdownEditing.lines(source), lines = sourceLines.map(\.text)
         var headings: [Heading] = [], anchors: Set<String> = [], index = 0
         var diagrams: [Diagram] = []
+        var regions: [AgentMarkdownEditing.Region] = []
         var images: [String: NSImage] = [:], imageAttempts = 0, decodedPixels = 0
         func inline(_ text: String, font: NSFont = font, style: NSParagraphStyle = paragraph) -> NSAttributedString {
-            NativeMarkdown.render(text, font: font, color: .labelColor, paragraph: style, resolveLink: { try? target($0, document: document, files: files) })
+            NativeMarkdown.inline(text, font: font, color: .labelColor, paragraph: style, resolveLink: { try? target($0, document: document, files: files) })
         }
         func append(_ value: NSAttributedString) {
             output.append(value)
@@ -69,6 +72,8 @@ import ImageIO
             append(rendered)
         }
         while index < lines.count {
+            let firstLine = index, displayStart = output.length
+            var tableRegion = false
             let original = lines[index], trimmed = original.trimmingCharacters(in: .whitespaces)
             if let fence = fence(trimmed) {
                 var content: [String] = []; index += 1
@@ -95,23 +100,30 @@ import ImageIO
             } else if index + 1 < lines.count, !trimmed.isEmpty, lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: "^(={3,}|-{3,})$", options: .regularExpression) != nil {
                 heading(trimmed, level: lines[index + 1].contains("=") ? 1 : 2); index += 1
             } else if index + 1 < lines.count, let alignment = tableAlignment(lines[index + 1]), cells(original).count == alignment.count {
-                var rows = [cells(original)]; index += 2
-                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).isEmpty, lines[index].contains("|") { rows.append(cells(lines[index])); index += 1 }
+                let tableStart = sourceLines[index].range.location
+                var rows = [(line: index, cells: AgentMarkdownEditing.cells(original))]; index += 2
+                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).isEmpty, lines[index].contains("|") { rows.append((line: index, cells: AgentMarkdownEditing.cells(lines[index]))); index += 1 }
                 let table = NSTextTable(); table.numberOfColumns = alignment.count; table.collapsesBorders = true; table.layoutAlgorithm = .automaticLayoutAlgorithm
-                for (row, values) in rows.enumerated() {
+                for (row, entry) in rows.enumerated() {
                     for column in alignment.indices {
+                        let cellStart = output.length, values = entry.cells
                         let block = NSTextTableBlock(table: table, startingRow: row, rowSpan: 1, startingColumn: column, columnSpan: 1)
                         block.setValue(100 / CGFloat(alignment.count), type: .percentageValueType, for: .width)
                         block.setWidth(7, type: .absoluteValueType, for: .padding)
                         block.setWidth(0.5, type: .absoluteValueType, for: .border); block.setBorderColor(.separatorColor)
                         block.backgroundColor = row == 0 ? NSColor(white: 0.95, alpha: 1) : .white
                         let style = paragraph.mutableCopy() as! NSMutableParagraphStyle; style.textBlocks = [block]; style.alignment = alignment[column]; style.paragraphSpacing = 3
-                        let value = column < values.count ? values[column] : ""
+                        let value = (column < values.count ? values[column].text : "").replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
                         output.append(inline(value, font: row == 0 ? .systemFont(ofSize: 13, weight: .semibold) : .systemFont(ofSize: 13), style: style))
                         output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: style]))
+                        let display = NSRange(location: cellStart, length: output.length - cellStart), line = sourceLines[entry.line]
+                        if column < values.count {
+                            let raw = values[column].range
+                            regions.append(AgentMarkdownEditing.Region(source: NSRange(location: line.range.location + raw.location, length: raw.length), display: display, kind: .cell(table: tableStart, row: row, column: column)))
+                        } else { regions.append(AgentMarkdownEditing.missingCell(line, column: column, existing: values.count, display: display, table: tableStart, row: row)) }
                     }
                 }
-                index -= 1
+                index -= 1; tableRegion = true
             } else if let image = imageLink(trimmed) {
                 do {
                     let url = try target(image.url, document: document, files: files)
@@ -120,12 +132,16 @@ import ImageIO
                     if let cached = images[url.path] { picture = cached }
                     else {
                         guard imageAttempts < 32 else { throw PetError("本页图片预览已达到上限") }; imageAttempts += 1
-                        let data = try files.readData(try files.resolve(url.path), maximum: 20_000_000)
-                        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-                              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1536] as CFDictionary) else { throw PetError("图片无法读取") }
-                        guard decodedPixels + cg.width * cg.height <= 16_000_000 else { throw PetError("本页图片预览已达到上限") }
-                        decodedPixels += cg.width * cg.height
-                        picture = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)); images[url.path] = picture
+                        if let cached = cachedImages[url.path] { picture = cached }
+                        else {
+                            let data = try files.readData(try files.resolve(url.path), maximum: 20_000_000)
+                            guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                                  let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1536] as CFDictionary) else { throw PetError("图片无法读取") }
+                            picture = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+                        }
+                        let pixels = Int(picture.size.width * picture.size.height)
+                        guard decodedPixels + pixels <= 16_000_000 else { throw PetError("本页图片预览已达到上限") }
+                        decodedPixels += pixels; images[url.path] = picture
                     }
                     let attachment = NSTextAttachment(), available = max(160, width - 36), scale = min(1, available / picture.size.width)
                     attachment.image = picture
@@ -151,9 +167,13 @@ import ImageIO
                 }
                 append(inline(value, style: style))
             }
+            if !tableRegion {
+                let last = sourceLines[min(index, sourceLines.count - 1)], first = sourceLines[firstLine]
+                regions.append(AgentMarkdownEditing.Region(source: NSRange(location: first.range.location, length: NSMaxRange(last.range) - first.range.location), display: NSRange(location: displayStart, length: output.length - displayStart), kind: .block))
+            }
             index += 1
         }
-        return Self(body: output, headings: headings, diagrams: diagrams)
+        return Self(body: output, headings: headings, diagrams: diagrams, regions: regions, images: images)
     }
     static func anchor(_ title: String) -> String {
         title.lowercased().filter { $0.isLetter || $0.isNumber || $0.isWhitespace || $0 == "-" || $0 == "_" }.replacingOccurrences(of: "\\s", with: "-", options: .regularExpression)
@@ -164,29 +184,11 @@ import ImageIO
         return count >= 3 ? (marker, count, String(line.dropFirst(count)).trimmingCharacters(in: .whitespaces)) : nil
     }
     static func cells(_ line: String) -> [String] {
-        let value = line.trimmingCharacters(in: .whitespaces)
-        var result: [String] = [], cell = "", code = 0, cursor = value.startIndex
-        while cursor < value.endIndex {
-            let char = value[cursor]; cursor = value.index(after: cursor)
-            if char == "\\", cursor < value.endIndex {
-                let next = value[cursor]; cell += next == "|" ? "|" : "\\" + String(next); cursor = value.index(after: cursor); continue
-            }
-            if char == "`" {
-                let remaining = value[cursor...].prefix(while: { $0 == "`" }).count, count = remaining + 1
-                cursor = value.index(cursor, offsetBy: remaining)
-                if code == 0 { code = count } else if code == count { code = 0 }
-                cell += String(repeating: "`", count: count); continue
-            }
-            if char == "|", code == 0 { result.append(cell.trimmingCharacters(in: .whitespaces)); cell = "" } else { cell.append(char) }
-        }
-        result.append(cell.trimmingCharacters(in: .whitespaces))
-        if value.hasPrefix("|"), result.first == "" { result.removeFirst() }
-        if value.hasSuffix("|"), result.last == "" { result.removeLast() }
-        return result
+        AgentMarkdownEditing.cells(line).map(\.text)
     }
     private static func tableAlignment(_ line: String) -> [NSTextAlignment]? {
         let parts = cells(line)
-        guard line.contains("|"), parts.count > 1, parts.allSatisfy({ $0.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
+        guard line.contains("|"), !parts.isEmpty, parts.allSatisfy({ $0.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
         return parts.map { $0.hasSuffix(":") ? ($0.hasPrefix(":") ? .center : .right) : .left }
     }
     private static func imageLink(_ text: String) -> (alt: String, url: URL)? {
