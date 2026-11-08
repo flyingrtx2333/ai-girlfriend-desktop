@@ -16,6 +16,7 @@ import Foundation
     lazy var projectChanges = AgentProjectChanges(store: self)
     lazy var canvases = AgentCanvas(store: self)
     lazy var offices = AgentOffice(store: self)
+    lazy var dataImport = AgentDataImport(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
@@ -84,6 +85,15 @@ import Foundation
         value.agent?.profile.instructions = ""
         value.team?.team.instructions = ""
         return value
+    }
+    func installImportedRecord(_ value: AgentTaskRecord) throws {
+        guard UUID(uuidString: value.id) != nil, value.importOrigin != nil, ![.running, .waiting].contains(value.status), value.pendingCalls.isEmpty, value.approvals.isEmpty, value.automation == nil, value.agent == nil, value.team == nil else { throw PetError("导入任务包含不能继承的运行状态") }
+        let previousTasks = tasks, previousCache = cache[value.id]
+        if let index = tasks.firstIndex(where: { $0.id == value.id }) { tasks[index] = Self.metadata(value) }
+        else { tasks.append(Self.metadata(value)) }
+        cache[value.id] = value
+        do { try save(value.id) } catch { tasks = previousTasks; cache[value.id] = previousCache; writeError = error.localizedDescription; throw error }
+        tasks.sort { $0.updated > $1.updated }; trimCache(keeping: value.id)
     }
     func task(_ id: String) -> AgentTaskRecord? {
         if let cached = cache[id] { return cached }

@@ -41,7 +41,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -95,6 +95,7 @@ final class FormDocumentView: NSView {
     private var worktreeWindow: AgentWorktreeWindow?
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
     private var worktreePolicyPanel: AgentWorktreePolicyView?
+    private var dataImportView: AgentDataImportView?
     private var generalSettingsSave: NSButton?
     private let executionLocation = AgentWorkbenchButton()
     private let branchControl = AgentWorkbenchButton()
@@ -424,6 +425,7 @@ final class FormDocumentView: NSView {
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
+        if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
         menu.addItem(.separator())
         let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
         let recap = NSMenuItem(title: "任务回顾", action: #selector(showTaskRecap), keyEquivalent: ""); recap.target = self; menu.addItem(recap)
@@ -485,8 +487,9 @@ final class FormDocumentView: NSView {
             button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true; categoryButtons.append(button)
         }
         let column = stack([back, settingsSearch, caption, navigation], vertical: true, spacing: 18)
-        settingsSidebar.addSubview(column)
-        NSLayoutConstraint.activate([column.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), column.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
+        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
+        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(column); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
     }
     @objc private func returnToChat() { companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
@@ -504,7 +507,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports"].contains($0.category) }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -693,6 +696,8 @@ final class FormDocumentView: NSView {
             group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
             let panel = AgentWorktreePolicyView(store: store) { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
             worktreePolicyPanel = panel; row("", panel)
+            group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
+            let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
         }
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
@@ -1216,6 +1221,14 @@ final class FormDocumentView: NSView {
             guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" else { return }
             saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
             if tasks.selectedID == id { selectAgentTask(id) }
+        case "import-source":
+            guard let origin = task.importOrigin else { return }
+            let alert = NSAlert(); alert.messageText = origin.source.title + "导入记录"
+            alert.informativeText = "原工作目录：" + (origin.originalWorkspace ?? "无") + "\n来源：" + origin.sourceFile + (origin.warnings.isEmpty ? "" : "\n" + origin.warnings.joined(separator: "\n"))
+            alert.addButton(withTitle: "来源副本"); alert.addButton(withTitle: "关闭")
+            if alert.runModal() == .alertFirstButtonReturn {
+                do { NSWorkspace.shared.activateFileViewerSelecting([try tasks.dataImport.sourceURL(id)]) } catch { setStatus(error.localizedDescription, error: true) }
+            }
         case "fork": saveAgentDraft(); if let next = tasks.fork(id) { selectAgentTask(next) }
         case "archive":
             saveAgentDraft(); tasks.update(id) { $0.archived.toggle() }
@@ -1705,6 +1718,8 @@ extension ControlWindow {
 
 @MainActor extension ControlWindow {
     func showAgentTask(_ id: String) { selectAgentTask(id) }
+    func refreshDataImport() { dataImportView?.refresh() }
+    func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
     func switchWorkMode(_ mode: AgentWorkMode) {
         guard let tasks = companion?.agentStore, tasks.selected?.organizationMode != mode else { return }
         saveAgentDraft()

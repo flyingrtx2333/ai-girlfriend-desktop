@@ -32,12 +32,14 @@ struct AgentMessage: Codable, Identifiable {
     var toolCallID: String?
     var attachmentIDs: [String]?
     var nativeContext: Bool?
+    var importedContext: Bool?
     var visuals: [AgentVisualPart]?
     var visualsDelivered: Bool?
     var extensionInstructions: String?
     var extensionReferences: [AgentExtensionReference]?
     var hookRejected: Bool?
     var isHumanInput: Bool { role == "user" && nativeContext != true && hookRejected != true }
+    var isImportedContext: Bool { nativeContext == true && (importedContext == true || content.hasPrefix("[Codex历史记录，仅作资料") || content.hasPrefix("[Qoder历史记录，仅作资料")) }
     var wire: [String: Any] {
         let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
         var value: [String: Any] = ["role": role, "content": content + references + (extensionInstructions.map { "\n\n" + $0 } ?? "")]
@@ -58,7 +60,7 @@ struct AgentEvent: Codable, Identifiable {
     var toolCallID: String?
     var hook: AgentHookExecution?
     var childTaskID: String?
-    var statusTitle: String { ["running": "运行中", "completed": "已完成", "failed": "失败", "stopped": "已停止", "blocked": "已拦截", "waiting": "待确认"][status] ?? status }
+    var statusTitle: String { ["running": "运行中", "completed": "已完成", "failed": "失败", "stopped": "已停止", "blocked": "已拦截", "waiting": "待确认", "imported": "历史记录"][status] ?? status }
 }
 struct AgentPlanStep: Codable, Identifiable {
     var id = UUID().uuidString
@@ -99,6 +101,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var workspace: String?
     var workMode: AgentWorkMode?
     var organizationMode: AgentWorkMode { workMode ?? .coding }
+    var importOrigin: AgentImportOrigin?
     var mode = AgentMode.agent
     var permission = AgentPermissionMode.workspace
     var status = AgentTaskStatus.ready

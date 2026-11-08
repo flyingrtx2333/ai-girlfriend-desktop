@@ -42,7 +42,11 @@ import Foundation
         task.contextThroughID.flatMap { id in task.messages.firstIndex(where: { $0.id == id }).map { $0 + 1 } } ?? 0
     }
     static func window(_ task: AgentTaskRecord, maximumImages: Int = 2, includeDeliveredImages: Bool = true, archivedFactBudget: Int = 0) -> [AgentMessage] {
-        var messages = Array(task.messages.dropFirst(offset(task))).filter { $0.hookRejected != true }
+        var messages = Array(task.messages.dropFirst(offset(task))).filter { $0.hookRejected != true && !(task.importOrigin != nil && $0.isImportedContext) }
+        if task.importOrigin != nil {
+            let imported = task.messages.enumerated().filter { $0.element.isImportedContext }
+            if let first = imported.first { messages.insert(AgentMessage(role: "user", content: "外部来源的\(imported.count)条工具资料保留在原始历史中，没有当作本次执行结果。需要时用 read_task_history(offset=\(first.offset)) 分段读取；imported=true可读取来源原文。按本轮要求先核对当前文件，不重放旧操作。", nativeContext: true), at: 0) }
+        }
         if !includeDeliveredImages { for i in messages.indices where messages[i].visualsDelivered != false { messages[i].visuals = nil } }
         if let summary = task.contextSummary, !summary.isEmpty {
             let inputs = task.messages.prefix(offset(task)).filter(\.isHumanInput)
@@ -107,6 +111,7 @@ import Foundation
         return selected.isEmpty ? "" : heading + selected.sorted { $0.0 < $1.0 }.map(\.1).joined(separator: "\n\n")
     }
     private static func digest(_ message: AgentMessage, index: Int) -> String {
+        if message.isImportedContext { return "[记录\(index) · 外部工具资料，完整内容用read_task_history offset=\(index)核对，不代表当前执行证据]\n" + String(message.content.split(separator: "\n", omittingEmptySubsequences: false).dropFirst().prefix(2).joined(separator: "\n").prefix(240)) }
         if message.hookRejected == true { return "[记录 \(index) · 输入被 Hook 阻止，未送入模型]" }
         var content = message.content + (message.extensionInstructions.map { "\n[用户选择的扩展说明]\n" + $0 } ?? "")
         if message.role == "tool", content.count > 4000 { content = String(content.prefix(2000)) + "\n[中段省略，可通过 read_task_history 核对]\n" + content.suffix(2000) }
