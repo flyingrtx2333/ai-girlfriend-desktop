@@ -753,3 +753,6 @@ Markdown 产物、Wiki 与只读来源窗口现可将 Mermaid 代码块绘制为
 最终记录在 `evidence/agent/bluefatfish-markdown-edit-Oq2vzj`；`EBLk3c` 的 BOM 保存失败和 `EZZQFP` 的撤销／Command+Return 失败均保留，分别修正实际内容解码与原生响应链后复验，没有重置或隐藏失败。构建及部署记录存于 `evidence/agent/markdown-edit-host-20261109`。本轮未调用模型，已有知识卡片127／128份回执不变；实际运行主机为 macOS 26.6.2，最低 macOS 14未另做实机验收。
 
 这是按块就地编辑，表格增删行列、冲突比较／合并、其他编码重开、视频、完整 Wiki 维护及其余已列功能仍在原目标内；完整目标保持 active，完整 IDE 不在范围内。
+
+
+功能已提交并推送为 `e2494f5`，同一严格签名候选已更新主目录日常应用并打开工作台。实际PID93870、二进制SHA256 `ee6d17bb261085e629c0bec15dcc7b91fe4d27604f15d17e1c9c40d92b3d7307` 与验收候选一致，167份受版本管理的构建输入与提交源码一致。两份原有任务、选中任务、空草稿及21项配置／记录逐字节保留，没有安装验收任务。旧版保存在 `build/backups/before-markdown-edit-20261109-021227.app`；运行及保护回读见 `evidence/agent/markdown-edit-host-20261109/deployment`。本轮临时构建服务已移除并归档，开发防闲置显示／系统休眠断言仍各为1，减弱动态效果仍关闭。
