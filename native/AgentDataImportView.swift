@@ -32,6 +32,7 @@ import AppKit
         let header = NSStackView(views: [source, folder, detect]); header.spacing = 8
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
         let actions = NSStackView(views: [state, NSView(), begin, pause, resume, cancel]); actions.spacing = 6
+        for line in [header, selection, actions] { line.distribution = .fill }
         let column = NSStackView(views: [header, selection, list, preview, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), source.widthAnchor.constraint(equalToConstant: 96), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), list.heightAnchor.constraint(equalToConstant: 236), preview.heightAnchor.constraint(equalToConstant: 142)])
@@ -47,7 +48,7 @@ import AppKit
         states = viewingPreview ? [:] : Dictionary((batch?.items ?? []).map { ($0.id, $0.state == "failed" ? "失败：" + $0.detail : ["pending": "等待导入", "imported": "已导入"][ $0.state ] ?? $0.state) }, uniquingKeysWith: { _, last in last })
         let next = rows.map { $0.id + $0.sourceHash + ($0.issue ?? "") }.joined()
         if signature != next { signature = next; selected = Set(rows.filter { $0.issue == nil && viewingPreview }.map(\.id)) }
-        folder.title = root.lastPathComponent; folder.toolTip = root.path
+        folder.title = (root.path as NSString).abbreviatingWithTildeInPath; folder.toolTip = root.path
         source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
         selectAll.isEnabled = viewingPreview && !service.active && !service.scanning && rows.contains { $0.issue == nil }; selectAll.state = selected.isEmpty ? .off : selected.count == rows.filter({ $0.issue == nil }).count ? .on : .mixed
         let previous = table.selectedRow; table.reloadData(); if rows.indices.contains(previous) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }

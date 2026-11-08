@@ -698,6 +698,7 @@ final class FormDocumentView: NSView {
             worktreePolicyPanel = panel; row("", panel)
             group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
+            imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
