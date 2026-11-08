@@ -32,7 +32,7 @@ import AppKit
         applying = true; defer { applying = false }
         roots = []; nodes = [:]
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = pages.filter { query.isEmpty || ($0.title + "\n" + String($0.path.dropFirst(".bluefatfish/wiki/".count))).range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil }
+        let filtered = pages.filter { query.isEmpty || ($0.title + "\n" + $0.path).range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil }
         for page in filtered {
             let parts = page.path.dropFirst(".bluefatfish/wiki/".count).split(separator: "/").map(String.init)
             var path = ".bluefatfish/wiki", parent: Node?

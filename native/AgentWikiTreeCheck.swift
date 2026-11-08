@@ -16,6 +16,7 @@ import AppKit
             checks["rootIndexRemainsFirstAndHiddenSensitiveSymlinkEntriesExcluded"] = pages.first == ".bluefatfish/wiki/index.md" && !pages.contains { $0.contains("link") || $0.contains(".env") || $0.contains(".hidden") }
             checks["UTF16BOMDocumentTitleUsesActualMarkdownHeading"] = catalog.first { $0.path == guide }?.title == "图表与选文" && catalog.first { $0.path.contains("编码 说明😀") }?.title == "图表与选文"
             checks["UppercaseMarkdownExtensionAndMarkdownNamedDirectoryWork"] = catalog.first { $0.path == ".bluefatfish/wiki/目录.md/开发说明.MARKDOWN" }?.title == "开发与版本管理"
+            checks["actualReadmeHeadingBadgesBecomePlainTitles"] = catalog.first { $0.path == ".bluefatfish/wiki/依赖/clsx/README.md" }?.title.hasPrefix("clsx") == true && catalog.allSatisfy { !$0.title.contains("![") && !$0.title.contains("](https://") }
             let otherWorkspace = output.appendingPathComponent("link-root-workspace"); try fm.createDirectory(at: otherWorkspace.appendingPathComponent(".bluefatfish"), withIntermediateDirectories: true)
             try fm.createSymbolicLink(at: otherWorkspace.appendingPathComponent(".bluefatfish/wiki"), withDestinationURL: workspace.appendingPathComponent(".bluefatfish/wiki"))
             do { _ = try AgentWiki.pages(workspace: otherWorkspace.path); checks["symbolicWikiRootRejected"] = false } catch { checks["symbolicWikiRootRejected"] = true }

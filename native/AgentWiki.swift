@@ -49,7 +49,8 @@ struct AgentWikiPage {
                 if frontmatter { if text == "---" || text == "..." { frontmatter = false }; continue }
                 guard let marker = text.range(of: "^#{1,6}\\s+", options: .regularExpression) else { break }
                 let title = String(text[marker.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
-                return AgentWikiPage(path: path, title: title.isEmpty ? fallback : String(title.prefix(200)))
+                let plain = (try? AttributedString(markdown: title, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))).map { String($0.characters) } ?? title
+                return AgentWikiPage(path: path, title: plain.isEmpty ? fallback : String(plain.prefix(200)))
             }
             return AgentWikiPage(path: path, title: fallback)
         }
