@@ -3,15 +3,56 @@ import Foundation
 struct AgentWikiManifest: Codable {
     var taskID: String; var revision: String; var created: Date; var pages: [String: String]; var sources: [String]
 }
+struct AgentWikiPage {
+    let path: String, title: String
+}
 
 @MainActor enum AgentWiki {
     static let required = ["index.md", "architecture.md", "workflows.md", "conventions.md"].map { ".bluefatfish/wiki/" + $0 }
     static func pages(workspace: String?) throws -> [String] {
-        let files = try AgentFiles(workspace: workspace), root = try files.resolve(".bluefatfish/wiki")
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]).filter {
-            let info = try $0.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]); return $0.pathExtension == "md" && info.isRegularFile == true && info.isSymbolicLink != true
-        }.prefix(40).map { files.relative($0) }.sorted { a, b in a.hasSuffix("/index.md") != b.hasSuffix("/index.md") ? a.hasSuffix("/index.md") : a < b }
+        let files = try AgentFiles(workspace: workspace), root = files.root.appendingPathComponent(".bluefatfish/wiki", isDirectory: true)
+        let metadata = try files.entryMetadata(root)
+        guard metadata.kind != "missing" else { return [] }
+        guard metadata.kind == "directory" else { throw PetError("Wiki 目录不是普通文件夹") }
+        var failure: Error?
+        guard let iterator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { _, error in failure = error; return false }) else { throw PetError("Wiki 目录不可读") }
+        var result: [String] = [], visited = 0
+        while let url = iterator.nextObject() as? URL {
+            visited += 1
+            guard visited <= 10_000 else { throw PetError("Wiki 目录超过 10000 个条目，请缩小目录范围") }
+            let info = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+            if info.isSymbolicLink == true { iterator.skipDescendants(); continue }
+            let path = files.relative(url)
+            if AgentFiles.sensitive(path) { iterator.skipDescendants(); continue }
+            guard path.hasPrefix(".bluefatfish/wiki/") else { throw PetError("Wiki 目录位置已变化，请刷新") }
+            guard path.split(separator: "/").count <= 34 else { throw PetError("Wiki 目录超过 32 层，请缩小目录范围") }
+            if info.isRegularFile == true, ["md", "markdown"].contains(url.pathExtension.lowercased()) {
+                result.append(path)
+                guard result.count <= 1000 else { throw PetError("Wiki 超过 1000 页，请缩小目录范围") }
+            }
+        }
+        if let failure { throw failure }
+        return result.sorted { a, b in let first = a == ".bluefatfish/wiki/index.md", second = b == ".bluefatfish/wiki/index.md"; return first != second ? first : a < b }
+    }
+    static func catalog(workspace: String?) throws -> [AgentWikiPage] {
+        let files = try AgentFiles(workspace: workspace); var titleBytes = 0
+        return try pages(workspace: workspace).map { path in
+            let file = try files.resolve(path), fallback = file.deletingPathExtension().lastPathComponent
+            guard titleBytes < 4_000_000, let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 64_000,
+                  let data = try? files.readData(file, maximum: 64_000), let decoded = try? AgentTextFile.decode(data) else { return AgentWikiPage(path: path, title: fallback) }
+            titleBytes += data.count
+            var frontmatter = false, first = true
+            for line in AgentMarkdownEditing.lines(decoded.text).prefix(64) {
+                let text = line.text.trimmingCharacters(in: .whitespaces)
+                if text.isEmpty { continue }
+                if first && text == "---" { frontmatter = true; first = false; continue }; first = false
+                if frontmatter { if text == "---" || text == "..." { frontmatter = false }; continue }
+                guard let marker = text.range(of: "^#{1,6}\\s+", options: .regularExpression) else { break }
+                let title = String(text[marker.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+                return AgentWikiPage(path: path, title: title.isEmpty ? fallback : String(title.prefix(200)))
+            }
+            return AgentWikiPage(path: path, title: fallback)
+        }
     }
     static func manifest(store: AgentStore, taskID: String) throws -> AgentWikiManifest? {
         let index = try AgentProjectIndex(workspace: store.task(taskID)?.workspace, storage: store.directory)
@@ -24,6 +65,7 @@ struct AgentWikiManifest: Codable {
         guard let manifest = try manifest(store: store, taskID: taskID) else { return "未校验" }
         let index = try AgentProjectIndex(workspace: store.task(taskID)?.workspace, storage: store.directory)
         guard manifest.revision == index.snapshot()?.revision else { return "需更新" }
+        guard Set(manifest.pages.keys) == Set(try pages(workspace: task?.workspace)) else { return "已编辑" }
         for (path, hash) in manifest.pages {
             guard let data = try? index.files.readData(index.files.resolve(path), maximum: 256_000), AgentFiles.hash(data) == hash else { return "已编辑" }
         }

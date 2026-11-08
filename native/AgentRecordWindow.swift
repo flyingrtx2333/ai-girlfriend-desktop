@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
     private let store: AgentStore, taskID: String
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
+    private let list = NSScrollView(), wikiTree = AgentWikiTree()
     private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
     private let readingToolbar = NSStackView()
     private lazy var sourceSelection = AgentMarkdownSelectionAction(text: text, button: sourceAdd) { [weak self] in
@@ -45,7 +46,12 @@ import UniformTypeIdentifiers
         sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = min(6, max(0, section)); activeSection = sections.selectedSegment
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        list.documentView = table; list.hasVerticalScroller = true
+        let navigation = NSView()
+        for child in [list, wikiTree] { navigation.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: navigation.topAnchor), child.leadingAnchor.constraint(equalTo: navigation.leadingAnchor), child.trailingAnchor.constraint(equalTo: navigation.trailingAnchor), child.bottomAnchor.constraint(equalTo: navigation.bottomAnchor)]) }
+        wikiTree.canSelect = { [weak self] path in guard let self else { return false }; return path == self.selection || self.canLeave() }
+        wikiTree.onSelect = { [weak self] path in guard let self, path != self.selection else { return }; self.loadSelection(path) }
+        wikiTree.onRefresh = { [weak self] in self?.refreshWikiCatalog() }
         text.isRichText = false; text.isEditable = false; text.previewUndoManager = UndoManager(); text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
@@ -75,14 +81,15 @@ import UniformTypeIdentifiers
         compare.target = self; compare.action = #selector(presentConflict); compare.setAccessibilityLabel("比较磁盘文件与草稿")
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, compare, save]); actions.spacing = 8
-        for view in [sections, list, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: list.topAnchor), documentPane.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+        for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func selectItem(section: Int, value: String) {
         guard canLeave() else { return }
         sections.selectedSegment = min(6, max(0, section)); refresh()
+        if section == 6 { _ = wikiTree.select(value); return }
         if let index = items.firstIndex(where: { $0.value == value }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); table.scrollRowToVisible(index) }
     }
     @objc private func refresh() {
@@ -90,6 +97,7 @@ import UniformTypeIdentifiers
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
+        wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
         guard let task = store.task(taskID) else { return }
         newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
         openOffice.isEnabled = task.workspace != nil; newOffice.isEnabled = task.workspace != nil && ![.running, .waiting].contains(task.status) && !task.archived
@@ -103,14 +111,23 @@ import UniformTypeIdentifiers
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
         case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         case 6:
-            do { items = try AgentWiki.pages(workspace: task.workspace).map { (URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent, $0) }; state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
-            catch { items = []; state.stringValue = error.localizedDescription }
+            do { let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: items.first?.value); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
+            catch { items = []; wikiTree.show([], selected: nil); state.stringValue = error.localizedDescription }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
         }
         if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
-        if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if sections.selectedSegment == 6 { if let first = items.first { loadSelection(first.value) } }
+        else if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+    }
+    private func refreshWikiCatalog() {
+        guard sections.selectedSegment == 6, let task = store.task(taskID) else { return }
+        do {
+            let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: selection)
+            if let selection, !pages.contains(where: { $0.path == selection }) { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
+            else if selection == nil, let first = items.first { _ = wikiTree.select(first.value) }
+        } catch { state.stringValue = error.localizedDescription }
     }
     func refreshLiveRecords(_ id: String) {
         guard id == taskID, window?.isVisible == true, [3, 4].contains(sections.selectedSegment), !dirty, let task = store.task(taskID) else { return }
@@ -130,13 +147,17 @@ import UniformTypeIdentifiers
         let label = NSTextField(labelWithString: items[row].title); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = items[row].value; return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard items.indices.contains(table.selectedRow), let task = store.task(taskID) else { return }
+        guard items.indices.contains(table.selectedRow) else { return }
         guard canLeave() else {
             table.delegate = nil
             if let previous = items.firstIndex(where: { $0.value == selection }) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
             table.delegate = self; return
         }
-        load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
+        loadSelection(items[table.selectedRow].value)
+    }
+    private func loadSelection(_ value: String) {
+        guard let task = store.task(taskID) else { return }
+        load?.cancel(); selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true; open.title = "打开"
         do {
@@ -241,7 +262,8 @@ import UniformTypeIdentifiers
             let files = try AgentFiles(workspace: workspace), target = try AgentMarkdownDocument.target(url, document: file, files: files)
             if let row = items.firstIndex(where: { (try? files.resolve($0.value).path) == target.path }) {
                 guard canLeave() else { return }
-                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row)
+                if sections.selectedSegment == 6 { _ = wikiTree.select(items[row].value) }
+                else { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
                 _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
             } else if AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, separate: true) }
             else {
@@ -381,12 +403,13 @@ import UniformTypeIdentifiers
         return result
     }
     func markdownEditingReadback() async -> [String: Any] {
-        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         await markdown.waitForDiagrams()
         let data = try? fileData()
         var result: [String: Any] = ["draft": text.string, "encodedDraft": fileContent, "encodedDraftBase64": data?.base64EncodedString() ?? "", "draftHash": data.map(AgentFiles.hash) ?? "", "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "encoding": fileFormat.encoding.rawValue, "byteOrderMark": fileFormat.bom, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState, "comparison": conflictWindow?.checkState ?? [:]]
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
+        if CommandLine.arguments.contains("--wiki-tree-check") { result["tree"] = wikiTree.checkState; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         return result
     }
     func checkMarkdown() -> [String: Bool] {

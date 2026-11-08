@@ -7,8 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const tables = process.argv.includes('--tables'), encodings = process.argv.includes('--encodings'), conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts || encodings || tables;
-const prefix = tables ? 'markdown-table' : encodings ? 'text-encoding' : conflicts ? 'file-conflict' : editing ? 'markdown-edit' : 'markdown';
+const tree = process.argv.includes('--wiki-tree'), tables = process.argv.includes('--tables'), encodings = process.argv.includes('--encodings'), conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts || encodings || tables || tree;
+const prefix = tree ? 'wiki-tree' : tables ? 'markdown-table' : encodings ? 'text-encoding' : conflicts ? 'file-conflict' : editing ? 'markdown-edit' : 'markdown';
 const candidate = process.argv.indexOf('--candidate-app');
 if (candidate < 0 || !process.argv[candidate + 1]) throw new Error('Use --candidate-app <signed application>');
 const app = path.resolve(process.argv[candidate + 1]);
@@ -35,6 +35,30 @@ for (const name of documents) {
   await mkdir(path.dirname(path.join(source, name)), { recursive: true }); await writeFile(path.join(source, name), bytes);
 }
 await writeFile(path.join(output, prefix + '-source-origin.json'), JSON.stringify({ repository: root, source, files: sourceHashes }, null, 2));
+if (tree) {
+  const workspace = path.join(output,'workspace'), wiki = '.bluefatfish/wiki/', imported = {};
+  async function document(origin, relative, converted) {
+    const data = await readFile(path.join(root,origin)); sourceHashes[origin] = hash(data);
+    await mkdir(path.dirname(path.join(source,origin)),{recursive:true}); await writeFile(path.join(source,origin),data);
+    const bytes = converted ?? data; await mkdir(path.dirname(path.join(workspace,relative)),{recursive:true}); await writeFile(path.join(workspace,relative),bytes); imported[relative] = {origin,sha256:hash(bytes)};
+  }
+  for (const name of ['README.md','docs/DEVELOPMENT.md','docs/AGENT-READING.md','docs/ROADMAP.md']) await document(name,wiki+'项目/'+name);
+  await cp(path.join(source,'docs/media'),path.join(workspace,wiki+'项目/docs/media'),{recursive:true});
+  const text=(await readFile(path.join(source,'docs/AGENT-READING.md'),'utf8')).replace(/\r\n/g,'\n').replace(/\n/g,'\r\n');
+  const convert = value => {const result=spawnSync('/usr/bin/iconv',['-f','UTF-8','-t','UTF-16LE'],{input:Buffer.from(value),maxBuffer:16_000_000});if(result.status!==0)throw Error('Independent UTF-16 conversion failed');return Buffer.concat([Buffer.from([255,254]),result.stdout]);};
+  await document('docs/AGENT-READING.md',wiki+'项目/docs/AGENT-READING.md',convert(text));
+  await document('docs/AGENT-READING.md',wiki+'项目/编码 说明😀.markdown',convert(text));
+  await document('docs/DEVELOPMENT.md',wiki+'目录.md/开发说明.MARKDOWN');
+  const packages=(await readdir(path.join(root,'node_modules'),{withFileTypes:true})).filter(e=>e.isDirectory()&&!e.name.startsWith('.')&&!e.name.startsWith('@')).map(e=>e.name).sort();let count=0;
+  for(const name of packages){const file='node_modules/'+name+'/README.md';let data;try{data=await readFile(path.join(root,file));}catch(error){if(error.code==='ENOENT')continue;throw error;}if(data.length>64000)continue;await document(file,wiki+'依赖/'+name+'/README.md');if(++count===44)break;}
+  if(count!==44)throw Error('Need actual installed dependency documentation to verify the old 40-page limit');
+  const index='# 项目文档\n\n[预览编辑](项目/docs/AGENT-READING.md#预览编辑)\n\n[开发与版本管理](项目/docs/DEVELOPMENT.md#目录)\n\n此目录为实际项目文档和已安装依赖说明的人工导航，不是本轮模型生成结果。\n';
+  await mkdir(path.join(workspace,wiki),{recursive:true});await writeFile(path.join(workspace,wiki+'index.md'),index);imported[wiki+'index.md']={origin:'manual acceptance navigation',sha256:hash(Buffer.from(index))};
+  const paragraph=text.split('\r\n').find(l=>l.startsWith('任务记录的 Markdown')), replacement='任务记录的 Markdown 文档已从 Wiki 文档树定位；这份实际修改应在刷新目录与切换保护中保留。';
+  const saved=convert(text.replace(paragraph,replacement));await writeFile(path.join(output,'wiki-tree-expected-saved.bin'),saved);
+  await writeFile(path.join(output,'wiki-tree-plan.json'),JSON.stringify({workspace,imported,initialPages:Object.keys(imported).sort(),target:wiki+'项目/docs/AGENT-READING.md',paragraphBefore:paragraph,paragraphAfter:replacement,savedHash:hash(saved),added:wiki+'新增/ROADMAP.md',removed:wiki+'依赖/any-promise/README.md',description:'Actual repository Markdown and 44 installed dependency READMEs; manual navigation is explicitly labeled; not a generation or model-quality check'},null,2));
+  await writeFile(path.join(output,prefix+'-source-origin.json'),JSON.stringify({repository:root,source,files:sourceHashes},null,2));
+}
 if (tables) {
   const fixtures = path.join(output, 'table-fixtures'); await mkdir(fixtures);
   const guide = (await readFile(path.join(source, 'docs/AGENT-READING.md'), 'utf8')).replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
@@ -128,7 +152,7 @@ try {
   report.actualTaskReadback = { tasks: records.length, modelRequests: records.reduce((sum, record) => sum + (record.modelReceipts?.length ?? 0), 0), messages: records.reduce((sum, record) => sum + record.messages.length, 0), queued: records.reduce((sum, record) => sum + (record.queuedMessages?.length ?? 0) + (record.queuedInputs?.length ?? 0), 0) };
   const originalDocuments = await Promise.all(Object.entries(sourceHashes).map(async ([name, digest]) => hash(await readFile(path.join(root, name))) === digest));
   report.independent = { dailyProfileUnchanged: isDeepStrictEqual(before, await snapshot()), binaryMatches: report.binaryHash === binaryHash, projectSignatureVerified: true, originalRepositoryDocumentsUnchanged: originalDocuments.every(Boolean), actualTaskFilesHaveNoModelRequestsOrMessages: records.length >= 3 && report.actualTaskReadback.modelRequests === 0 && report.actualTaskReadback.messages === 0 && report.actualTaskReadback.queued === 0, bothTaskDraftsPersisted: (editing ? originalTask?.draft === '保留的A草稿' : originalTask?.draft?.startsWith('保留的A草稿\n\n[文件选文：docs/AGENT-READING.md]') === true) && otherTask?.draft === '保留的B草稿' };
-  if (editing && !conflicts && !encodings && !tables) {
+  if (editing && !conflicts && !encodings && !tables && !tree) {
     const plan = JSON.parse(await readFile(path.join(output, 'markdown-edit-plan.json'), 'utf8'));
     report.independent.externalVersionPreserved = hash(await readFile(plan.file)) === plan.externalHash;
     report.independent.unsavedDraftRetained = hash(await readFile(path.join(output, 'retained-unsaved-draft.md'))) === plan.draftHash;
@@ -152,6 +176,12 @@ try {
     report.independent.unsavedTableBytesMatchIndependentIconv = hash(Buffer.from(final.encodedDraftBase64,'base64')) === plan.hashes.unsaved && final.openedHash === plan.hashes.alignCenter && final.dirty === true;
     const saved = JSON.parse(await readFile(path.join(output,'native-table-saved.json'),'utf8'));
     report.independent.actualSavedTableMatchesIndependentBytes = saved.draftHash === plan.hashes.alignCenter && saved.openedHash === plan.hashes.alignCenter && saved.dirty === false;
+  }
+  if (tree) {
+    const plan=JSON.parse(await readFile(path.join(output,'wiki-tree-plan.json'),'utf8')), final=JSON.parse(await readFile(path.join(output,'native-wiki-tree-final.json'),'utf8'));
+    report.independent.actualSavedWikiBytesMatchIndependentIconv=hash(await readFile(path.join(plan.workspace,plan.target)))===plan.savedHash;
+    report.independent.actualDirectoryRefreshAddsAndRemovesDocuments=final.tree.pages.some(p=>p.path===plan.added)&&!final.tree.pages.some(p=>p.path===plan.removed);
+    report.independent.otherImportedDocumentsUnchanged=(await Promise.all(Object.entries(plan.imported).filter(([name])=>![plan.target,plan.removed].includes(name)).map(async([name,value])=>hash(await readFile(path.join(plan.workspace,name)))===value.sha256))).every(Boolean);
   }
   report.success &&= report.modelsCalled === false && Object.values(report.independent).every(Boolean);
 } catch (error) { report = { ...(report ?? {}), success: false, error: error.message }; }
