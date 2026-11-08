@@ -769,3 +769,6 @@ Markdown 产物、Wiki 与只读来源窗口现可将 Mermaid 代码块绘制为
 最终证据在 `evidence/agent/bluefatfish-file-conflict-39ESzO`，含实际截图、每步磁盘与检查点回读；`3YIQc5` 的 CRLF 混行失败及全部原记录保留。构建及部署记录存于 `evidence/agent/file-conflict-host-20261109`。3份检查任务的模型回执、消息和排队输入均为0，原有两份任务草稿与21项日常配置／记录保护通过。本轮未调用模型，也未追加或重置旧模型额度。实际主机为 macOS 26.6.2，最低 macOS 14未另作实机验收。
 
 其他编码重开、视频、表格结构操作、完整 Wiki 维护及其余既定范围继续推进；完整目标保持 active，完整 IDE 仍不在范围内。
+
+
+功能已提交并推送为 `1504bfa`，同一严格签名候选已更新主目录日常应用并打开工作台。实际PID97910、二进制SHA256 `f58daab1d9b4876dcf84a4dfa36979f26fe90d462793f90293ec83f0bbaf9b6b` 与验收候选一致，169份受版本管理的构建输入与提交源码一致。原有两份任务、选中任务、空草稿及21项配置／记录逐字节保留，没有安装验收任务。旧版保存在 `build/backups/before-file-conflict-20261109-025106.app`；部署、实际工作台截图与运行回读见 `evidence/agent/file-conflict-host-20261109/deployment`。本轮临时构建服务已移除并归档，开发防闲置显示／系统休眠断言仍各为1，减弱动态效果仍关闭。
