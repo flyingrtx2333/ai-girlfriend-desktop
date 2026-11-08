@@ -79,7 +79,11 @@ final class AgentCommand: @unchecked Sendable {
         let invocation = arguments.map { [command] + $0 } ?? [shell ?? "/bin/sh", "-c", command]
         let launchArguments = ["/usr/bin/sandbox-exec", "-p", profile] + invocation
         var environment = inheritEnvironment ? ProcessInfo.processInfo.environment.filter { Self.validEnvironmentName($0.key) && !Self.launcherEnvironment($0.key) && !$0.value.contains("\0") } : [:]
-        let baseEnvironment = ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": NSHomeDirectory(), "TMPDIR": scratchPath, "LANG": "en_US.UTF-8", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "XDG_CACHE_HOME": scratchPath + "/cache", "npm_config_cache": scratchPath + "/npm", "XDG_CONFIG_HOME": gitConfiguration ? NSHomeDirectory() + "/.config" : scratchPath + "/config"]
+        // The system Git shim runs xcrun and needs a cache outside this command's
+        // writable roots. Reuse the resolved executable without widening access.
+        let gitBin = (try? AgentGit.executablePath()).map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
+        let toolPath = (["/opt/homebrew/bin", "/usr/local/bin"] + (gitBin.map { [$0] } ?? []) + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]).joined(separator: ":")
+        let baseEnvironment = ["PATH": toolPath, "HOME": NSHomeDirectory(), "TMPDIR": scratchPath, "LANG": "en_US.UTF-8", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "XDG_CACHE_HOME": scratchPath + "/cache", "npm_config_cache": scratchPath + "/npm", "XDG_CONFIG_HOME": gitConfiguration ? NSHomeDirectory() + "/.config" : scratchPath + "/config"]
         environment.merge(baseEnvironment) { _, value in value }
         if !gitConfiguration { environment["GIT_CONFIG_GLOBAL"] = "/dev/null"; environment["GIT_CONFIG_SYSTEM"] = "/dev/null" }
         environment.merge(extraEnvironment) { _, value in value }

@@ -16,7 +16,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     static let externalTools = ["git_prepare_push", "git_push", "git_push_status"]
     static let creationTools = ["git_worktree_branches", "git_prepare_worktree"]
     static let tools = ["git_status", "git_diff", "git_commit", "git_create_worktree", "git_init", "git_remotes"] + externalTools + AgentWorktreeEntry.tools + creationTools
-    private static let executable: Result<String, Error> = Result {
+    nonisolated private static let executable: Result<String, Error> = Result {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun"); process.arguments = ["--find", "git"]
         process.environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8"]
@@ -27,7 +27,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         guard process.terminationStatus == 0, path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else { throw PetError("找不到 Git，请先安装 Xcode 命令行工具") }
         return path
     }
-    static func executablePath() throws -> String { try executable.get() }
+    nonisolated static func executablePath() throws -> String { try executable.get() }
     let store: AgentStore, taskID: String, files: AgentFiles, directory: URL
     let scratch: URL
     private var command: AgentCommand?
