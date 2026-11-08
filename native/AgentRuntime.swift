@@ -348,7 +348,7 @@ import Foundation
                     let system = try self.systemContext(task), definitions = try self.toolDefinitions(task, preferences: p)
                     _ = try await AgentContext.messages(taskID: id, store: self.store, preferences: p, key: key, system: system, tools: definitions, force: true, compactEvent: { [weak self] event, trigger in
                         _ = try await self?.hook(event, id: id, trigger: trigger, value: "manual", fields: ["trigger": "manual"], secret: key)
-                    }) { [weak self] in self?.notifyChange(id) }
+                    }, requestCheck: self.modelRequestCheck) { [weak self] in self?.notifyChange(id) }
                     try Task.checkCancellation()
                 }
             } catch {
@@ -383,6 +383,7 @@ import Foundation
         let remainingMessages = task.messages.filter { $0.hookRejected != true }.suffix(16)
         for message in remainingMessages.reversed() { append("[最近记录，倒序 · \(message.role)]\n" + message.content, maximum: max(128, budget / 8)) }
         if !key.isEmpty { input = input.replacingOccurrences(of: key, with: "[Token 已隐藏]") }
+        try modelRequestCheck?()
         let turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: [AgentMessage(role: "user", content: input)], tools: [], purpose: "recap", onReceipt: { [store] in store.recordUsage(id, $0) }) { _ in }
         try Task.checkCancellation()
         guard turn.calls.isEmpty, store.task(id)?.messages.last?.id == task.messages.last?.id else { throw PetError("任务记录已变化，请重新生成回顾") }
@@ -730,7 +731,7 @@ import Foundation
                 let definitions = try toolDefinitions(task, preferences: p)
                 let context = try await AgentContext.messages(taskID: id, store: store, preferences: p, key: key, system: system, tools: definitions, compactEvent: { [weak self] event, trigger in
                     _ = try await self?.hook(event, id: id, trigger: trigger, value: "auto", fields: ["trigger": "auto"], secret: key)
-                }) { [weak self] in self?.notifyChange(id) }
+                }, requestCheck: modelRequestCheck) { [weak self] in self?.notifyChange(id) }
                 if flushHookContext(id) { continue }
                 if CommandLine.arguments.contains("--mcp-check") {
                     let toolData = (try? JSONSerialization.data(withJSONObject: definitions)) ?? Data()

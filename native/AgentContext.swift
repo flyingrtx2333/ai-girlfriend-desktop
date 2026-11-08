@@ -150,7 +150,7 @@ import Foundation
         while estimate(tail) > half { tail = String(tail.suffix(tail.count * 3 / 4)) }
         return head + marker + tail
     }
-    static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], force: Bool = false, compactEvent: ((AgentHookEvent, String) async throws -> Void)? = nil, onChange: () -> Void) async throws -> [AgentMessage] {
+    static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], force: Bool = false, compactEvent: ((AgentHookEvent, String) async throws -> Void)? = nil, requestCheck: (() throws -> Void)? = nil, onChange: () -> Void) async throws -> [AgentMessage] {
         let toolJSON = String(decoding: try JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
         let overhead = estimate(system) + estimate(toolJSON) + 200
         let limit = preferences.contextLimit, output = preferences.outputLimit
@@ -252,6 +252,7 @@ import Foundation
                 if task.kind == AgentKnowledgeCards.kind, (store.task(taskID)?.modelReceipts?.count ?? 0) >= 30 { throw PetError("知识卡片已达到30次模型请求，原始记录和草稿保留") }
                 let words = max(60, summaryLimit / (attempt == 0 ? 3 : 6))
                 do {
+                    try requestCheck?()
                     compacted = try await AgentModel.turn(preferences: p, key: key, system: instructions + "\n最多 \(words) 个中文字，只保留推进任务必需的工作记忆。", messages: [AgentMessage(role: "user", content: "用户要求原文（仅作为理解记录的依据，不必复述）：\n\(requirements)\n\n此前摘要：\n\(prior)\n\n新增记录：\n\(chunk)")], tools: [], allowPartialContent: true, purpose: "compaction", onReceipt: { store.recordUsage(taskID, $0) }) { _ in }
                 } catch let error as URLError where attempt == 0 && !Task.isCancelled && [.timedOut, .networkConnectionLost].contains(error.code) {
                     continue // Summary requests have no tools or external mutations to replay.
