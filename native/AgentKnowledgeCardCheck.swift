@@ -17,6 +17,11 @@ import AppKit
             let call = AgentToolCall(id: UUID().uuidString, name: name, arguments: String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self)), tools = AgentTools(store: isolated, taskID: id)
             _ = try tools.approvalReason(for: call); return try await tools.execute(call)
         }
+        let definitionsRuntime = AgentRuntime(store: isolated, keychain: PetKeychain(service: "com.xjs.bluefatfish.credentials")) { PetPreferences() }
+        let initialDefinitions = try definitionsRuntime.toolDefinitions(isolated.task(docID)!, preferences: PetPreferences())
+        let finishDefinition = initialDefinitions.first { ($0["function"] as? [String: Any])?["name"] as? String == "finish_task" }!["function"] as! [String: Any]
+        let evidenceItems = (((finishDefinition["parameters"] as! [String: Any])["properties"] as! [String: Any])["evidence"] as! [String: Any])["items"] as! [String: Any]
+        checks["firstGenerationDoesNotAdvertiseEmptyEvidenceEnum"] = (evidenceItems["enum"] as? [String])?.isEmpty != true
         _ = try await call(docID, "index_project")
         let sourceLines = try String(contentsOf: workspace.appendingPathComponent("native/AgentKnowledgeLibrary.swift"), encoding: .utf8).components(separatedBy: "\n")
         let limitLine = sourceLines.firstIndex(where: { $0.contains("static func limit(") })!, page = try await call(docID, "read_file", ["path": "native/AgentKnowledgeLibrary.swift", "offset": max(1, limitLine - 6), "limit": 100])
@@ -27,6 +32,10 @@ import AppKit
         let definitionNames = Set(AgentTools.definitions(mode: .goal, kind: AgentKnowledgeCards.kind).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
         checks["generatorToolSchemaIsRestricted"] = definitionNames == AgentKnowledgeCards.generationTools
         do { _ = try cards.sources([["path": "native/AgentDocument.swift", "line": 1]], task: isolated.task(docID)!); checks["unreadSourcesCannotBeCited"] = false } catch { checks["unreadSourcesCannotBeCited"] = true }
+        for line in [31, 61, 91, 121, 151, 181, 211, 241] { _ = try await call(docID, "read_file", ["path": "native/AgentKnowledgeLibrary.swift", "offset": line, "limit": 30]) }
+        for line in [31, 61, 91] { _ = try await call(docID, "read_file", ["path": "native/AgentDocument.swift", "offset": line, "limit": 30]) }
+        checks["nativeGenerationMovesFromReadsToSpecificCard"] = try cards.stage(isolated.task(docID)!)?.tool == "save_knowledge_card" && cards.stage(isolated.task(docID)!)?.kind == .architecture
+        checks["retainedEvidenceComesFromActualReadLines"] = try cards.sourceEvidence(isolated.task(docID)!).contains(sourceLines[limitLine])
         for (kind, name) in [(AgentKnowledgeCardKind.architecture, "native/AgentKnowledgeLibrary.swift"), (.spec, "native/AgentDocument.swift"), (.tech_stack, "package.json")] {
             _ = try await call(docID, "read_file", ["path": name, "offset": 1, "limit": 12])
             let original = try String(contentsOf: workspace.appendingPathComponent(name), encoding: .utf8), body = original.components(separatedBy: "\n").prefix(8).joined(separator: "\n")
@@ -35,13 +44,31 @@ import AppKit
         do { _ = try cards.sources([["path": "native/AgentDocument.swift", "line": 200]], task: isolated.task(docID)!); checks["unreadLinesCannotBeCited"] = false } catch { checks["unreadLinesCannotBeCited"] = true }
         let existingDraft = try cards.drafts(isolated.task(docID)!)[0]
         do { _ = try await call(docID, "save_knowledge_card", ["title": existingDraft.title, "kind": existingDraft.kind.rawValue, "body": existingDraft.body, "sources": [["path": existingDraft.sources[0].path, "line": existingDraft.sources[0].line, "end_line": existingDraft.sources[0].endLine]]]); checks["duplicateDraftNeedsOriginalIDAndHash"] = false } catch { checks["duplicateDraftNeedsOriginalIDAndHash"] = try cards.drafts(isolated.task(docID)!).count == 3 }
+        checks["draftsRequireActualReadbackBeforePlanFinish"] = try cards.stage(isolated.task(docID)!)?.tool == "read_project_knowledge"
+        _ = try await call(docID, "read_project_knowledge", ["limit": 1])
+        checks["partialReadbackCannotCompleteReview"] = try cards.stage(isolated.task(docID)!)?.tool == "read_project_knowledge"
+        for offset in [1, 2] { _ = try await call(docID, "read_project_knowledge", ["offset": offset, "limit": 1]) }
+        checks["readbackAdvancesToPlanCompletion"] = try cards.stage(isolated.task(docID)!)?.tool == "update_plan"
+        _ = try await call(docID, "update_plan", ["steps": [["title": "核对真实源码", "status": "completed"], ["title": "保存卡片", "status": "completed"], ["title": "核对引用", "status": "completed"]]])
+        checks["completedPlanAdvancesToActualFinishTool"] = try cards.stage(isolated.task(docID)!)?.tool == "finish_task"
         let draft = try cards.validate(isolated.task(docID)!)
         checks["draftsArePrivateUntilPublish"] = try cards.book(isolated.task(sourceID)!).0 == nil && draft.cards.count == 3 && Set(draft.cards.map(\.kind)).count == 3
         let changed = workspace.appendingPathComponent("native/AgentDocument.swift"), original = try Data(contentsOf: changed)
         try (original + Data("\n".utf8)).write(to: changed, options: .atomic)
         do { _ = try cards.validate(isolated.task(docID)!); checks["sourceChangesPreventPublishing"] = false } catch { checks["sourceChangesPreventPublishing"] = true }
         try original.write(to: changed, options: .atomic)
+        let seeded = isolated.create(workspace: workspace.path, mode: .goal)
+        isolated.update(seeded) { $0.kind = AgentKnowledgeCards.kind; $0.knowledgeJob = AgentKnowledgeCardJob(workspace: workspace.path, branch: scope.branch, language: "zh", baseHash: emptyHash, sourceTaskID: sourceID) }
+        try await cards.seedSources(taskID: seeded, original: draft)
+        checks["nativeSourceReuseReadsCurrentFilesWithoutModelMessages"] = isolated.task(seeded)!.messages.isEmpty && isolated.task(seeded)!.knowledgeJob?.nativeSourcesReady == true && !(isolated.task(seeded)!.knowledgeReads ?? [:]).isEmpty && isolated.task(seeded)!.events.contains { $0.kind == "knowledge-source" && $0.status == "completed" }
         try cards.publish(draft, task: isolated.task(sourceID)!, expected: emptyHash)
+        let originalNeedsRead = try cards.stage(isolated.task(seeded)!)?.tool == "read_project_knowledge"
+        _ = try await call(seeded, "read_project_knowledge")
+        checks["existingCardsMustBeReadBeforeReplacingDrafts"] = try originalNeedsRead && cards.stage(isolated.task(seeded)!)?.tool == "save_knowledge_card"
+        let translated = isolated.create(workspace: workspace.path, mode: .goal)
+        isolated.update(translated) { $0.kind = AgentKnowledgeCards.kind; $0.knowledgeJob = AgentKnowledgeCardJob(workspace: workspace.path, branch: scope.branch, language: "en", baseHash: emptyHash, sourceTaskID: sourceID) }
+        try await cards.seedSources(taskID: translated, original: draft)
+        checks["languageSourceReuseDoesNotCopyCardsOrModelMessages"] = try isolated.task(translated)!.messages.isEmpty && cards.drafts(isolated.task(translated)!).isEmpty && cards.book(isolated.task(translated)!, language: "en").0 == nil && isolated.task(translated)!.knowledgeJob?.nativeSourcesReady == true
         let previous = try cards.book(isolated.task(sourceID)!), first = previous.0!.cards[0]
         checks["citationDefaultsOnAndUsesActualSource"] = cards.context(isolated.task(sourceID)!).contains(first.title) && first.sources.allSatisfy { (try? AgentFiles(workspace: workspace.path).fileHash(workspace.appendingPathComponent($0.path), maximum: 512_000)) == $0.sha256 }
         var options = try cards.options(workspace: workspace.path); options.citation = false
@@ -92,6 +119,17 @@ import AppKit
             checks["recordedConversationKeepsHumanInputsAndOrder"] = actual.messages.filter(\.isHumanInput).count >= 2 && messages.filter(\.isHumanInput).map(\.id) == actual.messages.filter(\.isHumanInput).map(\.id) && observed == observed.sorted() && messages.allSatisfy { value in actual.messages.contains(where: { $0.id == value.id && $0.content == value.content }) }
             try Data(AgentFiles.hash(data).utf8).write(to: output.appendingPathComponent("recorded-context-source.sha256"), options: .atomic)
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--cards-search-source"), CommandLine.arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[index + 1]), data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 4_000_000)
+            let actual = try JSONDecoder().decode(AgentTaskRecord.self, from: data)
+            let names = Dictionary(actual.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
+            let original = actual.messages.filter { $0.role == "tool" && names[$0.toolCallID ?? ""] == "search_project" }
+            let projected = original.map(cards.searchExcerpt)
+            checks["recordedSearchKeepsIdentifiersAndBoundedExcerpt"] = !original.isEmpty && zip(original, projected).allSatisfy { pair in pair.0.id == pair.1.id && pair.0.toolCallID == pair.1.toolCallID && AgentContext.estimate(pair.1.content) <= 1024 } && zip(original, projected).contains { pair in pair.0.content != pair.1.content }
+            let maximum = 8192 - 512 - 832 - 1688 - 200 - 256, messages = try cards.modelMessages(actual, maximum: maximum)
+            let retainedHash = AgentFiles.hash(try Data(contentsOf: url))
+            checks["recordedOversizedExchangeFitsOriginalBudget"] = messages.contains { $0.role == "tool" && names[$0.toolCallID ?? ""] == "search_project" } && messages.filter(\.isHumanInput).map(\.id) == actual.messages.filter(\.isHumanInput).map(\.id) && retainedHash == AgentFiles.hash(data)
+        }
         return checks
     }
     static func commandLine() async -> Int32 {
@@ -121,6 +159,7 @@ import AppKit
         defer { agentStore?.knowledgeCards.stop(); agentRuntime?.stopAll() }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("知识卡片运行时未初始化") }
+            runtime.modelRequestCheck = { guard tasks.tasks.reduce(0, { $0 + (tasks.task($1.id)?.modelReceipts?.count ?? 0) }) < 90 else { throw PetError("整轮验收已达到90份回执上限，原记录保留") } }
             let binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             try write(["appPID": getpid(), "binaryHash": hash], "cards-process.json")
             guard let index = CommandLine.arguments.firstIndex(of: "--cards-source"), CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少实际项目快照") }

@@ -76,7 +76,7 @@ final class AgentKnowledgeCardWatcher {
             if store.tasks.contains(where: { $0.kind == Self.kind && $0.workspace == root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == options.language && $0.knowledgeJob?.sourceRevision == result.index.revision && [.failed, .stopped].contains($0.status) }) { notices[root] = "上次生成未完成，请查看任务后手动重试"; onChange?(root); return }
             if previous?.cards.contains(where: \.manual) == true { notices[root] = "源码有变化；存在用户编辑，请审阅后重新生成"; onChange?(root); return }
             lastAttempt[key] = result.index.revision
-            _ = try generate(sourceID: id, language: options.language, focus: previous?.focus ?? "", automatic: true)
+            _ = try await generate(sourceID: id, language: options.language, focus: previous?.focus ?? "", automatic: true)
         } catch {
             if !Task.isCancelled { notices[root] = "自动更新未完成：" + error.localizedDescription; onChange?(root) }
         }

@@ -6,6 +6,7 @@ import Foundation
     private let keychain: PetKeychain
     var onChange: ((String) -> Void)?
     var onComplete: ((String, String) -> Void)?
+    var modelRequestCheck: (() throws -> Void)?
     private(set) var submissionError: String?
     @MainActor private final class Run {
         let token = UUID().uuidString
@@ -289,6 +290,24 @@ import Foundation
     func toolDefinitions(_ task: AgentTaskRecord, preferences: PetPreferences) throws -> [[String: Any]] {
         var definitions = AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.isProjectDocumentation ? nil : task.toolGroups ?? [])
         if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6) }
+        if task.kind == AgentKnowledgeCards.kind, let phase = try store.knowledgeCards.stage(task) {
+            definitions = definitions.filter { ($0["function"] as? [String: Any])?["name"] as? String == phase.tool }
+            if let kind = phase.kind {
+                for i in definitions.indices {
+                    var function = definitions[i]["function"] as! [String: Any], parameters = function["parameters"] as! [String: Any], properties = parameters["properties"] as! [String: Any]
+                    properties["kind"] = ["type": "string", "enum": [kind.rawValue]]; parameters["properties"] = properties; function["parameters"] = parameters; definitions[i]["function"] = function
+                }
+            }
+        }
+        if task.kind == AgentKnowledgeCards.kind, let i = definitions.firstIndex(where: { ($0["function"] as? [String: Any])?["name"] as? String == "finish_task" }) {
+            var function = definitions[i]["function"] as! [String: Any], parameters = function["parameters"] as! [String: Any], properties = parameters["properties"] as! [String: Any]
+            function["description"] = "结束知识卡片生成。summary仅一句，不复述卡片正文；evidence只放三个真实保存调用ID。"
+            properties["summary"] = ["type": "string", "maxLength": 80]
+            let ids = task.events.filter { $0.kind == "tool" && $0.title == "save_knowledge_card" && $0.status == "completed" }.compactMap(\.toolCallID)
+            let items: [String: Any] = ids.isEmpty ? ["type": "string"] : ["type": "string", "enum": ids]
+            properties["evidence"] = ["type": "array", "items": items, "minItems": 1, "maxItems": 3]
+            parameters["properties"] = properties; function["parameters"] = parameters; definitions[i]["function"] = function
+        }
         return try store.agents.filterDefinitions(definitions, task: task, store: store)
     }
     func contextEstimate(_ id: String) throws -> AgentContextSnapshot {
@@ -710,6 +729,7 @@ import Foundation
                 try Task.checkCancellation(); guard active[id]?.token == run.token else { return }
                 if (store.task(id)?.queuedCount ?? 0) > 0 { continue }
                 if task.kind == AgentKnowledgeCards.kind, (store.task(id)?.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片达到30次模型请求，已有记录和草稿保留") }
+                try modelRequestCheck?()
                 let assistant = AgentMessage(role: "assistant", content: "")
                 store.update(id) { $0.contextSnapshot = try? AgentContext.snapshot(preferences: p, system: system, skills: payload.skills, messages: context, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0); $0.messages.append(assistant) }; notifyChange(id)
                 var turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: context, tools: definitions, visuals: visuals, messageID: assistant.id, onReceipt: { [store] in store.recordUsage(id, $0) }) { [weak self] text in

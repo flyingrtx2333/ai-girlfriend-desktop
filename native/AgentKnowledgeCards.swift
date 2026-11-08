@@ -25,6 +25,10 @@ struct AgentKnowledgeCardJob: Codable, Sendable {
     var workspace: String; var branch: String; var language: String; var baseHash: String
     var sourceTaskID: String; var sourceRevision: String?; var automatic = false
     var focus: String?
+    var nativeSourcesReady: Bool?
+    var reviewHash: String?
+    var reviewedHashes: [String: String]?
+    var originalReviewHash: String?
 }
 struct AgentKnowledgeCardRead: Codable, Sendable { var sha256: String; var ranges: [[Int]] }
 struct AgentKnowledgeCardOptions: Codable, Sendable {

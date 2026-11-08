@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor extension AgentKnowledgeCards {
-    func generate(sourceID: String, language: String, focus: String = "", automatic: Bool = false) throws -> String {
+    func generate(sourceID: String, language: String, focus: String = "", automatic: Bool = false) async throws -> String {
         guard let store, let runtime, let source = store.task(sourceID), !source.archived, source.kind != "hook" else { throw PetError("请选择可用的项目任务") }
         let scope = try scope(source)
         guard ["zh", "en"].contains(language), focus.count <= 2000 else { throw PetError("生成语言或分析范围无效") }
@@ -16,6 +16,10 @@ import Foundation
         }
         store.selectedID = selection
         if let error = store.writeError { throw PetError(error) }
+        var sourceBook = previous.0
+        if sourceBook == nil { sourceBook = try book(source, language: language == "zh" ? "en" : "zh").0 }
+        do { try await seedSources(taskID: id, original: sourceBook) }
+        catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-source", title: "源码复核未完成", detail: error.localizedDescription, status: "failed")) }; throw error }
         let languageName = language == "zh" ? "简体中文" : "English"
         guard runtime.submit("""
         为当前项目生成或更新\(languageName)知识卡片。先index_project一次，读取已有卡片，再核对实际源码。沿用当前三步计划；应用进度列出已读范围和已保存卡片，不重复已完成动作。只分析，不修改源码、不执行命令、不联网。
@@ -25,6 +29,35 @@ import Foundation
         """, taskID: id) else { store.update(id) { $0.status = .failed }; throw PetError(runtime.submissionError ?? "生成任务未开始") }
         notices[scope.root] = automatic ? "更新中…" : "生成中…"; onChange?(scope.root)
         return id
+    }
+    func seedSources(taskID: String, original: AgentKnowledgeCardBook?) async throws {
+        guard let store, let current = store.task(taskID), let job = current.knowledgeJob else { return }
+        var ranges: [(String, Int)] = []
+        if let original {
+            ranges = original.cards.flatMap { $0.sources.map { ($0.path, max(1, $0.line - 4)) } }
+        } else if let prior = store.tasks.compactMap({ store.task($0.id) }).filter({ $0.id != taskID && $0.kind == Self.kind && $0.knowledgeJob?.workspace == job.workspace && $0.knowledgeJob?.branch == job.branch && $0.knowledgeJob?.language == job.language && [.failed, .stopped].contains($0.status) && !($0.knowledgeReads ?? [:]).isEmpty }).max(by: { $0.updated < $1.updated }) {
+            for (path, read) in (prior.knowledgeReads ?? [:]).sorted(by: { $0.key < $1.key }) {
+                let selected = Array(read.ranges.prefix(3)) + Array(read.ranges.suffix(3))
+                ranges += selected.compactMap { $0.count == 2 ? (path, $0[0]) : nil }
+            }
+        }
+        var seen = Set<String>(); ranges = ranges.filter { seen.insert($0.0 + ":\($0.1)").inserted }
+        guard !ranges.isEmpty else { return }
+        let tools = AgentTools(store: store, taskID: taskID), index = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}"), metadata = try tools.gitDirectory(for: index)
+        guard try tools.approvalReason(for: index, gitDirectory: metadata) == nil else { throw PetError("请先在项目知识窗口连接当前项目，再生成卡片") }
+        _ = try await tools.execute(index, gitDirectory: metadata)
+        var count = 0
+        for (path, line) in ranges.prefix(12) {
+            try Task.checkCancellation()
+            let args: [String: Any] = ["path": path, "offset": line, "limit": 30]
+            let call = AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self))
+            guard try tools.approvalReason(for: call) == nil else { throw PetError("此源码读取需要在任务中确认：" + path) }
+            let result = try await tools.execute(call)
+            guard !result.failed else { throw PetError("源码复核失败：" + path) }
+            store.update(taskID) { $0.events.append(AgentEvent(kind: "knowledge-source", title: "应用复核源码", detail: result.text, status: "completed")) }
+            count += 1
+        }
+        if count > 0 { store.update(taskID) { $0.knowledgeJob?.nativeSourcesReady = true } }
     }
     func refreshIndex(_ task: AgentTaskRecord) async throws -> AgentIndexResult {
         guard let store else { throw PetError("项目已关闭") }
@@ -68,6 +101,18 @@ import Foundation
         }
         return card
     }
+    private func recordReview(_ visible: [AgentKnowledgeCard], task: AgentTaskRecord) throws {
+        guard task.kind == Self.kind, let store else { return }
+        let pending = try drafts(task), original = try book(task, language: task.knowledgeJob?.language)
+        guard !pending.isEmpty || original.0?.cards.isEmpty == false else { return }
+        var reviewed = task.knowledgeJob?.reviewedHashes ?? [:]
+        for card in visible { reviewed[card.id] = card.hash }
+        let complete = !pending.isEmpty && pending.allSatisfy { reviewed[$0.id] == $0.hash }
+        let hash: String?
+        if complete { let url = try draftURL(task); hash = AgentFiles.hash(try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 300_000)) } else { hash = nil }
+        let originalHash = original.0?.cards.allSatisfy { reviewed[$0.id] == $0.hash } == true ? original.1 : task.knowledgeJob?.originalReviewHash
+        store.update(task.id) { $0.knowledgeJob?.reviewedHashes = reviewed; $0.knowledgeJob?.reviewHash = hash; $0.knowledgeJob?.originalReviewHash = originalHash }
+    }
     func execute(_ call: AgentToolCall, task: AgentTaskRecord) throws -> AgentToolResult {
         let args = call.object
         func result(_ value: [String: Any]) throws -> AgentToolResult { AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)) }
@@ -94,9 +139,11 @@ import Foundation
         }
         if let id = args["id"] as? String {
             guard let card = cards.first(where: { $0.id == id }) else { throw PetError("当前分支和语言中没有此卡片") }
+            try recordReview([card], task: task)
             return try result(["language": language, "branch": scope.branch, "card": item(card, root: scope.root)])
         }
         let offset = min(cards.count, max(0, args["offset"] as? Int ?? 0)), limit = min(10, max(1, args["limit"] as? Int ?? 6)), page = cards.dropFirst(offset).prefix(limit)
+        try recordReview(Array(page), task: task)
         return try result(["language": language, "branch": scope.branch, "total": cards.count, "next_offset": offset + page.count < cards.count ? offset + page.count : NSNull(), "cards": page.map { item($0, root: scope.root) }])
     }
     func context(_ task: AgentTaskRecord) -> String {

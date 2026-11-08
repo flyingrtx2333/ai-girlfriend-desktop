@@ -27,7 +27,7 @@ import AppKit
             let alert = NSAlert(); alert.messageText = "重新核对已编辑的卡片？"; alert.informativeText = "将依据当前源码重新生成，旧版本可恢复。"; alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        run { [self] in try await connect(); _ = try cards.generate(sourceID: taskID, language: selectedLanguage, focus: focus.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        run { [self] in try await connect(); _ = try await cards.generate(sourceID: taskID, language: selectedLanguage, focus: focus.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
     @objc func reloadCards() { guard discard() else { return }; run { [self] in try await connect() } }
     var latestTask: AgentTaskRecord? {

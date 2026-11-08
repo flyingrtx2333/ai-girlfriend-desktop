@@ -50,6 +50,8 @@ if (servicesOnly) {
     if (signing.status !== 0 || !/^Authority=(Developer ID Application:|Apple Development:)/m.test(signing.stderr) || !/^TeamIdentifier=\S+$/m.test(signing.stderr)) throw new Error('The service binary requires the project signing identity; ad-hoc signatures are not accepted');
     const args = ['--knowledge-cards-services', '--check', directory, '--cards-source', origin.source];
     if (context >= 0) args.push('--cards-context-source', path.resolve(process.argv[context + 1]));
+    const search = process.argv.indexOf('--search-source');
+    if (search >= 0) args.push('--cards-search-source', path.resolve(process.argv[search + 1]));
     const result = spawnSync(binary, args, { encoding: 'utf8' });
     report = JSON.parse(await readFile(path.join(directory, 'cards-services-report.json'), 'utf8'));
     const files = Object.fromEntries(await Promise.all(Object.keys(origin.files).map(async name => [name, hash(await readFile(path.join(origin.source, name)))])));
@@ -61,7 +63,9 @@ if (servicesOnly) {
   console.log(JSON.stringify({ success: report.success, directory, checks: Object.keys(report.checks ?? {}).length, modelsCalled: report.modelsCalled, uiValidated: report.uiValidated, error: report.error }));
   process.exit(report.success ? 0 : 1);
 }
-const app = path.join(root, 'build/蓝色大肥鱼.app'), binaryHash = hash(await readFile(path.join(app, 'Contents/MacOS/BlueFatFish'))), origin = await json('cards-source-origin.json');
+const candidate = process.argv.indexOf('--candidate-app');
+const app = candidate < 0 ? path.join(root, 'build/蓝色大肥鱼.app') : path.resolve(process.argv[candidate + 1]);
+const binaryHash = hash(await readFile(path.join(app, 'Contents/MacOS/BlueFatFish'))), origin = await json('cards-source-origin.json');
 async function waitJSON(name, seconds, pid) {
   const deadline = Date.now() + seconds * 1000;
   while (Date.now() < deadline) {
@@ -76,6 +80,10 @@ let report;
 try {
   const previous = await json('cards-process.json').catch(() => null);
   if (previous && live(previous.appPID)) throw new Error('Existing cards acceptance is still running; preserve it');
+  for (const language of ['zh', 'en']) {
+    const headless = await json('cards-live-service-' + language + '-ready.json').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (headless && live(headless.appPID)) throw new Error('Actual model acceptance is still running; preserve its profile and process');
+  }
   for (const name of ['cards-process.json', 'cards-ui-ready.json', 'cards-report.json', 'finish-cards-ui']) await unlink(path.join(output, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
   command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--knowledge-cards-check', '--live-agent', '--cards-source', origin.source]);
   const owner = await waitJSON('cards-process.json', 30), ready = await waitJSON('cards-ui-ready.json', 240, owner.appPID);
