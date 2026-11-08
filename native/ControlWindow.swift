@@ -1391,7 +1391,7 @@ final class FormDocumentView: NSView {
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
         executionLocation.isHidden = task.organizationMode == .general
         refreshBranch(task)
-        executionLocation.toolTip = task.workspace ?? "未选择项目"; executionLocation.isEnabled = task.canChooseEnvironment && !running
+        executionLocation.toolTip = task.workspace ?? "终端使用当前任务目录"; executionLocation.isEnabled = task.canChooseEnvironment && !running
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
         gitButton.isEnabled = task.workspace != nil && !managed

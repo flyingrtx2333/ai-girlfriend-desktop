@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--terminal-check") { await runAgentTerminalCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--import-check") { await runAgentImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--organization-check") { await runAgentOrganizationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--office-check") { await runAgentOfficeCheck(output); NSApp.terminate(nil); return }

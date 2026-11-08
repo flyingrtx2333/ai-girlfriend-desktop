@@ -186,11 +186,12 @@ struct AgentProfileAssignment: Codable {
     func limits(_ task: AgentTaskRecord, store: AgentStore? = nil) throws -> (readOnly: Bool, network: Bool) {
         var readOnly = [.ask, .plan].contains(task.mode), network = true
         for record in [task] + (try ancestors(task, store: store)) {
+            readOnly = readOnly || [.ask, .plan].contains(record.mode)
             let automation = store?.automations.limits(record) ?? (readOnly: record.automation?.readOnly == true, network: record.automation?.network ?? true)
             readOnly = readOnly || automation.readOnly; network = network && automation.network
             guard let binding = record.agent else { continue }
             let current = try profile(binding.profile.id)
-            readOnly = readOnly || binding.readOnly || current.readOnly
+            readOnly = readOnly || binding.readOnly || current.readOnly || [.ask, .plan].contains(binding.modeCeiling)
             network = network && binding.network && current.network
         }
         return (readOnly, network)
@@ -246,14 +247,14 @@ struct AgentProfileAssignment: Codable {
             guard let id = call.object["server_id"] as? String, binding.mcpServers.contains(id), (current.mcpServers ?? []).contains(id) else { throw PetError("此 MCP 未分配给当前 Agent") }
             if AgentMCP.externalOperations.contains(call.name), binding.readOnly || current.readOnly || !binding.network || !current.network { throw PetError("只读或禁止外部连接的 Agent 不能执行未隔离的 MCP") }
         }
-        if [.ask, .plan].contains(binding.modeCeiling), Self.mutating.contains(call.name) || call.name == "run_command" { throw PetError("委派不能扩大主任务的只读模式") }
+        if [.ask, .plan].contains(binding.modeCeiling), Self.mutating.contains(call.name) { throw PetError("委派不能扩大主任务的只读模式") }
         if limits.readOnly {
             guard !Self.mutating.contains(call.name), call.name != "browser_action" || !["click", "fill", "select"].contains(call.object["action"] as? String ?? "") else { throw PetError("此 Agent 只读，不能修改项目或操作外部应用") }
         }
         if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此 Agent 未允许联网或外部应用连接") }
         for owner in try ancestors(task, store: store) {
             guard owner.workspace == task.workspace else { throw PetError("所属任务项目范围已改变，请重新发起委派") }
-            if [.ask, .plan].contains(owner.mode), Self.mutating.contains(call.name) || call.name == "run_command" || AgentMCP.externalOperations.contains(call.name) { throw PetError("所属任务当前为只读模式") }
+            if [.ask, .plan].contains(owner.mode), Self.mutating.contains(call.name) || AgentMCP.externalOperations.contains(call.name) { throw PetError("所属任务当前为只读模式") }
             guard let parent = owner.agent else { continue }
             let live = try profile(parent.profile.id)
             if !Self.skillTools.contains(call.name), !["load_tools", "update_plan", "ask_user", "read_task_history", "finish_task"].contains(call.name), !live.availableTools.contains(call.name) { throw PetError("所属 Agent 已收紧工具范围") }

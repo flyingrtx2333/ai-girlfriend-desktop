@@ -77,6 +77,7 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 | 对话传输协议 | `npm run native:check-service`；本地协议检查，不代表模型效果 |
 | 钥匙串读写和版本更新 | `npm run native:check-keychain`；使用独立测试凭据 |
 | Agent Git 状态、审阅、提交和工作树 | `npm run native:check-git`；独立公开仓库和已配置真实模型，实际核对提交、其他暂存内容、Hook 与工作树，不访问生产仓库 |
+| 问答／计划终端与无工作区执行 | `npm run native:check-terminal`；实际 macOS 命令、项目只读限制及任务目录持久化。使用已保存模型与预算，在原生界面选择问答、发送“当前磁盘内存多少”并批准真实终端；观察后写入 `terminal-ui-acceptance.json` 与 `finish-terminal-ui`。支持 `--prepare-only` 及 `--resume <实际目录>`，保留原失败任务和请求计量；不修改日常记录 |
 | Git 改动来源、逐文件暂存及可撤销恢复 | `npm run native:check-git-review -- --hold-ui`；真实本机 Git 仓库、索引、提交、分支与系统废纸篓，独立回读文件和检查点；不调用模型。界面观察后写入输出目录的 `finish-ui` 结束保持 |
 | 暂存版本提交、并排差异与来源统计 | `npm run native:check-git-review-flow`；实际暂存／工作区分层、选定文件提交、原索引字节、Hook、签名失败、修订变化、二进制、行号与长行布局。加 `-- --live-agent --hold-ui` 保持已保存模型预算跑真实审批，并在原生窗口完成暂存提交与推送到独立本机裸仓库；完成后写入 `finish-ui`。全程不提交或推送用户项目 |
 | 工作树管理、回收与恢复 | `npm run native:check-worktrees`；独立真实 Git 仓库核对文件／索引字节、实际 GC 后暂存对象、忽略及未跟踪内容、链接、任务归档、锁定、项目变化、原分支及恢复分支。加 `-- --live-agent` 使用已保存预算执行真实模型检查、回收、恢复和报告回读；加 `--hold-ui` 后在实际窗口完成一次回收／恢复，再写入输出目录的 `finish-ui`。不清理用户项目 |

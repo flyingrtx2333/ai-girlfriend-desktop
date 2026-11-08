@@ -92,10 +92,10 @@ import Foundation
             tool("browser_close", "关闭当前任务浏览器、释放页面并清除会话引用。", [:], []),
             tool("update_plan", "更新简洁执行计划，步骤状态为 pending、in_progress 或 completed。", ["steps": ["type": "array", "items": ["type": "object", "properties": ["title": string, "status": string], "required": ["title", "status"]]]], ["steps"]),
             tool("ask_user", "仅在缺少必要信息时向用户提出一个明确问题；等待用户答复后继续。", ["question": string], ["question"])]
+        tools.append(tool("run_command", "运行 shell 命令并返回实际输出与退出码。有工作区时在工作区执行，否则使用本任务目录。问答、计划及只读 Agent 不可修改项目文件。沿用当前审批，默认不联网；需要网络时明确 network=true。停止会结束进程组，不要启动脱离进程组的守护进程。Git 元数据不可写，提交等操作用专用 Git 工具。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"]))
         if mode == .agent || mode == .goal {
             tools += [tool("write_file", "创建或完整写入项目文件，自动保存修改前检查点。", ["path": string, "content": string], ["path", "content"]),
                 tool("edit_file", "精确替换文件中的唯一文本片段；旧文本必须存在且唯一。", ["path": string, "old_text": string, "new_text": string], ["path", "old_text", "new_text"]),
-                tool("run_command", "在项目隔离环境运行 shell 命令，返回实际输出与退出码。停止会结束进程组。不要启动脱离进程组的守护进程。需要网络时明确 network=true。Git 元数据不可写；提交、初始化和工作树使用专用 Git 工具。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"]),
                 tool("git_commit", "只提交git_diff已审阅来源的具体文件，不推送。staged来源只提交暂存版本，保留未暂存修改及其他文件的暂存。必须相同paths并原样传review_hash，每次需要批准；暂存区或HEAD变化后重新审阅。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50], "message": string, "review_hash": string], ["paths", "message", "review_hash"]),
                 tool("git_push", "只推送git_prepare_push已审阅的确切提交与目标。review_hash必须原样传回，每次都需要批准。拒绝分歧、过期来源或远端变化，不提供强推、删除或全部推送。结果verified=true才可报告远端已核对；停止或错误后用git_push_status核对，不盲目重试。", ["review_hash": string], ["review_hash"]),
                 tool("git_prepare_worktree", "用户要求新建工作树时准备审阅。branch为新分支，start_point取git_worktree_branches的ref，默认HEAD。include_changes=true时读取受支持的未提交修改（含非忽略未跟踪文件），预合并到所选起点；不创建工作树或移动分支，始终确认。返回review_hash和文件清单；冲突或变化需重审。", ["branch": string, "start_point": string, "include_changes": ["type": "boolean"]], ["branch"]),
@@ -224,8 +224,8 @@ import Foundation
             _ = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
             return "保存" + scope.title
         }
-        let mutating = ["write_file", "edit_file", "run_command"].contains(call.name)
-        if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改文件或执行命令，请切换到 Agent 模式") }
+        let mutating = ["write_file", "edit_file"].contains(call.name)
+        if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改项目文件，请切换到 Agent 模式") }
         if ["read_file", "write_file", "edit_file", "list_directory", "search_files"].contains(call.name) {
             let files = try AgentFiles(workspace: task.workspace), path = call.object["path"] as? String ?? "."
             let url = try projectURL(path, files: files, writing: ["write_file", "edit_file"].contains(call.name), readingFile: call.name == "read_file")
@@ -233,9 +233,12 @@ import Foundation
         }
         if call.name == "ask_user" { return call.object["question"] as? String ?? "需要补充信息" }
         if call.name == "run_command" {
-            _ = try AgentFiles(workspace: task.workspace)
+            if let workspace = task.workspace { _ = try AgentFiles(workspace: workspace) }
             if task.kind == "hook" { return nil }
-            if task.permission != .automatic || call.object["network"] as? Bool == true { return "运行命令\(call.object["network"] as? Bool == true ? "并访问网络" : "")" }
+            if task.permission != .automatic || call.object["network"] as? Bool == true {
+                let readOnly = try store.agents.limits(task, store: store).readOnly
+                return (readOnly ? "运行只读命令" : "运行命令") + (call.object["network"] as? Bool == true ? "并访问网络" : "")
+            }
         }
         let permission = task.agent.map { AgentProfiles.tighter(task.permission, $0.permissionCeiling) } ?? task.permission
         if ["web_search", "fetch_url"].contains(call.name) && permission != .automatic { return "访问网络" }
@@ -245,6 +248,9 @@ import Foundation
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
         let call = try store.mcp.routedCall(call, owner: taskID) ?? call
+        if call.name == "run_command", let task = store.task(taskID), try store.agents.limits(task, store: store).readOnly {
+            return try await executeCore(call, gitDirectory: gitDirectory)
+        }
         if ["run_command", "call_mcp_tool", "git_commit", "git_push", "git_init"].contains(call.name), store.task(taskID)?.kind != "hook" {
             let origin = call.name == "call_mcp_tool" ? "MCP 工具" : call.name == "run_command" ? "命令" : "Git 操作"
             return try await store.projectChanges.observe(taskID: taskID, origin: origin) { try await self.executeCore(call, gitDirectory: gitDirectory) }
@@ -500,13 +506,16 @@ import Foundation
                 return AgentToolResult(text: "已\(existing ? "更新" : "创建") \(files.relative(url))，\(data.count) 字节", artifacts: [url.path])
             }
         case "run_command":
-            let files = try AgentFiles(workspace: task.workspace), command = try string("command")
+            let command = try string("command")
             guard !command.isEmpty, command.utf8.count <= 30_000 else { throw PetError("命令为空或过长") }
             let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("tmp", isDirectory: true)
-            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let workspace = try task.workspace.map { try AgentFiles(workspace: $0).root } ?? scratch
             let process = AgentCommand(); commands[call.id] = process; defer { commands[call.id] = nil }
             let git = task.gitDirectory.flatMap { candidate -> URL? in guard (try? AgentGit.metadata(workspace: task.workspace).path) == candidate else { return nil }; return URL(fileURLWithPath: candidate) }
-            return try await process.run(command: command, workspace: files.root, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60), readOnly: task.kind == "hook" || (try store.agents.limits(task, store: store)).readOnly, gitDirectory: git, protectedData: store.directory.deletingLastPathComponent())
+            var result = try await process.run(command: command, workspace: workspace, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60), readOnly: task.kind == "hook" || (try store.agents.limits(task, store: store)).readOnly, gitDirectory: git, protectedData: store.directory.deletingLastPathComponent())
+            if task.workspace == nil { result.text = "[工作目录：" + workspace.path + "]\n" + result.text }
+            return result
         case "update_plan":
             guard let steps = args["steps"] as? [[String: String]], !steps.isEmpty, steps.count <= 30,
                   steps.allSatisfy({ !($0["title"] ?? "").isEmpty && ["pending", "in_progress", "completed"].contains($0["status"] ?? "") }) else { throw PetError("计划格式无效") }
