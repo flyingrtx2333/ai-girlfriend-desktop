@@ -654,3 +654,5 @@ PowerShell有本机安装诊断与执行入口，本轮未实际执行，不作�
 真实 `deepseek-flash` 保持8192／512预算，在无工作区Ask任务 `37237155-4218-4C83-ADC4-BC0206E8F1E7` 中载入知识工具、列出资料库及文件、实际读取清单，返回 `version`、`runtime.sha256` 和两项 `libraries`。独立解析当前项目原文件核对版本2.0.1、三份哈希及库名／顺序，全部一致。共5份实际请求，14450／416 Token，逐份回执与任务计数相符；前期界面修复未调用模型。20项日常配置／任务记录和原先不存在状态保持一致。
 
 证据为 `evidence/agent/knowledge-host-20261108`、`bluefatfish-knowledge-YvILZw` 及内部构建缓存的 `evidence/agent/knowledge-build`。复现：`npm run native:check-knowledge -- --resume <实际目录>`。团队／云端知识同步、知识卡片及原始完整矩阵中的其余能力仍继续实现，完整目标保持 active。
+
+功能已提交并同步为 `c4b91af`；同一严格签名候选已更新并打开主目录日常应用，实际进程16608与二进制 SHA-256 `d545beee64032c3bd8f9a49297a479bfbb2017ad0606861902bdff87cbe5664f` 已独立核对。旧版保留在 `build/backups/before-knowledge-20261108-1550.app`。日常窗口显示知识库入口，原两份对话、当前选择和空草稿保留；20项配置／任务记录及缺失状态逐字节一致，模型仍为 `deepseek-flash`、8192／512。未向日常资料库复制验收数据。临时构建服务已移除，防闲置显示／系统休眠断言保留，减弱动态效果为关闭；详情见上述目录内的 `deployment-evidence.json`、`daily-runtime-readback.json`、`cleanup-readback.json`。
