@@ -349,7 +349,7 @@ import UniformTypeIdentifiers
         let panel = NSOpenPanel(); panel.allowedContentTypes = (AgentOffice.formats + ["mp4", "webm"]).compactMap { UTType(filenameExtension: $0) }; panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let file = panel.url, let self else { return }
-            if AgentVideoSnapshot.supports(file) { do { try self.showVideo(file, files: AgentFiles(workspace: workspace), separate: true) } catch { self.state.stringValue = error.localizedDescription } }
+            if AgentVideoSnapshot.supports(file) { do { let files = try AgentFiles(workspace: workspace); try self.showVideo(files.resolve(file.path), files: files, separate: true) } catch { self.state.stringValue = error.localizedDescription } }
             else { self.showOffice(file.path) }
         }
     }
