@@ -25,7 +25,7 @@ enum AgentMarkdownEditing {
         if result.isEmpty || trailing { result.append(Line(text: "", range: NSRange(location: text.length, length: 0), fullRange: NSRange(location: text.length, length: 0))) }
         return result
     }
-    static func cells(_ line: String) -> [Cell] {
+    private static func cellRanges(_ line: String) -> [NSRange] {
         var ranges: [NSRange] = [], start = line.startIndex, cursor = start, code = 0
         while cursor < line.endIndex {
             let position = cursor, char = line[cursor]; cursor = line.index(after: cursor)
@@ -41,13 +41,107 @@ enum AgentMarkdownEditing {
         let text = line as NSString
         if ranges.count > 1, text.substring(with: ranges[0]).trimmingCharacters(in: .whitespaces).isEmpty { ranges.removeFirst() }
         if !ranges.isEmpty, line.contains("|"), text.substring(with: ranges.last!).trimmingCharacters(in: .whitespaces).isEmpty { ranges.removeLast() }
-        return ranges.map { span in
+        return ranges
+    }
+    static func cells(_ line: String) -> [Cell] {
+        let text = line as NSString
+        return cellRanges(line).map { span in
             let raw = text.substring(with: span), trimmed = raw.trimmingCharacters(in: .whitespaces)
             let local: NSRange
             if trimmed.isEmpty { local = NSRange(location: min(1, span.length), length: 0) }
             else { local = (raw as NSString).range(of: trimmed) }
             return Cell(text: trimmed.replacingOccurrences(of: "\\|", with: "|"), range: NSRange(location: span.location + local.location, length: local.length))
         }
+    }
+    static func tableAlignment(_ line: String) -> [NSTextAlignment]? {
+        let parts = cells(line)
+        guard line.contains("|"), !parts.isEmpty, parts.allSatisfy({ $0.text.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
+        return parts.map { $0.text.hasSuffix(":") ? ($0.text.hasPrefix(":") ? .center : .right) : .left }
+    }
+    enum TableAction: Int, CaseIterable {
+        case rowBefore, rowAfter, deleteRow, columnBefore, columnAfter, deleteColumn, alignLeft, alignCenter, alignRight
+        var title: String {
+            switch self {
+            case .rowBefore: return "上方插入行"
+            case .rowAfter: return "下方插入行"
+            case .deleteRow: return "删除当前行"
+            case .columnBefore: return "左侧插入列"
+            case .columnAfter: return "右侧插入列"
+            case .deleteColumn: return "删除当前列"
+            case .alignLeft: return "左对齐"
+            case .alignCenter: return "居中对齐"
+            case .alignRight: return "右对齐"
+            }
+        }
+    }
+    struct Table {
+        let rows: [Line], separator: Line, alignment: [NSTextAlignment]
+        var columns: Int { alignment.count }
+    }
+    struct TableChange { let source: String, row: Int, column: Int }
+    static func table(in source: String, at start: Int) throws -> Table {
+        let all = lines(source)
+        guard let index = all.firstIndex(where: { $0.range.location == start }), index + 1 < all.count,
+              let alignment = tableAlignment(all[index + 1].text), cells(all[index].text).count == alignment.count else { throw PetError("表格位置已变化，请重新选择单元格") }
+        var rows = [all[index]], end = index + 2
+        while end < all.count, !all[end].text.trimmingCharacters(in: .whitespaces).isEmpty, all[end].text.contains("|") { rows.append(all[end]); end += 1 }
+        return Table(rows: rows, separator: all[index + 1], alignment: alignment)
+    }
+    static func changingTable(in source: String, at start: Int, row: Int, column: Int, action: TableAction) throws -> TableChange {
+        let table = try table(in: source, at: start), raw = source as NSString
+        guard table.rows.indices.contains(row), table.alignment.indices.contains(column) else { throw PetError("单元格位置已变化，请重新选择") }
+        var patches: [(NSRange, String)] = [], nextRow = row, nextColumn = column
+        func ending(_ line: Line) -> String {
+            let length = NSMaxRange(line.fullRange) - NSMaxRange(line.range)
+            if length > 0 { return raw.substring(with: NSRange(location: NSMaxRange(line.range), length: length)) }
+            return source.contains("\r\n") ? "\r\n" : source.contains("\r") && !source.contains("\n") ? "\r" : "\n"
+        }
+        switch action {
+        case .rowBefore, .rowAfter:
+            guard action != .rowBefore || row > 0 else { throw PetError("请在表头下方插入数据行") }
+            let anchor = action == .rowAfter && row == 0 ? table.separator : table.rows[row]
+            let indent = String(anchor.text.prefix(while: { $0 == " " || $0 == "\t" }))
+            let blank = indent + "| " + Array(repeating: "", count: table.columns).joined(separator: " | ") + " |"
+            if action == .rowBefore {
+                patches.append((NSRange(location: anchor.fullRange.location, length: 0), blank + ending(anchor)))
+            } else {
+                let hasEnding = NSMaxRange(anchor.fullRange) > NSMaxRange(anchor.range)
+                patches.append((NSRange(location: NSMaxRange(anchor.fullRange), length: 0), hasEnding ? blank + ending(anchor) : ending(anchor) + blank))
+                nextRow += 1
+            }
+        case .deleteRow:
+            guard row > 0 else { throw PetError("表头不能删除") }
+            patches.append((table.rows[row].fullRange, "")); nextRow = min(row, table.rows.count - 2)
+        case .columnBefore, .columnAfter, .deleteColumn:
+            guard action != .deleteColumn || table.columns > 1 else { throw PetError("表格至少保留一列") }
+            let index = column + (action == .columnAfter ? 1 : 0)
+            for line in table.rows + [table.separator] {
+                let text = line.text as NSString, ranges = cellRanges(line.text)
+                guard let first = ranges.first, let last = ranges.last else { throw PetError("表格行无法编辑，请切换原文检查") }
+                var prefix = text.substring(to: first.location), suffix = text.substring(from: NSMaxRange(last))
+                var values = ranges.map { text.substring(with: $0) }
+                while values.count < table.columns { values.append("  ") }
+                if action == .deleteColumn { values.remove(at: column) }
+                else { values.insert(line.range == table.separator.range ? " --- " : "  ", at: index) }
+                // Empty edge cells and one-column rows need explicit outer pipes.
+                if prefix.isEmpty && (values.count == 1 || values.first!.trimmingCharacters(in: .whitespaces).isEmpty) { prefix = "|" }
+                if suffix.isEmpty && (values.count == 1 || values.last!.trimmingCharacters(in: .whitespaces).isEmpty) { suffix = "|" }
+                patches.append((line.range, prefix + values.joined(separator: "|") + suffix))
+            }
+            nextColumn = action == .deleteColumn ? min(column, table.columns - 2) : index
+        case .alignLeft, .alignCenter, .alignRight:
+            let cell = cells(table.separator.text)[column], token = (table.separator.text as NSString).substring(with: cell.range)
+            let dashes = token.filter { $0 == "-" }
+            let replacement = (action == .alignRight ? "" : ":") + dashes + (action == .alignLeft ? "" : ":")
+            patches.append((NSRange(location: table.separator.range.location + cell.range.location, length: cell.range.length), replacement))
+        }
+        var result = source
+        for (range, value) in patches.sorted(by: { $0.0.location > $1.0.location }) {
+            guard let span = Range(range, in: result) else { throw PetError("表格位置已变化，请重新选择") }
+            result.replaceSubrange(span, with: value)
+        }
+        guard !result.contains("\0"), result.utf8.count <= 2_000_000 else { throw PetError("文档超过 2MB，请缩减本次修改") }
+        return TableChange(source: result, row: nextRow, column: nextColumn)
     }
     static func missingCell(_ line: Line, column: Int, existing: Int, display: NSRange, table: Int, row: Int) -> Region {
         let trimmed = line.text.trimmingCharacters(in: .whitespaces), trailing = trimmed.hasSuffix("|")

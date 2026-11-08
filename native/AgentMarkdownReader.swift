@@ -1,10 +1,12 @@
 import AppKit
 
-@MainActor final class AgentMarkdownReader: NSView, NSTextViewDelegate {
+@MainActor final class AgentMarkdownReader: NSView, NSTextViewDelegate, NSMenuDelegate {
     let text = AgentMarkdownTextView()
     private let outline = NSPopUpButton(), scroll = NSScrollView()
     private let addSelection = NSButton(title: "加入任务", target: nil, action: nil)
     private let edit = NSButton(title: "编辑", target: nil, action: nil), edits = UndoManager()
+    private let tableActions = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var tableCell: (table: Int, row: Int, column: Int)?
     private var inlineEditor: AgentMarkdownInlineEditor?
     private(set) var isEditing = false
     var onSourceChanged: ((String) -> Void)? { didSet { updateEditingState() } }
@@ -29,17 +31,24 @@ import AppKit
         text.setAccessibilityLabel("Markdown 预览")
         outline.target = self; outline.action = #selector(selectHeading); outline.setAccessibilityLabel("章节目录")
         edit.target = self; edit.action = #selector(toggleEditing); edit.bezelStyle = .texturedRounded; edit.controlSize = .small; edit.setAccessibilityLabel("编辑 Markdown 预览"); edit.toolTip = "就地编辑；Command+Return 完成，Esc 取消本次修改"
+        tableActions.addItem(withTitle: "表格"); tableActions.controlSize = .small; tableActions.bezelStyle = .texturedRounded; tableActions.setAccessibilityLabel("表格操作")
+        tableActions.menu?.autoenablesItems = false; tableActions.menu?.delegate = self
+        for action in AgentMarkdownEditing.TableAction.allCases {
+            if action == .columnBefore || action == .alignLeft { tableActions.menu?.addItem(.separator()) }
+            let item = NSMenuItem(title: action.title, action: #selector(changeTable(_:)), keyEquivalent: ""); item.target = self; item.tag = action.rawValue
+            tableActions.menu?.addItem(item)
+        }
         scroll.documentView = text; scroll.hasVerticalScroller = true
-        let toolbar = NSStackView(views: [outline, NSView(), edit, addSelection]); toolbar.spacing = 8
+        let toolbar = NSStackView(views: [outline, NSView(), tableActions, edit, addSelection]); toolbar.spacing = 8
         for view in [toolbar, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor, constant: 4), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), outline.widthAnchor.constraint(lessThanOrEqualToConstant: 380), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)])
         selectionAction.update(); updateEditingState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func clear() { inlineEditor?.removeFromSuperview(); inlineEditor = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); diagramWindow?.close(); diagramWindow = nil; source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
+    func clear() { inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); diagramWindow?.close(); diagramWindow = nil; source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
     func show(_ source: String, file: URL, workspace: String, reuseIfUnchanged: Bool = false) {
         if reuseIfUnchanged, inlineEditor == nil, self.source == source, self.file == file, self.workspace == workspace, document != nil { isEditing = false; updateEditingState(); return }
-        inlineEditor?.removeFromSuperview(); inlineEditor = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
+        inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
         text.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }
     override func layout() {
@@ -80,7 +89,37 @@ import AppKit
         scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView)
         resizeImages(); renderDiagrams(result.diagrams.filter { drawings[$0.range.location] == nil }); selectionAction.update()
     }
-    private func updateEditingState() { edit.isHidden = onSourceChanged == nil || file == nil; edit.isEnabled = isEditing || canEdit?() == true; edit.title = isEditing ? "完成" : "编辑"; selectionAction.update() }
+    private func updateEditingState() {
+        edit.isHidden = onSourceChanged == nil || file == nil; edit.isEnabled = isEditing || canEdit?() == true; edit.title = isEditing ? "完成" : "编辑"; selectionAction.update()
+        updateTableActions()
+    }
+    private func updateTableActions() {
+        let table = tableCell.flatMap { try? AgentMarkdownEditing.table(in: source, at: $0.table) }
+        if table == nil { tableCell = nil }
+        tableActions.isHidden = !isEditing || tableCell == nil; tableActions.isEnabled = isEditing && canEdit?() == true
+        guard let table, var cell = tableCell else { return }
+        cell.row = min(cell.row, table.rows.count - 1); cell.column = min(cell.column, table.columns - 1); tableCell = cell
+        for item in tableActions.itemArray.dropFirst() where !item.isSeparatorItem {
+            guard let action = AgentMarkdownEditing.TableAction(rawValue: item.tag) else { continue }
+            item.isEnabled = tableActions.isEnabled && (!(action == .rowBefore || action == .deleteRow) || cell.row > 0) && (action != .deleteColumn || table.columns > 1)
+            let alignment = table.alignment[cell.column]
+            item.state = (action == .alignLeft && alignment == .left || action == .alignCenter && alignment == .center || action == .alignRight && alignment == .right) ? .on : .off
+        }
+    }
+    func menuNeedsUpdate(_ menu: NSMenu) { if menu === tableActions.menu { updateTableActions() } }
+    @objc private func changeTable(_ sender: NSMenuItem) {
+        do {
+            guard isEditing, canEdit?() == true, let cell = tableCell, let action = AgentMarkdownEditing.TableAction(rawValue: sender.tag) else { throw PetError("此文件当前只读，草稿已保留") }
+            try finishEditing()
+            guard canEdit?() == true else { throw PetError("此文件当前只读，草稿已保留") }
+            let previous = source, change = try AgentMarkdownEditing.changingTable(in: source, at: cell.table, row: cell.row, column: cell.column, action: action)
+            guard change.source != previous else { return }
+            source = change.source; tableCell = (cell.table, change.row, change.column); onSourceChanged?(source); replacePreview()
+            edits.registerUndo(withTarget: self) { reader in reader.restoreSource(previous) }; edits.setActionName(action.title)
+            if let target = document?.regions.first(where: { $0.kind == .cell(table: cell.table, row: change.row, column: change.column) }) { text.setSelectedRange(target.display); text.scrollRangeToVisible(target.display) }
+            window?.makeFirstResponder(text)
+        } catch { onEditError?(error.localizedDescription) }
+    }
     @objc private func toggleEditing() {
         do {
             if isEditing { try finishEditing(); isEditing = false; window?.makeFirstResponder(text) }
@@ -120,6 +159,7 @@ import AppKit
     }
     private func beginEditing(_ region: AgentMarkdownEditing.Region) throws {
         let editor = try AgentMarkdownInlineEditor(region: region, source: source); inlineEditor = editor
+        if case .cell(let table, let row, let column) = region.kind { tableCell = (table, row, column) } else { tableCell = nil }
         editor.onChange = { [weak self, weak editor] value in
             guard let self, let editor else { return }
             do { let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: value); if source != next { source = next; onSourceChanged?(next) } }
@@ -133,7 +173,7 @@ import AppKit
                 if direction != 0, let old, let cells = document?.regions.filter({ $0.isCell }), let index = cells.firstIndex(where: { $0.kind == old }), cells.indices.contains(index + direction), case .cell(let table, _, _) = old, case .cell(let nextTable, _, _) = cells[index + direction].kind, table == nextTable { try beginEditing(cells[index + direction]) }
             } catch { onEditError?(error.localizedDescription) }
         }
-        text.addSubview(editor); text.previewEditor = editor; positionEditor(); _ = text.scrollToVisible(editor.frame); editor.focus(); selectionAction.update()
+        text.addSubview(editor); text.previewEditor = editor; positionEditor(); _ = text.scrollToVisible(editor.frame); editor.focus(); selectionAction.update(); updateTableActions()
     }
     private func positionEditor() {
         guard let editor = inlineEditor else { return }
@@ -158,7 +198,7 @@ import AppKit
         let images = document?.images ?? [:]
         var cached: [String: AgentMarkdownDiagrams.Drawing] = [:]
         for diagram in document?.diagrams ?? [] { if let drawing = drawings[diagram.range.location] { cached[diagram.source] = drawing } }
-        cancelDiagrams(); render(cachedImages: images, cachedDrawings: cached)
+        cancelDiagrams(); render(cachedImages: images, cachedDrawings: cached); updateTableActions()
     }
     private func cancelDiagrams() { generation = UUID(); diagramTask?.cancel(); diagramTask = nil; diagramRenderer?.stop(); diagramRenderer = nil; drawings = [:]; diagramErrors = [:] }
     private func renderDiagrams(_ diagrams: [AgentMarkdownDocument.Diagram]) {
@@ -197,8 +237,8 @@ import AppKit
     }
     func waitForDiagrams() async { await diagramTask?.value }
     var editingCheckState: [String: Any] {
-        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
-        return ["canEdit": canEdit?() == true, "editButtonVisible": !edit.isHidden, "isEditing": isEditing, "activeEditor": inlineEditor != nil, "diagramImages": drawings.values.map { String(describing: ObjectIdentifier($0.image)) }.sorted(), "diagramErrors": diagramErrors.count]
+        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        return ["canEdit": canEdit?() == true, "editButtonVisible": !edit.isHidden, "isEditing": isEditing, "activeEditor": inlineEditor != nil, "tableMenuVisible": !tableActions.isHidden, "tableRow": tableCell?.row ?? -1, "tableColumn": tableCell?.column ?? -1, "tableActions": tableActions.itemArray.filter { !$0.isSeparatorItem }.map { ["title": $0.title, "enabled": $0.isEnabled, "checked": $0.state == .on] }, "diagramImages": drawings.values.map { String(describing: ObjectIdentifier($0.image)) }.sorted(), "diagramErrors": diagramErrors.count]
     }
     func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update() }
     func undoManager(for view: NSTextView) -> UndoManager? { edits }

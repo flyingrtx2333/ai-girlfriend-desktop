@@ -99,7 +99,7 @@ import ImageIO
                 heading(String(trimmed[match.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression), level: trimmed.prefix(while: { $0 == "#" }).count)
             } else if index + 1 < lines.count, !trimmed.isEmpty, lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: "^(={3,}|-{3,})$", options: .regularExpression) != nil {
                 heading(trimmed, level: lines[index + 1].contains("=") ? 1 : 2); index += 1
-            } else if index + 1 < lines.count, let alignment = tableAlignment(lines[index + 1]), cells(original).count == alignment.count {
+            } else if index + 1 < lines.count, let alignment = AgentMarkdownEditing.tableAlignment(lines[index + 1]), cells(original).count == alignment.count {
                 let tableStart = sourceLines[index].range.location
                 var rows = [(line: index, cells: AgentMarkdownEditing.cells(original))]; index += 2
                 while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).isEmpty, lines[index].contains("|") { rows.append((line: index, cells: AgentMarkdownEditing.cells(lines[index]))); index += 1 }
@@ -185,11 +185,6 @@ import ImageIO
     }
     static func cells(_ line: String) -> [String] {
         AgentMarkdownEditing.cells(line).map(\.text)
-    }
-    private static func tableAlignment(_ line: String) -> [NSTextAlignment]? {
-        let parts = cells(line)
-        guard line.contains("|"), !parts.isEmpty, parts.allSatisfy({ $0.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
-        return parts.map { $0.hasSuffix(":") ? ($0.hasPrefix(":") ? .center : .right) : .left }
     }
     private static func imageLink(_ text: String) -> (alt: String, url: URL)? {
         if text.range(of: "^<img\\s+[^>]+/?>$", options: [.regularExpression, .caseInsensitive]) != nil,

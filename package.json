@@ -73,6 +73,7 @@
     "native:check-knowledge-cards": "node scripts/check-native-knowledge-cards.mjs",
     "native:check-markdown": "node scripts/check-native-markdown.mjs",
     "build:diagrams": "vite build --config vite.diagrams.config.js",
+    "native:check-markdown-table": "node scripts/check-native-markdown.mjs --tables",
     "native:check-markdown-edit": "node scripts/check-native-markdown.mjs --editing",
     "native:check-file-conflict": "node scripts/check-native-markdown.mjs --conflicts",
     "native:check-text-encoding": "node scripts/check-native-markdown.mjs --encodings",

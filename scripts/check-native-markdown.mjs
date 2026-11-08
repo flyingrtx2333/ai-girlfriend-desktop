@@ -7,8 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const encodings = process.argv.includes('--encodings'), conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts || encodings;
-const prefix = encodings ? 'text-encoding' : conflicts ? 'file-conflict' : editing ? 'markdown-edit' : 'markdown';
+const tables = process.argv.includes('--tables'), encodings = process.argv.includes('--encodings'), conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts || encodings || tables;
+const prefix = tables ? 'markdown-table' : encodings ? 'text-encoding' : conflicts ? 'file-conflict' : editing ? 'markdown-edit' : 'markdown';
 const candidate = process.argv.indexOf('--candidate-app');
 if (candidate < 0 || !process.argv[candidate + 1]) throw new Error('Use --candidate-app <signed application>');
 const app = path.resolve(process.argv[candidate + 1]);
@@ -35,6 +35,44 @@ for (const name of documents) {
   await mkdir(path.dirname(path.join(source, name)), { recursive: true }); await writeFile(path.join(source, name), bytes);
 }
 await writeFile(path.join(output, prefix + '-source-origin.json'), JSON.stringify({ repository: root, source, files: sourceHashes }, null, 2));
+if (tables) {
+  const fixtures = path.join(output, 'table-fixtures'); await mkdir(fixtures);
+  const guide = (await readFile(path.join(source, 'docs/AGENT-READING.md'), 'utf8')).replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+  const block = rows => rows.join('\r\n');
+  const rows = ['| 对象 | 修改范围 | 文件 |','| --- | --- | --- |','| 正文或代码块 | 当前块的 Markdown | 保存后写入 |','| 表格单元格 | 当前单元格 | 保存后写入 |','| 只读来源 | 不可编辑 | 保持不变 |'];
+  if (guide.split(block(rows)).length !== 2) throw new Error('Update the actual project table targets');
+  const states = { initial: guide, insertedRow: guide.replace(block(rows),block([...rows.slice(0,2),'|  |  |  |',...rows.slice(2)])) };
+  const four = ['| 对象 |  | 修改范围 | 文件 |','| --- | --- | --- | --- |','|  |  |  |  |','| 正文或代码块 |  | 当前块的 Markdown | 保存后写入 |','| 表格单元格 |  | 当前单元格 | 保存后写入 |','| 只读来源 |  | 不可编辑 | 保持不变 |'];
+  states.insertedColumn = guide.replace(block(rows),block(four));
+  const filled = four.map((row,index) => index === 2 ? '|  | 新增 \\| 中文😀<br>第二行 |  |  |' : row);
+  states.filledCell = guide.replace(block(rows),block(filled));
+  for (const [name,marker] of [['alignLeft',':---'],['alignCenter',':---:'],['alignRight','---:']]) states[name] = guide.replace(block(rows),block(filled.map((row,index) => index === 1 ? '| --- | '+marker+' | --- | --- |' : row)));
+  states.external = states.alignCenter + '\r\n<!-- 外部实际写入：表格结构编辑验收 -->\r\n'; states.unsaved = states.alignRight;
+  const hashes = {};
+  for (const [name,text] of Object.entries(states)) {
+    const converted = spawnSync('/usr/bin/iconv',['-f','UTF-8','-t','UTF-16LE'],{input:Buffer.from(text),maxBuffer:16_000_000});
+    if (converted.status !== 0) throw new Error('Independent UTF-16 conversion failed');
+    const bytes = Buffer.concat([Buffer.from([255,254]),converted.stdout]); hashes[name] = hash(bytes); await writeFile(path.join(fixtures,name+'.bin'),bytes);
+  }
+  await writeFile(path.join(output,'markdown-table-plan.json'),JSON.stringify({sourceHash:sourceHashes['docs/AGENT-READING.md'],encoding:'UTF-16LE',bom:true,lineEndings:'CRLF',states,hashes,cellValue:'新增 | 中文😀\n第二行'},null,2));
+  const lead = '\uFEFF# 前😀\r\n\r\n', tail = '\r\n\r\n尾部👩🏽‍💻\r\n';
+  const base = '| A\\|B | `C|D` |\r\n| :---- | -----: |\r\n| **中文** | 值 |';
+  const v = (name,source,row,column,action,expected) => ({name,source,row,column,action,...(expected === null ? {reject:true} : {expected})});
+  const vectors = [
+    v('columnInsertPreservesEscapedCodePipesBOMAndOutsideBytes',lead+base+tail,1,1,3,lead+'| A\\|B |  | `C|D` |\r\n| :---- | --- | -----: |\r\n| **中文** |  | 值 |'+tail),
+    v('columnDeletePreservesRemainingRawMarkup',lead+base+tail,1,0,5,lead+'| `C|D` |\r\n| -----: |\r\n| 值 |'+tail),
+    v('alignmentChangesOnlySelectedDelimiter',lead+base+tail,1,1,7,lead+base.replace('-----: ',':-----: ')+tail),
+    v('headerRowInsertionStaysBelowSeparator',lead+base+tail,0,0,1,lead+base.replace('| **中文**','|  |  |\r\n| **中文**')+tail),
+    v('rowDeleteKeepsHeaderSeparatorAndOutsideText',lead+base+tail,1,0,2,lead+'| A\\|B | `C|D` |\r\n| :---- | -----: |'+tail),
+    v('rowInsertAtEOFDoesNotAddFinalNewline','A|B\n---|---\nx|y',1,0,1,'A|B\n---|---\nx|y\n|  |  |'),
+    v('bareEdgeColumnInsertRemainsRenderable','A|B\n---|---\nx|y\n',1,0,3,'|  |A|B\n --- |---|---\n|  |x|y\n'),
+    v('shortAndExtraRowsKeepCellPositions','| A | B |\n| --- | --- |\n| x |\n| a | b | extra |\n',1,1,4,'| A | B |  |\n| --- | --- | --- |\n| x |  |  |\n| a | b |  | extra |\n'),
+    v('headerDeletionRejected',base,0,0,2,null), v('insertAboveHeaderRejected',base,0,0,0,null),
+    v('lastColumnDeletionRejected','| A |\n| --- |\n| B |\n',1,0,5,null),
+    v('invalidCellSelectionRejected',base,8,0,1,null)
+  ];
+  await writeFile(path.join(output,'table-vectors.json'),JSON.stringify(vectors,null,2));
+}
 if (encodings) {
   const fixture = path.join(output, 'encoding-fixtures'); await mkdir(fixture);
   const guide = (await readFile(path.join(source, 'docs/AGENT-READING.md'), 'utf8')).replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
@@ -90,7 +128,7 @@ try {
   report.actualTaskReadback = { tasks: records.length, modelRequests: records.reduce((sum, record) => sum + (record.modelReceipts?.length ?? 0), 0), messages: records.reduce((sum, record) => sum + record.messages.length, 0), queued: records.reduce((sum, record) => sum + (record.queuedMessages?.length ?? 0) + (record.queuedInputs?.length ?? 0), 0) };
   const originalDocuments = await Promise.all(Object.entries(sourceHashes).map(async ([name, digest]) => hash(await readFile(path.join(root, name))) === digest));
   report.independent = { dailyProfileUnchanged: isDeepStrictEqual(before, await snapshot()), binaryMatches: report.binaryHash === binaryHash, projectSignatureVerified: true, originalRepositoryDocumentsUnchanged: originalDocuments.every(Boolean), actualTaskFilesHaveNoModelRequestsOrMessages: records.length >= 3 && report.actualTaskReadback.modelRequests === 0 && report.actualTaskReadback.messages === 0 && report.actualTaskReadback.queued === 0, bothTaskDraftsPersisted: (editing ? originalTask?.draft === '保留的A草稿' : originalTask?.draft?.startsWith('保留的A草稿\n\n[文件选文：docs/AGENT-READING.md]') === true) && otherTask?.draft === '保留的B草稿' };
-  if (editing && !conflicts && !encodings) {
+  if (editing && !conflicts && !encodings && !tables) {
     const plan = JSON.parse(await readFile(path.join(output, 'markdown-edit-plan.json'), 'utf8'));
     report.independent.externalVersionPreserved = hash(await readFile(plan.file)) === plan.externalHash;
     report.independent.unsavedDraftRetained = hash(await readFile(path.join(output, 'retained-unsaved-draft.md'))) === plan.draftHash;
@@ -106,6 +144,14 @@ try {
     report.independent.encodedFilesMatchIndependentExpectations = (await Promise.all(plan.files.map(async value => hash(await readFile(value.path)) === value.expectedHash))).every(Boolean);
     const current = JSON.parse(await readFile(path.join(output, 'native-encoding-readback.json'), 'utf8'));
     report.independent.editorBytesMatchSavedUnicodeFile = hash(Buffer.from(current.encodedDraftBase64, 'base64')) === plan.unicodeAfterHash && current.openedHash === plan.unicodeAfterHash && current.dirty === false;
+  }
+  if (tables) {
+    const plan = JSON.parse(await readFile(path.join(output,'markdown-table-plan.json'),'utf8'));
+    const final = JSON.parse(await readFile(path.join(output,'native-table-final.json'),'utf8'));
+    report.independent.conflictingExternalUTF16BytesPreserved = hash(await readFile(ready.file)) === plan.hashes.external;
+    report.independent.unsavedTableBytesMatchIndependentIconv = hash(Buffer.from(final.encodedDraftBase64,'base64')) === plan.hashes.unsaved && final.openedHash === plan.hashes.alignCenter && final.dirty === true;
+    const saved = JSON.parse(await readFile(path.join(output,'native-table-saved.json'),'utf8'));
+    report.independent.actualSavedTableMatchesIndependentBytes = saved.draftHash === plan.hashes.alignCenter && saved.openedHash === plan.hashes.alignCenter && saved.dirty === false;
   }
   report.success &&= report.modelsCalled === false && Object.values(report.independent).every(Boolean);
 } catch (error) { report = { ...(report ?? {}), success: false, error: error.message }; }

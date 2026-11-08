@@ -27,6 +27,7 @@ import WebKit
         if CommandLine.arguments.contains("--video-preview-check") { await runAgentVideoPreviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--text-encoding-check") { await runAgentTextEncodingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-conflict-check") { await runAgentFileConflictCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--markdown-table-check") { await runAgentMarkdownTableCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--markdown-edit-check") { await runAgentMarkdownEditingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--markdown-check") { await runAgentMarkdownCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-cards-check") { await runAgentKnowledgeCardCheck(output); NSApp.terminate(nil); return }
