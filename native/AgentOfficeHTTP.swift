@@ -92,7 +92,8 @@ final class AgentOfficeHTTP: @unchecked Sendable {
         #if OFFICE_ENGINE_PROBE
         FileHandle.standardError.write(Data("Office response \(status) bytes \(data.count)\n".utf8))
         #endif
-        let policy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' blob:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; media-src 'none'; form-action 'none'; base-uri 'none'"
+        // The document worker fetches embedded image data URLs before decoding.
+        let policy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; connect-src 'self' data: blob:; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; media-src 'none'; form-action 'none'; base-uri 'none'"
         let header = "HTTP/1.1 \(status) \(status == 200 ? "OK" : "Unavailable")\r\nContent-Length: \(data.count)\r\nContent-Type: \(mime)\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: \(policy)\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\n\r\n"
         connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
             guard error == nil else { self?.close(connection); return }

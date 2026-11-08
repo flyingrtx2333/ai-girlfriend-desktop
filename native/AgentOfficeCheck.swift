@@ -170,7 +170,13 @@ import AppKit
             control.showAgentTask(uiID); control.show(tab: "chat")
             _ = try await tasks.offices.show(ui.appendingPathComponent("sample.docx").path, taskID: uiID)
             try write(["appPID": getpid(), "taskID": uiID, "workspace": ui.path, "phase": "manual-edit", "binaryHash": binaryHash], "office-ui-ready.json")
-            if CommandLine.arguments.contains("--hold-ui") { try await waitFor("finish-office-ui") }
+            if CommandLine.arguments.contains("--hold-ui") {
+                try await waitFor("finish-office-ui")
+                let data = try Data(contentsOf: output.appendingPathComponent("office-ui-acceptance.json"))
+                let required = ["wordManualSaveAndReopen", "xlsxManualSaveAndReopen", "pptxManualSaveAndReopen", "conflictRefusesOverwrite", "saveAsPreservesBuffer", "externalDiskFileUnchanged", "unsavedSendKeepsDraftAndMakesNoRequest", "quitOffersContinueEditing", "wordImageVisible", "pptxChineseSpacingCorrect", "commonControlsLocalized"]
+                guard data.count <= 16_000, let ui = try JSONSerialization.jsonObject(with: data) as? [String: Any], ui["candidateHash"] as? String == candidateHash, ui["appPID"] as? Int == Int(getpid()), let values = ui["checks"] as? [String: Bool], required.allSatisfy({ values[$0] == true }) else { throw PetError("实际办公窗口验收未通过，保留原文件与报告") }
+                report["ui"] = ui
+            }
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["binaryHash"] = binaryHash
             try write(report, "office-report.json")
         } catch {

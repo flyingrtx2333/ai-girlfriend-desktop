@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as fonts from '@betteroffice/fonts';
 import { configureDefaultFonts } from '@betteroffice/docx/layout';
+import { sheetLocale, slidesLocale } from './locales';
 import './style.css';
 
 configureDefaultFonts({ fonts });
@@ -45,15 +46,28 @@ function changed() {
 }
 async function presentationFonts() {
   const selected = fonts.BUNDLED_FONTS.filter(face => ['Carlito', 'Noto Sans SC'].includes(face.family));
-  return Promise.all(selected.map(async face => ({ family: face.family, bytes: new Uint8Array(await fonts.loadBundledFontBytes(face)), weight: face.weight, style: face.style })));
+  return Promise.all(selected.map(async face => ({ family: face.family, bytes: new Uint8Array(await fonts.loadBundledFontBytes(face)), bold: face.weight >= 600, italic: face.style === 'italic' })));
 }
 function LoadedEditor({ Component, properties, format, token }: { Component: React.ComponentType<any>; properties: any; format: string; token: number }) {
   const reference = useRef<any>(null);
+  const preparing = useRef(false);
   const assign = useCallback((value: any) => {
     reference.current = value;
     if (token === generation && value && ready) editor = value;
   }, []);
-  const accept = useCallback((value: any) => { if (token === generation) becameReady(value); }, []);
+  const accept = useCallback((value: any) => {
+    if (token !== generation || fatal) return;
+    if (ready) { editor = value; return; }
+    if (preparing.current) return;
+    preparing.current = true;
+    void (async () => {
+      if (format === 'pptx') {
+        const access = await perform<any>(() => value.handleAsync());
+        for (const face of properties.fonts.filter((f: any) => f.family === 'Noto Sans SC')) await perform(() => access.registerFallbackFont(face));
+      }
+      if (token === generation) becameReady(value);
+    })().catch(error => { if (token === generation) failure(error); });
+  }, []);
   useEffect(() => {
     if (format !== 'docx') return;
     let ended = false;
@@ -107,10 +121,10 @@ async function load(url: string, name: string, locked: boolean) {
     Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n: locale.default, showFileOpen: false, showHelpMenu: false, colorMode: 'light' };
   } else if (format === 'xlsx') {
     const [module, locale] = await Promise.all([import('@betteroffice/xlsx-react'), import('@betteroffice/xlsx-i18n/zh-CN')]);
-    Component = module.XlsxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: locale.default };
+    Component = module.XlsxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: sheetLocale(locale.default) };
   } else {
     const [module, locale, faces] = await Promise.all([import('@betteroffice/pptx-react'), import('@betteroffice/pptx-i18n/zh-CN'), presentationFonts()]);
-    Component = module.PptxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: locale.default, fonts: faces };
+    Component = module.PptxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: slidesLocale(locale.default), fonts: faces };
   }
   if (token !== generation) throw new Error('文档已切换');
   const loaded = new Promise<void>((resolve, reject) => { pendingReady = { resolve, reject }; });
