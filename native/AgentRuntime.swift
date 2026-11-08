@@ -192,7 +192,7 @@ import Foundation
                 message.extensionInstructions = "[用户选择内置 /canvas。按需载入canvas工具，生成可交互画布；保留原始要求，使用实际数据，完成前核对渲染结果。]"
             } else if text.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit" {
                 guard !task.isProjectDocumentation, [.agent, .goal].contains(task.mode) else { throw PetError("请在普通Agent任务中编辑知识卡片") }
-                message.extensionInstructions = "[用户选择内置 /knowledge-edit。用load_tools载入project_knowledge工具组，先read_project_knowledge读原卡片及hash，再read_file核对实际源码，只用edit_project_knowledge修改用户指定的卡片，保留其他事实、卡片和引用；遵循单次批准，写后回读。原始用户要求保持不变。]"
+                message.extensionInstructions = "[用户选择内置 /knowledge-edit。应用已载入project_knowledge工具组。先read_project_knowledge读原卡片及hash，再read_file核对实际源码，只用edit_project_knowledge修改用户指定的卡片，保留其他事实、卡片和引用；遵循单次批准，写后回读。原始用户要求保持不变。]"
             } else { message = try store.extensions.expand(message, store: store, taskID: id) }
         }
         catch { submissionError = error.localizedDescription; return false }

@@ -149,7 +149,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         try AgentFiles(workspace: url.deletingLastPathComponent().path).writeData(data, to: url, permissions: 0o600)
     }
     func recordRead(taskID: String, path: String, sha256: String, text: String) throws {
-        guard let store, let task = store.task(taskID), task.kind == Self.kind || task.toolGroups?.contains("knowledge") == true else { return }
+        guard let store, let task = store.task(taskID), task.recordsKnowledgeSources else { return }
         let lines = text.split(separator: "\n").compactMap { Int($0.split(separator: ":", maxSplits: 1).first ?? "") }
         guard let first = lines.first, let last = lines.last else { return }
         var reads = task.knowledgeReads ?? [:]

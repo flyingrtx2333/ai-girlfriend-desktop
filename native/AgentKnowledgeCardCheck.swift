@@ -130,6 +130,20 @@ import AppKit
             let retainedHash = AgentFiles.hash(try Data(contentsOf: url))
             checks["recordedOversizedExchangeFitsOriginalBudget"] = messages.contains { $0.role == "tool" && names[$0.toolCallID ?? ""] == "search_project" } && messages.filter(\.isHumanInput).map(\.id) == actual.messages.filter(\.isHumanInput).map(\.id) && retainedHash == AgentFiles.hash(data)
         }
+        let editInput = AgentMessage(role: "user", content: "/knowledge-edit 核对当前卡片", extensionInstructions: "[用户选择内置 /knowledge-edit。]")
+        isolated.update(sourceID) { $0.activateExtensions(editInput) }
+        checks["knowledgeEditCommandLoadsNarrowToolsOnAdmission"] = isolated.task(sourceID)!.toolGroups == ["project_knowledge"]
+        var queued = isolated.task(sourceID)!, askingRecord = isolated.task(asking)!
+        queued.toolGroups = nil; queued.queuedMessages = [editInput]; queued.flushQueuedInputs(); askingRecord.activateExtensions(editInput)
+        checks["queuedCommandLoadsToolsButAskDoesNot"] = queued.toolGroups == ["project_knowledge"] && askingRecord.toolGroups == nil
+        let current = try cards.book(isolated.task(sourceID)!).0!, target = current.cards[0], reference = target.sources[0]
+        _ = try await call(sourceID, "read_file", ["path": reference.path, "offset": reference.line, "limit": reference.endLine - reference.line + 1])
+        let arguments: [String: Any] = ["id": target.id, "body": target.body + "\n原生读取与来源核对。", "expected_hash": target.hash, "sources": [["path": reference.path, "line": reference.line, "end_line": reference.endLine]]]
+        let editCall = AgentToolCall(id: UUID().uuidString, name: "edit_project_knowledge", arguments: String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self))
+        let approval = try AgentTools(store: isolated, taskID: sourceID).approvalReason(for: editCall)
+        _ = try await AgentTools(store: isolated, taskID: sourceID).execute(editCall)
+        let afterEdit = try cards.book(isolated.task(sourceID)!).0!
+        checks["narrowKnowledgeToolsRecordSourcesAndKeepEditApproval"] = approval != nil && isolated.task(sourceID)!.knowledgeReads?[reference.path] != nil && afterEdit.cards.first(where: { $0.id == target.id })!.body.hasSuffix("原生读取与来源核对。") && afterEdit.cards.filter { $0.id != target.id }.map(\.hash) == current.cards.filter { $0.id != target.id }.map(\.hash)
         return checks
     }
     static func commandLine() async -> Int32 {

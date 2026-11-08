@@ -144,6 +144,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var knowledgeJob: AgentKnowledgeCardJob?
     var knowledgeReads: [String: AgentKnowledgeCardRead]?
     var isProjectDocumentation: Bool { kind == "wiki" || kind == "knowledge-cards" }
+    var recordsKnowledgeSources: Bool { kind == "knowledge-cards" || toolGroups?.contains("knowledge") == true || toolGroups?.contains("project_knowledge") == true || agent?.tools.contains("edit_project_knowledge") == true }
     var attachments: [AgentAttachment]?
     var canvases: [AgentCanvasRecord]?
     var draftAttachmentIDs: [String]?
@@ -192,6 +193,7 @@ struct AgentTaskRecord: Codable, Identifiable {
         queuedInputs = []; queuedMessages = []
     }
     mutating func activateExtensions(_ message: AgentMessage) {
+        if message.isHumanInput, message.extensionInstructions != nil, message.content.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit", !isProjectDocumentation, [.agent, .goal].contains(mode) { toolGroups = ["project_knowledge"] }
         for reference in message.extensionReferences ?? [] where reference.kind == .skill {
             if activeSkills == nil { activeSkills = [] }
             activeSkills?.removeAll { $0.id == reference.id }; activeSkills?.append(reference)

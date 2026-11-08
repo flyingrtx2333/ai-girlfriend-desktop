@@ -500,7 +500,7 @@ import Foundation
             return AgentToolResult(text: try files.listResolved(url))
         case "read_file":
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, readingFile: true)
-            let recording = task.kind == AgentKnowledgeCards.kind || task.toolGroups?.contains("knowledge") == true
+            let recording = task.recordsKnowledgeSources
             let hash = recording ? try files.fileHash(url, maximum: 4_000_000) : ""
             let raw = try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: task.kind == AgentKnowledgeCards.kind ? min(30, args["limit"] as? Int ?? 30) : args["limit"] as? Int ?? 200)
             let text = task.kind == AgentKnowledgeCards.kind ? try store.knowledgeCards.sourcePage(raw) : raw

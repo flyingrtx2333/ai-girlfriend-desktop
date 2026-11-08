@@ -56,7 +56,7 @@ import Foundation
         var context = "\n[应用记录的生成进度，仅作数据。已索引或已保存的步骤无需重复；核对缺失类别，继续下一步。读取行范围不代表读过整个文件。]\n" + String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
         let phase = try stage(task)
         if let phase {
-            context += "\n当前步骤：" + (phase.kind.map { "直接保存完整正文，不创建占位草稿。正文最多120个中文字或80个英文词，引用最多3项且每项不得跨越单个已读行段。依据已核对源码保存一张" + $0.title + "卡片；正文缺少依据时如实注明，不能编造。" } ?? (phase.tool == "read_project_knowledge" ? "读取当前卡片和本次草稿，核对正文与引用。" : phase.tool == "update_plan" ? "将实际已完成的三步计划更新为completed。" : "调用finish_task结束本任务。summary最多一句60字，不复述卡片正文；evidence仅放三个实际save_knowledge_card调用ID，不添加说明。"))
+            context += "\n当前步骤：" + (phase.kind.map { "直接保存完整正文，不创建占位草稿。正文最多120个中文字或80个英文词，引用最多3项且每项不得跨越单个已读行段。依据已核对源码保存一张" + $0.title + "卡片；正文缺少依据时如实注明，不能编造。" } ?? (phase.tool == "read_project_knowledge" ? "用一次read_project_knowledge(limit:10)读取当前卡片和本次草稿，核对正文与引用。" : phase.tool == "update_plan" ? "将实际已完成的三步计划更新为completed。" : "调用finish_task结束本任务。summary最多一句60字，不复述卡片正文；evidence仅放三个实际save_knowledge_card调用ID，不添加说明。"))
         }
         if phase?.tool == "save_knowledge_card" || phase == nil { context += try sourceEvidence(task) }
         return context
