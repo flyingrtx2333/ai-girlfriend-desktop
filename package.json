@@ -75,7 +75,8 @@
     "build:diagrams": "vite build --config vite.diagrams.config.js",
     "native:check-markdown-edit": "node scripts/check-native-markdown.mjs --editing",
     "native:check-file-conflict": "node scripts/check-native-markdown.mjs --conflicts",
-    "native:check-text-encoding": "node scripts/check-native-markdown.mjs --encodings"
+    "native:check-text-encoding": "node scripts/check-native-markdown.mjs --encodings",
+    "native:check-video": "node scripts/check-native-video.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

@@ -237,6 +237,7 @@ import AppKit
     private let back = NSButton(title: "返回", target: nil, action: nil), reload = NSButton(title: "刷新", target: nil, action: nil), mode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let scroll = NSScrollView()
     private var history: [URL] = [], file: URL?
+    private var videoWindow: AgentVideoWindow?
     private let encodingMenu = NSPopUpButton()
     private var encodings: [String: AgentTextEncoding] = [:], requestedEncoding: AgentTextEncoding?, currentFormat: AgentTextFormat?
     init(workspace: String, target: URL) throws {
@@ -296,12 +297,18 @@ import AppKit
         } catch { label.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: currentFormat) }
     }
     private func follow(_ url: URL) {
-        do { if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) } else { try open(url) } }
+        do {
+            if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) }
+            else if AgentVideoSnapshot.supports(url) {
+                let target = try AgentMarkdownDocument.target(url, document: file ?? files.root.appendingPathComponent("index.md"), files: files)
+                videoWindow?.close(); videoWindow = AgentVideoWindow(file: target, files: files); videoWindow?.showWindow(nil); videoWindow?.window?.makeKeyAndOrderFront(nil)
+            } else { try open(url) }
+        }
         catch { label.stringValue = error.localizedDescription }
     }
     @objc private func switchMode() { let preview = !mode.isHidden && mode.selectedSegment == 0; reader.isHidden = !preview; scroll.isHidden = preview; sourceSelection.update(); sourceAdd.isHidden = preview || onAddSelection == nil }
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = scroll.isHidden || onAddSelection == nil }
-    func windowWillClose(_ notification: Notification) { reader.clear(); text.string = "" }
+    func windowWillClose(_ notification: Notification) { videoWindow?.close(); videoWindow = nil; reader.clear(); text.string = "" }
     @objc private func refreshFile() { guard let file else { return }; do { try open(file, remember: false) } catch { label.stringValue = error.localizedDescription } }
     var encodingCheckState: [String: Any] {
         guard CommandLine.arguments.contains("--text-encoding-check") else { return [:] }

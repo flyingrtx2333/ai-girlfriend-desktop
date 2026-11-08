@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
     private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
+    private let readingToolbar = NSStackView()
     private lazy var sourceSelection = AgentMarkdownSelectionAction(text: text, button: sourceAdd) { [weak self] in
         guard let self, !self.viewer.isHidden, let workspace = self.store.task(self.taskID)?.workspace, let path = self.selection, [1, 6].contains(self.sections.selectedSegment), let file = try? AgentFiles(workspace: workspace).resolve(path) else { return nil }; return (file, workspace)
     }
@@ -14,7 +15,7 @@ import UniformTypeIdentifiers
         markdown.canAddSelection = { [weak self] in self?.canAddSelection == true }; sourceSelection.canAdd = markdown.canAddSelection
     } }
     private var canAddSelection: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && task.kind != "hook" && !task.isProjectDocumentation && task.agent?.ownerID == nil && task.automation == nil }
-    private let markdown = AgentMarkdownReader(), viewer = NSScrollView()
+    private let markdown = AgentMarkdownReader(), viewer = NSScrollView(), video = AgentVideoPreview()
     private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let encodingMenu = NSPopUpButton()
     private var requestedEncoding: AgentTextEncoding?, encodings: [String: AgentTextEncoding] = [:], fileFormat = AgentTextFormat()
@@ -33,6 +34,7 @@ import UniformTypeIdentifiers
     private var attachmentWindow: AgentAttachmentWindow?
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
+    private var videoWindow: AgentVideoWindow?
     init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -58,9 +60,11 @@ import UniformTypeIdentifiers
         }
         markdown.onEditError = { [weak self] message in self?.state.stringValue = message }
         AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding); encodingMenu.isHidden = true
-        let pane = NSView(), readingToolbar = NSStackView(views: [displayMode, encodingMenu, NSView(), sourceAdd]); sourceSelection.update()
-        for child in [viewer, markdown] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
-        let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.spacing = 6
+        let pane = NSView(); [displayMode, encodingMenu, NSView(), sourceAdd].forEach { readingToolbar.addArrangedSubview($0) }; sourceSelection.update()
+        readingToolbar.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        video.isHidden = true
+        for child in [viewer, markdown, video] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
+        let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.distribution = .fill; documentPane.spacing = 6
         for child in [readingToolbar, pane] { child.widthAnchor.constraint(equalTo: documentPane.widthAnchor).isActive = true }
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
@@ -150,7 +154,11 @@ import UniformTypeIdentifiers
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
                 text.isEditable = task.status != .running; save.isHidden = false; save.isEnabled = text.isEditable; return
             }
-            if sections.selectedSegment == 2 { text.string = value; open.isHidden = false; return }
+            if sections.selectedSegment == 2 {
+                if let url = URL(string: value), url.isFileURL, AgentVideoSnapshot.supports(url) { let files = try AgentFiles(workspace: task.workspace); try showVideo(files.resolve(url.path), files: files) }
+                else { text.string = value; open.isHidden = false }
+                return
+            }
             if sections.selectedSegment == 3 {
                 guard let change = task.changes.first(where: { $0.id == value }) else { return }
                 undo.isHidden = change.restoredAt != nil; undo.isEnabled = task.status != .running && task.pendingFileCapture == nil && change.reviewOnly != true && change.afterState?.kind != "directory"
@@ -162,10 +170,12 @@ import UniformTypeIdentifiers
                 }; return
             }
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value)
+            if AgentVideoSnapshot.supports(file) { try showVideo(file, files: files); return }
             if AgentOffice.supports(file.path) { text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "编辑"; return }
             let data = try files.readData(file)
             openedFile = file; requestedEncoding = encodings[file.path]; open.isHidden = false
             encodingMenu.isHidden = !AgentTextEncoding.canReopen(file)
+            readingToolbar.isHidden = encodingMenu.isHidden
             AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: nil)
             do { let document = try AgentTextFile.decode(data, encoding: requestedEncoding); loadText(document, data: data, file: file, task: task); state.stringValue = (text.isEditable ? "" : "只读 · ") + files.relative(file) }
             catch { text.string = ""; state.stringValue = encodingMenu.isHidden ? "此文件不能作为文本预览" : error.localizedDescription }
@@ -177,11 +187,25 @@ import UniformTypeIdentifiers
               (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
         return true
     }
-    private func resetDocumentMode() { conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func resetDocumentMode() { readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func videoScope(_ files: AgentFiles) -> () throws -> Void {
+        { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("视频所属任务或工作区已变化") } }
+    }
+    private func showVideo(_ file: URL, files: AgentFiles, separate: Bool = false) throws {
+        guard try files.resolve(file.path) == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能预览此视频路径") }
+        if separate {
+            video.pause(); videoWindow?.close(); videoWindow = AgentVideoWindow(file: file, files: files, validate: videoScope(files))
+            videoWindow?.showWindow(nil); videoWindow?.window?.makeKeyAndOrderFront(nil)
+        } else {
+            text.string = ""; viewer.isHidden = true; markdown.isHidden = true; video.isHidden = false; readingToolbar.isHidden = true; sourceAdd.isHidden = true
+            openedFile = file; open.isHidden = false; open.title = "新窗口"; state.stringValue = files.relative(file)
+            video.show(file: file, files: files, validate: videoScope(files))
+        }
+    }
     private func loadText(_ document: AgentTextFile, data: Data, file: URL, task: AgentTaskRecord) {
         markdown.clear(); markdownFile = nil
         text.string = document.text; fileFormat = document.format; openedHash = AgentFiles.hash(data); openedFile = file; dirty = false; text.undoManager?.removeAllActions()
-        text.isEditable = data.count <= 2_000_000 && document.text.utf8.count <= 2_000_000 && fileIsEditable(task, file: file); save.isHidden = false; save.isEnabled = text.isEditable; compare.isHidden = !text.isEditable; encodingMenu.isHidden = false
+        text.isEditable = data.count <= 2_000_000 && document.text.utf8.count <= 2_000_000 && fileIsEditable(task, file: file); save.isHidden = false; save.isEnabled = text.isEditable; compare.isHidden = !text.isEditable; encodingMenu.isHidden = false; readingToolbar.isHidden = false
         AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: fileFormat)
         markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = !["md", "markdown"].contains(file.pathExtension.lowercased())
         if !displayMode.isHidden { markdownFile = file; displayMode.selectedSegment = 0; switchDocumentMode() }
@@ -219,7 +243,8 @@ import UniformTypeIdentifiers
                 guard canLeave() else { return }
                 table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row)
                 _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
-            } else {
+            } else if AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, separate: true) }
+            else {
                 let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target)
                 next.onAddSelection = onAddSelection; next.canAddSelection = { [weak self] in self?.canAddSelection == true }
                 sourceWindow?.close(); sourceWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
@@ -294,6 +319,9 @@ import UniformTypeIdentifiers
     }
     @objc private func openItem() {
         guard let value = selection else { return }
+        if !video.isHidden, let file = openedFile, let task = store.task(taskID) {
+            do { try showVideo(file, files: AgentFiles(workspace: task.workspace), separate: true) } catch { state.stringValue = error.localizedDescription }; return
+        }
         if sections.selectedSegment == 1, AgentOffice.supports(value) { showOffice(value); return }
         if let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
             load = Task { [weak self] in
@@ -318,8 +346,12 @@ import UniformTypeIdentifiers
     }
     @objc private func chooseOffice() {
         guard let window, let workspace = store.task(taskID)?.workspace else { return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = AgentOffice.formats.compactMap { UTType(filenameExtension: $0) }; panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
-        panel.beginSheetModal(for: window) { [weak self] response in guard response == .OK, let file = panel.url else { return }; self?.showOffice(file.path) }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = (AgentOffice.formats + ["mp4", "webm"]).compactMap { UTType(filenameExtension: $0) }; panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let file = panel.url, let self else { return }
+            if AgentVideoSnapshot.supports(file) { do { try self.showVideo(file, files: AgentFiles(workspace: workspace), separate: true) } catch { self.state.stringValue = error.localizedDescription } }
+            else { self.showOffice(file.path) }
+        }
     }
     @objc private func createOffice() {
         let index = newOffice.indexOfSelectedItem - 1; newOffice.selectItem(at: 0)
@@ -341,7 +373,13 @@ import UniformTypeIdentifiers
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
-    func windowWillClose(_ notification: Notification) { markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    func windowWillClose(_ notification: Notification) { video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    func videoPreviewReadback() async -> [String: Any] {
+        guard CommandLine.arguments.contains("--video-preview-check") else { return [:] }
+        var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""
+        if let videoWindow { result["separateWindowVisible"] = videoWindow.window?.isVisible == true; result["separatePlayer"] = await videoWindow.preview.checkState() }
+        return result
+    }
     func markdownEditingReadback() async -> [String: Any] {
         guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         await markdown.waitForDiagrams()

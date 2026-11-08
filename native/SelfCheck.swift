@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--video-preview-check") { await runAgentVideoPreviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--text-encoding-check") { await runAgentTextEncodingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-conflict-check") { await runAgentFileConflictCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--markdown-edit-check") { await runAgentMarkdownEditingCheck(output); NSApp.terminate(nil); return }
