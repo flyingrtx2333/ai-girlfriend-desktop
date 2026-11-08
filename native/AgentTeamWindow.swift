@@ -3,6 +3,7 @@ import AppKit
 @MainActor final class AgentTeamWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     let store: AgentStore
     let workspace: String?
+    private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
     private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), instructions = NSTextView()
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -11,8 +12,8 @@ import AppKit
     private var values: [AgentTeam] = [], agents: [AgentProfile] = [], pendingAgents: [AgentProfile] = []
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
-    init(store: AgentStore, workspace: String?) {
-        self.store = store; self.workspace = workspace
+    init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
+        self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Agent 团队"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
@@ -123,8 +124,8 @@ import AppKit
             pendingAgents = []; dirty = false; reload(); state.stringValue = "已保存"
         } catch { state.stringValue = error.localizedDescription }
     }
-    @objc private func useTeam() { do { guard !dirty, let selectedID else { throw PetError("请先保存团队") }; let id = try store.teams.createTask(selectedID, store: store, workspace: workspace); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
-    @objc private func manageAgents() { let manager = AgentProfileWindow(store: store, workspace: workspace); manager.onUse = onUse; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
+    @objc private func useTeam() { do { guard !dirty, let selectedID else { throw PetError("请先保存团队") }; let id = try store.teams.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
+    @objc private func manageAgents() { let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: workMode); manager.onUse = onUse; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
     func windowDidBecomeKey(_ notification: Notification) {
         guard dirty else { reload(); return }
         let id = leader.selectedItem?.representedObject as? String

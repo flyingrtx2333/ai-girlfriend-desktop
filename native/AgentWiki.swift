@@ -33,7 +33,7 @@ struct AgentWikiManifest: Codable {
         guard let source = store.task(sourceID) else { throw PetError("任务不存在") }
         let files = try AgentFiles(workspace: source.workspace)
         if let existing = store.tasks.first(where: { $0.kind == "wiki" && $0.workspace == source.workspace && [.ready, .running, .waiting].contains($0.status) && !$0.archived }) { return existing.id }
-        let id = store.create(title: "Repo Wiki · " + files.root.lastPathComponent, workspace: source.workspace, mode: .goal)
+        let id = store.create(title: "Repo Wiki · " + files.root.lastPathComponent, workspace: source.workspace, mode: .goal, workMode: source.organizationMode)
         store.update(id) { $0.kind = "wiki"; $0.parentID = sourceID; $0.permission = source.permission; $0.gitDirectory = source.gitDirectory }
         runtime.submit("""
         为当前项目生成或更新中文 Repo Wiki。先调用 index_project，查看实际覆盖范围。只生成文档，不修改源代码；不要运行命令或访问外部网页。

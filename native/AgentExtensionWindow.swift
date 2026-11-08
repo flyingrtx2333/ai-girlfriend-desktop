@@ -87,11 +87,11 @@ import UniformTypeIdentifiers
     }
     @objc private func showAgents() {
         if let window = agentWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentProfileWindow(store: store, workspace: workspace); manager.onUse = onStartAgent; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showTeams() {
         if let window = teamWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentTeamWindow(store: store, workspace: workspace); manager.onUse = onStartAgent; teamWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; teamWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

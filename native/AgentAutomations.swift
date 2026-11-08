@@ -63,6 +63,7 @@ struct AgentAutomation: Codable, Identifiable {
     var name: String
     var prompt: String
     var workspace: String
+    var workMode: AgentWorkMode?
     var schedule = AgentAutomationSchedule()
     var output = AgentAutomationOutput.independent
     var executor = "default"
@@ -218,9 +219,9 @@ struct AgentAutomationAssignment: Codable {
                 guard task.workspace == value.workspace, task.agent?.ownerID == nil, task.automation?.automationID == id else { throw PetError("合并任务范围已改变，请新建自动化") }
                 taskID = existing
                 try store.agents.refreshAutomationRole(taskID, executor: value.executor, store: store)
-            } else if value.executor.hasPrefix("agent:") { taskID = try store.agents.createTask(String(value.executor.dropFirst(6)), store: store, workspace: value.workspace) }
-            else if value.executor.hasPrefix("team:") { taskID = try store.teams.createTask(String(value.executor.dropFirst(5)), store: store, workspace: value.workspace) }
-            else { taskID = store.create(workspace: value.workspace) }
+            } else if value.executor.hasPrefix("agent:") { taskID = try store.agents.createTask(String(value.executor.dropFirst(6)), store: store, workspace: value.workspace, workMode: value.workMode) }
+            else if value.executor.hasPrefix("team:") { taskID = try store.teams.createTask(String(value.executor.dropFirst(5)), store: store, workspace: value.workspace, workMode: value.workMode) }
+            else { taskID = store.create(workspace: value.workspace, workMode: value.workMode) }
             run.taskID = taskID
             store.update(taskID) { task in
                 task.automation = AgentAutomationAssignment(automationID: id, runID: run.id, name: value.name, workspace: value.workspace, permission: value.permission, readOnly: value.readOnly, network: value.network)

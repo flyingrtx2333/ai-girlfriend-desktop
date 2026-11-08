@@ -106,10 +106,10 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         if let error = store.writeError { throw PetError("团队任务未保存：" + error) }
     }
-    func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil) throws -> String {
+    func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil) throws -> String {
         if let owner, try binding(owner, store: store) != nil { throw PetError("团队任务不能委派到另一个团队") }
         let value = try team(id, store: store)
-        let taskID = try store.agents.createTask(value.leaderID, store: store, workspace: workspace, owner: owner)
+        let taskID = try store.agents.createTask(value.leaderID, store: store, workspace: workspace, owner: owner, workMode: workMode)
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         return taskID
     }

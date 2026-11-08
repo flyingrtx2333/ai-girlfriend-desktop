@@ -97,6 +97,8 @@ final class FormDocumentView: NSView {
     private var worktreePolicyPanel: AgentWorktreePolicyView?
     private var generalSettingsSave: NSButton?
     private let executionLocation = AgentWorkbenchButton()
+    private let branchControl = AgentWorkbenchButton()
+    private var branchTask: Task<Void, Never>?, branchKey: String?
     private var knowledgeWindow: AgentKnowledgeWindow?
     private var extensionWindow: AgentExtensionWindow?
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
@@ -243,11 +245,17 @@ final class FormDocumentView: NSView {
         taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar)
         taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
-        taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProject() }
-        taskSidebar.onNewInWorkspace = { [weak self] path in
-            guard let self, let tasks = self.companion?.agentStore else { return }; self.saveAgentDraft(); self.selectAgentTask(tasks.create(workspace: path))
+        taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProjectDirectory() }
+        taskSidebar.onNewInWorkspace = { [weak self] path, mode in
+            guard let self, let tasks = self.companion?.agentStore else { return }; self.saveAgentDraft(); self.selectAgentTask(tasks.create(workspace: path, workMode: mode))
         }
         taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
+        taskSidebar.onWorkMode = { [weak self] mode in self?.switchWorkMode(mode) }
+        taskSidebar.onDirectoryAction = { [weak self] path, mode, action in self?.directoryAction(path, mode: mode, action: action) }
+        taskSidebar.onDirectorySort = { [weak self] sort, mode in
+            guard let self, let tasks = self.companion?.agentStore else { return }
+            do { try tasks.organization.sort(sort, mode: mode); self.renderAgentMessages() } catch { self.setStatus(error.localizedDescription, error: true) }
+        }
         let knowledge = AgentWorkbenchButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge))
         let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
         settingsNav.tag = 1; settingsNav.target = self; settingsNav.action = #selector(selectTab(_:))
@@ -256,7 +264,7 @@ final class FormDocumentView: NSView {
             AgentWorkbenchTheme.sidebarControl(button)
             button.isBordered = false; button.alignment = .left; button.font = .systemFont(ofSize: 14)
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageLeading; button.contentTintColor = .labelColor
-            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
         let footer = stack([AgentWorkbenchTheme.rule(), automationButton, knowledge, extensions, settingsNav], vertical: true, spacing: 6); content.addSubview(footer)
         for button in [automationButton as NSView, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
@@ -265,7 +273,7 @@ final class FormDocumentView: NSView {
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
         sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 231)
         let leftRule = NSView(); leftRule.wantsLayer = true; leftRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: main.leadingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -18), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -42)])
+        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: main.leadingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24)])
         for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
         }
@@ -324,7 +332,8 @@ final class FormDocumentView: NSView {
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 32).isActive = true
         executionLocation.isBordered = false; executionLocation.font = .systemFont(ofSize: 13); executionLocation.target = self; executionLocation.action = #selector(showExecutionLocation); executionLocation.imagePosition = .imageTrailing; executionLocation.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
         executionLocation.setAccessibilityLabel("执行位置")
-        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
+        branchControl.isBordered = false; branchControl.font = .systemFont(ofSize: 12); branchControl.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil); branchControl.imagePosition = .imageLeading; branchControl.target = self; branchControl.action = #selector(showAgentGit); branchControl.setAccessibilityLabel("当前分支"); branchControl.cell?.lineBreakMode = .byTruncatingMiddle; branchControl.widthAnchor.constraint(lessThanOrEqualToConstant: 155).isActive = true
+        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(branchControl); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
         voiceInput.target = self; voiceInput.action = #selector(toggleWorkbenchVoice); AgentWorkbenchTheme.toolbar(voiceInput, title: "语音输入", symbol: "mic")
         entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -373,7 +382,7 @@ final class FormDocumentView: NSView {
         emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
-        emptyProject.title = task.workspaceDisplayName ?? "选择项目"; emptyProject.toolTip = task.workspace
+        emptyProject.title = companion?.agentStore?.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
         composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
         workbenchBadge.update(task); workbenchInspector.update(task)
         taskBack.isEnabled = taskNavigationIndex > 0; taskForward.isEnabled = taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
@@ -411,6 +420,9 @@ final class FormDocumentView: NSView {
         let menu = NSMenu(); menu.autoenablesItems = false
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item)
+        }
+        if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
+            let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
         menu.addItem(.separator())
         let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
@@ -973,7 +985,10 @@ final class FormDocumentView: NSView {
     func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
     func windowDidMiniaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
     func windowDidDeminiaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
-    func windowDidBecomeKey(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidBecomeKey(_ notification: Notification) {
+        companion?.updatePetWorkspaceOcclusion()
+        if let task = companion?.agentStore?.selected { refreshBranch(task, force: true) }
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         dismissExtensionCandidates()
         saveAgentDraft()
@@ -1136,8 +1151,21 @@ final class FormDocumentView: NSView {
     @objc func newAgentTask() {
         guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
         let previous = tasks.selected
-        let id = tasks.create(workspace: previous?.workspace, mode: .agent)
+        let id = tasks.create(workspace: previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
+    }
+    private func directoryAction(_ path: String, mode: AgentWorkMode, action: String) {
+        guard let tasks = companion?.agentStore else { return }
+        do {
+            if action == "pin" { try tasks.organization.togglePinned(path, mode: mode, tasks: tasks.tasks) }
+            else if action == "rename" {
+                let alert = NSAlert(); alert.messageText = mode.directoryTitle + "显示名称"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
+                let input = NSTextField(string: tasks.organization.name(path, mode: mode) ?? ""); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); alert.accessoryView = input; alert.window.initialFirstResponder = input
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+                try tasks.organization.rename(path, mode: mode, name: input.stringValue, tasks: tasks.tasks)
+            }
+            renderAgentMessages()
+        } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func chooseExecutor() {
         guard let store = companion?.agentStore, let task = store.selected, task.canChooseExecutor else { return }
@@ -1184,11 +1212,15 @@ final class FormDocumentView: NSView {
                 if !title.isEmpty { tasks.update(id) { $0.title = String(title.prefix(120)) } }
             }
         case "pin": tasks.update(id) { $0.pinned.toggle() }
+        case "work-mode":
+            guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" else { return }
+            saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
+            if tasks.selectedID == id { selectAgentTask(id) }
         case "fork": saveAgentDraft(); if let next = tasks.fork(id) { selectAgentTask(next) }
         case "archive":
             saveAgentDraft(); tasks.update(id) { $0.archived.toggle() }
             if tasks.task(id)?.archived == true && tasks.selectedID == id {
-                let next = tasks.tasks.first(where: { !$0.archived && $0.id != id })?.id ?? tasks.create()
+                let next = tasks.tasks.first(where: { !$0.archived && $0.id != id && $0.organizationMode == task.organizationMode })?.id ?? tasks.create(workMode: task.organizationMode)
                 selectAgentTask(next)
             }
         default: break
@@ -1196,24 +1228,46 @@ final class FormDocumentView: NSView {
         renderAgentMessages()
     }
     @objc func chooseProject() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择项目"
+        guard let task = companion?.agentStore?.selected else { return }
+        guard task.organizationMode == .general else { chooseProjectDirectory(); return }
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let choose = NSMenuItem(title: "选择文件夹…", action: #selector(chooseProjectDirectory), keyEquivalent: ""); choose.target = self; menu.addItem(choose)
+        let none = NSMenuItem(title: "不关联文件夹", action: #selector(clearGeneralDirectory), keyEquivalent: ""); none.target = self; none.isEnabled = task.workspace != nil && ![.running, .waiting].contains(task.status) && task.automation == nil; menu.addItem(none)
+        let anchor = emptyProject.isHiddenOrHasHiddenAncestor ? projectButton : emptyProject
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+    }
+    @objc private func clearGeneralDirectory() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.organizationMode == .general, task.workspace != nil, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), ![.running, .waiting].contains(task.status) else { return }
+        saveAgentDraft()
+        if !task.messages.isEmpty || task.worktreeOrigin != nil {
+            let id = tasks.create(mode: task.mode, workMode: .general)
+            do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
+            catch { selectAgentTask(task.id); setStatus(error.localizedDescription, error: true); return }
+            tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = nil; $0.team = task.team }; selectAgentTask(id)
+        } else { tasks.update(task.id) { $0.workspace = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }; renderAgentMessages() }
+    }
+    @objc private func chooseProjectDirectory() {
+        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择" + task.organizationMode.directoryTitle
         if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
         guard let window else { return }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
+            guard tasks.selectedID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.organizationMode == task.organizationMode, current.agent?.ownerID == task.agent?.ownerID, current.workspace == nil || (current.status != .running && current.status != .waiting) else { self.setStatus("原任务已变化，请重新选择目录", error: true); return }
+            do { try tasks.organization.register(url.path, mode: task.organizationMode) }
+            catch { self.setStatus(error.localizedDescription, error: true); return }
             if task.workspace == nil {
                 self.companion?.agentRuntime?.cancel(task.id)
-                tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }
+                tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path; $0.gitDirectory = nil; $0.agent?.workspace = $0.workspace }
                 if !task.messages.isEmpty { self.companion?.agentRuntime?.submit("已选择项目：" + url.resolvingSymlinksInPath().path + "。继续原任务。", taskID: task.id) }
                 self.renderAgentMessages()
             } else if (!task.messages.isEmpty || task.worktreeOrigin != nil) && task.workspace != url.path {
-                self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode)
+                self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode, workMode: task.organizationMode)
                 do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
                 catch { self.selectAgentTask(task.id); self.setStatus(error.localizedDescription, error: true); return }
-                tasks.update(id) { $0.draft = self.composer.string }
+                tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = $0.workspace; $0.team = task.team }
                 self.selectAgentTask(id)
-            } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path }; self.renderAgentMessages() }
+            } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path; $0.gitDirectory = nil; $0.agent?.workspace = $0.workspace }; self.renderAgentMessages() }
         }
     }
     @objc func agentOptionsChanged() {
@@ -1244,7 +1298,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func selectLocalEnvironment() {
         guard let tasks = companion?.agentStore, let source = tasks.selected, source.canChooseEnvironment, let origin = source.worktreeOrigin else { return }
-        saveAgentDraft(); let id = tasks.create(workspace: origin.root, mode: source.mode)
+        saveAgentDraft(); let id = tasks.create(workspace: origin.root, mode: source.mode, workMode: source.organizationMode)
         do { try tasks.copyEnvironmentDraft(sourceID: source.id, targetID: id); selectAgentTask(id) }
         catch { tasks.selectedID = source.id; setStatus(error.localizedDescription, error: true) }
     }
@@ -1312,15 +1366,17 @@ final class FormDocumentView: NSView {
         recordWindow?.refreshLiveRecords(task.id)
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
-        taskSidebar.refresh(tasks.tasks, selected: task.id)
+        taskSidebar.refresh(tasks.tasks, selected: task.id, organization: tasks.organization)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
-        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = task.workspace ?? "选择项目"
+        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
         let managed = task.kind == "hook", delegated = task.agent?.ownerID != nil || task.automation != nil
         let locked = running || task.status == .waiting
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
+        executionLocation.isHidden = task.organizationMode == .general
+        refreshBranch(task)
         executionLocation.toolTip = task.workspace ?? "未选择项目"; executionLocation.isEnabled = task.canChooseEnvironment && !running
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
@@ -1446,6 +1502,31 @@ final class FormDocumentView: NSView {
     }
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
     func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates() }
+    private func refreshBranch(_ task: AgentTaskRecord, force: Bool = false) {
+        branchControl.isHidden = task.organizationMode == .general || task.workspace == nil
+        guard !branchControl.isHidden, let tasks = companion?.agentStore, let workspace = task.workspace else { branchTask?.cancel(); branchTask = nil; branchKey = nil; return }
+        let key = task.id + "\n" + workspace + "\n" + (task.gitDirectory ?? "")
+        guard force || branchKey != key else { return }
+        branchKey = key; branchTask?.cancel(); branchControl.title = "分支…"; branchControl.toolTip = workspace
+        branchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let directory = try AgentGit.metadata(workspace: workspace)
+                guard AgentWorktreeRetention.within(directory.path, workspace) || task.gitDirectory == directory.path else { branchControl.title = "连接分支…"; branchControl.toolTip = "连接共享 Git 元数据后查看分支"; return }
+                let git = try AgentGit(store: tasks, taskID: task.id, directory: directory)
+                let result = try await git.run(["symbolic-ref", "--quiet", "--short", "HEAD"], maximumOutput: 4096, timeout: 5)
+                var fallback = result
+                if result.failed { fallback = try await git.run(["rev-parse", "--short", "HEAD"], maximumOutput: 4096, timeout: 5) }
+                guard !Task.isCancelled, branchKey == key, tasks.selectedID == task.id else { return }
+                let value = (fallback.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                branchControl.title = fallback.failed || value.isEmpty ? "未提交" : value; branchControl.toolTip = fallback.failed ? "当前仓库尚无提交" : value
+                updateWorkbenchLayout()
+            } catch {
+                guard !Task.isCancelled, branchKey == key else { return }
+                branchControl.title = "Git"; branchControl.toolTip = error.localizedDescription
+            }
+        }
+    }
     @objc func showAgentExtensions() {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
         extensionWindow?.window?.performClose(nil)
@@ -1624,6 +1705,22 @@ extension ControlWindow {
 
 @MainActor extension ControlWindow {
     func showAgentTask(_ id: String) { selectAgentTask(id) }
+    func switchWorkMode(_ mode: AgentWorkMode) {
+        guard let tasks = companion?.agentStore, tasks.selected?.organizationMode != mode else { return }
+        saveAgentDraft()
+        do {
+            if let current = tasks.selected { try tasks.organization.remember(current) }
+            let id = tasks.organization.lastTask(mode, tasks: tasks.tasks) ?? tasks.create(workMode: mode)
+            selectAgentTask(id)
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    func organizationSnapshot() -> [String: Any] {
+        var value = taskSidebar.organizationSnapshot()
+        value["selected"] = companion?.agentStore?.selectedID ?? ""; value["draft"] = composer.string
+        value["locationHidden"] = executionLocation.isHidden; value["branchHidden"] = branchControl.isHidden; value["branch"] = branchControl.title
+        return value
+    }
+    func checkOrganizationMove(_ id: String) { agentTaskAction(id, action: "work-mode") }
     func checkExecutorSelection(taskID: String, agentID: String, teamID: String) -> [String: Bool] {
         guard let store = companion?.agentStore, let before = store.task(taskID) else { return ["executorDraftFound": false] }
         selectAgentTask(taskID)

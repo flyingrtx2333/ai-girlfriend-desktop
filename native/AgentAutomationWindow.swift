@@ -178,7 +178,7 @@ import AppKit
     @objc private func openRun() { guard let run = selectedRun else { return }; do { try service.markRead(run); if let id = run.taskID { onOpen?(id) }; loadHistory() } catch { state.stringValue = error.localizedDescription } }
     @objc private func create() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        var value = AgentAutomation(name: "", prompt: "", workspace: store.selected?.workspace ?? ""); value.enabled = true; newValue = value; selectedID = value.id; archived.selectItem(at: 0); reload(); open(value); dirty = true; updateControls(); sections.selectedSegment = 0; changeSection(); window?.makeFirstResponder(name)
+        var value = AgentAutomation(name: "", prompt: "", workspace: store.selected?.workspace ?? ""); value.workMode = store.selected?.workMode; value.enabled = true; newValue = value; selectedID = value.id; archived.selectItem(at: 0); reload(); open(value); dirty = true; updateControls(); sections.selectedSegment = 0; changeSection(); window?.makeFirstResponder(name)
     }
     @objc private func saveDefinition() { do { let value = try capture(); try service.save(value, expected: opened); newValue = nil; dirty = false; selectedID = value.id; reload(); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
     @objc private func togglePause() { do { guard let opened, !dirty else { throw PetError("请先保存更改") }; try service.setPaused(opened.id, paused: opened.enabled); reload() } catch { state.stringValue = error.localizedDescription } }

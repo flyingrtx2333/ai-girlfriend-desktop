@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor final class AgentProfileWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     let store: AgentStore
     let workspace: String?
+    private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
     private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), model = NSTextField(), instructions = NSTextView()
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -12,8 +13,8 @@ import UniformTypeIdentifiers
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = NSTextField(labelWithString: "")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
-    init(store: AgentStore, workspace: String?) {
-        self.store = store; self.workspace = workspace
+    init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
+        self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "自定义 Agent"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
@@ -173,7 +174,7 @@ import UniformTypeIdentifiers
         values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name)
     }
     @objc private func saveProfile() { do { capture(); try store.agents.save(store.agents.encode(values), expectedHash: openedHash); dirty = false; reload(); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
-    @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let id = try store.agents.createTask(selectedID, store: store, workspace: workspace); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
+    @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let id = try store.agents.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
     @objc private func importProfiles() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false

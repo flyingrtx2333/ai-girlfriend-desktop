@@ -23,11 +23,16 @@ private final class AgentTaskTable: NSTableView {
     var onSelect: ((String) -> Void)?
     var onNew: (() -> Void)?
     var onNewWorkspace: (() -> Void)?
-    var onNewInWorkspace: ((String) -> Void)?
+    var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
     var onAction: ((String, String) -> Void)?
+    var onWorkMode: ((AgentWorkMode) -> Void)?
+    var onDirectoryAction: ((String, AgentWorkMode, String) -> Void)?
+    var onDirectorySort: ((AgentDirectorySort, AgentWorkMode) -> Void)?
     private enum Row { case group(String, String?), task(AgentTaskRecord, Int) }
     private let table = AgentTaskTable(), search = NSSearchField(), searchButton = AgentWorkbenchButton(), attention = AgentWorkbenchButton()
     private let create = AgentWorkbenchButton(), viewMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let workModePicker = NSPopUpButton(), heading = NSTextField(labelWithString: "工作区"), add = AgentWorkbenchButton()
+    private var workMode = AgentWorkMode.coding, organization: AgentOrganization?
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
     private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
@@ -42,10 +47,13 @@ private final class AgentTaskTable: NSTableView {
         create.keyEquivalent = "n"; create.keyEquivalentModifierMask = .command
         searchButton.keyEquivalent = "k"; searchButton.keyEquivalentModifierMask = .command; searchButton.toolTip = "搜索任务 · ⌘K"
         search.placeholderString = "搜索任务"; search.setAccessibilityLabel("搜索任务"); search.delegate = self; search.controlSize = .small; search.isHidden = true
-        let heading = NSTextField(labelWithString: "工作区"); heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = .secondaryLabelColor
+        workModePicker.addItems(withTitles: AgentWorkMode.allCases.map(\.title)); workModePicker.isBordered = false; workModePicker.font = .systemFont(ofSize: 13, weight: .medium); workModePicker.target = self; workModePicker.action = #selector(changeWorkMode); workModePicker.setAccessibilityLabel("工作模式"); workModePicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = .secondaryLabelColor
         viewMenu.addItem(withTitle: ""); viewMenu.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "任务视图"); viewMenu.isBordered = false; viewMenu.setAccessibilityLabel("任务视图")
         for (i, title) in ["全部任务", "需要我", "归档"].enumerated() { let item = NSMenuItem(title: title, action: #selector(changeFilter(_:)), keyEquivalent: ""); item.tag = i; item.target = self; viewMenu.menu?.addItem(item) }
-        let add = AgentWorkbenchButton(title: "", target: self, action: #selector(newWorkspace)); AgentWorkbenchTheme.toolbar(add, title: "选择工作区", symbol: "folder.badge.plus")
+        viewMenu.menu?.addItem(.separator())
+        for sort in AgentDirectorySort.allCases { let item = NSMenuItem(title: "按" + sort.title, action: #selector(changeDirectorySort(_:)), keyEquivalent: ""); item.representedObject = sort.rawValue; item.target = self; viewMenu.menu?.addItem(item) }
+        add.target = self; add.action = #selector(newWorkspace); AgentWorkbenchTheme.toolbar(add, title: "添加工作区", symbol: "folder.badge.plus")
         viewMenu.widthAnchor.constraint(equalToConstant: 24).isActive = true
         let header = NSStackView(views: [heading, NSView(), viewMenu, add]); header.spacing = 4
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("tasks")); table.addTableColumn(column)
@@ -53,7 +61,7 @@ private final class AgentTaskTable: NSTableView {
         table.intercellSpacing = NSSize(width: 0, height: 2); table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务列表")
         table.taskMenu = { [weak self] row in self?.menu(row) }
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
-        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [create, attention, searchButton, search, rule, header, scroll])
+        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, attention, searchButton, search, rule, header, scroll])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(13, after: searchButton); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
         addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor), content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor)])
@@ -65,10 +73,14 @@ private final class AgentTaskTable: NSTableView {
         if event.modifierFlags.contains(.command), event.modifierFlags.intersection([.option, .control, .shift]).isEmpty, event.charactersIgnoringModifiers?.lowercased() == "f" { showSearch(); return true }
         return super.performKeyEquivalent(with: event)
     }
-    func refresh(_ values: [AgentTaskRecord], selected: String?) {
+    func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization) {
+        self.organization = organization
         let previous = self.selected; self.selected = selected
-        if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(path) }
-        let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)" }.joined(separator: "\n")
+        workMode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
+        workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
+        heading.stringValue = workMode.directoryTitle; add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
+        if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(groupKey(path)) }
+        let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)"
         let waiting = values.filter { !$0.archived && $0.status == .waiting }.count
         attention.title = waiting > 0 ? "需要我  \(waiting)" : "需要我"
         if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
@@ -78,6 +90,18 @@ private final class AgentTaskTable: NSTableView {
     @objc private func showSearch() { searchVisible.toggle(); search.isHidden = !searchVisible; if searchVisible { window?.makeFirstResponder(search) } else { search.stringValue = ""; applyFilter() } }
     @objc private func showAttention() { filter = filter == 1 ? 0 : 1; applyFilter() }
     @objc private func changeFilter(_ sender: NSMenuItem) { filter = sender.tag; applyFilter() }
+    @objc private func changeWorkMode() {
+        guard AgentWorkMode.allCases.indices.contains(workModePicker.indexOfSelectedItem) else { return }
+        filter = 0; search.stringValue = ""; searchVisible = false; search.isHidden = true
+        onWorkMode?(AgentWorkMode.allCases[workModePicker.indexOfSelectedItem]); workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
+    }
+    @objc private func changeDirectorySort(_ sender: NSMenuItem) { if let raw = sender.representedObject as? String, let sort = AgentDirectorySort(rawValue: raw) { onDirectorySort?(sort, workMode) } }
+    private func groupKey(_ path: String) -> String { workMode.rawValue + "\n" + path }
+    func organizationSnapshot() -> [String: Any] {
+        ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
+         "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
+         "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title]
+    }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.moveDown(_:)), let index = rows.firstIndex(where: { if case .task = $0 { return true }; return false }) {
@@ -90,7 +114,7 @@ private final class AgentTaskTable: NSTableView {
     private func applyFilter() {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let visible = tasks.filter { task in
-            (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting)) && (query.isEmpty || (task.title + "\n" + task.summary).localizedCaseInsensitiveContains(query))
+            (filter == 1 || task.organizationMode == workMode) && (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting)) && (query.isEmpty || (task.title + "\n" + task.summary).localizedCaseInsensitiveContains(query))
         }.sorted { $0.updated > $1.updated }
         rows = []
         func append(_ task: AgentTaskRecord, depth: Int = 0) {
@@ -102,20 +126,22 @@ private final class AgentTaskTable: NSTableView {
         let pinned = standalone.filter(\.pinned)
         if !pinned.isEmpty { rows.append(.group("置顶", nil)); for task in pinned { append(task) } }
         let unpinned = standalone.filter { !$0.pinned }
-        let workspaces = Set(unpinned.compactMap(\.workspace)).sorted { a, b in
-            let aSelected = visible.contains { $0.id == selected && $0.workspace == a }, bSelected = visible.contains { $0.id == selected && $0.workspace == b }
-            return aSelected != bSelected ? aSelected : a.localizedCaseInsensitiveCompare(b) == .orderedAscending
-        }
-        for workspace in workspaces {
-            let title = unpinned.first(where: { $0.workspace == workspace && $0.worktreeOrigin != nil })?.workspaceDisplayName ?? URL(fileURLWithPath: workspace).lastPathComponent
+        var entries = organization?.directories(workMode, tasks: visible) ?? []
+        let known = Set(entries.map(\.path))
+        for path in Set(unpinned.compactMap(\.workspace)).sorted() where !known.contains(path) { entries.append(AgentDirectoryEntry(path: path, mode: workMode)) }
+        for entry in entries {
+            let workspace = entry.path, members = unpinned.filter { $0.workspace == workspace }
+            guard filter == 0 && query.isEmpty || !members.isEmpty else { continue }
+            let title = entry.name ?? members.first(where: { $0.worktreeOrigin != nil })?.workspaceDisplayName ?? entry.title
             rows.append(.group(title, workspace))
-            if !collapsed.contains(workspace) || visible.contains(where: { $0.id == selected && $0.workspace == workspace }) && !query.isEmpty { for task in unpinned where task.workspace == workspace { append(task) } }
+            if !collapsed.contains(groupKey(workspace)) || visible.contains(where: { $0.id == selected && $0.workspace == workspace }) && !query.isEmpty { for task in members { append(task) } }
         }
         let ungrouped = unpinned.filter { $0.workspace == nil }
         if !ungrouped.isEmpty { rows.append(.group(filter == 2 ? "归档" : "最近任务", nil)); for task in ungrouped { append(task) } }
         attention.state = filter == 1 ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, filter == 1 ? AgentWorkbenchTheme.selection : .clear)
         for item in viewMenu.itemArray where item.action == #selector(changeFilter(_:)) { item.state = item.tag == filter ? .on : .off }
+        for item in viewMenu.itemArray where item.action == #selector(changeDirectorySort(_:)) { item.state = item.representedObject as? String == organization?.sorting(workMode).rawValue ? .on : .off }
         updating = true; table.reloadData(); updating = false; selectCurrent()
     }
     private func selectCurrent() {
@@ -146,7 +172,7 @@ private final class AgentTaskTable: NSTableView {
             }
             let button = AgentWorkbenchButton(title: title, target: self, action: #selector(toggleGroup(_:))); AgentWorkbenchTheme.sidebarControl(button, group: true, folder: path != nil); button.tag = row; button.isBordered = false; button.alignment = .left
             button.font = .systemFont(ofSize: 15); button.contentTintColor = .labelColor
-            button.image = NSImage(systemSymbolName: path == nil ? "clock" : collapsed.contains(path!) ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.imagePosition = .imageLeading
+            button.image = NSImage(systemSymbolName: path == nil ? "clock" : collapsed.contains(groupKey(path!)) ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.imagePosition = .imageLeading
             button.toolTip = path; return button
         case .task(let task, let depth):
             let cell = AgentTaskCell(); cell.select(task.id == selected, animated: false)
@@ -158,16 +184,27 @@ private final class AgentTaskTable: NSTableView {
             cell.toolTip = task.title + " · " + task.statusTitle; cell.setAccessibilityLabel(task.title + "，" + task.statusTitle); return cell
         }
     }
-    @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; if collapsed.contains(path) { collapsed.remove(path) } else { collapsed.insert(path) }; applyFilter() }
+    @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }
     private func menu(_ row: Int) -> NSMenu? {
         guard rows.indices.contains(row) else { return nil }; let menu = NSMenu(); menu.autoenablesItems = false
-        if case .group(_, let path) = rows[row], let path { let item = NSMenuItem(title: "在此新建任务", action: #selector(newInWorkspace(_:)), keyEquivalent: ""); item.target = self; item.representedObject = path; menu.addItem(item); return menu }
+        if case .group(_, let path) = rows[row], let path {
+            let item = NSMenuItem(title: "在此新建任务", action: #selector(newInWorkspace(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [path, workMode.rawValue]; menu.addItem(item)
+            let pinned = organization?.directories(workMode, tasks: tasks).first(where: { $0.path == path })?.pinned == true
+            for (title, action) in [("设置显示名称…", "rename"), (pinned ? "取消置顶" : "置顶" + workMode.directoryTitle, "pin")] {
+                let entry = NSMenuItem(title: title, action: #selector(directoryAction(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = [path, workMode.rawValue, action]; menu.addItem(entry)
+            }
+            return menu
+        }
         guard case .task(let task, _) = rows[row] else { return nil }
         if tasks.contains(where: { childOwner($0) == task.id }) { let item = NSMenuItem(title: expandedTasks.contains(task.id) ? "收起子任务" : "展开子任务", action: #selector(toggleChildren(_:)), keyEquivalent: ""); item.target = self; item.representedObject = task.id; menu.addItem(item); menu.addItem(.separator()) }
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档", "archive")] { let item = NSMenuItem(title: title, action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item) }
+        if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
+            let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
+        }
         return menu
     }
-    @objc private func newInWorkspace(_ sender: NSMenuItem) { if let path = sender.representedObject as? String { onNewInWorkspace?(path) } }
+    @objc private func newInWorkspace(_ sender: NSMenuItem) { if let values = sender.representedObject as? [String], values.count == 2, let mode = AgentWorkMode(rawValue: values[1]) { onNewInWorkspace?(values[0], mode) } }
+    @objc private func directoryAction(_ sender: NSMenuItem) { if let values = sender.representedObject as? [String], values.count == 3, let mode = AgentWorkMode(rawValue: values[1]) { onDirectoryAction?(values[0], mode, values[2]) } }
     @objc private func toggleChildren(_ sender: NSMenuItem) { guard let id = sender.representedObject as? String else { return }; if expandedTasks.contains(id) { expandedTasks.remove(id) } else { expandedTasks.insert(id) }; applyFilter() }
     @objc private func taskAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { onAction?(value[0], value[1]) } }
 }

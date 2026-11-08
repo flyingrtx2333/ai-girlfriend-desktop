@@ -195,7 +195,7 @@ struct AgentWorktreeCreationReview: Codable {
         }
         guard try Self.metadata(workspace: destination.path) == directory else { throw PetError("工作树已创建但元数据不匹配：" + destination.path) }
         let selection = store.selectedID, source = store.task(taskID)
-        let id = store.create(title: (source?.title ?? "任务") + " · " + review.branch, workspace: destination.path, mode: source?.mode ?? .agent)
+        let id = store.create(title: (source?.title ?? "任务") + " · " + review.branch, workspace: destination.path, mode: source?.mode ?? .agent, workMode: source?.organizationMode)
         store.update(id) {
             $0.parentID = taskID; $0.permission = source?.permission ?? .workspace; $0.gitDirectory = directory.path
             $0.model = source?.model ?? ""; $0.modelOverride = source?.modelOverride; $0.agent = source?.agent; $0.agent?.workspace = destination.path; $0.team = source?.team

@@ -12,6 +12,7 @@ import Foundation
     let models: AgentTaskModels
     let worktreeRetention: AgentWorktreeRetention
     let desktop: AgentDesktop
+    let organization: AgentOrganization
     lazy var projectChanges = AgentProjectChanges(store: self)
     lazy var canvases = AgentCanvas(store: self)
     lazy var offices = AgentOffice(store: self)
@@ -19,13 +20,20 @@ import Foundation
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
-    var selectedID: String? { didSet { do { try saveIndex() } catch { writeError = error.localizedDescription }; worktreeRetention.tasksChanged() } }
+    var selectedID: String? { didSet {
+        do {
+            try saveIndex()
+            if oldValue != selectedID, let task = tasks.first(where: { $0.id == selectedID }) { try organization.remember(task) }
+        } catch { writeError = error.localizedDescription }
+        worktreeRetention.tasksChanged()
+    } }
     var selected: AgentTaskRecord? { selectedID.flatMap(task) }
     private struct Index: Codable { var selectedID: String?; var tasks: [AgentTaskRecord] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]; return e }()
 
     init(directory: URL, legacy: [ChatMessage], extensionHome: URL? = FileManager.default.homeDirectoryForCurrentUser, mcpKeychain: PetKeychain? = nil, hookKeychain: PetKeychain? = nil) {
         self.directory = directory.appendingPathComponent("agent", isDirectory: true)
+        organization = AgentOrganization(profile: directory)
         extensions = AgentExtensions(profile: directory, sharedHome: extensionHome)
         mcp = AgentMCP(profile: directory, keychain: mcpKeychain, plugins: extensions.plugins)
         hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain)
@@ -59,10 +67,11 @@ import Foundation
         }
         selectedID = tasks.first(where: { $0.id == previousSelection && !$0.archived })?.id ?? tasks.first(where: { !$0.archived })?.id ?? tasks.first?.id
     }
-    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent) -> String {
-        let task = AgentTaskRecord(title: title, workspace: workspace, mode: mode)
+    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil) -> String {
+        var task = AgentTaskRecord(title: title, workspace: workspace, mode: mode)
+        task.workMode = workMode == .coding ? nil : workMode
         tasks.insert(Self.metadata(task), at: 0); cache[task.id] = task; selectedID = task.id
-        do { try save(task.id) } catch { writeError = error.localizedDescription }
+        do { try save(task.id); try organization.remember(task) } catch { writeError = error.localizedDescription }
         trimCache(keeping: task.id); return task.id
     }
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {

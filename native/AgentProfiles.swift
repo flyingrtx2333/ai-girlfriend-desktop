@@ -262,7 +262,7 @@ struct AgentProfileAssignment: Codable {
             if AgentMCP.tools.contains(call.name), call.name != "list_mcp_servers", let id = call.object["server_id"] as? String, !(live.mcpServers ?? []).contains(id) { throw PetError("所属 Agent 已移除此 MCP") }
         }
     }
-    @discardableResult func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil) throws -> String {
+    @discardableResult func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil) throws -> String {
         let value = try profile(id)
         if let owner { try store.teams.checkDelegate(id, owner: owner, store: store) }
         let selection = store.selectedID
@@ -276,7 +276,7 @@ struct AgentProfileAssignment: Codable {
             _ = try store.mcp.server(id)
             if let parent = owner?.agent { guard parent.mcpServers.contains(id), !parent.readOnly, parent.network else { throw PetError("MCP 委派不能扩大所属 Agent 的连接或权限范围") } }
         }
-        let taskID = store.create(title: "新的任务", workspace: workspace, mode: mode)
+        let taskID = store.create(title: "新的任务", workspace: workspace, mode: mode, workMode: owner?.organizationMode ?? workMode)
         store.update(taskID) {
             $0.agent = AgentProfileAssignment(profile: value, ownerID: owner?.id, permissionCeiling: ceiling, modeCeiling: mode, readOnlyCeiling: owner?.agent?.readOnly, networkCeiling: owner?.agent?.network, toolCeiling: owner?.agent.map { Array($0.tools) }, workspace: workspace)
             $0.agent?.mcpCeiling = owner?.agent.map { Array($0.mcpServers) }

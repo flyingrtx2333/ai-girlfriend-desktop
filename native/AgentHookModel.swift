@@ -18,7 +18,7 @@ import Foundation
         guard let parent = store.task(owner) else { throw AgentHookHalt("Hook 所属任务不可用") }
         var p = preferences; if let model = hook.model, !model.isEmpty { p.model = model }
         let allowed = hook.type == "agent" ? Set((hook.tools ?? ["Read", "Glob", "Grep", "Bash"]).compactMap { aliases[$0] }).intersection(safeTools) : []
-        let selection = store.selectedID, id = store.create(title: "校验 · " + hook.name, workspace: parent.workspace)
+        let selection = store.selectedID, id = store.create(title: "校验 · " + hook.name, workspace: parent.workspace, workMode: parent.organizationMode)
         store.selectedID = selection
         func redact(_ value: String) -> String { key.isEmpty ? value : value.replacingOccurrences(of: key, with: "[Token 已隐藏]") }
         let rule = redact(hook.prompt ?? "").replacingOccurrences(of: "$ARGUMENTS", with: "<当前事件 JSON，见数据消息>")

@@ -97,6 +97,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
     var title: String
     var workspace: String?
+    var workMode: AgentWorkMode?
+    var organizationMode: AgentWorkMode { workMode ?? .coding }
     var mode = AgentMode.agent
     var permission = AgentPermissionMode.workspace
     var status = AgentTaskStatus.ready
