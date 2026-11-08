@@ -738,3 +738,5 @@ Markdown 产物、Wiki 与只读来源窗口现可将 Mermaid 代码块绘制为
 失败记录均保留：早期命名空间链接清理遗漏、检查草稿初始化顺序、重复按钮与浮动入口缺失；随后只读附件双击仅选中图片，改为实际附件命中处理；前一候选切换原文会撑宽到536像素，最终以文件名收缩修复。证据在 `evidence/agent/bluefatfish-markdown-{1iS2kw,JcLrqk,NX0Let,pycfO3,N3mKMy}`，最终目录含窗口截图、独立回读、明确的既有证据来源和源码差异。构建输入与签名记录另存 `evidence/agent/markdown-diagrams-host-20261109`。
 
 以上在 Mac mini 的 macOS 26.6.2 实际运行；macOS 14／Safari 17 是编译目标，最低系统未另做实机验收。本轮未调用模型，知识卡片已有127／128份回执不变。预览内编辑／表格单元格编辑、非UTF-8编码、视频和完整 Wiki 维护仍按原范围继续，完整目标保持 active。
+
+功能已提交并推送为 `f9c6f42`，同一严格签名候选已替换并打开主目录日常应用。实际PID84701、二进制SHA256 `a839976a3dd3dcac3bc1046a98ec4b75b00e058b9009f6b7809c477f961b07fd` 与候选一致，165份受版本管理的构建输入与已提交源码核对一致。原有两份任务、选中项、空草稿及21项配置／记录逐字节保留，没有安装验收资料；旧版保存在 `build/backups/before-diagrams-20261109-003641.app`。部署、实际窗口及运行回读见 `evidence/agent/markdown-diagrams-host-20261109/deployment`。本次临时构建服务已移除，开发防闲置显示／系统休眠断言仍各为1，减弱动态效果仍关闭。
