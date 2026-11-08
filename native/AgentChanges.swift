@@ -97,8 +97,12 @@ import Foundation
     static func diff(_ change: AgentChange, taskID: String, store: AgentStore) async throws -> String {
         let value = try comparison(change, taskID: taskID, store: store, strict: false)
         defer { try? FileManager.default.removeItem(at: value.directory) }
-        let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: value.directory, scratch: value.directory, network: false, timeout: 15, readOnly: true, protectedData: store.directory.deletingLastPathComponent(), arguments: ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", value.left.path, value.right.path])
+        let patch = try await fileDiff(left: value.left, right: value.right, directory: value.directory, protectedData: store.directory.deletingLastPathComponent())
+        return (value.changedAgain ? "文件在工具修改后又有变化；撤回不会覆盖后续修改。\n\n" : "") + labels(patch, path: URL(fileURLWithPath: change.path).lastPathComponent)
+    }
+    static func fileDiff(left: URL, right: URL, directory: URL, protectedData: URL, maximumOutput: Int = 100_000) async throws -> String {
+        let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: directory, scratch: directory, network: false, timeout: 15, readOnly: true, maximumOutput: maximumOutput, protectedData: protectedData, arguments: ["--no-pager", "-c", "core.fsmonitor=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", "--", left.path, right.path])
         guard [0, 1].contains(result.exitCode ?? -1), result.truncated != true else { throw PetError("差异较大或不可读取，请分批审阅") }
-        return (value.changedAgain ? "文件在工具修改后又有变化；撤回不会覆盖后续修改。\n\n" : "") + labels(result.stdout ?? "", path: URL(fileURLWithPath: change.path).lastPathComponent)
+        return result.stdout ?? ""
     }
 }

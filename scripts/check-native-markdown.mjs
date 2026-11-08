@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const editing = process.argv.includes('--editing'), prefix = editing ? 'markdown-edit' : 'markdown';
+const conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts;
+const prefix = conflicts ? 'file-conflict' : editing ? 'markdown-edit' : 'markdown';
 const candidate = process.argv.indexOf('--candidate-app');
 if (candidate < 0 || !process.argv[candidate + 1]) throw new Error('Use --candidate-app <signed application>');
 const app = path.resolve(process.argv[candidate + 1]);
@@ -63,10 +64,16 @@ try {
   report.actualTaskReadback = { tasks: records.length, modelRequests: records.reduce((sum, record) => sum + (record.modelReceipts?.length ?? 0), 0), messages: records.reduce((sum, record) => sum + record.messages.length, 0), queued: records.reduce((sum, record) => sum + (record.queuedMessages?.length ?? 0) + (record.queuedInputs?.length ?? 0), 0) };
   const originalDocuments = await Promise.all(Object.entries(sourceHashes).map(async ([name, digest]) => hash(await readFile(path.join(root, name))) === digest));
   report.independent = { dailyProfileUnchanged: isDeepStrictEqual(before, await snapshot()), binaryMatches: report.binaryHash === binaryHash, projectSignatureVerified: true, originalRepositoryDocumentsUnchanged: originalDocuments.every(Boolean), actualTaskFilesHaveNoModelRequestsOrMessages: records.length >= 3 && report.actualTaskReadback.modelRequests === 0 && report.actualTaskReadback.messages === 0 && report.actualTaskReadback.queued === 0, bothTaskDraftsPersisted: (editing ? originalTask?.draft === '保留的A草稿' : originalTask?.draft?.startsWith('保留的A草稿\n\n[文件选文：docs/AGENT-READING.md]') === true) && otherTask?.draft === '保留的B草稿' };
-  if (editing) {
+  if (editing && !conflicts) {
     const plan = JSON.parse(await readFile(path.join(output, 'markdown-edit-plan.json'), 'utf8'));
     report.independent.externalVersionPreserved = hash(await readFile(plan.file)) === plan.externalHash;
     report.independent.unsavedDraftRetained = hash(await readFile(path.join(output, 'retained-unsaved-draft.md'))) === plan.draftHash;
+  }
+  if (conflicts) {
+    const plan = JSON.parse(await readFile(path.join(output, 'file-conflict-plan.json'), 'utf8'));
+    report.independent.adoptedDiskBytesPreserved = hash(await readFile(plan.file)) === plan.finalDiskHash;
+    const current = JSON.parse(await readFile(path.join(output, 'native-conflict-readback.json'), 'utf8'));
+    report.independent.adoptedEditorMatchesDisk = current.draftHash === plan.finalDiskHash && current.openedHash === plan.finalDiskHash && current.dirty === false;
   }
   report.success &&= report.modelsCalled === false && Object.values(report.independent).every(Boolean);
 } catch (error) { report = { ...(report ?? {}), success: false, error: error.message }; }

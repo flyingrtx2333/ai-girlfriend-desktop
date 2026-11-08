@@ -197,7 +197,7 @@ import AppKit
     }
     func waitForDiagrams() async { await diagramTask?.value }
     var editingCheckState: [String: Any] {
-        guard CommandLine.arguments.contains("--markdown-edit-check") else { return [:] }
+        guard CommandLine.arguments.contains("--markdown-edit-check") || CommandLine.arguments.contains("--file-conflict-check") else { return [:] }
         return ["canEdit": canEdit?() == true, "editButtonVisible": !edit.isHidden, "isEditing": isEditing, "activeEditor": inlineEditor != nil, "diagramImages": drawings.values.map { String(describing: ObjectIdentifier($0.image)) }.sorted(), "diagramErrors": diagramErrors.count]
     }
     func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update() }

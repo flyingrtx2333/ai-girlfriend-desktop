@@ -17,6 +17,7 @@ import UniformTypeIdentifiers
     private let markdown = AgentMarkdownReader(), viewer = NSScrollView()
     private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
+    private let compare = NSButton(title: "比较", target: nil, action: nil)
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
     var onGenerateWiki: (() -> Void)?
@@ -27,6 +28,7 @@ import UniformTypeIdentifiers
     private var logSignature = ""
     private var attachmentWindow: AgentAttachmentWindow?
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
+    private var conflictWindow: AgentFileConflictWindow?
     init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -61,7 +63,9 @@ import UniformTypeIdentifiers
         generate.target = self; generate.action = #selector(generateWiki)
         newOffice.addItems(withTitles: ["新建", "Word 文稿…", "Excel 表格…", "幻灯片…"]); newOffice.target = self; newOffice.action = #selector(createOffice); newOffice.setAccessibilityLabel("新建办公文件")
         openOffice.target = self; openOffice.action = #selector(chooseOffice)
-        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, save]); actions.spacing = 8
+        compare.target = self; compare.action = #selector(presentConflict); compare.setAccessibilityLabel("比较磁盘文件与草稿")
+        state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, list, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: list.topAnchor), documentPane.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
@@ -75,7 +79,7 @@ import UniformTypeIdentifiers
     @objc private func refresh() {
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
-        save.isHidden = true; undo.isHidden = true; open.isHidden = true
+        save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
         guard let task = store.task(taskID) else { return }
         newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
@@ -125,7 +129,7 @@ import UniformTypeIdentifiers
         }
         load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
-        save.isHidden = true; undo.isHidden = true; open.isHidden = true; open.title = "打开"
+        save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true; open.title = "打开"
         do {
             if sections.selectedSegment == 1, let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
                 let canvas = try store.canvases.source(id, taskID: taskID); text.string = canvas.code; open.isHidden = false; open.title = "打开画布"; state.stringValue = canvas.record.title; return
@@ -157,6 +161,7 @@ import UniformTypeIdentifiers
             let data = try files.readData(file)
             guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
             text.string = content; openedHash = AgentFiles.hash(data); openedFile = file; fileBOM = data.starts(with: [0xEF, 0xBB, 0xBF]); text.isEditable = data.count <= 2_000_000 && fileIsEditable(task, file: file)
+            compare.isHidden = !text.isEditable
             save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = (sections.selectedSegment == 6 ? "按上次索引：" + (try AgentWiki.status(store: store, taskID: taskID)) + " · " : "") + files.relative(file)
             if !text.isEditable { state.stringValue = "只读 · " + files.relative(file) }
             if ["md", "markdown"].contains(file.pathExtension.lowercased()) { markdownFile = file; displayMode.isHidden = false; displayMode.selectedSegment = 0; switchDocumentMode() }
@@ -168,7 +173,7 @@ import UniformTypeIdentifiers
               (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
         return true
     }
-    private func resetDocumentMode() { markdownFile = nil; openedFile = nil; fileBOM = false; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func resetDocumentMode() { conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileBOM = false; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
     @objc private func switchDocumentMode() {
         guard let file = markdownFile, let workspace = store.task(taskID)?.workspace else { return }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; displayMode.selectedSegment = markdown.isHidden ? 1 : 0; return }
@@ -205,16 +210,53 @@ import UniformTypeIdentifiers
             }
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path), current = try files.readData(file)
             guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
-            guard let hash = openedHash, AgentFiles.hash(current) == hash else { throw PetError("文件已更改，请重新打开后编辑") }
-            let content = fileContent, args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": hash])
-            saving = true; save.isEnabled = false; state.stringValue = "正在保存…"
+            guard let hash = openedHash else { throw PetError("打开的文件版本不可用，草稿已保留") }
+            guard AgentFiles.hash(current) == hash else { state.stringValue = "文件已更改，草稿已保留"; presentConflict(); return }
+            let content = fileContent
             load = Task { [weak self] in
                 guard let self else { return }
-                defer { saving = false; save.isEnabled = text.isEditable }
-                do { _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self))); openedHash = AgentFiles.hash(Data(content.utf8)); dirty = fileContent != content; state.stringValue = dirty ? "未保存" : "已保存" }
-                catch { state.stringValue = error.localizedDescription }
+                do { try await persistFile(path: path, content: content, expectedHash: hash) }
+                catch {
+                    state.stringValue = error.localizedDescription
+                    if let current = try? files.readData(file), AgentFiles.hash(current) != hash { presentConflict() }
+                }
             }
         } catch { state.stringValue = error.localizedDescription }
+    }
+    private func persistFile(path: String, content: String, expectedHash: String) async throws {
+        guard !saving, let task = store.task(taskID), let file = openedFile, fileIsEditable(task, file: file), try AgentFiles(workspace: task.workspace).resolve(path) == file else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
+        let args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": expectedHash])
+        saving = true; save.isEnabled = false; compare.isEnabled = false; state.stringValue = "正在保存…"
+        defer { saving = false; save.isEnabled = text.isEditable; compare.isEnabled = true }
+        _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self)))
+        openedHash = AgentFiles.hash(Data(content.utf8)); dirty = AgentFiles.hash(Data(fileContent.utf8)) != openedHash; state.stringValue = dirty ? "未保存" : "已保存"
+    }
+    private func conflictSnapshot() throws -> AgentFileConflictSnapshot {
+        guard !saving, window?.isVisible == true, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID), let workspace = task.workspace, let file = openedFile, let path = selection, try AgentFiles(workspace: workspace).resolve(path) == file else { throw PetError("文档或任务已变化，草稿已保留") }
+        try markdown.finishEditing()
+        return try AgentFileConflictSnapshot.read(file: file, workspace: workspace, draft: fileContent, allowsOverwrite: fileIsEditable(task, file: file))
+    }
+    @objc private func presentConflict() {
+        guard !saving, let file = openedFile else { return }
+        conflictWindow?.close()
+        let next = AgentFileConflictWindow(file: file, protectedData: store.directory.deletingLastPathComponent(), read: { [weak self] in
+            guard let self else { throw PetError("文档已关闭") }; return try self.conflictSnapshot()
+        }, resolve: { [weak self] reviewed, resolution in
+            guard let self else { throw PetError("文档已关闭") }
+            let current = try self.conflictSnapshot(); try reviewed.requireUnchanged(current)
+            guard let path = self.selection, let task = self.store.task(self.taskID), let workspace = task.workspace else { throw PetError("任务已变化") }
+            if resolution == .draft {
+                guard current.allowsOverwrite else { throw PetError("当前文件只读，草稿已保留") }
+                try await self.persistFile(path: path, content: String(decoding: reviewed.draft, as: UTF8.self), expectedHash: reviewed.diskHash)
+            } else {
+                self.text.string = String(data: current.disk, encoding: .utf8)!; self.fileBOM = current.disk.starts(with: [0xEF, 0xBB, 0xBF]); self.openedHash = current.diskHash; self.dirty = false
+                self.text.undoManager?.removeAllActions(); self.text.isEditable = self.fileIsEditable(task, file: current.file); self.save.isEnabled = self.text.isEditable; self.compare.isHidden = !self.text.isEditable
+                if let markdownFile = self.markdownFile { self.markdown.show(self.text.string, file: markdownFile, workspace: workspace) }
+                self.state.stringValue = "已采用磁盘版本"
+            }
+            self.window?.makeKeyAndOrderFront(nil)
+        })
+        conflictWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func restoreFile() {
         guard let task = store.task(taskID), let change = task.changes.first(where: { $0.id == selection }) else { return }
@@ -270,11 +312,13 @@ import UniformTypeIdentifiers
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
-    func windowWillClose(_ notification: Notification) { markdown.clear(); sourceWindow?.close(); sourceWindow = nil }
+    func windowWillClose(_ notification: Notification) { markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
     func markdownEditingReadback() async -> [String: Any] {
-        guard CommandLine.arguments.contains("--markdown-edit-check") else { return [:] }
+        guard CommandLine.arguments.contains("--markdown-edit-check") || CommandLine.arguments.contains("--file-conflict-check") else { return [:] }
         await markdown.waitForDiagrams()
-        return ["draft": text.string, "encodedDraft": fileContent, "draftHash": AgentFiles.hash(Data(fileContent.utf8)), "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState]
+        var result: [String: Any] = ["draft": text.string, "encodedDraft": fileContent, "draftHash": AgentFiles.hash(Data(fileContent.utf8)), "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState, "comparison": conflictWindow?.checkState ?? [:]]
+        if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
+        return result
     }
     func checkMarkdown() -> [String: Bool] {
         let original = text.string, hash = openedHash

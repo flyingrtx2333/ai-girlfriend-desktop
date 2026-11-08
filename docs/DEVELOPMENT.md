@@ -67,6 +67,7 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 | --- | --- |
 | Markdown／Wiki 阅读 | `npm run native:check-markdown -- --candidate-app <签名候选.app>`；复制当前项目实际文档与图片，核对排版、章节／源码导航、Mermaid 流程图／时序图／思维导图、离线策略、图表取消、选文与原任务草稿保护；此入口不调用模型，需补实际窗口记录。图表资源单独构建：`npm run build:diagrams`。 |
 | Markdown 预览编辑 | `npm run native:check-markdown-edit -- --candidate-app <签名候选.app>`；用实际项目文档核对正文与单元格原位编辑、撤销重做、原文／预览共用草稿、UTF-8 BOM 与 CRLF、保存哈希冲突、只读限制和未修改源码保留；不调用模型，需操作实际窗口并核对磁盘文件。 |
+| 文本文件保存冲突 | `npm run native:check-file-conflict -- --candidate-app <签名候选.app>`；实际项目文档、独立磁盘修改、并排差异与全文、过期比较拒绝、取消／确认覆盖、检查点回读、采用磁盘版本及 BOM／换行切换。使用独立资料目录，不调用模型；须操作实际窗口并核对每次落盘字节。 |
 | 用户／工作区知识库 | `npm run native:check-knowledge`；实际文件副本、范围限制、检索、版本保留、恢复及系统协调下载。原生界面创建“离线语音依赖”并导入本项目实际 `vendor/sherpa-onnx/manifest.json`，下载到所选位置，回读字节；无工作区 Ask 任务用已保存模型／预算核对版本与库哈希。观察后写入 `knowledge-download-origin.json`、`knowledge-ui-acceptance.json` 与 `finish-knowledge-ui`。支持 `--prepare-only` 和 `--resume <实际目录>`，保留原任务及失败记录 |
 | 项目知识卡片 | `npm run native:check-knowledge-cards -- --prepare-only` 固定真实项目模块与日常数据保护记录；随后 `--resume <实际目录>` 打开同一独立资料目录。真实窗口完成生成、自动更新、英文、编辑及项目导入导出后写入 `cards-ui-acceptance.json` 与 `finish-cards-ui`。30份单任务／90份整轮回执包含失败记录；未通过时保留原任务，不能清空或提高模型预算 |
 | 知识卡片原生服务 | 在同一记录目录运行 `npm run native:check-knowledge-cards -- --resume <实际目录> --services-only --service-binary <已按项目身份签名的可执行文件>`。可加 `--context-source <已有真实任务JSON>` 检查多轮用户消息顺序；固定快照与工作区保护哈希分别比对。此入口不初始化WebKit，不调用模型，不验收窗口；可加 `--search-source <已有真实生成任务JSON>` 核对大检索结果。完整窗口流程可用 `--candidate-app <严格签名候选.app>`，避免替换日常应用，并拒绝与仍在运行的真实生成共用资料目录 |

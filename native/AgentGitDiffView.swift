@@ -15,7 +15,9 @@ enum AgentGitDiffRows {
             for index in 0..<max(removed.count, added.count) { rows.append(AgentGitDiffRow(old: index < removed.count ? removed[index] : empty, new: index < added.count ? added[index] : empty)) }
             removed.removeAll(keepingCapacity: true); added.removeAll(keepingCapacity: true)
         }
-        for raw in patch.split(separator: "\n", omittingEmptySubsequences: false).dropLast(patch.hasSuffix("\n") ? 1 : 0) {
+        // Swift treats CRLF as one Character. Split at the LF code unit and
+        // retain CR as file content, including the final patch record.
+        for raw in patch.components(separatedBy: "\n").dropLast(patch.utf8.last == 10 ? 1 : 0) {
             let line = String(raw)
             if line.hasPrefix("diff --git ") {
                 flush(); inHunk = false; binary = false; oldPath = nil; fileHeader = rows.count
@@ -95,7 +97,7 @@ enum AgentGitDiffRows {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { NotificationCenter.default.removeObserver(self) }
     private func display(_ line: String) -> String { line.replacingOccurrences(of: "\r", with: "␍") }
-    func show(_ patch: String, oldTitle: String, newTitle: String) {
+    func show(_ patch: String, oldTitle: String, newTitle: String, accessibilityContext: String = "Git") {
         let content = NSMutableAttributedString(string: patch, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
         var offset = 0, inHunk = false
         for line in patch.components(separatedBy: "\n") {
@@ -105,7 +107,8 @@ enum AgentGitDiffRows {
         }
         text.textStorage?.setAttributedString(content); rows = AgentGitDiffRows.parse(patch); heights.removeAll(); widths = .zero
         oldTable.tableColumns[1].title = oldTitle; newTable.tableColumns[1].title = newTitle
-        oldTable.setAccessibilityLabel("Git " + oldTitle + "差异"); newTable.setAccessibilityLabel("Git " + newTitle + "差异")
+        text.setAccessibilityLabel(accessibilityContext + " 实际差异")
+        oldTable.setAccessibilityLabel(accessibilityContext + " " + oldTitle + "差异"); newTable.setAccessibilityLabel(accessibilityContext + " " + newTitle + "差异")
         longest = NSSize(width: rows.map { (display($0.old.text) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0, height: rows.map { (display($0.new.text) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0)
         oldTable.reloadData(); newTable.reloadData(); configureUnified(); needsLayout = true
     }
