@@ -3,31 +3,36 @@ import AppKit
 struct AgentFileConflictSnapshot {
     let file: URL, disk: Data, draft: Data
     let allowsOverwrite: Bool
+    let diskEncoding: AgentTextEncoding?, draftEncoding: AgentTextEncoding?
+    init(file: URL, disk: Data, draft: Data, allowsOverwrite: Bool, diskEncoding: AgentTextEncoding? = nil, draftEncoding: AgentTextEncoding? = nil) {
+        self.file = file; self.disk = disk; self.draft = draft; self.allowsOverwrite = allowsOverwrite; self.diskEncoding = diskEncoding; self.draftEncoding = draftEncoding
+    }
     var diskHash: String { AgentFiles.hash(disk) }
     var draftHash: String { AgentFiles.hash(draft) }
-    static func read(file: URL, workspace: String, draft: String, allowsOverwrite: Bool) throws -> Self {
+    static func read(file: URL, workspace: String, draft: String, allowsOverwrite: Bool, format: AgentTextFormat? = nil) throws -> Self {
         let files = try AgentFiles(workspace: workspace), safe = try files.resolve(file.path)
         guard safe == file, !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("文件位置已变化，草稿已保留") }
-        let disk = try files.readData(safe, maximum: 2_000_000), content = Data(draft.utf8)
-        for value in [disk, content] {
-            guard value.count <= 2_000_000, !value.contains(0), String(data: value, encoding: .utf8) != nil else { throw PetError("只能比较完整的 UTF-8 文本，草稿已保留") }
-        }
-        return Self(file: safe, disk: disk, draft: content, allowsOverwrite: allowsOverwrite)
+        let disk = try files.readData(safe, maximum: 2_000_000)
+        let draftDocument = try format.map { AgentTextFile(text: draft, format: $0) } ?? AgentTextFile.decode(Data(draft.utf8), encoding: .utf8)
+        let content = try draftDocument.format.encode(draftDocument.text)
+        let diskDocument = try AgentTextFile.decode(disk, encoding: AgentTextEncoding.markedEncoding(disk) == nil ? format?.encoding : nil)
+        guard content.count <= 2_000_000, draftDocument.text.utf8.count <= 2_000_000, diskDocument.text.utf8.count <= 2_000_000 else { throw PetError("文本超过比较上限，草稿已保留") }
+        return Self(file: safe, disk: disk, draft: content, allowsOverwrite: allowsOverwrite, diskEncoding: diskDocument.format.encoding, draftEncoding: draftDocument.format.encoding)
     }
     func requireUnchanged(_ current: Self) throws {
-        guard file == current.file, disk == current.disk, draft == current.draft else { throw PetError("文件或草稿已变化，请刷新比较") }
+        guard file == current.file, disk == current.disk, draft == current.draft, diskEncoding == current.diskEncoding, draftEncoding == current.draftEncoding else { throw PetError("文件或草稿已变化，请刷新比较") }
     }
-    static func format(_ data: Data) -> String {
-        let value = String(decoding: data, as: UTF8.self), rest = value.replacingOccurrences(of: "\r\n", with: "")
-        let endings = [value.contains("\r\n") ? "CRLF" : nil, rest.contains("\n") ? "LF" : nil, rest.contains("\r") ? "CR" : nil].compactMap { $0 }
-        return (data.starts(with: [0xEF, 0xBB, 0xBF]) ? "UTF-8 BOM" : "UTF-8") + (endings.isEmpty ? "" : " · " + endings.joined(separator: "/"))
-    }
+    func diskDocument() throws -> AgentTextFile { try AgentTextFile.decode(disk, encoding: diskEncoding) }
+    func draftDocument() throws -> AgentTextFile { try AgentTextFile.decode(draft, encoding: draftEncoding) }
+    static func format(_ data: Data) -> String { AgentTextFile.formatDescription(data) }
     func patch(protectedData: URL) async throws -> String {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("bluefatfish-file-compare-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: directory) }
         let files = try AgentFiles(workspace: directory.path), left = try files.resolve("disk"), right = try files.resolve("draft")
-        try files.writeData(disk, to: left, permissions: 0o600); try files.writeData(draft, to: right, permissions: 0o600)
+        let before = try diskDocument(), after = try draftDocument()
+        try files.writeData(Data(((before.format.bom ? "\u{FEFF}" : "") + before.text).utf8), to: left, permissions: 0o600)
+        try files.writeData(Data(((after.format.bom ? "\u{FEFF}" : "") + after.text).utf8), to: right, permissions: 0o600)
         let result = try await AgentChanges.fileDiff(left: left, right: right, directory: directory, protectedData: protectedData, maximumOutput: 2_000_000)
         return await AgentChanges.labels(result, path: file.lastPathComponent)
     }
@@ -86,14 +91,14 @@ struct AgentFileConflictSnapshot {
     @objc private func refreshComparison() {
         guard !resolving else { return }; job?.cancel(); review = nil; loading = true; state.stringValue = "正在比较…"; mode.isEnabled = false; updateActions()
         do {
-            let value = try readSnapshot(); diskText.string = String(data: value.disk, encoding: .utf8)!; draftText.string = String(data: value.draft, encoding: .utf8)!
-            diskFormat.stringValue = AgentFileConflictSnapshot.format(value.disk); draftFormat.stringValue = AgentFileConflictSnapshot.format(value.draft)
+            let value = try readSnapshot(); diskText.string = try value.diskDocument().text; draftText.string = try value.draftDocument().text
+            diskFormat.stringValue = AgentTextFile.formatDescription(value.disk, encoding: value.diskEncoding); draftFormat.stringValue = AgentTextFile.formatDescription(value.draft, encoding: value.draftEncoding)
             diff.show("", oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); switchComparisonView()
             job = Task { [weak self] in
                 guard let self else { return }
                 do {
                     let patch = try await value.patch(protectedData: protectedData); try Task.checkCancellation()
-                    diff.show(patch, oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); state.stringValue = patch.isEmpty ? "内容一致" : ""
+                    diff.show(patch, oldTitle: "磁盘文件", newTitle: "我的草稿", accessibilityContext: "文件"); state.stringValue = patch.isEmpty ? (value.disk == value.draft ? "内容一致" : "文本一致，文件编码或标记不同") : ""
                     mode.isEnabled = true
                 } catch {
                     guard !Task.isCancelled else { return }; mode.selectedSegment = 1; switchComparisonView(); state.stringValue = "无法显示差异，请对照全文"
@@ -121,7 +126,7 @@ struct AgentFileConflictSnapshot {
     func windowShouldClose(_ sender: NSWindow) -> Bool { !resolving }
     func windowWillClose(_ notification: Notification) { job?.cancel() }
     var checkState: [String: Any] {
-        guard CommandLine.arguments.contains("--file-conflict-check") else { return [:] }
+        guard ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         return ["visible": window?.isVisible == true, "diskHash": review?.diskHash ?? "", "draftHash": review?.draftHash ?? "", "loading": loading, "resolving": resolving, "overwriteEnabled": overwrite.isEnabled, "adoptEnabled": adopt.isEnabled, "mode": mode.selectedSegment, "patch": diff.patch, "state": state.stringValue]
     }
 }

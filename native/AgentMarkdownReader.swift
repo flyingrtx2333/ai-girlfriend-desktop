@@ -197,7 +197,7 @@ import AppKit
     }
     func waitForDiagrams() async { await diagramTask?.value }
     var editingCheckState: [String: Any] {
-        guard CommandLine.arguments.contains("--markdown-edit-check") || CommandLine.arguments.contains("--file-conflict-check") else { return [:] }
+        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         return ["canEdit": canEdit?() == true, "editButtonVisible": !edit.isHidden, "isEditing": isEditing, "activeEditor": inlineEditor != nil, "diagramImages": drawings.values.map { String(describing: ObjectIdentifier($0.image)) }.sorted(), "diagramErrors": diagramErrors.count]
     }
     func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update() }
@@ -237,6 +237,8 @@ import AppKit
     private let back = NSButton(title: "返回", target: nil, action: nil), reload = NSButton(title: "刷新", target: nil, action: nil), mode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let scroll = NSScrollView()
     private var history: [URL] = [], file: URL?
+    private let encodingMenu = NSPopUpButton()
+    private var encodings: [String: AgentTextEncoding] = [:], requestedEncoding: AgentTextEncoding?, currentFormat: AgentTextFormat?
     init(workspace: String, target: URL) throws {
         files = try AgentFiles(workspace: workspace)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -249,10 +251,11 @@ import AppKit
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         back.target = self; back.action = #selector(goBack); mode.target = self; mode.action = #selector(switchMode); mode.selectedSegment = 0
         reload.target = self; reload.action = #selector(refreshFile)
+        AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding)
         reader.onLink = { [weak self] url in self?.follow(url) }
         let toolbar = NSStackView(views: [back, label, NSView(), sourceAdd, reload, mode]); toolbar.spacing = 8; sourceSelection.update()
-        for child in [toolbar, scroll, reader] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 12), toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor), reader.topAnchor.constraint(equalTo: scroll.topAnchor), reader.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), reader.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), reader.bottomAnchor.constraint(equalTo: scroll.bottomAnchor)])
+        for child in [toolbar, scroll, reader, encodingMenu] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 12), toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: encodingMenu.topAnchor, constant: -8), reader.topAnchor.constraint(equalTo: scroll.topAnchor), reader.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), reader.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), reader.bottomAnchor.constraint(equalTo: scroll.bottomAnchor)])
         try open(target)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -260,8 +263,20 @@ import AppKit
         let safe = try AgentMarkdownDocument.target(target, document: file ?? files.root.appendingPathComponent("index.md"), files: files)
         guard safe.isFileURL else { throw PetError("请选择项目文件") }
         let data = try files.readData(try files.resolve(safe.path))
-        guard !data.contains(0), let value = String(data: data, encoding: .utf8) else { throw PetError("此文件不能作为文本预览") }
-        if remember, let file { history.append(file) }; file = safe; text.string = value
+        let document: AgentTextFile
+        do { document = try AgentTextFile.decode(data, encoding: encodings[safe.path]) }
+        catch {
+            guard AgentTextEncoding.canReopen(safe) else { throw PetError("此文件不能作为文本预览") }
+            if remember, let file { history.append(file) }; file = safe; requestedEncoding = encodings[safe.path]; currentFormat = nil
+            text.string = ""; reader.clear(); mode.isHidden = true; window?.title = files.relative(safe); label.stringValue = error.localizedDescription; label.toolTip = safe.path; back.isEnabled = !history.isEmpty
+            AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: nil); switchMode(); return
+        }
+        if remember, let file { history.append(file) }; file = safe; requestedEncoding = encodings[safe.path]
+        showDocument(document, file: safe)
+    }
+    private func showDocument(_ document: AgentTextFile, file safe: URL) {
+        let value = document.text; currentFormat = document.format; text.string = value
+        AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: currentFormat)
         let fragment = AgentMarkdownDocument.fragment(safe)
         window?.title = files.relative(safe); label.stringValue = files.relative(safe) + (fragment.map { " · " + $0 } ?? ""); label.toolTip = safe.path
         back.isEnabled = !history.isEmpty; mode.isHidden = !["md", "markdown"].contains(safe.pathExtension.lowercased()); mode.selectedSegment = 0
@@ -272,6 +287,14 @@ import AppKit
         }
         else if !mode.isHidden { _ = reader.navigate(fragment) }
     }
+    @objc private func reopenEncoding() {
+        guard let file else { return }; let chosen = AgentTextEncoding.selection(encodingMenu)
+        do {
+            let safe = try files.resolve(file.path); guard safe.path == file.path else { throw PetError("文件位置已变化") }
+            let data = try files.readData(safe), document = try AgentTextFile.decode(data, encoding: chosen)
+            encodings[file.path] = chosen; requestedEncoding = chosen; showDocument(document, file: file)
+        } catch { label.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: currentFormat) }
+    }
     private func follow(_ url: URL) {
         do { if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) } else { try open(url) } }
         catch { label.stringValue = error.localizedDescription }
@@ -280,6 +303,10 @@ import AppKit
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = scroll.isHidden || onAddSelection == nil }
     func windowWillClose(_ notification: Notification) { reader.clear(); text.string = "" }
     @objc private func refreshFile() { guard let file else { return }; do { try open(file, remember: false) } catch { label.stringValue = error.localizedDescription } }
+    var encodingCheckState: [String: Any] {
+        guard CommandLine.arguments.contains("--text-encoding-check") else { return [:] }
+        return ["editable": text.isEditable, "encoding": currentFormat?.encoding.rawValue ?? "", "byteOrderMark": currentFormat?.bom ?? false, "textHash": AgentFiles.hash(Data(text.string.utf8)), "file": file?.path ?? ""]
+    }
     @objc private func goBack() {
         guard let previous = history.popLast() else { return }
         do { try open(previous, remember: false) }
