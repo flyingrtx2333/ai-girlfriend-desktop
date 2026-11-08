@@ -199,10 +199,11 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         guard UUID(uuidString: id) != nil else { throw PetError("卡片编号无效") }
         if let old = try drafts(task).first(where: { $0.id == id }) ?? original.0?.cards.first(where: { $0.id == id }) { guard args["expected_hash"] as? String == old.hash else { throw PetError("请先读取原卡片及其 hash") } }
         else { guard args["id"] == nil else { throw PetError("新卡片不要提供 id") } }
-        guard !(original.0?.cards ?? []).contains(where: { $0.id != id && $0.kind == kind && $0.title == title }) else { throw PetError("已有同名卡片，请用其 id 和 hash 更新") }
+        let pending = try drafts(task)
+        guard !((original.0?.cards ?? []) + pending).contains(where: { $0.id != id && $0.kind == kind && $0.title == title }) else { throw PetError("已有同名卡片，请用其 id 和 hash 更新") }
         let card = AgentKnowledgeCard(id: id, title: title, kind: kind, body: body, sources: try sources(args["sources"], task: task))
-        var saved = try drafts(task); saved.removeAll { $0.id == id }; saved.append(card)
-        guard saved.count <= 30, saved.allSatisfy(Self.valid) else { throw PetError("本轮最多30张有效卡片") }
+        var saved = pending; saved.removeAll { $0.id == id }; saved.append(card)
+        guard saved.count <= 8, saved.allSatisfy(Self.valid) else { throw PetError("本轮最多8张有效卡片") }
         try write(saved, draftURL(task))
         if let error = store.writeError { throw PetError(error) }
         return card

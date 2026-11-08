@@ -22,7 +22,8 @@ async function snapshot() {
   for (const name of await readdir(path.join(base, 'agent'))) if (/^[0-9a-f-]{36}\.json$/i.test(name)) names.push('agent/' + name);
   return Object.fromEntries(await Promise.all(names.sort().map(async name => [name, await readFile(path.join(base, name)).then(hash).catch(error => { if (error.code === 'ENOENT') return null; throw error; })])));
 }
-const before = resume < 0 ? await snapshot() : await json('production-before.json');
+const servicesOnly = process.argv.includes('--services-only');
+const before = resume < 0 || servicesOnly ? await snapshot() : await json('production-before.json');
 if (!isDeepStrictEqual(before, await snapshot())) throw new Error('Preserve and inspect changed daily data');
 if (resume < 0) {
   await writeFile(path.join(output, 'production-before.json'), JSON.stringify(before, null, 2));
@@ -33,10 +34,33 @@ if (resume < 0) {
   command('/usr/bin/git', ['-C', source, 'init', '-b', 'main']); command('/usr/bin/git', ['-C', source, 'add', '.']);
   command('/usr/bin/git', ['-C', source, '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', '-c', 'user.name=BlueFatFish Local Acceptance', '-c', 'user.email=local-validation@example.invalid', 'commit', '-m', 'Preserve actual project module snapshot']);
   const files = Object.fromEntries(await Promise.all(['native/AgentKnowledgeLibrary.swift', 'native/AgentDocument.swift', 'package.json'].map(async name => [name, hash(await readFile(path.join(root, name)))])));
-  await writeFile(path.join(output, 'cards-source-origin.json'), JSON.stringify({ repository: root, commit, source, scope: ['native', 'docs', 'package.json', 'package-lock.json'], files }, null, 2));
+  const snapshotFiles = Object.fromEntries(await Promise.all(Object.keys(files).map(async name => [name, hash(await readFile(path.join(source, name)))])));
+  await writeFile(path.join(output, 'cards-source-origin.json'), JSON.stringify({ repository: root, commit, source, scope: ['native', 'docs', 'package.json', 'package-lock.json'], files, snapshotFiles }, null, 2));
 }
 console.log(JSON.stringify({ output }));
 if (process.argv.includes('--prepare-only')) process.exit(0);
+if (servicesOnly) {
+  const argument = process.argv.indexOf('--service-binary'), context = process.argv.indexOf('--context-source');
+  const binary = argument < 0 ? path.join(root, 'build/蓝色大肥鱼.app/Contents/MacOS/BlueFatFish') : path.resolve(process.argv[argument + 1]);
+  const directory = await mkdtemp(path.join(output, 'services-')), origin = await json('cards-source-origin.json');
+  let report = { success: false, modelsCalled: false, uiValidated: false };
+  try {
+    command('/usr/bin/codesign', ['--verify', '--strict', binary]);
+    const signing = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', binary], { encoding: 'utf8' });
+    if (signing.status !== 0 || !/^Authority=(Developer ID Application:|Apple Development:)/m.test(signing.stderr) || !/^TeamIdentifier=\S+$/m.test(signing.stderr)) throw new Error('The service binary requires the project signing identity; ad-hoc signatures are not accepted');
+    const args = ['--knowledge-cards-services', '--check', directory, '--cards-source', origin.source];
+    if (context >= 0) args.push('--cards-context-source', path.resolve(process.argv[context + 1]));
+    const result = spawnSync(binary, args, { encoding: 'utf8' });
+    report = JSON.parse(await readFile(path.join(directory, 'cards-services-report.json'), 'utf8'));
+    const files = Object.fromEntries(await Promise.all(Object.keys(origin.files).map(async name => [name, hash(await readFile(path.join(origin.source, name)))])));
+    const snapshotFiles = origin.snapshotFiles ?? Object.fromEntries(Object.keys(origin.files).map(name => [name, hash(command('/usr/bin/git', ['-C', origin.source, 'show', 'HEAD:' + name], { encoding: null }))]));
+    report.independent = { productionProfileUnchanged: isDeepStrictEqual(before, await snapshot()), pinnedBusinessSourceFilesMatch: isDeepStrictEqual(files, snapshotFiles), binaryHashMatches: report.binaryHash === hash(await readFile(binary)), sourceFiles: files, expectedSnapshotFiles: snapshotFiles, developerSignatureVerified: true };
+    report.success &&= result.status === 0 && report.modelsCalled === false && report.uiValidated === false && report.independent.productionProfileUnchanged && report.independent.pinnedBusinessSourceFilesMatch && report.independent.binaryHashMatches;
+  } catch (error) { report.success = false; report.error = error.message; }
+  await writeFile(path.join(directory, 'cards-services-driver-report.json'), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ success: report.success, directory, checks: Object.keys(report.checks ?? {}).length, modelsCalled: report.modelsCalled, uiValidated: report.uiValidated, error: report.error }));
+  process.exit(report.success ? 0 : 1);
+}
 const app = path.join(root, 'build/蓝色大肥鱼.app'), binaryHash = hash(await readFile(path.join(app, 'Contents/MacOS/BlueFatFish'))), origin = await json('cards-source-origin.json');
 async function waitJSON(name, seconds, pid) {
   const deadline = Date.now() + seconds * 1000;

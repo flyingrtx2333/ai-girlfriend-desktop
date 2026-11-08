@@ -1,7 +1,7 @@
 import AppKit
 
-@MainActor extension AppDelegate {
-    func checkKnowledgeCardServices(_ output: URL, source: URL, hash: String) async throws -> [String: Bool] {
+@MainActor enum AgentKnowledgeCardServiceCheck {
+    static func run(_ output: URL, source: URL, hash: String) async throws -> [String: Bool] {
         let fm = FileManager.default, root = output.appendingPathComponent("native-" + String(hash.prefix(12))), workspace = root.appendingPathComponent("source")
         try fm.createDirectory(at: workspace, withIntermediateDirectories: true)
         for name in ["native/AgentKnowledgeLibrary.swift", "native/AgentDocument.swift", "package.json"] {
@@ -33,6 +33,8 @@ import AppKit
             _ = try await call(docID, "save_knowledge_card", ["title": "原文片段 · " + kind.title, "kind": kind.rawValue, "body": body, "sources": [["path": name, "line": 1, "end_line": 8]]])
         }
         do { _ = try cards.sources([["path": "native/AgentDocument.swift", "line": 200]], task: isolated.task(docID)!); checks["unreadLinesCannotBeCited"] = false } catch { checks["unreadLinesCannotBeCited"] = true }
+        let existingDraft = try cards.drafts(isolated.task(docID)!)[0]
+        do { _ = try await call(docID, "save_knowledge_card", ["title": existingDraft.title, "kind": existingDraft.kind.rawValue, "body": existingDraft.body, "sources": [["path": existingDraft.sources[0].path, "line": existingDraft.sources[0].line, "end_line": existingDraft.sources[0].endLine]]]); checks["duplicateDraftNeedsOriginalIDAndHash"] = false } catch { checks["duplicateDraftNeedsOriginalIDAndHash"] = try cards.drafts(isolated.task(docID)!).count == 3 }
         let draft = try cards.validate(isolated.task(docID)!)
         checks["draftsArePrivateUntilPublish"] = try cards.book(isolated.task(sourceID)!).0 == nil && draft.cards.count == 3 && Set(draft.cards.map(\.kind)).count == 3
         let changed = workspace.appendingPathComponent("native/AgentDocument.swift"), original = try Data(contentsOf: changed)
@@ -83,8 +85,35 @@ import AppKit
         try (original + Data("\n".utf8)).write(to: changed, options: .atomic)
         checks["staleSourcesAreExcludedFromAutomaticCitation"] = beforeChange && !cards.context(isolated.task(sourceID)!).contains(spec.title) && cards.context(isolated.task(sourceID)!).contains(first.title)
         try original.write(to: changed, options: .atomic)
+        if let index = CommandLine.arguments.firstIndex(of: "--cards-context-source"), CommandLine.arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[index + 1]), data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 4_000_000)
+            let actual = try JSONDecoder().decode(AgentTaskRecord.self, from: data), messages = try cards.modelMessages(actual, maximum: 6000)
+            let positions = Dictionary(uniqueKeysWithValues: actual.messages.enumerated().map { ($0.element.id, $0.offset) }), observed = messages.compactMap { positions[$0.id] }
+            checks["recordedConversationKeepsHumanInputsAndOrder"] = actual.messages.filter(\.isHumanInput).count >= 2 && messages.filter(\.isHumanInput).map(\.id) == actual.messages.filter(\.isHumanInput).map(\.id) && observed == observed.sorted() && messages.allSatisfy { value in actual.messages.contains(where: { $0.id == value.id && $0.content == value.content }) }
+            try Data(AgentFiles.hash(data).utf8).write(to: output.appendingPathComponent("recorded-context-source.sha256"), options: .atomic)
+        }
         return checks
     }
+    static func commandLine() async -> Int32 {
+        func option(_ name: String) -> URL? { guard let index = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.indices.contains(index + 1) else { return nil }; return URL(fileURLWithPath: CommandLine.arguments[index + 1]) }
+        guard let output = option("--check"), let source = option("--cards-source") else { print("需要 --check 检查目录及 --cards-source 实际项目目录"); return 1 }
+        let reportURL = output.appendingPathComponent("cards-services-report.json")
+        guard !FileManager.default.fileExists(atPath: reportURL.path) else { print("该检查目录已有记录，请保留原记录并使用新的检查目录"); return 1 }
+        var report: [String: Any] = ["modelsCalled": false, "uiValidated": false]
+        do {
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            let binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
+            let checks = try await run(output, source: source, hash: hash)
+            report.merge(["success": checks.values.allSatisfy { $0 }, "checks": checks, "binaryHash": hash, "source": source.path]) { _, new in new }
+        } catch { report["success"] = false; report["error"] = error.localizedDescription }
+        do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL, options: .atomic) }
+        catch { print(error.localizedDescription); return 1 }
+        print(reportURL.path)
+        return report["success"] as? Bool == true ? 0 : 1
+    }
+}
+
+@MainActor extension AppDelegate {
     func runAgentKnowledgeCardCheck(_ output: URL) async {
         let fm = FileManager.default
         func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name), options: .atomic) }
@@ -96,7 +125,7 @@ import AppKit
             try write(["appPID": getpid(), "binaryHash": hash], "cards-process.json")
             guard let index = CommandLine.arguments.firstIndex(of: "--cards-source"), CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少实际项目快照") }
             let source = URL(fileURLWithPath: CommandLine.arguments[index + 1]), nativeURL = output.appendingPathComponent("cards-native-" + String(hash.prefix(12)) + ".json")
-            if !fm.fileExists(atPath: nativeURL.path) { let checks = try await checkKnowledgeCardServices(output, source: source, hash: hash); try write(["success": checks.values.allSatisfy { $0 }, "checks": checks, "binaryHash": hash], nativeURL.lastPathComponent) }
+            if !fm.fileExists(atPath: nativeURL.path) { let checks = try await AgentKnowledgeCardServiceCheck.run(output, source: source, hash: hash); try write(["success": checks.values.allSatisfy { $0 }, "checks": checks, "binaryHash": hash], nativeURL.lastPathComponent) }
             let native = try JSONSerialization.jsonObject(with: Data(contentsOf: nativeURL)) as! [String: Any]
             guard native["success"] as? Bool == true else { throw PetError("知识卡片相关检查未通过，原记录保留") }
             guard CommandLine.arguments.contains("--live-agent") else { throw PetError("需要真实模型和窗口验收") }

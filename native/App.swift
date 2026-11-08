@@ -661,6 +661,10 @@ private extension NSRect { var area: CGFloat { isNull ? 0 : width * height } }
         if let index = CommandLine.arguments.firstIndex(of: "--make-icons"), CommandLine.arguments.count > index + 1 {
             makeIcons(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); return
         }
+        if CommandLine.arguments.contains("--knowledge-cards-services") {
+            Task { @MainActor in exit(await AgentKnowledgeCardServiceCheck.commandLine()) }
+            dispatchMain()
+        }
         let app = NSApplication.shared, delegate = AppDelegate()
         app.delegate = delegate; app.run(); withExtendedLifetime(delegate) {}
     }

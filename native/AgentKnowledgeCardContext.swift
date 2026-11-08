@@ -36,7 +36,8 @@ import Foundation
             selected.append(exchange); remaining -= size
             if selected.count == 3 { break }
         }
-        return input + selected.reversed().flatMap { $0 }
+        let retained = Set(input.map(\.id) + selected.flatMap { $0 }.map(\.id))
+        return task.messages.filter { retained.contains($0.id) }
     }
     func sourcePage(_ text: String) throws -> String {
         let lines = text.components(separatedBy: "\n"), header = lines.first ?? ""
