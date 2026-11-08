@@ -6,6 +6,7 @@ import AppKit
     private let find = NSButton(title: "检索", target: nil, action: nil), update = NSButton(title: "更新索引", target: nil, action: nil), rebuild = NSButton(title: "重建", target: nil, action: nil), open = NSButton(title: "打开文件", target: nil, action: nil)
     private var hits: [AgentIndexHit] = [], job: Task<Void, Never>?, busy = false
     var onOpenWiki: (() -> Void)?
+    var onOpenCards: (() -> Void)?
     init(store: AgentStore, taskID: String) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -24,7 +25,8 @@ import AppKit
         find.action = #selector(searchProject); update.action = #selector(updateIndex); rebuild.action = #selector(rebuildIndex); open.action = #selector(openSource)
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingMiddle
         let wiki = NSButton(title: "Repo Wiki", target: self, action: #selector(openWiki))
-        let header = NSStackView(views: [search, find, update, rebuild, wiki]); header.spacing = 8
+        let cards = NSButton(title: "知识卡片", target: self, action: #selector(openCards)); cards.isEnabled = store.task(taskID)?.workspace != nil
+        let header = NSStackView(views: [search, find, update, rebuild, wiki, cards]); header.spacing = 8
         let footer = NSStackView(views: [state, NSView(), open]); footer.spacing = 8; open.isEnabled = false
         for view in [header, list, viewer, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -41,6 +43,7 @@ import AppKit
     @objc private func updateIndex() { run(query: nil) }
     @objc private func rebuildIndex() { run(query: nil, rebuild: true) }
     @objc private func openWiki() { onOpenWiki?() }
+    @objc private func openCards() { onOpenCards?() }
     private func run(query: String?, rebuild: Bool = false) {
         guard !busy else { return }
         let query = query?.trimmingCharacters(in: .whitespacesAndNewlines)

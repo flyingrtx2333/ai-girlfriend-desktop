@@ -141,6 +141,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var gitPushReceipt: AgentGitPushReceipt?
     var gitRemoteSnapshot: AgentGitRemoteSnapshot?
     var wikiRevision: String?
+    var knowledgeJob: AgentKnowledgeCardJob?
+    var knowledgeReads: [String: AgentKnowledgeCardRead]?
+    var isProjectDocumentation: Bool { kind == "wiki" || kind == "knowledge-cards" }
     var attachments: [AgentAttachment]?
     var canvases: [AgentCanvasRecord]?
     var draftAttachmentIDs: [String]?
@@ -155,10 +158,10 @@ struct AgentTaskRecord: Codable, Identifiable {
     var team: AgentTeamAssignment?
     var automation: AgentAutomationAssignment?
     var canChooseExecutor: Bool {
-        status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && kind != "wiki"
+        status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && !isProjectDocumentation
     }
     var canChooseEnvironment: Bool {
-        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && kind != "wiki"
+        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && !isProjectDocumentation
     }
     var workspaceDisplayName: String? {
         if let origin = worktreeOrigin { return URL(fileURLWithPath: origin.root).lastPathComponent + " · 工作树" }

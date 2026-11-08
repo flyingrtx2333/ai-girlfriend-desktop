@@ -66,6 +66,7 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 | 改动 | 可选检查 |
 | --- | --- |
 | 用户／工作区知识库 | `npm run native:check-knowledge`；实际文件副本、范围限制、检索、版本保留、恢复及系统协调下载。原生界面创建“离线语音依赖”并导入本项目实际 `vendor/sherpa-onnx/manifest.json`，下载到所选位置，回读字节；无工作区 Ask 任务用已保存模型／预算核对版本与库哈希。观察后写入 `knowledge-download-origin.json`、`knowledge-ui-acceptance.json` 与 `finish-knowledge-ui`。支持 `--prepare-only` 和 `--resume <实际目录>`，保留原任务及失败记录 |
+| 项目知识卡片（验收中） | `npm run native:check-knowledge-cards -- --prepare-only` 固定真实项目模块与日常数据保护记录；随后 `--resume <实际目录>` 打开同一独立资料目录。真实窗口完成生成、自动更新、英文、编辑及项目导入导出后写入 `cards-ui-acceptance.json` 与 `finish-cards-ui`。30份单任务／90份整轮回执包含失败记录；未通过时保留原任务，不能清空或提高模型预算 |
 | 互动和原画动画 | 启动开发服务器后运行 `npm run check:companion` |
 | 原生编译或打包 | `npm run native:build` |
 | 屏幕陪伴 | `npm run native:check-screen`；真实抓屏与在线服务需显式加 `-- --installed --capture-fixture --live-vision` |

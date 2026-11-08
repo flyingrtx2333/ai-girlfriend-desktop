@@ -67,7 +67,7 @@ struct AgentProfileAssignment: Codable {
     private struct Document: Codable { var agents: [AgentProfile] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     static let toolNames = Set(AgentTools.names).subtracting(["finish_task"])
-    static let mutating: Set<String> = ["write_file", "edit_file", "write_memory", "git_init", "git_commit", "git_create_worktree", "git_push", "git_recycle_worktree", "git_restore_worktree", "desktop_action", "office_create", "office_edit"]
+    static let mutating: Set<String> = ["write_file", "edit_file", "write_memory", "edit_project_knowledge", "git_init", "git_commit", "git_create_worktree", "git_push", "git_recycle_worktree", "git_restore_worktree", "desktop_action", "office_create", "office_edit"]
     nonisolated static let skillTools: Set<String> = ["list_skills", "read_skill", "read_skill_resource", "unload_skill"]
     static let unsupported = Set<String>()
     init(profile: URL) { directory = profile }

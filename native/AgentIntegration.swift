@@ -3,13 +3,15 @@ import AppKit
 @MainActor extension AppDelegate {
     func ensureAgent() {
         guard agentStore == nil else { return }
-        let extensionHome = checkDirectory != nil && ["--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
+        let extensionHome = checkDirectory != nil && ["--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
         let mcpKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.mcp.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let hookKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.hooks.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let tasks = AgentStore(directory: store.directory, legacy: store.messages, extensionHome: extensionHome, mcpKeychain: mcpKeychain, hookKeychain: hookKeychain)
         let keychain = checkDirectory != nil && CommandLine.arguments.contains("--live-agent") ? PetKeychain(service: "com.xjs.bluefatfish.credentials") : store.keychain
         let runtime = AgentRuntime(store: tasks, keychain: keychain) { [weak self] in self?.store.preferences ?? PetPreferences() }
         agentStore = tasks; agentRuntime = runtime
+        tasks.knowledgeCards.runtime = runtime
+        tasks.knowledgeCards.onChange = { [weak self] root in self?.control.refreshKnowledgeCards(workspace: root) }
         tasks.dataImport.onChange = { [weak self] in self?.control.refreshDataImport(); self?.control.scheduleRender() }
         _ = tasks.mcp.observeContent { [weak self] in self?.control.scheduleRender() }
         tasks.browser.onDraftCapture = { [weak self] id, shot, marks, note in
@@ -19,6 +21,7 @@ import AppKit
         runtime.onChange = { [weak self] id in
             guard let self else { return }
             self.control.scheduleRender(); self.control.refreshAutomationBadge(); self.refreshVoiceBusy()
+            if let task = tasks.task(id), task.kind == AgentKnowledgeCards.kind, task.status != .running, let root = task.workspace { self.control.refreshKnowledgeCards(workspace: root) }
             self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
@@ -29,13 +32,20 @@ import AppKit
         }
         runtime.onComplete = { [weak self] id, text in
             guard let self else { return }
-            if tasks.task(id)?.kind == "wiki" {
+            if tasks.task(id)?.isProjectDocumentation == true {
                 let messageID = tasks.task(id)?.messages.last?.id
                 Task { [weak self] in
-                    do { try await AgentWiki.finalize(store: tasks, taskID: id) }
-                    catch {
-                        if tasks.task(id)?.status == .completed, tasks.task(id)?.messages.last?.id == messageID { tasks.update(id) { $0.status = .failed; $0.goalAccepted = nil; $0.events.append(AgentEvent(kind: "wiki", title: "Wiki 校验未通过", detail: error.localizedDescription, status: "failed")) } }
+                    do {
+                        if tasks.task(id)?.kind == AgentKnowledgeCards.kind { try await tasks.knowledgeCards.complete(id) }
+                        else { try await AgentWiki.finalize(store: tasks, taskID: id) }
                     }
+                    catch {
+                        if tasks.task(id)?.status == .completed, tasks.task(id)?.messages.last?.id == messageID {
+                            tasks.update(id) { $0.status = .failed; $0.goalAccepted = nil; $0.events.append(AgentEvent(kind: $0.kind ?? "wiki", title: "项目知识校验未完成", detail: error.localizedDescription, status: "failed")) }
+                            if let root = tasks.task(id)?.workspace { tasks.knowledgeCards.notices[root] = error.localizedDescription }
+                        }
+                    }
+                    if let root = tasks.task(id)?.workspace { self?.control.refreshKnowledgeCards(workspace: root); tasks.knowledgeCards.changed(workspace: root) }
                     self?.control.scheduleRender(); self?.refreshAgentAnimation(); self?.refreshVoiceBusy()
                     if tasks.task(id)?.status == .completed { self?.completeAgentResponse(id: id, text: text) }
                 }
@@ -47,7 +57,7 @@ import AppKit
         }
         automationNotifications.onOpen = { [weak self] id in self?.control.show(tab: "chat"); self?.control.showAgentTask(id) }
         tasks.worktreeRetention.onChange = { [weak self] in self?.control.refreshWorktreeRetention() }
-        if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks) }
+        if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume() }
     }
     private func completeAgentResponse(id: String, text: String) {
         guard agentStore?.selectedID == id, agentStore?.task(id)?.automation == nil, !text.isEmpty else { return }

@@ -18,6 +18,7 @@ import Foundation
     lazy var offices = AgentOffice(store: self)
     lazy var dataImport = AgentDataImport(store: self)
     lazy var knowledge = AgentKnowledgeLibrary(profile: directory.deletingLastPathComponent())
+    lazy var knowledgeCards = AgentKnowledgeCards(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
@@ -83,6 +84,7 @@ import Foundation
         value.hookContexts = nil; value.hookRejectedAnswers = nil
         value.hookPromptIDs = nil; value.hookContextIDs = nil
         value.modelReceipts = nil; value.contextSnapshot = nil; value.recap = nil; value.gitTurn = nil; value.gitPushReview = nil; value.gitPushReceipt = nil; value.gitRemoteSnapshot = nil
+        value.knowledgeReads = nil
         value.agent?.profile.instructions = ""
         value.team?.team.instructions = ""
         return value

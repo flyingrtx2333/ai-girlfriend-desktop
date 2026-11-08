@@ -101,6 +101,7 @@ final class FormDocumentView: NSView {
     private let branchControl = AgentWorkbenchButton()
     private var branchTask: Task<Void, Never>?, branchKey: String?
     private var knowledgeWindow: AgentKnowledgeWindow?
+    private var knowledgeCardWindow: AgentKnowledgeCardWindow?
     private var knowledgeLibraryWindow: AgentKnowledgeLibraryWindow?
     private var extensionWindow: AgentExtensionWindow?
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
@@ -424,7 +425,7 @@ final class FormDocumentView: NSView {
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item)
         }
-        if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
+        if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
         if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
@@ -1123,7 +1124,7 @@ final class FormDocumentView: NSView {
         draftAttachments.update(values, removable: true, enabled: !importing)
         attachmentButton.image = NSImage(systemSymbolName: importing ? "xmark.circle" : "paperclip", accessibilityDescription: importing ? "取消添加" : "添加附件")
         attachmentButton.toolTip = importing ? "取消添加" : "添加附件"
-        attachmentButton.isEnabled = !task.archived && task.kind != "wiki" && (attachmentImport == nil || importing)
+        attachmentButton.isEnabled = !task.archived && !task.isProjectDocumentation && (attachmentImport == nil || importing)
     }
     func openAttachment(taskID: String, id: String, part: Int = 1) {
         guard let store = companion?.agentStore else { return }
@@ -1221,7 +1222,7 @@ final class FormDocumentView: NSView {
             }
         case "pin": tasks.update(id) { $0.pinned.toggle() }
         case "work-mode":
-            guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" else { return }
+            guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation else { return }
             saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
             if tasks.selectedID == id { selectAgentTask(id) }
         case "import-source":
@@ -1335,8 +1336,18 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
         knowledgeWindow?.window?.performClose(nil); knowledgeWindow = AgentKnowledgeWindow(store: store, taskID: id)
         knowledgeWindow?.onOpenWiki = { [weak self] in self?.selectAgentTask(id); self?.presentAgentRecords(section: 6) }
+        knowledgeWindow?.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
         knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
     }
+    internal func showKnowledgeCards(taskID: String) {
+        guard let store = companion?.agentStore, store.task(taskID)?.workspace != nil else { return }
+        if let existing = knowledgeCardWindow { existing.window?.performClose(nil); if existing.window?.isVisible == true { return } }
+        knowledgeWindow?.window?.performClose(nil)
+        knowledgeCardWindow = AgentKnowledgeCardWindow(store: store, taskID: taskID)
+        knowledgeCardWindow?.onOpenTask = { [weak self] id in self?.showAgentTask(id) }
+        knowledgeCardWindow?.showWindow(nil); knowledgeCardWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    internal func refreshKnowledgeCards(workspace: String) { knowledgeCardWindow?.refresh(workspace: workspace); scheduleRender() }
     @objc func showKnowledgeLibrary() {
         guard let store = companion?.agentStore else { return }
         knowledgeLibraryWindow?.window?.performClose(nil)
@@ -1394,7 +1405,7 @@ final class FormDocumentView: NSView {
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
-        let managed = task.kind == "hook", delegated = task.agent?.ownerID != nil || task.automation != nil
+        let managed = task.kind == "hook" || task.isProjectDocumentation, delegated = task.agent?.ownerID != nil || task.automation != nil
         let locked = running || task.status == .waiting
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
         executionLocation.isHidden = task.organizationMode == .general

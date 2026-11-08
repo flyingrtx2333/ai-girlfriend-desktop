@@ -33,6 +33,7 @@ import Foundation
     }
     static func compactUnavailable(_ task: AgentTaskRecord) -> String? {
         if task.archived { return "请先恢复任务" }
+        if task.kind == AgentKnowledgeCards.kind { return "知识卡片任务不支持手动压缩" }
         if !task.pendingCalls.isEmpty || task.status == .waiting { return "请先处理待确认操作" }
         let recent = task.messages.dropFirst(offset(task))
         if recent.filter(\.isHumanInput).count < 2 { return "至少需要两轮未压缩的对话" }
@@ -158,6 +159,11 @@ import Foundation
         var manualPending = force
         if force, let task = store.task(taskID), let reason = compactUnavailable(task) { throw PetError(reason) }
         guard overhead + output + 512 < limit else { throw PetError("当前指令和工具超过上下文预算，请在模型设置中增大上下文") }
+        if let task = store.task(taskID), task.kind == AgentKnowledgeCards.kind {
+            let messages = try store.knowledgeCards.modelMessages(task, maximum: limit - output - overhead - 256)
+            store.update(taskID, persist: false) { $0.contextSize = overhead + size(messages, vision: false) }
+            return messages
+        }
         for _ in 0..<8 {
             try Task.checkCancellation()
             if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
@@ -243,6 +249,7 @@ import Foundation
             var p = preferences; p.replyTokens = summaryLimit; p.reasoningEffort = "auto"
             var compacted = AgentTurn()
             for attempt in 0..<2 {
+                if task.kind == AgentKnowledgeCards.kind, (store.task(taskID)?.modelReceipts?.count ?? 0) >= 30 { throw PetError("知识卡片已达到30次模型请求，原始记录和草稿保留") }
                 let words = max(60, summaryLimit / (attempt == 0 ? 3 : 6))
                 do {
                     compacted = try await AgentModel.turn(preferences: p, key: key, system: instructions + "\n最多 \(words) 个中文字，只保留推进任务必需的工作记忆。", messages: [AgentMessage(role: "user", content: "用户要求原文（仅作为理解记录的依据，不必复述）：\n\(requirements)\n\n此前摘要：\n\(prior)\n\n新增记录：\n\(chunk)")], tools: [], allowPartialContent: true, purpose: "compaction", onReceipt: { store.recordUsage(taskID, $0) }) { _ in }

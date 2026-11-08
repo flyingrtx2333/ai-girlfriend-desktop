@@ -69,7 +69,8 @@
     "native:check-canvas": "node scripts/check-native-canvas.mjs",
     "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs",
     "native:check-plugins": "node scripts/check-native-plugins.mjs",
-    "native:check-plugin-mcp": "node scripts/check-native-plugin-mcp.mjs"
+    "native:check-plugin-mcp": "node scripts/check-native-plugin-mcp.mjs",
+    "native:check-knowledge-cards": "node scripts/check-native-knowledge-cards.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",
