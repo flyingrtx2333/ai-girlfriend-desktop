@@ -42,7 +42,7 @@ private final class AgentDocumentXML: NSObject, XMLParserDelegate {
 
 enum AgentDocument {
     static let imageTypes: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "tif", "tiff", "webp", "gif"]
-    static let textTypes: Set<String> = ["txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "htm", "log", "swift", "py", "js", "jsx", "ts", "tsx", "css", "sql", "sh", "rs", "go", "java", "c", "h", "cpp"]
+    static let textTypes: Set<String> = ["txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html", "htm", "svg", "log", "swift", "py", "js", "jsx", "ts", "tsx", "css", "sql", "sh", "rs", "go", "java", "c", "h", "cpp"]
     static func image(_ url: URL, maximumDimension: Int = 1536) throws -> AgentDocumentImage {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: min(1536, max(128, maximumDimension)), kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
@@ -72,9 +72,9 @@ enum AgentDocument {
         let part = text.isEmpty && recognize ? AgentDocumentPart(title: "第 \(number) 页 · OCR", text: try ocr(image), ocr: true) : extracted
         return (part, AgentDocumentImage(jpeg: jpeg, width: width, height: height))
     }
-    static func extract(_ url: URL, scratch: URL) async throws -> AgentDocumentContent {
+    static func extract(_ url: URL, scratch: URL, maximumSize: Int = 20_000_000, allowTextPrefix: Bool = false) async throws -> AgentDocumentContent {
         let type = url.pathExtension.lowercased(), size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard size <= 20_000_000 else { throw PetError("文件上限 20MB") }
+        guard size <= maximumSize else { throw PetError("文件超过大小上限") }
         if type == "pdf" {
             guard let pdf = PDFDocument(url: url), !pdf.isLocked else { throw PetError("PDF 无法读取或已加密") }
             var parts: [AgentDocumentPart] = [], count = 0
@@ -91,10 +91,14 @@ enum AgentDocument {
             return AgentDocumentContent(format: "image", parts: [AgentDocumentPart(title: "图片文字 · OCR", text: try ocr(image), ocr: true)], totalParts: normalized.frames, partial: normalized.frames > 1, notes: ["OCR 只识别文字，不代表图片已完成视觉理解"] + (normalized.frames > 1 ? ["仅第一帧"] : []))
         }
         if ["docx", "xlsx", "pptx"].contains(type) { return try await office(url, scratch: scratch) }
-        guard textTypes.contains(type), size <= 2_000_000 else { throw PetError("暂不支持此格式，请使用 PDF、DOCX、XLSX、PPTX、图片或文本") }
-        let files = try AgentFiles(workspace: url.deletingLastPathComponent().path), data = try files.readData(url, maximum: 2_000_000)
+        guard textTypes.contains(type), allowTextPrefix || size <= 2_000_000 else { throw PetError("暂不支持此格式，请使用 PDF、DOCX、XLSX、PPTX、图片或文本") }
+        let files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
+        var (data, partial) = try files.readPrefix(url, maximum: 2_000_000)
+        if partial {
+            for _ in 0..<3 where String(data: data, encoding: .utf8) == nil { data.removeLast() }
+        }
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw PetError("文件不是 UTF-8 文本") }
-        return AgentDocumentContent(format: type, parts: [AgentDocumentPart(title: url.lastPathComponent, text: String(text.prefix(500_000)))], totalParts: 1, partial: text.count > 500_000)
+        return AgentDocumentContent(format: type, parts: [AgentDocumentPart(title: url.lastPathComponent, text: String(text.prefix(500_000)))], totalParts: 1, partial: partial || text.count > 500_000, notes: type == "svg" ? ["SVG源码，未渲染或执行脚本"] : [])
     }
     private static func xml(_ entry: String, archive: URL, scratch: URL, optional: Bool = false) async throws -> Data? {
         guard !entry.isEmpty, !entry.hasPrefix("/"), !entry.contains(where: { "*?[]\0\n\r".contains($0) }), !entry.split(separator: "/").contains("..") else { throw PetError("文档内部路径无效") }

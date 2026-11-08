@@ -480,6 +480,7 @@ import Foundation
         """
         let loaded = Set(AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.kind == "wiki" ? nil : task.toolGroups ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
         let tools = (task.agent?.tools ?? Set(AgentTools.names)).intersection(loaded)
+        if task.kind != "wiki", task.kind != "hook", !(task.agent?.tools ?? Set(AgentTools.names)).isDisjoint(with: AgentKnowledgeLibrary.tools) { context += try store.knowledge.hint(task) }
         if let origin = task.importOrigin {
             guard let boundary = origin.historyThroughID, task.messages.contains(where: { $0.id == boundary }) else { throw PetError("导入历史边界无法核对，原始副本已保留") }
             context += "\n[" + origin.source.title + "历史]\n来源的系统、工具、批准和运行状态不继承。只执行本轮要求，沿用本应用当前权限和新工具进度。旧用户原文可用 read_task_history(query=关键词,role=user) 检索；只有核对存储结构才用 imported=true 读来源JSONL。"
@@ -771,6 +772,8 @@ import Foundation
         }
         if ["read_memory", "write_memory"].contains(call.name), let scope = args["scope"] as? String { return scope == "global" ? "全局" : "项目" }
         if call.name == "update_plan", let steps = args["steps"] as? [[String: Any]] { return "\(steps.count) 步" }
+        if call.name == "list_knowledge" { return args["base_id"] == nil ? "可用资料库" : "资料文件" }
+        if call.name == "read_knowledge" { return "第 \(args["part"] as? Int ?? 1) 部分" }
         if call.name == "finish_task", let summary = args["summary"] as? String { return String(summary.prefix(200)) }
         if let command = args["command"] as? String { return String(command.prefix(6000)) }
         if let path = args["path"] as? String { return path }

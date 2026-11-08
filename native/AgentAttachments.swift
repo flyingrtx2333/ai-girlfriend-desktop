@@ -141,7 +141,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             throw error
         }
     }
-    private nonisolated static func preserveQuarantine(from source: URL, to target: URL) throws {
+    nonisolated static func preserveQuarantine(from source: URL, to target: URL) throws {
         let name = "com.apple.quarantine"
         let size = getxattr(source.path, name, nil, 0, 0, XATTR_NOFOLLOW)
         if size < 0 { if errno == ENOATTR || errno == ENOTSUP { return }; throw PetError("无法读取文件来源标记") }

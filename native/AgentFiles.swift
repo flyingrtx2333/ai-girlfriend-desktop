@@ -137,6 +137,21 @@ struct AgentFiles: Sendable {
         }
         return data
     }
+    func readPrefix(_ url: URL, maximum: Int) throws -> (data: Data, partial: Bool) {
+        let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
+        let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG, maximum > 0 else { throw PetError("不是普通文件") }
+        var data = Data()
+        while data.count < maximum, let chunk = try file.read(upToCount: min(65_536, maximum - data.count)), !chunk.isEmpty {
+            try Task.checkCancellation(); data.append(chunk)
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, Self.signature(before) == Self.signature(after) else { throw PetError("读取期间文件已变化") }
+        return (data, before.st_size > data.count)
+    }
     func writeData(_ data: Data, to url: URL, permissions: Int = 0o644, expectedTarget: String? = nil) throws {
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
         let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(permissions))

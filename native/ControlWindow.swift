@@ -101,6 +101,7 @@ final class FormDocumentView: NSView {
     private let branchControl = AgentWorkbenchButton()
     private var branchTask: Task<Void, Never>?, branchKey: String?
     private var knowledgeWindow: AgentKnowledgeWindow?
+    private var knowledgeLibraryWindow: AgentKnowledgeLibraryWindow?
     private var extensionWindow: AgentExtensionWindow?
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
     private var automationWindow: AgentAutomationWindow?
@@ -258,17 +259,18 @@ final class FormDocumentView: NSView {
             do { try tasks.organization.sort(sort, mode: mode); self.renderAgentMessages() } catch { self.setStatus(error.localizedDescription, error: true) }
         }
         let knowledge = AgentWorkbenchButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge))
+        let library = AgentWorkbenchButton(title: "知识库", target: self, action: #selector(showKnowledgeLibrary))
         let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
         settingsNav.tag = 1; settingsNav.target = self; settingsNav.action = #selector(selectTab(_:))
         automationButton.target = self; automationButton.action = #selector(showAutomations)
-        for (button, symbol) in [(automationButton as NSButton, "clock.arrow.circlepath"), (knowledge as NSButton, "books.vertical"), (extensions as NSButton, "puzzlepiece.extension"), (settingsNav, "gearshape")] {
+        for (button, symbol) in [(automationButton as NSButton, "clock.arrow.circlepath"), (library as NSButton, "tray.full"), (knowledge as NSButton, "books.vertical"), (extensions as NSButton, "puzzlepiece.extension"), (settingsNav, "gearshape")] {
             AgentWorkbenchTheme.sidebarControl(button)
             button.isBordered = false; button.alignment = .left; button.font = .systemFont(ofSize: 14)
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageLeading; button.contentTintColor = .labelColor
             button.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
-        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, knowledge, extensions, settingsNav], vertical: true, spacing: 6); content.addSubview(footer)
-        for button in [automationButton as NSView, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
+        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, library, knowledge, extensions, settingsNav], vertical: true, spacing: 6); content.addSubview(footer)
+        for button in [automationButton as NSView, library, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         chatSidebarViews = [brand, taskSidebar, footer]
         let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor; main.layer?.cornerRadius = 0
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
@@ -1334,6 +1336,12 @@ final class FormDocumentView: NSView {
         knowledgeWindow?.window?.performClose(nil); knowledgeWindow = AgentKnowledgeWindow(store: store, taskID: id)
         knowledgeWindow?.onOpenWiki = { [weak self] in self?.selectAgentTask(id); self?.presentAgentRecords(section: 6) }
         knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    @objc func showKnowledgeLibrary() {
+        guard let store = companion?.agentStore else { return }
+        knowledgeLibraryWindow?.window?.performClose(nil)
+        knowledgeLibraryWindow = AgentKnowledgeLibraryWindow(store: store, taskID: store.selectedID)
+        knowledgeLibraryWindow?.showWindow(nil); knowledgeLibraryWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
     private func openAgentRecordItem(section: Int, value: String) {

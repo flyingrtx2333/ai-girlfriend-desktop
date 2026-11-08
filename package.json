@@ -65,6 +65,7 @@
     "native:check-organization": "node scripts/check-native-organization.mjs",
     "native:check-import": "node scripts/check-native-import.mjs",
     "native:check-terminal": "node scripts/check-native-terminal.mjs",
+    "native:check-knowledge": "node scripts/check-native-knowledge.mjs",
     "native:check-canvas": "node scripts/check-native-canvas.mjs",
     "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs",
     "native:check-plugins": "node scripts/check-native-plugins.mjs",
