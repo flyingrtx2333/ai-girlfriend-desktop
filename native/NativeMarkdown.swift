@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor enum NativeMarkdown {
-    static func render(_ source: String, font: NSFont, color: NSColor, paragraph: NSParagraphStyle) -> NSAttributedString {
+    static func render(_ source: String, font: NSFont, color: NSColor, paragraph: NSParagraphStyle, resolveLink: ((URL) -> URL?)? = nil) -> NSAttributedString {
         let output = NSMutableAttributedString(), lines = source.components(separatedBy: "\n")
         var code = false, tableColumns = 0, renderedLines = 0
         for (index, original) in lines.enumerated() {
@@ -38,7 +38,7 @@ import AppKit
                     if intent.contains(.code) { f = .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular); attributes[.backgroundColor] = NSColor(white: 0.95, alpha: 1) }
                     if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
                 }
-                if let link = run.link, ["https", "http"].contains(link.scheme) { attributes[.link] = link; attributes[.foregroundColor] = NSColor.linkColor }
+                if let link = run.link, let target = resolveLink?(link) ?? (["https", "http"].contains(link.scheme) ? link : nil) { attributes[.link] = target; attributes[.foregroundColor] = NSColor.linkColor }
                 attributes[.font] = f
                 output.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
             }

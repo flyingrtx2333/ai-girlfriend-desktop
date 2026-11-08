@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
     private let store: AgentStore, taskID: String
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
+    private let markdown = AgentMarkdownReader(), viewer = NSScrollView()
+    private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
@@ -13,6 +15,7 @@ import UniformTypeIdentifiers
     private var dirty = false, activeSection = 0
     private var logSignature = ""
     private var attachmentWindow: AgentAttachmentWindow?
+    private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     init(store: AgentStore, taskID: String, section: Int = 0) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -27,7 +30,13 @@ import UniformTypeIdentifiers
         text.isRichText = false; text.isEditable = false; text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
-        let viewer = NSScrollView(); viewer.documentView = text; viewer.hasVerticalScroller = true
+        viewer.documentView = text; viewer.hasVerticalScroller = true
+        displayMode.target = self; displayMode.action = #selector(switchDocumentMode); displayMode.selectedSegment = 0; displayMode.setAccessibilityLabel("Markdown 显示方式")
+        markdown.onLink = { [weak self] url in self?.openDocumentLink(url) }
+        let pane = NSView(), readingToolbar = NSStackView(views: [displayMode, NSView()])
+        for child in [viewer, markdown] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
+        let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.spacing = 6
+        for child in [readingToolbar, pane] { child.widthAnchor.constraint(equalTo: documentPane.widthAnchor).isActive = true }
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
@@ -35,8 +44,8 @@ import UniformTypeIdentifiers
         newOffice.addItems(withTitles: ["新建", "Word 文稿…", "Excel 表格…", "幻灯片…"]); newOffice.target = self; newOffice.action = #selector(createOffice); newOffice.setAccessibilityLabel("新建办公文件")
         openOffice.target = self; openOffice.action = #selector(chooseOffice)
         let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, save]); actions.spacing = 8
-        for view in [sections, list, viewer, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+        for view in [sections, list, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: list.topAnchor), documentPane.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -47,7 +56,7 @@ import UniformTypeIdentifiers
     }
     @objc private func refresh() {
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
-        load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false
+        load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
         guard let task = store.task(taskID) else { return }
@@ -96,7 +105,7 @@ import UniformTypeIdentifiers
             if let previous = items.firstIndex(where: { $0.value == selection }) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
             table.delegate = self; return
         }
-        load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""
+        load?.cancel(); let value = items[table.selectedRow].value; selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; open.title = "打开"
         do {
@@ -129,9 +138,32 @@ import UniformTypeIdentifiers
             if AgentOffice.supports(file.path) { text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "编辑"; return }
             let data = try files.readData(file)
             guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
-            text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = task.status != .running
+            text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = ![.running, .waiting].contains(task.status) && !task.archived
             save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = (sections.selectedSegment == 6 ? "按上次索引：" + (try AgentWiki.status(store: store, taskID: taskID)) + " · " : "") + files.relative(file)
+            if ["md", "markdown"].contains(file.pathExtension.lowercased()) { markdownFile = file; displayMode.isHidden = false; displayMode.selectedSegment = 0; switchDocumentMode() }
         } catch { text.string = ""; state.stringValue = error.localizedDescription }
+    }
+    private func resetDocumentMode() { markdownFile = nil; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true }
+    @objc private func switchDocumentMode() {
+        guard let file = markdownFile, let workspace = store.task(taskID)?.workspace else { return }
+        let preview = displayMode.selectedSegment == 0
+        markdown.isHidden = !preview; viewer.isHidden = preview
+        if preview { markdown.show(text.string, file: file, workspace: workspace) }
+    }
+    private func openDocumentLink(_ url: URL) {
+        do {
+            if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url); return }
+            guard let workspace = store.task(taskID)?.workspace, let file = markdownFile else { return }
+            let files = try AgentFiles(workspace: workspace), target = try AgentMarkdownDocument.target(url, document: file, files: files)
+            if let row = items.firstIndex(where: { (try? files.resolve($0.value).path) == target.path }) {
+                guard canLeave() else { return }
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row)
+                _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
+            } else {
+                let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target)
+                sourceWindow?.close(); sourceWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
+            }
+        } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func saveFile() {
         guard let path = selection, let task = store.task(taskID) else { return }
@@ -201,6 +233,15 @@ import UniformTypeIdentifiers
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
+    func checkMarkdown() -> [String: Bool] {
+        let original = text.string, hash = openedHash
+        var checks = ["wikiOpensInPreview": !markdown.isHidden && viewer.isHidden && !displayMode.isHidden && markdown.document?.headings.first?.title == "项目文档"]
+        displayMode.selectedSegment = 1; switchDocumentMode()
+        checks["sourceViewKeepsExactBytes"] = !viewer.isHidden && markdown.isHidden && text.string == original && openedHash == hash
+        displayMode.selectedSegment = 0; switchDocumentMode()
+        checks["previewSwitchDoesNotMutateSourceOrSaveState"] = !dirty && text.string == original && openedHash == hash && !markdown.isHidden
+        return checks
+    }
     func checkWiki(_ output: URL) -> [String: Bool] {
         sections.selectedSegment = 6; enableWikiGeneration {}; refresh()
         var checks: [String: Bool] = ["nativeWikiListsFourActualPages": items.count == 4, "nativeWikiGenerationControlVisible": !generate.isHidden && generate.isEnabled]
