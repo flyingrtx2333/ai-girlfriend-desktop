@@ -144,6 +144,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var knowledgeJob: AgentKnowledgeCardJob?
     var knowledgeReads: [String: AgentKnowledgeCardRead]?
     var isProjectDocumentation: Bool { kind == "wiki" || kind == "knowledge-cards" }
+    var isKnowledgeEditing: Bool {
+        !isProjectDocumentation && kind != "hook" && agent == nil && team == nil && automation == nil && importOrigin == nil && (activeSkills?.isEmpty != false) && availableAttachmentIDs.isEmpty && toolGroups == ["project_knowledge"] && messages.last(where: \.isHumanInput)?.content.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit"
+    }
     var hasConfirmedKnowledgeCompletion: Bool {
         guard kind == "knowledge-cards", mode == .goal, goalAccepted == true, !plan.isEmpty, plan.allSatisfy({ $0.status == "completed" }), pendingCalls.isEmpty, queuedCount == 0, completionEvidence?.isEmpty == false else { return false }
         let ids = Set(messages.filter { $0.role == "assistant" }.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "finish_task" }.map(\.id))

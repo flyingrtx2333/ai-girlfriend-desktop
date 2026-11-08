@@ -24,11 +24,11 @@ async function snapshot() {
 }
 const servicesOnly = process.argv.includes('--services-only');
 const extraArgument = process.argv.indexOf('--cards-extra-requests'), extraRequests = extraArgument < 0 ? 0 : Number(process.argv[extraArgument + 1]);
-if (![0, 30].includes(extraRequests)) throw new Error('Only the explicitly approved 30 additional requests are supported');
+if (!Number.isInteger(extraRequests) || extraRequests < 0 || extraRequests > 60) throw new Error('Additional requests must be a bounded integer matching explicit user authorization');
 const maximumRequests = 90 + extraRequests;
 if (extraRequests) {
   const grant = await json('cards-budget-authorization.json');
-  if (grant.kind !== 'explicit-user-authorization' || grant.originalRequestLimit !== 90 || grant.additionalRequests !== 30 || grant.requestLimit !== 120 || grant.context !== 8192 || grant.output !== 512) throw new Error('Missing explicit user authorization for additional requests');
+  if (grant.kind !== 'explicit-user-authorization' || grant.originalRequestLimit !== 90 || grant.additionalRequests !== extraRequests || grant.requestLimit !== maximumRequests || grant.context !== 8192 || grant.output !== 512) throw new Error('Missing explicit user authorization for additional requests');
 }
 
 const before = resume < 0 || servicesOnly ? await snapshot() : await json('production-before.json');
@@ -94,7 +94,8 @@ try {
   }
   for (const name of ['cards-process.json', 'cards-ui-ready.json', 'cards-report.json', 'finish-cards-ui']) await unlink(path.join(output, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
   const finishSource = process.argv.indexOf('--finish-source');
-  command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--knowledge-cards-check', '--live-agent', '--cards-source', origin.source, ...(extraRequests ? ['--cards-extra-requests', String(extraRequests)] : []), ...(finishSource >= 0 ? ['--cards-finish-source', path.resolve(process.argv[finishSource + 1])] : [])]);
+  const editSource = process.argv.indexOf('--edit-source');
+  command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--knowledge-cards-check', '--live-agent', '--cards-source', origin.source, ...(extraRequests ? ['--cards-extra-requests', String(extraRequests)] : []), ...(finishSource >= 0 ? ['--cards-finish-source', path.resolve(process.argv[finishSource + 1])] : []), ...(editSource >= 0 ? ['--cards-edit-source', path.resolve(process.argv[editSource + 1])] : [])]);
   const owner = await waitJSON('cards-process.json', 30), ready = await waitJSON('cards-ui-ready.json', 240, owner.appPID);
   if (ready.binaryHash !== binaryHash || ready.requestLimit !== maximumRequests) throw new Error('Actual UI candidate or request allowance mismatch');
   console.log(JSON.stringify({ phase: 'actual-ui-ready', outputDirectory: output, ...ready }));

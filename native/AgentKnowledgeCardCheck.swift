@@ -3,10 +3,10 @@ import AppKit
 @MainActor enum AgentKnowledgeCardBudget {
     static func limit(_ output: URL) throws -> Int {
         guard let index = CommandLine.arguments.firstIndex(of: "--cards-extra-requests") else { return 90 }
-        guard CommandLine.arguments.indices.contains(index + 1), CommandLine.arguments[index + 1] == "30" else { throw PetError("本次追加额度须为已授权的30次") }
+        guard CommandLine.arguments.indices.contains(index + 1), let extra = Int(CommandLine.arguments[index + 1]), (1...60).contains(extra) else { throw PetError("本次追加额度须与用户授权记录一致") }
         let files = try AgentFiles(workspace: output.path), data = try files.readData(files.resolve("cards-budget-authorization.json"), maximum: 8192)
-        guard let grant = try JSONSerialization.jsonObject(with: data) as? [String: Any], grant["kind"] as? String == "explicit-user-authorization", grant["originalRequestLimit"] as? Int == 90, grant["additionalRequests"] as? Int == 30, grant["requestLimit"] as? Int == 120, grant["context"] as? Int == 8192, grant["output"] as? Int == 512 else { throw PetError("缺少本轮追加额度的用户授权记录") }
-        return 120
+        guard let grant = try JSONSerialization.jsonObject(with: data) as? [String: Any], grant["kind"] as? String == "explicit-user-authorization", grant["originalRequestLimit"] as? Int == 90, grant["additionalRequests"] as? Int == extra, grant["requestLimit"] as? Int == 90 + extra, grant["context"] as? Int == 8192, grant["output"] as? Int == 512 else { throw PetError("缺少本轮追加额度的用户授权记录") }
+        return 90 + extra
     }
 }
 
@@ -189,6 +189,18 @@ import AppKit
             let actual = try JSONDecoder().decode(AgentTaskRecord.self, from: data); var unconfirmed = actual; unconfirmed.goalAccepted = nil
             checks["recordedCappedTaskHasActualConfirmedModelFinish"] = (actual.modelReceipts?.count ?? 0) == 30 && actual.hasConfirmedKnowledgeCompletion && !unconfirmed.hasConfirmedKnowledgeCompletion
             try Data(AgentFiles.hash(data).utf8).write(to: output.appendingPathComponent("recorded-finish-source.sha256"), options: .atomic)
+        }
+        if let index = CommandLine.arguments.firstIndex(of: "--cards-edit-source"), CommandLine.arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[index + 1]), data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 4_000_000), actual = try JSONDecoder().decode(AgentTaskRecord.self, from: data)
+            let replayID = isolated.create(workspace: workspace.path, mode: .agent); var replay = actual; replay.id = replayID; replay.workspace = workspace.path; replay.gitDirectory = nil
+            isolated.update(replayID) { $0 = replay }
+            let snapshot = try definitionsRuntime.contextEstimate(replayID), system = try definitionsRuntime.systemContext(replay), names = try definitionsRuntime.toolDefinitions(replay, preferences: PetPreferences())
+            let overhead = AgentContext.estimate(system) + AgentContext.estimate(String(decoding: try JSONSerialization.data(withJSONObject: names), as: UTF8.self)) + 200
+            let selected = try cards.modelMessages(replay, maximum: 8192 - 512 - overhead - 256)
+            checks["recordedKnowledgeEditFitsOriginalBudgetWithoutModelCompaction"] = replay.isKnowledgeEditing && snapshot.estimatedTokens + 512 <= 8192 && snapshot.parts.first(where: { $0.title == "系统指令" })!.tokens < 2526
+            let recordedEditUnchanged = AgentFiles.hash(try Data(contentsOf: url)) == AgentFiles.hash(data)
+            checks["recordedKnowledgeEditKeepsActualInputsAndToolValues"] = selected.filter(\.isHumanInput).map(\.id) == actual.messages.filter(\.isHumanInput).map(\.id) && selected.allSatisfy { value in actual.messages.contains(where: { $0.id == value.id && $0.content == value.content }) } && recordedEditUnchanged
+            try Data(AgentFiles.hash(data).utf8).write(to: output.appendingPathComponent("recorded-edit-source.sha256"), options: .atomic)
         }
         return checks
     }

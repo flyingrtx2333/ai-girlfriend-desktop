@@ -159,7 +159,7 @@ import Foundation
         var manualPending = force
         if force, let task = store.task(taskID), let reason = compactUnavailable(task) { throw PetError(reason) }
         guard overhead + output + 512 < limit else { throw PetError("当前指令和工具超过上下文预算，请在模型设置中增大上下文") }
-        if let task = store.task(taskID), task.kind == AgentKnowledgeCards.kind {
+        if let task = store.task(taskID), task.kind == AgentKnowledgeCards.kind || (task.isKnowledgeEditing && !force) {
             let messages = try store.knowledgeCards.modelMessages(task, maximum: limit - output - overhead - 256)
             store.update(taskID, persist: false) { $0.contextSize = overhead + size(messages, vision: false) }
             return messages
