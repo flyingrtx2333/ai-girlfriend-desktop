@@ -580,3 +580,11 @@ PowerShell有本机安装诊断与执行入口，本轮未实际执行，不作�
 检查中实际发现拆分的后台模块反向导入入口，WebKit 随后失去已打开文档；按 [Vite worker 配置](https://vite.dev/config/worker-options)和 [Rolldown codeSplitting 配置](https://rolldown.rs/reference/OutputOptions.codeSplitting)，把每个后台模块构建为单个文件，原输入随后成功导出。保留此前失败报告与诊断，没有更换输入或忽略保存错误。独立测试应用另曾卡在外置盘资源枚举；使用哈希完全一致的内部副本继续检查，未修改磁盘挂载或新增系统权限。
 
 本地原始证据位于内部构建缓存的 `evidence/agent/office-build/attempt-single-worker*`，包括实际原生导出、独立回读报告与失败诊断。构建生成完整依赖及字体许可说明；资源不进入 Git。原有日常应用和生产配置保持在上一已验收版本。完整 Agent 目标保持 active。
+
+## Office 原生集成（2026-11-08，人工与模型验收进行中）
+
+任务产物及文件窗口已接入独立 DOCX／XLSX／PPTX 编辑窗口，提供新建、打开、保存、另存为和重新载入。新增按需加载的 `office_read`／`office_create`／`office_edit`，沿用项目路径、任务权限、审阅审批和文件检查点；未保存的人工编辑会阻止任务开始。磁盘版本变化时拒绝覆盖，备份失败时停止写入，归档产物可读不可保存。文件导出分片传回原生端，再以哈希与元数据核对后原子写入。
+
+候选 `d26f03f91713` 的30项实际原生检查全部通过，覆盖三种格式的结构化修改、保存后重读、原始备份、过期版本拒绝、新建空白文档、路径及私有数据限制、归档和备份失败保护。独立 Python 文档库重开输出的17项检查通过，保留原段落／表格／页眉页脚、工作表数值与公式、两张幻灯片、图片字节和几何信息及额外 XML；实际公式缓存与独立十进制核算均为43.65。真实幻灯片曾因同时切换 SDK 只读状态而失败，已改为宿主交互锁，原生文件写入继续校验任务权限。
+
+真实 `deepseek-flash` 已读取同一批三份文件，原任务 `7A1C50BD-9DF7-4011-9FB2-76FA0F64B1E1` 因512回复上限截断而停止；尚未完成真实模型修改和人工窗口验收。继续原任务可用 `native:check-office -- --resume <实际目录> --live-agent --hold-ui --office-output-limit 2048 --python <含文档库的Python>`，上限仅作用于独立验收配置，原生产配置不改写。原输入、失败报告及模型用量记录保留在 `bluefatfish-office-cI2RJR` 和内部构建缓存 `evidence/agent/office-*`。此阶段尚未替换日常应用，完整目标保持 active。

@@ -61,6 +61,7 @@
     "native:check-desktop": "node scripts/check-native-desktop.mjs",
     "build:canvas": "vite build --config vite.canvas.config.js",
     "build:office": "vite build --config vite.office.config.js",
+    "native:check-office": "node scripts/check-native-office.mjs",
     "native:check-canvas": "node scripts/check-native-canvas.mjs",
     "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs",
     "native:check-plugins": "node scripts/check-native-plugins.mjs",

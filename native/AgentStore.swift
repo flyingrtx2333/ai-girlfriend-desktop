@@ -14,6 +14,7 @@ import Foundation
     let desktop: AgentDesktop
     lazy var projectChanges = AgentProjectChanges(store: self)
     lazy var canvases = AgentCanvas(store: self)
+    lazy var offices = AgentOffice(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?
@@ -130,6 +131,7 @@ import Foundation
             do { try save(id) } catch { writeError = error.localizedDescription; tasks[index].status = .failed }
         }
         if value.archived && !wasArchived { onArchive?(id) }
+        offices.changed(id)
         let hookChanged = (previous.events.last?.hook != nil || value.events.last?.hook != nil) && (previous.events.last?.id != value.events.last?.id || previous.events.last?.status != value.events.last?.status)
         if coreScopeChanged || previous.status != value.status || previous.pendingFileCapture?.id != value.pendingFileCapture?.id || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
     }

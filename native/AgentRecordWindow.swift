@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
@@ -6,6 +7,7 @@ import AppKit
     private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
+    private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
     var onGenerateWiki: (() -> Void)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0
@@ -30,7 +32,9 @@ import AppKit
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         generate.target = self; generate.action = #selector(generateWiki)
-        let actions = NSStackView(views: [state, NSView(), generate, undo, open, save]); actions.spacing = 8
+        newOffice.addItems(withTitles: ["新建", "Word 文稿…", "Excel 表格…", "幻灯片…"]); newOffice.target = self; newOffice.action = #selector(createOffice); newOffice.setAccessibilityLabel("新建办公文件")
+        openOffice.target = self; openOffice.action = #selector(chooseOffice)
+        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, save]); actions.spacing = 8
         for view in [sections, list, viewer, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
@@ -47,6 +51,8 @@ import AppKit
         save.isHidden = true; undo.isHidden = true; open.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
         guard let task = store.task(taskID) else { return }
+        newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
+        openOffice.isEnabled = task.workspace != nil; newOffice.isEnabled = task.workspace != nil && ![.running, .waiting].contains(task.status) && !task.archived
         switch sections.selectedSegment {
         case 0:
             items = []; text.string = task.plan.enumerated().map { index, step in "\(step.status == "completed" ? "✓" : step.status == "in_progress" ? "◉" : "○") \(index + 1). \(step.title)" }.joined(separator: "\n\n")
@@ -119,7 +125,9 @@ import AppKit
                     catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
                 }; return
             }
-            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value), data = try files.readData(file)
+            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value)
+            if AgentOffice.supports(file.path) { text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "编辑"; return }
+            let data = try files.readData(file)
             guard !data.contains(0), let content = String(data: data, encoding: .utf8) else { text.string = file.lastPathComponent; open.isHidden = false; return }
             text.string = content; openedHash = AgentFiles.hash(data); text.isEditable = task.status != .running
             save.isHidden = false; save.isEnabled = text.isEditable; open.isHidden = false; state.stringValue = (sections.selectedSegment == 6 ? "按上次索引：" + (try AgentWiki.status(store: store, taskID: taskID)) + " · " : "") + files.relative(file)
@@ -150,6 +158,7 @@ import AppKit
     }
     @objc private func openItem() {
         guard let value = selection else { return }
+        if sections.selectedSegment == 1, AgentOffice.supports(value) { showOffice(value); return }
         if let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
             load = Task { [weak self] in
                 guard let self else { return }; do { _ = try await store.canvases.show(id, taskID: taskID) } catch { state.stringValue = error.localizedDescription }
@@ -164,9 +173,26 @@ import AppKit
                 } catch { state.stringValue = error.localizedDescription }
             }
             else if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
-            else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let safe = try? files.resolve(url.path) { NSWorkspace.shared.open(safe) }
+            else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let safe = try? files.resolve(url.path) { if AgentOffice.supports(safe.path) { showOffice(safe.path) } else { NSWorkspace.shared.open(safe) } }
         }
         else if let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }
+    }
+    private func showOffice(_ path: String) {
+        load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
+    }
+    @objc private func chooseOffice() {
+        guard let window, let workspace = store.task(taskID)?.workspace else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = AgentOffice.formats.compactMap { UTType(filenameExtension: $0) }; panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
+        panel.beginSheetModal(for: window) { [weak self] response in guard response == .OK, let file = panel.url else { return }; self?.showOffice(file.path) }
+    }
+    @objc private func createOffice() {
+        let index = newOffice.indexOfSelectedItem - 1; newOffice.selectItem(at: 0)
+        guard AgentOffice.formats.indices.contains(index), let window, let workspace = store.task(taskID)?.workspace else { return }
+        let format = AgentOffice.formats[index], panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: format) ?? .data]; panel.directoryURL = URL(fileURLWithPath: workspace); panel.nameFieldStringValue = "未命名." + format
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let file = panel.url, let self else { return }
+            self.load = Task { @MainActor in do { _ = try await self.store.offices.create(file.path, taskID: self.taskID); self.refresh() } catch { self.state.stringValue = error.localizedDescription } }
+        }
     }
     func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存" }
     private func canLeave() -> Bool {

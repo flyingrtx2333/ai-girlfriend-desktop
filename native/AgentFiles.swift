@@ -67,11 +67,13 @@ struct AgentFiles: Sendable {
             return (kind, kind == "file" ? Int(info.st_mode & 0o7777) : nil, Self.signature(info))
         } catch let error as POSIXError where error.code == .ENOENT { return ("missing", nil, "missing") }
     }
-    private func streamFile(_ url: URL, copyingTo output: Int32? = nil) throws -> String {
+    private func streamFile(_ url: URL, copyingTo output: Int32? = nil, maximum: Int? = nil) throws -> String {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
         let fd = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; defer { close(fd) }
         var before = stat(); guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG else { throw PetError("不是普通文件") }
+        if let maximum, before.st_size > maximum { throw PetError("文件超过大小上限") }
+        var total = 0
         var digest = SHA256(), buffer = [UInt8](repeating: 0, count: 65_536)
         while true {
             try Task.checkCancellation()
@@ -79,6 +81,8 @@ struct AgentFiles: Sendable {
             if count < 0 && errno == EINTR { continue }
             guard count >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
             if count == 0 { break }
+            total += count
+            if let maximum, total > maximum { throw PetError("文件超过大小上限") }
             digest.update(data: Data(buffer.prefix(count)))
             if let output {
                 try buffer.withUnsafeBytes { bytes in
@@ -94,12 +98,12 @@ struct AgentFiles: Sendable {
         var after = stat(); guard fstat(fd, &after) == 0, Self.signature(before) == Self.signature(after) else { throw PetError("读取期间文件已变化，请重新核对") }
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
-    func fileHash(_ url: URL) throws -> String { try streamFile(url) }
-    @discardableResult func copyFile(_ source: URL, from sourceFiles: AgentFiles, to url: URL, permissions: Int = 0o600, expectedHash: String? = nil, expectedTarget: String? = nil) throws -> String {
+    func fileHash(_ url: URL, maximum: Int? = nil) throws -> String { try streamFile(url, maximum: maximum) }
+    @discardableResult func copyFile(_ source: URL, from sourceFiles: AgentFiles, to url: URL, permissions: Int = 0o600, expectedHash: String? = nil, expectedTarget: String? = nil, maximum: Int? = nil) throws -> String {
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
         let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; defer { close(fd); unlinkat(parent, temporary, 0) }
-        let hash = try sourceFiles.streamFile(source, copyingTo: fd)
+        let hash = try sourceFiles.streamFile(source, copyingTo: fd, maximum: maximum)
         guard expectedHash == nil || expectedHash == hash else { throw PetError("检查点校验失败") }
         guard fchmod(fd, mode_t(permissions)) == 0, fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         if let expectedTarget { guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") } }

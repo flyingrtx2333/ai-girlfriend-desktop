@@ -58,7 +58,7 @@ final class PetWebView: WKWebView {
     var agentRuntime: AgentRuntime?
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -125,6 +125,7 @@ final class PetWebView: WKWebView {
         closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); agentStore?.worktreeRetention.stop(); stopSpeech()
         agentStore?.browser.closeAll()
         agentStore?.canvases.closeAll()
+        agentStore?.offices.closeAll()
         agentStore?.desktop.disconnectAll()
         voiceWake.stop(); scaleSaveTimer?.invalidate()
         if let globalMouse { NSEvent.removeMonitor(globalMouse) }
@@ -132,6 +133,10 @@ final class PetWebView: WKWebView {
         try? store.saveHistory(); try? store.savePreferences()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let offices = agentStore?.offices, offices.hasWindows else { return .terminateNow }
+        Task { @MainActor in sender.reply(toApplicationShouldTerminate: await offices.canQuit()) }; return .terminateLater
+    }
     func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let image = NSImage(systemSymbolName: "fish.fill", accessibilityDescription: "蓝色大肥鱼") {

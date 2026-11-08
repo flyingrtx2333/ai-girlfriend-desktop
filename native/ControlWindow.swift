@@ -297,7 +297,7 @@ final class FormDocumentView: NSView {
         NSLayoutConstraint.activate([conversation.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversation.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), conversation.topAnchor.constraint(equalTo: chat.topAnchor), conversation.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
             if value.hasPrefix("canvas://"), let id = self?.companion?.agentStore?.selectedID { self?.openCanvasReference(value, taskID: id) }
-            else { self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+            else { self?.openAgentRecordItem(section: section, value: value) }
         }
         workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
@@ -1268,6 +1268,12 @@ final class FormDocumentView: NSView {
         knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
+    private func openAgentRecordItem(section: Int, value: String) {
+        if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = store.selectedID {
+            Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
+        }
+        presentAgentRecords(section: section); recordWindow?.selectItem(section: section, value: value)
+    }
     func presentAgentRecords(section: Int) {
         guard let store = companion?.agentStore, let id = store.selectedID else { return }
         if let existing = recordWindow {
@@ -1374,7 +1380,7 @@ final class FormDocumentView: NSView {
             if task.status == .completed {
                 for path in task.artifacts.prefix(4) {
                     let row = AgentInspectorFileButton(title: URL(fileURLWithPath: path).lastPathComponent, value: path, section: 1, symbol: "doc", inline: true)
-                    row.onOpen = { [weak self] section, value in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.presentAgentRecords(section: section); self?.recordWindow?.selectItem(section: section, value: value) }
+                    row.onOpen = { [weak self] section, value in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openAgentRecordItem(section: section, value: value) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
                 for canvas in (task.canvases ?? []).prefix(4) {

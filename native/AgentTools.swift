@@ -3,7 +3,7 @@ import Foundation
 @MainActor final class AgentTools {
     static let groups: [String: [String]] = [
         "files": ["list_directory", "read_file", "search_files", "write_file", "edit_file"],
-        "terminal": ["run_command"], "web": ["web_search", "fetch_url"], "browser": AgentBrowser.tools, "desktop": AgentDesktop.tools, "canvas": AgentCanvas.tools,
+        "terminal": ["run_command"], "web": ["web_search", "fetch_url"], "browser": AgentBrowser.tools, "desktop": AgentDesktop.tools, "canvas": AgentCanvas.tools, "office": AgentOffice.tools,
         "git": AgentGit.tools.filter { !(AgentWorktreeEntry.tools + AgentGit.creationTools).contains($0) },
         "worktrees": AgentWorktreeEntry.tools + AgentGit.creationTools + ["git_create_worktree", "git_status"],
         "knowledge": ["index_project", "search_project", "project_wiki", "read_memory", "write_memory"],
@@ -18,7 +18,7 @@ import Foundation
     private var commands: [String: AgentCommand] = [:]
     private var gitCalls: [String: AgentGit] = [:]
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
-    func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }; store.browser.stop(taskID); store.canvases.stop(taskID); store.desktop.disconnect(taskID); store.mcp.disconnect(owner: taskID) }
+    func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }; store.browser.stop(taskID); store.canvases.stop(taskID); store.offices.stop(taskID); store.desktop.disconnect(taskID); store.mcp.disconnect(owner: taskID) }
     func gitDirectory(for call: AgentToolCall) throws -> String? {
         if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID) ?? call, task: task, store: store) }
         if ["index_project", "search_project"].contains(call.name), let task = store.task(taskID) {
@@ -45,7 +45,7 @@ import Foundation
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + ["load_tools"]
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + ["load_tools"]
     private func checkHookTool(_ call: AgentToolCall, task: AgentTaskRecord) throws {
         guard task.kind == "hook" else { return }
         guard AgentHookModel.safeTools.contains(call.name), task.hookTools?.contains(call.name) == true else { throw PetError("校验任务不允许此工具：" + call.name) }
@@ -110,7 +110,11 @@ import Foundation
         tools += AgentMCP.definitions(mode: mode)
         tools += AgentDesktop.definitions(mode: mode)
         tools += AgentCanvas.definitions()
-        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；git 版本管理；worktrees 工作树管理；knowledge 索引/Wiki/记忆；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
+        tools += AgentOffice.definitions().filter { definition in
+            let name = (definition["function"] as? [String: Any])?["name"] as? String ?? ""
+            return ![.ask, .plan].contains(mode) || !AgentOffice.writes.contains(name)
+        }
+        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 索引/Wiki/记忆；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
         if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
         if let groups {
             let enabled = Set(["load_tools", "update_plan", "ask_user", "finish_task", "read_task_history"] + groups.flatMap { Self.groups[$0] ?? [] })
@@ -137,6 +141,11 @@ import Foundation
         if AgentDesktop.tools.contains(call.name) { return try store.desktop.approvalReason(call, task: task) ?? (rule == .ask ? "Agent 工具权限要求确认：" + call.name : nil) }
         if AgentCanvas.tools.contains(call.name) {
             return AgentCanvas.writes.contains(call.name) && task.permission == .review ? "保存本任务画布：" + ((call.object["title"] as? String) ?? ((try? store.canvases.record(call.object["id"] as? String ?? "", taskID: taskID).title) ?? "")) : rule == .ask ? "查看本任务画布" : nil
+        }
+        if AgentOffice.tools.contains(call.name) {
+            let (files, url) = try store.offices.file(call.object["path"] as? String ?? "", taskID: taskID)
+            _ = try store.offices.task(taskID, root: files.root, agentWrite: AgentOffice.writes.contains(call.name))
+            return AgentOffice.writes.contains(call.name) && task.permission == .review ? "保存办公文件：" + files.relative(url) : rule == .ask ? "读取办公文件：" + files.relative(url) : nil
         }
         if call.name == "browser_open" {
             let url = try AgentBrowser.url(call.object["url"] as? String ?? "")
@@ -255,6 +264,7 @@ import Foundation
         if AgentMCP.tools.contains(call.name) { return try await store.mcp.execute(call, task: task, store: store) }
         if AgentDesktop.tools.contains(call.name) { return try await store.desktop.execute(call, task: task, store: store) }
         if AgentCanvas.tools.contains(call.name) { return try await store.canvases.execute(call, task: task) }
+        if AgentOffice.tools.contains(call.name) { return try await store.offices.execute(call, task: task) }
         func string(_ name: String) throws -> String {
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }

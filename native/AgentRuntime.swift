@@ -196,6 +196,7 @@ import Foundation
         if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || task.status == .waiting {
             cancel(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); return true
         }
+        if let reason = store.offices.unsavedReason(workspace: task.workspace) { submissionError = reason; return false }
         if isExecuting(id) {
             store.update(id) { if $0.queuedMessages == nil { $0.queuedMessages = [] }; $0.queuedMessages?.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; $0.goalAccepted = nil; $0.completionEvidence = nil }; notifyChange(id); return true
         }
@@ -217,6 +218,9 @@ import Foundation
     func start(_ id: String) {
         cancelAnalysis(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        if let reason = store.offices.unsavedReason(workspace: task.workspace) {
+            store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "办公文档未保存", detail: reason, status: "stopped")) }; notifyChange(id); return
+        }
         if !hasSlot(task) {
             if !queued.contains(id) { queued.append(id); store.update(id) { $0.status = .ready }; notifyChange(id) }
             return
@@ -544,6 +548,7 @@ import Foundation
             drainQueue()
         }
         do {
+            try await store.offices.prepareForExecution(workspace: store.task(id)?.workspace)
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)
             if let binding = store.task(id)?.agent {

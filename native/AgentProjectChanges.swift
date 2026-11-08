@@ -61,7 +61,7 @@ extension AgentChange {
     var onChange: ((String) -> Void)?
     init(store: AgentStore) { self.store = store }
 
-    func observe(taskID: String, origin: String, paths: [String]? = nil, operation: () async throws -> AgentToolResult) async throws -> AgentToolResult {
+    func observe(taskID: String, origin: String, paths: [String]? = nil, requireCheckpoint: Bool = false, operation: () async throws -> AgentToolResult) async throws -> AgentToolResult {
         guard let store, let task = store.task(taskID), let workspace = task.workspace else { return try await operation() }
         guard task.pendingFileCapture == nil, !active.values.contains(where: { $0.taskID == taskID }) else { throw PetError("此任务正在记录文件变更，请稍后重试") }
         func perform() async throws -> AgentToolResult {
@@ -95,6 +95,11 @@ extension AgentChange {
             if let error = store.writeError { throw PetError("执行前快照未保存：" + error) }
         } catch {
             if Task.isCancelled { throw CancellationError() }
+            if requireCheckpoint {
+                let message = "未能建立保存前检查点，文件未修改：" + error.localizedDescription
+                warn(message, taskID: taskID, turnID: turnID)
+                throw PetError(message)
+            }
             var result = try await perform()
             let warning = "未建立完整的执行前检查点：" + error.localizedDescription + "。请在“未提交”中核对实际内容。"
             warn(warning, taskID: taskID, turnID: turnID); result.text += "\n" + warning
