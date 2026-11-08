@@ -111,14 +111,14 @@ import UniformTypeIdentifiers
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
         case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         case 6:
-            do { let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: items.first?.value); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
+            do { let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; let preferred = pages.first { $0.path == wikiTree.selectedDocument }?.path ?? items.first?.value; wikiTree.show(pages, selected: preferred); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
             catch { items = []; wikiTree.show([], selected: nil); state.stringValue = error.localizedDescription }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
         }
         if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
-        if sections.selectedSegment == 6 { if let first = items.first { loadSelection(first.value) } }
+        if sections.selectedSegment == 6 { if let selected = wikiTree.selectedDocument { _ = wikiTree.select(selected, notify: false); loadSelection(selected) } }
         else if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
     private func refreshWikiCatalog() {

@@ -11,6 +11,7 @@ import AppKit
     private var pages: [AgentWikiPage] = [], roots: [Node] = [], nodes: [String: Node] = [:], expanded: Set<String> = []
     private var applying = false, selectedPath: String?
     var canSelect: ((String) -> Bool)?, onSelect: ((String) -> Void)?, onRefresh: (() -> Void)?
+    var selectedDocument: String? { selectedPath }
     override init(frame: NSRect) {
         super.init(frame: frame)
         search.placeholderString = "搜索 Wiki"; search.setAccessibilityLabel("搜索 Wiki 文档"); search.delegate = self; search.sendsSearchStringImmediately = true
