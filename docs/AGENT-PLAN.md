@@ -722,3 +722,5 @@ PowerShell有本机安装诊断与执行入口，本轮未实际执行，不作�
 前两次窗口失败分别保留：中文片段被当作编码文本，以及首次跳转早于文本布局导致仍停在顶部。后续统一 URL 片段解码，将定位延后至布局完成，并以实际可见区域检查和真实截图补验；没有仅凭选中的目录标题认定通过。证据为 `evidence/agent/bluefatfish-markdown-HP1LLD`、`bluefatfish-markdown-BShyGp`、最终 `bluefatfish-markdown-B5mJfs` 与 `markdown-host-20261108/ui-ab3fcfa28a29`。
 
 Mermaid、预览内编辑／表格单元格编辑、选文加入任务、非UTF-8编码选择与视频预览仍待实现；完整 Wiki 文档树、规划、语言、增量维护及共享继续按原范围推进。此阶段只补齐本机阅读核心，完整目标保持 active。
+
+功能已提交并同步为 `7a15207`；同一严格签名候选已更新并打开主目录日常应用，实际PID75224、二进制SHA256 `ab3fcfa28a297cc7f242bf14d529f74831f390f409a190e8a16d784bdd091dfe` 与156份已提交原生输入均核对一致。原对话、选择、空草稿和21项配置／任务记录逐字节保留，没有安装验收任务或资料。旧版保存在 `build/backups/before-markdown-20261108-225903.app`；部署与运行回读见 `evidence/agent/markdown-host-20261108/deployment`。临时构建服务已移除，开发防闲置显示／系统休眠断言仍各为1，减弱动态效果保持关闭。本阶段没有追加模型请求，知识卡片整轮仍为127／128份。
