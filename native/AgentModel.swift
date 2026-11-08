@@ -1,16 +1,22 @@
 import Foundation
 
 enum AgentModel {
+    @MainActor static func requestBody(preferences: PetPreferences, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:]) throws -> [String: Any] {
+        let snapshot = try AgentContext.snapshot(preferences: preferences, system: system, skills: "", messages: messages, tools: tools, loadedSkills: 0)
+        guard snapshot.estimatedTokens + preferences.outputLimit <= preferences.contextLimit else { throw PetError("Agent请求超过当前上下文预算，请整理历史或提高上限") }
+        var body = try preferences.modelOptions(stream: true)
+        body["messages"] = [["role": "system", "content": system]] + AgentAttachmentVisuals.wire(messages: messages, inputs: visuals)
+        if !tools.isEmpty { body["tools"] = tools; body["tool_choice"] = "auto"; body["parallel_tool_calls"] = false }
+        body["stream_options"] = ["include_usage": true]
+        return body
+    }
     @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:], allowPartialContent: Bool = false,
                                 purpose: String = "conversation", messageID: String? = nil, onReceipt: ((AgentModelReceipt) -> Void)? = nil,
                                 onText: @escaping (String) -> Void) async throws -> AgentTurn {
         let url = try CompanionService.endpoint(preferences.endpoint, chat: true)
         guard !key.isEmpty || CompanionService.isLocal(url.host ?? "") else { throw PetError("请先填写对话 Token") }
-        var p = preferences; p.persona = system
-        var body = try p.requestBody(messages: [], stream: true)
-        body["messages"] = [["role": "system", "content": system]] + AgentAttachmentVisuals.wire(messages: messages, inputs: visuals)
-        if !tools.isEmpty { body["tools"] = tools; body["tool_choice"] = "auto"; body["parallel_tool_calls"] = false }
-        body["stream_options"] = ["include_usage": true]
+        let p = preferences
+        let body = try requestBody(preferences: p, system: system, messages: messages, tools: tools, visuals: visuals)
         let request = try CompanionService.request(url: url, key: key, body: body)
         let started = Date()
         let (bytes, response) = try await CompanionService.session.bytes(for: request)

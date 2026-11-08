@@ -57,7 +57,7 @@ extension PetPreferences {
     }
 
     func requestBody(messages: [ChatMessage], stream: Bool = true, output: Int? = nil) throws -> [String: Any] {
-        try validateModel()
+        var body = try modelOptions(stream: stream, output: output)
         let reserve = min(output ?? outputLimit, outputLimit)
         var context = messages.filter { ["user", "assistant"].contains($0.role) && !$0.content.isEmpty }
         while context.first?.role == "assistant" { context.removeFirst() }
@@ -68,8 +68,13 @@ extension PetPreferences {
             context.removeFirst(); while context.first?.role == "assistant" { context.removeFirst() }
         }
         guard cost() + reserve <= contextLimit else { throw PetError("本次消息超过上下文预算，请缩短内容或增大上下文。") }
-        var body: [String: Any] = ["model": model, "stream": stream, "max_tokens": reserve,
-            "messages": [["role": "system", "content": persona]] + context.map { ["role": $0.role, "content": $0.content] }]
+        body["messages"] = [["role": "system", "content": persona]] + context.map { ["role": $0.role, "content": $0.content] }
+        return body
+    }
+    func modelOptions(stream: Bool = true, output: Int? = nil) throws -> [String: Any] {
+        try validateModel()
+        let reserve = min(output ?? outputLimit, outputLimit)
+        var body: [String: Any] = ["model": model, "stream": stream, "max_tokens": reserve]
         let deepSeek = try CompanionService.endpoint(endpoint).host == "api.deepseek.com"
         if deepSeek {
             let thinking = !["auto", "off"].contains(reasoningEffort)
