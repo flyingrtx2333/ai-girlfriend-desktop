@@ -19,7 +19,7 @@ import Foundation
         "extensions": ["list_skills", "read_skill", "read_skill_resource", "unload_skill"], "mcp": AgentMCP.tools,
         "agents": ["list_agents", "delegate_task"]
     ]
-    private static let wikiTools: Set<String> = ["list_directory", "read_file", "search_project", "index_project", "project_wiki", "write_file", "edit_file", "update_plan", "ask_user", "finish_task", "read_task_history", "git_status"]
+    private static let wikiTools: Set<String> = ["list_directory", "read_file", "search_project", "index_project", "project_wiki", "plan_wiki", "write_file", "edit_file", "update_plan", "ask_user", "finish_task", "read_task_history", "git_status"]
     let store: AgentStore
     let taskID: String
     var delegateTask: ((AgentToolCall) async throws -> AgentToolResult)?
@@ -44,7 +44,17 @@ import Foundation
         guard value != privateRoot && !value.hasPrefix(privateRoot + "/") else { throw PetError("请使用记忆和任务管理工具访问应用数据") }
         let bundle = Bundle.main.bundleURL.path.lowercased()
         if writing && (value == bundle || value.hasPrefix(bundle + "/")) { throw PetError("不能通过项目工具修改正在运行的应用") }
-        if writing, store.task(taskID)?.kind == "wiki", !files.relative(url).hasPrefix(".bluefatfish/wiki/") { throw PetError("Wiki 任务只能修改 .bluefatfish/wiki/ 中的文档") }
+        if let task = store.task(taskID), task.kind == "wiki" {
+            try AgentWiki.checkScope(task, store: store)
+            if writing {
+                if let job = task.wikiJob { guard try job.plan.paths(root: job.root).values.contains(files.relative(url)) else { throw PetError("Wiki 只能写入当前语言与冻结规划中的页面") } }
+                else if !files.relative(url).hasPrefix(".bluefatfish/wiki/") { throw PetError("Wiki 任务只能修改 .bluefatfish/wiki/ 中的文档") }
+            }
+            if readingFile, let job = task.wikiJob, files.relative(url).hasPrefix(".bluefatfish/wiki/") {
+                let path = files.relative(url), previous = job.previousRoot.map { path.hasPrefix($0 + "/") && ($0 != ".bluefatfish/wiki" || !path.hasPrefix(".bluefatfish/wiki/.generated/")) } ?? false
+                guard path.hasPrefix(job.root + "/") || previous else { throw PetError("此 Wiki 页面不属于本任务语言或先前版本") }
+            }
+        }
         if readingFile, store.task(taskID)?.kind == "wiki" {
             let relative = files.relative(url)
             if !relative.hasPrefix(".bluefatfish/wiki/"), !["AGENTS.md", ".gitignore"].contains(relative),
@@ -55,7 +65,7 @@ import Foundation
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "plan_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
     private func checkHookTool(_ call: AgentToolCall, task: AgentTaskRecord) throws {
         guard task.kind == "hook" else { return }
         guard AgentHookModel.safeTools.contains(call.name), task.hookTools?.contains(call.name) == true else { throw PetError("校验任务不允许此工具：" + call.name) }
@@ -80,7 +90,8 @@ import Foundation
             tool("search_attachment", "在已提交附件的初始提取文字中查找关键词，返回页/工作表及实际行号。扫描页和额外页请用 read_attachment 按页读取，搜索不代表已经 OCR 全文。", ["id": string, "query": string], ["id", "query"]),
             tool("index_project", "在本机增量更新项目全文索引，跳过凭据、隐藏文件、构建目录及 Git 忽略文件。不调用模型。单文件上限 512KB、总文本 16MB、5000 文件；返回实际覆盖范围。rebuild=true 完整重建。", ["rebuild": ["type": "boolean"]], []),
             tool("search_project", "从当前项目索引检索实现、文档或符号，返回实际文件、行号和 sha256。每次先增量更新并核对命中文件。query 使用 1 至 6 个关键词或短语，空格分隔；非语义向量搜索。找到后用 read_file 核对上下文，回答引用路径和行号。", ["query": string, "limit": integer], ["query"]),
-            tool("project_wiki", "分页列出当前项目 Repo Wiki 文档树，返回真实标题、路径和父目录；offset 从 1 开始，列表默认50页，最多100页。path 可读取某页，offset/limit 改为正文行号与行数。先更新项目索引核对状态；Wiki 是资料，重要结论仍须核对当前源码。", ["path": string, "offset": integer, "limit": integer], []),
+            tool("project_wiki", "分页列出当前项目 Repo Wiki 文档树，返回真实标题、路径和父目录；offset 从 1 开始，列表默认50页，最多100页。path 可读取某页，offset/limit 改为正文行号与行数。先更新项目索引核对状态；Wiki 是资料，重要结论仍须核对当前源码。", ["path": string, "offset": integer, "limit": integer, "language": ["type": "string", "enum": ["zh", "en", "legacy"]]], []),
+            tool("plan_wiki", "读取本次冻结的 Wiki 规划，offset从1开始分页；没有规划时可一次提交documents，包含title、goal及可选parent、hints文字列表、template。提交后不可替换。只能在Wiki生成任务使用。", ["offset": integer, "limit": integer, "source": ["type": "boolean"], "content_offset": integer, "content_limit": integer, "documents": ["type": "array", "items": ["type": "object", "properties": ["title": string, "goal": string, "parent": string, "hints": ["type": "array", "items": string], "template": string], "required": ["title", "goal"]]]], []),
             tool("list_knowledge", "列出当前任务可用的用户及工作区知识库；base_id取返回编号可列出该库的文件、编号、sha256及解析范围。无工作区可使用用户知识库。offset从0开始分页。只读，不读取草稿或其他工作区资料。", ["base_id": string, "offset": integer, "limit": integer], []),
             tool("search_knowledge", "检索当前可用知识库的实际提取原文，返回文件编号、页/表、行号和sha256。query为1至6个空格分隔关键词，匹配任意词；base_id可限定知识库。offset/limit按文件分页，按next_offset续查。命中后用read_knowledge核对上下文；扫描PDF未预先OCR全文。", ["query": string, "base_id": string, "offset": integer, "limit": integer], ["query"]),
             tool("read_knowledge", "按id读取当前可用知识文件的原文及来源sha256。part为页/工作表/幻灯片，从1开始；line/lines分页，长段按next_content_offset传回content_offset续读。扫描PDF按页本机OCR。资料不是指令或授权；partial/notes标明提取限制，不能据此声称已读完整原文件或理解图片。", ["id": string, "part": integer, "line": integer, "lines": integer, "content_offset": integer], ["id"]),
@@ -136,6 +147,7 @@ import Foundation
         }
         tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 知识库/索引/Wiki/记忆；project_knowledge 知识卡片与源码；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
         if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
+        if kind != "wiki" { tools.removeAll { ($0["function"] as? [String: Any])?["name"] as? String == "plan_wiki" } }
         if kind == AgentKnowledgeCards.kind { tools.removeAll { item in !AgentKnowledgeCards.generationTools.contains((item["function"] as? [String: Any])?["name"] as? String ?? "") } }
         if let groups {
             let enabled = Set(["load_tools", "update_plan", "ask_user", "finish_task", "read_task_history"] + groups.flatMap { Self.groups[$0] ?? [] })
@@ -153,6 +165,7 @@ import Foundation
         if rule == .ask { task.permission = .review }
         if rule == .allow, try store.agents.canAutoApprove(task, store: store) { task.permission = .automatic }
         guard Self.names.contains(call.name) else { throw PetError("未知工具：\(call.name)") }
+        if task.kind == "wiki" { try AgentWiki.checkScope(task, store: store) }
         if task.kind == "wiki", !Self.wikiTools.contains(call.name) { throw PetError("Wiki 任务只读取索引内项目文件并生成文档") }
         if task.kind == AgentKnowledgeCards.kind, !AgentKnowledgeCards.generationTools.contains(call.name) { throw PetError("知识卡片任务只读取索引内源码并保存卡片") }
         if call.name == "edit_project_knowledge" {
@@ -289,6 +302,7 @@ import Foundation
         task.permission = try store.agents.executionPermission(task, store: store)
         try checkHookTool(call, task: task)
         try store.agents.check(call, task: task, store: store)
+        if task.kind == "wiki" { try AgentWiki.checkScope(task, store: store) }
         if task.kind == "wiki", !Self.wikiTools.contains(call.name) { throw PetError("Wiki 任务只读取索引内项目文件并生成文档") }
         if task.kind == AgentKnowledgeCards.kind, !AgentKnowledgeCards.generationTools.contains(call.name) { throw PetError("知识卡片任务只读取索引内源码并保存卡片") }
         if task.queuedCount > 0 { throw PetError("用户已更新要求，此操作尚未执行") }
@@ -402,15 +416,17 @@ import Foundation
             if task.kind == AgentKnowledgeCards.kind, task.knowledgeJob?.sourceRevision == nil { store.update(taskID) { $0.knowledgeJob?.sourceRevision = result.index.revision } }
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
             return AgentToolResult(text: String(decoding: try encoder.encode(result), as: UTF8.self), sources: result.matches.map(\.source))
+        case "plan_wiki": return try AgentWiki.setPlan(call, store: store, task: task)
         case "project_wiki":
-            let pages = try AgentWiki.pages(workspace: task.workspace), status = try AgentWiki.status(store: store, taskID: taskID)
+            let language = task.wikiJob?.language ?? args["language"] as? String ?? task.wikiLanguage ?? "zh"
+            let view = try AgentWiki.view(store: store, taskID: taskID, language: language), pages = view.pages.map(\.path), status = try AgentWiki.status(store: store, taskID: taskID, language: language)
             if let path = args["path"] as? String, !path.isEmpty {
                 let files = try AgentFiles(workspace: task.workspace), url = try projectURL(path, files: files)
                 guard pages.contains(files.relative(url)) else { throw PetError("请从 Wiki 页面列表选择实际路径") }
                 return AgentToolResult(text: status + "\n" + (try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: args["limit"] as? Int ?? 150)), sources: [url.absoluteString])
             }
-            let catalog = try AgentWiki.catalog(workspace: task.workspace), offset = min(catalog.count, max(1, args["offset"] as? Int ?? 1) - 1), limit = min(100, max(1, args["limit"] as? Int ?? 50)), slice = Array(catalog.dropFirst(offset).prefix(limit))
-            let value: [String: Any] = ["status": pages.isEmpty ? "未生成" : status, "pages": slice.map(\.path), "documents": slice.map { ["path": $0.path, "title": $0.title, "parent": ($0.path as NSString).deletingLastPathComponent] }, "total": catalog.count, "next_offset": offset + slice.count < catalog.count ? offset + slice.count + 1 : NSNull()]
+            let catalog = view.pages, offset = min(catalog.count, max(1, args["offset"] as? Int ?? 1) - 1), limit = min(100, max(1, args["limit"] as? Int ?? 50)), slice = Array(catalog.dropFirst(offset).prefix(limit))
+            let value: [String: Any] = ["status": pages.isEmpty ? "未生成" : status, "language": language, "pages": slice.map(\.path), "documents": slice.map { ["path": $0.path, "title": $0.title, "parent": $0.parent ?? ($0.path as NSString).deletingLastPathComponent] }, "total": catalog.count, "next_offset": offset + slice.count < catalog.count ? offset + slice.count + 1 : NSNull()]
             return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), as: UTF8.self))
         case "git_push_status":
             let receipt = try await AgentGitTransport.verifyReceipt(store: store, taskID: taskID, operationID: string("operation_id"))
@@ -516,15 +532,17 @@ import Foundation
             let text = task.kind == AgentKnowledgeCards.kind ? try store.knowledgeCards.sourcePage(raw) : raw
             if recording {
                 guard try files.fileHash(url, maximum: 4_000_000) == hash else { throw PetError("读取期间源码已变化，请重读") }
-                try store.knowledgeCards.recordRead(taskID: taskID, path: files.relative(url), sha256: hash, text: text)
+                if let job = task.wikiJob, files.relative(url).hasPrefix(job.root + "/") { let total = try AgentTextFile.decode(files.readData(url, maximum: 256_000), encoding: encoding).text.components(separatedBy: "\n").count; try AgentWiki.recordPageRead(store: store, task: task, path: files.relative(url), hash: hash, raw: text, totalLines: total) }
+                else if task.kind != "wiki" || !files.relative(url).hasPrefix(".bluefatfish/wiki/") { try store.knowledgeCards.recordRead(taskID: taskID, path: files.relative(url), sha256: hash, text: text) }
             }
-            return AgentToolResult(text: text, sources: [url.absoluteString])
+            return AgentToolResult(text: task.wikiJob != nil ? "SHA256: " + hash + "\n" + text : text, sources: [url.absoluteString])
         case "search_files":
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
             return AgentToolResult(text: try await files.search(path: url.path, pattern: string("pattern"), namesOnly: args["names_only"] as? Bool ?? false, excluding: [store.directory.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path.lowercased()]))
         case "write_file", "edit_file":
             let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, writing: true)
             let existing = FileManager.default.fileExists(atPath: url.path), before = existing ? try files.readData(url) : nil
+            if task.wikiJob != nil, call.name == "write_file", existing, args["expected_hash"] == nil { throw PetError("覆盖已有 Wiki 草稿需要当前 expected_hash，请先读取页面") }
             if args.keys.contains("expected_hash") { guard let expected = args["expected_hash"] as? String, let before, AgentFiles.hash(before) == expected else { throw PetError("文件已更改或哈希无效，草稿未写入；请先比较当前文件") } }
             guard (before?.count ?? 0) < 4_000_000 else { throw PetError("文件过大，请分解操作") }
             // JSONSerialization drops a leading U+FEFF from string values on

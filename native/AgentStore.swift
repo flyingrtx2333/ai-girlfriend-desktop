@@ -85,6 +85,7 @@ import Foundation
         value.hookPromptIDs = nil; value.hookContextIDs = nil
         value.modelReceipts = nil; value.contextSnapshot = nil; value.recap = nil; value.gitTurn = nil; value.gitPushReview = nil; value.gitPushReceipt = nil; value.gitRemoteSnapshot = nil
         value.knowledgeReads = nil
+        if var job = value.wikiJob { job.plan = AgentWikiPlan(); job.reviewed = nil; job.pageReads = nil; value.wikiJob = job }
         value.agent?.profile.instructions = ""
         value.team?.team.instructions = ""
         return value

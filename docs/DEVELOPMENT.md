@@ -66,6 +66,8 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 | 改动 | 可选检查 |
 | --- | --- |
 | Markdown／Wiki 阅读 | `npm run native:check-markdown -- --candidate-app <签名候选.app>`；复制当前项目实际文档与图片，核对排版、章节／源码导航、Mermaid 流程图／时序图／思维导图、离线策略、图表取消、选文与原任务草稿保护；此入口不调用模型，需补实际窗口记录。图表资源单独构建：`npm run build:diagrams`。 |
+| Wiki 规划与语言 | `node scripts/check-native-wiki-plan.mjs --candidate-app <严格签名候选.app>`；实际项目文件、Git 分支切换、完整 YAML 解析、冻结结构、引用行、写后回读、写入范围与发布前置条件，随后在独立目录操作真实窗口。手工导入文档仅用于文件和界面检查，不作为模型生成结果；保存窗口记录后写入 `wiki-plan-ui-acceptance.json` 与 `finish-wiki-plan-ui`。YAML 资源用 `npm run build:wiki` 单独构建。 |
+| Wiki 真实生成 | `node scripts/check-native-wiki-live.mjs --candidate-app <严格签名候选.app> --prepare-only` 准备实际项目副本、现有8192／512配置与日常数据保护记录，不调用模型。独立的 Wiki 请求额度获明确批准后才创建授权记录，再用 `--resume <原目录> --language zh\|en` 调用原生生成服务。全轮请求在发送前记账并限制上限，保留失败任务、账本与回执；原知识卡片额度不转用。 |
 | Markdown 预览编辑 | `npm run native:check-markdown-edit -- --candidate-app <签名候选.app>`；用实际项目文档核对正文与单元格原位编辑、撤销重做、原文／预览共用草稿、UTF-8 BOM 与 CRLF、保存哈希冲突、只读限制和未修改源码保留；不调用模型，需操作实际窗口并核对磁盘文件。 |
 | 文本文件保存冲突 | `npm run native:check-file-conflict -- --candidate-app <签名候选.app>`；实际项目文档、独立磁盘修改、并排差异与全文、过期比较拒绝、取消／确认覆盖、检查点回读、采用磁盘版本及 BOM／换行切换。使用独立资料目录，不调用模型；须操作实际窗口并核对每次落盘字节。 |
 | 文本编码重开与写回 | `npm run native:check-text-encoding -- --candidate-app <签名候选.app>`；系统 `iconv` 独立转换真实项目文档并记录预期字节，核对10种编码／15份标记组合、实际文件工具、GB18030编辑及冲突检查点、Big5不可表示文字与重开取消、UTF-16保存及只读来源。使用独立目录、不调用模型，须实际操作窗口并回读文件。 |

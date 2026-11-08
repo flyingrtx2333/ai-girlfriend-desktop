@@ -24,7 +24,8 @@ import UniformTypeIdentifiers
     private let compare = NSButton(title: "比较", target: nil, action: nil)
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
-    var onGenerateWiki: (() -> Void)?
+    var onGenerateWiki: ((String) -> Void)?
+    private var wikiPlanWindow: AgentWikiPlanWindow?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0, saving = false
     private var fileBOM: Bool { fileFormat.bom }
@@ -52,6 +53,13 @@ import UniformTypeIdentifiers
         wikiTree.canSelect = { [weak self] path in guard let self else { return false }; return path == self.selection || self.canLeave() }
         wikiTree.onSelect = { [weak self] path in guard let self, path != self.selection else { return }; self.loadSelection(path) }
         wikiTree.onRefresh = { [weak self] in self?.refreshWikiCatalog() }
+        wikiTree.setLanguage(store.task(taskID)?.wikiLanguage ?? store.task(taskID)?.wikiJob?.language ?? "zh")
+        wikiTree.onLanguage = { [weak self] language in
+            guard let self else { return false }
+            guard self.canLeave() else { self.wikiTree.setLanguage(self.store.task(self.taskID)?.wikiLanguage ?? self.store.task(self.taskID)?.wikiJob?.language ?? "zh"); return false }
+            self.store.update(self.taskID) { $0.wikiLanguage = language }; self.wikiTree.show([], selected: nil); self.refresh(); return true
+        }
+        wikiTree.onPlan = { [weak self] in self?.openWikiPlan() }
         text.isRichText = false; text.isEditable = false; text.previewUndoManager = UndoManager(); text.allowsUndo = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         text.textContainerInset = NSSize(width: 15, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]
         text.textContainer?.widthTracksTextView = true; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false
@@ -96,7 +104,7 @@ import UniformTypeIdentifiers
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
-        generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil
+        generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
         wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
         guard let task = store.task(taskID) else { return }
         newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
@@ -111,7 +119,7 @@ import UniformTypeIdentifiers
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
         case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         case 6:
-            do { let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; let preferred = pages.first { $0.path == wikiTree.selectedDocument }?.path ?? items.first?.value; wikiTree.show(pages, selected: preferred); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID) }
+            do { let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage), pages = view.pages; items = pages.map { ($0.title, $0.path) }; let preferred = pages.first { $0.path == wikiTree.selectedDocument }?.path ?? items.first?.value; wikiTree.show(pages, selected: preferred, root: view.root); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID, language: wikiTree.selectedLanguage) }
             catch { items = []; wikiTree.show([], selected: nil); state.stringValue = error.localizedDescription }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
@@ -124,7 +132,7 @@ import UniformTypeIdentifiers
     private func refreshWikiCatalog() {
         guard sections.selectedSegment == 6, let task = store.task(taskID) else { return }
         do {
-            let pages = try AgentWiki.catalog(workspace: task.workspace); items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: selection)
+            let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage), pages = view.pages; items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: selection, root: view.root)
             if let selection, !pages.contains(where: { $0.path == selection }) { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
             else if selection == nil, let first = items.first { _ = wikiTree.select(first.value) }
         } catch { state.stringValue = error.localizedDescription }
@@ -140,8 +148,22 @@ import UniformTypeIdentifiers
         if let index = items.firstIndex(where: { $0.value == previous }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         if let clip, let origin { clip.scroll(to: origin); text.enclosingScrollView?.reflectScrolledClipView(clip) }
     }
-    @objc private func generateWiki() { if canLeave() { onGenerateWiki?() } }
-    func enableWikiGeneration(_ action: @escaping () -> Void) { onGenerateWiki = action; generate.isEnabled = true }
+    @objc private func generateWiki() { if wikiTree.selectedLanguage != "legacy", wikiPlanWindow?.confirmClosing() != false, canLeave() { onGenerateWiki?(wikiTree.selectedLanguage) } }
+    func enableWikiGeneration(_ action: @escaping () -> Void) { enableWikiGeneration { _ in action() } }
+    func enableWikiGeneration(_ action: @escaping (String) -> Void) { onGenerateWiki = action; generate.isEnabled = wikiTree.selectedLanguage != "legacy" }
+    private func openWikiPlan() {
+        do {
+            guard let task = store.task(taskID), let workspace = task.workspace else { throw PetError("请选择项目文件夹") }
+            if let old = wikiPlanWindow, old.window?.isVisible == true { old.window?.makeKeyAndOrderFront(nil); return }
+            let original = try AgentFiles(workspace: workspace).root
+            let next = try AgentWikiPlanWindow(workspace: workspace, storage: store.directory) { [weak self] in
+                guard let self, let current = self.store.task(self.taskID), !current.archived, current.kind != "hook", (try? AgentFiles(workspace: current.workspace).root) == original, (try? self.store.agents.limits(current, store: self.store).readOnly) == false else { return false }
+                let path = original.appendingPathComponent(AgentWikiPlan.configurationPath).path
+                return FileManager.default.isWritableFile(atPath: FileManager.default.fileExists(atPath: path) ? path : original.path)
+            }
+            wikiPlanWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
+        } catch { state.stringValue = error.localizedDescription }
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let label = NSTextField(labelWithString: items[row].title); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = items[row].value; return label
@@ -394,8 +416,8 @@ import UniformTypeIdentifiers
         let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
-    func windowWillClose(_ notification: Notification) { video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
+    func windowWillClose(_ notification: Notification) { wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
     func videoPreviewReadback() async -> [String: Any] {
         guard CommandLine.arguments.contains("--video-preview-check") else { return [:] }
         var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""
@@ -403,13 +425,13 @@ import UniformTypeIdentifiers
         return result
     }
     func markdownEditingReadback() async -> [String: Any] {
-        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        guard ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         await markdown.waitForDiagrams()
         let data = try? fileData()
         var result: [String: Any] = ["draft": text.string, "encodedDraft": fileContent, "encodedDraftBase64": data?.base64EncodedString() ?? "", "draftHash": data.map(AgentFiles.hash) ?? "", "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "encoding": fileFormat.encoding.rawValue, "byteOrderMark": fileFormat.bom, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState, "comparison": conflictWindow?.checkState ?? [:]]
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
-        if CommandLine.arguments.contains("--wiki-tree-check") { result["tree"] = wikiTree.checkState; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
+        if CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         return result
     }
     func checkMarkdown() -> [String: Bool] {

@@ -1371,7 +1371,7 @@ final class FormDocumentView: NSView {
         recordWindow?.onAddSelection = { [weak self] selection in
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
-        recordWindow?.enableWikiGeneration { [weak self] in self?.generateAgentWiki(sourceID: id) }
+        recordWindow?.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
         recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
@@ -1392,10 +1392,10 @@ final class FormDocumentView: NSView {
         if displayedTask == taskID { composer.string = combined }
         selectAgentTask(taskID); show(tab: "chat"); window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(composer)
     }
-    func generateAgentWiki(sourceID: String) {
+    func generateAgentWiki(sourceID: String, language: String? = nil) {
         guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
         do {
-            let id = try AgentWiki.start(store: store, runtime: runtime, sourceID: sourceID)
+            let id = try AgentWiki.start(store: store, runtime: runtime, sourceID: sourceID, language: language ?? store.task(sourceID)?.wikiLanguage ?? "zh")
             recordWindow?.window?.close(); knowledgeWindow?.window?.close(); selectAgentTask(id)
         } catch { setStatus(error.localizedDescription, error: true) }
     }

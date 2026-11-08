@@ -145,13 +145,13 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         }
         onChange?(scope.root)
     }
-    func locked<T>(_ directory: URL, _ operation: () throws -> T) throws -> T {
+    func locked<T>(_ directory: URL, label: String = "知识卡片", _ operation: () throws -> T) throws -> T {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files = try AgentFiles(workspace: directory.path), (parent, name) = try files.parentDescriptor(directory.appendingPathComponent("write.lock"), create: true)
         defer { close(parent) }
         let fd = openat(parent, name, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw PetError("知识卡片无法锁定") }; defer { close(fd) }
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw PetError("另一窗口正在更新知识卡片") }; defer { flock(fd, LOCK_UN) }
+        guard fd >= 0 else { throw PetError(label + "无法锁定") }; defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw PetError("另一窗口正在更新" + label) }; defer { flock(fd, LOCK_UN) }
         return try operation()
     }
     func write<T: Encodable>(_ value: T, _ url: URL) throws {

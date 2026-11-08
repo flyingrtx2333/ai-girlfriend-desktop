@@ -58,7 +58,7 @@ final class PetWebView: WKWebView {
     var agentRuntime: AgentRuntime?
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || ["--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -135,6 +135,7 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        for window in sender.windows where window.isVisible { if let plan = window.windowController as? AgentWikiPlanWindow, !plan.confirmClosing() { return .terminateCancel } }
         guard let offices = agentStore?.offices, offices.hasWindows else { return .terminateNow }
         Task { @MainActor in sender.reply(toApplicationShouldTerminate: await offices.canQuit()) }; return .terminateLater
     }
@@ -662,6 +663,10 @@ private extension NSRect { var area: CGFloat { isNull ? 0 : width * height } }
     @MainActor static func main() {
         if let index = CommandLine.arguments.firstIndex(of: "--make-icons"), CommandLine.arguments.count > index + 1 {
             makeIcons(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); return
+        }
+        if CommandLine.arguments.contains("--wiki-live-check") {
+            Task { @MainActor in exit(await AgentWikiLiveCheck.commandLine()) }
+            dispatchMain()
         }
         if CommandLine.arguments.contains("--knowledge-cards-live-check") {
             Task { @MainActor in exit(await AgentKnowledgeCardLiveCheck.commandLine()) }
