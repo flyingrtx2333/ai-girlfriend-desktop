@@ -569,3 +569,14 @@ PowerShell有本机安装诊断与执行入口，本轮未实际执行，不作�
 核心实现已及时提交并推送 `1eed161`。最终签名应用已更新到主目录并实际打开，SHA-256为 `3fa6946e9e093d5117b4ed6ac92b15089de195c562b8195f4e8a2c4a602a222c`，213份输入与构建目录一致。日常界面仍为原问答／待开始任务、deepseek-flash与空草稿，MCP 列表仍为空；16项原有设置／记录及插件目录缺失状态逐字节保持，没有导入验收插件。旧签名应用保留于 `build/backups/before-plugin-mcp-20261108-074738.app`，构建清单、部署记录与日常窗口在 `evidence/agent/plugin-mcp-build`。临时构建服务已移除，保持唤醒服务继续运行，减弱动态效果仍关闭。
 
 复现：`npm run native:check-plugin-mcp -- --live-agent --hold-ui`，继续原实际任务使用 `--resume <目录>`。插件内 Agent／Hooks／规则、更多传输与 OAuth、市场、创建更新、Office 编辑、远程及其余22项矩阵继续实现，完整目标 active。
+
+
+## Office 引擎接入基础（2026-11-08，尚未替换日常应用）
+
+新增独立的 `build:office` 构建，使用 Apache-2.0 的 BetterOffice 0.5.1 处理真实 DOCX／XLSX／PPTX，字体及中文语言包随本地资源提供。原生只读服务仅监听 127.0.0.1，每个窗口只公布随机地址下的资源与一份固定文档；不提供任意路径或写入接口。此提交是接入基础，任务产物的内置 Office 窗口、人工编辑保存、冲突保护和真实 Agent 办公流程尚在实现，不能当作完整 Office 已交付。
+
+真实 AppKit／WKWebView 检查使用独立 Python 文档库生成的相同公开输入，经过实际引擎打开、读取和导出，再由 python-docx、openpyxl、python-pptx 独立重开。DOCX 的段落、表格、图片字节、页眉页脚，XLSX 的工作表、数值、公式和实际原有格式，以及 PPTX 的两张幻灯片、文字、图片与位置尺寸均一致；三种格式内额外的未识别 XML 均保留。只覆盖这三份文件的往返，不代表全部 Office 格式兼容性；未使用模拟 AI 回复，也尚未作为真实模型流程证据。
+
+检查中实际发现拆分的后台模块反向导入入口，WebKit 随后失去已打开文档；按 [Vite worker 配置](https://vite.dev/config/worker-options)和 [Rolldown codeSplitting 配置](https://rolldown.rs/reference/OutputOptions.codeSplitting)，把每个后台模块构建为单个文件，原输入随后成功导出。保留此前失败报告与诊断，没有更换输入或忽略保存错误。独立测试应用另曾卡在外置盘资源枚举；使用哈希完全一致的内部副本继续检查，未修改磁盘挂载或新增系统权限。
+
+本地原始证据位于内部构建缓存的 `evidence/agent/office-build/attempt-single-worker*`，包括实际原生导出、独立回读报告与失败诊断。构建生成完整依赖及字体许可说明；资源不进入 Git。原有日常应用和生产配置保持在上一已验收版本。完整 Agent 目标保持 active。
