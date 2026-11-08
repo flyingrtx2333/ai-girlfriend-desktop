@@ -17,6 +17,7 @@ struct AgentImportOrigin: Codable {
     var snapshot: String
     var imported = Date()
     var taskHash: String
+    var historyThroughID: String?
     var warnings: [String]
     var key: String { source.rawValue + ":" + sourceID.lowercased() }
 }

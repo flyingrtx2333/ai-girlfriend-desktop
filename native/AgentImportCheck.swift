@@ -59,10 +59,14 @@ import SQLite3
                     checks["pauseKeepsSelectedSnapshotAndCompletedItem"] = service.batch?.state == "paused" && service.batch?.items.filter({ $0.state == "imported" }).count == 1 && service.batch?.items.filter({ $0.state == "pending" }).count == 1
                     checks["backgroundImportDoesNotChangeSelectedTask"] = tasks.selectedID == selection
                     guard checks.values.allSatisfy({ $0 }) else { throw PetError("导入暂停阶段检查失败：" + checks.filter { !$0.value }.map(\.key).joined(separator: ", ")) }
-                    try write(["phase": "paused", "checks": checks, "binaryHash": binaryHash, "items": service.batch!.items.map { ["sourceID": $0.record.sourceID, "targetID": $0.record.targetID, "state": $0.state] }], "import-phase.json")
+                    let legacyID = service.batch!.items.first { $0.state == "imported" }!.record.targetID
+                    let legacyBoundary = tasks.task(legacyID)!.importOrigin!.historyThroughID!
+                    tasks.update(legacyID) { $0.importOrigin?.historyThroughID = nil }
+                    try write(["phase": "paused", "checks": checks, "binaryHash": binaryHash, "legacyID": legacyID, "legacyBoundary": legacyBoundary, "items": service.batch!.items.map { ["sourceID": $0.record.sourceID, "targetID": $0.record.targetID, "state": $0.state] }], "import-phase.json")
                     return
                 }
                 let phase = try JSONSerialization.jsonObject(with: Data(contentsOf: phaseURL)) as! [String: Any]; checks = phase["checks"] as! [String: Bool]
+                checks["legacyImportBoundaryRecoveredOnActualRestart"] = (phase["legacyID"] as? String).flatMap { tasks.task($0)?.importOrigin?.historyThroughID } == phase["legacyBoundary"] as? String
                 checks["actualAppRestartRecoversPausedBatch"] = service.batch?.state == "paused" && service.unfinished && !service.active && service.batch?.items.count == 2
                 service.resume(); try await finishBatch()
                 checks["resumeProcessesOnlyRemainingItem"] = service.batch?.state == "completed" && service.batch?.items.allSatisfy { $0.state == "imported" } == true && tasks.tasks.filter { $0.importOrigin?.source == .codex }.count == 2
@@ -109,6 +113,29 @@ import SQLite3
                 let imported = tasks.task(target.id)!, window = AgentContext.window(imported)
                 let sourceText = try service.sourceHistory(target.id, offset: 0, limit: 1, contentOffset: 0, contentLimit: 1000)
                 checks["importedToolDetailsStayReadableWithoutFillingDefaultContext"] = imported.messages.contains(where: \.isImportedContext) && !window.contains(where: \.isImportedContext) && sourceText.contains("session_meta")
+                checks["importedUserOriginalsRemainInHistoryDataBlock"] = window.first?.nativeContext == true && window.first?.content.contains("用户原文") == true && imported.messages.filter(\.isHumanInput).allSatisfy { window.first?.content.contains($0.content) == true }
+                let search = try await AgentTools(store: tasks, taskID: target.id).execute(AgentToolCall(id: UUID().uuidString, name: "read_task_history", arguments: "{\"offset\":0,\"query\":\"SWE-bench\",\"role\":\"user\"}"))
+                checks["historySearchSeparatesHumanTextFromAssistantSuggestion"] = search.text.contains("例如SWE-bench？") && !search.text.contains("SWE-bench Verified")
+                let bounded = try service.sourceHistory(target.id, offset: 0, limit: 5, contentOffset: 0, contentLimit: 16000)
+                checks["rawMetadataPagesHaveBoundedContextAndCursor"] = AgentContext.estimate(bounded) < 1600 && bounded.contains("content_offset=")
+                let master = output.deletingLastPathComponent(), ownersURL = master.appendingPathComponent("import-live-tasks.json")
+                let regressionURL = master.appendingPathComponent("import-continuation-failure.json")
+                if let bytes = try? Data(contentsOf: ownersURL), let owners = try JSONSerialization.jsonObject(with: bytes) as? [String: String], let id = owners["codex"], let bytes = try? Data(contentsOf: FileManager.default.fileExists(atPath: regressionURL.path) ? regressionURL : master.appendingPathComponent("profile/agent/" + id + ".json")), let actual = try? JSONDecoder().decode(AgentTaskRecord.self, from: bytes), !(actual.modelReceipts ?? []).isEmpty {
+                    let past = actual.messages.prefix(AgentContext.offset(actual)), calls = Dictionary(past.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
+                    let historyReceipt = past.last { $0.role == "tool" && calls[$0.toolCallID ?? ""] == "read_task_history" }, fileReceipt = past.last { $0.role == "tool" && calls[$0.toolCallID ?? ""] == "read_file" }
+                    let actualPreferences = try JSONDecoder().decode(PetPreferences.self, from: Data(contentsOf: master.appendingPathComponent("profile/settings.json"))), priorPreferences = store.preferences
+                    store.preferences = actualPreferences; defer { store.preferences = priorPreferences }
+                    let actualSystem = try runtime.systemContext(actual), actualTools = try runtime.toolDefinitions(actual, preferences: actualPreferences)
+                    let actualOverhead = AgentContext.estimate(actualSystem) + AgentContext.estimate(String(decoding: try JSONSerialization.data(withJSONObject: actualTools), as: UTF8.self)) + 200
+                    let retainedBudget = AgentContext.factBudget(actual, preferences: actualPreferences, overhead: actualOverhead, maximumImages: 0)
+                    let actualWindow = AgentContext.window(actual, maximumImages: 0, archivedFactBudget: retainedBudget)
+                    let envelope = try AgentModel.requestBody(preferences: actualPreferences, system: actualSystem, messages: actualWindow, tools: actualTools)
+                    let snapshot = try AgentContext.snapshot(preferences: actualPreferences, system: actualSystem, skills: "", messages: actualWindow, tools: actualTools, loadedSkills: 0)
+                    let frame = actualWindow.first { $0.content.hasPrefix("[历史工具原文摘录") }?.content ?? ""
+                    checks["actualFailedContinuationRetainsHistoryAndFileReceiptsTogether"] = historyReceipt?.toolCallID.map { frame.contains($0) } == true && fileReceipt?.toolCallID.map { frame.contains($0) } == true && ["SWE-bench", "14.20", "8.35", "21.10"].allSatisfy { frame.contains($0) }
+                    checks["actualFailedContinuationFitsUnchangedModelBudget"] = actualPreferences.contextLimit == 8192 && envelope["max_tokens"] as? Int == 2048 && snapshot.estimatedTokens + actualPreferences.outputLimit <= actualPreferences.contextLimit
+                    report["actualContinuationBudget"] = ["overhead": actualOverhead, "retainedFacts": retainedBudget, "inputEstimate": snapshot.estimatedTokens, "outputReserve": actualPreferences.outputLimit, "limit": actualPreferences.contextLimit]
+                }
                 let fork = tasks.fork(current.targetID)!
                 tasks.update(fork) { $0.importOrigin?.snapshot = "../settings.json" }
                 do { _ = try service.sourceHistory(fork, offset: 0, limit: 1, contentOffset: 0, contentLimit: 1000); checks["foreignSnapshotPathCannotEscape"] = false } catch { checks["foreignSnapshotPathCannotEscape"] = true }
@@ -119,7 +146,7 @@ import SQLite3
                 try cancelService.begin(.codex, root: codexRoot, ids: Set(cancelService.preview.filter { $0.issue == nil }.map(\.id)))
                 let deadline = Date().addingTimeInterval(90); while cancelService.active && Date() < deadline { await wait(0.05) }
                 checks["cancelRetainsImportedItemsAndStopsRemainder"] = cancelService.batch?.state == "cancelled" && cancelService.batch?.items.filter({ $0.state == "imported" }).count == 1 && cancelService.batch?.items.filter({ $0.state == "pending" }).count == 1 && !cancelService.unfinished
-                let success = checks.values.allSatisfy { $0 }; try write(["success": success, "checks": checks, "binaryHash": binaryHash, "contextMetrics": ["askOverhead": overhead, "replyReserve": 2048, "contextLimit": 8192]], "import-native.json")
+                let success = checks.values.allSatisfy { $0 }; try write(["success": success, "checks": checks, "binaryHash": binaryHash, "contextMetrics": ["askOverhead": overhead, "replyReserve": 2048, "contextLimit": 8192], "actualContinuationBudget": report["actualContinuationBudget"] ?? [:]], "import-native.json")
                 if !success { throw PetError("导入原生检查失败") }; return
             }
             guard CommandLine.arguments.contains("--live-agent") else { throw PetError("需要真实模型继续导入记录") }
@@ -127,6 +154,7 @@ import SQLite3
             var preferences = PreferencesStore(directory: production).preferences
             preferences.replyTokens = 2048; preferences.voiceEnabled = false; preferences.wakeEnabled = false; preferences.screenObservationEnabled = false; try preferences.validateModel(); store.preferences = preferences
             report["preferences"] = ["model": preferences.model, "context": preferences.contextLimit, "output": preferences.outputLimit, "productionSettingsWritten": false]
+            report["requestLimitPerTask"] = 40
             let ownersURL = output.appendingPathComponent("import-live-tasks.json")
             var owners = fm.fileExists(atPath: ownersURL.path) ? try JSONSerialization.jsonObject(with: Data(contentsOf: ownersURL)) as! [String: String] : [:]
             for (key, source, root, sourceID) in [("qoder", AgentImportSource.qoder, qoderRoot, qoder), ("codex", AgentImportSource.codex, codexRoot, codex)] {
@@ -151,12 +179,12 @@ import SQLite3
                 let deadline = Date().addingTimeInterval(900)
                 while Date() < deadline {
                     guard let task = tasks.task(id) else { throw PetError("原导入任务丢失") }
-                    if (task.modelReceipts?.count ?? 0) > 24 { runtime.cancel(id); throw PetError("原导入任务超过24次请求，保留记录") }
+                    if task.status == .completed && !runtime.isExecuting(id) { break }
+                    if (task.modelReceipts?.count ?? 0) > 40 { runtime.cancel(id); throw PetError("原导入任务超过40次请求（含此前失败），保留记录") }
                     if task.status == .waiting, let call = task.pendingCalls.first {
                         guard key == "codex", ["read_file", "list_directory", "search_files", "write_file", "edit_file", "run_command", "read_task_history"].contains(call.name), task.approvals.filter({ $0.decision == "allow" }).count < 8, call.object["network"] as? Bool != true else { throw PetError("模型提出预期外动作") }
                         runtime.decide(taskID: id, callID: call.id, decision: "allow")
                     }
-                    if task.status == .completed && !runtime.isExecuting(id) { break }
                     if [.failed, .stopped].contains(task.status) && !runtime.isExecuting(id) { throw PetError("原真实任务已停止：" + (task.events.last?.detail ?? "")) }
                     await wait(0.2)
                 }
@@ -165,7 +193,7 @@ import SQLite3
                     let text = task.messages.last(where: { $0.role == "assistant" })?.content ?? ""
                     guard let first = text.firstIndex(of: "{"), let last = text.lastIndex(of: "}"), let value = try JSONSerialization.jsonObject(with: Data(text[first...last].utf8)) as? [String: Any], value["first_user"] as? String == "hi", !task.messages.contains(where: { $0.toolCalls?.isEmpty == false }) else { throw PetError("模型没有从原导入历史恢复hi，保留实际回答") }
                 }
-                report[key] = ["taskID": id, "requests": task.modelReceipts?.count ?? 0, "inputTokens": task.inputTokens, "outputTokens": task.outputTokens, "status": task.status.rawValue]
+                report[key] = ["taskID": id, "requests": task.modelReceipts?.count ?? 0, "inputTokens": task.inputTokens, "outputTokens": task.outputTokens, "status": task.status.rawValue, "completedBeforeResume": initial.status == .completed, "requestsAtResume": initial.modelReceipts?.count ?? 0, "requestsAbovePollingLimit": max(0, (task.modelReceipts?.count ?? 0) - 40)]
             }
             if !fm.fileExists(atPath: output.appendingPathComponent("import-ui-planned.json").path) {
                 try updateTitle(codex, value: tasks.task(owners["codex"]!)!.title + " · 来源更新")

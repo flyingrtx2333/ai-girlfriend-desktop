@@ -99,6 +99,9 @@ import Foundation
         if let cached = cache[id] { return cached }
         guard UUID(uuidString: id) != nil, let data = try? Data(contentsOf: directory.appendingPathComponent(id + ".json")),
               var task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data), task.id == id else { return nil }
+        if task.importOrigin != nil, task.importOrigin?.historyThroughID == nil {
+            let boundary = try? AgentDataImport.historyBoundary(task, directory: directory); task.importOrigin?.historyThroughID = boundary
+        }
         let interrupted = !hooks.isRunning(id) && (task.status == .running || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
