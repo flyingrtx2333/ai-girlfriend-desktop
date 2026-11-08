@@ -30,7 +30,18 @@ struct AgentKnowledgeCardJob: Codable, Sendable {
     var reviewedHashes: [String: String]?
     var originalReviewHash: String?
 }
-struct AgentKnowledgeCardRead: Codable, Sendable { var sha256: String; var ranges: [[Int]] }
+struct AgentKnowledgeCardRead: Codable, Sendable {
+    var sha256: String; var ranges: [[Int]]
+    func covers(_ first: Int, through last: Int) -> Bool {
+        guard first > 0, last >= first else { return false }; var next = first
+        for range in ranges.filter({ $0.count == 2 && $0[0] > 0 && $0[1] >= $0[0] }).sorted(by: { $0[0] < $1[0] }) {
+            if range[1] < next { continue }
+            guard range[0] <= next else { return false }
+            if range[1] >= last { return true }; next = range[1] + 1
+        }
+        return false
+    }
+}
 struct AgentKnowledgeCardOptions: Codable, Sendable {
     var language = "zh"; var citation = true; var autoUpdate = false; var autoExport = false
     var sourceTaskID: String?; var rootIdentity: String?
@@ -166,7 +177,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         return try values.map { value in
             guard let path = value["path"] as? String, !AgentFiles.sensitive(path), let line = value["line"] as? Int else { throw PetError("来源路径或行号无效") }
             let url = try files.resolve(path), relative = files.relative(url), end = value["end_line"] as? Int ?? line
-            guard try index.contains(relative), let read = task.knowledgeReads?[relative], read.ranges.contains(where: { $0.count == 2 && $0[0] <= line && end <= $0[1] }), line > 0, end >= line,
+            guard try index.contains(relative), let read = task.knowledgeReads?[relative], read.covers(line, through: end), line > 0, end >= line,
                   try files.fileHash(url, maximum: 512_000) == read.sha256 else { throw PetError("请先用 read_file 核对当前源码及引用行号：" + relative) }
             return AgentKnowledgeCardSource(path: relative, line: line, endLine: end, sha256: read.sha256)
         }
@@ -199,11 +210,17 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
               let body = args["body"] as? String, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, body.utf8.count <= 4000 else { throw PetError("卡片标题、类型或正文无效，正文最多4KB") }
         let original = try book(task, language: job.language)
         guard original.1 == job.baseHash else { throw PetError("生成期间卡片已有修改，原版本保留") }
-        let id = args["id"] as? String ?? UUID().uuidString
+        let related = original.0?.cards.filter { $0.kind == kind } ?? []
+        let inferred = args["id"] == nil && related.count == 1 && job.originalReviewHash == job.baseHash ? related.first : nil
+        let id = args["id"] as? String ?? inferred?.id ?? UUID().uuidString
         guard UUID(uuidString: id) != nil else { throw PetError("卡片编号无效") }
-        if let old = try drafts(task).first(where: { $0.id == id }) ?? original.0?.cards.first(where: { $0.id == id }) { guard args["expected_hash"] as? String == old.hash else { throw PetError("请先读取原卡片及其 hash") } }
-        else { guard args["id"] == nil else { throw PetError("新卡片不要提供 id") } }
-        let pending = try drafts(task)
+        let allPending = try drafts(task)
+        if let old = allPending.first(where: { $0.id == id }) ?? original.0?.cards.first(where: { $0.id == id }) {
+            guard args["expected_hash"] as? String == old.hash || (args["expected_hash"] == nil && inferred?.id == old.id && inferred?.hash == old.hash) else { throw PetError("请先读取原卡片及其 hash") }
+        } else { guard args["id"] == nil else { throw PetError("新卡片不要提供 id") } }
+        let originalIDs = Set((original.0?.cards ?? []).map(\.id))
+        let replacingUnique = related.count == 1 && related.first?.id == id && job.originalReviewHash == job.baseHash
+        let pending = replacingUnique ? allPending.filter { $0.kind != kind || originalIDs.contains($0.id) } : allPending
         guard !((original.0?.cards ?? []) + pending).contains(where: { $0.id != id && $0.kind == kind && $0.title == title }) else { throw PetError("已有同名卡片，请用其 id 和 hash 更新") }
         let card = AgentKnowledgeCard(id: id, title: title, kind: kind, body: body, sources: try sources(args["sources"], task: task))
         var saved = pending; saved.removeAll { $0.id == id }; saved.append(card)

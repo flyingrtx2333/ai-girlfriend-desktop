@@ -233,7 +233,7 @@ import Foundation
         let run = Run(store: store, id: id); active[id] = run
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
         store.update(id) { record in
-            if [.stopped, .failed].contains(task.status) { record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。")); record.goalAccepted = nil }
+            if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion { record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。")); record.goalAccepted = nil }
             if record.hookSession == nil { record.hookSession = UUID().uuidString; record.hookStopBlocks = 0 }
             record.status = .running
         }; notifyChange(id)
@@ -295,6 +295,13 @@ import Foundation
             if let kind = phase.kind {
                 for i in definitions.indices {
                     var function = definitions[i]["function"] as! [String: Any], parameters = function["parameters"] as! [String: Any], properties = parameters["properties"] as! [String: Any]
+                    properties["body"] = ["type": "string", "maxLength": task.knowledgeJob?.language == "en" ? 500 : 180, "description": "简短正文，不复述原卡片全文"]
+                    var sources = properties["sources"] as! [String: Any]; sources["maxItems"] = 2; properties["sources"] = sources
+                    let pendingIDs = Set(try store.knowledgeCards.drafts(task).map(\.id))
+                    if let target = try store.knowledgeCards.book(task, language: task.knowledgeJob?.language).0?.cards.first(where: { $0.kind == kind && !pendingIDs.contains($0.id) }) {
+                        properties["id"] = ["type": "string", "enum": [target.id]]; properties["expected_hash"] = ["type": "string", "enum": [target.hash]]
+                        parameters["required"] = (parameters["required"] as? [String] ?? []) + ["id", "expected_hash"]
+                    }
                     properties["kind"] = ["type": "string", "enum": [kind.rawValue]]; parameters["properties"] = properties; function["parameters"] = parameters; definitions[i]["function"] = function
                 }
             }
@@ -709,6 +716,11 @@ import Foundation
                     guard try await admitPrompt(message, id: id, secret: key) else { throw AgentHookHalt("输入已被 Hook 阻止，请修改后重新发送") }
                 }
                 flushHookContext(id); task = store.task(id)!
+                if task.hasConfirmedKnowledgeCompletion {
+                    _ = try store.knowledgeCards.validate(task)
+                    store.update(id) { $0.status = .completed }; notifyChange(id)
+                    onComplete?(id, task.summary); return
+                }
                 if task.kind == AgentKnowledgeCards.kind, (task.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片已使用30次模型请求，请缩小分析范围后重试；已有记录和草稿保留") }
                 let payload = try contextPayload(task), system = payload.text
                 _ = try await hook(.instructions, id: id, trigger: AgentFiles.hash(Data(system.utf8)), fields: ["instructions": system], secret: key)
@@ -732,7 +744,8 @@ import Foundation
                 try modelRequestCheck?()
                 let assistant = AgentMessage(role: "assistant", content: "")
                 store.update(id) { $0.contextSnapshot = try? AgentContext.snapshot(preferences: p, system: system, skills: payload.skills, messages: context, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0); $0.messages.append(assistant) }; notifyChange(id)
-                var turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: context, tools: definitions, visuals: visuals, messageID: assistant.id, onReceipt: { [store] in store.recordUsage(id, $0) }) { [weak self] text in
+                let requiredTool = task.kind == AgentKnowledgeCards.kind && definitions.count == 1 ? (definitions[0]["function"] as? [String: Any])?["name"] as? String : nil
+                var turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: context, tools: definitions, requiredTool: requiredTool, visuals: visuals, messageID: assistant.id, onReceipt: { [store] in store.recordUsage(id, $0) }) { [weak self] text in
                     guard let self, self.active[id]?.token == run.token else { return }
                     self.store.update(id, persist: false) { if let i = $0.messages.firstIndex(where: { $0.id == assistant.id }) { $0.messages[i].content += text } }
                     if Date().timeIntervalSince(lastSaved) > 1 { try? self.store.save(id); lastSaved = Date() }

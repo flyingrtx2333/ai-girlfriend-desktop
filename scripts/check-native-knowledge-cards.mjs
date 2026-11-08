@@ -23,6 +23,14 @@ async function snapshot() {
   return Object.fromEntries(await Promise.all(names.sort().map(async name => [name, await readFile(path.join(base, name)).then(hash).catch(error => { if (error.code === 'ENOENT') return null; throw error; })])));
 }
 const servicesOnly = process.argv.includes('--services-only');
+const extraArgument = process.argv.indexOf('--cards-extra-requests'), extraRequests = extraArgument < 0 ? 0 : Number(process.argv[extraArgument + 1]);
+if (![0, 30].includes(extraRequests)) throw new Error('Only the explicitly approved 30 additional requests are supported');
+const maximumRequests = 90 + extraRequests;
+if (extraRequests) {
+  const grant = await json('cards-budget-authorization.json');
+  if (grant.kind !== 'explicit-user-authorization' || grant.originalRequestLimit !== 90 || grant.additionalRequests !== 30 || grant.requestLimit !== 120 || grant.context !== 8192 || grant.output !== 512) throw new Error('Missing explicit user authorization for additional requests');
+}
+
 const before = resume < 0 || servicesOnly ? await snapshot() : await json('production-before.json');
 if (!isDeepStrictEqual(before, await snapshot())) throw new Error('Preserve and inspect changed daily data');
 if (resume < 0) {
@@ -85,9 +93,10 @@ try {
     if (headless && live(headless.appPID)) throw new Error('Actual model acceptance is still running; preserve its profile and process');
   }
   for (const name of ['cards-process.json', 'cards-ui-ready.json', 'cards-report.json', 'finish-cards-ui']) await unlink(path.join(output, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
-  command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--knowledge-cards-check', '--live-agent', '--cards-source', origin.source]);
+  const finishSource = process.argv.indexOf('--finish-source');
+  command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--knowledge-cards-check', '--live-agent', '--cards-source', origin.source, ...(extraRequests ? ['--cards-extra-requests', String(extraRequests)] : []), ...(finishSource >= 0 ? ['--cards-finish-source', path.resolve(process.argv[finishSource + 1])] : [])]);
   const owner = await waitJSON('cards-process.json', 30), ready = await waitJSON('cards-ui-ready.json', 240, owner.appPID);
-  if (ready.binaryHash !== binaryHash) throw new Error('Actual UI candidate mismatch');
+  if (ready.binaryHash !== binaryHash || ready.requestLimit !== maximumRequests) throw new Error('Actual UI candidate or request allowance mismatch');
   console.log(JSON.stringify({ phase: 'actual-ui-ready', outputDirectory: output, ...ready }));
   report = await waitJSON('cards-report.json', 7200, owner.appPID);
   for (let i = 0; i < 100 && live(owner.appPID); i++) await pause(100);
@@ -118,10 +127,10 @@ try {
     actualBeforeAndAfterLimit: published.some(book => book.cards.some(card => card.kind === 'spec' && /150\s*MB|150[_,]?000[_,]?000/i.test(card.body))) && published.some(book => book.cards.some(card => card.kind === 'spec' && /160\s*MB|160[_,]?000[_,]?000/i.test(card.body))),
     realKnowledgeEditTool: tasks.some(task => task.kind !== 'knowledge-cards' && task.messages.some(message => message.role === 'user' && message.content.startsWith('/knowledge-edit ')) && task.events.some(event => event.title === 'edit_project_knowledge' && event.status === 'completed') && (task.modelReceipts?.length ?? 0) > 0),
     actualReceiptsAccounted: accounted,
-    requestBoundsPreserved: allReceipts.length <= 90 && generated.every(task => (task.modelReceipts?.length ?? 0) <= 30),
+    requestBoundsPreserved: allReceipts.length <= maximumRequests && generated.every(task => (task.modelReceipts?.length ?? 0) <= 30),
     originalContextAndReplyBudgets: ready.context === 8192 && ready.output === 512,
   };
-  report.requests = allReceipts.length; report.source = origin; report.success &&= Object.values(report.independent).every(Boolean);
+  report.requests = allReceipts.length; report.requestLimit = maximumRequests; report.additionalApprovedRequests = extraRequests; report.source = origin; report.success &&= Object.values(report.independent).every(Boolean);
 } catch (error) { report = { ...(report ?? {}), success: false, error: error.message }; }
 finally {
   await writeFile(path.join(output, 'cards-driver-report.json'), JSON.stringify(report, null, 2));

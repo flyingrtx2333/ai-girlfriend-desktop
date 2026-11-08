@@ -1,5 +1,15 @@
 import AppKit
 
+@MainActor enum AgentKnowledgeCardBudget {
+    static func limit(_ output: URL) throws -> Int {
+        guard let index = CommandLine.arguments.firstIndex(of: "--cards-extra-requests") else { return 90 }
+        guard CommandLine.arguments.indices.contains(index + 1), CommandLine.arguments[index + 1] == "30" else { throw PetError("本次追加额度须为已授权的30次") }
+        let files = try AgentFiles(workspace: output.path), data = try files.readData(files.resolve("cards-budget-authorization.json"), maximum: 8192)
+        guard let grant = try JSONSerialization.jsonObject(with: data) as? [String: Any], grant["kind"] as? String == "explicit-user-authorization", grant["originalRequestLimit"] as? Int == 90, grant["additionalRequests"] as? Int == 30, grant["requestLimit"] as? Int == 120, grant["context"] as? Int == 8192, grant["output"] as? Int == 512 else { throw PetError("缺少本轮追加额度的用户授权记录") }
+        return 120
+    }
+}
+
 @MainActor enum AgentKnowledgeCardServiceCheck {
     static func run(_ output: URL, source: URL, hash: String) async throws -> [String: Bool] {
         let fm = FileManager.default, root = output.appendingPathComponent("native-" + String(hash.prefix(12))), workspace = root.appendingPathComponent("source")
@@ -42,6 +52,9 @@ import AppKit
             _ = try await call(docID, "save_knowledge_card", ["title": "原文片段 · " + kind.title, "kind": kind.rawValue, "body": body, "sources": [["path": name, "line": 1, "end_line": 8]]])
         }
         do { _ = try cards.sources([["path": "native/AgentDocument.swift", "line": 200]], task: isolated.task(docID)!); checks["unreadLinesCannotBeCited"] = false } catch { checks["unreadLinesCannotBeCited"] = true }
+        do { _ = try cards.sources([["path": "native/AgentKnowledgeLibrary.swift", "line": 1, "end_line": 57]], task: isolated.task(docID)!); checks["unreadPageGapCannotBeCited"] = false } catch { checks["unreadPageGapCannotBeCited"] = true }
+        _ = try await call(docID, "read_file", ["path": "native/AgentKnowledgeLibrary.swift", "offset": 13, "limit": 18])
+        checks["actuallyReadAdjacentPagesSupportCrossPageCitation"] = try cards.sources([["path": "native/AgentKnowledgeLibrary.swift", "line": 1, "end_line": 57]], task: isolated.task(docID)!).count == 1
         let existingDraft = try cards.drafts(isolated.task(docID)!)[0]
         do { _ = try await call(docID, "save_knowledge_card", ["title": existingDraft.title, "kind": existingDraft.kind.rawValue, "body": existingDraft.body, "sources": [["path": existingDraft.sources[0].path, "line": existingDraft.sources[0].line, "end_line": existingDraft.sources[0].endLine]]]); checks["duplicateDraftNeedsOriginalIDAndHash"] = false } catch { checks["duplicateDraftNeedsOriginalIDAndHash"] = try cards.drafts(isolated.task(docID)!).count == 3 }
         checks["draftsRequireActualReadbackBeforePlanFinish"] = try cards.stage(isolated.task(docID)!)?.tool == "read_project_knowledge"
@@ -144,6 +157,39 @@ import AppKit
         _ = try await AgentTools(store: isolated, taskID: sourceID).execute(editCall)
         let afterEdit = try cards.book(isolated.task(sourceID)!).0!
         checks["narrowKnowledgeToolsRecordSourcesAndKeepEditApproval"] = approval != nil && isolated.task(sourceID)!.knowledgeReads?[reference.path] != nil && afterEdit.cards.first(where: { $0.id == target.id })!.body.hasSuffix("原生读取与来源核对。") && afterEdit.cards.filter { $0.id != target.id }.map(\.hash) == current.cards.filter { $0.id != target.id }.map(\.hash)
+        let existingBook = try cards.book(isolated.task(sourceID)!), repairing = isolated.create(workspace: workspace.path, mode: .goal)
+        isolated.update(repairing) { $0.kind = AgentKnowledgeCards.kind; $0.knowledgeJob = AgentKnowledgeCardJob(workspace: workspace.path, branch: scope.branch, language: "zh", baseHash: existingBook.1, sourceTaskID: sourceID) }
+        try await cards.seedSources(taskID: repairing, original: existingBook.0)
+        _ = try await call(repairing, "read_project_knowledge")
+        let originalCard = existingBook.0!.cards[0]; var orphan = originalCard; orphan.id = UUID().uuidString
+        try cards.write([orphan], cards.draftURL(isolated.task(repairing)!))
+        let phase = try cards.stage(isolated.task(repairing)!), next = try definitionsRuntime.toolDefinitions(isolated.task(repairing)!, preferences: PetPreferences())
+        let nextFunction = next[0]["function"] as! [String: Any], nextProperties = (nextFunction["parameters"] as! [String: Any])["properties"] as! [String: Any]
+        checks["unfinishedOriginalIdentityRemainsRequired"] = phase?.kind == originalCard.kind && (nextProperties["id"] as? [String: Any])?["enum"] as? [String] == [originalCard.id]
+        let ref = originalCard.sources[0]
+        _ = try await call(repairing, "save_knowledge_card", ["title": "重新核对的原文", "kind": originalCard.kind.rawValue, "body": originalCard.body, "sources": [["path": ref.path, "line": ref.line, "end_line": ref.endLine]]])
+        let repaired = try cards.drafts(isolated.task(repairing)!)
+        let originalBookUnchanged = try cards.book(isolated.task(sourceID)!).1 == existingBook.1
+        checks["reviewedUniqueCategoryKeepsStableIDAndReplacesUnboundDraft"] = repaired.count == 1 && repaired[0].id == originalCard.id && repaired[0].body == originalCard.body && originalBookUnchanged
+        try cards.write([orphan], cards.draftURL(isolated.task(repairing)!))
+        _ = try await call(repairing, "save_knowledge_card", ["id": originalCard.id, "expected_hash": originalCard.hash, "title": orphan.title, "kind": originalCard.kind.rawValue, "body": originalCard.body, "sources": [["path": ref.path, "line": ref.line, "end_line": ref.endLine]]])
+        let explicitlyRepaired = try cards.drafts(isolated.task(repairing)!)
+        checks["explicitStableIDAlsoReplacesUnboundSameTitleDraft"] = explicitlyRepaired.count == 1 && explicitlyRepaired[0].id == originalCard.id
+        do { _ = try await call(repairing, "save_knowledge_card", ["id": originalCard.id, "expected_hash": originalCard.hash, "title": "过期覆盖", "kind": originalCard.kind.rawValue, "body": originalCard.body, "sources": [["path": ref.path, "line": ref.line]]]); checks["implicitIdentityDoesNotAcceptStaleExplicitHash"] = false } catch { checks["implicitIdentityDoesNotAcceptStaleExplicitHash"] = true }
+        let one = initialDefinitions.filter { ($0["function"] as? [String: Any])?["name"] as? String == "read_project_knowledge" }
+        let named = try AgentModel.requestBody(preferences: PetPreferences(), system: "", messages: [], tools: one, requiredTool: "read_project_knowledge"), ordinary = try AgentModel.requestBody(preferences: PetPreferences(), system: "", messages: [], tools: one)
+        checks["stagedRequestNamesActualToolAndKeepsOriginalBudget"] = ((named["tool_choice"] as? [String: Any])?["function"] as? [String: String])?["name"] == "read_project_knowledge" && named["max_tokens"] as? Int == 512 && ordinary["tool_choice"] as? String == "auto"
+        var thinkingPreferences = PetPreferences(); thinkingPreferences.reasoningEffort = "high"
+        let thinking = try AgentModel.requestBody(preferences: thinkingPreferences, system: "", messages: [], tools: one, requiredTool: "read_project_knowledge")
+        checks["stagedChoicePreservesDeepSeekThinkingMode"] = (thinking["thinking"] as? [String: String])?["type"] == "enabled" && thinking["tool_choice"] as? String == "auto"
+        do { _ = try AgentModel.requestBody(preferences: PetPreferences(), system: "", messages: [], tools: one, requiredTool: "not_loaded"); checks["stagedChoiceRejectsUnloadedTool"] = false } catch { checks["stagedChoiceRejectsUnloadedTool"] = true }
+        checks["draftsAndCompletedPlanDoNotImplyModelFinish"] = !isolated.task(docID)!.hasConfirmedKnowledgeCompletion
+        if let index = CommandLine.arguments.firstIndex(of: "--cards-finish-source"), CommandLine.arguments.indices.contains(index + 1) {
+            let url = URL(fileURLWithPath: CommandLine.arguments[index + 1]), data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 4_000_000)
+            let actual = try JSONDecoder().decode(AgentTaskRecord.self, from: data); var unconfirmed = actual; unconfirmed.goalAccepted = nil
+            checks["recordedCappedTaskHasActualConfirmedModelFinish"] = (actual.modelReceipts?.count ?? 0) == 30 && actual.hasConfirmedKnowledgeCompletion && !unconfirmed.hasConfirmedKnowledgeCompletion
+            try Data(AgentFiles.hash(data).utf8).write(to: output.appendingPathComponent("recorded-finish-source.sha256"), options: .atomic)
+        }
         return checks
     }
     static func commandLine() async -> Int32 {
@@ -173,7 +219,8 @@ import AppKit
         defer { agentStore?.knowledgeCards.stop(); agentRuntime?.stopAll() }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("知识卡片运行时未初始化") }
-            runtime.modelRequestCheck = { guard tasks.tasks.reduce(0, { $0 + (tasks.task($1.id)?.modelReceipts?.count ?? 0) }) < 90 else { throw PetError("整轮验收已达到90份回执上限，原记录保留") } }
+            let maximumRequests = try AgentKnowledgeCardBudget.limit(output)
+            runtime.modelRequestCheck = { guard tasks.tasks.reduce(0, { $0 + (tasks.task($1.id)?.modelReceipts?.count ?? 0) }) < maximumRequests else { throw PetError("整轮验收已达到\(maximumRequests)份回执上限，原记录保留") } }
             let binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             try write(["appPID": getpid(), "binaryHash": hash], "cards-process.json")
             guard let index = CommandLine.arguments.firstIndex(of: "--cards-source"), CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少实际项目快照") }
@@ -190,15 +237,15 @@ import AppKit
             else { id = tasks.create(title: "项目知识卡片验收", workspace: source.path, mode: .agent); try write(["id": id], ownerURL.lastPathComponent) }
             control.showAgentTask(id); control.show(tab: "chat")
             tasks.knowledgeCards.resume()
-            try write(["appPID": getpid(), "binaryHash": hash, "taskID": id, "workspace": source.path, "model": preferences.model, "context": preferences.contextLimit, "output": preferences.outputLimit], "cards-ui-ready.json")
+            try write(["appPID": getpid(), "binaryHash": hash, "taskID": id, "workspace": source.path, "model": preferences.model, "context": preferences.contextLimit, "output": preferences.outputLimit, "requestLimit": maximumRequests], "cards-ui-ready.json")
             while !fm.fileExists(atPath: output.appendingPathComponent("finish-cards-ui").path) {
-                if tasks.tasks.reduce(0, { $0 + ($1.modelReceipts?.count ?? 0) }) > 90 { throw PetError("知识卡片验收达到90份实际请求上限，原任务保留") }
+                if tasks.tasks.reduce(0, { $0 + (tasks.task($1.id)?.modelReceipts?.count ?? 0) }) > maximumRequests { throw PetError("知识卡片验收达到\(maximumRequests)份实际请求上限，原任务保留") }
                 await wait(0.2)
             }
             guard !tasks.tasks.contains(where: { runtime.isExecuting($0.id) || $0.status == .waiting }) else { throw PetError("仍有任务运行或等待批准") }
             let ui = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("cards-ui-acceptance.json"))) as! [String: Any]
             guard ui["appPID"] as? Int == Int(getpid()), ui["binaryHash"] as? String == hash, let checks = ui["checks"] as? [String: Bool], !checks.isEmpty, checks.values.allSatisfy({ $0 }) else { throw PetError("实际窗口验收记录不匹配") }
-            report = ["success": true, "binaryHash": hash, "native": native, "ui": ui, "tasks": tasks.tasks.map { ["id": $0.id, "kind": $0.kind ?? "task", "status": $0.status.rawValue, "requests": $0.modelReceipts?.count ?? 0, "inputTokens": $0.inputTokens, "outputTokens": $0.outputTokens] as [String: Any] }]
+            report = ["success": true, "binaryHash": hash, "requestLimit": maximumRequests, "native": native, "ui": ui, "tasks": tasks.tasks.map { ["id": $0.id, "kind": $0.kind ?? "task", "status": $0.status.rawValue, "requests": $0.modelReceipts?.count ?? 0, "inputTokens": $0.inputTokens, "outputTokens": $0.outputTokens] as [String: Any] }]
         } catch { report["success"] = false; report["error"] = error.localizedDescription }
         try? write(report, "cards-report.json")
     }

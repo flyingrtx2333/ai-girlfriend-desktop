@@ -1,22 +1,28 @@
 import Foundation
 
 enum AgentModel {
-    @MainActor static func requestBody(preferences: PetPreferences, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:]) throws -> [String: Any] {
+    @MainActor static func requestBody(preferences: PetPreferences, system: String, messages: [AgentMessage], tools: [[String: Any]], requiredTool: String? = nil, visuals: [String: [AgentVisualInput]] = [:]) throws -> [String: Any] {
         let snapshot = try AgentContext.snapshot(preferences: preferences, system: system, skills: "", messages: messages, tools: tools, loadedSkills: 0)
         guard snapshot.estimatedTokens + preferences.outputLimit <= preferences.contextLimit else { throw PetError("Agent请求超过当前上下文预算，请整理历史或提高上限") }
         var body = try preferences.modelOptions(stream: true)
         body["messages"] = [["role": "system", "content": system]] + AgentAttachmentVisuals.wire(messages: messages, inputs: visuals)
         if !tools.isEmpty { body["tools"] = tools; body["tool_choice"] = "auto"; body["parallel_tool_calls"] = false }
+        if let requiredTool {
+            guard tools.contains(where: { ($0["function"] as? [String: Any])?["name"] as? String == requiredTool }) else { throw PetError("指定步骤的工具未载入") }
+            // DeepSeek thinking mode rejects named tool choices; preserve the selected mode.
+            let deepSeek = try CompanionService.endpoint(preferences.endpoint).host == "api.deepseek.com"
+            if !deepSeek || (body["thinking"] as? [String: String])?["type"] == "disabled" { body["tool_choice"] = ["type": "function", "function": ["name": requiredTool]] }
+        }
         body["stream_options"] = ["include_usage": true]
         return body
     }
-    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], visuals: [String: [AgentVisualInput]] = [:], allowPartialContent: Bool = false,
+    @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], requiredTool: String? = nil, visuals: [String: [AgentVisualInput]] = [:], allowPartialContent: Bool = false,
                                 purpose: String = "conversation", messageID: String? = nil, onReceipt: ((AgentModelReceipt) -> Void)? = nil,
                                 onText: @escaping (String) -> Void) async throws -> AgentTurn {
         let url = try CompanionService.endpoint(preferences.endpoint, chat: true)
         guard !key.isEmpty || CompanionService.isLocal(url.host ?? "") else { throw PetError("请先填写对话 Token") }
         let p = preferences
-        let body = try requestBody(preferences: p, system: system, messages: messages, tools: tools, visuals: visuals)
+        let body = try requestBody(preferences: p, system: system, messages: messages, tools: tools, requiredTool: requiredTool, visuals: visuals)
         let request = try CompanionService.request(url: url, key: key, body: body)
         let started = Date()
         let (bytes, response) = try await CompanionService.session.bytes(for: request)

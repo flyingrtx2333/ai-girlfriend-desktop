@@ -23,12 +23,13 @@ import Darwin
             let owner = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("cards-source-task.json"))) as! [String: String]
             guard let sourceID = owner["id"], let source = tasks.task(sourceID), try cards.scope(source).root == AgentFiles(workspace: sourcePath).root.path else { throw PetError("原项目任务或范围不匹配") }
             func count() -> Int { tasks.tasks.reduce(0) { $0 + (tasks.task($1.id)?.modelReceipts?.count ?? 0) } }
-            let before = count(); guard before < 90 else { throw PetError("整轮验收已达到90份回执上限，原记录保留") }
+            let maximumRequests = try AgentKnowledgeCardBudget.limit(output)
+            let before = count(); guard before < maximumRequests else { throw PetError("整轮验收已达到\(maximumRequests)份回执上限，原记录保留") }
             let keychain = PetKeychain(service: "com.xjs.bluefatfish.credentials")
             guard !(try keychain.read("chat")).isEmpty else { throw PetError("原对话凭据不可用，请在应用中处理") }
             let runtime = AgentRuntime(store: tasks, keychain: keychain) { preferences }
             cards.runtime = runtime
-            runtime.modelRequestCheck = { guard count() < 90 else { throw PetError("整轮验收已达到90份回执上限，原记录保留") } }
+            runtime.modelRequestCheck = { guard count() < maximumRequests else { throw PetError("整轮验收已达到\(maximumRequests)份回执上限，原记录保留") } }
             var finalized: Set<String> = [], finalizing: Set<String> = []
             runtime.onComplete = { id, _ in
                 guard tasks.task(id)?.kind == AgentKnowledgeCards.kind else { return }; finalizing.insert(id)
@@ -61,11 +62,11 @@ import Darwin
                 id = try await cards.generate(sourceID: sourceID, language: language, focus: focus)
                 try write(["id": id], marker.lastPathComponent)
             }
-            try write(["appPID": getpid(), "binaryHash": binaryHash, "taskID": id, "language": language, "model": preferences.model, "context": preferences.contextLimit, "output": preferences.outputLimit, "requestsBefore": before, "uiValidated": false], "cards-live-service-" + language + "-ready.json")
+            try write(["appPID": getpid(), "binaryHash": binaryHash, "taskID": id, "language": language, "model": preferences.model, "context": preferences.contextLimit, "output": preferences.outputLimit, "requestsBefore": before, "requestLimit": maximumRequests, "uiValidated": false], "cards-live-service-" + language + "-ready.json")
             var observed = Date.distantPast
             while true {
                 guard let task = tasks.task(id) else { throw PetError("原任务不可读") }
-                if count() > 90 { runtime.cancel(id); throw PetError("整轮验收达到90份实际回执上限，原记录保留") }
+                if count() > maximumRequests { runtime.cancel(id); throw PetError("整轮验收达到\(maximumRequests)份实际回执上限，原记录保留") }
                 if Date().timeIntervalSince(observed) >= 1 {
                     try write(["appPID": getpid(), "taskID": id, "status": task.status.rawValue, "requests": task.modelReceipts?.count ?? 0, "totalRequests": count(), "finalizing": finalizing.contains(id)], "cards-live-service-" + language + "-state.json"); observed = Date()
                 }
@@ -75,7 +76,7 @@ import Darwin
             guard let task = tasks.task(id) else { throw PetError("原任务不可读") }
             let book = try cards.book(source, language: language).0
             let success = task.status == .completed && finalized.contains(id) && book?.taskID == id && Set(book!.cards.map(\.kind)).isSuperset(of: Set(AgentKnowledgeCardKind.allCases)) && book!.cards.allSatisfy { cards.fresh($0, workspace: book!.workspace) }
-            report.merge(["success": success, "appPID": getpid(), "binaryHash": binaryHash, "taskID": id, "status": task.status.rawValue, "modelsCalled": count() > before, "newRequests": count() - before, "totalRequests": count(), "context": preferences.contextLimit, "output": preferences.outputLimit, "model": preferences.model, "taskRequests": task.modelReceipts?.count ?? 0, "inputTokens": task.inputTokens, "outputTokens": task.outputTokens, "failure": success ? "" : task.events.last(where: { $0.status == "failed" })?.detail ?? "", "historicalFailures": task.events.filter { $0.status == "failed" }.count, "needsApproval": task.status == .waiting]) { _, new in new }
+            report.merge(["success": success, "appPID": getpid(), "binaryHash": binaryHash, "taskID": id, "status": task.status.rawValue, "modelsCalled": count() > before, "newRequests": count() - before, "totalRequests": count(), "requestLimit": maximumRequests, "context": preferences.contextLimit, "output": preferences.outputLimit, "model": preferences.model, "taskRequests": task.modelReceipts?.count ?? 0, "inputTokens": task.inputTokens, "outputTokens": task.outputTokens, "failure": success ? "" : task.events.last(where: { $0.status == "failed" })?.detail ?? "", "historicalFailures": task.events.filter { $0.status == "failed" }.count, "needsApproval": task.status == .waiting]) { _, new in new }
             if let book { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; try encoder.encode(book).write(to: output.appendingPathComponent("cards-live-service-" + language + "-book.json"), options: .atomic) }
             cards.stop()
         } catch { report["error"] = error.localizedDescription }

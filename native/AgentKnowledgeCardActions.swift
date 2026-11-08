@@ -45,6 +45,7 @@ import AppKit
             alert.informativeText = sender === automatic ? "源码变化后使用此任务的模型生成卡片，会产生模型用量。存在手动编辑时会提示审阅。" : "卡片保存后写入当前项目的 " + ((try? cards.sharingPath(language: selectedLanguage)) ?? "知识目录") + "，可随项目提交。外部改动需先导入。"
             alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { sender.state = .off; return }
+            sender.state = .on
         }
         saveOptions()
     }

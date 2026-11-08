@@ -190,3 +190,5 @@ git commit -m "feat: add screen companion reactions"
 MCP 资源与提示词验证：`npm run native:check-mcp-content -- --live-agent --hold-ui`。需要先从官方 npm 注册表将 `@modelcontextprotocol/server-everything@2.2.1` 安装到 `~/Library/Caches/bluefatfish-mcp-everything-real`。检查实际服务器的静态文档、URI 模板、带参数提示词、目录与订阅通知和图片内容；Node 独立核对安装包的文档字节与报告。真实模型使用保存的配置、原有上下文与输出预算，读取用户选用的提示词附件，经审批读取 MCP 文档、写入并回读五字段报告，再描述实际工具图片。默认不传 `--live-agent` 只做相关原生与真实 MCP 进程检查，不返回替代模型回复。配置与公开输入哈希需保持一致。
 
 文档流程已有相同生产代码的实际完成证据时，可加 `--image-only` 仅复验图片模型流程，仍执行相关实际 MCP 原生检查。此模式不产生文档通过声明，需保留并单独核对先前真实文档结果及源码差异。
+
+知识卡片本轮追加额度仅在用户明确同意后启用：原目录保存 `cards-budget-authorization.json`，运行时加 `--cards-extra-requests 30`，总上限120次；不清空此前任务、失败或计量。可用 `--finish-source <已有实际任务JSON>` 检查已由模型提交完成证据的任务恢复；该记录须包含真实成功工具事件与调用ID，原生发布仍重新校验源码、分支和版本。

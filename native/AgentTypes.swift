@@ -144,6 +144,11 @@ struct AgentTaskRecord: Codable, Identifiable {
     var knowledgeJob: AgentKnowledgeCardJob?
     var knowledgeReads: [String: AgentKnowledgeCardRead]?
     var isProjectDocumentation: Bool { kind == "wiki" || kind == "knowledge-cards" }
+    var hasConfirmedKnowledgeCompletion: Bool {
+        guard kind == "knowledge-cards", mode == .goal, goalAccepted == true, !plan.isEmpty, plan.allSatisfy({ $0.status == "completed" }), pendingCalls.isEmpty, queuedCount == 0, completionEvidence?.isEmpty == false else { return false }
+        let ids = Set(messages.filter { $0.role == "assistant" }.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "finish_task" }.map(\.id))
+        return events.contains { $0.kind == "tool" && $0.title == "finish_task" && $0.status == "completed" && $0.toolCallID.map(ids.contains) == true }
+    }
     var recordsKnowledgeSources: Bool { kind == "knowledge-cards" || toolGroups?.contains("knowledge") == true || toolGroups?.contains("project_knowledge") == true || agent?.tools.contains("edit_project_knowledge") == true }
     var attachments: [AgentAttachment]?
     var canvases: [AgentCanvasRecord]?
