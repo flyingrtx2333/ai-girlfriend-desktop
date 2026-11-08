@@ -71,7 +71,8 @@
     "native:check-plugins": "node scripts/check-native-plugins.mjs",
     "native:check-plugin-mcp": "node scripts/check-native-plugin-mcp.mjs",
     "native:check-knowledge-cards": "node scripts/check-native-knowledge-cards.mjs",
-    "native:check-markdown": "node scripts/check-native-markdown.mjs"
+    "native:check-markdown": "node scripts/check-native-markdown.mjs",
+    "build:diagrams": "vite build --config vite.diagrams.config.js"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",
@@ -87,6 +88,7 @@
     "@betteroffice/xlsx-react": "0.5.1",
     "@pixiv/three-vrm": "^3.5.5",
     "@pixiv/three-vrm-animation": "^3.5.5",
+    "mermaid": "11.15.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "recharts": "3.10.1",

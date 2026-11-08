@@ -4,7 +4,16 @@ import UniformTypeIdentifiers
 @MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
-    private let table = NSTableView(), text = NSTextView(), state = NSTextField(labelWithString: "")
+    private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
+    private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
+    private lazy var sourceSelection = AgentMarkdownSelectionAction(text: text, button: sourceAdd) { [weak self] in
+        guard let self, !self.viewer.isHidden, let workspace = self.store.task(self.taskID)?.workspace, let path = self.selection, [1, 6].contains(self.sections.selectedSegment), let file = try? AgentFiles(workspace: workspace).resolve(path) else { return nil }; return (file, workspace)
+    }
+    var onAddSelection: ((AgentMarkdownSelection) throws -> Void)? { didSet {
+        markdown.onAddSelection = onAddSelection; sourceSelection.onAdd = onAddSelection
+        markdown.canAddSelection = { [weak self] in self?.canAddSelection == true }; sourceSelection.canAdd = markdown.canAddSelection
+    } }
+    private var canAddSelection: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && task.kind != "hook" && !task.isProjectDocumentation && task.agent?.ownerID == nil && task.automation == nil }
     private let markdown = AgentMarkdownReader(), viewer = NSScrollView()
     private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
@@ -33,7 +42,7 @@ import UniformTypeIdentifiers
         viewer.documentView = text; viewer.hasVerticalScroller = true
         displayMode.target = self; displayMode.action = #selector(switchDocumentMode); displayMode.selectedSegment = 0; displayMode.setAccessibilityLabel("Markdown 显示方式")
         markdown.onLink = { [weak self] url in self?.openDocumentLink(url) }
-        let pane = NSView(), readingToolbar = NSStackView(views: [displayMode, NSView()])
+        let pane = NSView(), readingToolbar = NSStackView(views: [displayMode, NSView(), sourceAdd]); sourceSelection.update()
         for child in [viewer, markdown] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
         let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.spacing = 6
         for child in [readingToolbar, pane] { child.widthAnchor.constraint(equalTo: documentPane.widthAnchor).isActive = true }
@@ -143,11 +152,12 @@ import UniformTypeIdentifiers
             if ["md", "markdown"].contains(file.pathExtension.lowercased()) { markdownFile = file; displayMode.isHidden = false; displayMode.selectedSegment = 0; switchDocumentMode() }
         } catch { text.string = ""; state.stringValue = error.localizedDescription }
     }
-    private func resetDocumentMode() { markdownFile = nil; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true }
+    private func resetDocumentMode() { markdownFile = nil; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
     @objc private func switchDocumentMode() {
         guard let file = markdownFile, let workspace = store.task(taskID)?.workspace else { return }
         let preview = displayMode.selectedSegment == 0
         markdown.isHidden = !preview; viewer.isHidden = preview
+        sourceSelection.update(); sourceAdd.isHidden = preview || onAddSelection == nil
         if preview { markdown.show(text.string, file: file, workspace: workspace) }
     }
     private func openDocumentLink(_ url: URL) {
@@ -161,6 +171,7 @@ import UniformTypeIdentifiers
                 _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
             } else {
                 let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target)
+                next.onAddSelection = onAddSelection; next.canAddSelection = { [weak self] in self?.canAddSelection == true }
                 sourceWindow?.close(); sourceWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
             }
         } catch { state.stringValue = error.localizedDescription }
@@ -227,12 +238,14 @@ import UniformTypeIdentifiers
         }
     }
     func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存" }
+    func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = viewer.isHidden || onAddSelection == nil }
     private func canLeave() -> Bool {
         guard dirty else { return true }
         let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { load?.cancel(); return true }; return false }
+    func windowWillClose(_ notification: Notification) { markdown.clear(); sourceWindow?.close(); sourceWindow = nil }
     func checkMarkdown() -> [String: Bool] {
         let original = text.string, hash = openedHash
         var checks = ["wikiOpensInPreview": !markdown.isHidden && viewer.isHidden && !displayMode.isHidden && markdown.document?.headings.first?.title == "项目文档"]

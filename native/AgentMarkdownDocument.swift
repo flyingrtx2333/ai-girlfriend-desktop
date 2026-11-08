@@ -3,8 +3,11 @@ import ImageIO
 
 @MainActor struct AgentMarkdownDocument {
     struct Heading { let title: String; let anchor: String; let level: Int; let range: NSRange }
+    struct Diagram { let source: String; let range: NSRange; let attachment: NSTextAttachment }
+    static let selectedSource = NSAttributedString.Key("BlueFatFishMarkdownSelectedSource")
     let body: NSAttributedString
     let headings: [Heading]
+    let diagrams: [Diagram]
 
     static func fragment(_ url: URL) -> String? { URLComponents(url: url, resolvingAgainstBaseURL: false)?.fragment }
 
@@ -48,6 +51,7 @@ import ImageIO
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 4; paragraph.paragraphSpacing = 9
         let lines = source.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").components(separatedBy: "\n")
         var headings: [Heading] = [], anchors: Set<String> = [], index = 0
+        var diagrams: [Diagram] = []
         var images: [String: NSImage] = [:], imageAttempts = 0, decodedPixels = 0
         func inline(_ text: String, font: NSFont = font, style: NSParagraphStyle = paragraph) -> NSAttributedString {
             NativeMarkdown.render(text, font: font, color: .labelColor, paragraph: style, resolveLink: { try? target($0, document: document, files: files) })
@@ -75,7 +79,17 @@ import ImageIO
                 }
                 let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
                 style.headIndent = 10; style.firstLineHeadIndent = 10; style.lineSpacing = 2
-                append(NSAttributedString(string: content.joined(separator: "\n"), attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: NSColor(white: 0.95, alpha: 1), .paragraphStyle: style]))
+                let code = content.joined(separator: "\n")
+                if fence.info.lowercased() == "mermaid", diagrams.count < 16, code.utf8.count <= 32_768 {
+                    let attachment = NSTextAttachment(); attachment.image = AgentMarkdownDiagrams.statusImage("正在绘制 Mermaid 图表…"); attachment.bounds = NSRect(x: 0, y: 0, width: min(340, max(160, width - 36)), height: 44)
+                    let range = NSRange(location: output.length, length: 1)
+                    let value = NSMutableAttributedString(attachment: attachment)
+                    value.addAttributes([Self.selectedSource: "```mermaid\n" + code + "\n```", .toolTip: "Mermaid 图表 · 双击放大"], range: NSRange(location: 0, length: 1))
+                    diagrams.append(Diagram(source: code, range: range, attachment: attachment)); append(value)
+                } else {
+                    if fence.info.lowercased() == "mermaid" { append(inline("图表超过本页 16 张或单张 32KB 的预览上限")) }
+                    append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: NSColor(white: 0.95, alpha: 1), .paragraphStyle: style]))
+                }
             } else if let match = trimmed.range(of: "^#{1,6}\\s+", options: .regularExpression) {
                 heading(String(trimmed[match.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression), level: trimmed.prefix(while: { $0 == "#" }).count)
             } else if index + 1 < lines.count, !trimmed.isEmpty, lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: "^(={3,}|-{3,})$", options: .regularExpression) != nil {
@@ -116,7 +130,7 @@ import ImageIO
                     let attachment = NSTextAttachment(), available = max(160, width - 36), scale = min(1, available / picture.size.width)
                     attachment.image = picture
                     attachment.bounds = NSRect(x: 0, y: 0, width: picture.size.width * scale, height: picture.size.height * scale)
-                    let value = NSMutableAttributedString(attachment: attachment); value.addAttribute(.toolTip, value: image.alt, range: NSRange(location: 0, length: value.length)); append(value)
+                    let value = NSMutableAttributedString(attachment: attachment); value.addAttributes([.toolTip: image.alt, Self.selectedSource: original], range: NSRange(location: 0, length: value.length)); append(value)
                     if !image.alt.isEmpty { append(inline(image.alt, font: .systemFont(ofSize: 11))) }
                 } catch { append(inline((image.alt.isEmpty ? "图片" : image.alt) + " · " + error.localizedDescription)) }
             } else if trimmed.hasPrefix(">") {
@@ -139,7 +153,7 @@ import ImageIO
             }
             index += 1
         }
-        return Self(body: output, headings: headings)
+        return Self(body: output, headings: headings, diagrams: diagrams)
     }
     static func anchor(_ title: String) -> String {
         title.lowercased().filter { $0.isLetter || $0.isNumber || $0.isWhitespace || $0 == "-" || $0 == "_" }.replacingOccurrences(of: "\\s", with: "-", options: .regularExpression)

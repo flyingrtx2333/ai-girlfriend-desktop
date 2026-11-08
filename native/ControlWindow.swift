@@ -1368,8 +1368,29 @@ final class FormDocumentView: NSView {
             if existing.window?.isVisible == true { return }
         }
         recordWindow = AgentRecordWindow(store: store, taskID: id, section: section)
+        recordWindow?.onAddSelection = { [weak self] selection in
+            guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
+        }
         recordWindow?.enableWikiGeneration { [weak self] in self?.generateAgentWiki(sourceID: id) }
         recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
+        guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,
+              task.agent?.ownerID == nil, task.automation == nil else { throw PetError("此任务不能接收选文") }
+        let files = try AgentFiles(workspace: task.workspace), selectedFiles = try AgentFiles(workspace: selection.workspace)
+        guard files.root == selectedFiles.root, selection.text.utf8.count <= 16_384, !selection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError("文档所属工作区已改变，或选文超过 16KB") }
+        let safe = try files.resolve(selection.file.path)
+        guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能加入受保护文件的内容") }
+        saveAgentDraft()
+        if let displayedTask { try store.save(displayedTask) }
+        guard let previous = store.task(taskID) else { throw PetError("任务已关闭") }
+        let draft = previous.draft ?? "", combined = draft + (draft.isEmpty ? "" : "\n\n") + selection.draftText
+        guard combined.utf8.count <= 100_000 else { throw PetError("草稿超过 100KB，请先缩减草稿") }
+        store.update(taskID, persist: false) { $0.draft = combined }
+        do { try store.save(taskID) }
+        catch { store.update(taskID, persist: false) { $0.draft = previous.draft }; throw error }
+        if displayedTask == taskID { composer.string = combined }
+        selectAgentTask(taskID); show(tab: "chat"); window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(composer)
     }
     func generateAgentWiki(sourceID: String) {
         guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
@@ -1638,6 +1659,14 @@ final class FormDocumentView: NSView {
 }
 
 extension ControlWindow {
+    func checkAddDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
+        guard companion?.checkDirectory != nil else { throw PetError("仅用于独立验收配置") }
+        try addDocumentSelection(selection, taskID: taskID)
+    }
+    func prepareMarkdownCheck(taskID: String) -> AgentRecordWindow? {
+        guard companion?.checkDirectory != nil else { return nil }
+        selectAgentTask(taskID); show(tab: "chat"); presentAgentRecords(section: 6); return recordWindow
+    }
     func prepareExtensionCheckWindow(taskID: String, manager: Bool) {
         selectAgentTask(taskID); show(tab: "chat"); if manager { showAgentExtensions() }
     }
