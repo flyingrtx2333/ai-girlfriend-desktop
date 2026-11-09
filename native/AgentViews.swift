@@ -207,8 +207,6 @@ private final class AgentTaskTable: NSTableView {
         if filter != 1 { if taskView.grouping == .workspace, taskView.workspace != nil { heading.stringValue += " · 已筛选" }; if taskView.activity != .all { heading.stringValue += " · " + taskView.activity.title } }
         heading.toolTip = heading.stringValue; heading.lineBreakMode = .byTruncatingTail; rebuildViewMenu()
         empty.isHidden = rows.contains { if case .task = $0 { return true }; return false }; empty.stringValue = narrowed ? "没有匹配的任务" : "暂无任务"
-        let ungrouped = unpinned.filter { $0.workspace == nil }
-        if !ungrouped.isEmpty { rows.append(.group(filter == 2 ? "归档" : "最近任务", nil)); for task in ungrouped { append(task) } }
         attention.state = filter == 1 ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, filter == 1 ? AgentWorkbenchTheme.selection : .clear)
         for item in viewMenu.itemArray where item.action == #selector(changeFilter(_:)) { item.state = item.tag == filter ? .on : .off }

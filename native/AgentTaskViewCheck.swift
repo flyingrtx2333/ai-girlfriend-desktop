@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor extension AppDelegate {
     func runAgentTaskViewCheck(_ output: URL) async {
-        var checks: [String: Bool] = [:], report: [String: Any] = ["modelsCalled": false, "uiValidated": false, "boundary": "Real local tasks, project directories, queued user input cancelled before execution, organization files and native windows. Calendar boundary checks do not represent fabricated conversation history."]
+        var checks: [String: Bool] = [:], report: [String: Any] = ["modelsCalled": false, "uiValidated": false, "boundary": "Real local tasks, project directories, user input recorded without starting execution, organization files and native windows. Calendar boundary checks do not represent fabricated conversation history."]
         func write(_ object: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name), options: .atomic) }
         do {
             guard !CommandLine.arguments.contains("--live-agent") else { throw PetError("任务视图检查不调用模型") }
@@ -68,6 +68,9 @@ import AppKit
             try organization.resetTaskView(.general); try organization.sort(.name, mode: .coding)
             guard checks.values.allSatisfy({ $0 }) else { throw PetError("任务视图原生检查未通过") }
             control.showAgentTask(a); control.show(tab: "chat")
+            let shown = control.organizationSnapshot()["tasks"] as? [String] ?? []
+            checks["actualSidebarListsEachTaskOnce"] = !shown.isEmpty && shown.count == Set(shown).count
+            guard checks["actualSidebarListsEachTaskOnce"] == true else { throw PetError("实际任务窗口重复显示任务") }
             let binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             try write(["appPID": getpid(), "binaryHash": hash, "checks": checks, "tasks": ["alpha": a, "beta": b, "none": none, "general": general], "groups": ["engineering": groupA, "reference": groupB], "projects": [rootA.path, rootB.path], "modelsCalled": false], "task-views-ui-ready.json")
             let deadline = Date().addingTimeInterval(3600); var capture = ""
