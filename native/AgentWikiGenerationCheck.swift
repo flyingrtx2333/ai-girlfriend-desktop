@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor extension AppDelegate {
     func runAgentWikiGenerationCheck(_ output: URL) async {
-        var checks: [String: Bool] = [:], report: [String: Any] = ["modelsCalled": false, "uiValidated": false, "boundary": "Actual retained failed Wiki history and real native start/cancel/restart operations; execution cancelled before credentials/model requests. No generated-content quality claim."]
+        var checks: [String: Bool] = [:], report: [String: Any] = ["modelsCalled": false, "uiValidated": false, "boundary": "Actual retained failed Wiki history and real native start/cancel/restart operations. Native preflight runs cancelled before startup; window actions blocked before model transmission. No generated-content quality claim."]
         func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name), options: .atomic) }
         do {
             guard !CommandLine.arguments.contains("--live-agent") else { throw PetError("生成管理检查不调用模型") }
@@ -65,7 +65,7 @@ import AppKit
             if let data = try? Data(contentsOf: output.appendingPathComponent("wiki-generation-ui-acceptance.json")), let ui = try JSONSerialization.jsonObject(with: data) as? [String: Any], let observed = ui["checks"] as? [String: Bool] { report["uiValidated"] = ui["appPID"] as? Int == Int(getpid()) && ui["binaryHash"] as? String == binaryHash && !observed.isEmpty && observed.values.allSatisfy { $0 }; report["ui"] = ui }
             let after = tasks.task(copied.id)!
             checks["finalOriginalHistoryReceiptsAndSourceRetained"] = try encoder.encode(Array(after.messages.prefix(historical.messages.count))) == originalMessages && encoder.encode(after.modelReceipts) == originalReceipts && Data(contentsOf: sourceURL) == sourceBytes
-            checks["noModelReceiptAddedToAnyTask"] = tasks.tasks.compactMap { tasks.task($0.id) }.filter { $0.id != copied.id }.allSatisfy { ($0.modelReceipts ?? []).isEmpty } && rejectedRequests == 0
+            checks["noModelReceiptAddedToAnyTask"] = tasks.tasks.compactMap { tasks.task($0.id) }.filter { $0.id != copied.id }.allSatisfy { ($0.modelReceipts ?? []).isEmpty }
             report["appPID"] = getpid(); report["binaryHash"] = binaryHash; report["rejectedRequestAttempts"] = rejectedRequests
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && report["uiValidated"] as? Bool == true
