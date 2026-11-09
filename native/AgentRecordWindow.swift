@@ -32,6 +32,8 @@ import UniformTypeIdentifiers
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: NSAlert?
     private var wikiCitation: (enabled: Bool, signature: String, workspace: String)?
+    private var wikiMaintenance: (options: AgentWikiMaintenanceOptions, signature: String, workspace: String)?
+    private var wikiMaintenanceNotice = ""
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0, saving = false
     private var fileBOM: Bool { fileFormat.bom }
@@ -147,7 +149,12 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     func refreshLiveRecords(_ id: String) {
-        if window?.isVisible == true, sections.selectedSegment == 6 { updateWikiSharingState(); return }
+        if window?.isVisible == true, sections.selectedSegment == 6 {
+            updateWikiSharingState()
+            let notice = store.wikiMaintenance.notice(workspace: store.task(taskID)?.workspace ?? "", language: wikiTree.selectedLanguage)
+            if notice != wikiMaintenanceNotice { wikiMaintenanceNotice = notice; if !notice.isEmpty, !dirty, wikiSharingTask == nil { state.stringValue = notice } }
+            return
+        }
         guard id == taskID, window?.isVisible == true, [3, 4].contains(sections.selectedSegment), !dirty, let task = store.task(taskID) else { return }
         let next = sections.selectedSegment == 3
             ? task.changes.map { "\($0.id)|\($0.afterHash ?? "")|\($0.afterKind ?? "")|\($0.restoredAt?.description ?? "")" }.joined() + task.status.rawValue + (task.pendingFileCapture?.id ?? "")
@@ -200,6 +207,10 @@ import UniformTypeIdentifiers
             if let workspace = task?.workspace { wikiCitation = try AgentWiki.citation(store: store, workspace: workspace); wikiTree.setCitationState(wikiCitation?.enabled) }
             else { wikiCitation = nil; wikiTree.setCitationState(nil) }
         } catch { wikiCitation = nil; wikiTree.setCitationState(nil, problem: error.localizedDescription) }
+        do {
+            if let workspace = task?.workspace, ["zh", "en"].contains(wikiTree.selectedLanguage) { wikiMaintenance = try AgentWiki.maintenance(store: store, workspace: workspace, language: wikiTree.selectedLanguage); wikiTree.setMaintenanceState(wikiMaintenance?.options) }
+            else { wikiMaintenance = nil; wikiTree.setMaintenanceState(nil) }
+        } catch { wikiMaintenance = nil; wikiTree.setMaintenanceState(nil, problem: error.localizedDescription) }
         wikiGeneration = nil
         if let runtime = wikiRuntime, wikiTree.selectedLanguage != "legacy" {
             do { wikiGeneration = try AgentWiki.generationState(store: store, runtime: runtime, sourceID: taskID, language: wikiTree.selectedLanguage); generate.toolTip = nil }
@@ -246,6 +257,7 @@ import UniformTypeIdentifiers
             } catch { state.stringValue = error.localizedDescription }
             updateWikiSharingState(); return
         }
+        if ["auto-update", "auto-export"].contains(action) { configureWikiMaintenance(action); return }
         if action == "open" {
             do { let files = try AgentFiles(workspace: workspace), folder = try files.resolve(AgentWiki.sharingPath(language)); guard FileManager.default.fileExists(atPath: folder.path) else { throw PetError("共享目录尚未创建，请先导出") }; NSWorkspace.shared.open(folder) }
             catch { state.stringValue = error.localizedDescription }; return
@@ -275,6 +287,29 @@ import UniformTypeIdentifiers
                 try Task.checkCancellation(); try await AgentWiki.importWiki(preview, store: store, taskID: taskID, restoring: action == "restore")
                 if activeSection == 6, wikiTree.selectedLanguage == language { wikiTree.show([], selected: nil); refresh() }
                 state.stringValue = "已\(action == "restore" ? "恢复" : "导入") \(preview.metadata.documents.count) 页 Wiki"
+            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+        }
+        updateWikiSharingState()
+    }
+    private func configureWikiMaintenance(_ action: String) {
+        guard let snapshot = wikiMaintenance else { return }
+        let language = wikiTree.selectedLanguage, enabling = action == "auto-update" ? !snapshot.options.autoUpdate : !snapshot.options.autoExport
+        guard !enabling || !dirty else { state.stringValue = "请先保存当前文档，草稿已保留"; return }
+        wikiSharingTask = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+            do {
+                guard let task = store.task(taskID), try AgentFiles(workspace: task.workspace).root.path == snapshot.workspace else { throw PetError("项目已变化，请刷新后重试") }
+                if enabling {
+                    if action == "auto-update" { try await connectWikiIndex() }
+                    let alert = NSAlert(); alert.messageText = action == "auto-update" ? "开启自动更新？" : "开启自动导出？"
+                    alert.informativeText = (language == "zh" ? "简体中文" : "English") + "\n" + (action == "auto-update" ? "应用运行期间，Git 提交变化后自动使用此任务的模型增量更新 Wiki，可能产生模型费用。人工修改的文档先保留，需手动审阅更新。" : "生成、更新或导入发布后，自动导出当前语言到项目共享目录。检测到外部文件修改时停止覆盖。")
+                    alert.addButton(withTitle: "开启"); alert.addButton(withTitle: "取消")
+                    guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
+                }
+                try Task.checkCancellation(); var options = snapshot.options
+                if action == "auto-update" { options.autoUpdate = enabling } else { options.autoExport = enabling }
+                try AgentWiki.setMaintenance(store: store, sourceID: taskID, language: language, options: options, expected: snapshot.signature)
+                state.stringValue = (action == "auto-update" ? "自动更新已" : "自动导出已") + (enabling ? "开启" : "关闭") + (dirty ? " · 草稿未保存" : "")
             } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
         }
         updateWikiSharingState()
@@ -586,7 +621,8 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         if CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["wikiSharingBusy"] = wikiSharingTask != nil; result["wikiSharingConfirmation"] = wikiSharingAlert?.messageText ?? ""; result["wikiSharingSheetVisible"] = wikiSharingAlert.map { window?.attachedSheet === $0.window } ?? false; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
-        if CommandLine.arguments.contains("--wiki-generation-check") { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "problem": generate.toolTip ?? ""] }
+        if CommandLine.arguments.contains("--wiki-generation-check") || CommandLine.arguments.contains("--wiki-updates-check") { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "problem": generate.toolTip ?? ""] }
+        if CommandLine.arguments.contains("--wiki-updates-check") { result["maintenance"] = ["available": wikiMaintenance != nil, "autoUpdate": wikiMaintenance?.options.autoUpdate ?? false, "autoExport": wikiMaintenance?.options.autoExport ?? false, "notice": store.wikiMaintenance.notice(workspace: store.task(taskID)?.workspace ?? "", language: wikiTree.selectedLanguage)] }
         return result
     }
     func checkMarkdown() -> [String: Bool] {

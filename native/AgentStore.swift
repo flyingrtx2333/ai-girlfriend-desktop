@@ -19,6 +19,7 @@ import Foundation
     lazy var dataImport = AgentDataImport(store: self)
     lazy var knowledge = AgentKnowledgeLibrary(profile: directory.deletingLastPathComponent())
     lazy var knowledgeCards = AgentKnowledgeCards(store: self)
+    lazy var wikiMaintenance = AgentWikiMaintenance(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?

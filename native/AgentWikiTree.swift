@@ -14,6 +14,7 @@ import AppKit
     private var rootPath = ".bluefatfish/wiki"
     private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil), more = NSPopUpButton(frame: .zero, pullsDown: true)
     private var citationAvailable = false
+    private var maintenanceAvailable = false
     var canSelect: ((String) -> Bool)?, onSelect: ((String) -> Void)?, onRefresh: (() -> Void)?
     var onLanguage: ((String) -> Bool)?, onPlan: (() -> Void)?
     var onSharing: ((String) -> Void)?
@@ -39,6 +40,7 @@ import AppKit
         for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
         more.menu?.addItem(.separator())
         let citation = NSMenuItem(title: "自动引用 Wiki", action: #selector(sharingAction(_:)), keyEquivalent: ""); citation.target = self; citation.representedObject = "citation"; more.menu?.addItem(citation)
+        for (title, action) in [("自动更新", "auto-update"), ("自动导出", "auto-export")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = action; more.menu?.addItem(item) }
         more.widthAnchor.constraint(equalToConstant: 25).isActive = true
         let options = NSStackView(views: [language, NSView(), plan, more]); options.spacing = 4
         for child in [toolbar, options, scroll, empty] { addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
@@ -55,8 +57,12 @@ import AppKit
         language.isEnabled = !busy; more.isEnabled = !busy; plan.isEnabled = !busy
         for item in more.itemArray.dropFirst() where !item.isSeparatorItem {
             let action = item.representedObject as? String
-            item.isEnabled = action == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || action == "open") && (!["regenerate", "update"].contains(action ?? "") || canRegenerate)
+            item.isEnabled = action == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || action == "open") && (!["regenerate", "update"].contains(action ?? "") || canRegenerate) && (!["auto-update", "auto-export"].contains(action ?? "") || maintenanceAvailable)
         }
+    }
+    func setMaintenanceState(_ options: AgentWikiMaintenanceOptions?, problem: String? = nil) {
+        maintenanceAvailable = options != nil
+        for (action, enabled) in [("auto-update", options?.autoUpdate), ("auto-export", options?.autoExport)] { let item = more.itemArray.first { $0.representedObject as? String == action }; item?.state = enabled == true ? .on : .off; item?.toolTip = problem }
     }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild() }
     private func rebuild() {

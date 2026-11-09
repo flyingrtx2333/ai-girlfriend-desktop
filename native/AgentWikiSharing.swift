@@ -259,6 +259,7 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
                 catch { throw PetError("Wiki 已导入，导出记录未能更新：" + error.localizedDescription) }
             }
         }
+        await store.wikiMaintenance.published(taskID: taskID, language: preview.language, expectedID: id)
     }
     static func wikiHistory(store: AgentStore, taskID: String, language: String) throws -> [AgentWikiHistoryEntry] {
         let scope = try storage(store, taskID, language), folder = scope.directory.appendingPathComponent("history")

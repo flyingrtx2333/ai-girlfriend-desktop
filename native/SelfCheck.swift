@@ -28,6 +28,7 @@ import WebKit
         if CommandLine.arguments.contains("--text-encoding-check") { await runAgentTextEncodingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-conflict-check") { await runAgentFileConflictCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-tree-check") { await runAgentWikiTreeCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--wiki-updates-check") { await runAgentWikiUpdatesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-generation-check") { await runAgentWikiGenerationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-citation-check") { await runAgentWikiCitationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-sharing-check") { await runAgentWikiSharingCheck(output); NSApp.terminate(nil); return }

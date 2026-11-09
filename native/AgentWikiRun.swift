@@ -192,7 +192,7 @@ import Foundation
         try Task.checkCancellation()
         if let update = job.update {
             guard commit == update.commit else { throw PetError("Wiki 更新期间 Git 提交或工作区已变化，草稿已保留") }
-            guard update.baseFiles.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 20_000_000)) == $0.value }) else { throw PetError("原 Wiki 在更新期间被编辑，原文与更新草稿均已保留") }
+            try requireUpdateBase(task)
         }
         guard let current = store.task(taskID), current.status == .completed, current.messages.last?.id == task.messages.last?.id else { return }; try checkScope(current, store: store)
         guard current.hasConfirmedWikiCompletion else { throw PetError("Wiki 缺少实际完成调用及校验依据") }

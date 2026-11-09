@@ -110,6 +110,12 @@ struct AgentWikiUpdatePreview {
         guard let page = task.wikiJob?.update?.retained[path], page.sha256 == hash, !page.sources.isEmpty, let files = try? AgentFiles(workspace: task.workspace) else { return false }
         return page.sources.allSatisfy { (try? files.fileHash(files.resolve($0.key), maximum: 512_000)) == $0.value }
     }
+    static func requireUpdateBase(_ task: AgentTaskRecord) throws {
+        guard let job = task.wikiJob, let update = job.update else { return }
+        let files = try AgentFiles(workspace: task.workspace), expectedPages = Set(update.baseFiles.keys.filter { ["md", "markdown"].contains(($0 as NSString).pathExtension.lowercased()) })
+        guard let previous = job.previousRoot, !expectedPages.isEmpty, Set(try pages(workspace: task.workspace, root: previous)) == expectedPages,
+              update.baseFiles.allSatisfy({ (try? files.fileHash(files.resolve($0.key), maximum: 20_000_000)) == $0.value }) else { throw PetError("原 Wiki 在更新期间被编辑，原文与更新草稿均已保留") }
+    }
     static func readUpdateChanges(_ call: AgentToolCall, store: AgentStore, task: AgentTaskRecord) throws -> AgentToolResult {
         guard var job = task.wikiJob, var update = job.update else { throw PetError("此任务没有提交更新差异") }
         let start = min(update.diff.count, max(0, call.object["content_offset"] as? Int ?? 0)), limit = min(1600, max(1, call.object["content_limit"] as? Int ?? 1200)), content = String(update.diff.dropFirst(start).prefix(limit))

@@ -11,6 +11,8 @@ import AppKit
         let runtime = AgentRuntime(store: tasks, keychain: keychain) { [weak self] in self?.store.preferences ?? PetPreferences() }
         agentStore = tasks; agentRuntime = runtime
         tasks.knowledgeCards.runtime = runtime
+        tasks.wikiMaintenance.runtime = runtime
+        tasks.wikiMaintenance.onChange = { [weak self] _ in self?.control.scheduleRender() }
         tasks.knowledgeCards.onChange = { [weak self] root in self?.control.refreshKnowledgeCards(workspace: root) }
         tasks.dataImport.onChange = { [weak self] in self?.control.refreshDataImport(); self?.control.scheduleRender() }
         _ = tasks.mcp.observeContent { [weak self] in self?.control.scheduleRender() }
@@ -22,6 +24,7 @@ import AppKit
             guard let self else { return }
             self.control.scheduleRender(); self.control.refreshAutomationBadge(); self.refreshVoiceBusy()
             if let task = tasks.task(id), task.kind == AgentKnowledgeCards.kind, task.status != .running, let root = task.workspace { self.control.refreshKnowledgeCards(workspace: root) }
+            if let task = tasks.task(id), task.kind == "wiki", [.failed, .stopped].contains(task.status), let root = task.workspace { tasks.wikiMaintenance.changed(workspace: root) }
             self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
         }
@@ -37,7 +40,7 @@ import AppKit
                 Task { [weak self] in
                     do {
                         if tasks.task(id)?.kind == AgentKnowledgeCards.kind { try await tasks.knowledgeCards.complete(id) }
-                        else { try await AgentWiki.finalize(store: tasks, taskID: id) }
+                        else { try await AgentWiki.finalize(store: tasks, taskID: id); if let language = tasks.task(id)?.wikiJob?.language { await tasks.wikiMaintenance.published(taskID: id, language: language, expectedID: id) } }
                     }
                     catch {
                         if tasks.task(id)?.status == .completed, tasks.task(id)?.messages.last?.id == messageID {
@@ -57,7 +60,7 @@ import AppKit
         }
         automationNotifications.onOpen = { [weak self] id in self?.control.show(tab: "chat"); self?.control.showAgentTask(id) }
         tasks.worktreeRetention.onChange = { [weak self] in self?.control.refreshWorktreeRetention() }
-        if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume() }
+        if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume(); tasks.wikiMaintenance.resume() }
     }
     private func completeAgentResponse(id: String, text: String) {
         guard agentStore?.selectedID == id, agentStore?.task(id)?.automation == nil, !text.isEmpty else { return }

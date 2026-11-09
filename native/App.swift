@@ -124,6 +124,7 @@ final class PetWebView: WKWebView {
         if agentStore != nil { control.persistAgentDraft() }
         closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); agentStore?.worktreeRetention.stop(); stopSpeech()
         agentStore?.knowledgeCards.stop()
+        agentStore?.wikiMaintenance.stop()
         agentStore?.browser.closeAll()
         agentStore?.canvases.closeAll()
         agentStore?.offices.closeAll()
