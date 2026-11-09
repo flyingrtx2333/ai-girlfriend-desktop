@@ -183,6 +183,7 @@ final class PetWebView: WKWebView {
         redo.keyEquivalentModifierMask = [.command, .shift]; edit.insertItem(redo, at: 1)
         editItem.submenu = edit; main.addItem(editItem)
         let windows = NSMenu(title: "窗口"), windowItem = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
+        windows.addItem(withTitle: "关闭", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         windows.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windows.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windows.addItem(.separator()); windows.addItem(withTitle: "全部置于前面", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
