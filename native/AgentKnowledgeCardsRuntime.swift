@@ -87,7 +87,9 @@ import Foundation
         try publish(value, task: current, expected: job.baseHash)
         store.update(id) { $0.events.append(AgentEvent(kind: "knowledge-cards", title: "知识卡片已核对", detail: "\(value.cards.count) 张 · \(job.language) · \(job.branch)", status: "completed")) }
         notices[job.workspace] = ""
-        if try options(workspace: job.workspace).autoExport {
+        if try AgentWiki.maintenance(store: store, workspace: job.workspace, language: job.language).options.autoExport {
+            await store.wikiMaintenance.cardsPublished(taskID: id, language: job.language)
+        } else if try options(workspace: job.workspace).autoExport {
             do { _ = try exportBook(current, language: job.language) }
             catch { notices[job.workspace] = "已生成，导出未完成：" + error.localizedDescription; onChange?(job.workspace); throw error }
         }

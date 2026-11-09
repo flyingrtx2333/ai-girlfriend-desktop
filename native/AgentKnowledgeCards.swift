@@ -121,7 +121,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
         guard let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, text.count < 1024 else { throw PetError("无法核对当前分支") }
         return (root, text.hasPrefix("ref: ") ? String(text.dropFirst(5)) : "detached:" + text, index.directory.appendingPathComponent("knowledge-cards"))
     }
-    private func pointer(_ scope: (root: String, branch: String, directory: URL), language: String) throws -> URL {
+    func pointer(_ scope: (root: String, branch: String, directory: URL), language: String) throws -> URL {
         guard ["zh", "en"].contains(language) else { throw PetError("知识卡片语言无效") }
         return scope.directory.appendingPathComponent(AgentFiles.hash(Data((scope.branch + "\n" + language).utf8)) + ".json")
     }
@@ -136,15 +136,23 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
               value.cards.allSatisfy(Self.valid) else { throw PetError("知识卡片版本或范围不匹配") }
         return (value, AgentFiles.hash(data))
     }
-    func publish(_ value: AgentKnowledgeCardBook, task: AgentTaskRecord, expected: String) throws {
+    func publicationWrites(_ value: AgentKnowledgeCardBook, task: AgentTaskRecord, expected: String) throws -> [AgentKnowledgeFileWrite] {
         let scope = try scope(task)
         guard value.version == 1, UUID(uuidString: value.id) != nil, value.workspace == scope.root, value.branch == scope.branch, ["zh", "en"].contains(value.language), !value.cards.isEmpty, value.cards.count <= 30, Set(value.cards.map(\.id)).count == value.cards.count, value.cards.allSatisfy(Self.valid) else { throw PetError("卡片内容、工作区或分支无效，原版本保留") }
+        guard try book(task, language: value.language).1 == expected else { throw PetError("知识卡片已被其他操作修改，原版本保留") }
+        let files = try AgentFiles(workspace: scope.directory.path), encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(value); guard data.count <= 2_000_000 else { throw PetError("知识卡片数据过大") }
+        let path = "versions/" + value.id + ".json", version = try files.literalURL(path), entry = try files.entryMetadata(version)
+        if entry.kind != "missing" { guard try files.fileHash(version, maximum: 2_000_000) == AgentFiles.hash(data) else { throw PetError("卡片历史版本已存在且内容不同，未覆盖") } }
+        return [try AgentKnowledgeFileWrite(files: files, path: path, data: data, expectedHash: entry.kind == "missing" ? nil : AgentFiles.hash(data), permissions: 0o600), try AgentKnowledgeFileWrite(files: files, path: files.relative(pointer(scope, language: value.language)), data: data, expectedHash: expected, permissions: 0o600)]
+    }
+    func publish(_ value: AgentKnowledgeCardBook, task: AgentTaskRecord, expected: String) throws {
+        let scope = try scope(task)
         try locked(scope.directory) {
-            guard try book(task, language: value.language).1 == expected else { throw PetError("知识卡片已被其他操作修改，原版本保留") }
-            let versions = scope.directory.appendingPathComponent("versions", isDirectory: true)
-            try FileManager.default.createDirectory(at: versions, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try write(value, versions.appendingPathComponent(value.id + ".json"))
-            try write(value, pointer(scope, language: value.language))
+            let writes = try publicationWrites(value, task: task, expected: expected)
+            try AgentKnowledgeFileBatch.commit(writes, backup: scope.directory.appendingPathComponent("publish-backups/" + UUID().uuidString)) {
+                guard try self.book(task, language: value.language).1 == expected else { throw PetError("知识卡片已变化，原版本保留") }
+            }
         }
         onChange?(scope.root)
     }

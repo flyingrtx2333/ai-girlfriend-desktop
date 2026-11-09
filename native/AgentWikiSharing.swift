@@ -28,6 +28,19 @@ struct AgentWikiHistoryEntry: Codable, Equatable {
 }
 private struct AgentWikiExportState: Codable { var hashes: [String: String] }
 
+struct AgentWikiExportPreparation {
+    var snapshot: AgentWikiSnapshot, relative: String
+    var directory: URL, stateURL: URL
+    var payloads: [String: Data]
+}
+struct AgentWikiPublication {
+    var previous: AgentWikiSnapshot
+    var preview: AgentWikiImportPreview? = nil
+    var directory: URL, pointer: URL, stateURL: URL
+    var root: String?, id: String?, manifest: Data?, exportState: Data?
+    var payloads: [String: Data], restoring: Bool
+}
+
 @MainActor extension AgentWiki {
     static let transferMetadata = "meta/repowiki-metadata.json"
     static func sharingPath(_ language: String) throws -> String {
@@ -124,10 +137,10 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
     static func requireSnapshot(_ expected: AgentWikiSnapshot, store: AgentStore, taskID: String, language: String) throws {
         let scope = try storage(store, taskID, language, writing: true)
         guard scope.files.root.path == expected.workspace, scope.branch == expected.metadata.branch, try pointerHash(scope.directory, branch: scope.branch, language: language) == expected.pointer else { throw PetError("Wiki 工作区、分支或发布版本已变化，请重新预览") }
-        let actual = try pages(workspace: scope.files.root.path, root: expected.root)
-        guard Set(actual) == Set(expected.metadata.documents.map { expected.root + "/" + $0.file }), expected.metadata.documents.allSatisfy({ (try? scope.files.fileHash(target(scope.files, expected.root + "/" + $0.file), maximum: 512_000)) == $0.sha256 }), (expected.metadata.resources ?? []).allSatisfy({ (try? scope.files.fileHash(target(scope.files, expected.root + "/" + $0.file), maximum: 20_000_000)) == $0.sha256 }) else { throw PetError("预览后当前 Wiki 或附件已被编辑，请重新预览") }
+        let current = try view(store: store, taskID: taskID, language: language)
+        guard current.root == expected.root, Set(current.pages.map(\.path)) == Set(expected.metadata.documents.map { expected.root + "/" + $0.file }), expected.metadata.documents.allSatisfy({ (try? scope.files.fileHash(target(scope.files, expected.root + "/" + $0.file), maximum: 512_000)) == $0.sha256 }), (expected.metadata.resources ?? []).allSatisfy({ (try? scope.files.fileHash(target(scope.files, expected.root + "/" + $0.file), maximum: 20_000_000)) == $0.sha256 }) else { throw PetError("预览后当前 Wiki 或附件已被编辑，请重新预览") }
     }
-    static func exportWiki(store: AgentStore, taskID: String, language: String) async throws -> Int {
+    static func prepareWikiExport(store: AgentStore, taskID: String, language: String) async throws -> AgentWikiExportPreparation {
         let scope = try storage(store, taskID, language, writing: true), original = try await snapshot(store, taskID, language), relative = try sharingPath(language)
         guard !original.data.isEmpty else { throw PetError("当前语言没有可导出的 Wiki") }
         var metadata = original.metadata, payloads: [String: Data] = [:], total = 0
@@ -143,48 +156,33 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         _ = try relativeDocuments(metadata, root: relative + "/content")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; payloads[transferMetadata] = try encoder.encode(metadata)
         guard payloads[transferMetadata]!.count <= 4_000_000 else { throw PetError("Wiki 元数据超过4MB") }
-        try FileManager.default.createDirectory(at: scope.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try store.knowledgeCards.locked(scope.directory, label: "Wiki") {
-            try requireSnapshot(original, store: store, taskID: taskID, language: language)
-            let stateURL = scope.directory.appendingPathComponent("export-" + key(scope.branch, language) + ".json"), stateFiles = try AgentFiles(workspace: scope.directory.path)
-            let previous = FileManager.default.fileExists(atPath: stateURL.path) ? try JSONDecoder().decode(AgentWikiExportState.self, from: stateFiles.readData(stateURL, maximum: 4_000_000)) : AgentWikiExportState(hashes: [:])
-            let actual = try pages(workspace: scope.files.root.path, root: relative + "/content")
-            guard actual.allSatisfy({ previous.hashes[String($0.dropFirst(relative.count + 1))] != nil }) else { throw PetError("共享目录有未导入的页面，请先导入") }
-            var before: [String: (data: Data?, signature: String, permissions: Int)] = [:]
-            for name in Set(payloads.keys).union(previous.hashes.keys) {
-                guard name == transferMetadata || name.hasPrefix("content/") && validSharedFile(String(name.dropFirst(8))) else { throw PetError("原导出记录包含无效路径") }
-                let file = try target(scope.files, relative + "/" + name), entry = try scope.files.entryMetadata(file)
-                if entry.kind == "missing" { before[name] = (nil, entry.signature, 0o644); continue }
-                guard entry.kind == "file", let expected = previous.hashes[name], (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("共享目录有未导入或只读的文件：" + name) }
-                let data = try scope.files.readData(file, maximum: 20_000_000)
-                guard AgentFiles.hash(data) == expected else { throw PetError("共享文件有外部修改，请先导入：" + name) }; before[name] = (data, entry.signature, entry.permissions ?? 0o644)
-            }
-            let backup = scope.directory.appendingPathComponent("export-backups/" + UUID().uuidString); try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); let backups = try AgentFiles(workspace: backup.path)
-            for (name, entry) in before { if let data = entry.data { try backups.writeData(data, to: backups.resolve(name), permissions: 0o600) } }
-            var changed: [String: (hash: String?, signature: String)] = [:]
-            do {
-                for name in payloads.keys.filter({ $0 != transferMetadata }).sorted() + [transferMetadata] {
-                    let file = try target(scope.files, relative + "/" + name), data = payloads[name]!
-                    try scope.files.writeData(data, to: file, permissions: before[name]!.permissions, expectedTarget: before[name]!.signature)
-                    changed[name] = (AgentFiles.hash(data), try scope.files.entryMetadata(file).signature)
-                }
-                for name in previous.hashes.keys.sorted() where payloads[name] == nil && before[name]?.data != nil {
-                    let file = try target(scope.files, relative + "/" + name)
-                    guard try scope.files.entryMetadata(file).signature == before[name]!.signature else { throw PetError("共享文件在导出期间被编辑") }
-                    try scope.files.remove(file); changed[name] = (nil, "missing")
-                }
-                try stateFiles.writeData(encoder.encode(AgentWikiExportState(hashes: payloads.mapValues(AgentFiles.hash))), to: stateURL, permissions: 0o600)
-            } catch {
-                for name in changed.keys.filter({ $0 != transferMetadata }).sorted() + [transferMetadata] {
-                    guard let changed = changed[name], let file = try? target(scope.files, relative + "/" + name), (try? scope.files.entryMetadata(file).signature) == changed.signature else { continue }
-                    if let hash = changed.hash, (try? scope.files.fileHash(file, maximum: 20_000_000)) != hash { continue }
-                    if let data = before[name]?.data { try? scope.files.writeData(data, to: file, permissions: before[name]!.permissions, expectedTarget: changed.signature) }
-                    else if changed.hash != nil { try? scope.files.remove(file) }
-                }
-                throw PetError("导出未完成：" + error.localizedDescription + "；原文件备份：" + backup.path)
-            }
+        return AgentWikiExportPreparation(snapshot: original, relative: relative, directory: scope.directory, stateURL: scope.directory.appendingPathComponent("export-" + key(scope.branch, language) + ".json"), payloads: payloads)
+    }
+    static func wikiExportWrites(_ prepared: AgentWikiExportPreparation, store: AgentStore, taskID: String, language: String) throws -> [AgentKnowledgeFileWrite] {
+        let scope = try storage(store, taskID, language, writing: true), stateFiles = try AgentFiles(workspace: prepared.directory.path)
+        try requireSnapshot(prepared.snapshot, store: store, taskID: taskID, language: language)
+        let previous = FileManager.default.fileExists(atPath: prepared.stateURL.path) ? try JSONDecoder().decode(AgentWikiExportState.self, from: stateFiles.readData(prepared.stateURL, maximum: 4_000_000)) : AgentWikiExportState(hashes: [:])
+        let actual = try pages(workspace: scope.files.root.path, root: prepared.relative + "/content")
+        guard actual.allSatisfy({ previous.hashes[String($0.dropFirst(prepared.relative.count + 1))] != nil }) else { throw PetError("共享目录有未导入的页面，请先导入") }
+        var writes: [AgentKnowledgeFileWrite] = []
+        let names = Set(prepared.payloads.keys).union(previous.hashes.keys)
+        for name in names.filter({ $0 != transferMetadata }).sorted() + [transferMetadata] {
+            guard name == transferMetadata || name.hasPrefix("content/") && validSharedFile(String(name.dropFirst(8))) else { throw PetError("Wiki 导出记录路径无效") }
+            let file = try target(scope.files, prepared.relative + "/" + name), entry = try scope.files.entryMetadata(file)
+            guard entry.kind == "missing" || previous.hashes[name] != nil else { throw PetError("共享目录有未导入的文件：" + name) }
+            writes.append(try AgentKnowledgeFileWrite(files: scope.files, path: prepared.relative + "/" + name, data: prepared.payloads[name], expectedHash: entry.kind == "missing" ? nil : previous.hashes[name]))
         }
-        return metadata.documents.count
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        writes.append(try AgentKnowledgeFileWrite(files: stateFiles, path: stateFiles.relative(prepared.stateURL), data: encoder.encode(AgentWikiExportState(hashes: prepared.payloads.mapValues(AgentFiles.hash))), permissions: 0o600))
+        return writes
+    }
+    static func exportWiki(store: AgentStore, taskID: String, language: String) async throws -> Int {
+        let prepared = try await prepareWikiExport(store: store, taskID: taskID, language: language)
+        try store.knowledgeCards.locked(prepared.directory, label: "Wiki") {
+            let writes = try wikiExportWrites(prepared, store: store, taskID: taskID, language: language)
+            try AgentKnowledgeFileBatch.commit(writes, backup: prepared.directory.appendingPathComponent("export-backups/" + UUID().uuidString)) { try requireSnapshot(prepared.snapshot, store: store, taskID: taskID, language: language) }
+        }
+        return prepared.snapshot.metadata.documents.count
     }
     static func previewWikiImport(store: AgentStore, taskID: String, language: String) async throws -> AgentWikiImportPreview {
         let scope = try storage(store, taskID, language, writing: true), relative = try sharingPath(language), file = try target(scope.files, relative + "/" + transferMetadata)
@@ -213,13 +211,14 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         _ = try relativeDocuments(updated, root: relative + "/content")
         return AgentWikiImportPreview(workspace: scope.files.root.path, branch: scope.branch, language: language, sourceRoot: relative + "/content", metadata: updated, data: data, sourceHashes: hashes, previous: try await snapshot(store, taskID, language), manuallyChanged: changed)
     }
-    private static func archive(_ snapshot: AgentWikiSnapshot, directory: URL) throws {
-        guard !snapshot.data.isEmpty else { return }
+    @discardableResult static func archive(_ snapshot: AgentWikiSnapshot, directory: URL) throws -> AgentWikiHistoryEntry? {
+        guard !snapshot.data.isEmpty else { return nil }
         let id = UUID().uuidString, folder = directory.appendingPathComponent("history/" + id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); let files = try AgentFiles(workspace: folder.path)
         for (name, bytes) in snapshot.data { try files.writeData(bytes, to: files.resolve("content/" + name), permissions: 0o600) }
         let entry = AgentWikiHistoryEntry(id: id, created: Date(), originalRoot: snapshot.root, metadata: snapshot.metadata)
         try files.writeData(JSONEncoder().encode(entry), to: files.resolve("version.json"), permissions: 0o600)
+        return entry
     }
     static func saveEditedPage(_ snapshot: AgentWikiSnapshot, store: AgentStore, taskID: String, path: String, data: Data) throws {
         let scope = try storage(store, taskID, snapshot.metadata.language, writing: true)
@@ -233,7 +232,7 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
             try scope.files.writeData(data, to: url, permissions: metadata.permissions ?? 0o644, expectedTarget: metadata.signature)
         }
     }
-    static func importWiki(_ preview: AgentWikiImportPreview, store: AgentStore, taskID: String, restoring: Bool = false) async throws {
+    static func prepareWikiPublication(_ preview: AgentWikiImportPreview, store: AgentStore, taskID: String, restoring: Bool = false) async throws -> AgentWikiPublication {
         let scope = try storage(store, taskID, preview.language, writing: true)
         guard scope.files.root.path == preview.workspace, scope.branch == preview.branch else { throw PetError("导入预览的工作区或分支已变化") }
         try requireNoGeneration(store, workspace: scope.files.root.path, branch: scope.branch, language: preview.language)
@@ -248,30 +247,44 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         for resource in preview.metadata.resources ?? [] {
             guard let data = preview.data[resource.file], AgentFiles.hash(data) == resource.sha256 else { throw PetError("附件与导入预览不一致") }; payloads[importedRoot + "/" + resource.file] = data
         }
-        try FileManager.default.createDirectory(at: scope.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try store.knowledgeCards.locked(scope.directory, label: "Wiki") {
-            try requireSnapshot(preview.previous, store: store, taskID: taskID, language: preview.language)
-            try requireNoGeneration(store, workspace: scope.files.root.path, branch: scope.branch, language: preview.language)
-            if !restoring {
-                let relative = try sharingPath(preview.language), actual = try pages(workspace: scope.files.root.path, root: relative + "/content")
-                guard Set(actual) == Set(preview.metadata.documents.map { relative + "/content/" + $0.file }), preview.sourceHashes.allSatisfy({ (try? scope.files.fileHash(target(scope.files, relative + "/" + $0.key), maximum: 20_000_000)) == $0.value }) else { throw PetError("导入文件在预览后已变化，请重新预览") }
-            }
-            let storage = try AgentFiles(workspace: scope.directory.path), pointer = scope.directory.appendingPathComponent(key(scope.branch, preview.language) + ".json"), pointerSignature = try storage.entryMetadata(pointer).signature
-            try archive(preview.previous, directory: scope.directory)
-            guard try scope.files.entryMetadata(target(scope.files, importedRoot)).kind == "missing" else { throw PetError("导入目录已存在，未覆盖") }
-            for (path, data) in payloads { try scope.files.writeData(data, to: target(scope.files, path), expectedTarget: "missing") }
-            let documentPaths = Set(preview.metadata.documents.map { importedRoot + "/" + $0.file })
-            var value = AgentWikiManifest(taskID: id, revision: preview.metadata.sourceRevision, created: Date(), pages: payloads.filter { documentPaths.contains($0.key) }.mapValues(AgentFiles.hash), sources: preview.metadata.sourceHashes.keys.sorted())
-            value.version = 3; value.branch = scope.branch; value.language = preview.language; value.root = importedRoot; value.structure = docs; value.sourceHashes = preview.metadata.sourceHashes; value.origin = restoring ? "restore" : "import"
-            value.assets = payloads.filter { !documentPaths.contains($0.key) }.mapValues(AgentFiles.hash)
-            value.sourceCommit = preview.metadata.sourceCommit
-            try storage.writeData(JSONEncoder().encode(value), to: pointer, permissions: 0o600, expectedTarget: pointerSignature)
-            if !restoring {
-                do { try storage.writeData(JSONEncoder().encode(AgentWikiExportState(hashes: preview.sourceHashes)), to: scope.directory.appendingPathComponent("export-" + key(scope.branch, preview.language) + ".json"), permissions: 0o600) }
-                catch { throw PetError("Wiki 已导入，导出记录未能更新：" + error.localizedDescription) }
-            }
+        let documentPaths = Set(preview.metadata.documents.map { importedRoot + "/" + $0.file })
+        var value = AgentWikiManifest(taskID: id, revision: preview.metadata.sourceRevision, created: Date(), pages: payloads.filter { documentPaths.contains($0.key) }.mapValues(AgentFiles.hash), sources: preview.metadata.sourceHashes.keys.sorted())
+        value.version = 3; value.branch = scope.branch; value.language = preview.language; value.root = importedRoot; value.structure = docs; value.sourceHashes = preview.metadata.sourceHashes; value.origin = restoring ? "restore" : "import"
+        value.assets = payloads.filter { !documentPaths.contains($0.key) }.mapValues(AgentFiles.hash); value.sourceCommit = preview.metadata.sourceCommit
+        return AgentWikiPublication(previous: preview.previous, preview: preview, directory: scope.directory, pointer: scope.directory.appendingPathComponent(key(scope.branch, preview.language) + ".json"), stateURL: scope.directory.appendingPathComponent("export-" + key(scope.branch, preview.language) + ".json"), root: importedRoot, id: id, manifest: try JSONEncoder().encode(value), exportState: restoring ? nil : try JSONEncoder().encode(AgentWikiExportState(hashes: preview.sourceHashes)), payloads: payloads, restoring: restoring)
+    }
+    static func prepareAbsentWiki(_ previous: AgentWikiSnapshot, store: AgentStore, taskID: String, language: String) throws -> AgentWikiPublication {
+        let scope = try storage(store, taskID, language, writing: true)
+        if language != "en" { guard try pages(workspace: previous.workspace).isEmpty else { throw PetError("旧版 Wiki 仍有文档，请先保留并核对，未清除任何文件") } }
+        return AgentWikiPublication(previous: previous, directory: scope.directory, pointer: scope.directory.appendingPathComponent(key(scope.branch, language) + ".json"), stateURL: scope.directory.appendingPathComponent("export-" + key(scope.branch, language) + ".json"), payloads: [:], restoring: true)
+    }
+    static func requirePublication(_ prepared: AgentWikiPublication, store: AgentStore, taskID: String) throws {
+        let language = prepared.previous.metadata.language, scope = try storage(store, taskID, language, writing: true)
+        try requireSnapshot(prepared.previous, store: store, taskID: taskID, language: language)
+        try requireNoGeneration(store, workspace: scope.files.root.path, branch: scope.branch, language: language)
+        if let preview = prepared.preview, !prepared.restoring {
+            let relative = try sharingPath(language), actual = try pages(workspace: scope.files.root.path, root: relative + "/content")
+            guard Set(actual) == Set(preview.metadata.documents.map { relative + "/content/" + $0.file }), preview.sourceHashes.allSatisfy({ (try? scope.files.fileHash(target(scope.files, relative + "/" + $0.key), maximum: 20_000_000)) == $0.value }) else { throw PetError("预览后 Wiki 导入文件已变化，请重新预览") }
         }
-        await store.wikiMaintenance.published(taskID: taskID, language: preview.language, expectedID: id)
+        if let root = prepared.root { guard try scope.files.entryMetadata(target(scope.files, root)).kind == "missing" else { throw PetError("导入目录已存在，未覆盖") } }
+        else if language != "en" { guard try pages(workspace: scope.files.root.path).isEmpty else { throw PetError("旧版 Wiki 已新增文档，未覆盖") } }
+    }
+    static func wikiPublicationWrites(_ prepared: AgentWikiPublication, store: AgentStore, taskID: String) throws -> [AgentKnowledgeFileWrite] {
+        try requirePublication(prepared, store: store, taskID: taskID)
+        let files = try AgentFiles(workspace: prepared.previous.workspace), storage = try AgentFiles(workspace: prepared.directory.path)
+        var writes = try prepared.payloads.keys.sorted().map { try AgentKnowledgeFileWrite(files: files, path: $0, data: prepared.payloads[$0]!, missing: true) }
+        writes.append(try AgentKnowledgeFileWrite(files: storage, path: storage.relative(prepared.pointer), data: prepared.manifest, expectedHash: prepared.previous.pointer, permissions: 0o600))
+        if let state = prepared.exportState { writes.append(try AgentKnowledgeFileWrite(files: storage, path: storage.relative(prepared.stateURL), data: state, permissions: 0o600)) }
+        return writes
+    }
+    static func importWiki(_ preview: AgentWikiImportPreview, store: AgentStore, taskID: String, restoring: Bool = false) async throws {
+        let prepared = try await prepareWikiPublication(preview, store: store, taskID: taskID, restoring: restoring)
+        try store.knowledgeCards.locked(prepared.directory, label: "Wiki") {
+            try requirePublication(prepared, store: store, taskID: taskID); try archive(preview.previous, directory: prepared.directory)
+            let writes = try wikiPublicationWrites(prepared, store: store, taskID: taskID)
+            try AgentKnowledgeFileBatch.commit(writes, backup: prepared.directory.appendingPathComponent("import-backups/" + UUID().uuidString)) { try requirePublication(prepared, store: store, taskID: taskID) }
+        }
+        await store.wikiMaintenance.published(taskID: taskID, language: preview.language, expectedID: prepared.id!)
     }
     static func wikiHistory(store: AgentStore, taskID: String, language: String) throws -> [AgentWikiHistoryEntry] {
         let scope = try storage(store, taskID, language), folder = scope.directory.appendingPathComponent("history")

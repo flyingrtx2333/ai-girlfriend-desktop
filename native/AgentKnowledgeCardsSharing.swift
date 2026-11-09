@@ -12,81 +12,82 @@ struct AgentKnowledgeCardExportState: Codable { var hashes: [String: String] }
 struct AgentKnowledgeCardImport {
     var book: AgentKnowledgeCardBook; var hashes: [String: String]; var previousHash: String
 }
+struct AgentKnowledgeCardExport {
+    var workspace: String, branch: String, language: String, bookHash: String
+    var directory: URL, stateURL: URL
+    var payloads: [String: Data]
+    var count: Int
+}
 
 @MainActor extension AgentKnowledgeCards {
     func sharingPath(language: String) throws -> String {
         guard ["zh", "en"].contains(language) else { throw PetError("知识卡片语言无效") }
         return ".bluefatfish/repowiki/knowledge/" + language
     }
-    private func sharingState(_ task: AgentTaskRecord, language: String) throws -> URL {
+    func sharingState(_ task: AgentTaskRecord, language: String) throws -> URL {
         let scope = try scope(task)
         return scope.directory.appendingPathComponent("export-" + AgentFiles.hash(Data((scope.branch + "\n" + language).utf8)) + ".json")
     }
-    @discardableResult func exportBook(_ task: AgentTaskRecord, language: String) throws -> [String] {
-        let scope = try scope(task), files = try AgentFiles(workspace: scope.root), relative = try sharingPath(language: language), stateURL = try sharingState(task, language: language)
+    func prepareExport(_ task: AgentTaskRecord, language: String) throws -> AgentKnowledgeCardExport {
+        let scope = try scope(task), previous = try book(task, language: language)
         let bundle = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
-        guard scope.root != bundle, !scope.root.hasPrefix(bundle + "/"), let value = try book(task, language: language).0 else { throw PetError("当前分支和语言没有可导出的卡片") }
-        return try locked(scope.directory) {
-            var payloads: [String: Data] = [:], items: [AgentKnowledgeCardTransfer.Item] = []
-            for card in value.cards {
-                let name = card.id + ".md", data = Data(("# " + card.title + "\n\n" + card.body + "\n").utf8)
-                payloads[name] = data
-                items.append(.init(id: card.id, title: card.title, kind: card.kind, sources: card.sources, file: name, sha256: AgentFiles.hash(data), manual: card.manual))
-            }
-            let metadata = AgentKnowledgeCardTransfer(branch: scope.branch, language: language, sourceRevision: value.sourceRevision, cards: items)
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            payloads["knowledge.json"] = try encoder.encode(metadata)
-            let previous: AgentKnowledgeCardExportState
-            if FileManager.default.fileExists(atPath: stateURL.path) {
-                previous = try JSONDecoder().decode(AgentKnowledgeCardExportState.self, from: AgentFiles(workspace: scope.directory.path).readData(stateURL, maximum: 100_000))
-            } else { previous = AgentKnowledgeCardExportState(hashes: [:]) }
-            var before: [String: (signature: String, data: Data?)] = [:]
-            for name in payloads.keys.sorted() {
-                let url = try files.resolve(relative + "/" + name), entry = try files.entryMetadata(url)
-                if entry.kind == "missing" { before[name] = (entry.signature, nil); continue }
-                guard entry.kind == "file", let expected = previous.hashes[name] else { throw PetError("导出位置有未导入的同名内容，请先导入：" + name) }
-                let data = try files.readData(url, maximum: 200_000)
-                guard AgentFiles.hash(data) == expected else { throw PetError("导出文件有外部编辑，请先导入：" + name) }
-                before[name] = (entry.signature, data)
-            }
-            let backup = scope.directory.appendingPathComponent("export-backups/" + UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            for (name, entry) in before {
-                if let data = entry.data { try AgentFiles(workspace: backup.path).writeData(data, to: backup.appendingPathComponent(name), permissions: 0o600) }
-            }
-            var written: [(String, String)] = []
-            do {
-                // The manifest becomes visible only after all referenced Markdown.
-                let names = payloads.keys.filter { $0 != "knowledge.json" }.sorted() + ["knowledge.json"]
-                for name in names {
-                    let url = try files.resolve(relative + "/" + name), data = payloads[name]!
-                    try files.writeData(data, to: url, permissions: 0o644, expectedTarget: before[name]!.signature)
-                    written.append((name, try files.entryMetadata(url).signature))
-                }
-                try write(AgentKnowledgeCardExportState(hashes: payloads.mapValues(AgentFiles.hash)), stateURL)
-            } catch {
-                for (name, signature) in written.reversed() {
-                    guard let url = try? files.resolve(relative + "/" + name), (try? files.entryMetadata(url).signature) == signature,
-                          (try? files.fileHash(url, maximum: 200_000)) == payloads[name].map(AgentFiles.hash) else { continue }
-                    if let data = before[name]?.data { try? files.writeData(data, to: url, permissions: 0o644, expectedTarget: signature) }
-                    else { try? files.remove(url) }
-                }
-                throw PetError("导出未完成：" + error.localizedDescription + "；原文件备份：" + backup.path)
-            }
-            return payloads.keys.sorted().map { relative + "/" + $0 }
+        guard scope.root != bundle, !scope.root.hasPrefix(bundle + "/"), let value = previous.0 else { throw PetError("当前分支和语言没有可导出的卡片") }
+        var payloads: [String: Data] = [:], items: [AgentKnowledgeCardTransfer.Item] = []
+        for card in value.cards {
+            let name = card.id + ".md", data = Data(("# " + card.title + "\n\n" + card.body + "\n").utf8)
+            payloads[name] = data; items.append(.init(id: card.id, title: card.title, kind: card.kind, sources: card.sources, file: name, sha256: AgentFiles.hash(data), manual: card.manual))
+        }
+        let metadata = AgentKnowledgeCardTransfer(branch: scope.branch, language: language, sourceRevision: value.sourceRevision, cards: items), encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        payloads["knowledge.json"] = try encoder.encode(metadata)
+        return AgentKnowledgeCardExport(workspace: scope.root, branch: scope.branch, language: language, bookHash: previous.1, directory: scope.directory, stateURL: try sharingState(task, language: language), payloads: payloads, count: value.cards.count)
+    }
+    func requireExport(_ prepared: AgentKnowledgeCardExport, task: AgentTaskRecord) throws {
+        let scope = try scope(task)
+        guard scope.root == prepared.workspace, scope.branch == prepared.branch, try book(task, language: prepared.language).1 == prepared.bookHash else { throw PetError("卡片或项目范围已变化，请重新导出") }
+    }
+    func exportWrites(_ prepared: AgentKnowledgeCardExport, task: AgentTaskRecord) throws -> [AgentKnowledgeFileWrite] {
+        try requireExport(prepared, task: task)
+        let files = try AgentFiles(workspace: prepared.workspace), stateFiles = try AgentFiles(workspace: prepared.directory.path), relative = try sharingPath(language: prepared.language)
+        let previous = FileManager.default.fileExists(atPath: prepared.stateURL.path) ? try JSONDecoder().decode(AgentKnowledgeCardExportState.self, from: stateFiles.readData(prepared.stateURL, maximum: 100_000)) : AgentKnowledgeCardExportState(hashes: [:])
+        let root = try files.literalURL(relative)
+        guard try files.relative(files.resolve(relative)) == relative, ["directory", "missing"].contains(try files.entryMetadata(root).kind) else { throw PetError("卡片共享目录位置无效") }
+        if FileManager.default.fileExists(atPath: root.path) {
+            let actual = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent != ".DS_Store" }
+            guard actual.count <= 100, actual.allSatisfy({ previous.hashes[$0.lastPathComponent] != nil && (try? files.entryMetadata($0).kind) == "file" }) else { throw PetError("卡片目录有未导入的内容，请先核对 knowledge.json 后导入") }
+        }
+        var writes: [AgentKnowledgeFileWrite] = []
+        let names = Set(prepared.payloads.keys).union(previous.hashes.keys)
+        for name in names.filter({ $0 != "knowledge.json" }).sorted() + ["knowledge.json"] {
+            guard name == "knowledge.json" || name.hasSuffix(".md") && UUID(uuidString: String(name.dropLast(3))) != nil else { throw PetError("卡片导出记录路径无效") }
+            let url = try files.literalURL(relative + "/" + name), entry = try files.entryMetadata(url)
+            guard entry.kind == "missing" || previous.hashes[name] != nil else { throw PetError("卡片导出位置有未导入的内容：" + name) }
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: relative + "/" + name, data: prepared.payloads[name], expectedHash: entry.kind == "missing" ? nil : previous.hashes[name]))
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        writes.append(try AgentKnowledgeFileWrite(files: stateFiles, path: stateFiles.relative(prepared.stateURL), data: encoder.encode(AgentKnowledgeCardExportState(hashes: prepared.payloads.mapValues(AgentFiles.hash))), permissions: 0o600))
+        return writes
+    }
+    @discardableResult func exportBook(_ task: AgentTaskRecord, language: String) throws -> [String] {
+        let prepared = try prepareExport(task, language: language)
+        return try locked(prepared.directory) {
+            let writes = try exportWrites(prepared, task: task)
+            try AgentKnowledgeFileBatch.commit(writes, backup: prepared.directory.appendingPathComponent("export-backups/" + UUID().uuidString)) { try self.requireExport(prepared, task: task) }
+            let relative = try sharingPath(language: language); return prepared.payloads.keys.sorted().map { relative + "/" + $0 }
         }
     }
     func previewImport(_ task: AgentTaskRecord, language: String) throws -> AgentKnowledgeCardImport {
         guard let store else { throw PetError("项目已关闭") }
         let scope = try scope(task), files = try AgentFiles(workspace: scope.root), relative = try sharingPath(language: language)
+        guard try files.relative(files.resolve(relative + "/knowledge.json")) == relative + "/knowledge.json" else { throw PetError("卡片共享目录包含符号链接") }
         let data = try files.readData(files.resolve(relative + "/knowledge.json"), maximum: 300_000)
         let metadata = try JSONDecoder().decode(AgentKnowledgeCardTransfer.self, from: data)
         guard metadata.format == "bluefatfish.knowledge-cards", metadata.version == 1, metadata.language == language, metadata.branch == scope.branch, !metadata.cards.isEmpty, metadata.cards.count <= 30,
-              Set(metadata.cards.map(\.id)).count == metadata.cards.count else { throw PetError("这不是当前语言支持的知识卡片格式") }
+              Set(metadata.cards.compactMap { UUID(uuidString: $0.id)?.uuidString }).count == metadata.cards.count else { throw PetError("这不是当前语言支持的知识卡片格式") }
         let index = try AgentProjectIndex(workspace: scope.root, storage: store.directory)
         var hashes = ["knowledge.json": AgentFiles.hash(data)], cards: [AgentKnowledgeCard] = []
         for item in metadata.cards {
             guard UUID(uuidString: item.id) != nil, item.file == item.id + ".md", !item.sources.isEmpty, item.sources.count <= 12 else { throw PetError("导入卡片或文件名无效") }
+            guard try files.relative(files.resolve(relative + "/" + item.file)) == relative + "/" + item.file else { throw PetError("卡片文件包含符号链接") }
             let raw = try files.readData(files.resolve(relative + "/" + item.file), maximum: 8000)
             guard let text = String(data: raw, encoding: .utf8), !text.contains("\0") else { throw PetError("卡片必须是UTF-8 Markdown") }
             let lines = text.components(separatedBy: "\n")
@@ -105,14 +106,27 @@ struct AgentKnowledgeCardImport {
         let book = AgentKnowledgeCardBook(workspace: scope.root, branch: scope.branch, language: language, sourceRevision: metadata.sourceRevision, cards: cards)
         return AgentKnowledgeCardImport(book: book, hashes: hashes, previousHash: try self.book(task, language: language).1)
     }
-    func importBook(_ preview: AgentKnowledgeCardImport, task: AgentTaskRecord) throws {
+    func requireImport(_ preview: AgentKnowledgeCardImport, task: AgentTaskRecord) throws {
         let scope = try scope(task), files = try AgentFiles(workspace: scope.root), relative = try sharingPath(language: preview.book.language)
-        guard preview.book.workspace == scope.root, preview.book.branch == scope.branch else { throw PetError("导入预览的工作区或分支已变化") }
+        guard preview.book.workspace == scope.root, preview.book.branch == scope.branch, try book(task, language: preview.book.language).1 == preview.previousHash else { throw PetError("导入预览的项目、分支或原卡片已变化") }
+        guard try files.relative(files.resolve(relative)) == relative else { throw PetError("卡片共享目录包含符号链接") }
         for (name, hash) in preview.hashes {
-            guard try files.fileHash(files.resolve(relative + "/" + name), maximum: 300_000) == hash else { throw PetError("预览之后导入文件已变化，请重新预览") }
+            guard name == "knowledge.json" || name.hasSuffix(".md") && UUID(uuidString: String(name.dropLast(3))) != nil, try files.relative(files.resolve(relative + "/" + name)) == relative + "/" + name, try files.fileHash(files.resolve(relative + "/" + name), maximum: 300_000) == hash else { throw PetError("预览后卡片文件已变化，请重新预览") }
         }
-        try publish(preview.book, task: task, expected: preview.previousHash)
-        try write(AgentKnowledgeCardExportState(hashes: preview.hashes), sharingState(task, language: preview.book.language))
+    }
+    func importWrites(_ preview: AgentKnowledgeCardImport, task: AgentTaskRecord, restoring: Bool = false) throws -> [AgentKnowledgeFileWrite] {
+        if !restoring { try requireImport(preview, task: task) }
+        let scope = try scope(task), files = try AgentFiles(workspace: scope.directory.path), encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        var writes = try publicationWrites(preview.book, task: task, expected: preview.previousHash)
+        if !restoring { writes.append(try AgentKnowledgeFileWrite(files: files, path: files.relative(sharingState(task, language: preview.book.language)), data: encoder.encode(AgentKnowledgeCardExportState(hashes: preview.hashes)), permissions: 0o600)) }
+        return writes
+    }
+    func importBook(_ preview: AgentKnowledgeCardImport, task: AgentTaskRecord) throws {
+        let scope = try scope(task)
+        try locked(scope.directory) {
+            let writes = try importWrites(preview, task: task)
+            try AgentKnowledgeFileBatch.commit(writes, backup: scope.directory.appendingPathComponent("import-backups/" + UUID().uuidString)) { try self.requireImport(preview, task: task) }
+        }
         notices[scope.root] = "已导入 \(preview.book.cards.count) 张卡片"; onChange?(scope.root)
     }
     func history(_ task: AgentTaskRecord, language: String) throws -> [AgentKnowledgeCardBook] {

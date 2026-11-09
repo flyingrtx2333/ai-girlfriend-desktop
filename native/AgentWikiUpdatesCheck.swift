@@ -92,7 +92,7 @@ import AppKit
             let restoreCitation = try AgentWiki.citation(store: tasks, workspace: workspace.path); try AgentWiki.setCitation(store: tasks, workspace: workspace.path, enabled: true, expected: restoreCitation.signature)
             await tasks.wikiMaintenance.published(taskID: owner, language: "zh", expectedID: published.taskID)
             let exported = try await AgentWiki.previewWikiImport(store: tasks, taskID: owner, language: "zh")
-            checks["automaticExportWritesActualPagesAndRetainsBaseline"] = exported.metadata.documents.count == 2 && exported.metadata.sourceCommit == base && tasks.task(owner)!.events.contains { $0.title == "Wiki 已自动导出" && $0.status == "completed" }
+            checks["automaticExportWritesActualPagesAndRetainsBaseline"] = exported.metadata.documents.count == 2 && exported.metadata.sourceCommit == base && tasks.task(owner)!.events.contains { $0.title == "项目知识已自动导出" && $0.status == "completed" }
             let exportedPage = try files.resolve(root + "/overview.md"), exportedBytes = try files.readData(exportedPage, maximum: 512_000), edited = exportedBytes + Data("\nActual external edit\n".utf8)
             try files.writeData(edited, to: exportedPage); await tasks.wikiMaintenance.published(taskID: owner, language: "zh", expectedID: published.taskID)
             checks["automaticExportPreservesExternalFileEdits"] = try files.readData(exportedPage, maximum: 512_000) == edited && tasks.wikiMaintenance.notice(workspace: files.root.path, language: "zh").contains("未完成")

@@ -100,10 +100,22 @@ struct AgentWikiMaintenanceOptions: Codable {
         do {
             guard try AgentWiki.maintenance(store: store, workspace: root, language: language).options.autoExport else { changed(workspace: root); return }
             guard try AgentWiki.plannedManifest(store: store, taskID: taskID, language: language)?.taskID == expectedID else { throw PetError("Wiki 发布版本已变化，未自动导出") }
-            let count = try await AgentWiki.exportWiki(store: store, taskID: taskID, language: language)
-            notices[key] = "已自动导出 \(count) 页 Wiki"; store.update(taskID) { $0.events.append(AgentEvent(kind: "wiki", title: "Wiki 已自动导出", detail: "\(count) 页 · \(language)", status: "completed")) }
+            if let group = store.task(expectedID)?.wikiJob?.knowledgeGeneration, taskID == expectedID || task.knowledgeJob?.wikiTaskID == expectedID {
+                guard let cardID = group.cardTaskID, try store.knowledgeCards.book(task, language: language).0?.taskID == cardID else { notices[key] = "Wiki 已发布，等待配套卡片后导出"; onChange?(root); return }
+            }
+            let count = try await AgentProjectKnowledgeSharing.export(store: store, taskID: taskID, language: language)
+            notices[key] = "已自动导出 \(count.pages) 页 Wiki · \(count.cards) 张卡片"; store.update(taskID) { $0.events.append(AgentEvent(kind: "wiki", title: "项目知识已自动导出", detail: "\(count.pages) 页 · \(count.cards) 张 · \(language)", status: "completed")) }
         } catch { notices[key] = "Wiki 已发布，自动导出未完成：" + error.localizedDescription; store.update(taskID) { $0.events.append(AgentEvent(kind: "wiki", title: "自动导出未完成", detail: error.localizedDescription, status: "failed")) } }
         onChange?(root); changed(workspace: root)
+    }
+    func cardsPublished(taskID: String, language: String) async {
+        guard let store, let task = store.task(taskID), let root = task.workspace else { return }
+        do {
+            guard try AgentWiki.maintenance(store: store, workspace: root, language: language).options.autoExport,
+                  let wiki = try AgentWiki.plannedManifest(store: store, taskID: taskID, language: language) else { return }
+            if let paired = task.knowledgeJob?.wikiTaskID, wiki.taskID != paired { return }
+            await published(taskID: taskID, language: language, expectedID: wiki.taskID)
+        } catch { notices[root + "\n" + language] = "卡片已发布，自动导出未完成：" + error.localizedDescription; onChange?(root) }
     }
     func notice(workspace: String, language: String) -> String { notices[workspace + "\n" + language] ?? notices[workspace] ?? "" }
     var checkState: [String: Any] { guard CommandLine.arguments.contains("--wiki-updates-check") else { return [:] }; return ["watching": watchers.keys.sorted(), "lastAttempt": lastAttempt, "notices": notices] }

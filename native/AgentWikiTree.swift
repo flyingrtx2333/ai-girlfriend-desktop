@@ -37,6 +37,8 @@ import AppKit
         more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
         let update = NSMenuItem(title: "增量更新…", action: #selector(sharingAction(_:)), keyEquivalent: ""); update.target = self; update.representedObject = "update"; more.menu?.addItem(update)
         let regenerate = NSMenuItem(title: "重新生成 Wiki…", action: #selector(sharingAction(_:)), keyEquivalent: ""); regenerate.target = self; regenerate.representedObject = "regenerate"; more.menu?.addItem(regenerate); more.menu?.addItem(.separator())
+        for (title, value) in [("导出项目知识", "knowledge-export"), ("从项目导入知识…", "knowledge-import"), ("恢复项目知识版本…", "knowledge-restore")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
+        more.menu?.addItem(.separator())
         for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
         more.menu?.addItem(.separator())
         let citation = NSMenuItem(title: "自动引用 Wiki", action: #selector(sharingAction(_:)), keyEquivalent: ""); citation.target = self; citation.representedObject = "citation"; more.menu?.addItem(citation)

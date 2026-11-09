@@ -283,6 +283,7 @@ import UniformTypeIdentifiers
         guard !dirty else { state.stringValue = "请先保存当前文档，草稿已保留"; return }
         if action == "update" { updateWiki(); return }
         if action == "regenerate" { regenerateWiki(); return }
+        if action.hasPrefix("knowledge-") { shareProjectKnowledge(action, language: language); return }
         state.stringValue = action == "export" ? "正在导出 Wiki…" : "正在读取 Wiki…"
         wikiSharingTask = Task { @MainActor [weak self] in
             guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
@@ -309,6 +310,48 @@ import UniformTypeIdentifiers
         }
         updateWikiSharingState()
     }
+    private func shareProjectKnowledge(_ action: String, language: String) {
+        state.stringValue = action == "knowledge-export" ? "正在导出项目知识…" : "正在读取项目知识…"
+        wikiSharingTask = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+            do {
+                if action == "knowledge-export" {
+                    let count = try await AgentProjectKnowledgeSharing.export(store: store, taskID: taskID, language: language)
+                    state.stringValue = "已导出 \(count.pages) 页 Wiki · \(count.cards) 张卡片"; return
+                }
+                try await connectWikiIndex()
+                let restoring = action == "knowledge-restore", preview: AgentProjectKnowledgeImport
+                if restoring {
+                    let versions = try AgentProjectKnowledgeSharing.history(store: store, taskID: taskID, language: language)
+                    guard !versions.isEmpty else { throw PetError("暂无可恢复的项目知识版本") }
+                    let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 480, height: 28)), formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .medium
+                    picker.addItems(withTitles: versions.map { formatter.string(from: $0.created) + " · \($0.wiki?.metadata.documents.count ?? 0) 页 / \($0.cards?.cards.count ?? 0) 张 · " + String($0.id.prefix(8)) })
+                    let alert = NSAlert(); alert.messageText = "选择项目知识版本"; alert.accessoryView = picker; alert.addButton(withTitle: "预览"); alert.addButton(withTitle: "取消")
+                    guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
+                    preview = try await AgentProjectKnowledgeSharing.previewRestore(versions[picker.indexOfSelectedItem], store: store, taskID: taskID, language: language)
+                } else { preview = try await AgentProjectKnowledgeSharing.previewImport(store: store, taskID: taskID, language: language) }
+                guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                let alert = NSAlert(); alert.messageText = "\(restoring ? "恢复" : "导入")项目知识？"
+                var changes = [preview.scope.branch + " · " + (language == "zh" ? "简体中文" : "English")]
+                changes.append(preview.wiki != nil ? "Wiki：\(preview.pageCount) 页" : restoring ? "Wiki：恢复为未发布" : "Wiki：保留当前版本")
+                changes.append(preview.cards != nil ? "知识卡片：\(preview.cardCount) 张" : restoring ? "知识卡片：恢复为未发布" : "知识卡片：保留当前版本")
+                changes.append("替换前的完整知识版本可恢复。")
+                alert.informativeText = changes.joined(separator: "\n")
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 280)), text = NSTextView(frame: scroll.bounds)
+                text.isEditable = false; text.isRichText = false; text.font = .systemFont(ofSize: 12); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true
+                let pages = preview.wiki.map { wiki in wiki.metadata.documents.prefix(30).map { doc in "# Wiki · " + doc.title + "\n" + String(((try? AgentTextFile.decode(wiki.data[doc.file] ?? Data()).text) ?? "").prefix(500)) } } ?? []
+                let cards = preview.cards?.book.cards.map { "# 卡片 · " + $0.title + "\n" + String($0.body.prefix(500)) } ?? []
+                text.string = (pages + cards).joined(separator: "\n\n"); text.setAccessibilityLabel("项目知识导入预览"); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
+                alert.addButton(withTitle: restoring ? "恢复" : "导入"); alert.addButton(withTitle: "取消")
+                guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
+                try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                try await AgentProjectKnowledgeSharing.apply(preview, store: store, taskID: taskID)
+                if activeSection == 6, wikiTree.selectedLanguage == language { wikiTree.show([], selected: nil); refresh() }
+                state.stringValue = "已\(restoring ? "恢复" : "导入")项目知识 · \(preview.pageCount) 页 / \(preview.cardCount) 张"
+            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+        }
+        updateWikiSharingState()
+    }
     private func configureWikiMaintenance(_ action: String) {
         guard let snapshot = wikiMaintenance else { return }
         let language = wikiTree.selectedLanguage, enabling = action == "auto-update" ? !snapshot.options.autoUpdate : !snapshot.options.autoExport
@@ -320,7 +363,7 @@ import UniformTypeIdentifiers
                 if enabling {
                     if action == "auto-update" { try await connectWikiIndex() }
                     let alert = NSAlert(); alert.messageText = action == "auto-update" ? "开启自动更新？" : "开启自动导出？"
-                    alert.informativeText = (language == "zh" ? "简体中文" : "English") + "\n" + (action == "auto-update" ? "应用运行期间，Git 提交变化后自动使用此任务的模型增量更新 Wiki，可能产生模型费用。人工修改的文档先保留，需手动审阅更新。" : "生成、更新或导入发布后，自动导出当前语言到项目共享目录。检测到外部文件修改时停止覆盖。")
+                    alert.informativeText = (language == "zh" ? "简体中文" : "English") + "\n" + (action == "auto-update" ? "应用运行期间，Git 提交变化后自动使用此任务的模型增量更新 Wiki，可能产生模型费用。人工修改的文档先保留，需手动审阅更新。" : "生成、更新或导入发布后，自动导出当前语言的 Wiki 与知识卡片。检测到外部文件修改时停止覆盖。")
                     alert.addButton(withTitle: "开启"); alert.addButton(withTitle: "取消")
                     guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
                 }
