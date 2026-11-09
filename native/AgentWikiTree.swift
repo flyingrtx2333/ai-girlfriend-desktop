@@ -34,6 +34,7 @@ import AppKit
         language.addItems(withTitles: ["简体中文", "English", "旧版"]); language.controlSize = .small; language.target = self; language.action = #selector(changeLanguage); language.setAccessibilityLabel("Wiki 语言")
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")
         more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
+        let update = NSMenuItem(title: "增量更新…", action: #selector(sharingAction(_:)), keyEquivalent: ""); update.target = self; update.representedObject = "update"; more.menu?.addItem(update)
         let regenerate = NSMenuItem(title: "重新生成 Wiki…", action: #selector(sharingAction(_:)), keyEquivalent: ""); regenerate.target = self; regenerate.representedObject = "regenerate"; more.menu?.addItem(regenerate); more.menu?.addItem(.separator())
         for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
         more.menu?.addItem(.separator())
@@ -54,7 +55,7 @@ import AppKit
         language.isEnabled = !busy; more.isEnabled = !busy; plan.isEnabled = !busy
         for item in more.itemArray.dropFirst() where !item.isSeparatorItem {
             let action = item.representedObject as? String
-            item.isEnabled = action == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || action == "open") && (action != "regenerate" || canRegenerate)
+            item.isEnabled = action == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || action == "open") && (!["regenerate", "update"].contains(action ?? "") || canRegenerate)
         }
     }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild() }

@@ -93,4 +93,5 @@ struct AgentWikiJob: Codable {
     var reviewed: [String: String]?
     var pageReads: [String: AgentKnowledgeCardRead]?
     var baseTaskID: String?
+    var update: AgentWikiUpdateJob?
 }

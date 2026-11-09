@@ -9,6 +9,7 @@ struct AgentWikiTransfer: Codable, Equatable {
     var documents: [Document]
     var origin: String
     var resources: [Resource]? = nil
+    var sourceCommit: String? = nil
 }
 struct AgentWikiSnapshot {
     var workspace: String, root: String, pointer: String
@@ -94,7 +95,7 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         result[try files.resolve(from).path] = files.root.appendingPathComponent(to, isDirectory: true)
         return result
     }
-    private static func snapshot(_ store: AgentStore, _ taskID: String, _ language: String) async throws -> AgentWikiSnapshot {
+    static func snapshot(_ store: AgentStore, _ taskID: String, _ language: String) async throws -> AgentWikiSnapshot {
         let scope = try storage(store, taskID, language), pointer = try pointerHash(scope.directory, branch: scope.branch, language: language), view = try view(store: store, taskID: taskID, language: language)
         var data: [String: Data] = [:], documents: [AgentWikiTransfer.Document] = [], total = 0
         for page in view.pages {
@@ -115,11 +116,12 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         guard assets.values.reduce(0, { $0 + $1.count }) <= 64_000_000 else { throw PetError("Wiki 附件超过64MB") }
         let origin = view.manifest?.version == 3 ? "import" : view.manifest == nil ? "legacy" : view.manifest.flatMap { store.task($0.taskID) }?.hasConfirmedWikiCompletion == true ? "generation" : "manual"
         var metadata = AgentWikiTransfer(branch: scope.branch, language: language, sourceRevision: view.manifest?.revision ?? "", sourceHashes: sources, documents: documents, origin: origin)
+        metadata.sourceCommit = view.manifest?.sourceCommit
         metadata.resources = assets.keys.sorted().map { .init(file: $0, sha256: AgentFiles.hash(assets[$0]!)) }; data.merge(assets) { _, resource in resource }
         guard try pointerHash(scope.directory, branch: scope.branch, language: language) == pointer else { throw PetError("读取期间 Wiki 发布版本已变化，请重试") }
         return AgentWikiSnapshot(workspace: scope.files.root.path, root: view.root, pointer: pointer, metadata: metadata, data: data)
     }
-    private static func requireSnapshot(_ expected: AgentWikiSnapshot, store: AgentStore, taskID: String, language: String) throws {
+    static func requireSnapshot(_ expected: AgentWikiSnapshot, store: AgentStore, taskID: String, language: String) throws {
         let scope = try storage(store, taskID, language, writing: true)
         guard scope.files.root.path == expected.workspace, scope.branch == expected.metadata.branch, try pointerHash(scope.directory, branch: scope.branch, language: language) == expected.pointer else { throw PetError("Wiki 工作区、分支或发布版本已变化，请重新预览") }
         let actual = try pages(workspace: scope.files.root.path, root: expected.root)
@@ -187,6 +189,7 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
     static func previewWikiImport(store: AgentStore, taskID: String, language: String) async throws -> AgentWikiImportPreview {
         let scope = try storage(store, taskID, language, writing: true), relative = try sharingPath(language), file = try target(scope.files, relative + "/" + transferMetadata)
         let bytes = try scope.files.readData(file, maximum: 4_000_000), metadata = try JSONDecoder().decode(AgentWikiTransfer.self, from: bytes)
+        guard metadata.sourceCommit == nil || validCommit(metadata.sourceCommit!) else { throw PetError("共享 Wiki 的 Git 提交基线无效") }
         guard metadata.language == language else { throw PetError("共享 Wiki 不是当前选择的语言") }
         _ = try relativeDocuments(metadata, root: relative + "/content")
         let listed = Set(metadata.documents.map(\.file)), actual = try catalog(workspace: scope.files.root.path, root: relative + "/content")
@@ -249,6 +252,7 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
             var value = AgentWikiManifest(taskID: id, revision: preview.metadata.sourceRevision, created: Date(), pages: payloads.filter { documentPaths.contains($0.key) }.mapValues(AgentFiles.hash), sources: preview.metadata.sourceHashes.keys.sorted())
             value.version = 3; value.branch = scope.branch; value.language = preview.language; value.root = importedRoot; value.structure = docs; value.sourceHashes = preview.metadata.sourceHashes; value.origin = restoring ? "restore" : "import"
             value.assets = payloads.filter { !documentPaths.contains($0.key) }.mapValues(AgentFiles.hash)
+            value.sourceCommit = preview.metadata.sourceCommit
             try storage.writeData(JSONEncoder().encode(value), to: pointer, permissions: 0o600, expectedTarget: pointerSignature)
             if !restoring {
                 do { try storage.writeData(JSONEncoder().encode(AgentWikiExportState(hashes: preview.sourceHashes)), to: scope.directory.appendingPathComponent("export-" + key(scope.branch, preview.language) + ".json"), permissions: 0o600) }

@@ -37,6 +37,7 @@ struct AgentWikiRegeneration: Equatable {
         let state = try generationState(store: store, runtime: runtime, sourceID: sourceID, language: language)
         guard state.taskID == expectedID, state.action == "resume", let task = store.task(expectedID), let job = task.wikiJob else { throw PetError("Wiki 生成状态已变化，请刷新后重试") }
         guard try !store.agents.limits(task, store: store).readOnly else { throw PetError("此 Wiki 任务为只读，请重新生成") }
+        guard task.messages.contains(where: \.isHumanInput) else { throw PetError(task.wikiJob?.update == nil ? "任务初始准备未完成，请重新生成" : "更新草稿准备未完成，请重新执行增量更新") }
         try checkScope(task, store: store)
         guard try plannedManifest(store: store, taskID: sourceID, language: language)?.taskID == job.baseTaskID else { throw PetError("Wiki 已由另一操作更新，请重新生成；原草稿已保留") }
         let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)

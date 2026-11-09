@@ -251,6 +251,7 @@ import UniformTypeIdentifiers
             catch { state.stringValue = error.localizedDescription }; return
         }
         guard !dirty else { state.stringValue = "请先保存当前文档，草稿已保留"; return }
+        if action == "update" { updateWiki(); return }
         if action == "regenerate" { regenerateWiki(); return }
         state.stringValue = action == "export" ? "正在导出 Wiki…" : "正在读取 Wiki…"
         wikiSharingTask = Task { @MainActor [weak self] in
@@ -274,6 +275,27 @@ import UniformTypeIdentifiers
                 try Task.checkCancellation(); try await AgentWiki.importWiki(preview, store: store, taskID: taskID, restoring: action == "restore")
                 if activeSection == 6, wikiTree.selectedLanguage == language { wikiTree.show([], selected: nil); refresh() }
                 state.stringValue = "已\(action == "restore" ? "恢复" : "导入") \(preview.metadata.documents.count) 页 Wiki"
+            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+        }
+        updateWikiSharingState()
+    }
+    private func updateWiki() {
+        guard let runtime = wikiRuntime, wikiPlanWindow?.confirmClosing() != false else { return }
+        let language = wikiTree.selectedLanguage; state.stringValue = "正在核对 Wiki 提交差异…"
+        wikiSharingTask = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+            do {
+                try await connectWikiIndex()
+                let preview = try await AgentWiki.previewUpdate(store: store, runtime: runtime, sourceID: taskID, language: language)
+                let alert = NSAlert(); alert.messageText = "增量更新 Wiki？"
+                alert.informativeText = "分支：" + preview.snapshot.metadata.branch + " · " + (language == "zh" ? "简体中文" : "English") + "\n提交 " + String(preview.baseCommit.prefix(8)) + " → " + String(preview.commit.prefix(8)) + " · \(preview.changedPaths.count) 个文件\n使用当前任务模型核对受影响内容，原任务和文档保留。"
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 540, height: 280)), text = NSTextView(frame: scroll.bounds)
+                text.isEditable = false; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 11, weight: .regular); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.string = preview.diff; text.setAccessibilityLabel("Wiki 提交差异预览"); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
+                alert.addButton(withTitle: "更新"); alert.addButton(withTitle: "取消")
+                guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
+                try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                let id = try await AgentWiki.startUpdate(preview, store: store, runtime: runtime, sourceID: taskID)
+                state.stringValue = "已开始增量更新"; onWikiTask?(id)
             } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
         }
         updateWikiSharingState()

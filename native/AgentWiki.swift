@@ -4,6 +4,7 @@ struct AgentWikiManifest: Codable {
     var taskID: String; var revision: String; var created: Date; var pages: [String: String]; var sources: [String]
     var version: Int?, branch: String?, language: String?, root: String?, plan: AgentWikiPlan?
     var structure: [AgentWikiPage]?, sourceHashes: [String: String]?, assets: [String: String]?, origin: String?
+    var sourceCommit: String?
 }
 struct AgentWikiPage: Codable {
     let path: String, title: String
