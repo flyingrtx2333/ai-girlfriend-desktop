@@ -1382,7 +1382,9 @@ final class FormDocumentView: NSView {
             if alert.runModal() == .alertFirstButtonReturn {
                 do { NSWorkspace.shared.activateFileViewerSelecting([try tasks.dataImport.sourceURL(id)]) } catch { setStatus(error.localizedDescription, error: true) }
             }
-        case "fork": saveAgentDraft(); if let next = tasks.fork(id) { selectAgentTask(next) }
+        case "fork":
+            guard saveAgentDraft() else { return }
+            if let next = tasks.fork(id) { selectAgentTask(next) } else if let issue = tasks.writeError { setStatus(issue, error: true) }
         case "archive":
             _ = archiveTasks([id], archived: !task.archived); return
         default: break
@@ -1654,6 +1656,23 @@ final class FormDocumentView: NSView {
     }
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
+    private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {
+        guard agentTaskID == taskID, let tasks = companion?.agentStore else { return false }
+        do {
+            let message = try tasks.replyMessage(taskID: taskID, messageID: messageID, expectedHash: hash, allowStreaming: action == "copy")
+            if action == "copy" {
+                NSPasteboard.general.clearContents(); guard NSPasteboard.general.setString(message.content, forType: .string) else { throw PetError("回复未能复制，请重试") }; return true
+            }
+            if action == "branch" {
+                guard saveAgentDraft() else { return false }
+                guard let id = tasks.fork(taskID, through: messageID, expectedHash: hash) else { throw PetError(tasks.writeError ?? "分支未创建") }
+                selectAgentTask(id); return true
+            }
+            let previous = tasks.organization.replyFeedback(taskID: taskID, message: message)
+            try tasks.setReplyFeedback(taskID: taskID, messageID: messageID, expectedHash: hash, value: previous == action ? nil : action)
+            renderAgentMessages(); return true
+        } catch { renderAgentMessages(); setStatus(error.localizedDescription, error: true); return false }
+    }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
         let keepSearchHitVisible = isMessageSearchVisible
@@ -1759,6 +1778,14 @@ final class FormDocumentView: NSView {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch?.query : nil)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
+            if let row = messageRows[message.id] {
+                let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
+                let canBranch = eligible && !running && task.pendingFileCapture == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+                row.setReplyActions(binding: eligible ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch,
+                    copy: { [weak self] in self?.replyAction("copy", taskID: owner, messageID: message.id, hash: hash) ?? false },
+                    mark: { [weak self] value in _ = self?.replyAction(value, taskID: owner, messageID: message.id, hash: hash) },
+                    branch: { [weak self] in _ = self?.replyAction("branch", taskID: owner, messageID: message.id, hash: hash) })
+            }
             for call in message.toolCalls ?? [] {
                 var visibleCall = call
                 if call.name == "delegate_task", let child = (events[call.id]?.childTaskID).flatMap({ tasks.task($0) }) { visibleCall.displayName = "委派 · " + (child.team?.team.name ?? child.agent?.profile.name ?? child.title) }

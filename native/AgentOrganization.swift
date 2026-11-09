@@ -48,6 +48,7 @@ struct AgentDirectoryEntry: Codable {
 }
 
 @MainActor final class AgentOrganization {
+    private struct ReplyFeedback: Codable { var value: String; var hash: String }
     private struct Document: Codable {
         var directories: [AgentDirectoryEntry] = []
         var selected: [String: String] = [:]
@@ -56,6 +57,7 @@ struct AgentDirectoryEntry: Codable {
         var taskGroups: [AgentCustomTaskGroup]?
         var manualOrders: [String: [String]]?
         var unreadTasks: [String]?
+        var replyFeedback: [String: [String: ReplyFeedback]]?
     }
     private let file: URL
     private var document = Document(), loadIssue: String?
@@ -64,6 +66,15 @@ struct AgentDirectoryEntry: Codable {
     var onChange: (() -> Void)?
     private var unreadTasks = Set<String>()
     func isTaskUnread(_ id: String) -> Bool { unreadTasks.contains(id) }
+    func replyFeedback(taskID: String, message: AgentMessage) -> String? {
+        guard let value = document.replyFeedback?[taskID]?[message.id], value.hash == AgentFiles.hash(Data(message.content.utf8)) else { return nil }; return value.value
+    }
+    func setReplyFeedback(taskID: String, message: AgentMessage, value: String?) throws {
+        guard UUID(uuidString: taskID) != nil, UUID(uuidString: message.id) != nil, message.isReply, value == nil || ["helpful", "unhelpful"].contains(value!) else { throw PetError("回复反馈无效") }
+        var next = document, values = next.replyFeedback ?? [:], replies = values[taskID] ?? [:]
+        replies[message.id] = value.map { ReplyFeedback(value: $0, hash: AgentFiles.hash(Data(message.content.utf8))) }
+        values[taskID] = replies.isEmpty ? nil : replies; next.replyFeedback = values.isEmpty ? nil : values; try save(next)
+    }
     func setTaskUnread(_ id: String, _ unread: Bool) throws {
         guard UUID(uuidString: id) != nil else { throw PetError("任务编号无效") }
         guard unreadTasks.contains(id) != unread else { return }
@@ -84,6 +95,7 @@ struct AgentDirectoryEntry: Codable {
         next.directories.removeAll { $0.archiveID.map(workspaceIDs.contains) == true }
         next.selected = next.selected.filter { !taskIDs.contains($0.value) }
         next.unreadTasks?.removeAll { taskIDs.contains($0) }
+        next.replyFeedback = next.replyFeedback?.filter { !taskIDs.contains($0.key) }
         if let selected { next.selected[selected.organizationMode.rawValue] = selected.id }
         if next.taskGroups != nil { for i in next.taskGroups!.indices { next.taskGroups![i].taskIDs.removeAll { taskIDs.contains($0) } } }
         try save(next)
@@ -98,6 +110,7 @@ struct AgentDirectoryEntry: Codable {
             guard try files.entryMetadata(file).signature == before else { throw PetError("任务组织记录正在变化，请重试") }
             document = try JSONDecoder().decode(Document.self, from: data)
             guard (document.unreadTasks ?? []).allSatisfy({ UUID(uuidString: $0) != nil }) else { throw PetError("未读任务编号无效") }
+            guard (document.replyFeedback ?? [:]).allSatisfy({ task, replies in UUID(uuidString: task) != nil && replies.allSatisfy { id, value in UUID(uuidString: id) != nil && ["helpful", "unhelpful"].contains(value.value) && value.hash.count == 64 && value.hash.allSatisfy(\.isHexDigit) } }) else { throw PetError("回复反馈记录无效") }
             unreadTasks = Set(document.unreadTasks ?? [])
             openedSignature = before
         } catch { loadIssue = "任务组织记录无法读取，原文件已保留：" + error.localizedDescription }
@@ -159,6 +172,10 @@ struct AgentDirectoryEntry: Codable {
         let write: AgentKnowledgeFileWrite
         let accept: () -> Void
     }
+    func prepareSelection(_ task: AgentTaskRecord) throws -> ArchiveChange? {
+        guard document.selected[task.organizationMode.rawValue] != task.id else { return nil }
+        var next = document; next.selected[task.organizationMode.rawValue] = task.id; return try prepareDocument(next, label: "创建分支")
+    }
     func prepareArchive(_ changes: [AgentDirectoryEntry], tasks: [AgentTaskRecord], selected: AgentTaskRecord?) throws -> ArchiveChange? {
         guard !changes.isEmpty || selected.map({ document.selected[$0.organizationMode.rawValue] != $0.id }) == true else { return nil }
         if let loadIssue { throw PetError(loadIssue) }
@@ -169,10 +186,14 @@ struct AgentDirectoryEntry: Codable {
             if entry.archiveID != nil, next.taskViews?[entry.mode.rawValue]?.workspace == entry.path { next.taskViews?[entry.mode.rawValue]?.workspace = nil }
         }
         if let selected { next.selected[selected.organizationMode.rawValue] = selected.id }
+        return try prepareDocument(next, label: "归档")
+    }
+    private func prepareDocument(_ next: Document, label: String) throws -> ArchiveChange {
+        if let loadIssue { throw PetError(loadIssue) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(next); guard data.count <= 1_000_000 else { throw PetError("任务组织记录过大") }
         let files = try AgentFiles(workspace: file.deletingLastPathComponent().path)
-        let write = try AgentKnowledgeFileWrite(files: files, path: file.path, data: data, permissions: 0o600, label: "归档")
+        let write = try AgentKnowledgeFileWrite(files: files, path: file.path, data: data, permissions: 0o600, label: label)
         guard write.signature == openedSignature else { throw PetError("任务组织记录已变化，请重新打开应用后重试") }
         return ArchiveChange(write: write, accept: { [self] in
             document = next; revision += 1

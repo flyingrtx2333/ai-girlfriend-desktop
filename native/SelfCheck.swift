@@ -79,6 +79,7 @@ import WebKit
         if CommandLine.arguments.contains("--markdown-check") { await runAgentMarkdownCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-cards-check") { await runAgentKnowledgeCardCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-check") { await runAgentKnowledgeCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--reply-policy-check") { await runAgentReplyPolicyCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--terminal-check") { await runAgentTerminalCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--import-check") { await runAgentImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--organization-check") { await runAgentOrganizationCheck(output); NSApp.terminate(nil); return }

@@ -97,10 +97,22 @@ struct AgentCanvasCapture: Codable, Sendable {
         guard AgentFiles.hash(data) == hash, let code = String(data: data, encoding: .utf8) else { throw PetError("历史源码校验失败") }
         return try update(id, source: code, expected: expected, taskID: taskID)
     }
-    func copyForFork(sourceID: String, targetID: String, records: [AgentCanvasRecord]) throws {
+    func copyForFork(sourceID: String, targetID: String, records: [AgentCanvasRecord], historical: Bool = false) throws {
         var created: [URL] = []
         do {
             for record in records {
+                if historical {
+                    let from = try AgentFiles(workspace: directory(record.id, taskID: sourceID).path), target = try directory(record.id, taskID: targetID)
+                    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); created.append(target)
+                    let files = try AgentFiles(workspace: target.path)
+                    for hash in Set(record.versions.map(\.hash) + [record.hash]) {
+                        guard hash.count == 64, hash.allSatisfy(\.isHexDigit) else { throw PetError("历史画布版本无效") }
+                        let data = try from.readData(from.literalURL("versions/" + hash + ".canvas.tsx"), maximum: 256_000)
+                        guard AgentFiles.hash(data) == hash else { throw PetError("历史画布源码校验失败") }
+                        try files.writeData(data, to: files.literalURL("versions/" + hash + ".canvas.tsx"), permissions: 0o600)
+                        if hash == record.hash { try files.writeData(data, to: files.literalURL("document.canvas.tsx"), permissions: 0o600) }
+                    }; continue
+                }
                 _ = try source(record.id, taskID: sourceID)
                 let source = try directory(record.id, taskID: sourceID), target = try directory(record.id, taskID: targetID)
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

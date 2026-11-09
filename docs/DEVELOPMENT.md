@@ -37,6 +37,8 @@ npm run native:open
 
 需 Apple 芯片、macOS 14+ 和 Swift 6.1 及以上的 Xcode 工具链。构建要求本机有效的 Apple 签名证书；多证书时通过 `BLUEFATFISH_SIGN_IDENTITY` 选择。保持证书与 bundle identifier 稳定，避免更新后失去钥匙串身份。证书、私钥和签名配置不提交。
 
+回复分支的权限检查可用已签名候选运行 `open -n <候选应用> --args --check <独立临时目录> --reply-policy-check`。它通过实际原生读写、终端和自动化任务检查委派／自动化分支的工具、联网、审批及只读范围，并重新加载实际记录；模型请求在发送前阻止。`reply-policy-result.json` 保留每项检查和实际工具结果。复制、反馈、历史画布与 Skill 文件另用保留的真实对话在窗口验收，不生成模拟模型回复。
+
 电脑操作使用 `npm run native:check-desktop -- --live-agent --hold-ui`。脚本创建独立配置和一份公开纯文本文档，原生检查先核对默认关闭、配置冲突、只读／受限 Agent 与工具目录，不请求系统权限、不调用模型。窗口停在「电脑操作」；需用户确认启用并授予辅助功能与屏幕录制权限，再通过系统文本编辑打开输出的公开文档。检查者确认准备完成后，在该次输出目录创建 `start-desktop-live`，真实模型仅通过桌面工具更改审阅人、保存并回读；Node 独立核对文件字节、工具范围、模型计量与生产配置。`finish-desktop-ui` 结束窗口验收，`stop-desktop-check` 停止当前检查。应用确已终止后可用 `--resume <原输出目录>` 继续同一真实任务，不替换原始要求或请求回执。普通检查不带 `--live-agent`，仅证明权限入口和配置边界，不代表实际桌面操作已验收。
 
 构建脚本先构建 `native-mcp` 动态库，再构建原有 Swift 5 AppKit 入口及语音桥接，部署目标保持 macOS 14。Swift Package 使用原生构建后端以保留可直接链接的模块路径；产物包含 SDK、System、Logging、EventSource 的许可证。包内不携带 Node；用户配置的 stdio 服务使用本机运行环境。依赖升级时一并更新并核对 `Package.resolved`。

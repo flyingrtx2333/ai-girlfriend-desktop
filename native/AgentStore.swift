@@ -111,6 +111,7 @@ import Foundation
         if var job = value.wikiJob { job.plan = AgentWikiPlan(); job.reviewed = nil; job.pageReads = nil; job.update?.diff = ""; job.update?.retained = [:]; job.update?.assets = [:]; job.update?.baseFiles = [:]; job.update?.changesRead = nil; value.wikiJob = job }
         value.knowledgeJob?.writingNotes = nil
         value.agent?.profile.instructions = ""
+        value.agent?.teamCeiling?.instructions = ""
         value.team?.team.instructions = ""
         return value
     }
@@ -353,32 +354,64 @@ import Foundation
         for id in newlyArchived { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id); onArchive?(id) }
         for value in values { offices.changed(value.id) }; trimCache(keeping: selection ?? ""); worktreeRetention.tasksChanged()
     }
-    @discardableResult func fork(_ id: String) -> String? {
-        guard var original = task(id), original.status != .running, original.pendingFileCapture == nil else { return nil }
-        guard organization.archiveID(original.workspace, mode: original.organizationMode) == nil else { writeError = "请先恢复此任务的工作区"; return nil }
-        original.parentID = id; original.id = UUID().uuidString; original.title += " · 分支"
-        original.agent?.ownerID = nil
+    func replyMessage(taskID: String, messageID: String, expectedHash: String, allowStreaming: Bool = false) throws -> AgentMessage {
+        guard refreshDeletedRecords(), let record = task(taskID), let message = record.messages.first(where: { $0.id == messageID && $0.isReply }), AgentFiles.hash(Data(message.content.utf8)) == expectedHash,
+              allowStreaming || record.status != .running || record.messages.last?.id != messageID else { throw PetError("回复已变化，请重新打开后重试") }
+        let files = try AgentFiles(workspace: directory.path)
+        guard try files.fileHash(files.literalURL(taskID + ".json"), maximum: 20_000_000) == taskHashes[taskID] else { throw PetError("任务记录已被其他窗口或应用修改，请重新打开后重试") }
+        return message
+    }
+    func setReplyFeedback(taskID: String, messageID: String, expectedHash: String, value: String?) throws {
+        let message = try replyMessage(taskID: taskID, messageID: messageID, expectedHash: expectedHash)
+        try organization.setReplyFeedback(taskID: taskID, message: message, value: value); onChange?()
+    }
+    @discardableResult func fork(_ id: String, through messageID: String? = nil, expectedHash: String? = nil) -> String? {
+        let targetID = UUID().uuidString, target = directory.appendingPathComponent(targetID + ".json")
         do {
+            guard refreshDeletedRecords(), var original = task(id), original.status != .running, original.pendingFileCapture == nil else { throw PetError("任务正在执行或记录不可用，未创建分支") }
+            guard organization.archiveID(original.workspace, mode: original.organizationMode) == nil else { throw PetError("请先恢复此任务的工作区") }
+            let files = try AgentFiles(workspace: directory.path), source = try files.literalURL(id + ".json"), sourceHash = try files.fileHash(source, maximum: 20_000_000)
+            guard sourceHash == taskHashes[id] else { throw PetError("原任务已变化，请重新打开后重试") }
+            try agents.detachForFork(&original, store: self)
+            if let messageID {
+                guard let expectedHash else { throw PetError("缺少原回复版本") }
+                _ = try replyMessage(taskID: id, messageID: messageID, expectedHash: expectedHash)
+                original = try AgentReplyBranch.prefix(original, through: messageID)
+            } else { original.branchMessageID = nil }
+            original.parentID = id; original.id = targetID; original.title += " · 分支"; original.agent?.ownerID = nil
             try AgentAttachments.copyForFork(store: self, sourceID: id, targetID: original.id, files: original.attachments ?? [])
-            try canvases.copyForFork(sourceID: id, targetID: original.id, records: original.canvases ?? [])
+            try canvases.copyForFork(sourceID: id, targetID: original.id, records: original.canvases ?? [], historical: messageID != nil)
             try extensions.copyForFork(store: self, sourceID: id, task: &original)
+            for call in original.pendingCalls { original.messages.append(AgentMessage(role: "tool", content: "原任务在此处中断，分支尚未执行该操作。", toolCallID: call.id)) }
+            if messageID == nil { original.flushQueuedInputs() }
+            original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
+            original.workspaceArchiveID = nil
+            original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
+            original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
+            original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
+            original.hookRewakePromptID = nil; original.hookRewakeCount = nil
+            for i in original.events.indices where original.events[i].status == "running" && original.events[i].hook?.asynchronous == true {
+                original.events[i].status = "stopped"; original.events[i].hook?.delivery = "fork-history"
+                original.events[i].detail += "\n分支保留记录，不接管原任务的后台执行"
+            }
+            original.created = Date(); original.updated = original.created; original.activityAt = original.created
+            var next = tasks; next.insert(Self.metadata(original), at: 0)
+            let data = try encoder.encode(original), index = try encoder.encode(Index(selectedID: original.id, tasks: next))
+            var writes = [try AgentKnowledgeFileWrite(files: files, path: target.path, data: data, missing: true, permissions: 0o600, label: "创建分支"),
+                          try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, missing: indexHash == nil, permissions: 0o600, label: "创建分支")]
+            let selection = try organization.prepareSelection(original); if let selection { writes.append(selection.write) }
+            try AgentKnowledgeFileBatch.commit(writes, backup: directory.deletingLastPathComponent().appendingPathComponent("branch-transactions/" + original.id), label: "创建分支") {
+                guard self.refreshDeletedRecords(), try files.fileHash(source, maximum: 20_000_000) == sourceHash, !self.deletions.taskIDs.contains(id) else { throw PetError("原任务已变化，未创建分支") }
+            }
+            tasks = next; cache[original.id] = original; taskHashes[original.id] = AgentFiles.hash(data); indexHash = AgentFiles.hash(index); selection?.accept()
+            taskSearchRevision &+= 1; taskSearchRevisions[original.id] = taskSearchRevision
+            applyingArchive = true; selectedID = original.id; applyingArchive = false; writeError = nil
+            trimCache(keeping: original.id); worktreeRetention.tasksChanged(); onChange?(); return original.id
+        } catch {
+            // A failed rollback may retain a complete record for recovery; keep its resources with it.
+            if !FileManager.default.fileExists(atPath: target.path) { try? FileManager.default.removeItem(at: directory.appendingPathComponent(targetID)) }
+            writeError = error.localizedDescription; return nil
         }
-        catch { writeError = error.localizedDescription; return nil }
-        for call in original.pendingCalls { original.messages.append(AgentMessage(role: "tool", content: "原任务在此处中断，分支尚未执行该操作。", toolCallID: call.id)) }
-        original.flushQueuedInputs()
-        original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
-        original.workspaceArchiveID = nil
-        original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
-        original.recap = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
-        original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
-        original.hookRewakePromptID = nil; original.hookRewakeCount = nil
-        for i in original.events.indices where original.events[i].status == "running" && original.events[i].hook?.asynchronous == true {
-            original.events[i].status = "stopped"; original.events[i].hook?.delivery = "fork-history"
-            original.events[i].detail += "\n分支保留记录，不接管原任务的后台执行"
-        }
-        original.created = Date(); original.updated = Date(); tasks.insert(Self.metadata(original), at: 0); cache[original.id] = original; selectedID = original.id
-        do { try save(original.id) } catch { writeError = error.localizedDescription }
-        trimCache(keeping: original.id); return original.id
     }
     func backupDirectory(_ id: String) throws -> URL {
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }

@@ -39,6 +39,7 @@ struct AgentMessage: Codable, Identifiable {
     var extensionReferences: [AgentExtensionReference]?
     var hookRejected: Bool?
     var isHumanInput: Bool { role == "user" && nativeContext != true && hookRejected != true }
+    var isReply: Bool { role == "assistant" && nativeContext != true && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (toolCalls ?? []).isEmpty }
     var isImportedContext: Bool { nativeContext == true && (importedContext == true || content.hasPrefix("[Codex历史记录，仅作资料") || content.hasPrefix("[Qoder历史记录，仅作资料")) }
     var wire: [String: Any] {
         let references = (attachmentIDs ?? []).isEmpty ? "" : "\n[附件编号：" + (attachmentIDs ?? []).joined(separator: ", ") + "]"
@@ -111,6 +112,7 @@ struct AgentTaskResult: Codable, Identifiable {
         return Self(id: task.status.rawValue + ":" + key, messageID: task.status == .completed ? message?.id : nil, eventID: event?.id, summary: task.summary, status: task.status, created: date, plan: task.mode == .plan && !task.plan.isEmpty && task.status == .completed ? task.plan.map(\.title) : nil)
     }
 }
+struct AgentInheritedLimits: Codable { var readOnly: Bool; var network: Bool; var permission: AgentPermissionMode }
 struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
     var title: String
@@ -135,6 +137,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var archived = false, pinned = false
     var workspaceArchiveID: String?
     var parentID: String?
+    var branchMessageID: String?
+    var inheritedLimits: AgentInheritedLimits?
     var model = ""
     var modelOverride: String?
     var modelReceipts: [AgentModelReceipt]?

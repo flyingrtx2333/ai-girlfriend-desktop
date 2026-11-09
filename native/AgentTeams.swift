@@ -83,6 +83,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         var current = task, seen = Set<String>()
         while seen.insert(current.id).inserted, seen.count <= 5 {
             if let value = current.team?.team { return value }
+            if let value = current.agent?.teamCeiling { return value }
             guard let owner = current.agent?.ownerID else { return nil }
             guard let parent = store.task(owner), !parent.archived else { throw PetError("团队所属任务不可用") }; current = parent
         }
