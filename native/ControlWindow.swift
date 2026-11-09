@@ -7,6 +7,23 @@ final class ComposerView: NSTextView {
     var onInputChanged: (() -> Void)?
     var onExtensionKey: ((UInt16) -> Bool)?
     var onEditingEnded: (() -> Void)?
+    var attachmentOwner: (() -> String?)?
+    var onImportFiles: (([URL], String) -> Bool)?
+    private var dragOwner: String?
+    override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.readablePasteboardTypes.filter { $0 != .fileURL } }
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.acceptableDragTypes.filter { $0 != .fileURL } }
+    override func dragOperation(for draggingInfo: NSDraggingInfo, type: NSPasteboard.PasteboardType) -> NSDragOperation {
+        guard type == .fileURL else { return super.dragOperation(for: draggingInfo, type: type) }
+        guard isEditable, let owner = attachmentOwner?(), dragOwner == nil || dragOwner == owner else { return [] }
+        dragOwner = owner; _ = super.dragOperation(for: draggingInfo, type: type); return .copy
+    }
+    override func cleanUpAfterDragOperation() { dragOwner = nil; super.cleanUpAfterDragOperation() }
+    override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .fileURL else { return super.readSelection(from: pasteboard, type: type) }
+        guard isEditable, let owner = attachmentOwner?(), dragOwner == nil || dragOwner == owner,
+              let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
+        return onImportFiles?(urls, owner) ?? false
+    }
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder(); if result { onEditingEnded?() }; return result
     }
@@ -149,6 +166,15 @@ final class FormDocumentView: NSView {
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        composer.attachmentOwner = { [weak self] in
+            guard let self, selectedTab == "chat", attachmentImport == nil, let task = currentAgentTask,
+                  !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { return nil }
+            return task.id
+        }
+        composer.onImportFiles = { [weak self] urls, owner in
+            guard let self, let tasks = self.companion?.agentStore, self.agentTaskID == owner, self.saveAgentDraft() else { return false }
+            return self.beginAttachmentImport(urls, store: tasks, taskID: owner) != nil
+        }
         taskSidebar.onOpenSearch = { [weak self] id, query, message in self?.selectAgentTask(id, searchQuery: query, messageID: message) }
         taskSidebar.onSearchQueryChanged = { [weak self] in self?.clearMessageSearchHighlight() }
         taskSidebar.onSearchVersion = { [weak companion] id in companion?.agentStore?.taskSearchRevisions[id] ?? 0 }
@@ -1220,21 +1246,6 @@ final class FormDocumentView: NSView {
             self.beginAttachmentImport(urls, store: store, taskID: owner)
         }
     }
-    func beginAttachmentImport(_ urls: [URL], store: AgentStore, taskID: String) {
-        importTaskID = taskID
-        attachmentImport = Task { [weak self] in
-            guard let self else { return }; var failure: String?
-            do {
-                for url in urls {
-                    try Task.checkCancellation(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    _ = try await AgentAttachments.importFile(url, store: store, taskID: taskID)
-                }
-            } catch { failure = Task.isCancelled ? "已取消添加" : error.localizedDescription }
-            attachmentImport = nil; importTaskID = nil; renderMessages()
-            if let failure { setStatus(failure, error: true) }
-        }
-        renderMessages()
-    }
     func renderDraftAttachments(_ task: AgentTaskRecord) {
         let owner = task.id, importing = importTaskID == owner && attachmentImport != nil
         let ids = task.draftAttachmentIDs ?? [], values = (task.attachments ?? []).filter { ids.contains($0.id) }
@@ -1905,6 +1916,25 @@ final class FormDocumentView: NSView {
 }
 
 @MainActor extension ControlWindow {
+    @discardableResult func beginAttachmentImport(_ urls: [URL], store: AgentStore, taskID: String) -> Task<Void, Never>? {
+        do {
+            guard attachmentImport == nil else { throw PetError("请先等待当前附件添加完成") }
+            try AgentAttachments.validateImportFiles(urls, store: store, taskID: taskID)
+        } catch { setStatus(error.localizedDescription, error: true); return nil }
+        importTaskID = taskID
+        let job = Task { @MainActor [weak self] in
+            guard let self else { return }; var failure: String?
+            do {
+                for url in urls {
+                    try Task.checkCancellation(); let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                    _ = try await AgentAttachments.importFile(url, store: store, taskID: taskID)
+                }
+            } catch { failure = Task.isCancelled ? "已取消添加" : error.localizedDescription }
+            attachmentImport = nil; importTaskID = nil; renderMessages()
+            if let failure { setStatus(failure, error: true) }
+        }
+        attachmentImport = job; renderMessages(); return job
+    }
     @objc private func showWorktrees() {
         showWorktreePolicySettings()
     }

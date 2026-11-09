@@ -84,6 +84,7 @@ import WebKit
         if CommandLine.arguments.contains("--round-rollback-check") { await runAgentRoundRollbackCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--edit-resend-check") { await runAgentEditResendCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-check") { await runAgentSideTaskCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--attachment-drop-check") { await runAgentAttachmentDropCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-reopen-check") { await runAgentSideTaskReopenCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-session-check") { await runAgentSideTaskSessionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-session-observe") { await runAgentSideTaskSessionObserver(output); NSApp.terminate(nil); return }
