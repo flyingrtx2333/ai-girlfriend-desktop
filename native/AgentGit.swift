@@ -43,7 +43,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
-    static func metadata(workspace: String?, creating: Bool = false) throws -> URL {
+    nonisolated static func metadata(workspace: String?, creating: Bool = false) throws -> URL {
         let files = try AgentFiles(workspace: workspace), entry = try files.resolve(".git")
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDirectory) else {

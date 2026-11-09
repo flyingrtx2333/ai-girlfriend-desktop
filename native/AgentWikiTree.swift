@@ -154,7 +154,7 @@ import AppKit
         cell.toolTip = node.path; cell.setAccessibilityLabel(node.title + (node.directory ? "，文件夹" : "，文档")); return cell
     }
     var checkState: [String: Any] {
-        guard CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") else { return [:] }
+        guard CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
         return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden, "citationAvailable": citationAvailable, "citationEnabled": more.itemArray.first(where: { $0.representedObject as? String == "citation" })?.state == .on]
     }
 }

@@ -13,7 +13,7 @@ struct AgentWikiPage: Codable {
 
 @MainActor enum AgentWiki {
     static let required = ["index.md", "architecture.md", "workflows.md", "conventions.md"].map { ".bluefatfish/wiki/" + $0 }
-    static func pages(workspace: String?, root relativeRoot: String = ".bluefatfish/wiki") throws -> [String] {
+    nonisolated static func pages(workspace: String?, root relativeRoot: String = ".bluefatfish/wiki") throws -> [String] {
         let files = try AgentFiles(workspace: workspace), root = files.root.appendingPathComponent(relativeRoot, isDirectory: true)
         guard relativeRoot == ".bluefatfish/wiki" || relativeRoot.hasPrefix(".bluefatfish/wiki/.generated/") || ["zh", "en"].contains(where: { relativeRoot == ".bluefatfish/repowiki/" + $0 + "/content" }) else { throw PetError("Wiki 目录范围无效") }
         let metadata = try files.entryMetadata(root)
@@ -61,7 +61,10 @@ struct AgentWikiPage: Codable {
         }
     }
     static func manifest(store: AgentStore, taskID: String) throws -> AgentWikiManifest? {
-        let index = try AgentProjectIndex(workspace: store.task(taskID)?.workspace, storage: store.directory)
+        try legacyManifest(workspace: store.task(taskID)?.workspace, storage: store.directory)
+    }
+    nonisolated static func legacyManifest(workspace: String?, storage: URL) throws -> AgentWikiManifest? {
+        let index = try AgentProjectIndex(workspace: workspace, storage: storage)
         guard let data = try? Data(contentsOf: index.directory.appendingPathComponent("wiki.json")) else { return nil }
         return try JSONDecoder().decode(AgentWikiManifest.self, from: data)
     }
@@ -69,9 +72,12 @@ struct AgentWikiPage: Codable {
         let task = store.task(taskID)
         if store.tasks.contains(where: { $0.kind == "wiki" && $0.wikiJob == nil && $0.workspace == task?.workspace && [.ready, .running, .waiting].contains($0.status) && !$0.archived }) { return "生成中" }
         guard let manifest = try manifest(store: store, taskID: taskID) else { return "未校验" }
-        let index = try AgentProjectIndex(workspace: store.task(taskID)?.workspace, storage: store.directory)
+        return try legacyStatus(manifest, workspace: task?.workspace, storage: store.directory)
+    }
+    nonisolated static func legacyStatus(_ manifest: AgentWikiManifest, workspace: String?, storage: URL) throws -> String {
+        let index = try AgentProjectIndex(workspace: workspace, storage: storage)
         guard manifest.revision == index.snapshot()?.revision else { return "需更新" }
-        guard Set(manifest.pages.keys) == Set(try pages(workspace: task?.workspace)) else { return "已编辑" }
+        guard Set(manifest.pages.keys) == Set(try pages(workspace: workspace)) else { return "已编辑" }
         for (path, hash) in manifest.pages {
             guard let data = try? index.files.readData(index.files.resolve(path), maximum: 256_000), AgentFiles.hash(data) == hash else { return "已编辑" }
         }

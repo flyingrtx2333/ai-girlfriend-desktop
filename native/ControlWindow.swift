@@ -101,6 +101,7 @@ final class FormDocumentView: NSView {
     private let branchControl = AgentWorkbenchButton()
     private var branchTask: Task<Void, Never>?, branchKey: String?
     private var knowledgeWindow: AgentKnowledgeWindow?
+    private var repoWikiWindow: AgentRepoWikiWindow?
     private var knowledgeCardWindow: AgentKnowledgeCardWindow?
     private var knowledgeLibraryWindow: AgentKnowledgeLibraryWindow?
     private var extensionWindow: AgentExtensionWindow?
@@ -1364,9 +1365,47 @@ final class FormDocumentView: NSView {
         gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func showAgentKnowledge() {
-        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        guard let store = companion?.agentStore else { return }
+        if repoWikiWindow == nil {
+            repoWikiWindow = AgentRepoWikiWindow(store: store)
+            repoWikiWindow?.onOpen = { [weak self] project, language, action in
+                guard let self else { throw PetError("任务窗口已关闭") }; try self.openRepoWikiProject(project, language: language, action: action)
+            }
+        } else { repoWikiWindow?.reload() }
+        repoWikiWindow?.showWindow(nil); repoWikiWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    private func openRepoWikiProject(_ project: AgentRepoWikiProject, language: String, action: String) throws {
+        guard let store = companion?.agentStore, ["wiki", "cards", "search"].contains(action), ["zh", "en"].contains(language) else { throw PetError("项目操作无效") }
+        let files = try AgentFiles(workspace: project.workspace)
+        _ = try AgentProjectIndex(workspace: files.root.path, storage: store.directory)
+        if action == "wiki", let existing = recordWindow {
+            existing.window?.performClose(nil)
+            guard existing.window?.isVisible != true else { throw PetError("请先保存或撤回已打开文档的修改") }; recordWindow = nil
+        }
+        let candidates = store.tasks.filter { task in !task.archived && task.agent == nil && task.team == nil && task.automation == nil && !task.isProjectDocumentation && task.kind != "hook" && task.workspace.map { URL(fileURLWithPath: $0).standardizedFileURL.path == files.root.path } == true }
+        let preferred = candidates.first { $0.id == project.taskID } ?? candidates.max { $0.updated < $1.updated }
+        let id: String
+        if let source = preferred.flatMap({ store.task($0.id) }), try AgentFiles(workspace: source.workspace).root == files.root { id = source.id }
+        else {
+            saveAgentDraft(); if let displayedTask { try store.save(displayedTask) }
+            let previous = store.selectedID
+            id = store.create(title: "项目知识 · " + project.name, workspace: files.root.path, workMode: project.mode)
+            store.selectedID = previous
+            if let previous = previous.flatMap(store.task) { try store.organization.remember(previous) }
+            try store.save(id)
+        }
+        switch action {
+        case "wiki":
+            if store.task(id)?.wikiLanguage != language { store.update(id) { $0.wikiLanguage = language }; try store.save(id) }
+            presentAgentRecords(section: 6, taskID: id)
+        case "cards": showKnowledgeCards(taskID: id, language: language)
+        default: showProjectIndex(taskID: id)
+        }
+    }
+    private func showProjectIndex(taskID id: String) {
+        guard let store = companion?.agentStore, store.task(id) != nil else { return }
         knowledgeWindow?.window?.performClose(nil); knowledgeWindow = AgentKnowledgeWindow(store: store, taskID: id)
-        knowledgeWindow?.onOpenWiki = { [weak self] in self?.selectAgentTask(id); self?.presentAgentRecords(section: 6) }
+        knowledgeWindow?.onOpenWiki = { [weak self] in self?.presentAgentRecords(section: 6, taskID: id) }
         knowledgeWindow?.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
         knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
     }
@@ -1396,8 +1435,8 @@ final class FormDocumentView: NSView {
         }
         presentAgentRecords(section: section); recordWindow?.selectItem(section: section, value: value)
     }
-    func presentAgentRecords(section: Int) {
-        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+    func presentAgentRecords(section: Int, taskID: String? = nil) {
+        guard let store = companion?.agentStore, let id = taskID ?? store.selectedID else { return }
         if let existing = recordWindow {
             existing.window?.performClose(nil)
             if existing.window?.isVisible == true { return }
@@ -1458,6 +1497,7 @@ final class FormDocumentView: NSView {
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
+        repoWikiWindow?.refreshLiveState()
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         let taskView = tasks.organization.taskView(task.organizationMode)
@@ -1809,6 +1849,16 @@ extension ControlWindow {
 
 @MainActor extension ControlWindow {
     func showAgentTask(_ id: String) { selectAgentTask(id) }
+    func prepareRepoWikiOverviewCheck() { showAgentKnowledge() }
+    func repoWikiOverviewReadback() async -> [String: Any] {
+        guard CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
+        var value = repoWikiWindow?.checkState ?? [:]
+        value["selectedTask"] = companion?.agentStore?.selectedID as Any? ?? NSNull(); value["draft"] = composer.string
+        value["tasks"] = companion?.agentStore?.tasks.map { ["id": $0.id, "workspace": $0.workspace as Any? ?? NSNull(), "kind": $0.kind as Any? ?? NSNull()] as [String: Any] } ?? []
+        value["projectSearchOpen"] = knowledgeWindow?.window?.isVisible == true
+        if let recordWindow, recordWindow.window?.isVisible == true { value["document"] = await recordWindow.markdownEditingReadback() }
+        return value
+    }
     func refreshDataImport() { dataImportView?.refresh() }
     func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
     func switchWorkMode(_ mode: AgentWorkMode) {

@@ -1,6 +1,6 @@
 import Foundation
 
-enum AgentWorkMode: String, Codable, CaseIterable {
+enum AgentWorkMode: String, Codable, CaseIterable, Sendable {
     case coding, general
     var title: String { self == .coding ? "编程" : "通用" }
     var directoryTitle: String { self == .coding ? "工作区" : "文件夹" }

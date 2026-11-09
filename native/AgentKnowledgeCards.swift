@@ -103,11 +103,14 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
     }
     func scope(_ task: AgentTaskRecord) throws -> (root: String, branch: String, directory: URL) {
         guard let store else { throw PetError("知识卡片存储已关闭") }
-        let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory), root = index.files.root.path
+        return try Self.scope(workspace: task.workspace, gitDirectory: task.gitDirectory, storage: store.directory)
+    }
+    nonisolated static func scope(workspace: String?, gitDirectory: String?, storage: URL) throws -> (root: String, branch: String, directory: URL) {
+        let index = try AgentProjectIndex(workspace: workspace, storage: storage), root = index.files.root.path
         let entry = try index.files.resolve(".git")
         guard FileManager.default.fileExists(atPath: entry.path) else { return (root, "folder", index.directory.appendingPathComponent("knowledge-cards")) }
         let metadata = try AgentGit.metadata(workspace: root)
-        guard metadata.path == root || metadata.path.hasPrefix(root + "/") || task.gitDirectory == metadata.path else { throw PetError("请先连接当前工作区的 Git 元数据") }
+        guard metadata.path == root || metadata.path.hasPrefix(root + "/") || gitDirectory == metadata.path else { throw PetError("请先连接当前工作区的 Git 元数据") }
         let values = try entry.resourceValues(forKeys: [.isDirectoryKey])
         let headDirectory: URL
         if values.isDirectory == true { headDirectory = entry }

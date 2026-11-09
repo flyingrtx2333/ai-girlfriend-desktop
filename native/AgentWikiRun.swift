@@ -4,13 +4,13 @@ import Foundation
     static let languages = ["zh", "en", "legacy"]
     private static var finalizing: Set<String> = []
     static func isFinalizing(_ id: String) -> Bool { finalizing.contains(id) }
-    static func root(branch: String, language: String, taskID: String) -> String { ".bluefatfish/wiki/.generated/" + AgentFiles.hash(Data(branch.utf8)) + "/" + language + "/" + taskID }
-    static func validSharedFile(_ path: String) -> Bool {
+    nonisolated static func root(branch: String, language: String, taskID: String) -> String { ".bluefatfish/wiki/.generated/" + AgentFiles.hash(Data(branch.utf8)) + "/" + language + "/" + taskID }
+    nonisolated static func validSharedFile(_ path: String) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !path.isEmpty && path.utf8.count <= 1000 && parts.count <= 32 && !path.hasPrefix("/") && !path.contains("\\") && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && parts.allSatisfy { !$0.isEmpty && !$0.hasPrefix(".") } && !AgentFiles.sensitive(path)
     }
-    static func validPageFile(_ path: String) -> Bool { validSharedFile(path) && ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()) }
-    static func manifestDocuments(_ value: AgentWikiManifest) throws -> [AgentWikiPage] {
+    nonisolated static func validPageFile(_ path: String) -> Bool { validSharedFile(path) && ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()) }
+    nonisolated static func manifestDocuments(_ value: AgentWikiManifest) throws -> [AgentWikiPage] {
         guard let root = value.root else { throw PetError("Wiki 清单缺少目录") }
         if value.version == 2, let plan = value.plan {
             let paths = try plan.paths(root: root)
@@ -35,7 +35,11 @@ import Foundation
     }
     static func plannedManifest(store: AgentStore, taskID: String, language: String) throws -> AgentWikiManifest? {
         guard ["zh", "en"].contains(language), let task = store.task(taskID) else { throw PetError("Wiki 语言或任务无效") }
-        let scope = try store.knowledgeCards.scope(task), url = scope.directory.deletingLastPathComponent().appendingPathComponent("wiki").appendingPathComponent(AgentFiles.hash(Data((scope.branch + "\n" + language).utf8)) + ".json")
+        return try plannedManifest(scope: store.knowledgeCards.scope(task), language: language)
+    }
+    nonisolated static func plannedManifest(scope: (root: String, branch: String, directory: URL), language: String) throws -> AgentWikiManifest? {
+        guard ["zh", "en"].contains(language) else { throw PetError("Wiki 语言无效") }
+        let url = scope.directory.deletingLastPathComponent().appendingPathComponent("wiki").appendingPathComponent(AgentFiles.hash(Data((scope.branch + "\n" + language).utf8)) + ".json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 1_000_000), value = try JSONDecoder().decode(AgentWikiManifest.self, from: data)
         guard [2, 3].contains(value.version ?? 0), UUID(uuidString: value.taskID) != nil, value.language == language, value.branch == scope.branch, value.root == root(branch: scope.branch, language: language, taskID: value.taskID), Set(try manifestDocuments(value).map(\.path)) == Set(value.pages.keys) else { throw PetError("Wiki 清单版本或分支范围无效，原文件未修改") }
@@ -62,16 +66,19 @@ import Foundation
         let scope = try store.knowledgeCards.scope(task)
         if store.tasks.contains(where: { $0.kind == "wiki" && $0.workspace == task.workspace && $0.wikiJob?.branch == scope.branch && $0.wikiJob?.language == language && [.ready, .running, .waiting].contains($0.status) && !$0.archived }) { return "生成中" }
         guard let value = try plannedManifest(store: store, taskID: taskID, language: language) else { return language == "zh" ? try status(store: store, taskID: taskID) : "未生成" }
-        let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
+        return try publicationStatus(value, workspace: task.workspace, storage: store.directory)
+    }
+    nonisolated static func publicationStatus(_ value: AgentWikiManifest, workspace: String?, storage: URL) throws -> String {
+        let index = try AgentProjectIndex(workspace: workspace, storage: storage)
         if value.version == 3 {
-            let current = try pages(workspace: task.workspace, root: value.root!)
+            let current = try pages(workspace: workspace, root: value.root!)
             guard Set(current) == Set(value.pages.keys), value.pages.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 512_000)) == $0.value }), (value.assets ?? [:]).allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 20_000_000)) == $0.value }) else { return "已编辑" }
             guard let hashes = value.sourceHashes, !hashes.isEmpty else { return "待核对" }
             guard index.snapshot()?.revision == value.revision, hashes.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 512_000)) == $0.value }) else { return "需更新" }
             return value.origin == "restore" ? "已恢复" : "已导入"
         }
         guard index.snapshot()?.revision == value.revision else { return "需更新" }
-        let current = try pages(workspace: task.workspace, root: value.root!)
+        let current = try pages(workspace: workspace, root: value.root!)
         guard Set(current) == Set(value.pages.keys), value.pages.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 256_000)) == $0.value }) else { return "已编辑" }
         guard (value.assets ?? [:]).allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 20_000_000)) == $0.value }) else { return "已编辑" }
         return "已生成"
