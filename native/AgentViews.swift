@@ -75,7 +75,7 @@ private final class AgentTaskTable: NSTableView {
         }
         create.keyEquivalent = "n"; create.keyEquivalentModifierMask = .command
         searchButton.keyEquivalent = "k"; searchButton.keyEquivalentModifierMask = .command; searchButton.toolTip = "搜索任务 · ⌘K"
-        search.placeholderString = "搜索任务"; search.setAccessibilityLabel("搜索任务"); search.delegate = self; search.controlSize = .small; search.isHidden = true
+        search.placeholderString = "搜索任务"; search.setAccessibilityLabel("搜索任务"); search.delegate = self; search.target = self; search.action = #selector(applyFilter); search.controlSize = .small; search.isHidden = true
         workModePicker.addItems(withTitles: AgentWorkMode.allCases.map(\.title)); workModePicker.isBordered = false; workModePicker.font = .systemFont(ofSize: 13, weight: .medium); workModePicker.target = self; workModePicker.action = #selector(changeWorkMode); workModePicker.setAccessibilityLabel("工作模式"); workModePicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
         heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = .secondaryLabelColor
         viewMenu.addItem(withTitle: ""); viewMenu.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "任务视图"); viewMenu.isBordered = false; viewMenu.setAccessibilityLabel("任务视图")
@@ -238,7 +238,7 @@ private final class AgentTaskTable: NSTableView {
         return nil
     }
     private func childOwner(_ task: AgentTaskRecord) -> String? { task.agent?.ownerID ?? (task.kind == "hook" ? task.parentID : nil) }
-    private func applyFilter() {
+    @objc private func applyFilter() {
         guard !draggingRows else { return }
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date(), calendar = Calendar.current
