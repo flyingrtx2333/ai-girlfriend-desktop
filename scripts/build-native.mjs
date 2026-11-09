@@ -53,6 +53,12 @@ await writeFile(path.join(contents, 'Info.plist'), `<?xml version="1.0" encoding
 <key>CFBundleShortVersionString</key><string>${version}</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
+<key>CFBundleDocumentTypes</key><array><dict>
+<key>CFBundleTypeName</key><string>任务附件</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>CFBundleTypeExtensions</key><array>${['txt', 'md', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml', 'toml', 'xml', 'html', 'htm', 'svg', 'log', 'swift', 'py', 'js', 'jsx', 'ts', 'tsx', 'css', 'sql', 'sh', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'png', 'jpg', 'jpeg', 'heic', 'heif', 'tif', 'tiff', 'webp', 'gif', 'pdf', 'docx', 'xlsx', 'pptx'].map(type => `<string>${type}</string>`).join('')}</array>
+</dict></array>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

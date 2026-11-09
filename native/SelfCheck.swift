@@ -49,6 +49,9 @@ import WebKit
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
+                        value["fileOpenEvents"] = fileOpenEvents
+                        value["fileOpenPending"] = pendingFileOpens.count
+                        value["fileOpenImporting"] = fileOpenJob != nil
                         value["tasks"] = tasks.tasks.map { ["id": $0.id, "title": $0.title, "mode": $0.organizationMode.rawValue, "archived": $0.archived, "unread": tasks.organization.isTaskUnread($0.id)] as [String: Any] }
                         try write(value, "native-manual-ui-" + pid + "-" + name + ".json")
                     }; await wait(0.25)
@@ -85,6 +88,7 @@ import WebKit
         if CommandLine.arguments.contains("--edit-resend-check") { await runAgentEditResendCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-check") { await runAgentSideTaskCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--attachment-drop-check") { await runAgentAttachmentDropCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--file-open-check") { await runAgentFileOpenCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-reopen-check") { await runAgentSideTaskReopenCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-session-check") { await runAgentSideTaskSessionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--side-task-session-observe") { await runAgentSideTaskSessionObserver(output); NSApp.terminate(nil); return }

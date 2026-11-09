@@ -1923,6 +1923,7 @@ final class FormDocumentView: NSView {
 }
 
 @MainActor extension ControlWindow {
+    var isImportingAttachments: Bool { attachmentImport != nil }
     @discardableResult func beginAttachmentImport(_ urls: [URL], store: AgentStore, taskID: String) -> Task<Void, Never>? {
         do {
             guard attachmentImport == nil else { throw PetError("请先等待当前附件添加完成") }

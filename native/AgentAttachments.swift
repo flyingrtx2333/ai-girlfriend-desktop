@@ -25,7 +25,10 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     static func validateImportFiles(_ urls: [URL], store: AgentStore, taskID: String) throws {
         guard let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("当前任务不能添加附件") }
         try store.sideTasks.requireOpen(task)
-        guard !urls.isEmpty, urls.count + (task.draftAttachmentIDs?.count ?? 0) <= 6 else { throw PetError("每条消息最多 6 个附件") }
+        try validateSources(urls, draftCount: task.draftAttachmentIDs?.count ?? 0)
+    }
+    static func validateSources(_ urls: [URL], draftCount: Int = 0) throws {
+        guard !urls.isEmpty, urls.count + draftCount <= 6 else { throw PetError("每条消息最多 6 个附件") }
         for url in urls {
             let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             _ = try validatedSource(url)
