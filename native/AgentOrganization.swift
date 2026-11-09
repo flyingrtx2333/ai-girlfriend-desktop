@@ -126,8 +126,8 @@ struct AgentDirectoryEntry: Codable {
         let write: AgentKnowledgeFileWrite
         let accept: () -> Void
     }
-    func prepareArchive(_ changes: [AgentDirectoryEntry], tasks: [AgentTaskRecord]) throws -> ArchiveChange? {
-        guard !changes.isEmpty else { return nil }
+    func prepareArchive(_ changes: [AgentDirectoryEntry], tasks: [AgentTaskRecord], selected: AgentTaskRecord?) throws -> ArchiveChange? {
+        guard !changes.isEmpty || selected.map({ document.selected[$0.organizationMode.rawValue] != $0.id }) == true else { return nil }
         if let loadIssue { throw PetError(loadIssue) }
         var next = document
         for entry in changes {
@@ -135,6 +135,7 @@ struct AgentDirectoryEntry: Codable {
             next.directories.removeAll { $0.path == entry.path && $0.mode == entry.mode }; next.directories.append(entry)
             if entry.archiveID != nil, next.taskViews?[entry.mode.rawValue]?.workspace == entry.path { next.taskViews?[entry.mode.rawValue]?.workspace = nil }
         }
+        if let selected { next.selected[selected.organizationMode.rawValue] = selected.id }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(next); guard data.count <= 1_000_000 else { throw PetError("任务组织记录过大") }
         let files = try AgentFiles(workspace: file.deletingLastPathComponent().path)

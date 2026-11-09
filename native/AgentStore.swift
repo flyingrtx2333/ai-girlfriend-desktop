@@ -242,7 +242,7 @@ import Foundation
         let previousMode = selected?.organizationMode
         let selection = next.first(where: { $0.id == selectedID && !$0.archived })?.id ?? next.first(where: { !$0.archived && $0.organizationMode == previousMode })?.id
         let indexWrite = try AgentKnowledgeFileWrite(files: files, path: "index.json", data: encoder.encode(Index(selectedID: selection, tasks: next)), expectedHash: indexHash, missing: indexHash == nil, permissions: 0o600, label: "归档")
-        let organizationChange = try organization.prepareArchive(directories, tasks: tasks)
+        let organizationChange = try organization.prepareArchive(directories, tasks: tasks, selected: next.first { $0.id == selection })
         writes.append(indexWrite); if let organizationChange { writes.append(organizationChange.write) }
         let backup = directory.deletingLastPathComponent().appendingPathComponent("archive-transactions/" + UUID().uuidString)
         try AgentKnowledgeFileBatch.commit(writes, backup: backup, label: "归档操作") {
@@ -255,7 +255,7 @@ import Foundation
         applyingArchive = true; selectedID = selection; applyingArchive = false
         writeError = nil
         for id in newlyArchived { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id); onArchive?(id) }
-        for value in values { offices.changed(value.id) }; worktreeRetention.tasksChanged()
+        for value in values { offices.changed(value.id) }; trimCache(keeping: selection ?? ""); worktreeRetention.tasksChanged()
     }
     @discardableResult func fork(_ id: String) -> String? {
         guard var original = task(id), original.status != .running, original.pendingFileCapture == nil else { return nil }
