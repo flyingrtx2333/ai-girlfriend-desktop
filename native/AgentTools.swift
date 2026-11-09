@@ -352,7 +352,7 @@ import Foundation
         case "load_tools":
             guard let groups = args["groups"] as? [String], groups.count <= Self.groups.count, groups.allSatisfy({ Self.groups[$0] != nil }) else { throw PetError("可用工具组：" + Self.groups.keys.sorted().joined(separator: ", ")) }
             let selected = Array(Set(groups)).sorted(); store.update(taskID) { $0.toolGroups = selected }
-            let visible = try store.agents.filterDefinitions(Self.definitions(mode: task.mode, kind: task.kind, groups: selected), task: task, store: store).compactMap { ($0["function"] as? [String: Any])?["name"] as? String }
+            let visible = try store.agents.filterDefinitions(Self.definitions(mode: task.mode, kind: task.kind, groups: selected), task: task, store: store).compactMap { ($0["function"] as? [String: Any])?["name"] as? String }.filter { $0 != "project_wiki" || AgentWiki.citationAllowed(store: store, task: task) }
             return AgentToolResult(text: "当前模式可用工具：" + visible.joined(separator: ", ") + "。下一轮使用实际工具；权限与审批方式未改变。")
         case "list_attachments":
             let files = (task.attachments ?? []).filter { task.availableAttachmentIDs.contains($0.id) }
@@ -418,6 +418,7 @@ import Foundation
             return AgentToolResult(text: String(decoding: try encoder.encode(result), as: UTF8.self), sources: result.matches.map(\.source))
         case "plan_wiki": return try AgentWiki.setPlan(call, store: store, task: task)
         case "project_wiki":
+            guard AgentWiki.citationAllowed(store: store, task: task) else { throw PetError("当前项目已关闭 Wiki 自动引用，可在 Wiki 更多菜单开启") }
             let language = task.wikiJob?.language ?? args["language"] as? String ?? task.wikiLanguage ?? "zh"
             let view = try AgentWiki.view(store: store, taskID: taskID, language: language), pages = view.pages.map(\.path), status = try AgentWiki.status(store: store, taskID: taskID, language: language)
             if let path = args["path"] as? String, !path.isEmpty {

@@ -13,6 +13,7 @@ import AppKit
     private var applying = false, selectedPath: String?
     private var rootPath = ".bluefatfish/wiki"
     private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil), more = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var citationAvailable = false
     var canSelect: ((String) -> Bool)?, onSelect: ((String) -> Void)?, onRefresh: (() -> Void)?
     var onLanguage: ((String) -> Bool)?, onPlan: (() -> Void)?
     var onSharing: ((String) -> Void)?
@@ -34,6 +35,8 @@ import AppKit
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")
         more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
         for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
+        more.menu?.addItem(.separator())
+        let citation = NSMenuItem(title: "自动引用 Wiki", action: #selector(sharingAction(_:)), keyEquivalent: ""); citation.target = self; citation.representedObject = "citation"; more.menu?.addItem(citation)
         more.widthAnchor.constraint(equalToConstant: 25).isActive = true
         let options = NSStackView(views: [language, NSView(), plan, more]); options.spacing = 4
         for child in [toolbar, options, scroll, empty] { addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
@@ -41,9 +44,16 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func setLanguage(_ value: String) { language.selectItem(at: ["zh", "en", "legacy"].firstIndex(of: value) ?? 0) }
+    func setCitationState(_ enabled: Bool?, problem: String? = nil) {
+        citationAvailable = enabled != nil
+        let item = more.itemArray.first { $0.representedObject as? String == "citation" }
+        item?.state = enabled == true ? .on : .off; item?.toolTip = problem
+    }
     func setSharingState(busy: Bool, writable: Bool) {
         language.isEnabled = !busy; more.isEnabled = !busy; plan.isEnabled = !busy
-        for item in more.itemArray.dropFirst() { item.isEnabled = !busy && selectedLanguage != "legacy" && (writable || item.representedObject as? String == "open") }
+        for item in more.itemArray.dropFirst() where !item.isSeparatorItem {
+            item.isEnabled = item.representedObject as? String == "citation" ? !busy && citationAvailable : !busy && selectedLanguage != "legacy" && (writable || item.representedObject as? String == "open")
+        }
     }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild() }
     private func rebuild() {
@@ -134,6 +144,6 @@ import AppKit
     }
     var checkState: [String: Any] {
         guard CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") else { return [:] }
-        return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden]
+        return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden, "citationAvailable": citationAvailable, "citationEnabled": more.itemArray.first(where: { $0.representedObject as? String == "citation" })?.state == .on]
     }
 }

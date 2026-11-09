@@ -28,6 +28,7 @@ import UniformTypeIdentifiers
     private var wikiPlanWindow: AgentWikiPlanWindow?
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: NSAlert?
+    private var wikiCitation: (enabled: Bool, signature: String, workspace: String)?
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0, saving = false
     private var fileBOM: Bool { fileFormat.bom }
@@ -135,6 +136,7 @@ import UniformTypeIdentifiers
     }
     private func refreshWikiCatalog() {
         guard sections.selectedSegment == 6, store.task(taskID) != nil else { return }
+        updateWikiSharingState()
         do {
             let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage), pages = view.pages; items = pages.map { ($0.title, $0.path) }; wikiTree.show(pages, selected: selection, root: view.root)
             if let selection, !pages.contains(where: { $0.path == selection }) { state.stringValue = dirty ? "文档已移出目录，草稿已保留" : "文档已移出目录" }
@@ -171,6 +173,10 @@ import UniformTypeIdentifiers
     }
     private func updateWikiSharingState() {
         let task = store.task(taskID), writable = task.map { !$0.archived && $0.kind != "hook" && (try? store.agents.limits($0, store: store).readOnly) == false } ?? false
+        do {
+            if let workspace = task?.workspace { wikiCitation = try AgentWiki.citation(store: store, workspace: workspace); wikiTree.setCitationState(wikiCitation?.enabled) }
+            else { wikiCitation = nil; wikiTree.setCitationState(nil) }
+        } catch { wikiCitation = nil; wikiTree.setCitationState(nil, problem: error.localizedDescription) }
         wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable)
         generate.isEnabled = wikiSharingTask == nil && onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
     }
@@ -201,8 +207,16 @@ import UniformTypeIdentifiers
         alert.addButton(withTitle: restoring ? "恢复" : "导入"); alert.addButton(withTitle: "取消"); return try await presentWikiAlert(alert) == .alertFirstButtonReturn
     }
     private func shareWiki(_ action: String) {
-        guard wikiSharingTask == nil, ["zh", "en"].contains(wikiTree.selectedLanguage), let task = store.task(taskID), let workspace = task.workspace else { return }
+        guard wikiSharingTask == nil, (action == "citation" || ["zh", "en"].contains(wikiTree.selectedLanguage)), let task = store.task(taskID), let workspace = task.workspace else { return }
         let language = wikiTree.selectedLanguage
+        if action == "citation" {
+            do {
+                guard let snapshot = wikiCitation, try AgentFiles(workspace: workspace).root.path == snapshot.workspace else { throw PetError("Wiki 引用设置或项目已变化，请刷新后重试") }
+                try AgentWiki.setCitation(store: store, workspace: workspace, enabled: !snapshot.enabled, expected: snapshot.signature)
+                state.stringValue = "Wiki 自动引用已" + (snapshot.enabled ? "关闭" : "开启") + (dirty ? " · 草稿未保存" : "")
+            } catch { state.stringValue = error.localizedDescription }
+            updateWikiSharingState(); return
+        }
         if action == "open" {
             do { let files = try AgentFiles(workspace: workspace), folder = try files.resolve(AgentWiki.sharingPath(language)); guard FileManager.default.fileExists(atPath: folder.path) else { throw PetError("共享目录尚未创建，请先导出") }; NSWorkspace.shared.open(folder) }
             catch { state.stringValue = error.localizedDescription }; return
