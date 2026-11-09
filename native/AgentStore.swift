@@ -31,6 +31,7 @@ import Foundation
     private(set) var selectionFallbackMode = AgentWorkMode.coding
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
+    var onChange: (() -> Void)?
     var archiveIsBusy: ((String) -> Bool)?
     var selectedID: String? { didSet {
         if !applyingArchive {
@@ -224,6 +225,7 @@ import Foundation
         let data = try encoder.encode(Index(selectedID: selectedID, tasks: tasks)); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         indexHash = AgentFiles.hash(data)
+        onChange?()
     }
     func prepareDeletion(_ ids: [String], workspaceIDs: [String] = []) throws -> AgentTaskDeletionPlan {
         guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }

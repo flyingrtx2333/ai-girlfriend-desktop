@@ -61,6 +61,7 @@ struct AgentDirectoryEntry: Codable {
     private var document = Document(), loadIssue: String?
     private var openedSignature = "missing"
     private(set) var revision = 0
+    var onChange: (() -> Void)?
     private var unreadTasks = Set<String>()
     func isTaskUnread(_ id: String) -> Bool { unreadTasks.contains(id) }
     func setTaskUnread(_ id: String, _ unread: Bool) throws {
@@ -111,7 +112,7 @@ struct AgentDirectoryEntry: Codable {
         do { try files.writeData(data, to: file, permissions: 0o600, expectedTarget: openedSignature) }
         catch { throw PetError("任务组织记录未保存，请重新打开应用后重试：" + error.localizedDescription) }
         openedSignature = try files.entryMetadata(file).signature
-        document = value; unreadTasks = Set(value.unreadTasks ?? []); revision += 1
+        document = value; unreadTasks = Set(value.unreadTasks ?? []); revision += 1; onChange?()
     }
     func remember(_ task: AgentTaskRecord) throws {
         guard document.selected[task.organizationMode.rawValue] != task.id else { return }

@@ -13,23 +13,25 @@ import AppKit
         if tasks.deletions.pendingCount > 0 {
             Task { @MainActor [weak self] in
                 let issue = await tasks.deletions.cleanup()
-                if let issue { self?.control.setStatus(issue, error: true) }; self?.control.scheduleRender()
+                if let issue { self?.inputControl.setStatus(issue, error: true) }; self?.refreshTaskWindows()
             }
         }
         tasks.knowledgeCards.runtime = runtime
         tasks.wikiMaintenance.runtime = runtime
-        tasks.wikiMaintenance.onChange = { [weak self] _ in self?.control.scheduleRender() }
-        tasks.knowledgeCards.onChange = { [weak self] root in self?.control.refreshKnowledgeCards(workspace: root) }
-        tasks.dataImport.onChange = { [weak self] in self?.control.refreshDataImport(); self?.control.scheduleRender() }
-        _ = tasks.mcp.observeContent { [weak self] in self?.control.scheduleRender() }
+        tasks.onChange = { [weak self] in self?.refreshTaskWindows() }
+        tasks.organization.onChange = { [weak self] in self?.refreshTaskWindows() }
+        tasks.wikiMaintenance.onChange = { [weak self] _ in self?.refreshTaskWindows() }
+        tasks.knowledgeCards.onChange = { [weak self] root in for window in self?.taskControls ?? [] { window.refreshKnowledgeCards(workspace: root) } }
+        tasks.dataImport.onChange = { [weak self] in for window in self?.taskControls ?? [] { window.refreshDataImport() }; self?.refreshTaskWindows() }
+        _ = tasks.mcp.observeContent { [weak self] in self?.refreshTaskWindows() }
         tasks.browser.onDraftCapture = { [weak self] id, shot, marks, note in
             guard let self else { throw PetError("任务窗口已关闭") }
-            try await self.control.attachBrowserCapture(shot, marks: marks, note: note, taskID: id)
+            try await self.taskControl(for: id).attachBrowserCapture(shot, marks: marks, note: note, taskID: id)
         }
         runtime.onChange = { [weak self] id in
             guard let self else { return }
-            self.control.scheduleRender(); self.control.refreshAutomationBadge(); self.refreshVoiceBusy()
-            if let task = tasks.task(id), task.kind == AgentKnowledgeCards.kind, task.status != .running, let root = task.workspace { self.control.refreshKnowledgeCards(workspace: root) }
+            self.refreshTaskWindows(); self.refreshVoiceBusy()
+            if let task = tasks.task(id), task.kind == AgentKnowledgeCards.kind, task.status != .running, let root = task.workspace { self.taskControls.forEach { $0.refreshKnowledgeCards(workspace: root) } }
             if let task = tasks.task(id), task.kind == "wiki", [.failed, .stopped].contains(task.status), let root = task.workspace { tasks.wikiMaintenance.changed(workspace: root) }
             self.refreshAgentAnimation()
             if !self.selectedAgentBusy { self.startPendingVoiceListen() }
@@ -37,7 +39,7 @@ import AppKit
         tasks.projectChanges.onChange = { [weak runtime] id in runtime?.onChange?(id) }
         tasks.canvases.onChange = { [weak runtime] id in runtime?.onChange?(id) }
         tasks.canvases.onDraftCapture = { [weak self] id, shot, marks, note in
-            guard let self else { throw PetError("任务窗口已关闭") }; try await self.control.attachCanvasCapture(shot, marks: marks, note: note, taskID: id)
+            guard let self else { throw PetError("任务窗口已关闭") }; try await self.taskControl(for: id).attachCanvasCapture(shot, marks: marks, note: note, taskID: id)
         }
         runtime.onComplete = { [weak self] id, text in
             guard let self else { return }
@@ -54,18 +56,18 @@ import AppKit
                             if let root = tasks.task(id)?.workspace { tasks.knowledgeCards.notices[root] = error.localizedDescription }
                         }
                     }
-                    if let root = tasks.task(id)?.workspace { self?.control.refreshKnowledgeCards(workspace: root); tasks.knowledgeCards.changed(workspace: root) }
-                    self?.control.scheduleRender(); self?.refreshAgentAnimation(); self?.refreshVoiceBusy()
+                    if let root = tasks.task(id)?.workspace { self?.taskControls.forEach { $0.refreshKnowledgeCards(workspace: root) }; tasks.knowledgeCards.changed(workspace: root) }
+                    self?.refreshTaskWindows(); self?.refreshAgentAnimation(); self?.refreshVoiceBusy()
                     if tasks.task(id)?.status == .completed { self?.completeAgentResponse(id: id, text: text) }
                 }
             } else { self.completeAgentResponse(id: id, text: text) }
         }
         tasks.automations.onNotice = { [weak self] run in
-            guard let self, !self.closing else { return }; self.control.refreshAutomationBadge()
+            guard let self, !self.closing else { return }; self.taskControls.forEach { $0.refreshAutomationBadge() }
             if self.checkDirectory == nil { self.automationNotifications.post(run) }
         }
-        automationNotifications.onOpen = { [weak self] id in self?.control.show(tab: "chat"); self?.control.showAgentTask(id) }
-        tasks.worktreeRetention.onChange = { [weak self] in self?.control.refreshWorktreeRetention() }
+        automationNotifications.onOpen = { [weak self] id in guard let self else { return }; let window = self.taskControl(for: id); window.showAgentTask(id); window.show(tab: "chat") }
+        tasks.worktreeRetention.onChange = { [weak self] in for window in self?.taskControls ?? [] { window.refreshWorktreeRetention() } }
         if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume(); tasks.wikiMaintenance.resume() }
     }
     private func completeAgentResponse(id: String, text: String) {

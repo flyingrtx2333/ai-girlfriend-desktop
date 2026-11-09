@@ -38,6 +38,7 @@ import UniformTypeIdentifiers
     private var wikiMaintenance: (options: AgentWikiMaintenanceOptions, signature: String, workspace: String)?
     private var wikiMaintenanceNotice = ""
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
+    private var openedFiles: [String] = []
     private var dirty = false, activeSection = 0, saving = false
     func requireDeletionAllowed(_ ids: Set<String>) throws {
         if ids.contains(taskID), dirty || saving || wikiSharingTask != nil { throw PetError("请先保存或关闭此任务未保存或正在处理的记录窗口") }
@@ -131,7 +132,9 @@ import UniformTypeIdentifiers
         switch sections.selectedSegment {
         case 0:
             items = []; text.string = task.plan.enumerated().map { index, step in "\(step.status == "completed" ? "✓" : step.status == "in_progress" ? "◉" : "○") \(index + 1). \(step.title)" }.joined(separator: "\n\n")
-        case 1: items = task.artifacts.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) } + (task.canvases ?? []).map { ($0.title, $0.reference) }
+        case 1:
+            var seen = Set<String>()
+            items = (task.artifacts + openedFiles).filter { seen.insert($0).inserted }.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) } + (task.canvases ?? []).map { ($0.title, $0.reference) }
         case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
         case 4:
@@ -645,12 +648,22 @@ import UniformTypeIdentifiers
         load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func chooseOffice() {
-        guard let window, let workspace = store.task(taskID)?.workspace else { return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = (AgentOffice.formats + ["mp4", "webm"]).compactMap { UTType(filenameExtension: $0) }; panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
+        guard let window, let workspace = store.task(taskID)?.workspace, canLeave() else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let file = panel.url, let self else { return }
-            if AgentVideoSnapshot.supports(file) { do { let files = try AgentFiles(workspace: workspace); try self.showVideo(files.resolve(file.path), files: files, separate: true) } catch { self.state.stringValue = error.localizedDescription } }
-            else { self.showOffice(file.path) }
+            do {
+                let files = try AgentFiles(workspace: workspace)
+                guard let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("任务工作区已变化，请重新打开文件") }
+                let safe = try files.resolve(file.path)
+                guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能打开敏感文件") }
+                if AgentVideoSnapshot.supports(safe) { try self.showVideo(safe, files: files, separate: true) }
+                else if AgentOffice.supports(safe.path) { self.showOffice(safe.path) }
+                else {
+                    if !self.openedFiles.contains(safe.path) { self.openedFiles.append(safe.path) }
+                    self.selectItem(section: 1, value: safe.path)
+                }
+            } catch { self.state.stringValue = error.localizedDescription }
         }
     }
     @objc private func createOffice() {

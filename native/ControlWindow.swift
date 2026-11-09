@@ -31,7 +31,7 @@ final class FormDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
-@MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
+@MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
@@ -88,6 +88,8 @@ final class FormDocumentView: NSView {
     var agentTaskID: String? { displayedTask ?? companion?.agentStore?.selectedID }
     private var currentAgentTask: AgentTaskRecord? { agentTaskID.flatMap { companion?.agentStore?.task($0) } }
     private var displayedWorkMode = AgentWorkMode.coding
+    let taskWindowNumber: Int
+    private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
     private var taskModelWindow: AgentTaskModelWindow?
@@ -129,8 +131,9 @@ final class FormDocumentView: NSView {
     private var taskNavigation: [String] = [], taskNavigationIndex = -1, navigatingTaskHistory = false
     private var lastInspectorTransitionDuration: TimeInterval = 0
 
-    init(companion: AppDelegate) {
+    init(companion: AppDelegate, taskID: String? = nil, windowNumber: Int = 1) {
         self.companion = companion
+        taskWindowNumber = windowNumber; displayedTask = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: companion.usesAgent ? 1200 : 980, height: companion.usesAgent ? 774 : 700),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
@@ -143,16 +146,19 @@ final class FormDocumentView: NSView {
         build()
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         refreshPreferences()
-        if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; composer.string = task.draft ?? ""; taskNavigation = [task.id]; taskNavigationIndex = 0 }
+        if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
-        companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
-        companion.onWakeChange = { [weak self] enabled, status in
-            self?.wakeEnabled.state = enabled ? .on : .off; self?.wakeStatus.stringValue = status
-            self?.sidebarWake.stringValue = enabled ? status : "语音未开启"; self?.listenButton.title = enabled ? "立即聆听" : "开启语音"
-            self?.stopRecordingButton.isEnabled = enabled; self?.voiceStopButton.isEnabled = enabled
-            self?.updateWorkbenchVoice()
+        if windowNumber == 1 {
+            companion.onScaleChange = { [weak companion] value in for window in companion?.taskControls ?? [] { window.scale.doubleValue = value; window.sizeValue.stringValue = "\(Int((value * 100).rounded()))%" } }
+            companion.onWakeChange = { [weak companion] enabled, status in
+                for window in companion?.taskControls ?? [] {
+                    window.wakeEnabled.state = enabled ? .on : .off; window.wakeStatus.stringValue = status
+                    window.sidebarWake.stringValue = enabled ? status : "语音未开启"; window.listenButton.title = enabled ? "立即聆听" : "开启语音"
+                    window.stopRecordingButton.isEnabled = enabled; window.voiceStopButton.isEnabled = enabled; window.updateWorkbenchVoice()
+                }
+            }
+            companion.screenCompanion.onChange = { [weak companion] state in for window in companion?.taskControls ?? [] { window.updateScreenStatus(state) } }
         }
-        companion.screenCompanion.onChange = { [weak self] in self?.updateScreenStatus($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -451,6 +457,7 @@ final class FormDocumentView: NSView {
         if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
         let unread = companion?.agentStore?.organization.isTaskUnread(task.id) == true, read = NSMenuItem(title: unread ? "标记已读" : "标记未读", action: #selector(taskMenuAction(_:)), keyEquivalent: "")
         read.target = self; read.representedObject = [task.id, unread ? "read" : "unread"]; menu.addItem(read)
+        let newWindow = NSMenuItem(title: "在新窗口打开", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); newWindow.target = self; newWindow.representedObject = [task.id, "new-window"]; menu.addItem(newWindow)
         menu.addItem(.separator())
         let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
         let recap = NSMenuItem(title: "任务回顾", action: #selector(showTaskRecap), keyEquivalent: ""); recap.target = self; menu.addItem(recap)
@@ -480,7 +487,8 @@ final class FormDocumentView: NSView {
         if agentTaskID == taskID { saveAgentDraft() }
         mcpContentWindow?.window?.performClose(nil)
         mcpContentWindow = AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
-            guard let self, let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
+            guard let self, companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
+            guard let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
             let visible = agentTaskID == taskID && self.displayedTask == taskID
             let draft = visible ? self.composer.string : previous.draft ?? ""
             let combined = draft + (text.isEmpty ? "" : (draft.isEmpty ? "" : "\n\n") + text)
@@ -973,6 +981,7 @@ final class FormDocumentView: NSView {
         }
         if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(taskID: agentTaskID); return }
         if companion.send(composer.string, attachmentIDs: files, taskID: agentTaskID) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
+        else if companion.usesAgent, let error = companion.agentRuntime?.submissionError { setStatus(error, error: true) }
     }
     @objc private func clear() {
         if let id = agentTaskID { agentTaskAction(id, action: "archive") }
@@ -1031,6 +1040,7 @@ final class FormDocumentView: NSView {
     func windowDidDeminiaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
     func windowDidBecomeKey(_ notification: Notification) {
         companion?.updatePetWorkspaceOcclusion()
+        companion?.focusedTaskControl = self
         if let task = currentAgentTask {
             if companion?.agentStore?.selectedID != task.id { companion?.agentStore?.selectedID = task.id }
             refreshBranch(task, force: true)
@@ -1038,10 +1048,25 @@ final class FormDocumentView: NSView {
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         dismissExtensionCandidates()
-        saveAgentDraft()
+        guard saveAgentDraft() else { return false }
+        if taskWindowNumber != 1 { guard closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
         sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
     }
+    func windowWillClose(_ notification: Notification) {
+        pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
+        if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
+        composer.delegate = nil; windowDraft = nil
+        companion?.removeTaskWindow(self); companion?.updatePetWorkspaceOcclusion()
+    }
+    func closeOwnedTaskPanels() -> Bool {
+        guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
+        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
+        for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
+        return true
+    }
+    func requireTaskDeletionAllowed(_ ids: Set<String>) throws { try recordWindow?.requireDeletionAllowed(ids) }
+    func closeDeletedTaskRecords(_ ids: Set<String>) { recordWindow?.closeDeletedTask(ids) }
     func checkSettings(_ output: URL) async -> [String: Any] {
         guard companion?.checkDirectory != nil else { return ["success": false] }
         var checks: [String: Bool] = [:], sizes: [String: [Double]] = [:]
@@ -1180,23 +1205,35 @@ final class FormDocumentView: NSView {
         let work = DispatchWorkItem { [weak self] in self?.saveAgentDraft() }
         draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
-    func saveAgentDraft() {
+    @discardableResult func saveAgentDraft() -> Bool {
         draftSave?.cancel(); draftSave = nil
-        guard let tasks = companion?.agentStore, let id = displayedTask, (tasks.task(id)?.draft ?? "") != composer.string else { return }
-        tasks.update(id) { $0.draft = composer.string }
+        guard let tasks = companion?.agentStore, let id = displayedTask, let task = tasks.task(id) else { return true }
+        windowDraft?.refresh(task.draft ?? "", attributes: composer.typingAttributes)
+        let value = composer.string
+        guard (task.draft ?? "") != value || windowDraft?.saved != value || windowDraft?.pendingSave == true || tasks.writeError != nil else { return true }
+        windowDraft?.pendingSave = true
+        if (task.draft ?? "") != value { tasks.update(id, persist: false) { $0.draft = value } }
+        do { try tasks.save(id); windowDraft?.saved = value; windowDraft?.pendingSave = false; return true }
+        catch { setStatus("草稿未保存：" + error.localizedDescription, error: true); return false }
+    }
+    private func bindAgentDraft(_ task: AgentTaskRecord) {
+        guard let value = companion?.windowDraft(task.id, attributes: composer.typingAttributes) else { return }
+        if let manager = composer.layoutManager, manager.textStorage !== value.storage {
+            manager.textStorage?.removeLayoutManager(manager); value.storage.addLayoutManager(manager)
+        }
+        windowDraft = value; composer.delegate = self; composer.needsDisplay = true
     }
     func selectAgentTask(_ id: String) {
         dismissExtensionCandidates()
-        guard let tasks = companion?.agentStore, tasks.task(id) != nil else { return }
+        guard let tasks = companion?.agentStore, tasks.task(id) != nil, saveAgentDraft() else { return }
         if !navigatingTaskHistory, taskNavigationIndex < 0 || taskNavigation[taskNavigationIndex] != id {
             if taskNavigationIndex + 1 < taskNavigation.count { taskNavigation.removeSubrange((taskNavigationIndex + 1)..<taskNavigation.count) }
             taskNavigation.append(id); taskNavigationIndex = taskNavigation.count - 1
         }
-        saveAgentDraft(); var readIssue: String?
+        var readIssue: String?
         do { try tasks.setTaskUnread(id, false) } catch { readIssue = error.localizedDescription }
         tasks.selectedID = id; displayedTask = id; displayedWorkMode = tasks.task(id)?.organizationMode ?? displayedWorkMode
-        composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
-        composer.undoManager?.removeAllActions()
+        if let task = tasks.task(id) { bindAgentDraft(task) }
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]
         selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
@@ -1204,7 +1241,7 @@ final class FormDocumentView: NSView {
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
     @objc func newAgentTask() {
-        guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
+        guard let tasks = companion?.agentStore, saveAgentDraft() else { return }
         let previous = currentAgentTask
         let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
@@ -1278,9 +1315,10 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func agentTaskAction(_ id: String, action: String) {
-        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread"].contains(action) else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window"].contains(action) else { return }
         if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
         switch action {
+        case "new-window": companion?.openTaskWindow(id, from: self); return
         case "read", "unread":
             do { try tasks.setTaskUnread(id, action == "unread"); renderAgentMessages() } catch { setStatus(error.localizedDescription, error: true) }; return
         case "copy-id": NSPasteboard.general.clearContents(); NSPasteboard.general.setString(id, forType: .string)
@@ -1332,16 +1370,16 @@ final class FormDocumentView: NSView {
     private func deleteAgentTasks(_ ids: [String], workspaceIDs: [String]) async throws -> String? {
         guard let store = companion?.agentStore else { throw PetError("任务未初始化") }
         saveAgentDraft(); let mode = currentAgentTask?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
-        try recordWindow?.requireDeletionAllowed(plan.ids)
+        try companion?.requireTaskDeletionAllowed(plan.ids)
         let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = workspaceIDs.isEmpty ? "永久删除\(plan.records.count)项任务？" : "永久删除\(workspaceIDs.count)个工作区及\(plan.records.count)项任务？"
         let names = plan.workspaceTitles + plan.titles
         alert.informativeText = names.prefix(20).joined(separator: "\n") + (names.count > 20 ? "\n及其余\(names.count - 20)项" : "") + "\n\n对话、草稿、任务附件和检查点将不可恢复。项目文件和 Git 工作树保留。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "永久删除"); alert.buttons[1].hasDestructiveAction = true
         guard alert.runModal() == .alertSecondButtonReturn else { return nil }
-        try recordWindow?.requireDeletionAllowed(plan.ids)
+        try companion?.requireTaskDeletionAllowed(plan.ids)
         let issue = try await store.permanentlyDelete(plan)
-        recordWindow?.closeDeletedTask(plan.ids)
+        companion?.closeDeletedTaskWindows(plan.ids)
         taskNavigation.removeAll { plan.ids.contains($0) }; taskNavigationIndex = agentTaskID.flatMap { taskNavigation.firstIndex(of: $0) } ?? taskNavigation.count - 1
         finishArchive(mode); return issue
     }
@@ -1546,7 +1584,7 @@ final class FormDocumentView: NSView {
         guard files.root == selectedFiles.root, selection.text.utf8.count <= 16_384, !selection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError("文档所属工作区已改变，或选文超过 16KB") }
         let safe = try files.resolve(selection.file.path)
         guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能加入受保护文件的内容") }
-        saveAgentDraft()
+        guard saveAgentDraft(), companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
         if let displayedTask { try store.save(displayedTask) }
         guard let previous = store.task(taskID) else { throw PetError("任务已关闭") }
         let draft = previous.draft ?? "", combined = draft + (draft.isEmpty ? "" : "\n\n") + selection.draftText
@@ -1588,6 +1626,8 @@ final class FormDocumentView: NSView {
             let id = tasks.tasks.first(where: { !$0.archived && $0.organizationMode == displayedWorkMode })?.id ?? tasks.create(workMode: displayedWorkMode)
             selectAgentTask(id); return
         }
+        bindAgentDraft(task)
+        window?.title = task.title + " · 小鲸" + (taskWindowNumber == 1 ? "" : "（\(taskWindowNumber)）")
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
@@ -1811,12 +1851,12 @@ final class FormDocumentView: NSView {
     }
     private func attachTaskCapture(taskID: String, note: String, importing: (AgentStore) async throws -> Void) async throws {
         guard let tasks = companion?.agentStore, tasks.task(taskID) != nil else { throw PetError("任务不存在") }
-        saveAgentDraft()
+        guard saveAgentDraft(), companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
         try await importing(tasks)
         defer { renderMessages() }
         try Task.checkCancellation()
         // Preserve edits made in either composer while the image was imported.
-        saveAgentDraft()
+        guard saveAgentDraft(), companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
         if !note.isEmpty {
             tasks.update(taskID) { record in
                 let previous = record.draft ?? ""
@@ -1892,6 +1932,8 @@ extension ControlWindow {
         return checks
     }
     func persistAgentDraft() { attachmentImport?.cancel(); saveAgentDraft() }
+    func saveWindowDraft() -> Bool { saveAgentDraft() }
+    func undoManager(for view: NSTextView) -> UndoManager? { view === composer ? windowDraft?.undo : nil }
     func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
         guard let store = companion?.agentStore else { return ["attachmentUI": false] }
         selectAgentTask(taskID); showWindow(nil); composer.string = "附件草稿"; composer.didChangeText(); saveAgentDraft()
@@ -1976,6 +2018,14 @@ extension ControlWindow {
         var value = taskSidebar.organizationSnapshot()
         value["selected"] = agentTaskID ?? ""; value["draft"] = composer.string
         value["focusedTask"] = companion?.agentStore?.selectedID ?? ""
+        value["windowNumber"] = taskWindowNumber; value["windowTitle"] = window?.title ?? ""; value["windowVisible"] = window?.isVisible == true
+        value["nativeWindowNumber"] = window?.windowNumber ?? 0
+        if CommandLine.arguments.contains("--manual-ui") {
+            value["draftUndoAvailable"] = windowDraft?.undo.canUndo == true; value["draftRedoAvailable"] = windowDraft?.undo.canRedo == true
+            value["composerUsesSharedUndo"] = windowDraft.map { composer.undoManager === $0.undo } ?? false
+            value["draftPendingSave"] = windowDraft?.pendingSave == true
+        }
+        value["inspectorRequested"] = inspectorRequested; value["inspectorVisible"] = !workbenchInspector.isHidden
         value["locationHidden"] = executionLocation.isHidden; value["branchHidden"] = branchControl.isHidden; value["branch"] = branchControl.title
         return value
     }

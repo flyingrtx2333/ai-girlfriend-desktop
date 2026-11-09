@@ -335,6 +335,7 @@ private final class AgentTaskTable: NSTableView {
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档", "archive")] { let item = NSMenuItem(title: title, action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item) }
         let unread = organization?.isTaskUnread(task.id) == true, read = NSMenuItem(title: unread ? "标记已读" : "标记未读", action: #selector(taskAction(_:)), keyEquivalent: "")
         read.target = self; read.representedObject = [task.id, unread ? "read" : "unread"]; menu.addItem(read)
+        let newWindow = NSMenuItem(title: "在新窗口打开", action: #selector(taskAction(_:)), keyEquivalent: ""); newWindow.target = self; newWindow.representedObject = [task.id, "new-window"]; menu.addItem(newWindow)
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }

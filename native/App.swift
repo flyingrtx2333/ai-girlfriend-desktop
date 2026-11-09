@@ -53,6 +53,10 @@ final class PetWebView: WKWebView {
     var scheme: AssetScheme!
     var statusItem: NSStatusItem!
     lazy var control = ControlWindow(companion: self)
+    var additionalTaskWindows: [ControlWindow] = []
+    weak var focusedTaskControl: ControlWindow?
+    var nextTaskWindowNumber = 2
+    let taskWindowDrafts = NSMapTable<NSString, AgentWindowDraft>(keyOptions: .strongMemory, valueOptions: .weakMemory)
     lazy var screenCompanion = ScreenCompanion(host: self)
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
@@ -121,7 +125,7 @@ final class PetWebView: WKWebView {
         if checkDirectory == nil { ensureAgent(); if !store.keychain.contains("chat") { control.show(tab: "settings") } }
     }
     func applicationWillTerminate(_ notification: Notification) {
-        if agentStore != nil { control.persistAgentDraft() }
+        if agentStore != nil { for window in taskControls { window.persistAgentDraft() } }
         closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); agentStore?.worktreeRetention.stop(); stopSpeech()
         agentStore?.knowledgeCards.stop()
         agentStore?.wikiMaintenance.stop()
@@ -136,6 +140,10 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if agentStore != nil {
+            guard persistTaskDrafts() else { return .terminateCancel }
+            for window in taskControls { if !window.closeOwnedTaskPanels() { return .terminateCancel } }
+        }
         for window in sender.windows where window.isVisible { if let plan = window.windowController as? AgentWikiPlanWindow, !plan.confirmClosing() { return .terminateCancel } }
         guard let offices = agentStore?.offices, offices.hasWindows else { return .terminateNow }
         Task { @MainActor in sender.reply(toApplicationShouldTerminate: await offices.canQuit()) }; return .terminateLater
@@ -158,7 +166,12 @@ final class PetWebView: WKWebView {
         }
         let redo = NSMenuItem(title: "重做", action: Selector("redo:"), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]; edit.insertItem(redo, at: 1)
-        editItem.submenu = edit; main.addItem(editItem); NSApp.mainMenu = main
+        editItem.submenu = edit; main.addItem(editItem)
+        let windows = NSMenu(title: "窗口"), windowItem = NSMenuItem(title: "窗口", action: nil, keyEquivalent: "")
+        windows.addItem(withTitle: "最小化", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windows.addItem(withTitle: "缩放", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windows.addItem(.separator()); windows.addItem(withTitle: "全部置于前面", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowItem.submenu = windows; main.addItem(windowItem); NSApp.windowsMenu = windows; NSApp.mainMenu = main
     }
     func menu() -> NSMenu {
         let m = NSMenu(); m.delegate = self; m.autoenablesItems = false; m.showsStateColumn = false; m.minimumWidth = 208
@@ -298,7 +311,7 @@ final class PetWebView: WKWebView {
     private func endVoiceInput(_ message: String, draft: String = "") {
         pendingVoiceListen = false; store.preferences.wakeEnabled = false; wakeError = nil; wakeStatus = "未开启"
         voiceWake.stop(); appliedWake = nil; screenCompanion.interaction(); cancelConversation()
-        if !draft.isEmpty { control.keepInterruptedVoiceDraft(draft) }
+        if !draft.isEmpty { inputControl.keepInterruptedVoiceDraft(draft) }
         try? store.savePreferences(); publishVoiceState(); statusItem.menu = menu(); showBubble(message, duration: 2.5)
     }
     func voiceEvent(_ event: VoiceWake.Event) {
@@ -315,12 +328,12 @@ final class PetWebView: WKWebView {
             wakeStatus = "聆听中"; playWakeChime(); emit("voiceListen"); showBubble("我在，讲吧", duration: 10)
         case .partial(let text): showBubble(text, duration: 12)
         case .utterance(let text):
-            if !send(text) { control.keepVoiceDraft(text); voiceWake.resetConversation() }
+            if !send(text) { inputControl.keepVoiceDraft(text); voiceWake.resetConversation() }
         case .stopped(let message, let draft): endVoiceInput(message, draft: draft)
         case .failure(let error):
             wakeError = error; wakeStatus = error; store.preferences.wakeEnabled = false
             try? store.savePreferences(); appliedWake = nil; syncWakePreference()
-            control.setStatus(error, error: true); showBubble(error)
+            inputControl.setStatus(error, error: true); showBubble(error)
             statusItem.menu = menu()
         }
         publishVoiceState()
@@ -469,8 +482,8 @@ final class PetWebView: WKWebView {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         diagnostics.append(error.localizedDescription); control.setStatus("角色加载失败，请重新打开应用。", error: true)
     }
-    @objc func openChat() { screenCompanion.interaction(); control.show(tab: "chat") }
-    @objc func openSettings() { screenCompanion.interaction(); control.show(tab: "settings") }
+    @objc func openChat() { screenCompanion.interaction(); inputControl.show(tab: "chat") }
+    @objc func openSettings() { screenCompanion.interaction(); inputControl.show(tab: "settings") }
     @objc func observeScreen() { screenCompanion.observe() }
     @objc func pauseScreenObservation() { screenCompanion.toggleQuiet(); statusItem.menu = menu() }
     @objc func accessibilityChat() -> Bool { openChat(); return true }
@@ -495,8 +508,8 @@ final class PetWebView: WKWebView {
             guard !text.isEmpty || !attachmentIDs.isEmpty, let runtime = agentRuntime else { return false }
             stopSpeech()
             let accepted = runtime.submit(text, taskID: taskID, attachmentIDs: attachmentIDs)
-            if accepted { control.scheduleRender(); refreshVoiceBusy() }
-            else if let error = runtime.submissionError { control.setStatus(error, error: true) }
+            if accepted { refreshTaskWindows(); refreshVoiceBusy() }
+            else if let error = runtime.submissionError { (taskID.map { taskControl(for: $0) } ?? inputControl).setStatus(error, error: true) }
             return accepted
         }
         guard !text.isEmpty, chatTask == nil else { return false }
