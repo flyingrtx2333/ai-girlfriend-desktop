@@ -9,20 +9,27 @@ final class ComposerView: NSTextView {
     var onEditingEnded: (() -> Void)?
     var attachmentOwner: (() -> String?)?
     var onImportFiles: (([URL], String) -> Bool)?
-    private var dragOwner: String?
+    private(set) var dragOwner: String?
+    private(set) var fileIngressDiagnostics: [String: Int] = [:]
+    private func noteFileIngress(_ value: String) {
+        guard CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--attachment-drop-check") else { return }
+        fileIngressDiagnostics[value, default: 0] += 1
+    }
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.readablePasteboardTypes.filter { $0 != .fileURL } }
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.acceptableDragTypes.filter { $0 != .fileURL } }
     override func dragOperation(for draggingInfo: NSDraggingInfo, type: NSPasteboard.PasteboardType) -> NSDragOperation {
+        noteFileIngress("drag:" + type.rawValue)
         guard type == .fileURL else { return super.dragOperation(for: draggingInfo, type: type) }
         guard isEditable, let owner = attachmentOwner?(), dragOwner == nil || dragOwner == owner else { return [] }
         dragOwner = owner; _ = super.dragOperation(for: draggingInfo, type: type); return .copy
     }
-    override func cleanUpAfterDragOperation() { dragOwner = nil; super.cleanUpAfterDragOperation() }
+    override func cleanUpAfterDragOperation() { noteFileIngress("cleanup"); dragOwner = nil; super.cleanUpAfterDragOperation() }
     override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        noteFileIngress("read:" + type.rawValue)
         guard type == .fileURL else { return super.readSelection(from: pasteboard, type: type) }
         guard isEditable, let owner = attachmentOwner?(), dragOwner == nil || dragOwner == owner,
               let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
-        return onImportFiles?(urls, owner) ?? false
+        let accepted = onImportFiles?(urls, owner) ?? false; noteFileIngress(accepted ? "accepted" : "rejected"); return accepted
     }
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder(); if result { onEditingEnded?() }; return result
@@ -2202,6 +2209,7 @@ extension ControlWindow {
         value["windowNumber"] = taskWindowNumber; value["windowTitle"] = window?.title ?? ""; value["windowVisible"] = window?.isVisible == true
         value["nativeWindowNumber"] = window?.windowNumber ?? 0
         if CommandLine.arguments.contains("--manual-ui") {
+            value["fileIngress"] = composer.fileIngressDiagnostics; value["fileDragTypes"] = composer.registeredDraggedTypes.map(\.rawValue); value["fileDropOwner"] = composer.dragOwner as Any? ?? NSNull()
             value["draftUndoAvailable"] = windowDraft?.undo.canUndo == true; value["draftRedoAvailable"] = windowDraft?.undo.canRedo == true
             value["composerUsesSharedUndo"] = windowDraft.map { composer.undoManager === $0.undo } ?? false
             value["draftPendingSave"] = windowDraft?.pendingSave == true
