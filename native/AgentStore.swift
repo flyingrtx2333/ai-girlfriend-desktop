@@ -237,16 +237,32 @@ import Foundation
     func hasFileRollback(in workspace: String, except taskID: String? = nil) -> Bool {
         tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspace.map { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } == true }
     }
-    @discardableResult func commitFileRollbackRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL) throws -> String {
+    @discardableResult func commitFileRollbackRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL, continuation: AgentTaskRecord? = nil) throws -> String {
         guard try recordVersion(record.id) == expectedHash, let i = tasks.firstIndex(where: { $0.id == record.id }) else { throw PetError("任务记录已变化，未保存撤回状态") }
+        var record = record
+        if let continuation {
+            try requireArchivable(record)
+            guard UUID(uuidString: continuation.id) != nil, continuation.parentID == record.id, !tasks.contains(where: { $0.id == continuation.id }), !deletions.taskIDs.contains(continuation.id), continuation.workspace == record.workspace, continuation.status == .ready, !continuation.archived else { throw PetError("重新发送的任务已变化") }
+            record.archived = true; record.pinned = false; record.title += " · 编辑前"
+        }
         let files = try AgentFiles(workspace: directory.path), data = try encoder.encode(record)
         var next = tasks; next[i] = Self.metadata(record)
-        let index = try encoder.encode(Index(selectedID: selectedID, tasks: next))
-        let writes = [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: expectedHash, permissions: 0o600, label: "撤回文件"),
+        if let continuation { next.insert(Self.metadata(continuation), at: 0) }
+        let index = try encoder.encode(Index(selectedID: continuation?.id ?? selectedID, tasks: next))
+        var writes = [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: expectedHash, permissions: 0o600, label: "撤回文件"),
                       try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, permissions: 0o600, label: "撤回文件")]
+        let continuationData = try continuation.map { try encoder.encode($0) }, selection = try continuation.flatMap { try organization.prepareSelection($0) }
+        guard data.count <= 20_000_000, (continuationData?.count ?? 0) <= 20_000_000 else { throw PetError("任务记录过大，未保存") }
+        if let continuation, let continuationData { writes.append(try AgentKnowledgeFileWrite(files: files, path: continuation.id + ".json", data: continuationData, missing: true, permissions: 0o600, label: "重新发送")) }
+        if let selection { writes.append(selection.write) }
         try AgentKnowledgeFileBatch.commit(writes, backup: transaction, label: "撤回文件") { guard try self.recordVersion(record.id) == expectedHash else { throw PetError("任务记录已变化") } }
         tasks = next; cache[record.id] = record; taskHashes[record.id] = AgentFiles.hash(data); indexHash = AgentFiles.hash(index); writeError = nil
         taskSearchRevision &+= 1; taskSearchRevisions[record.id] = taskSearchRevision
+        if let continuation, let continuationData {
+            cache[continuation.id] = continuation; taskHashes[continuation.id] = AgentFiles.hash(continuationData); taskSearchRevisions[continuation.id] = taskSearchRevision
+            applyingArchive = true; selectedID = continuation.id; applyingArchive = false; selection?.accept(); trimCache(keeping: continuation.id)
+            onArchive?(record.id)
+        }
         offices.changed(record.id); worktreeRetention.tasksChanged(record.id); onChange?(); return AgentFiles.hash(data)
     }
     private func saveIndex() throws {

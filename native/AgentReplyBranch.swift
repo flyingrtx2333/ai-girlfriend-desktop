@@ -3,8 +3,15 @@ import Foundation
 @MainActor enum AgentReplyBranch {
     static func prefix(_ source: AgentTaskRecord, through messageID: String) throws -> AgentTaskRecord {
         guard !source.isProjectDocumentation, source.kind != "hook", let end = source.messages.firstIndex(where: { $0.id == messageID && $0.isReply }) else { throw PetError("此回复不能创建分支") }
+        var task = retained(source, count: end + 1); task.branchMessageID = messageID; return task
+    }
+    static func before(_ source: AgentTaskRecord, messageID: String) throws -> AgentTaskRecord {
+        guard !source.isProjectDocumentation, source.kind != "hook", let end = source.messages.firstIndex(where: { $0.id == messageID && $0.isHumanInput }) else { throw PetError("原始要求已变化") }
+        return retained(source, count: end)
+    }
+    private static func retained(_ source: AgentTaskRecord, count: Int) -> AgentTaskRecord {
         var task = source
-        task.messages = Array(source.messages[...end])
+        task.messages = Array(source.messages.prefix(count))
         let ids = Set(task.messages.map(\.id)), calls = Dictionary(task.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         task.events = source.events.filter { $0.toolCallID.map { calls[$0] != nil } == true }
         task.modelReceipts = source.modelReceipts?.filter { $0.purpose == "conversation" && $0.messageID.map(ids.contains) == true }
@@ -45,7 +52,7 @@ import Foundation
             value.updated = value.versions.last(where: { $0.hash == observed.hash })?.created ?? original.created
             value.draft = nil; value.draftHash = nil; return value
         }
-        task.branchMessageID = messageID; task.pinned = false; task.pendingCalls = []; task.queuedInputs = nil; task.queuedMessages = nil
+        task.branchMessageID = nil; task.pinned = false; task.pendingCalls = []; task.queuedInputs = nil; task.queuedMessages = nil
         task.contextSummary = nil; task.contextThroughID = nil; task.contextManualThroughID = nil; task.contextSize = nil; task.contextSnapshot = nil
         task.plan = []; task.artifacts = []; task.sources = []; task.resultHistory = nil; task.importOrigin = nil; task.automation = nil
         task.wikiJob = nil; task.wikiRevision = nil; task.wikiLanguage = nil; task.knowledgeJob = nil; task.wikiEditReads = nil; task.knowledgeReads = nil

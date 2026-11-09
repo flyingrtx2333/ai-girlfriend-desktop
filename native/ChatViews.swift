@@ -35,8 +35,8 @@ final class ChatMessageRow: NSView {
     private let attachments = AgentAttachmentStrip()
     private let body = NSStackView(), replyActions = NSStackView()
     private let copyReply = NSButton(), helpful = NSButton(), unhelpful = NSButton(), branchReply = NSButton()
-    private let roundActions = NSStackView(), rollbackFiles = NSButton()
-    private var onRoundRollback: (() -> Void)?
+    private let roundActions = NSStackView(), rollbackFiles = NSButton(), editInput = NSButton()
+    private var onRoundRollback: (() -> Void)?, onEditInput: (() -> Void)?
     private var replyBinding: String?, copiedReset: DispatchWorkItem?
     private var onCopyReply: (() -> Bool)?, onReplyFeedback: ((String) -> Void)?, onBranchReply: (() -> Void)?
     init(message: ChatMessage, workbench: Bool = false) {
@@ -59,7 +59,10 @@ final class ChatMessageRow: NSView {
         rollbackFiles.isBordered = false; rollbackFiles.font = .systemFont(ofSize: 12); rollbackFiles.contentTintColor = .secondaryLabelColor
         rollbackFiles.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil); rollbackFiles.imagePosition = .imageLeading
         rollbackFiles.target = self; rollbackFiles.action = #selector(rollbackRound); rollbackFiles.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        roundActions.addArrangedSubview(rollbackFiles); roundActions.addArrangedSubview(NSView())
+        editInput.title = "编辑并重发"; editInput.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil); editInput.imagePosition = .imageLeading
+        editInput.isBordered = false; editInput.font = .systemFont(ofSize: 12); editInput.contentTintColor = .secondaryLabelColor; editInput.target = self; editInput.action = #selector(editMessage); editInput.setAccessibilityLabel("编辑并重发")
+        editInput.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        roundActions.addArrangedSubview(editInput); roundActions.addArrangedSubview(rollbackFiles); roundActions.addArrangedSubview(NSView())
         attachments.maximumRows = 6
         label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
         label.font = .systemFont(ofSize: workbench ? 14 : 15); label.textColor = NSColor(white: 0.12, alpha: 1)
@@ -95,12 +98,14 @@ final class ChatMessageRow: NSView {
         body.setCustomSpacing(replyActions.isHidden && roundActions.isHidden ? 0 : 6, after: attachments)
         body.setCustomSpacing(roundActions.isHidden ? 0 : 6, after: replyActions)
     }
-    func setRoundRollback(visible: Bool, enabled: Bool, recovery: Bool, action: (() -> Void)?) {
-        roundActions.isHidden = !isUser || !visible; onRoundRollback = action; rollbackFiles.isEnabled = enabled
+    func setRoundRollback(visible: Bool, enabled: Bool, recovery: Bool, action: (() -> Void)?, edit: (() -> Void)? = nil, canEdit: Bool = false) {
+        roundActions.isHidden = !isUser || (!visible && edit == nil); onRoundRollback = action; rollbackFiles.isEnabled = enabled; rollbackFiles.isHidden = !visible
+        onEditInput = edit; editInput.isHidden = edit == nil; editInput.isEnabled = canEdit
         rollbackFiles.title = recovery ? "恢复撤回前文件" : "撤回文件"; rollbackFiles.setAccessibilityLabel(rollbackFiles.title)
         rollbackFiles.toolTip = recovery ? "恢复被中断的撤回操作，保留当前对话" : "撤回从这条要求起的项目文件，保留对话"
         updateBodySpacing()
     }
+    @objc private func editMessage() { onEditInput?() }
     @objc private func rollbackRound() { onRoundRollback?() }
     @objc private func copyResponse() {
         guard onCopyReply?() == true else { return }; let binding = replyBinding

@@ -188,16 +188,8 @@ import Foundation
             if !started { submissionError = analysisErrors[id] }
             return started
         }
-        var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)
-        do {
-            if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {
-                guard !task.isProjectDocumentation else { throw PetError("请在普通任务中生成画布") }
-                message.extensionInstructions = "[用户选择内置 /canvas。按需载入canvas工具，生成可交互画布；保留原始要求，使用实际数据，完成前核对渲染结果。]"
-            } else if text.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit" {
-                guard !task.isProjectDocumentation, [.agent, .goal].contains(task.mode) else { throw PetError("请在普通Agent任务中编辑项目知识") }
-                message.extensionInstructions = "[用户选择内置 /knowledge-edit。应用已载入project_knowledge工具组。按用户指定对象，用read_project_knowledge读取卡片或read_project_wiki读取Wiki及hash，再read_file核对实际源码，只用edit_project_knowledge或edit_project_wiki修改指定内容，保留其他事实、卡片、页面和引用；遵循单次批准，写后回读。原始用户要求保持不变。]"
-            } else { message = try store.extensions.expand(message, store: store, taskID: id) }
-        }
+        let message: AgentMessage
+        do { message = try prepareInput(text, attachmentIDs: attachmentIDs, task: task) }
         catch { submissionError = error.localizedDescription; return false }
         cancelAnalysis(id)
         if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || task.status == .waiting {
@@ -221,6 +213,17 @@ import Foundation
             record.status = .ready
         }
         if startImmediately { start(id) } else { notifyChange(id) }; return true
+    }
+    func prepareInput(_ text: String, attachmentIDs: [String], task: AgentTaskRecord) throws -> AgentMessage {
+        var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)
+        if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {
+            guard !task.isProjectDocumentation else { throw PetError("请在普通任务中生成画布") }
+            message.extensionInstructions = "[用户选择内置 /canvas。按需载入canvas工具，生成可交互画布；保留原始要求，使用实际数据，完成前核对渲染结果。]"
+        } else if text.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit" {
+            guard !task.isProjectDocumentation, [.agent, .goal].contains(task.mode) else { throw PetError("请在普通Agent任务中编辑项目知识") }
+            message.extensionInstructions = "[用户选择内置 /knowledge-edit。应用已载入project_knowledge工具组。按用户指定对象，用read_project_knowledge读取卡片或read_project_wiki读取Wiki及hash，再read_file核对实际源码，只用edit_project_knowledge或edit_project_wiki修改指定内容，保留其他事实、卡片、页面和引用；遵循单次批准，写后回读。原始用户要求保持不变。]"
+        } else { message = try store.extensions.expand(message, store: store, taskID: task.id) }
+        return message
     }
     func start(_ id: String) {
         cancelAnalysis(id)

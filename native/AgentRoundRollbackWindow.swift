@@ -5,10 +5,12 @@ import AppKit
     private let table = NSTableView(), text = NSTextView(), state = NSTextField(wrappingLabelWithString: "")
     private let applyButton = NSButton(), refreshButton = NSButton(title: "重新检查", target: nil, action: nil)
     private var review: AgentRoundRollback.Review?, loading: Task<Void, Never>?, generation = 0, applying = false
+    private let actionTitle: String?
     var beforeApply: (() throws -> Void)?
+    var performReview: ((AgentRoundRollback.Review) throws -> Void)?
     var onComplete: (() -> Void)?
-    init(store: AgentStore, taskID: String, messageID: String) {
-        self.store = store; self.taskID = taskID; self.messageID = messageID
+    init(store: AgentStore, taskID: String, messageID: String, actionTitle: String? = nil, notice: String? = nil) {
+        self.store = store; self.taskID = taskID; self.messageID = messageID; self.actionTitle = actionTitle
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.minSize = NSSize(width: 540, height: 520); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
@@ -19,7 +21,7 @@ import AppKit
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.borderType = .bezelBorder
         text.isEditable = false; text.isSelectable = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.isRichText = false; text.textContainerInset = NSSize(width: 8, height: 8); text.setAccessibilityLabel("文件撤回差异")
         let diff = NSScrollView(); diff.documentView = text; diff.hasVerticalScroller = true; diff.borderType = .bezelBorder
-        let notice = NSTextField(wrappingLabelWithString: "对话记录会保留。命令、服务及外部操作不能自动撤回。"); notice.font = .systemFont(ofSize: 12); notice.textColor = .secondaryLabelColor
+        let notice = NSTextField(wrappingLabelWithString: notice ?? "对话记录会保留。命令、服务及外部操作不能自动撤回。"); notice.font = .systemFont(ofSize: 12); notice.textColor = .secondaryLabelColor
         state.font = .systemFont(ofSize: 12); state.textColor = .systemRed
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         refreshButton.target = self; refreshButton.action = #selector(refresh)
@@ -38,12 +40,12 @@ import AppKit
         guard !applying else { return }; generation += 1; loading?.cancel(); text.string = ""; state.stringValue = ""
         do {
             let value = try AgentRoundRollback.review(taskID: taskID, from: messageID, store: store); review = value
-            let title = value.recovery ? "恢复撤回前文件" : "撤回文件"
+            let title = actionTitle ?? (value.recovery ? "恢复撤回前文件" : "撤回文件")
             window?.title = title + " · " + (store.task(taskID)?.title ?? "任务"); applyButton.title = title; applyButton.setAccessibilityLabel(title)
             applyButton.isEnabled = value.canApply; state.stringValue = value.issues.prefix(2).joined(separator: "\n"); state.toolTip = value.issues.joined(separator: "\n")
             table.deselectAll(nil); table.reloadData(); text.string = value.issues.joined(separator: "\n")
             if !value.paths.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
-        } catch { review = nil; applyButton.title = "撤回文件"; applyButton.isEnabled = false; state.stringValue = error.localizedDescription; table.reloadData() }
+        } catch { review = nil; applyButton.title = actionTitle ?? "撤回文件"; applyButton.isEnabled = false; state.stringValue = error.localizedDescription; table.reloadData() }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { review?.paths.count ?? 0 }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -75,7 +77,8 @@ import AppKit
         guard let review, review.canApply, !applying else { return }; loading?.cancel(); generation += 1
         do {
             try beforeApply?(); applying = true; applyButton.isEnabled = false; refreshButton.isEnabled = false; state.stringValue = "正在恢复文件…"; window?.displayIfNeeded()
-            try AgentRoundRollback.apply(review, store: store); applying = false; onComplete?(); close()
+            if let performReview { try performReview(review) } else { try AgentRoundRollback.apply(review, store: store) }
+            applying = false; onComplete?(); close()
         } catch { applying = false; refreshButton.isEnabled = true; applyButton.isEnabled = false; state.stringValue = error.localizedDescription }
     }
     @objc private func cancel() { if !applying { close() } }

@@ -107,13 +107,14 @@ import Foundation
         }
         return try files.entryMetadata(url).signature
     }
-    static func apply(_ expected: Review, store: AgentStore) throws {
+    static func apply(_ expected: Review, store: AgentStore, continuation: AgentTaskRecord? = nil) throws {
         let review = try self.review(taskID: expected.taskID, from: expected.messageID, store: store)
         guard review.canApply else { throw PetError(review.issues.joined(separator: "\n")) }
         guard review.fingerprint == expected.fingerprint else { throw PetError("文件或任务已变化，请重新审阅") }
         let original = try validateTask(review.taskID, store: store), files = try AgentFiles(workspace: review.workspace)
         let backups = try AgentFiles(workspace: store.backupDirectory(review.taskID).path)
         if let pending = original.pendingFileRollback {
+            guard continuation == nil else { throw PetError("请先恢复未完成的文件撤回") }
             let folder = try directory(pending.id, taskID: review.taskID, store: store), journal = try AgentFiles(workspace: folder.path)
             for entry in review.entries { guard try files.entryMetadata(files.literalURL(entry.path)).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
             for entry in review.entries {
@@ -160,7 +161,7 @@ import Foundation
             if let turn = restored.gitTurn?.id, review.roundIDs.contains(turn), let count = restored.gitTurn?.changes.count { for i in 0..<count { restored.gitTurn?.changes[i].restoredAt = now } }
             restored.pendingFileRollback = nil; restored.updated = now; restored.activityAt = now; restored.goalAccepted = nil; restored.completionEvidence = nil; restored.gitReview = nil; restored.gitPushReview = nil
             restored.events.append(AgentEvent(kind: "change", title: "已撤回所选回合及以后的文件", detail: "\(entries.count) 个文件；对话记录保留", status: "completed"))
-            _ = try store.commitFileRollbackRecord(restored, expectedHash: pendingHash, transaction: folder.appendingPathComponent("completed-record"))
+            _ = try store.commitFileRollbackRecord(restored, expectedHash: pendingHash, transaction: folder.appendingPathComponent("completed-record"), continuation: continuation)
             try? journal.writeData(Data("completed".utf8), to: journal.literalURL("outcome"), permissions: 0o600)
         } catch {
             var retained: [String] = []

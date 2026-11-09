@@ -94,6 +94,7 @@ final class FormDocumentView: NSView {
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
     private var roundRollbackWindow: AgentRoundRollbackWindow?
+    private var editResendWindow: AgentEditResendWindow?
     private var taskModelWindow: AgentTaskModelWindow?
     private var contextWindow: AgentContextWindow?
     private var mcpContentWindow: AgentMCPContentWindow?
@@ -1077,7 +1078,7 @@ final class FormDocumentView: NSView {
     }
     func closeOwnedTaskPanels() -> Bool {
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
@@ -1673,6 +1674,18 @@ final class FormDocumentView: NSView {
         panel.onComplete = { [weak self] in self?.renderAgentMessages() }; roundRollbackWindow = panel
         panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
     }
+    private func presentEditResend(taskID: String, messageID: String) {
+        guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
+        if agentTaskID == taskID, !saveAgentDraft() { return }
+        editResendWindow?.window?.performClose(nil)
+        if editResendWindow?.window?.isVisible == true { editResendWindow?.window?.makeKeyAndOrderFront(nil); return }
+        do {
+            let panel = try AgentEditResendWindow(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
+            panel.beforeApply = { [weak self] in guard let companion = self?.companion else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID]) }
+            panel.onSent = { [weak self] id in self?.selectAgentTask(id) }; editResendWindow = panel
+            panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
     private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {
         guard agentTaskID == taskID, let tasks = companion?.agentStore else { return false }
         do {
@@ -1806,7 +1819,9 @@ final class FormDocumentView: NSView {
                     mark: { [weak self] value in _ = self?.replyAction(value, taskID: owner, messageID: message.id, hash: hash) },
                     branch: { [weak self] in _ = self?.replyAction("branch", taskID: owner, messageID: message.id, hash: hash) })
                 row.setRoundRollback(visible: message.isHumanInput && fileRollbackMessages.contains(message.id), enabled: !running && !task.archived && task.pendingFileCapture == nil && task.pendingCalls.isEmpty, recovery: task.pendingFileRollback != nil,
-                    action: { [weak self] in self?.presentRoundRollback(taskID: owner, messageID: message.id) })
+                    action: { [weak self] in self?.presentRoundRollback(taskID: owner, messageID: message.id) },
+                    edit: message.isHumanInput && AgentEditResend.supported(task) ? { [weak self] in self?.presentEditResend(taskID: owner, messageID: message.id) } : nil,
+                    canEdit: !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && task.pendingCalls.isEmpty && task.queuedCount == 0)
             }
             for call in message.toolCalls ?? [] {
                 var visibleCall = call

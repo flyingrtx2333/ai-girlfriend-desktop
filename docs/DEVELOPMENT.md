@@ -41,6 +41,8 @@ npm run native:open
 
 按回合撤回使用候选的 `--check <独立临时目录> --round-rollback-check`：正式工具实际修改两轮文件，核对保存、检查点损坏、后来编辑、真实只读失败与恢复，不产生模型输出。`--manual-ui --round-rollback-fixtures` 只创建一份真实文件／人工要求的窗口验收任务；重开同一目录不重复传 fixtures。`--round-rollback-crash-check` 另建实际128MB文件，写出 `round-crash-ready.json` 后等待目录内的 `start-round-crash`；控制器须确认该进程存活，在撤回实际开始后终止该进程。随后 `--round-rollback-recovery-check` 只核对真实遗留标记及项目隔离，不自动恢复文件，再以 `--manual-ui` 从实际窗口审阅并恢复。完整保留失败与中断记录，不将这些文件操作检查作为 AI 效果验收。
 
+编辑重发以现有历史分支复制附件、Skill及历史画布，再将旧任务归档和新续接任务一并保存；有文件撤回时沿用同一恢复事务。普通任务仅保留修改处之前的消息并加入新要求，不复用后续摘要、审批、画布版本或回执；旧任务完整保留，可从归档恢复。`--edit-resend-check` 实际修改文件、制造只读保存失败和后来编辑，核对替换、正常归档恢复及无工作区问答。独立目录中预先保留真实旧会话和资源时，用 `--edit-resend-history-task <任务编号>` 追加原消息、回执和不可变历史画布核对，不生成模拟助手回复。模型传输在这些原生检查中禁止。
+
 电脑操作使用 `npm run native:check-desktop -- --live-agent --hold-ui`。脚本创建独立配置和一份公开纯文本文档，原生检查先核对默认关闭、配置冲突、只读／受限 Agent 与工具目录，不请求系统权限、不调用模型。窗口停在「电脑操作」；需用户确认启用并授予辅助功能与屏幕录制权限，再通过系统文本编辑打开输出的公开文档。检查者确认准备完成后，在该次输出目录创建 `start-desktop-live`，真实模型仅通过桌面工具更改审阅人、保存并回读；Node 独立核对文件字节、工具范围、模型计量与生产配置。`finish-desktop-ui` 结束窗口验收，`stop-desktop-check` 停止当前检查。应用确已终止后可用 `--resume <原输出目录>` 继续同一真实任务，不替换原始要求或请求回执。普通检查不带 `--live-agent`，仅证明权限入口和配置边界，不代表实际桌面操作已验收。
 
 构建脚本先构建 `native-mcp` 动态库，再构建原有 Swift 5 AppKit 入口及语音桥接，部署目标保持 macOS 14。Swift Package 使用原生构建后端以保留可直接链接的模块路径；产物包含 SDK、System、Logging、EventSource 的许可证。包内不携带 Node；用户配置的 stdio 服务使用本机运行环境。依赖升级时一并更新并核对 `Package.resolved`。
