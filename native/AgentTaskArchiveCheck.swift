@@ -20,6 +20,10 @@ import AppKit
             let original = tasks.task(a)!, generalBytes = try Data(contentsOf: tasks.directory.appendingPathComponent(general + ".json"))
             let checkpoint = try tasks.backupDirectory(a).appendingPathComponent("README-copy.md"), checkpointData = try Data(contentsOf: alpha.appendingPathComponent("README.md")); try checkpointData.write(to: checkpoint)
             try tasks.setArchived([a, b], archived: true)
+            let archivedBytes = try Data(contentsOf: tasks.directory.appendingPathComponent(a + ".json"))
+            var rejected = 0
+            for text in ["归档后不能加入输入", "/compact"] { if !runtime.submit(text, taskID: a, startImmediately: false), runtime.submissionError?.contains("已归档") == true { rejected += 1 } }
+            checks["archivedTaskRejectsNormalAndCommandInputsWithoutChangingBytes"] = try rejected == 2 && Data(contentsOf: tasks.directory.appendingPathComponent(a + ".json")) == archivedBytes && !runtime.isBusy(a) && requests == 0
             checks["bulkArchivePreservesDraftInputPinActivityAndCheckpointBytes"] = try tasks.task(a)?.archived == true && tasks.task(b)?.archived == true && tasks.task(a)?.draft == original.draft && tasks.task(a)?.messages.map(\.id) == original.messages.map(\.id) && tasks.task(a)?.messages.map(\.content) == original.messages.map(\.content) && tasks.task(a)?.pinned == true && tasks.task(a)?.activityAt == original.activityAt && Data(contentsOf: checkpoint) == checkpointData
             checks["archiveSwitchesSelectionToAnActiveTask"] = tasks.selected?.archived == false && tasks.selectedID != a && tasks.selectedID != b
             try tasks.setArchived([a, b], archived: false); tasks.update(a) { $0.pinned = false }

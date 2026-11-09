@@ -944,6 +944,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func send() {
         guard let companion else { return }
+        guard companion.agentStore?.selected?.archived != true else { setStatus("任务已归档，请先恢复", error: true); return }
         guard importTaskID != companion.agentStore?.selectedID || attachmentImport == nil else { return }
         if let task = companion.agentStore?.selected, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
         let files = companion.agentStore?.selected?.draftAttachmentIDs ?? []
@@ -1096,6 +1097,11 @@ final class FormDocumentView: NSView {
 
 @MainActor private extension ControlWindow {
     func updateSendButton() {
+        sendButton.toolTip = nil
+        if companion?.agentStore?.selected?.archived == true {
+            sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送"); sendButton.setAccessibilityLabel("发送")
+            sendButton.isEnabled = false; sendButton.toolTip = "任务已归档，请先恢复"; return
+        }
         if companion?.agentStore?.selected?.kind == "hook" {
             sendButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "停止校验")
             sendButton.setAccessibilityLabel("停止校验"); sendButton.isEnabled = busy; return
@@ -1883,7 +1889,7 @@ extension ControlWindow {
     func refreshDataImport() { dataImportView?.refresh() }
     func archiveReadback() -> [String: Any] {
         guard CommandLine.arguments.contains("--task-archive-check"), let store = companion?.agentStore else { return [:] }
-        return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": store.selectedID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "settingsCategory": settingsCategory,
+        return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": store.selectedID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "sendEnabled": sendButton.isEnabled, "composerEditable": composer.isEditable, "settingsCategory": settingsCategory,
                 "tasks": store.tasks.compactMap { store.task($0.id) }.map { ["id": $0.id, "title": $0.title, "workspace": $0.workspace as Any? ?? NSNull(), "mode": $0.organizationMode.rawValue, "archived": $0.archived, "archiveID": $0.workspaceArchiveID as Any? ?? NSNull(), "draft": $0.draft ?? ""] },
                 "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] }]
     }

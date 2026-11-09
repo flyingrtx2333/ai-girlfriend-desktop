@@ -181,6 +181,7 @@ import Foundation
         guard !text.isEmpty, text.utf8.count <= 100_000, let id = taskID ?? store.selectedID, let task = store.task(id),
               task.kind != "hook", attachmentIDs.count <= 6, !task.isProjectDocumentation || attachmentIDs.isEmpty,
               attachmentIDs.allSatisfy({ candidate in task.attachments?.contains(where: { $0.id == candidate }) == true }) else { return false }
+        guard !task.archived else { submissionError = "任务已归档，请先恢复"; return false }
         if text == "/compact", attachmentIDs.isEmpty {
             let started = analyze(id, recap: false)
             if !started { submissionError = analysisErrors[id] }
