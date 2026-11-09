@@ -85,6 +85,9 @@ final class FormDocumentView: NSView {
     private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
     private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
+    var agentTaskID: String? { displayedTask ?? companion?.agentStore?.selectedID }
+    private var currentAgentTask: AgentTaskRecord? { agentTaskID.flatMap { companion?.agentStore?.task($0) } }
+    private var displayedWorkMode = AgentWorkMode.coding
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
     private var taskModelWindow: AgentTaskModelWindow?
@@ -140,7 +143,7 @@ final class FormDocumentView: NSView {
         build()
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         refreshPreferences()
-        if let task = companion.agentStore?.selected { displayedTask = task.id; composer.string = task.draft ?? ""; taskNavigation = [task.id]; taskNavigationIndex = 0 }
+        if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; composer.string = task.draft ?? ""; taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
         companion.onScaleChange = { [weak self] in self?.scale.doubleValue = $0; self?.sizeValue.stringValue = "\(Int(($0 * 100).rounded()))%" }
         companion.onWakeChange = { [weak self] enabled, status in
@@ -325,7 +328,7 @@ final class FormDocumentView: NSView {
         inspectorRule.wantsLayer = true; inspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
         NSLayoutConstraint.activate([conversation.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversation.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), conversation.topAnchor.constraint(equalTo: chat.topAnchor), conversation.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
-            if value.hasPrefix("canvas://"), let id = self?.companion?.agentStore?.selectedID { self?.openCanvasReference(value, taskID: id) }
+            if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
             else { self?.openAgentRecordItem(section: section, value: value) }
         }
         workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
@@ -387,7 +390,7 @@ final class FormDocumentView: NSView {
         history.setContentHuggingPriority(.defaultLow, for: .vertical); history.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
     }
     private func updateWorkbenchLayout(animated: Bool = false) {
-        guard companion?.usesAgent == true, inspectorWidth != nil, let task = companion?.agentStore?.selected else { return }
+        guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
@@ -437,7 +440,7 @@ final class FormDocumentView: NSView {
         guard taskNavigationIndex + 1 < taskNavigation.count else { return }; taskNavigationIndex += 1; navigatingTaskHistory = true; defer { navigatingTaskHistory = false }; selectAgentTask(taskNavigation[taskNavigationIndex])
     }
     @objc private func showTaskMenu(_ sender: NSButton) {
-        guard let task = companion?.agentStore?.selected else { return }
+        guard let task = currentAgentTask else { return }
         let menu = NSMenu(); menu.autoenablesItems = false
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item)
@@ -460,25 +463,25 @@ final class FormDocumentView: NSView {
     }
     @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
     @objc private func showTaskModelMenu(_ sender: NSButton) {
-        guard let runtime = companion?.agentRuntime, let id = companion?.agentStore?.selectedID else { return }
+        guard let runtime = companion?.agentRuntime, let id = agentTaskID else { return }
         taskModelWindow?.window?.performClose(nil); taskModelWindow = AgentTaskModelWindow(runtime: runtime, taskID: id)
         taskModelWindow?.showWindow(nil); taskModelWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
     private func presentTaskContext(section: Int) {
-        guard let runtime = companion?.agentRuntime, let id = companion?.agentStore?.selectedID else { return }
+        guard let runtime = companion?.agentRuntime, let id = agentTaskID else { return }
         contextWindow?.window?.performClose(nil); contextWindow = AgentContextWindow(runtime: runtime, taskID: id, section: section)
         contextWindow?.showWindow(nil); contextWindow?.window?.makeKeyAndOrderFront(nil)
     }
-    @objc private func showTaskMCPContent() { if let id = companion?.agentStore?.selectedID { presentMCPContent(taskID: id) } }
+    @objc private func showTaskMCPContent() { if let id = agentTaskID { presentMCPContent(taskID: id) } }
     func presentMCPContent(taskID: String, serverID: String? = nil) {
         guard let store = companion?.agentStore, store.task(taskID) != nil else { return }
-        if store.selectedID == taskID { saveAgentDraft() }
+        if agentTaskID == taskID { saveAgentDraft() }
         mcpContentWindow?.window?.performClose(nil)
         mcpContentWindow = AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
             guard let self, let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
-            let visible = store.selectedID == taskID && self.displayedTask == taskID
+            let visible = agentTaskID == taskID && self.displayedTask == taskID
             let draft = visible ? self.composer.string : previous.draft ?? ""
             let combined = draft + (text.isEmpty ? "" : (draft.isEmpty ? "" : "\n\n") + text)
             guard combined.utf8.count <= 100_000, (previous.draftAttachmentIDs?.count ?? 0) + ids.count <= 6,
@@ -766,7 +769,7 @@ final class FormDocumentView: NSView {
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : .secondaryLabelColor
         workbenchChrome.forEach { $0.isHidden = configuring }
-        if configuring { updateSettingsSections() } else { pageTitle.stringValue = companion?.agentStore?.selected?.title ?? "对话" }
+        if configuring { updateSettingsSections() } else { pageTitle.stringValue = currentAgentTask?.title ?? "对话" }
         chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         updateWorkbenchLayout()
@@ -953,26 +956,26 @@ final class FormDocumentView: NSView {
     }
     @objc private func send() {
         guard let companion else { return }
-        guard companion.agentStore?.selected?.archived != true else { setStatus("任务已归档，请先恢复", error: true); return }
-        guard importTaskID != companion.agentStore?.selectedID || attachmentImport == nil else { return }
-        if let task = companion.agentStore?.selected, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
-        let files = companion.agentStore?.selected?.draftAttachmentIDs ?? []
+        guard currentAgentTask?.archived != true else { setStatus("任务已归档，请先恢复", error: true); return }
+        guard importTaskID != agentTaskID || attachmentImport == nil else { return }
+        if let task = currentAgentTask, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
+        let files = currentAgentTask?.draftAttachmentIDs ?? []
         if companion.usesAgent, files.isEmpty, composer.string.trimmingCharacters(in: .whitespacesAndNewlines) == "/compact" {
-            if companion.agentRuntime?.submit(composer.string) == true { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
+            if companion.agentRuntime?.submit(composer.string, taskID: agentTaskID) == true { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
             presentTaskContext(section: 0); return
         }
         if extensionPickerTask != nil && extensionPanel.isVisible { extensionPicker.pick(); return }
-        if let pair = visibleApproval, pair.task != companion.agentStore?.selectedID,
+        if let pair = visibleApproval, pair.task != agentTaskID,
            companion.agentStore?.task(pair.task)?.pendingCalls.first?.name == "ask_user" {
             guard files.isEmpty else { setStatus("请在子任务中添加答复附件", error: true); return }
             if companion.agentRuntime?.submit(composer.string, taskID: pair.task) == true { composer.string = ""; composer.didChangeText(); saveAgentDraft(); renderMessages() }
             return
         }
-        if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(); return }
-        if companion.send(composer.string, attachmentIDs: files) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
+        if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(taskID: agentTaskID); return }
+        if companion.send(composer.string, attachmentIDs: files, taskID: agentTaskID) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
     }
     @objc private func clear() {
-        if let id = companion?.agentStore?.selectedID { agentTaskAction(id, action: "archive") }
+        if let id = agentTaskID { agentTaskAction(id, action: "archive") }
         else { companion?.clearConversation(); renderMessages() }
     }
     func keepVoiceDraft(_ text: String) { composer.string = text; composer.didChangeText() }
@@ -1028,7 +1031,10 @@ final class FormDocumentView: NSView {
     func windowDidDeminiaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
     func windowDidBecomeKey(_ notification: Notification) {
         companion?.updatePetWorkspaceOcclusion()
-        if let task = companion?.agentStore?.selected { refreshBranch(task, force: true) }
+        if let task = currentAgentTask {
+            if companion?.agentStore?.selectedID != task.id { companion?.agentStore?.selectedID = task.id }
+            refreshBranch(task, force: true)
+        }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         dismissExtensionCandidates()
@@ -1107,22 +1113,22 @@ final class FormDocumentView: NSView {
 @MainActor private extension ControlWindow {
     func updateSendButton() {
         sendButton.toolTip = nil
-        if companion?.agentStore?.selected?.archived == true {
+        if currentAgentTask?.archived == true {
             sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送"); sendButton.setAccessibilityLabel("发送")
             sendButton.isEnabled = false; sendButton.toolTip = "任务已归档，请先恢复"; return
         }
-        if companion?.agentStore?.selected?.kind == "hook" {
+        if currentAgentTask?.kind == "hook" {
             sendButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "停止校验")
             sendButton.setAccessibilityLabel("停止校验"); sendButton.isEnabled = busy; return
         }
-        let files = companion?.agentStore?.selected?.draftAttachmentIDs ?? []
+        let files = currentAgentTask?.draftAttachmentIDs ?? []
         let stopping = busy && (companion?.usesAgent != true || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty))
         sendButton.image = NSImage(systemSymbolName: stopping ? "stop.fill" : "arrow.up", accessibilityDescription: stopping ? "停止任务" : busy ? "补充要求" : "发送")
         sendButton.setAccessibilityLabel(stopping ? "停止任务" : busy ? "补充要求" : "发送")
-        sendButton.isEnabled = importTaskID != companion?.agentStore?.selectedID || attachmentImport == nil
+        sendButton.isEnabled = importTaskID != agentTaskID || attachmentImport == nil
     }
     @objc func addAttachments() {
-        guard let store = companion?.agentStore, let task = store.selected, !task.archived, !["wiki", "hook"].contains(task.kind ?? ""), let window else { return }
+        guard let store = companion?.agentStore, let task = currentAgentTask, !task.archived, !["wiki", "hook"].contains(task.kind ?? ""), let window else { return }
         if attachmentImport != nil { if importTaskID == task.id { attachmentImport?.cancel() }; return }
         guard (task.draftAttachmentIDs?.count ?? 0) < 6 else { setStatus("每条消息最多 6 个附件", error: true); return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = true; panel.prompt = "添加"
@@ -1188,7 +1194,7 @@ final class FormDocumentView: NSView {
         }
         saveAgentDraft(); var readIssue: String?
         do { try tasks.setTaskUnread(id, false) } catch { readIssue = error.localizedDescription }
-        tasks.selectedID = id; displayedTask = id
+        tasks.selectedID = id; displayedTask = id; displayedWorkMode = tasks.task(id)?.organizationMode ?? displayedWorkMode
         composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
         composer.undoManager?.removeAllActions()
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -1199,7 +1205,7 @@ final class FormDocumentView: NSView {
     }
     @objc func newAgentTask() {
         guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
-        let previous = tasks.selected
+        let previous = currentAgentTask
         let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
     }
@@ -1239,7 +1245,7 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func chooseExecutor() {
-        guard let store = companion?.agentStore, let task = store.selected, task.canChooseExecutor else { return }
+        guard let store = companion?.agentStore, let task = currentAgentTask, task.canChooseExecutor else { return }
         let menu = NSMenu()
         func item(_ title: String, _ value: String, selected: Bool = false, available: Bool = true) {
             let entry = NSMenuItem(title: title, action: #selector(selectExecutor(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = value; entry.state = selected ? .on : .off; entry.isEnabled = available; menu.addItem(entry)
@@ -1256,7 +1262,7 @@ final class FormDocumentView: NSView {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workbenchEmptyTitle.bounds.height + 4), in: workbenchEmptyTitle)
     }
     @objc private func selectExecutor(_ sender: NSMenuItem) {
-        guard let store = companion?.agentStore, let task = store.selected, let value = sender.representedObject as? String else { return }
+        guard let store = companion?.agentStore, let task = currentAgentTask, let value = sender.representedObject as? String else { return }
         saveAgentDraft()
         if value == "manage-agents" {
             let manager = AgentProfileWindow(store: store, workspace: task.workspace); manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); return
@@ -1295,7 +1301,7 @@ final class FormDocumentView: NSView {
         case "work-mode":
             guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation else { return }
             saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
-            if tasks.selectedID == id { selectAgentTask(id) }
+            if agentTaskID == id { selectAgentTask(id) }
         case "import-source":
             guard let origin = task.importOrigin else { return }
             let alert = NSAlert(); alert.messageText = origin.source.title + "导入记录"
@@ -1313,19 +1319,19 @@ final class FormDocumentView: NSView {
     }
     private func archiveTasks(_ ids: [String], archived: Bool) -> Bool {
         guard let store = companion?.agentStore else { return false }
-        let mode = store.selected?.organizationMode ?? .coding
+        let mode = currentAgentTask?.organizationMode ?? .coding
         do { saveAgentDraft(); try store.setArchived(ids, archived: archived); finishArchive(mode); return true }
         catch { setStatus(error.localizedDescription, error: true); return false }
     }
     private func finishArchive(_ mode: AgentWorkMode) {
         guard let store = companion?.agentStore else { return }
-        let id = store.selectedID ?? store.create(workMode: mode)
+        let id = currentAgentTask.flatMap { $0.archived ? nil : $0.id } ?? store.tasks.first(where: { !$0.archived && $0.organizationMode == mode })?.id ?? store.create(workMode: mode)
         if displayedTask != id { selectAgentTask(id) } else { renderAgentMessages() }
         archivedTasksView?.refresh()
     }
     private func deleteAgentTasks(_ ids: [String], workspaceIDs: [String]) async throws -> String? {
         guard let store = companion?.agentStore else { throw PetError("任务未初始化") }
-        saveAgentDraft(); let mode = store.selected?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
+        saveAgentDraft(); let mode = currentAgentTask?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
         try recordWindow?.requireDeletionAllowed(plan.ids)
         let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = workspaceIDs.isEmpty ? "永久删除\(plan.records.count)项任务？" : "永久删除\(workspaceIDs.count)个工作区及\(plan.records.count)项任务？"
@@ -1336,7 +1342,7 @@ final class FormDocumentView: NSView {
         try recordWindow?.requireDeletionAllowed(plan.ids)
         let issue = try await store.permanentlyDelete(plan)
         recordWindow?.closeDeletedTask(plan.ids)
-        taskNavigation.removeAll { plan.ids.contains($0) }; taskNavigationIndex = store.selectedID.flatMap { taskNavigation.firstIndex(of: $0) } ?? taskNavigation.count - 1
+        taskNavigation.removeAll { plan.ids.contains($0) }; taskNavigationIndex = agentTaskID.flatMap { taskNavigation.firstIndex(of: $0) } ?? taskNavigation.count - 1
         finishArchive(mode); return issue
     }
     private func exportAgentTask(_ id: String, format: AgentTaskExport.Format) {
@@ -1360,7 +1366,7 @@ final class FormDocumentView: NSView {
         }
     }
     @objc func chooseProject() {
-        guard let task = companion?.agentStore?.selected else { return }
+        guard let task = currentAgentTask else { return }
         guard task.organizationMode == .general else { chooseProjectDirectory(); return }
         let menu = NSMenu(); menu.autoenablesItems = false
         let choose = NSMenuItem(title: "选择文件夹…", action: #selector(chooseProjectDirectory), keyEquivalent: ""); choose.target = self; menu.addItem(choose)
@@ -1369,7 +1375,7 @@ final class FormDocumentView: NSView {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
     }
     @objc private func clearGeneralDirectory() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.organizationMode == .general, task.workspace != nil, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), ![.running, .waiting].contains(task.status) else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.organizationMode == .general, task.workspace != nil, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), ![.running, .waiting].contains(task.status) else { return }
         saveAgentDraft()
         if !task.messages.isEmpty || task.worktreeOrigin != nil {
             let id = tasks.create(mode: task.mode, workMode: .general)
@@ -1379,13 +1385,13 @@ final class FormDocumentView: NSView {
         } else { tasks.update(task.id) { $0.workspace = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }; renderAgentMessages() }
     }
     @objc private func chooseProjectDirectory() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择" + task.organizationMode.directoryTitle
         if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
         guard let window else { return }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            guard tasks.selectedID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.organizationMode == task.organizationMode, current.agent?.ownerID == task.agent?.ownerID, current.workspace == nil || (current.status != .running && current.status != .waiting) else { self.setStatus("原任务已变化，请重新选择目录", error: true); return }
+            guard agentTaskID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.organizationMode == task.organizationMode, current.agent?.ownerID == task.agent?.ownerID, current.workspace == nil || (current.status != .running && current.status != .waiting) else { self.setStatus("原任务已变化，请重新选择目录", error: true); return }
             do { try tasks.organization.register(url.path, mode: task.organizationMode) }
             catch { self.setStatus(error.localizedDescription, error: true); return }
             if task.workspace == nil {
@@ -1403,12 +1409,12 @@ final class FormDocumentView: NSView {
         }
     }
     @objc func agentOptionsChanged() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.automation == nil, task.status != .running && task.status != .waiting else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.automation == nil, task.status != .running && task.status != .waiting else { return }
         tasks.update(task.id) { $0.mode = AgentMode.allCases[max(0, modePopup.indexOfSelectedItem)]; $0.permission = AgentPermissionMode.allCases[max(0, permissionPopup.indexOfSelectedItem)] }
         renderAgentMessages()
     }
     @objc private func showExecutionLocation() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.canChooseEnvironment else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.canChooseEnvironment else { return }
         saveAgentDraft()
         let menu = NSMenu(); menu.autoenablesItems = false
         let local = NSMenuItem(title: "本地", action: #selector(selectLocalEnvironment), keyEquivalent: ""); local.target = self; local.state = task.worktreeOrigin == nil ? .on : .off; local.isEnabled = task.worktreeOrigin != nil; menu.addItem(local)
@@ -1416,7 +1422,7 @@ final class FormDocumentView: NSView {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: executionLocation.bounds.height + 4), in: executionLocation)
     }
     @objc func createTaskWorktree() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected, task.canChooseEnvironment, task.workspace != nil else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.canChooseEnvironment, task.workspace != nil else { return }
         saveAgentDraft()
         do {
             let directory = try AgentGit.metadata(workspace: task.workspace)
@@ -1429,20 +1435,20 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func selectLocalEnvironment() {
-        guard let tasks = companion?.agentStore, let source = tasks.selected, source.canChooseEnvironment, let origin = source.worktreeOrigin else { return }
+        guard let tasks = companion?.agentStore, let source = currentAgentTask, source.canChooseEnvironment, let origin = source.worktreeOrigin else { return }
         saveAgentDraft(); let id = tasks.create(workspace: origin.root, mode: source.mode, workMode: source.organizationMode)
         do { try tasks.copyEnvironmentDraft(sourceID: source.id, targetID: id); selectAgentTask(id) }
         catch { tasks.selectedID = source.id; setStatus(error.localizedDescription, error: true) }
     }
-    @objc func resumeAgentTask() { if let id = companion?.agentStore?.selectedID { companion?.agentRuntime?.start(id) } }
+    @objc func resumeAgentTask() { if let id = agentTaskID { companion?.agentRuntime?.start(id) } }
     @objc func showAgentRecords() { presentAgentRecords(section: 0) }
     @objc func showAgentBrowser() {
-        guard let store = companion?.agentStore, let task = store.selected else { return }
+        guard let store = companion?.agentStore, let task = currentAgentTask else { return }
         do { _ = try store.browser.show(taskID: task.id, title: task.title) }
         catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc func showAgentGit() {
-        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        guard let store = companion?.agentStore, let id = agentTaskID else { return }
         gitWindow?.window?.performClose(nil)
         gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
         gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
@@ -1508,18 +1514,18 @@ final class FormDocumentView: NSView {
     @objc func showKnowledgeLibrary() {
         guard let store = companion?.agentStore else { return }
         knowledgeLibraryWindow?.window?.performClose(nil)
-        knowledgeLibraryWindow = AgentKnowledgeLibraryWindow(store: store, taskID: store.selectedID)
+        knowledgeLibraryWindow = AgentKnowledgeLibraryWindow(store: store, taskID: agentTaskID)
         knowledgeLibraryWindow?.showWindow(nil); knowledgeLibraryWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
     private func openAgentRecordItem(section: Int, value: String) {
-        if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = store.selectedID {
+        if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
         presentAgentRecords(section: section); recordWindow?.selectItem(section: section, value: value)
     }
     func presentAgentRecords(section: Int, taskID: String? = nil) {
-        guard let store = companion?.agentStore, let id = taskID ?? store.selectedID else { return }
+        guard let store = companion?.agentStore, let id = taskID ?? agentTaskID else { return }
         if let existing = recordWindow {
             existing.window?.performClose(nil)
             if existing.window?.isVisible == true { return }
@@ -1578,7 +1584,10 @@ final class FormDocumentView: NSView {
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
         guard tasks.refreshDeletedRecords() else { composer.isEditable = false; sendButton.isEnabled = false; setStatus(tasks.deletions.issue ?? "永久删除记录无法读取，请检查配置并重新打开应用", error: true); return }
-        guard let task = tasks.selected else { selectAgentTask(tasks.create(workMode: tasks.selectionFallbackMode)); return }
+        guard let task = currentAgentTask else {
+            let id = tasks.tasks.first(where: { !$0.archived && $0.organizationMode == displayedWorkMode })?.id ?? tasks.create(workMode: displayedWorkMode)
+            selectAgentTask(id); return
+        }
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
@@ -1649,7 +1658,7 @@ final class FormDocumentView: NSView {
                         if image != nil { shownCanvases.insert(capture.canvasID + capture.sourceHash) }
                         let record = AgentCanvasRecord(id: capture.canvasID, title: capture.title, hash: capture.sourceHash)
                         let snapshot = AgentCanvasPreviewRow(record: record, image: image, actionTitle: "查看快照")
-                        snapshot.onOpen = { [weak self] in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openAttachment(taskID: task.id, id: file.id) }
+                        snapshot.onOpen = { [weak self] in guard self?.agentTaskID == task.id else { return }; self?.openAttachment(taskID: task.id, id: file.id) }
                         messageColumn.addArrangedSubview(snapshot); snapshot.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                     }
                 }
@@ -1657,12 +1666,12 @@ final class FormDocumentView: NSView {
             if task.status == .completed {
                 for path in task.artifacts.prefix(4) {
                     let row = AgentInspectorFileButton(title: URL(fileURLWithPath: path).lastPathComponent, value: path, section: 1, symbol: "doc", inline: true)
-                    row.onOpen = { [weak self] section, value in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openAgentRecordItem(section: section, value: value) }
+                    row.onOpen = { [weak self] section, value in guard self?.agentTaskID == task.id else { return }; self?.openAgentRecordItem(section: section, value: value) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
                 for canvas in (task.canvases ?? []).prefix(4) {
                     let row = AgentCanvasPreviewRow(record: canvas, image: shownCanvases.contains(canvas.id + canvas.hash) ? nil : tasks.canvases.previewImage(canvas, taskID: task.id))
-                    row.onOpen = { [weak self] in guard self?.companion?.agentStore?.selectedID == task.id else { return }; self?.openCanvasReference(canvas.reference, taskID: task.id) }
+                    row.onOpen = { [weak self] in guard self?.agentTaskID == task.id else { return }; self?.openCanvasReference(canvas.reference, taskID: task.id) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
             }
@@ -1738,7 +1747,7 @@ final class FormDocumentView: NSView {
                 let result = try await git.run(["symbolic-ref", "--quiet", "--short", "HEAD"], maximumOutput: 4096, timeout: 5)
                 var fallback = result
                 if result.failed { fallback = try await git.run(["rev-parse", "--short", "HEAD"], maximumOutput: 4096, timeout: 5) }
-                guard !Task.isCancelled, branchKey == key, tasks.selectedID == task.id else { return }
+                guard !Task.isCancelled, branchKey == key, agentTaskID == task.id else { return }
                 let value = (fallback.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 branchControl.title = fallback.failed || value.isEmpty ? "未提交" : value; branchControl.toolTip = fallback.failed ? "当前仓库尚无提交" : value
                 updateWorkbenchLayout()
@@ -1749,7 +1758,7 @@ final class FormDocumentView: NSView {
         }
     }
     @objc func showAgentExtensions() {
-        guard let store = companion?.agentStore, let id = store.selectedID else { return }
+        guard let store = companion?.agentStore, let id = agentTaskID else { return }
         extensionWindow?.window?.performClose(nil)
         if extensionWindow?.window?.isVisible == true { return }
         let manager = AgentExtensionWindow(store: store, taskID: id)
@@ -1772,7 +1781,7 @@ final class FormDocumentView: NSView {
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }
     private func updateExtensionCandidates() {
-        guard selectedTab == "chat", let store = companion?.agentStore, let task = store.selected, task.id == displayedTask, !["wiki", "hook"].contains(task.kind ?? ""),
+        guard selectedTab == "chat", let store = companion?.agentStore, let task = currentAgentTask, task.id == displayedTask, !["wiki", "hook"].contains(task.kind ?? ""),
               composer.string.hasPrefix("/"), !composer.string.contains(where: { $0.isWhitespace }), !composer.hasMarkedText(), window?.isVisible == true else { dismissExtensionCandidates(); return }
         do {
             let query = String(composer.string.dropFirst())
@@ -1852,7 +1861,7 @@ extension ControlWindow {
         let other = store.create(title: "另一个扩展草稿", workspace: store.task(taskID)?.workspace)
         selectAgentTask(other); composer.string = "另一个原草稿"; saveAgentDraft()
         try insertExtension(item, taskID: taskID); saveAgentDraft()
-        checks["managerInsertionPreservesBothTaskDrafts"] = store.selectedID == taskID && store.task(taskID)?.draft == "/" + item.invocation + " 保留原草稿" && store.task(other)?.draft == "另一个原草稿"
+        checks["managerInsertionPreservesBothTaskDrafts"] = agentTaskID == taskID && store.task(taskID)?.draft == "/" + item.invocation + " 保留原草稿" && store.task(other)?.draft == "另一个原草稿"
         composer.string = "/"; composer.didChangeText(); selectAgentTask(other)
         try await Task.sleep(nanoseconds: 50_000_000)
         checks["taskSwitchClosesSlashCandidates"] = extensionPickerTask == nil && !extensionPanel.isVisible
@@ -1868,7 +1877,7 @@ extension ControlWindow {
         let other = tasks.create(title: "另一个未发送草稿", mode: .ask)
         selectAgentTask(other); composer.string = "独立草稿"; saveAgentDraft()
         try await attachBrowserCapture(shot, marks: marks, note: note, taskID: taskID)
-        return ["captureReturnsToOwningTask": tasks.selectedID == taskID && displayedTask == taskID,
+        return ["captureReturnsToOwningTask": agentTaskID == taskID && displayedTask == taskID,
                 "capturePreservesBothComposerDrafts": tasks.task(taskID)?.draft == "保留的原有草稿\n" + note && tasks.task(other)?.draft == "独立草稿",
                 "captureAppearsInComposerBeforeSending": tasks.task(taskID)?.draftAttachmentIDs?.count == 1 && !draftAttachments.isHidden && !composer.string.isEmpty && tasks.task(taskID)?.messages.isEmpty == true]
     }
@@ -1908,14 +1917,14 @@ extension ControlWindow {
         return checks
     }
     func checkAgentLayout(_ output: URL, includeArtifacts: Bool = true) async -> [String: Bool] {
-        guard let tasks = companion?.agentStore, let originalID = tasks.selectedID else { return ["nativeAgentLayout": false] }
+        guard let tasks = companion?.agentStore, let originalID = agentTaskID else { return ["nativeAgentLayout": false] }
         let draft = composer.string
         composer.string = "尚未发送的 Agent 草稿"; composer.didChangeText(); saveAgentDraft()
         let second = tasks.create(title: "另一项任务"); selectAgentTask(second); composer.string = "另一份草稿"; composer.didChangeText()
         selectAgentTask(originalID)
         var checks = ["draftsAreIsolatedAndPersistent": composer.string == "尚未发送的 Agent 草稿" && tasks.task(second)?.draft == "另一份草稿"]
         selectedTab = "settings"; changeTab(); selectedTab = "chat"; changeTab()
-        checks["settingsReturnPreservesTaskDraft"] = composer.string == "尚未发送的 Agent 草稿" && tasks.selectedID == originalID
+        checks["settingsReturnPreservesTaskDraft"] = composer.string == "尚未发送的 Agent 草稿" && agentTaskID == originalID
         func capture(_ name: String) {
             guard let view = window?.contentView else { return }; view.layoutSubtreeIfNeeded()
             if let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(name + ".png")) }
@@ -1939,7 +1948,7 @@ extension ControlWindow {
     func repoWikiOverviewReadback() async -> [String: Any] {
         guard CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
         var value = repoWikiWindow?.checkState ?? [:]
-        value["selectedTask"] = companion?.agentStore?.selectedID as Any? ?? NSNull(); value["draft"] = composer.string
+        value["selectedTask"] = agentTaskID as Any? ?? NSNull(); value["draft"] = composer.string
         value["tasks"] = companion?.agentStore?.tasks.map { ["id": $0.id, "workspace": $0.workspace as Any? ?? NSNull(), "kind": $0.kind as Any? ?? NSNull()] as [String: Any] } ?? []
         value["projectSearchOpen"] = knowledgeWindow?.window?.isVisible == true
         if let recordWindow, recordWindow.window?.isVisible == true { value["document"] = await recordWindow.markdownEditingReadback() }
@@ -1948,24 +1957,25 @@ extension ControlWindow {
     func refreshDataImport() { dataImportView?.refresh() }
     func archiveReadback() -> [String: Any] {
         guard CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check"), let store = companion?.agentStore else { return [:] }
-        return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": store.selectedID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "sendEnabled": sendButton.isEnabled, "composerEditable": composer.isEditable, "settingsCategory": settingsCategory,
+        return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": agentTaskID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "sendEnabled": sendButton.isEnabled, "composerEditable": composer.isEditable, "settingsCategory": settingsCategory,
                 "tasks": store.tasks.compactMap { store.task($0.id) }.map { ["id": $0.id, "title": $0.title, "workspace": $0.workspace as Any? ?? NSNull(), "mode": $0.organizationMode.rawValue, "archived": $0.archived, "archiveID": $0.workspaceArchiveID as Any? ?? NSNull(), "draft": $0.draft ?? ""] },
                 "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] },
                 "deletions": ["ids": store.deletions.taskIDs.sorted(), "workspaces": store.deletions.workspaceIDs.sorted(), "pending": store.deletions.pendingCount, "working": store.deletions.working, "issue": store.deletions.issue as Any? ?? NSNull()]]
     }
     func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
     func switchWorkMode(_ mode: AgentWorkMode) {
-        guard let tasks = companion?.agentStore, tasks.selected?.organizationMode != mode else { return }
+        guard let tasks = companion?.agentStore, currentAgentTask?.organizationMode != mode else { return }
         saveAgentDraft()
         do {
-            if let current = tasks.selected { try tasks.organization.remember(current) }
+            if let current = currentAgentTask { try tasks.organization.remember(current) }
             let id = tasks.organization.lastTask(mode, tasks: tasks.tasks) ?? tasks.create(workMode: mode)
             selectAgentTask(id)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func organizationSnapshot() -> [String: Any] {
         var value = taskSidebar.organizationSnapshot()
-        value["selected"] = companion?.agentStore?.selectedID ?? ""; value["draft"] = composer.string
+        value["selected"] = agentTaskID ?? ""; value["draft"] = composer.string
+        value["focusedTask"] = companion?.agentStore?.selectedID ?? ""
         value["locationHidden"] = executionLocation.isHidden; value["branchHidden"] = branchControl.isHidden; value["branch"] = branchControl.title
         return value
     }
@@ -1975,7 +1985,7 @@ extension ControlWindow {
         selectAgentTask(taskID)
         let count = store.tasks.count, draft = composer.string, files = before.draftAttachmentIDs
         func select(_ value: String) { let item = NSMenuItem(); item.representedObject = value; selectExecutor(item) }
-        func preserved() -> Bool { store.tasks.count == count && composer.string == draft && store.task(taskID)?.draft == before.draft && store.task(taskID)?.draftAttachmentIDs == files && store.selectedID == taskID }
+        func preserved() -> Bool { store.tasks.count == count && composer.string == draft && store.task(taskID)?.draft == before.draft && store.task(taskID)?.draftAttachmentIDs == files && agentTaskID == taskID }
         select("agent:" + agentID)
         let agent = store.task(taskID)?.agent?.profile.id == agentID && preserved() && workbenchEmptyTitle.title == store.task(taskID)?.agent?.profile.name
         select("team:" + teamID)
@@ -2065,15 +2075,15 @@ extension ControlWindow {
         }
         toggleTaskInspector(); checks["recordPaneCanClose"] = workbenchInspector.isHidden
         toggleTaskInspector(); checks["recordPaneCanReopen"] = !workbenchInspector.isHidden
-        newAgentTask(); let emptyID = tasks.selectedID!
+        newAgentTask(); let emptyID = agentTaskID!
         composer.string = "尚未发送的工作台草稿"; composer.didChangeText(); saveAgentDraft()
         await capture("workbench-empty")
         checks["emptyTaskHasOwnStartingState"] = !workbenchEmpty.isHidden && history.isHidden && workbenchInspector.isHidden
         checks["emptyTaskDoesNotDisplayPriorMessages"] = messageColumn.arrangedSubviews.isEmpty && tasks.task(emptyID)?.messages.isEmpty == true
         selectAgentTask(actualTask); selectAgentTask(emptyID)
         checks["draftSurvivesTaskSwitch"] = composer.string == "尚未发送的工作台草稿" && tasks.task(emptyID)?.messages.isEmpty == true
-        selectAgentTask(actualTask); previousAgentTask(); checks["backReturnsToPriorTask"] = tasks.selectedID == emptyID
-        nextAgentTask(); checks["forwardRestoresTask"] = tasks.selectedID == actualTask
+        selectAgentTask(actualTask); previousAgentTask(); checks["backReturnsToPriorTask"] = agentTaskID == emptyID
+        nextAgentTask(); checks["forwardRestoresTask"] = agentTaskID == actualTask
         setSize(NSSize(width: 900, height: 640)); await capture("workbench-narrow")
         checks["narrowCollapsesInspector"] = workbenchInspector.isHidden && history.contentView.bounds.width > 550
         checks["composerControlsDoNotOverlapNarrow"] = !entryLeading.convert(entryLeading.bounds, to: entryToolbar).intersects(entryTrailing.convert(entryTrailing.bounds, to: entryToolbar))

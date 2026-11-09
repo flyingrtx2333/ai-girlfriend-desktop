@@ -488,13 +488,13 @@ final class PetWebView: WKWebView {
     }
     @objc func quit() { NSApp.terminate(nil) }
 
-    func send(_ text: String, attachmentIDs: [String] = []) -> Bool {
+    func send(_ text: String, attachmentIDs: [String] = [], taskID: String? = nil) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if usesAgent {
             ensureAgent(); screenCompanion.interaction()
             guard !text.isEmpty || !attachmentIDs.isEmpty, let runtime = agentRuntime else { return false }
             stopSpeech()
-            let accepted = runtime.submit(text, attachmentIDs: attachmentIDs)
+            let accepted = runtime.submit(text, taskID: taskID, attachmentIDs: attachmentIDs)
             if accepted { control.scheduleRender(); refreshVoiceBusy() }
             else if let error = runtime.submissionError { control.setStatus(error, error: true) }
             return accepted
@@ -538,9 +538,9 @@ final class PetWebView: WKWebView {
             return true
         } catch { control.setStatus(error.localizedDescription, error: true); return false }
     }
-    func cancelConversation() {
+    func cancelConversation(taskID: String? = nil) {
         chatTask?.cancel()
-        if let id = agentStore?.selectedID { agentRuntime?.cancel(id) }
+        if let id = taskID ?? agentStore?.selectedID { agentRuntime?.cancel(id) }
         stopSpeech(); refreshVoiceBusy(); startPendingVoiceListen()
     }
     func clearConversation() {
