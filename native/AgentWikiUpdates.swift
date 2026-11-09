@@ -57,7 +57,8 @@ struct AgentWikiUpdatePreview {
         if let frozen = manifest.plan { plan = try frozen.validated() }
         else {
             let titles = Dictionary(uniqueKeysWithValues: documents.map { ($0.file, $0.title) })
-            plan = try AgentWikiPlan(documents: documents.map { AgentWikiDocument(title: $0.title, goal: "结合提交变更核对并保留此页已有事实与用户补充", parent: $0.parent.flatMap { titles[$0] }) }).validated()
+            let ordered = documents.filter { $0.parent == nil } + documents.filter { $0.parent != nil }
+            plan = try AgentWikiPlan(documents: ordered.map { AgentWikiDocument(title: $0.title, goal: "结合提交变更核对并保留此页已有事实与用户补充", parent: $0.parent.flatMap { titles[$0] }) }).validated()
         }
         let indexed = try await store.knowledgeCards.refreshIndex(source)
         guard try await cleanCommit(store: store, taskID: sourceID) == head, try store.knowledgeCards.scope(source).branch == scope.branch, try AgentKnowledgeCards.identity(scope.root) == identity else { throw PetError("项目或提交已变化，请重新审阅更新") }
