@@ -20,11 +20,11 @@ struct AgentWikiRegeneration: Equatable {
     static func generationState(store: AgentStore, runtime: AgentRuntime, sourceID: String, language: String) throws -> AgentWikiGenerationState {
         let source = try generationSource(store: store, sourceID: sourceID, language: language), scope = try store.knowledgeCards.scope(source)
         let candidates = store.tasks.filter { $0.kind == "wiki" && $0.workspace == scope.root && $0.wikiJob?.branch == scope.branch && $0.wikiJob?.language == language && !$0.archived }.sorted { $0.created > $1.created }
-        let active = candidates.first { isFinalizing($0.id) || runtime.isRunning($0.id) || [.ready, .running, .waiting].contains($0.status) }
-        guard let task = active ?? candidates.first else { return AgentWikiGenerationState() }
+        let active = candidates.first { isFinalizing($0.id) || runtime.isRunning($0.id) || $0.status == .waiting }
+        guard let metadata = active ?? candidates.first, let task = store.task(metadata.id) else { return AgentWikiGenerationState() }
         if isFinalizing(task.id) { return AgentWikiGenerationState(taskID: task.id, action: "publishing") }
         if active != nil { return AgentWikiGenerationState(taskID: task.id, action: "pause") }
-        return AgentWikiGenerationState(taskID: task.id, action: [.stopped, .failed].contains(task.status) ? "resume" : "generate")
+        return AgentWikiGenerationState(taskID: task.id, action: [.ready, .stopped, .failed].contains(task.status) ? "resume" : "generate")
     }
     static func pauseGeneration(store: AgentStore, runtime: AgentRuntime, sourceID: String, language: String, expectedID: String) throws {
         let state = try generationState(store: store, runtime: runtime, sourceID: sourceID, language: language)
