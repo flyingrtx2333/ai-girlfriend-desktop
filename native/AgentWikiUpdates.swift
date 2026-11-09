@@ -119,9 +119,18 @@ struct AgentWikiUpdatePreview {
     }
     static func readUpdateChanges(_ call: AgentToolCall, store: AgentStore, task: AgentTaskRecord) throws -> AgentToolResult {
         guard var job = task.wikiJob, var update = job.update else { throw PetError("此任务没有提交更新差异") }
-        let start = min(update.diff.count, max(0, call.object["content_offset"] as? Int ?? 0)), limit = min(1600, max(1, call.object["content_limit"] as? Int ?? 1200)), content = String(update.diff.dropFirst(start).prefix(limit))
+        let start = min(update.diff.count, max(0, call.object["content_offset"] as? Int ?? 0)), limit = min(1600, max(1, call.object["content_limit"] as? Int ?? 1200))
+        var content = String(update.diff.dropFirst(start).prefix(limit))
+        while AgentContext.estimate(content) > 400, content.count > 1 { content = String(content.prefix(max(1, content.count * 3 / 4))) }
+        guard AgentContext.estimate(content) <= 400 else { throw PetError("提交差异中的单个字符序列过长，请缩小变更范围") }
         let hash = AgentFiles.hash(Data(update.diff.utf8)); var read = update.changesRead ?? AgentKnowledgeCardRead(sha256: hash, ranges: [])
         if !content.isEmpty, !read.ranges.contains([start + 1, start + content.count]) { read.ranges.append([start + 1, start + content.count]) }
+        var merged: [[Int]] = []
+        for range in read.ranges.sorted(by: { $0[0] < $1[0] }) {
+            if let last = merged.last, range[0] <= last[1] + 1 { merged[merged.count - 1][1] = max(last[1], range[1]) }
+            else { merged.append(range) }
+        }
+        read.ranges = merged
         guard read.ranges.count <= 200 else { throw PetError("差异读取次数过多，请重新更新") }
         update.changesRead = read; job.update = update; store.update(task.id) { $0.wikiJob = job }
         if let error = store.writeError { throw PetError(error) }

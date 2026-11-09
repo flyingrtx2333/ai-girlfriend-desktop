@@ -53,7 +53,10 @@ import AppKit
             checks["changedSourcePageCannotBeSilentlyRetained"] = try !AgentWiki.retainedPage(task, path: native, hash: files.fileHash(files.resolve(native), maximum: 256_000))
             do { _ = try AgentWiki.validatePlanned(task); checks["unreadCommitDiffBlocksCompletion"] = false } catch { checks["unreadCommitDiffBlocksCompletion"] = error.localizedDescription.contains("读完本次提交差异") }
             var offset = 0
-            while offset < job.update!.diff.count { _ = try await call(id, "plan_wiki", ["changes": true, "content_offset": offset, "content_limit": 1600]); offset += 1600 }
+            while offset < job.update!.diff.count {
+                let result = try await call(id, "plan_wiki", ["changes": true, "content_offset": offset, "content_limit": 1600]), body = result.text.components(separatedBy: "\n").dropFirst(2).dropLast().joined(separator: "\n")
+                guard !body.isEmpty, body == String(job.update!.diff.dropFirst(offset).prefix(body.count)), AgentContext.estimate(body) <= 400 else { throw PetError("实际提交差异分页与原件或上下文预算不一致") }; offset += body.count
+            }
             let copiedHash = try files.fileHash(files.resolve(native), maximum: 256_000)
             do { _ = try await call(id, "plan_wiki", ["confirm_page": native, "expected_hash": copiedHash]); checks["confirmRetainedPageRequiresActualReadback"] = false } catch { checks["confirmRetainedPageRequiresActualReadback"] = true }
             _ = try await call(id, "read_file", ["path": "native/AgentWiki.swift", "offset": 1, "limit": 4]); _ = try await call(id, "read_file", ["path": native, "limit": 200])
@@ -78,6 +81,10 @@ import AppKit
             options.autoUpdate = false; try setOptions(options); _ = try await apply("fourth"); let stoppedCount = tasks.tasks.filter { $0.kind == "wiki" }.count
             await wait(2.3)
             checks["disableRemovesWatcherAndStopsFutureAutomaticTasks"] = tasks.tasks.filter { $0.kind == "wiki" }.count == stoppedCount && (tasks.wikiMaintenance.checkState["watching"] as? [String])?.isEmpty == true
+            let longPreview = try await AgentWiki.previewUpdate(store: tasks, runtime: runtime, sourceID: owner, language: "zh"), boundedID = try await AgentWiki.startUpdate(longPreview, store: tasks, runtime: runtime, sourceID: owner); runtime.cancel(boundedID)
+            guard let cjkStart = longPreview.diff.range(of: "在「记录")?.lowerBound else { throw PetError("真实提交差异缺少已保留的中文项目文档") }
+            let cjkOffset = longPreview.diff.distance(from: longPreview.diff.startIndex, to: cjkStart), result = try await call(boundedID, "plan_wiki", ["changes": true, "content_offset": cjkOffset, "content_limit": 1600]), body = result.text.components(separatedBy: "\n").dropFirst(2).dropLast().joined(separator: "\n")
+            checks["actualChineseCommitDiffFitsBoundedContextWithExactNextOffset"] = !body.isEmpty && body == String(longPreview.diff.dropFirst(cjkOffset).prefix(body.count)) && AgentContext.estimate(body) <= 400 && result.text.contains("next_offset=\(cjkOffset + body.count)")
             let stale = try AgentWiki.maintenance(store: tasks, workspace: workspace.path, language: "zh"); options.autoExport = true; try setOptions(options)
             do { try AgentWiki.setMaintenance(store: tasks, sourceID: owner, language: "zh", options: stale.options, expected: stale.signature); checks["staleSettingsCannotOverwriteNewOptions"] = false } catch { checks["staleSettingsCannotOverwriteNewOptions"] = try AgentWiki.maintenance(store: tasks, workspace: workspace.path, language: "zh").options.autoExport }
             let citation = try AgentWiki.citation(store: tasks, workspace: workspace.path); try AgentWiki.setCitation(store: tasks, workspace: workspace.path, enabled: false, expected: citation.signature)
