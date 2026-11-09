@@ -65,6 +65,8 @@ final class PetWebView: WKWebView {
     var pendingFileOpens: [[URL]] = []
     var fileOpenJob: Task<Void, Never>?
     var fileOpenEvents: [[String: Any]] = []
+    var attachmentCheckActivations = 0
+    var usesBackgroundAttachmentCheck: Bool { checkDirectory != nil && CommandLine.arguments.contains("--background-attachment-check") && !CommandLine.arguments.contains("--manual-ui") && ["--file-open-check", "--attachment-drop-check"].contains(where: CommandLine.arguments.contains) }
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
@@ -171,6 +173,7 @@ final class PetWebView: WKWebView {
     }
     func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.isVisible = !usesBackgroundAttachmentCheck
         if let image = NSImage(systemSymbolName: "fish.fill", accessibilityDescription: "蓝色大肥鱼") {
             image.isTemplate = true; statusItem.button?.image = image
         } else { statusItem.button?.title = "鲸" }
@@ -395,7 +398,7 @@ final class PetWebView: WKWebView {
     @objc func frontApplicationChanged() { screenCompanion.applicationChanged() }
     @objc func screensChanged() { pet.setFrame(clamp(pet.frame), display: true); updateBubblePosition() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateVisibility() }
-    func applicationDidBecomeActive(_ notification: Notification) { updatePetWorkspaceOcclusion() }
+    func applicationDidBecomeActive(_ notification: Notification) { if usesBackgroundAttachmentCheck { attachmentCheckActivations += 1 }; updatePetWorkspaceOcclusion() }
     func applicationDidResignActive(_ notification: Notification) { updatePetWorkspaceOcclusion() }
 
     func setupMouse() {
@@ -478,7 +481,7 @@ final class PetWebView: WKWebView {
         let payload = body["payload"] as? [String: Any] ?? [:]
         switch action {
         case "ready":
-            ready = true; pet.orderFrontRegardless(); updateVisibility(); statusItem.menu = menu()
+            ready = true; if !usesBackgroundAttachmentCheck { pet.orderFrontRegardless() }; updateVisibility(); statusItem.menu = menu()
             if selectedAgentBusy || agentStore?.selected?.status == .waiting { agentAnimationPhase = ""; refreshAgentAnimation() }
             if checkDirectory != nil { Task { await runSelfCheck() } }
         case "hit": if dragOrigin == nil { pet.ignoresMouseEvents = !(payload["hit"] as? Bool ?? false) }

@@ -50,6 +50,7 @@ import AppKit
             report["firstTaskID"] = id; report["previousTaskIDs"] = [a, b]; report["queuedTaskIDs"] = queued.sorted(); report["fileOpenEvents"] = fileOpenEvents
         } catch { failure = error.localizedDescription }
         report["checks"] = checks; report["success"] = failure == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["appPID"] = getpid(); report["blockedModelAttempts"] = requests
+        report["backgroundComponentCheck"] = usesBackgroundAttachmentCheck; report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
         report["boundary"] = "Real native delegate, windows, files, parsing and durable records. Direct delegate calls do not prove Launch Services or Finder Open With delivery."
         if let failure { report["error"] = failure }
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }

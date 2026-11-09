@@ -56,6 +56,7 @@ import AppKit
             values = ["sourceTaskID": a, "otherTaskID": b, "quotaTaskID": quota, "uiTaskID": ui, "readmeHash": AgentFiles.hash(original), "imageHash": AgentFiles.hash(imageBytes), "nativeClipboardIsNotASystemDragProof": true]
         } catch { failure = error.localizedDescription }
         values["checks"] = checks; values["success"] = failure == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; values["appPID"] = getpid(); values["blockedModelAttempts"] = requests
+        values["backgroundComponentCheck"] = usesBackgroundAttachmentCheck; values["activationCount"] = attachmentCheckActivations; values["applicationActive"] = NSApp.isActive; values["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
         if let failure { values["error"] = failure }
         if let binary = Bundle.main.executableURL { values["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("attachment-drop-result.json"), options: .atomic)

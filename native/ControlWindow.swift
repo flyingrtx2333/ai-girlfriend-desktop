@@ -822,7 +822,9 @@ final class FormDocumentView: NSView {
     func show(tab: String) {
         if window?.isVisible != true { refreshPreferences() }
         selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
-        renderMessages(); showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        renderMessages()
+        if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
+        showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if tab != "settings" { window?.makeFirstResponder(composer) }
         companion?.updatePetWorkspaceOcclusion()
     }
