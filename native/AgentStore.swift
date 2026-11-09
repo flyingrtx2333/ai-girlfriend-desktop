@@ -26,6 +26,7 @@ import Foundation
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private var taskHashes: [String: String] = [:]
+    private(set) var taskSearchRevisions: [String: UInt64] = [:], taskSearchRevision: UInt64 = 0
     private var indexHash: String?
     private var applyingArchive = false
     private var deletionRevision = -1
@@ -156,6 +157,7 @@ import Foundation
             if deletionRevision != deletions.revision {
                 let mode = tasks.first(where: { $0.id == selectedID })?.organizationMode ?? selectionFallbackMode
                 let ids = deletions.taskIDs; tasks.removeAll { ids.contains($0.id) }; cache = cache.filter { !ids.contains($0.key) }; taskHashes = taskHashes.filter { !ids.contains($0.key) }
+                taskSearchRevisions = taskSearchRevisions.filter { !ids.contains($0.key) }
                 organization.suppressDeletedArchives(deletions.workspaceIDs); deletionRevision = deletions.revision
                 if let selectedID, ids.contains(selectedID) { selectionFallbackMode = mode; applyingArchive = true; self.selectedID = tasks.first(where: { !$0.archived && $0.organizationMode == mode })?.id; applyingArchive = false }
             }; return true
@@ -222,6 +224,7 @@ import Foundation
         let data = try encoder.encode(task); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         taskHashes[id] = AgentFiles.hash(data)
+        taskSearchRevision &+= 1; taskSearchRevisions[id] = taskSearchRevision
         try saveIndex(); writeError = nil
     }
     private func saveIndex() throws {

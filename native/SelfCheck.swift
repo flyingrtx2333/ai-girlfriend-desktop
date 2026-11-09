@@ -36,6 +36,7 @@ import WebKit
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
+                if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")

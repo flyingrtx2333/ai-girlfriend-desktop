@@ -144,6 +144,11 @@ final class FormDocumentView: NSView {
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        taskSidebar.onSearchVersion = { [weak companion] id in companion?.agentStore?.taskSearchRevisions[id] ?? 0 }
+        taskSidebar.onSearch = { [weak companion] query, candidates in
+            guard let directory = companion?.agentStore?.directory else { return AgentTaskSearch.Result(checked: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0.version) }), issues: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, "任务系统尚未初始化") })) }
+            return await AgentTaskSearch.find(query, candidates: candidates, directory: directory)
+        }
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         refreshPreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
@@ -1641,7 +1646,7 @@ final class FormDocumentView: NSView {
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         let taskView = tasks.organization.taskView(task.organizationMode)
-        taskSidebar.refresh(taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks, selected: task.id, organization: tasks.organization)
+        taskSidebar.refresh(taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks, selected: task.id, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
         projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)

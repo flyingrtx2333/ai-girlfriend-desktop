@@ -3,7 +3,9 @@ import AppKit
 private final class AgentTaskTable: NSTableView {
     var taskMenu: ((Int) -> NSMenu?)?
     var willClick: ((NSEvent) -> Void)?
+    var onKey: ((NSEvent) -> Bool)?
     override func mouseDown(with event: NSEvent) { willClick?(event); super.mouseDown(with: event) }
+    override func keyDown(with event: NSEvent) { if onKey?(event) != true { super.keyDown(with: event) } }
     override func menu(for event: NSEvent) -> NSMenu? {
         let row = row(at: convert(event.locationInWindow, from: nil))
         return row >= 0 ? taskMenu?(row) : nil
@@ -24,6 +26,8 @@ private final class AgentTaskTable: NSTableView {
 @MainActor final class AgentTaskSidebar: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     var onSelect: ((String) -> Void)?
     var onAttention: (() -> Void)?
+    var onSearch: ((String, [AgentTaskSearch.Candidate]) async -> AgentTaskSearch.Result)?
+    var onSearchVersion: ((String) -> UInt64)?
     var onNew: (() -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
@@ -55,6 +59,10 @@ private final class AgentTaskTable: NSTableView {
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
     private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
+    private var searchTask: Task<Void, Never>?, searchGeneration = 0, searchQuery = "", searchScope = Set<String>()
+    private var searchVersions: [String: String] = [:], searchHits: [String: AgentTaskSearch.Hit] = [:], searchIssues: [String: String] = [:]
+    private var searchBusy = false, searchSelection: String?
+    private var listSelection: String? { searchVisible ? searchSelection ?? selected : selected }
     override init(frame: NSRect) {
         super.init(frame: frame)
         for (button, title, symbol, action) in [(create, "新的任务", "plus.square", #selector(newTask)), (attention, "需要我", "bell", #selector(showAttention)), (searchButton, "搜索", "magnifyingglass", #selector(showSearch))] {
@@ -85,6 +93,10 @@ private final class AgentTaskTable: NSTableView {
             if !bulkSelecting { bulkIDs.removeAll(); updateBulkBar() }
         }
         table.taskMenu = { [weak self] row in self?.menu(row) }
+        table.onKey = { [weak self] event in
+            guard let self, searchVisible, !bulkSelecting, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return false }
+            switch event.keyCode { case 125: moveSearchSelection(1); case 126: moveSearchSelection(-1); case 36, 76: commitSearchSelection(); case 53: closeSearch(); default: return false }; return true
+        }
         table.target = self; table.action = #selector(openUnreadSelection)
         table.registerForDraggedTypes([Self.dragType]); table.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
@@ -103,14 +115,14 @@ private final class AgentTaskTable: NSTableView {
         scroll.setContentHuggingPriority(.defaultLow, for: .vertical); scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
         for name in [Notification.Name.NSCalendarDayChanged, .NSSystemTimeZoneDidChange] { dayObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.applyFilter() } }) }
     }
-    deinit { for observer in dayObservers { NotificationCenter.default.removeObserver(observer) } }
+    deinit { searchTask?.cancel(); for observer in dayObservers { NotificationCenter.default.removeObserver(observer) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.keyCode == 53, bulkSelecting { cancelBulkSelection(); return true }
         if event.modifierFlags.contains(.command), event.modifierFlags.intersection([.option, .control, .shift]).isEmpty, event.charactersIgnoringModifiers?.lowercased() == "f" { showSearch(); return true }
         return super.performKeyEquivalent(with: event)
     }
-    func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization) {
+    func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization, searchRevision: UInt64 = 0) {
         self.organization = organization
         let previous = self.selected; self.selected = selected
         let mode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
@@ -120,13 +132,14 @@ private final class AgentTaskTable: NSTableView {
         workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
         add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
         if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(groupKey(path)) }
-        let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))"
+        let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))|\(search.stringValue.isEmpty ? 0 : searchRevision)"
         if onAttention == nil { setAttentionCount(values.filter { !$0.archived && $0.status == .waiting }.count, enabled: true) }
         if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
     }
     @objc private func newTask() { onNew?() }
     @objc private func newWorkspace() { onNewWorkspace?() }
-    @objc private func showSearch() { searchVisible.toggle(); search.isHidden = !searchVisible; if searchVisible { window?.makeFirstResponder(search) } else { search.stringValue = ""; applyFilter() } }
+    @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
+    private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }
     func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
     @objc private func showAttention() { cancelBulkSelection(); if let onAttention { onAttention() } else { filter = filter == 1 ? 0 : 1; applyFilter() } }
     @objc private func changeFilter(_ sender: NSMenuItem) { if sender.tag == 1, let onAttention { onAttention(); return }; cancelBulkSelection(); filter = sender.tag; applyFilter() }
@@ -167,25 +180,67 @@ private final class AgentTaskTable: NSTableView {
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
         value["filter"] = filter; value["unreadTaskIDs"] = tasks.filter { organization?.isTaskUnread($0.id) == true }.map(\.id).sorted()
+        if CommandLine.arguments.contains("--manual-ui") { value["searchQuery"] = search.stringValue; value["searchVisible"] = searchVisible; value["searchBusy"] = searchBusy; value["searchSelection"] = searchSelection as Any? ?? NSNull(); value["searchIssues"] = searchIssues; value["searchMatches"] = searchHits.mapValues { ["messageID": $0.messageID, "role": $0.role, "excerpt": $0.excerpt] } }
         if CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
         if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        if selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.moveDown(_:)), let index = rows.firstIndex(where: { if case .task = $0 { return true }; return false }) {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); window?.makeFirstResponder(table); return true
-        }
-        if selector == #selector(NSResponder.cancelOperation(_:)) { searchVisible = false; search.isHidden = true; search.stringValue = ""; applyFilter(); return true }
+        guard !textView.hasMarkedText() else { return false }
+        if selector == #selector(NSResponder.insertNewline(_:)) { commitSearchSelection(); return true }
+        if selector == #selector(NSResponder.moveDown(_:)) { moveSearchSelection(1); return true }
+        if selector == #selector(NSResponder.moveUp(_:)) { moveSearchSelection(-1); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { closeSearch(); return true }
         return false
+    }
+    private func moveSearchSelection(_ delta: Int) {
+        cancelBulkSelection()
+        let indices = rows.indices.filter { if case .task = rows[$0] { return true }; return false }; guard !indices.isEmpty else { return }
+        let current = indices.firstIndex(where: { if case .task(let task, _) = rows[$0] { return task.id == listSelection }; return false })
+        let next = current.map { min(indices.count - 1, max(0, $0 + delta)) } ?? (delta > 0 ? 0 : indices.count - 1)
+        if case .task(let task, _) = rows[indices[next]] { searchSelection = task.id }; selectCurrent()
+    }
+    private func commitSearchSelection() {
+        guard !bulkSelecting, let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == listSelection }; return false }) ?? rows.firstIndex(where: { if case .task = $0 { return true }; return false }), case .task(let task, _) = rows[row] else { return }
+        searchSelection = task.id; onSelect?(task.id)
+    }
+    private func searchVersion(_ task: AgentTaskRecord) -> String { "\(onSearchVersion?(task.id) ?? 0)|\(task.title)|\(task.summary)" }
+    private func beginSearch(_ query: String, scope: [AgentTaskRecord]) {
+        let ids = Set(scope.map(\.id))
+        if query != searchQuery || ids != searchScope {
+            searchTask?.cancel(); searchTask = nil; searchGeneration += 1; searchQuery = query; searchScope = ids
+            searchVersions = [:]; searchHits = [:]; searchIssues = [:]; searchBusy = false; searchSelection = nil
+        }
+        guard !query.isEmpty, let provider = onSearch else { return }
+        let changed = scope.filter { !(($0.title + "\n" + $0.summary).localizedCaseInsensitiveContains(query)) && searchVersions[$0.id] != searchVersion($0) }.map { AgentTaskSearch.Candidate(id: $0.id, version: searchVersion($0), title: $0.title) }
+        guard !changed.isEmpty, searchTask == nil else { return }
+        searchBusy = true; let ticket = searchGeneration
+        searchTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 160_000_000) } catch { return }
+            let result = await provider(query, changed)
+            guard let self, !Task.isCancelled, searchGeneration == ticket else { return }
+            searchTask = nil; searchBusy = false
+            for (id, version) in result.checked { searchVersions[id] = version; searchHits[id] = result.hits[id]; searchIssues[id] = result.issues[id] }
+            applyFilter()
+        }
+    }
+    private func searchSnippet(_ task: AgentTaskRecord) -> String? {
+        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !task.title.localizedCaseInsensitiveContains(query) else { return nil }
+        if searchVersions[task.id] == searchVersion(task), let hit = searchHits[task.id] { return (hit.role == "user" ? "你：" : "回复：") + hit.excerpt }
+        if task.summary.localizedCaseInsensitiveContains(query) { return "摘要：" + AgentTaskSearch.excerpt(task.summary, query: query) }
+        return nil
     }
     private func childOwner(_ task: AgentTaskRecord) -> String? { task.agent?.ownerID ?? (task.kind == "hook" ? task.parentID : nil) }
     private func applyFilter() {
         guard !draggingRows else { return }
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date(), calendar = Calendar.current
-        let visible = tasks.filter { task in
-            (filter == 1 || task.organizationMode == workMode) && (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting) && (filter != 3 || organization?.isTaskUnread(task.id) == true)) && (filter == 1 || taskView.includes(task, now: now, calendar: calendar)) && (query.isEmpty || (task.title + "\n" + task.summary).localizedCaseInsensitiveContains(query))
-        }.sorted { effectiveGrouping == .activity ? ($0.activityAt ?? $0.updated) > ($1.activityAt ?? $1.updated) : $0.updated > $1.updated }
+        let scope = tasks.filter { task in
+            (filter == 1 || task.organizationMode == workMode) && (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting) && (filter != 3 || organization?.isTaskUnread(task.id) == true)) && (filter == 1 || taskView.includes(task, now: now, calendar: calendar))
+        }
+        beginSearch(query, scope: scope)
+        let visible = scope.filter { query.isEmpty || ($0.title + "\n" + $0.summary).localizedCaseInsensitiveContains(query) || searchVersions[$0.id] == searchVersion($0) && searchHits[$0.id] != nil }.sorted { effectiveGrouping == .activity ? ($0.activityAt ?? $0.updated) > ($1.activityAt ?? $1.updated) : $0.updated > $1.updated }
         let custom = organization?.customGroups(workMode, tasks: tasks) ?? [], byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var memberships: [String: String] = [:]; for group in custom { for id in group.taskIDs { memberships[id] = group.id } }
         func membership(_ task: AgentTaskRecord) -> String? {
@@ -195,7 +250,7 @@ private final class AgentTaskTable: NSTableView {
         rows = []
         func append(_ task: AgentTaskRecord, depth: Int = 0) {
             rows.append(.task(task, depth))
-            guard depth < 3, expandedTasks.contains(task.id) || visible.contains(where: { $0.id == selected && childOwner($0) == task.id }) else { return }
+            guard query.isEmpty, filter == 0, depth < 3, expandedTasks.contains(task.id) || visible.contains(where: { $0.id == selected && childOwner($0) == task.id }) else { return }
             for child in visible where childOwner(child) == task.id && (effectiveGrouping != .custom || membership(child) == membership(task)) { append(child, depth: depth + 1) }
         }
         let standalone = visible.filter { task in query.isEmpty && filter == 0 ? !visible.contains(where: { $0.id == childOwner(task) && (effectiveGrouping != .custom || membership($0) == membership(task)) }) : true }
@@ -213,7 +268,7 @@ private final class AgentTaskTable: NSTableView {
                 guard !narrowed || !members.isEmpty else { continue }
                 let title = entry.name ?? members.first(where: { $0.worktreeOrigin != nil })?.workspaceDisplayName ?? entry.title
                 rows.append(.group(title, workspace))
-                if !collapsed.contains(groupKey(workspace)) || visible.contains(where: { $0.id == selected && $0.workspace == workspace }) && !query.isEmpty { for task in members { append(task) } }
+                if !collapsed.contains(groupKey(workspace)) || !query.isEmpty { for task in members { append(task) } }
             }
             let ungrouped = unpinned.filter { $0.workspace == nil }
             if !ungrouped.isEmpty { rows.append(.group(filter == 2 ? "归档" : "最近任务", nil)); for task in ungrouped { append(task) } }
@@ -235,7 +290,13 @@ private final class AgentTaskTable: NSTableView {
         heading.stringValue = filter == 1 ? "需要我" : filter == 2 ? "归档" : filter == 3 ? "未读" : effectiveGrouping == .workspace ? workMode.directoryTitle : effectiveGrouping == .custom ? "自定义分组" : "最近会话"
         if filter != 1 { if taskView.grouping == .workspace, taskView.workspace != nil { heading.stringValue += " · 已筛选" }; if taskView.activity != .all { heading.stringValue += " · " + taskView.activity.title } }
         heading.toolTip = heading.stringValue; heading.lineBreakMode = .byTruncatingTail; rebuildViewMenu()
-        empty.isHidden = rows.contains { if case .task = $0 { return true }; return false }; empty.stringValue = narrowed ? "没有匹配的任务" : "暂无任务"
+        if searchVisible, !query.isEmpty, !visible.contains(where: { $0.id == searchSelection }) {
+            searchSelection = visible.first(where: { $0.id == selected })?.id ?? rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil }.first
+        }
+        let hasRows = rows.contains { if case .task = $0 { return true }; return false }
+        empty.isHidden = hasRows && !searchBusy && searchIssues.isEmpty
+        empty.stringValue = searchBusy ? "正在搜索…" : !searchIssues.isEmpty ? "\(searchIssues.count) 份会话未能搜索" : narrowed ? "没有匹配的任务" : "暂无任务"
+        empty.toolTip = searchIssues.values.sorted().joined(separator: "\n")
         attention.state = filter == 1 ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, filter == 1 ? AgentWorkbenchTheme.selection : .clear)
         for item in viewMenu.itemArray where item.action == #selector(changeFilter(_:)) { item.state = item.tag == filter ? .on : .off }
@@ -247,17 +308,17 @@ private final class AgentTaskTable: NSTableView {
         updating = true; defer { updating = false }
         if bulkSelecting {
             table.selectRowIndexes(IndexSet(rows.indices.filter { row in if case .task(let task, _) = rows[row] { return bulkIDs.contains(task.id) }; return false }), byExtendingSelection: false)
-        } else if let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }) {
+        } else if let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == listSelection }; return false }) {
             if table.selectedRow != row { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound { for row in visible.location..<min(rows.count, NSMaxRange(visible)) {
             guard case .task(let task, _) = rows[row] else { continue }
-            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == selected)
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection)
         } }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { if case .group = rows[row] { return 32 }; return 33 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { if case .group = rows[row] { return 32 }; if case .task(let task, _) = rows[row], searchSnippet(task) != nil { return 53 }; return 33 }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { if case .group(_, let key) = rows[row] { return !bulkSelecting && key != nil }; return true }
     func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {
         guard bulkSelecting || proposedSelectionIndexes.count > 1 else { return proposedSelectionIndexes }
@@ -268,10 +329,13 @@ private final class AgentTaskTable: NSTableView {
         if bulkSelecting || table.selectedRowIndexes.count > 1 {
             bulkSelecting = true; bulkIDs = Set(table.selectedRowIndexes.compactMap { row in if rows.indices.contains(row), case .task(let task, _) = rows[row] { return task.id }; return nil }); updateBulkBar(); selectCurrent(); return
         }
-        guard rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }; onSelect?(task.id)
+        guard rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }
+        if searchVisible { searchSelection = task.id; selectCurrent() } else { onSelect?(task.id) }
     }
     @objc private func openUnreadSelection() {
-        guard !bulkSelecting, rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow], task.id == selected, organization?.isTaskUnread(task.id) == true else { return }
+        guard !bulkSelecting, rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }
+        if searchVisible { searchSelection = task.id; commitSearchSelection(); return }
+        guard task.id == selected, organization?.isTaskUnread(task.id) == true else { return }
         onSelect?(task.id)
     }
     private func updateBulkBar() {
@@ -294,19 +358,24 @@ private final class AgentTaskTable: NSTableView {
             }
             let view = NSView(), button = AgentWorkbenchButton(title: "", target: self, action: #selector(toggleGroup(_:))), label = NSTextField(labelWithString: title), icon = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!)
             let closed = collapsed.contains(groupKey(path!)); button.image = NSImage(systemSymbolName: closed ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.tag = row; button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.setAccessibilityLabel((closed ? "展开 " : "收起 ") + title)
+            button.isHidden = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             label.font = .systemFont(ofSize: 15); label.lineBreakMode = .byTruncatingTail; view.toolTip = effectiveGrouping == .custom ? "自定义分组" : path
             for child in [button, icon, label] as [NSView] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
             NSLayoutConstraint.activate([button.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4), button.widthAnchor.constraint(equalToConstant: 20), button.heightAnchor.constraint(equalToConstant: 26), button.centerYAnchor.constraint(equalTo: view.centerYAnchor), icon.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), icon.centerYAnchor.constraint(equalTo: view.centerYAnchor), label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 46), label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
             return view
         case .task(let task, let depth):
-            let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == selected, animated: false)
+            let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection, animated: false)
             let unread = organization?.isTaskUnread(task.id) == true
             let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
             let icon = NSImageView(image: NSImage(systemSymbolName: task.status == .completed ? "circle.fill" : task.status == .running ? "circle.dotted" : task.status == .waiting ? "exclamationmark.circle.fill" : task.status == .failed ? "exclamationmark.circle" : task.status == .stopped ? "stop.circle" : "circle", accessibilityDescription: nil)!)
             icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : .secondaryLabelColor
-            let line = NSStackView(views: [icon, label]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
+            let snippet = searchSnippet(task)
+            let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 3
+            if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = .secondaryLabelColor; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
+            for child in text.arrangedSubviews { child.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
+            let line = NSStackView(views: [icon, text]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12), icon.heightAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12)])
-            cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "")); return cell
+            cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
         }
     }
     @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }
