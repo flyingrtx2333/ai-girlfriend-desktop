@@ -81,6 +81,7 @@ import Foundation
     }
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
+        value.activityAt = task.activityAt ?? task.events.map(\.created).max() ?? (task.messages.isEmpty ? task.created : task.updated)
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []; value.canvases = nil
         value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.queuedMessages = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
         value.hookContexts = nil; value.hookRejectedAnswers = nil
@@ -120,6 +121,11 @@ import Foundation
         trimCache(keeping: id)
         return task
     }
+    func taskViewMetadata() -> [AgentTaskRecord] {
+        // Older indexes lack activity dates; load each missing entry once without rewriting its task file.
+        for i in tasks.indices where tasks[i].activityAt == nil { if let value = task(tasks[i].id) { tasks[i] = Self.metadata(value) } else { tasks[i].activityAt = tasks[i].updated } }
+        return tasks
+    }
     private static func recover(_ task: inout AgentTaskRecord) {
         if let capture = task.pendingFileCapture {
             let warning = "执行中断，文件归属尚未确认；请先在“未提交”中核对实际内容。执行前快照已保留：" + capture.manifest
@@ -151,7 +157,11 @@ import Foundation
     func update(_ id: String, persist: Bool = true, _ body: (inout AgentTaskRecord) -> Void) {
         guard let index = tasks.firstIndex(where: { $0.id == id }), var value = task(id) else { return }
         let wasArchived = value.archived, previous = value
-        body(&value); value.updated = Date(); cache[id] = value; tasks[index] = Self.metadata(value)
+        body(&value); value.updated = Date()
+        let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
+        let eventsChanged = !messagesChanged && (value.events.count != previous.events.count || zip(value.events, previous.events).contains { pair in pair.0.id != pair.1.id || pair.0.status != pair.1.status || pair.0.detail != pair.1.detail || pair.0.duration != pair.1.duration })
+        value.activityAt = messagesChanged || eventsChanged ? value.updated : previous.activityAt ?? Self.metadata(previous).activityAt
+        cache[id] = value; tasks[index] = Self.metadata(value)
         let coreScopeChanged = previous.workspace != value.workspace || previous.mode != value.mode || previous.permission != value.permission
         let agentScopeChanged = previous.agent?.profile.id != value.agent?.profile.id || previous.agent?.ownerID != value.agent?.ownerID || previous.agent?.readOnly != value.agent?.readOnly || previous.agent?.network != value.agent?.network || previous.agent?.permissionCeiling != value.agent?.permissionCeiling
         let scheduleChanged = previous.automation?.runID != value.automation?.runID || previous.automation?.readOnly != value.automation?.readOnly || previous.automation?.network != value.automation?.network || previous.team?.team.id != value.team?.team.id

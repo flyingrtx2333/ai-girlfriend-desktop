@@ -259,6 +259,19 @@ final class FormDocumentView: NSView {
             guard let self, let tasks = self.companion?.agentStore else { return }
             do { try tasks.organization.sort(sort, mode: mode); self.renderAgentMessages() } catch { self.setStatus(error.localizedDescription, error: true) }
         }
+        taskSidebar.onTaskView = { [weak self] view, mode in
+            guard let self, let tasks = self.companion?.agentStore else { return }
+            do { if let view { try tasks.organization.setTaskView(view, mode: mode) } else { try tasks.organization.resetTaskView(mode) }; self.renderAgentMessages() } catch { self.setStatus(error.localizedDescription, error: true) }
+        }
+        taskSidebar.onCustomGroup = { [weak self] id, mode, action in self?.customTaskGroup(id, mode: mode, action: action) }
+        taskSidebar.onAssignGroup = { [weak self] task, group, mode in
+            guard let self, let tasks = self.companion?.agentStore else { return false }
+            do { try tasks.organization.assignTask(task, group: group, mode: mode, tasks: tasks.tasks); self.renderAgentMessages(); return true } catch { self.setStatus(error.localizedDescription, error: true); return false }
+        }
+        taskSidebar.onReorderGroup = { [weak self] id, target, mode, grouping in
+            guard let self, let tasks = self.companion?.agentStore else { return false }
+            do { try tasks.organization.reorder(id, before: target, mode: mode, grouping: grouping, tasks: tasks.tasks); self.renderAgentMessages(); return true } catch { self.setStatus(error.localizedDescription, error: true); return false }
+        }
         let knowledge = AgentWorkbenchButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge))
         let library = AgentWorkbenchButton(title: "知识库", target: self, action: #selector(showKnowledgeLibrary))
         let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
@@ -1176,6 +1189,24 @@ final class FormDocumentView: NSView {
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
     }
+    private func customTaskGroup(_ id: String?, mode: AgentWorkMode, action: String) {
+        guard let tasks = companion?.agentStore else { return }
+        do {
+            let existing = tasks.organization.customGroups(mode, tasks: tasks.tasks).first { $0.id == id }
+            guard id == nil || existing != nil else { throw PetError("分组已变化，请刷新后重试") }
+            let alert = NSAlert(); alert.addButton(withTitle: action == "remove" ? "删除分组" : "保存"); alert.addButton(withTitle: "取消")
+            if action == "remove", let id {
+                alert.messageText = "删除“\(existing!.name)”分组？"; alert.informativeText = "任务会保留在未分组会话中。"
+                guard alert.runModal() == .alertFirstButtonReturn else { return }; try tasks.organization.removeCustomGroup(id, mode: mode)
+            } else {
+                alert.messageText = id == nil ? "新建分组" : "分组名称"
+                let input = NSTextField(string: existing?.name ?? ""); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); input.setAccessibilityLabel("分组名称"); alert.accessoryView = input; alert.window.initialFirstResponder = input
+                guard alert.runModal() == .alertFirstButtonReturn else { return }; _ = try tasks.organization.saveCustomGroup(id, name: input.stringValue, mode: mode)
+                if id == nil { var view = tasks.organization.taskView(mode); view.grouping = .custom; try tasks.organization.setTaskView(view, mode: mode) }
+            }
+            renderAgentMessages()
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
     @objc private func chooseExecutor() {
         guard let store = companion?.agentStore, let task = store.selected, task.canChooseExecutor else { return }
         let menu = NSMenu()
@@ -1429,7 +1460,8 @@ final class FormDocumentView: NSView {
         recordWindow?.refreshLiveRecords(task.id)
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
-        taskSidebar.refresh(tasks.tasks, selected: task.id, organization: tasks.organization)
+        let taskView = tasks.organization.taskView(task.organizationMode)
+        taskSidebar.refresh(taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks, selected: task.id, organization: tasks.organization)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
         projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)

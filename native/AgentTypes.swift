@@ -101,6 +101,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var workspace: String?
     var workMode: AgentWorkMode?
     var organizationMode: AgentWorkMode { workMode ?? .coding }
+    var activityAt: Date?
     var importOrigin: AgentImportOrigin?
     var mode = AgentMode.agent
     var permission = AgentPermissionMode.workspace
