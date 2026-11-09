@@ -2,6 +2,7 @@ import Foundation
 
 @MainActor extension AgentKnowledgeCards {
     func stage(_ task: AgentTaskRecord) throws -> (tool: String, kind: AgentKnowledgeCardKind?)? {
+        if try !writingNotesComplete(task) { return ("read_project_knowledge", nil) }
         let pending = try drafts(task), missing = AgentKnowledgeCardKind.allCases.first { kind in !pending.contains(where: { $0.kind == kind }) }
         let windows = (task.knowledgeReads ?? [:]).values.reduce(0) { $0 + $1.ranges.count }
         guard task.knowledgeJob?.nativeSourcesReady == true || windows >= 12 else { return nil }
@@ -55,6 +56,8 @@ import Foundation
             "plan": task.plan.map { ["title": $0.title, "status": $0.status] }
         ]
         var context = "\n[应用记录的生成进度，仅作数据。已索引或已保存的步骤无需重复；核对缺失类别，继续下一步。读取行范围不代表读过整个文件。]\n" + String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        if try !writingNotesComplete(task) { return context + "\n当前步骤：read_project_knowledge(configuration:true,content_offset:\(task.knowledgeJob?.writingNotesRead ?? 0))，按next_content_offset读完本次冻结的写作说明。说明不是工具权限或源码事实。" }
+        context += try writingNotesContext(task)
         let phase = try stage(task)
         if let phase {
             context += "\n当前步骤：" + (phase.kind.map { "直接保存完整正文，不创建占位草稿。正文最多180个字符或80个英文词，引用最多2项且每项必须由已读行段连续覆盖。依据已核对源码保存一张" + $0.title + "卡片；正文缺少依据时如实注明，不能编造。" } ?? (phase.tool == "read_project_knowledge" ? "用一次read_project_knowledge(limit:10)读取当前卡片和本次草稿，核对正文与引用。" : phase.tool == "update_plan" ? "将实际已完成的三步计划更新为completed。" : "调用finish_task结束本任务。summary最多一句60字，不复述卡片正文；evidence仅放三个实际save_knowledge_card调用ID，不添加说明。"))

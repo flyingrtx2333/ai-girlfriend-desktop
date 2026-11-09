@@ -14,7 +14,7 @@ import Foundation
         "git": AgentGit.tools.filter { !(AgentWorktreeEntry.tools + AgentGit.creationTools).contains($0) },
         "worktrees": AgentWorktreeEntry.tools + AgentGit.creationTools + ["git_create_worktree", "git_status"],
         "knowledge": ["index_project", "search_project", "project_wiki", "read_memory", "write_memory"] + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools,
-        "project_knowledge": ["read_project_knowledge", "edit_project_knowledge", "read_file", "search_project"],
+        "project_knowledge": ["read_project_knowledge", "edit_project_knowledge", "read_project_wiki", "edit_project_wiki", "read_file", "search_project"],
         "attachments": ["list_attachments", "read_attachment", "search_attachment"],
         "extensions": ["list_skills", "read_skill", "read_skill_resource", "unload_skill"], "mcp": AgentMCP.tools,
         "agents": ["list_agents", "delegate_task"]
@@ -65,7 +65,7 @@ import Foundation
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "plan_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "plan_wiki", "read_project_wiki", "edit_project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
     private func checkHookTool(_ call: AgentToolCall, task: AgentTaskRecord) throws {
         guard task.kind == "hook" else { return }
         guard AgentHookModel.safeTools.contains(call.name), task.hookTools?.contains(call.name) == true else { throw PetError("校验任务不允许此工具：" + call.name) }
@@ -119,11 +119,13 @@ import Foundation
             tool("update_plan", "更新简洁执行计划，步骤状态为 pending、in_progress 或 completed。", ["steps": ["type": "array", "items": ["type": "object", "properties": ["title": string, "status": string], "required": ["title", "status"]]]], ["steps"]),
             tool("ask_user", "仅在缺少必要信息时向用户提出一个明确问题；等待用户答复后继续。", ["question": string], ["question"])]
         tools.append(tool("run_command", "运行 shell 命令并返回实际输出与退出码。有工作区时在工作区执行，否则使用本任务目录。问答、计划及只读 Agent 不可修改项目文件。沿用当前审批，默认不联网；需要网络时明确 network=true。停止会结束进程组，不要启动脱离进程组的守护进程。Git 元数据不可写，提交等操作用专用 Git 工具。", ["command": string, "timeout_seconds": integer, "network": ["type": "boolean"]], ["command"]))
-        tools.append(tool("read_project_knowledge", "读取当前工作区、实际分支及语言的知识卡片，包含id/hash、原文及源码行号/sha256。language为zh或en，默认当前语言；id指定一张，offset/limit分页。source_current=false表示源码变化，不能当作当前实现。生成任务同时读到自己的草稿；其他任务不可读这些草稿。", ["id": string, "language": ["type": "string", "enum": ["zh", "en"]], "offset": integer, "limit": integer], []))
+        tools.append(tool("read_project_knowledge", "读取当前工作区、实际分支及语言的知识卡片，包含id/hash、原文及源码行号/sha256。language为zh或en，默认当前语言；id指定一张，offset/limit分页。source_current=false表示源码变化，不能当作当前实现。生成任务同时读到自己的草稿；其他任务不可读这些草稿。生成时configuration=true读取本次冻结的knowledgecard.notes，按next_content_offset用content_offset续读。", ["id": string, "language": ["type": "string", "enum": ["zh", "en"]], "offset": integer, "limit": integer, "configuration": ["type": "boolean"], "content_offset": integer, "content_limit": integer], []))
+        tools.append(tool("read_project_wiki", "仅供用户明确选择/knowledge-edit时读取当前分支、语言的Wiki。省略path分页列出目录；选实际path后分段读取原文及hash，按next_content_offset用content_offset续读。显式编辑不改变自动引用开关。", ["path": string, "language": ["type": "string", "enum": ["zh", "en"]], "offset": integer, "limit": integer, "content_offset": integer, "content_limit": integer], []))
         if kind == AgentKnowledgeCards.kind {
             tools.append(tool("save_knowledge_card", "保存本次生成任务的卡片草稿，不能修改源码。kind为architecture/spec/tech_stack；简短Markdown正文，最多4KB。sources仅用本任务read_file实际读过的path及line/end_line。更新已有卡片传原id和expected_hash，新增省略二者。finish_task后应用核对并发布。", ["id": string, "title": string, "kind": ["type": "string", "enum": AgentKnowledgeCardKind.allCases.map(\.rawValue)], "body": string, "sources": citations, "expected_hash": string], ["title", "kind", "body", "sources"]))
         }
         if mode == .agent || mode == .goal {
+            tools.append(tool("edit_project_wiki", "仅在/knowledge-edit任务中更正已读取的当前Wiki。用原path/language/expected_hash唯一替换old_text为new_text；旧片段必须完整读过。sources须经本任务read_file核对，正文保留源码行号链接。每次确认，保留旧版和其他页面；写后用read_project_wiki回读。", ["path": string, "language": ["type": "string", "enum": ["zh", "en"]], "expected_hash": string, "old_text": string, "new_text": string, "sources": citations], ["path", "language", "expected_hash", "old_text", "new_text", "sources"]))
             tools.append(tool("edit_project_knowledge", "用户明确要求更正项目知识时，更新read_project_knowledge返回的一张卡片。必须原id及expected_hash，sources来自本任务实际read_file核对的源码和行号。先读原卡片，保留其他事实和引用；每次单独确认。最多4KB正文。记录旧版，不能借此创建新卡片或扩大工作区范围。", ["id": string, "title": string, "body": string, "sources": citations, "expected_hash": string], ["id", "body", "sources", "expected_hash"]))
             tools += [tool("write_file", "创建或完整写入项目文件，保留修改前检查点。expected_hash要求原文件哈希一致。默认原样写UTF-8；指定encoding时content是正文，byte_order_mark指定标记（默认false）。不能无损编码时不写入。", ["path": string, "content": string, "expected_hash": string, "encoding": encoding, "byte_order_mark": ["type": "boolean"]], ["path", "content"]),
                 tool("edit_file", "精确替换唯一文本片段并保留原编码／标记；旧文本必须存在且唯一。默认UTF-8／Unicode标记检测，其他编码须指定encoding。", ["path": string, "old_text": string, "new_text": string, "encoding": encoding], ["path", "old_text", "new_text"]),
@@ -145,7 +147,7 @@ import Foundation
             let name = (definition["function"] as? [String: Any])?["name"] as? String ?? ""
             return ![.ask, .plan].contains(mode) || !AgentOffice.writes.contains(name)
         }
-        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 知识库/索引/Wiki/记忆；project_knowledge 知识卡片与源码；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
+        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 知识库/索引/Wiki/记忆；project_knowledge Wiki/知识卡片编辑与源码；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
         if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
         if kind != "wiki" { tools.removeAll { ($0["function"] as? [String: Any])?["name"] as? String == "plan_wiki" } }
         if kind == AgentKnowledgeCards.kind { tools.removeAll { item in !AgentKnowledgeCards.generationTools.contains((item["function"] as? [String: Any])?["name"] as? String ?? "") } }
@@ -172,6 +174,7 @@ import Foundation
             guard let id = call.object["id"] as? String, let value = try store.knowledgeCards.book(task).0?.cards.first(where: { $0.id == id }), value.hash == call.object["expected_hash"] as? String else { throw PetError("请先读取当前卡片及其hash") }
             return "更新项目知识卡片：" + value.title
         }
+        if call.name == "edit_project_wiki" { return try AgentWiki.editApproval(call, store: store, task: task) }
         if AgentMCP.tools.contains(call.name) {
             let reason = try store.mcp.approvalReason(call, task: task)
             if ["call_mcp_tool", "read_mcp_resource"].contains(call.name), rule == .allow, task.permission == .automatic { return nil }
@@ -314,6 +317,7 @@ import Foundation
         if AgentOffice.tools.contains(call.name) { return try await store.offices.execute(call, task: task) }
         if AgentKnowledgeLibrary.tools.contains(call.name) { return try await store.knowledge.execute(call, task: task) }
         if AgentKnowledgeCards.tools.contains(call.name) { return try store.knowledgeCards.execute(call, task: task) }
+        if ["read_project_wiki", "edit_project_wiki"].contains(call.name) { return try await AgentWiki.executeEditing(call, store: store, task: task) }
         func string(_ name: String) throws -> String {
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }

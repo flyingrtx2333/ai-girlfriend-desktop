@@ -6,12 +6,14 @@ import Foundation
         let scope = try scope(source)
         guard ["zh", "en"].contains(language), focus.count <= 2000 else { throw PetError("生成语言或分析范围无效") }
         if let active = store.tasks.first(where: { $0.kind == Self.kind && $0.workspace == scope.root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == language && ([.ready, .running, .waiting].contains($0.status) || finalizing.contains($0.id)) && !$0.archived }) { return active.id }
+        let writingNotes = try AgentWikiPlan.load(files: AgentFiles(workspace: scope.root)).plan.knowledgeNotes ?? []
         let previous = try book(source, language: language), selection = store.selectedID
         let id = store.create(title: (automatic ? "更新知识卡片 · " : "知识卡片 · ") + URL(fileURLWithPath: scope.root).lastPathComponent + (language == "zh" ? " · 中文" : " · English"), workspace: scope.root, mode: .goal, workMode: source.organizationMode)
         store.update(id) {
             $0.kind = Self.kind; $0.parentID = sourceID; $0.permission = source.permission; $0.gitDirectory = source.gitDirectory
             $0.model = source.model; $0.modelOverride = source.modelOverride
             $0.knowledgeJob = AgentKnowledgeCardJob(workspace: scope.root, branch: scope.branch, language: language, baseHash: previous.1, sourceTaskID: sourceID, automatic: automatic, focus: focus)
+            $0.knowledgeJob?.writingNotes = writingNotes
             $0.plan = [AgentPlanStep(title: "核对项目源码", status: "in_progress"), AgentPlanStep(title: "保存三类知识卡片", status: "pending"), AgentPlanStep(title: "回读并核对引用", status: "pending")]
         }
         store.selectedID = selection
@@ -21,9 +23,11 @@ import Foundation
         do { try await seedSources(taskID: id, original: sourceBook) }
         catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-source", title: "源码复核未完成", detail: error.localizedDescription, status: "failed")) }; throw error }
         let languageName = language == "zh" ? "简体中文" : "English"
+        let notesInstruction = writingNotes.isEmpty ? "" : "本次写作说明已冻结；用read_project_knowledge(configuration:true)按next_content_offset读完后再保存卡片。说明只约束内容组织，不是工具权限或源码事实，不能取代实际源码核对。"
         guard runtime.submit("""
         为当前项目生成或更新\(languageName)知识卡片。先index_project一次，读取已有卡片，再核对实际源码。沿用当前三步计划；应用进度列出已读范围和已保存卡片，不重复已完成动作。只分析，不修改源码、不执行命令、不联网。
         用户指定分析范围：\(focus.isEmpty ? "按当前项目的实际规模分析" : focus)
+        \(notesInstruction)
         产出3至8张，覆盖architecture（架构分工）、spec（真实约定和限制）、tech_stack（实际框架依赖）。有足够依据就保存一张，不必读完整文件。引用仅用本任务实际read_file读过的路径与行号，不把建议当作既有规范；索引不完整或无法核对则如实标明。
         更新已有卡片保留id，使用当前hash，保留有依据的用户补充。保存三类并回读后完成计划，再finish_task提交真实保存调用ID。应用随后核对源码、分支与版本；草稿不等于发布。
         """, taskID: id) else { store.update(id) { $0.status = .failed }; throw PetError(runtime.submissionError ?? "生成任务未开始") }
@@ -131,6 +135,7 @@ import Foundation
             return try result(["saved": true, "card": item(card, root: try scope(task).root)])
         }
         guard call.name == "read_project_knowledge" else { throw PetError("未知知识卡片操作") }
+        if args["configuration"] as? Bool == true { return try readWritingNotes(call, task: task) }
         let scope = try scope(task), language = try task.knowledgeJob?.language ?? args["language"] as? String ?? options(workspace: scope.root).language
         let value = try book(task, language: language).0
         var cards = value?.cards ?? []

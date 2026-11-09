@@ -144,6 +144,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var wikiJob: AgentWikiJob?
     var wikiLanguage: String?
     var knowledgeJob: AgentKnowledgeCardJob?
+    var wikiEditReads: [String: AgentWikiEditRead]?
     var knowledgeReads: [String: AgentKnowledgeCardRead]?
     var isProjectDocumentation: Bool { kind == "wiki" || kind == "knowledge-cards" }
     var isKnowledgeEditing: Bool {

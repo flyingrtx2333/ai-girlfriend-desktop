@@ -29,6 +29,8 @@ struct AgentKnowledgeCardJob: Codable, Sendable {
     var reviewHash: String?
     var reviewedHashes: [String: String]?
     var originalReviewHash: String?
+    var writingNotes: [String]?
+    var writingNotesRead: Int?
 }
 struct AgentKnowledgeCardRead: Codable, Sendable {
     var sha256: String; var ranges: [[Int]]
@@ -204,6 +206,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
     }
     func saveDraft(_ call: AgentToolCall, task: AgentTaskRecord) throws -> AgentKnowledgeCard {
         guard let store, task.kind == Self.kind, let job = task.knowledgeJob, task.mode == .goal else { throw PetError("只有知识卡片生成任务可新建草稿") }
+        guard try writingNotesComplete(task) else { throw PetError("请先读完本次冻结的知识卡片写作说明") }
         let scope = try scope(task), args = call.object
         guard scope.root == job.workspace, scope.branch == job.branch, job.sourceRevision != nil else { throw PetError("请先更新索引；工作区或分支不可改变") }
         guard let title = args["title"] as? String, Self.validTitle(title), let raw = args["kind"] as? String, let kind = AgentKnowledgeCardKind(rawValue: raw),
@@ -231,6 +234,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
     }
     func validate(_ task: AgentTaskRecord) throws -> AgentKnowledgeCardBook {
         guard let store, let job = task.knowledgeJob, let revision = job.sourceRevision else { throw PetError("知识卡片缺少已核对的项目索引") }
+        guard try writingNotesComplete(task) else { throw PetError("请先读完本次冻结的知识卡片写作说明") }
         let scope = try scope(task), original = try book(task, language: job.language), pending = try drafts(task)
         guard scope.root == job.workspace, scope.branch == job.branch, original.1 == job.baseHash, !pending.isEmpty else { throw PetError("生成范围或原卡片已变化，不能替换") }
         var cards = original.0?.cards ?? []

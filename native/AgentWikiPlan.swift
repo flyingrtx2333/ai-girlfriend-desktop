@@ -15,7 +15,8 @@ struct AgentWikiDocument: Codable, Equatable {
 }
 struct AgentWikiPlan: Codable, Equatable {
     var template = "architecture", notes: [String] = [], documents: [AgentWikiDocument]?
-    static let initialYAML = "version: 1\nrepowiki:\n  template: architecture\n  notes: []\n"
+    var knowledgeNotes: [String]?
+    static let initialYAML = "version: 1\nrepowiki:\n  template: architecture\n  notes: []\nknowledgecard:\n  notes: []\n"
     static let configurationPath = ".bluefatfish/repowiki/wiki_plan.yaml"
     static let compatiblePath = ".qoder/repowiki/wiki_plan.yaml"
     private struct YAMLFile: Decodable {
@@ -28,10 +29,12 @@ struct AgentWikiPlan: Codable, Equatable {
             }
         }
         struct Body: Decodable { let template: String?; let notes: [Note]?; let documents: [AgentWikiDocument]? }
-        let version: Int, repowiki: Body
+        struct Cards: Decodable { let notes: [Note]? }
+        let version: Int, repowiki: Body?, knowledgecard: Cards?
     }
     func validated() throws -> Self {
-        guard ["architecture", "product_requirement"].contains(template), notes.count <= 30, notes.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4000 }) else { throw PetError("规划模板或写作说明无效") }
+        let cardNotes = knowledgeNotes ?? []
+        guard ["architecture", "product_requirement"].contains(template), notes.count <= 30, cardNotes.count <= 30, (notes + cardNotes).allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4000 }) else { throw PetError("规划模板或写作说明无效") }
         if let documents {
             guard !documents.isEmpty, documents.count <= 100, Set(documents.map(\.title)).count == documents.count else { throw PetError("规划需要1至100页，页面标题不能重复") }
             let titles = Set(documents.map(\.title))
@@ -56,9 +59,9 @@ struct AgentWikiPlan: Codable, Equatable {
         let value = context.objectForKeyedSubscript("BlueFatFishWikiYAML")?.objectForKeyedSubscript("decode")?.call(withArguments: [source])?.toString()
         guard problem == nil, let value, let data = value.data(using: .utf8), data.count <= 256_000,
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let decoded = try? JSONDecoder().decode(YAMLFile.self, from: data), decoded.version == 1,
-              let config = object["repowiki"] as? [String: Any] else { throw PetError(problem.map { "规划格式错误：" + String($0.prefix(300)) } ?? "规划需要 version: 1 和 repowiki 配置") }
-        guard Set(object.keys).isSubset(of: ["version", "repowiki", "knowledgecard"]), Set(config.keys).isSubset(of: ["template", "notes", "documents"]) else { throw PetError("规划包含无法识别的字段") }
-        return try AgentWikiPlan(template: decoded.repowiki.template ?? "architecture", notes: decoded.repowiki.notes?.map(\.text) ?? [], documents: decoded.repowiki.documents).validated()
+              decoded.repowiki != nil || decoded.knowledgecard != nil else { throw PetError(problem.map { "规划格式错误：" + String($0.prefix(300)) } ?? "规划需要 version: 1 和 repowiki 或 knowledgecard 配置") }
+        guard Set(object.keys).isSubset(of: ["version", "repowiki", "knowledgecard"]), (object["repowiki"] as? [String: Any]).map({ Set($0.keys).isSubset(of: ["template", "notes", "documents"]) }) ?? (object["repowiki"] == nil), (object["knowledgecard"] as? [String: Any]).map({ Set($0.keys).isSubset(of: ["notes"]) }) ?? (object["knowledgecard"] == nil) else { throw PetError("规划包含无法识别的字段") }
+        return try AgentWikiPlan(template: decoded.repowiki?.template ?? "architecture", notes: decoded.repowiki?.notes?.map(\.text) ?? [], documents: decoded.repowiki?.documents, knowledgeNotes: decoded.knowledgecard?.notes?.map(\.text)).validated()
     }
     struct Snapshot {
         let plan: AgentWikiPlan, text: String, path: String?, hash: String?, targetSignature: String, format: AgentTextFormat

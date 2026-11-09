@@ -221,6 +221,18 @@ private struct AgentWikiExportState: Codable { var hashes: [String: String] }
         let entry = AgentWikiHistoryEntry(id: id, created: Date(), originalRoot: snapshot.root, metadata: snapshot.metadata)
         try files.writeData(JSONEncoder().encode(entry), to: files.resolve("version.json"), permissions: 0o600)
     }
+    static func saveEditedPage(_ snapshot: AgentWikiSnapshot, store: AgentStore, taskID: String, path: String, data: Data) throws {
+        let scope = try storage(store, taskID, snapshot.metadata.language, writing: true)
+        guard snapshot.metadata.documents.contains(where: { snapshot.root + "/" + $0.file == path }), data.count <= 512_000 else { throw PetError("编辑页面不属于当前 Wiki 或超过512KB") }
+        try FileManager.default.createDirectory(at: scope.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try store.knowledgeCards.locked(scope.directory, label: "Wiki") {
+            try requireSnapshot(snapshot, store: store, taskID: taskID, language: snapshot.metadata.language)
+            try requireNoGeneration(store, workspace: snapshot.workspace, branch: snapshot.metadata.branch, language: snapshot.metadata.language)
+            let url = try target(scope.files, path), metadata = try scope.files.entryMetadata(url)
+            try archive(snapshot, directory: scope.directory)
+            try scope.files.writeData(data, to: url, permissions: metadata.permissions ?? 0o644, expectedTarget: metadata.signature)
+        }
+    }
     static func importWiki(_ preview: AgentWikiImportPreview, store: AgentStore, taskID: String, restoring: Bool = false) async throws {
         let scope = try storage(store, taskID, preview.language, writing: true)
         guard scope.files.root.path == preview.workspace, scope.branch == preview.branch else { throw PetError("导入预览的工作区或分支已变化") }

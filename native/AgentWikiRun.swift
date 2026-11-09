@@ -126,7 +126,10 @@ import Foundation
         if call.object["confirm_page"] != nil { return try confirmUpdatePage(call, store: store, task: task) }
         guard var job = task.wikiJob else { throw PetError("此任务不是新版 Wiki 生成任务") }
         if call.object["source"] as? Bool == true {
-            let content = String(decoding: try JSONEncoder().encode(job.plan), as: UTF8.self), start = min(content.count, max(0, call.object["content_offset"] as? Int ?? 0)), limit = min(6000, max(1, call.object["content_limit"] as? Int ?? 3000)), slice = String(content.dropFirst(start).prefix(limit))
+            var wikiPlan = job.plan; wikiPlan.knowledgeNotes = nil
+            let content = String(decoding: try JSONEncoder().encode(wikiPlan), as: UTF8.self), start = min(content.count, max(0, call.object["content_offset"] as? Int ?? 0)), limit = min(1600, max(1, call.object["content_limit"] as? Int ?? 1600))
+            var slice = String(content.dropFirst(start).prefix(limit))
+            while AgentContext.estimate(slice) > 400 { slice = String(slice.prefix(max(1, slice.count * 3 / 4))) }
             return AgentToolResult(text: "冻结规划 · 字符 \(start)...\(start + slice.count)/\(content.count)\n" + slice + (start + slice.count < content.count ? "\n[继续 content_offset=\(start + slice.count)]" : ""))
         }
         guard let documents = call.object["documents"] else { return AgentToolResult(text: planContext(task, offset: call.object["offset"] as? Int ?? 1, limit: call.object["limit"] as? Int ?? 3)) }
