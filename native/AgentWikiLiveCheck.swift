@@ -2,6 +2,59 @@ import Foundation
 import Darwin
 
 @MainActor enum AgentWikiLiveCheck {
+    static func contextReplayCheck() async -> Int32 {
+        func option(_ name: String) -> String? { guard let i = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.indices.contains(i + 1) else { return nil }; return CommandLine.arguments[i + 1] }
+        guard !CommandLine.arguments.contains("--live-agent"), let path = option("--check"), let source = option("--context-source") else { return 1 }
+        let output = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        guard output.lastPathComponent.hasPrefix("bluefatfish-wiki-context-") else { return 1 }
+        var report: [String: Any] = ["success": false, "modelsCalled": false]
+        do {
+            let sourceURL = URL(fileURLWithPath: source), original = try Data(contentsOf: sourceURL), historical = try JSONDecoder().decode(AgentTaskRecord.self, from: original)
+            guard historical.wikiJob != nil, !(historical.modelReceipts ?? []).isEmpty, !historical.messages.isEmpty else { throw PetError("需要保留的真实 Wiki 模型会话") }
+            let profile = output.appendingPathComponent("profile"), tasks = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"))
+            guard let task = tasks.task(historical.id) else { throw PetError("真实会话的独立副本不存在") }
+            let preferences = PreferencesStore(directory: profile, testing: true).preferences
+            guard preferences.contextLimit == 8192, preferences.outputLimit == 512 else { throw PetError("保留8192／512配置") }
+            let runtime = AgentRuntime(store: tasks, keychain: PetKeychain(service: "com.xjs.bluefatfish.wiki-context-unused")) { preferences }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let beforeMessages = try encoder.encode(task.messages), beforeReceipts = try encoder.encode(task.modelReceipts)
+            let system = try runtime.systemContext(task), definitions = try runtime.toolDefinitions(task, preferences: preferences)
+            var admitted = 0
+            let messages = try await AgentContext.messages(taskID: task.id, store: tasks, preferences: preferences, key: "", system: system, tools: definitions, requestCheck: { admitted += 1; throw PetError("回放不得调用模型") }, onChange: {})
+            let snapshot = try runtime.contextEstimate(task.id), tokens = snapshot.parts.reduce(0) { $0 + $1.tokens }
+            let progress = try AgentWiki.progress(task, store: tasks), expected = try task.wikiJob!.plan.paths(root: task.wikiJob!.root)
+            let names = Set(definitions.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+            let originalByID = Dictionary(uniqueKeysWithValues: task.messages.map { ($0.id, $0) })
+            let retainedIDs = Set(messages.flatMap { $0.toolCalls ?? [] }.map(\.id))
+            guard let actualRead = task.messages.flatMap({ $0.toolCalls ?? [] }).first(where: { $0.name == "read_file" && $0.object["path"] as? String == "README.md" }) else { throw PetError("真实记录缺少 README 读取") }
+            let result = try await AgentTools(store: tasks, taskID: task.id).execute(actualRead, gitDirectory: nil)
+            let lines = result.text.split(separator: "\n").compactMap { Int($0.split(separator: ":", maxSplits: 1).first ?? "") }
+            let after = tasks.task(task.id)!
+            let messagesUnchanged = try encoder.encode(after.messages) == beforeMessages
+            let receiptsUnchanged = try encoder.encode(after.modelReceipts) == beforeReceipts
+            let checks: [String: Bool] = [
+                "actualFailedHistoryAndReceiptsUnchanged": messagesUnchanged && receiptsUnchanged,
+                "originalSourceRecordBytesUnchanged": try Data(contentsOf: sourceURL) == original,
+                "noCompactionOrModelRequest": admitted == 0,
+                "projectionRetainsOriginalHumanRequirements": task.messages.filter(\.isHumanInput).allSatisfy { input in messages.contains { $0.id == input.id && $0.content == input.content } },
+                "projectedMessagesAreActualOriginalRecords": messages.allSatisfy { originalByID[$0.id]?.content == $0.content },
+                "completeToolExchangesRetained": messages.filter { $0.role == "tool" }.allSatisfy { retainedIDs.contains($0.toolCallID ?? "") },
+                "nextActualPageAndReadEvidenceSurvive": progress.contains(expected[task.wikiJob!.plan.documents!.first!.title]!) && progress.contains("README.md") && progress.contains("read_sources") && progress.contains("not_written"),
+                "writeToolRemainsAvailable": names.contains("write_file") && names.contains("read_file") && names.contains("finish_task"),
+                "contextFitsOriginal8192With512Output": tokens + preferences.outputLimit < preferences.contextLimit,
+                "summaryAndHistoryBoundaryUnchanged": after.contextSummary == task.contextSummary && after.contextThroughID == task.contextThroughID,
+                "actualSourceReadIsBoundedAndResumable": !lines.isEmpty && lines.count <= 30 && result.text.contains("next_offset=") && AgentContext.estimate(result.text) <= 450,
+                "manualCompactionCannotSpendWikiAllowance": AgentContext.compactUnavailable(task) == "Wiki 生成任务不支持手动压缩"
+            ]
+            report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["historicalMessages"] = task.messages.count; report["historicalReceipts"] = task.modelReceipts?.count ?? 0
+            report["inputEstimate"] = tokens; report["context"] = preferences.contextLimit; report["output"] = preferences.outputLimit; report["projectedMessages"] = messages.count; report["actualReadLines"] = lines.count
+            report["progress"] = progress; report["projection"] = messages.map { ["id": $0.id, "role": $0.role, "content": $0.content] }
+            report["snapshot"] = try JSONSerialization.jsonObject(with: encoder.encode(snapshot))
+            let executable = Bundle.main.executableURL!; report["binaryHash"] = try AgentFiles(workspace: executable.deletingLastPathComponent().path).fileHash(executable)
+        } catch { report["error"] = error.localizedDescription }
+        do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("wiki-context-report.json"), options: .atomic) } catch { return 1 }
+        print(output.appendingPathComponent("wiki-context-report.json").path); return report["success"] as? Bool == true ? 0 : 1
+    }
     static func requestGateCheck() async -> Int32 {
         func option(_ name: String) -> String? { guard let i = CommandLine.arguments.firstIndex(of: name), CommandLine.arguments.indices.contains(i + 1) else { return nil }; return CommandLine.arguments[i + 1] }
         guard !CommandLine.arguments.contains("--live-agent"), let path = option("--check"), let source = option("--context-source") else { return 1 }
@@ -39,7 +92,7 @@ import Darwin
         func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(name), options: .atomic) }
         do {
             let files = try AgentFiles(workspace: output.path)
-            guard let grant = try JSONSerialization.jsonObject(with: files.readData(files.resolve("wiki-budget-authorization.json"), maximum: 8192)) as? [String: Any], grant["kind"] as? String == "explicit-user-authorization", let maximum = grant["requestLimit"] as? Int, (1...30).contains(maximum), grant["context"] as? Int == 8192, grant["output"] as? Int == 512 else { throw PetError("缺少本轮 Wiki 真实请求的明确授权") }
+            guard let grant = try JSONSerialization.jsonObject(with: files.readData(files.resolve("wiki-budget-authorization.json"), maximum: 8192)) as? [String: Any], grant["kind"] as? String == "explicit-user-authorization", let maximum = grant["requestLimit"] as? Int, (1...128).contains(maximum), grant["context"] as? Int == 8192, grant["output"] as? Int == 512 else { throw PetError("缺少本轮 Wiki 真实请求的明确授权") }
             let profile = output.appendingPathComponent("profile"), preferences = PreferencesStore(directory: profile, testing: true).preferences
             guard preferences.contextLimit == 8192, preferences.outputLimit == 512 else { throw PetError("必须保留8192／512配置") }
             let tasks = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"))

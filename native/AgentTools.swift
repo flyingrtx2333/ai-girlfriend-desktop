@@ -528,8 +528,9 @@ import Foundation
             let exact = try JSONDecoder().decode(FileTextArguments.self, from: Data(call.arguments.utf8)), encoding = try AgentTextEncoding.argument(exact.encoding)
             let recording = task.recordsKnowledgeSources
             let hash = recording ? try files.fileHash(url, maximum: 4_000_000) : ""
-            let raw = try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: task.kind == AgentKnowledgeCards.kind ? min(30, args["limit"] as? Int ?? 30) : args["limit"] as? Int ?? 200, encoding: encoding)
-            let text = task.kind == AgentKnowledgeCards.kind ? try store.knowledgeCards.sourcePage(raw) : raw
+            let paged = task.kind == AgentKnowledgeCards.kind || task.wikiJob != nil
+            let raw = try files.readResolved(url, offset: args["offset"] as? Int ?? 1, limit: paged ? min(30, args["limit"] as? Int ?? 30) : args["limit"] as? Int ?? 200, encoding: encoding)
+            let text = paged ? try store.knowledgeCards.sourcePage(raw, maximum: task.wikiJob == nil ? 1000 : 400) : raw
             if recording {
                 guard try files.fileHash(url, maximum: 4_000_000) == hash else { throw PetError("读取期间源码已变化，请重读") }
                 if let job = task.wikiJob, files.relative(url).hasPrefix(job.root + "/") { let total = try AgentTextFile.decode(files.readData(url, maximum: 256_000), encoding: encoding).text.components(separatedBy: "\n").count; try AgentWiki.recordPageRead(store: store, task: task, path: files.relative(url), hash: hash, raw: text, totalLines: total) }

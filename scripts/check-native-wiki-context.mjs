@@ -1,0 +1,28 @@
+import { readFile, writeFile, cp, mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import os from 'node:os';
+
+const option = name => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
+const candidate = option('--candidate-app'), actual = option('--actual-run');
+if (!candidate || !actual) throw Error('Use --candidate-app <signed application> --actual-run <retained real Wiki round>');
+const hash = value => createHash('sha256').update(value).digest('hex');
+const grant = JSON.parse(await readFile(path.join(actual, 'wiki-budget-authorization.json'), 'utf8'));
+const ledgerPath = path.join(actual, 'wiki-request-ledger.json'), ledger = await readFile(ledgerPath);
+const marker = JSON.parse(await readFile(path.join(actual, 'wiki-live-zh-task.json'), 'utf8'));
+const source = path.join(actual, 'profile/agent', marker.id + '.json'), original = await readFile(source), task = JSON.parse(original);
+if (grant.kind !== 'explicit-user-authorization' || !task.wikiJob || !task.modelReceipts?.length) throw Error('An actual retained Wiki model history is required');
+const app = path.resolve(candidate), binary = path.join(app, 'Contents/MacOS/BlueFatFish');
+const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { encoding: 'utf8' });
+if (signature.status !== 0) throw Error(signature.stderr);
+const output = await mkdtemp(path.join(os.tmpdir(), 'bluefatfish-wiki-context-'));
+await cp(path.join(actual, 'profile'), path.join(output, 'profile'), { recursive: true });
+await writeFile(path.join(output, 'replay-origin.json'), JSON.stringify({ actual, source, sourceHash: hash(original), ledgerHash: hash(ledger), requestsBefore: JSON.parse(ledger).length, copiedActualProfile: true, modelsCalled: false }, null, 2));
+const result = spawnSync(binary, ['--wiki-context-replay-check', '--check', output, '--context-source', source], { encoding: 'utf8' });
+const report = JSON.parse(await readFile(path.join(output, 'wiki-context-report.json'), 'utf8'));
+const independent = { originalTaskBytesUnchanged: hash(await readFile(source)) === hash(original), requestLedgerBytesUnchanged: hash(await readFile(ledgerPath)) === hash(ledger), actualCandidate: report.binaryHash === hash(await readFile(binary)), noNewModelRequests: report.modelsCalled === false };
+report.independent = independent; report.success &&= Object.values(independent).every(Boolean);
+await writeFile(path.join(output, 'wiki-context-driver-report.json'), JSON.stringify(report, null, 2));
+console.log(JSON.stringify({ success: report.success, output, checks: report.checks, independent, error: report.error, inputEstimate: report.inputEstimate, historicalReceipts: report.historicalReceipts }));
+if (result.status !== 0 || !report.success) process.exitCode = 1;

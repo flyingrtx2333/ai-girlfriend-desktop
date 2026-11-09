@@ -664,6 +664,10 @@ private extension NSRect { var area: CGFloat { isNull ? 0 : width * height } }
         if let index = CommandLine.arguments.firstIndex(of: "--make-icons"), CommandLine.arguments.count > index + 1 {
             makeIcons(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); return
         }
+        if CommandLine.arguments.contains("--wiki-context-replay-check") {
+            Task { @MainActor in exit(await AgentWikiLiveCheck.contextReplayCheck()) }
+            dispatchMain()
+        }
         if CommandLine.arguments.contains("--wiki-request-gate-check") {
             Task { @MainActor in exit(await AgentWikiLiveCheck.requestGateCheck()) }
             dispatchMain()

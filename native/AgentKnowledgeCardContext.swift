@@ -14,10 +14,10 @@ import Foundation
         if task.plan.isEmpty || task.plan.contains(where: { $0.status != "completed" }) { return ("update_plan", nil) }
         return ("finish_task", nil)
     }
-    func sourceEvidence(_ task: AgentTaskRecord) throws -> String {
+    func sourceEvidence(_ task: AgentTaskRecord, maximum: Int = 1450) throws -> String {
         let files = try AgentFiles(workspace: task.workspace)
-        let reads = Array((task.knowledgeReads ?? [:]).sorted(by: { $0.key < $1.key }).prefix(12)), fileBudget = max(100, min(700, 1450 / max(1, reads.count)))
-        var remaining = 1450, sections: [String] = []
+        let reads = Array((task.knowledgeReads ?? [:]).sorted(by: { $0.key < $1.key }).prefix(12)), fileBudget = max(100, min(700, maximum / max(1, reads.count)))
+        var remaining = maximum, sections: [String] = []
         for (path, read) in reads {
             let url = try files.resolve(path)
             guard try files.fileHash(url, maximum: 512_000) == read.sha256, let text = String(data: try files.readData(url, maximum: 512_000), encoding: .utf8) else { continue }
@@ -90,13 +90,13 @@ import Foundation
     }
     // Keep complete recent exchanges. All original messages remain on disk;
     // verified reads and drafts above carry progress across this small window.
-    func modelMessages(_ task: AgentTaskRecord, maximum: Int) throws -> [AgentMessage] {
+    func modelMessages(_ task: AgentTaskRecord, maximum: Int, label: String = "知识卡片") throws -> [AgentMessage] {
         func cost(_ message: AgentMessage) -> Int {
             20 + AgentContext.estimate(message.content) + AgentContext.estimate(message.reasoning ?? "") + AgentContext.estimate(message.extensionInstructions ?? "") + (message.toolCalls ?? []).reduce(0) { $0 + 15 + AgentContext.estimate($1.name) + AgentContext.estimate($1.arguments) }
         }
         let input = task.messages.filter { $0.isHumanInput && $0.hookRejected != true }
         var remaining = maximum - input.reduce(0) { $0 + cost($1) }
-        guard remaining >= 512 else { throw PetError("知识卡片要求超过上下文预算，请缩小分析范围") }
+        guard remaining >= 512 else { throw PetError(label + "要求超过上下文预算，请缩小分析范围") }
         let calls = Dictionary(task.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last })
         var exchanges: [[AgentMessage]] = [], projected: [String: AgentMessage] = [:]
         for original in task.messages where !original.isHumanInput && original.hookRejected != true {
@@ -117,13 +117,13 @@ import Foundation
         let retained = Set(input.map(\.id) + selected.flatMap { $0 }.map(\.id))
         return task.messages.filter { retained.contains($0.id) }.map { projected[$0.id] ?? $0 }
     }
-    func sourcePage(_ text: String) throws -> String {
+    func sourcePage(_ text: String, maximum: Int = 1000) throws -> String {
         let lines = text.components(separatedBy: "\n"), header = lines.first ?? ""
         let total = Int(header.split(separator: " ").dropLast().last ?? "") ?? 0
         var output = header + "\n", last = 0
         for line in lines.dropFirst() {
             guard let number = Int(line.split(separator: ":", maxSplits: 1).first ?? "") else { continue }
-            if AgentContext.estimate(output + line) > 1000 {
+            if AgentContext.estimate(output + line) > maximum {
                 guard last > 0 else { throw PetError("该源码行过长，无法完整核对，请使用其他可读取的源码作为引用") }; break
             }
             output += line + "\n"; last = number
