@@ -43,6 +43,7 @@ import Foundation
     init(store: AgentStore, keychain: PetKeychain, preferences: @escaping () -> PetPreferences) {
         self.store = store; self.keychain = keychain; self.preferences = preferences
         store.onArchive = { [weak self] id in self?.cancel(id) }
+        store.archiveIsBusy = { [weak self] id in self?.isBusy(id) == true }
         store.agents.onDisable = { [weak self] profileID in
             guard let self else { return }
             for task in self.store.tasks where task.agent?.profile.id == profileID { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }

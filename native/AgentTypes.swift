@@ -116,6 +116,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var sources: [String] = []
     var summary = ""
     var archived = false, pinned = false
+    var workspaceArchiveID: String?
     var parentID: String?
     var model = ""
     var modelOverride: String?

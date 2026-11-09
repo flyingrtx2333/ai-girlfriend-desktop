@@ -41,7 +41,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("archived", "归档", "archivebox")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -96,6 +96,7 @@ final class FormDocumentView: NSView {
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
     private var worktreePolicyPanel: AgentWorktreePolicyView?
     private var dataImportView: AgentDataImportView?
+    private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
     private let executionLocation = AgentWorkbenchButton()
     private let branchControl = AgentWorkbenchButton()
@@ -254,6 +255,7 @@ final class FormDocumentView: NSView {
             guard let self, let tasks = self.companion?.agentStore else { return }; self.saveAgentDraft(); self.selectAgentTask(tasks.create(workspace: path, workMode: mode))
         }
         taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
+        taskSidebar.onBulkArchive = { [weak self] ids, archived in self?.archiveTasks(ids, archived: archived) == true }
         taskSidebar.onWorkMode = { [weak self] mode in self?.switchWorkMode(mode) }
         taskSidebar.onDirectoryAction = { [weak self] path, mode, action in self?.directoryAction(path, mode: mode, action: action) }
         taskSidebar.onDirectorySort = { [weak self] sort, mode in
@@ -514,6 +516,7 @@ final class FormDocumentView: NSView {
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
     private func updateSettingsSections() {
+        archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
         pageTitle.stringValue = query.isEmpty ? selected.1 : "搜索结果"
@@ -524,7 +527,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports", "archived"].contains($0.category) }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -716,6 +719,11 @@ final class FormDocumentView: NSView {
             group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            group("archived", "已归档", "归档 恢复 工作区 任务 项目")
+            let archive = AgentArchivedTasksView(store: store); archivedTasksView = archive
+            archive.onWillChange = { [weak self] in self?.saveAgentDraft() }
+            archive.onChange = { [weak self] in self?.renderAgentMessages() }
+            row("", archive); archive.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
@@ -1174,12 +1182,16 @@ final class FormDocumentView: NSView {
     @objc func newAgentTask() {
         guard let tasks = companion?.agentStore else { return }; saveAgentDraft()
         let previous = tasks.selected
-        let id = tasks.create(workspace: previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
+        let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
     }
     private func directoryAction(_ path: String, mode: AgentWorkMode, action: String) {
         guard let tasks = companion?.agentStore else { return }
         do {
+            if action == "archive" || action == "restore" {
+                saveAgentDraft(); try tasks.setWorkspaceArchived(path, mode: mode, archived: action == "archive")
+                finishArchive(mode); return
+            }
             if action == "pin" { try tasks.organization.togglePinned(path, mode: mode, tasks: tasks.tasks) }
             else if action == "rename" {
                 let alert = NSAlert(); alert.messageText = mode.directoryTitle + "显示名称"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
@@ -1267,14 +1279,22 @@ final class FormDocumentView: NSView {
             }
         case "fork": saveAgentDraft(); if let next = tasks.fork(id) { selectAgentTask(next) }
         case "archive":
-            saveAgentDraft(); tasks.update(id) { $0.archived.toggle() }
-            if tasks.task(id)?.archived == true && tasks.selectedID == id {
-                let next = tasks.tasks.first(where: { !$0.archived && $0.id != id && $0.organizationMode == task.organizationMode })?.id ?? tasks.create(workMode: task.organizationMode)
-                selectAgentTask(next)
-            }
+            _ = archiveTasks([id], archived: !task.archived); return
         default: break
         }
         renderAgentMessages()
+    }
+    private func archiveTasks(_ ids: [String], archived: Bool) -> Bool {
+        guard let store = companion?.agentStore else { return false }
+        let mode = store.selected?.organizationMode ?? .coding
+        do { saveAgentDraft(); try store.setArchived(ids, archived: archived); finishArchive(mode); return true }
+        catch { setStatus(error.localizedDescription, error: true); return false }
+    }
+    private func finishArchive(_ mode: AgentWorkMode) {
+        guard let store = companion?.agentStore else { return }
+        let id = store.selectedID ?? store.create(workMode: mode)
+        if displayedTask != id { selectAgentTask(id) } else { renderAgentMessages() }
+        archivedTasksView?.refresh()
     }
     @objc func chooseProject() {
         guard let task = companion?.agentStore?.selected else { return }
@@ -1498,6 +1518,7 @@ final class FormDocumentView: NSView {
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
         repoWikiWindow?.refreshLiveState()
+        archivedTasksView?.refresh()
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         let taskView = tasks.organization.taskView(task.organizationMode)
@@ -1860,6 +1881,12 @@ extension ControlWindow {
         return value
     }
     func refreshDataImport() { dataImportView?.refresh() }
+    func archiveReadback() -> [String: Any] {
+        guard CommandLine.arguments.contains("--task-archive-check"), let store = companion?.agentStore else { return [:] }
+        return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": store.selectedID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "settingsCategory": settingsCategory,
+                "tasks": store.tasks.compactMap { store.task($0.id) }.map { ["id": $0.id, "title": $0.title, "workspace": $0.workspace as Any? ?? NSNull(), "mode": $0.organizationMode.rawValue, "archived": $0.archived, "archiveID": $0.workspaceArchiveID as Any? ?? NSNull(), "draft": $0.draft ?? ""] },
+                "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] }]
+    }
     func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
     func switchWorkMode(_ mode: AgentWorkMode) {
         guard let tasks = companion?.agentStore, tasks.selected?.organizationMode != mode else { return }

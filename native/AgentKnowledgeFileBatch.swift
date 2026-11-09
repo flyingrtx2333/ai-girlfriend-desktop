@@ -2,27 +2,29 @@ import Foundation
 
 struct AgentKnowledgeFileWrite {
     let files: AgentFiles, url: URL, data: Data?, before: Data?, signature: String, permissions: Int, originalPermissions: Int
-    init(files: AgentFiles, path: String, data: Data?, expectedHash: String? = nil, missing: Bool = false, permissions: Int? = nil) throws {
+    private let label: String
+    init(files: AgentFiles, path: String, data: Data?, expectedHash: String? = nil, missing: Bool = false, permissions: Int? = nil, label: String = "知识传递") throws {
         let url = try files.literalURL(path)
         let requested = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : files.root.appendingPathComponent(path)).standardizedFileURL
-        guard try files.resolve(path) == url, requested == url else { throw PetError("知识传递路径包含符号链接或位置已变化：" + path) }
+        guard try files.resolve(path) == url, requested == url else { throw PetError(label + "路径包含符号链接或位置已变化：" + path) }
         let entry = try files.entryMetadata(url)
-        guard ["file", "missing"].contains(entry.kind), !missing || entry.kind == "missing", entry.kind != "file" || (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("知识传递目标已存在、只读或不是普通文件：" + path) }
+        guard ["file", "missing"].contains(entry.kind), !missing || entry.kind == "missing", entry.kind != "file" || (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError(label + "目标已存在、只读或不是普通文件：" + path) }
         let before = entry.kind == "file" ? try files.readData(url, maximum: 20_000_000) : nil
-        guard (data?.count ?? 0) <= 20_000_000, expectedHash == nil || AgentFiles.hash(before ?? Data()) == expectedHash else { throw PetError("知识传递文件已变化，请重新预览：" + path) }
+        guard (data?.count ?? 0) <= 20_000_000, expectedHash == nil || AgentFiles.hash(before ?? Data()) == expectedHash else { throw PetError(label + "文件已变化或超过20MB，请重新打开后重试：" + path) }
+        self.label = label
         self.files = files; self.url = url; self.data = data; self.before = before; signature = entry.signature
         self.permissions = permissions ?? entry.permissions ?? 0o644; originalPermissions = entry.permissions ?? self.permissions
     }
     func requireCurrent() throws {
-        guard try files.resolve(url.path) == url, try files.entryMetadata(url).signature == signature else { throw PetError("知识文件在预览后已变化：" + files.relative(url)) }
-        if let before { guard try files.fileHash(url, maximum: 20_000_000) == AgentFiles.hash(before) else { throw PetError("知识文件在预览后已变化：" + files.relative(url)) } }
+        guard try files.resolve(url.path) == url, try files.entryMetadata(url).signature == signature else { throw PetError(label + "文件在检查后已变化：" + files.relative(url)) }
+        if let before { guard try files.fileHash(url, maximum: 20_000_000) == AgentFiles.hash(before) else { throw PetError(label + "文件在检查后已变化：" + files.relative(url)) } }
     }
 }
 
 @MainActor enum AgentKnowledgeFileBatch {
-    static func commit(_ writes: [AgentKnowledgeFileWrite], backup: URL, validate: () throws -> Void) throws {
+    static func commit(_ writes: [AgentKnowledgeFileWrite], backup: URL, label: String = "知识传递", validate: () throws -> Void) throws {
         let keys = writes.map { $0.url.path.precomposedStringWithCanonicalMapping.lowercased() }
-        guard writes.count <= 6000, Set(keys).count == writes.count, writes.reduce(0, { $0 + ($1.data?.count ?? 0) + ($1.before?.count ?? 0) }) <= 256_000_000 else { throw PetError("知识传递文件重复或超过256MB") }
+        guard writes.count <= 6000, Set(keys).count == writes.count, writes.reduce(0, { $0 + ($1.data?.count ?? 0) + ($1.before?.count ?? 0) }) <= 256_000_000 else { throw PetError(label + "文件重复或超过256MB") }
         try validate(); try writes.forEach { try $0.requireCurrent() }; try Task.checkCancellation()
         try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files = try AgentFiles(workspace: backup.path)
@@ -55,7 +57,7 @@ struct AgentKnowledgeFileWrite {
                 } catch { retained.append(entry.url.path) }
             }
             try? files.writeData(JSONSerialization.data(withJSONObject: ["state": retained.isEmpty ? "rolled-back" : "needs-review", "retained": retained, "error": error.localizedDescription], options: [.prettyPrinted, .sortedKeys]), to: files.resolve("outcome.json"), permissions: 0o600)
-            throw PetError("知识传递未完成：" + error.localizedDescription + (retained.isEmpty ? "；本次已写内容已恢复。" : "；部分文件有后续修改或无法恢复，已保留，请检查。") + "备份：" + backup.path)
+            throw PetError(label + "未完成：" + error.localizedDescription + (retained.isEmpty ? "；本次已写内容已恢复。" : "；部分文件有后续修改或无法恢复，已保留，请检查。") + "备份：" + backup.path)
         }
     }
 }

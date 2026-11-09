@@ -23,14 +23,20 @@ import Foundation
     lazy var projectKnowledge = AgentProjectKnowledgeGeneration(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
+    private var taskHashes: [String: String] = [:]
+    private var indexHash: String?
+    private var applyingArchive = false
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
+    var archiveIsBusy: ((String) -> Bool)?
     var selectedID: String? { didSet {
+        if !applyingArchive {
         do {
             try saveIndex()
             if oldValue != selectedID, let task = tasks.first(where: { $0.id == selectedID }) { try organization.remember(task) }
         } catch { writeError = error.localizedDescription }
         worktreeRetention.tasksChanged()
+        }
     } }
     var selected: AgentTaskRecord? { selectedID.flatMap(task) }
     private struct Index: Codable { var selectedID: String?; var tasks: [AgentTaskRecord] }
@@ -51,6 +57,7 @@ import Foundation
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var previousSelection: String?
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {
+            indexHash = AgentFiles.hash(data)
             tasks = index.tasks.filter { UUID(uuidString: $0.id) != nil }; previousSelection = index.selectedID
             for i in tasks.indices where tasks[i].status == .running { tasks[i].status = .stopped }
         }
@@ -75,6 +82,7 @@ import Foundation
     @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil) -> String {
         var task = AgentTaskRecord(title: title, workspace: workspace, mode: mode)
         task.workMode = workMode == .coding ? nil : workMode
+        if let token = organization.archiveID(workspace, mode: task.organizationMode) { task.archived = true; task.workspaceArchiveID = token }
         tasks.insert(Self.metadata(task), at: 0); cache[task.id] = task; selectedID = task.id
         do { try save(task.id); try organization.remember(task) } catch { writeError = error.localizedDescription }
         trimCache(keeping: task.id); return task.id
@@ -96,7 +104,9 @@ import Foundation
         return value
     }
     func installImportedRecord(_ value: AgentTaskRecord) throws {
+        var value = value
         guard UUID(uuidString: value.id) != nil, value.importOrigin != nil, ![.running, .waiting].contains(value.status), value.pendingCalls.isEmpty, value.approvals.isEmpty, value.automation == nil, value.agent == nil, value.team == nil else { throw PetError("导入任务包含不能继承的运行状态") }
+        if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let previousTasks = tasks, previousCache = cache[value.id]
         if let index = tasks.firstIndex(where: { $0.id == value.id }) { tasks[index] = Self.metadata(value) }
         else { tasks.append(Self.metadata(value)) }
@@ -114,6 +124,7 @@ import Foundation
         let interrupted = !hooks.isRunning(id) && (task.status == .running || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
+        taskHashes[id] = AgentFiles.hash(data)
         if interrupted {
             if let index = tasks.firstIndex(where: { $0.id == id }) { tasks[index] = Self.metadata(task) }
             do { try save(id) } catch { writeError = error.localizedDescription }
@@ -158,6 +169,7 @@ import Foundation
         guard let index = tasks.firstIndex(where: { $0.id == id }), var value = task(id) else { return }
         let wasArchived = value.archived, previous = value
         body(&value); value.updated = Date()
+        if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
         let eventsChanged = !messagesChanged && (value.events.count != previous.events.count || zip(value.events, previous.events).contains { pair in pair.0.id != pair.1.id || pair.0.status != pair.1.status || pair.0.detail != pair.1.detail || pair.0.duration != pair.1.duration })
         value.activityAt = messagesChanged || eventsChanged ? value.updated : previous.activityAt ?? Self.metadata(previous).activityAt
@@ -179,17 +191,75 @@ import Foundation
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }
         guard let task = task(id) else { return }
         let file = directory.appendingPathComponent(id + ".json")
-        try encoder.encode(task).write(to: file, options: .atomic)
+        let data = try encoder.encode(task); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        taskHashes[id] = AgentFiles.hash(data)
         try saveIndex(); writeError = nil
     }
     private func saveIndex() throws {
         let file = directory.appendingPathComponent("index.json")
-        try encoder.encode(Index(selectedID: selectedID, tasks: tasks)).write(to: file, options: .atomic)
+        let data = try encoder.encode(Index(selectedID: selectedID, tasks: tasks)); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        indexHash = AgentFiles.hash(data)
+    }
+    func setArchived(_ ids: [String], archived: Bool) throws {
+        let unique = Set(ids); guard !unique.isEmpty, unique.count == ids.count else { throw PetError("请选择任务") }
+        var changed: [AgentTaskRecord] = [], directories: [AgentDirectoryEntry] = []
+        for id in ids {
+            guard var task = task(id), task.archived != archived else { throw PetError("所选任务已变化，请刷新后重试") }
+            try requireArchivable(task)
+            task.archived = archived; task.workspaceArchiveID = nil; changed.append(task)
+            if !archived, let path = task.workspace, let entry = organization.directories(task.organizationMode, tasks: tasks, includingArchived: true).first(where: { $0.path == path && $0.archiveID != nil }), !directories.contains(where: { $0.path == path && $0.mode == task.organizationMode }) {
+                var active = entry; active.archiveID = nil; active.archivedAt = nil; directories.append(active)
+            }
+        }
+        try commitArchive(changed, directories: directories)
+    }
+    func setWorkspaceArchived(_ path: String, mode: AgentWorkMode, archived: Bool) throws {
+        guard var entry = organization.directories(mode, tasks: tasks, includingArchived: true).first(where: { $0.path == path }), (entry.archiveID != nil) != archived else { throw PetError("工作区已变化，请刷新后重试") }
+        let previousToken = entry.archiveID, token = UUID().uuidString
+        var changed: [AgentTaskRecord] = []
+        for metadata in tasks where metadata.workspace == path && metadata.organizationMode == mode {
+            guard var task = task(metadata.id) else { throw PetError("任务无法读取，未归档工作区") }
+            if archived && !task.archived || !archived && task.workspaceArchiveID == previousToken {
+                try requireArchivable(task); task.archived = archived; task.workspaceArchiveID = archived ? token : nil; changed.append(task)
+            }
+        }
+        entry.archiveID = archived ? token : nil; entry.archivedAt = archived ? Date() : nil
+        try commitArchive(changed, directories: [entry])
+    }
+    private func requireArchivable(_ task: AgentTaskRecord) throws {
+        guard task.status != .running, task.pendingFileCapture == nil, !hooks.isRunning(task.id), archiveIsBusy?(task.id) != true else { throw PetError("请先停止“" + task.title + "”的执行，再归档或恢复") }
+    }
+    private func commitArchive(_ changed: [AgentTaskRecord], directories: [AgentDirectoryEntry]) throws {
+        let files = try AgentFiles(workspace: directory.path)
+        var values = changed, next = tasks, writes: [AgentKnowledgeFileWrite] = []
+        for i in values.indices {
+            values[i].updated = Date(); let value = values[i]
+            guard let index = next.firstIndex(where: { $0.id == value.id }), let hash = taskHashes[value.id] else { throw PetError("任务记录已变化，请重新打开应用后重试") }
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: value.id + ".json", data: encoder.encode(value), expectedHash: hash, permissions: 0o600, label: "归档")); next[index] = Self.metadata(value)
+        }
+        let previousMode = selected?.organizationMode
+        let selection = next.first(where: { $0.id == selectedID && !$0.archived })?.id ?? next.first(where: { !$0.archived && $0.organizationMode == previousMode })?.id
+        let indexWrite = try AgentKnowledgeFileWrite(files: files, path: "index.json", data: encoder.encode(Index(selectedID: selection, tasks: next)), expectedHash: indexHash, missing: indexHash == nil, permissions: 0o600, label: "归档")
+        let organizationChange = try organization.prepareArchive(directories, tasks: tasks)
+        writes.append(indexWrite); if let organizationChange { writes.append(organizationChange.write) }
+        let backup = directory.deletingLastPathComponent().appendingPathComponent("archive-transactions/" + UUID().uuidString)
+        try AgentKnowledgeFileBatch.commit(writes, backup: backup, label: "归档操作") {
+            for value in values { try self.requireArchivable(value) }
+        }
+        let newlyArchived = values.filter { value in value.archived && tasks.first(where: { $0.id == value.id })?.archived == false }.map(\.id)
+        tasks = next
+        for value in values { cache[value.id] = value; taskHashes[value.id] = AgentFiles.hash(try encoder.encode(value)) }
+        indexHash = AgentFiles.hash(indexWrite.data!); organizationChange?.accept()
+        applyingArchive = true; selectedID = selection; applyingArchive = false
+        writeError = nil
+        for id in newlyArchived { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id); onArchive?(id) }
+        for value in values { offices.changed(value.id) }; worktreeRetention.tasksChanged()
     }
     @discardableResult func fork(_ id: String) -> String? {
         guard var original = task(id), original.status != .running, original.pendingFileCapture == nil else { return nil }
+        guard organization.archiveID(original.workspace, mode: original.organizationMode) == nil else { writeError = "请先恢复此任务的工作区"; return nil }
         original.parentID = id; original.id = UUID().uuidString; original.title += " · 分支"
         original.agent?.ownerID = nil
         do {
@@ -201,6 +271,7 @@ import Foundation
         for call in original.pendingCalls { original.messages.append(AgentMessage(role: "tool", content: "原任务在此处中断，分支尚未执行该操作。", toolCallID: call.id)) }
         original.flushQueuedInputs()
         original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
+        original.workspaceArchiveID = nil
         original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
         original.recap = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
         original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil

@@ -80,7 +80,8 @@
     "native:check-file-conflict": "node scripts/check-native-markdown.mjs --conflicts",
     "native:check-text-encoding": "node scripts/check-native-markdown.mjs --encodings",
     "native:check-video": "node scripts/check-native-video.mjs",
-    "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs"
+    "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs",
+    "native:check-task-archive": "node scripts/check-native-task-archive.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

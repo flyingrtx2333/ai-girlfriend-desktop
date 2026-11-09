@@ -42,6 +42,8 @@ struct AgentDirectoryEntry: Codable {
     var name: String?
     var pinned = false
     var created = Date()
+    var archiveID: String?
+    var archivedAt: Date?
     var title: String { name ?? URL(fileURLWithPath: path).lastPathComponent }
 }
 
@@ -93,13 +95,15 @@ struct AgentDirectoryEntry: Codable {
     }
     func register(_ path: String, mode: AgentWorkMode) throws {
         let canonical = try AgentFiles(workspace: path).root.path
+        guard archiveID(canonical, mode: mode) == nil else { throw PetError("此" + mode.directoryTitle + "已归档，请先在设置中恢复") }
         guard !document.directories.contains(where: { $0.path == canonical && $0.mode == mode }) else { return }
         var next = document; next.directories.append(AgentDirectoryEntry(path: canonical, mode: mode)); try save(next)
     }
-    func directories(_ mode: AgentWorkMode, tasks: [AgentTaskRecord]) -> [AgentDirectoryEntry] {
+    func archiveID(_ path: String?, mode: AgentWorkMode) -> String? { document.directories.first { $0.path == path && $0.mode == mode }?.archiveID }
+    func directories(_ mode: AgentWorkMode, tasks: [AgentTaskRecord], includingArchived: Bool = false) -> [AgentDirectoryEntry] {
         var values = document.directories.filter { $0.mode == mode }
         var activity: [String: Date] = [:], created: [String: Date] = [:]
-        for task in tasks where task.organizationMode == mode {
+        for task in tasks where task.organizationMode == mode && (includingArchived || !task.archived) {
             guard let path = task.workspace else { continue }
             activity[path] = max(activity[path] ?? task.updated, task.updated)
             created[path] = min(created[path] ?? task.created, task.created)
@@ -108,7 +112,7 @@ struct AgentDirectoryEntry: Codable {
         for (path, date) in created where !stored.contains(path) { values.append(AgentDirectoryEntry(path: path, mode: mode, created: date)) }
         let sort = sorting(mode)
         let order = manualOrder(mode, grouping: .workspace)
-        return values.sorted { a, b in
+        return values.filter { includingArchived || $0.archiveID == nil }.sorted { a, b in
             if a.pinned != b.pinned { return a.pinned }
             if sort == .manual, order.firstIndex(of: a.path) != order.firstIndex(of: b.path) { return (order.firstIndex(of: a.path) ?? Int.max) < (order.firstIndex(of: b.path) ?? Int.max) }
             let first = activity[a.path] ?? a.created, second = activity[b.path] ?? b.created
@@ -117,6 +121,30 @@ struct AgentDirectoryEntry: Codable {
             let order = a.title.localizedStandardCompare(b.title)
             return order != .orderedSame ? order == .orderedAscending : a.path < b.path
         }
+    }
+    struct ArchiveChange {
+        let write: AgentKnowledgeFileWrite
+        let accept: () -> Void
+    }
+    func prepareArchive(_ changes: [AgentDirectoryEntry], tasks: [AgentTaskRecord]) throws -> ArchiveChange? {
+        guard !changes.isEmpty else { return nil }
+        if let loadIssue { throw PetError(loadIssue) }
+        var next = document
+        for entry in changes {
+            guard directories(entry.mode, tasks: tasks, includingArchived: true).contains(where: { $0.path == entry.path }) else { throw PetError("工作区已变化，请刷新后重试") }
+            next.directories.removeAll { $0.path == entry.path && $0.mode == entry.mode }; next.directories.append(entry)
+            if entry.archiveID != nil, next.taskViews?[entry.mode.rawValue]?.workspace == entry.path { next.taskViews?[entry.mode.rawValue]?.workspace = nil }
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(next); guard data.count <= 1_000_000 else { throw PetError("任务组织记录过大") }
+        let files = try AgentFiles(workspace: file.deletingLastPathComponent().path)
+        let write = try AgentKnowledgeFileWrite(files: files, path: file.path, data: data, permissions: 0o600, label: "归档")
+        guard write.signature == openedSignature else { throw PetError("任务组织记录已变化，请重新打开应用后重试") }
+        return ArchiveChange(write: write, accept: { [self] in
+            document = next; revision += 1
+            do { openedSignature = try files.entryMetadata(file).signature }
+            catch { loadIssue = "任务组织记录已保存，无法重新读取；请重新打开应用：" + error.localizedDescription }
+        })
     }
     func name(_ path: String?, mode: AgentWorkMode) -> String? {
         guard let path else { return nil }

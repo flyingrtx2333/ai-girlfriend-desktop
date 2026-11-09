@@ -2,6 +2,8 @@ import AppKit
 
 private final class AgentTaskTable: NSTableView {
     var taskMenu: ((Int) -> NSMenu?)?
+    var willClick: ((NSEvent) -> Void)?
+    override func mouseDown(with event: NSEvent) { willClick?(event); super.mouseDown(with: event) }
     override func menu(for event: NSEvent) -> NSMenu? {
         let row = row(at: convert(event.locationInWindow, from: nil))
         return row >= 0 ? taskMenu?(row) : nil
@@ -25,6 +27,7 @@ private final class AgentTaskTable: NSTableView {
     var onNewWorkspace: (() -> Void)?
     var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
     var onAction: ((String, String) -> Void)?
+    var onBulkArchive: (([String], Bool) -> Bool)?
     var onWorkMode: ((AgentWorkMode) -> Void)?
     var onDirectoryAction: ((String, AgentWorkMode, String) -> Void)?
     var onDirectorySort: ((AgentDirectorySort, AgentWorkMode) -> Void)?
@@ -37,6 +40,9 @@ private final class AgentTaskTable: NSTableView {
     private let create = AgentWorkbenchButton(), viewMenu = NSPopUpButton(frame: .zero, pullsDown: true)
     private let workModePicker = NSPopUpButton(), heading = NSTextField(labelWithString: "工作区"), add = AgentWorkbenchButton()
     private let empty = NSTextField(labelWithString: "没有匹配的任务")
+    private let bulkCount = NSTextField(labelWithString: ""), bulkAction = NSButton(), bulkCancel = NSButton(title: "取消选择", target: nil, action: nil)
+    private let bulkBar = NSStackView()
+    private var bulkIDs = Set<String>(), bulkSelecting = false
     private var dayObservers: [NSObjectProtocol] = []
     private var draggingRows = false
     private var dragDiagnostics: [String: String] = [:]
@@ -69,11 +75,25 @@ private final class AgentTaskTable: NSTableView {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("tasks")); table.addTableColumn(column)
         table.headerView = nil; table.backgroundColor = .clear; table.style = .plain; table.selectionHighlightStyle = .none
         table.intercellSpacing = NSSize(width: 0, height: 2); table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务列表")
+        table.allowsMultipleSelection = true
+        table.willClick = { [weak self] event in
+            guard let self else { return }
+            let row = table.row(at: table.convert(event.locationInWindow, from: nil))
+            guard rows.indices.contains(row), case .task = rows[row] else { return }
+            bulkSelecting = !event.modifierFlags.intersection([.shift, .command]).isEmpty
+            if !bulkSelecting { bulkIDs.removeAll(); updateBulkBar() }
+        }
         table.taskMenu = { [weak self] row in self?.menu(row) }
         table.registerForDraggedTypes([Self.dragType]); table.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         empty.font = .systemFont(ofSize: 12); empty.textColor = .secondaryLabelColor; empty.isHidden = true; empty.setAccessibilityLabel("任务筛选状态")
-        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, attention, searchButton, search, rule, header, empty, scroll])
+        bulkCount.font = .systemFont(ofSize: 12); bulkCount.setAccessibilityLabel("所选任务数量")
+        bulkCancel.bezelStyle = .inline; bulkCancel.font = .systemFont(ofSize: 11); bulkCancel.target = self; bulkCancel.action = #selector(cancelBulkSelection)
+        bulkAction.bezelStyle = .rounded; bulkAction.target = self; bulkAction.action = #selector(archiveBulkSelection)
+        let bulkHeader = NSStackView(views: [bulkCount, NSView(), bulkCancel]); bulkHeader.spacing = 4
+        bulkBar.orientation = .vertical; bulkBar.alignment = .leading; bulkBar.spacing = 7; bulkBar.addArrangedSubview(bulkHeader); bulkBar.addArrangedSubview(bulkAction); bulkBar.isHidden = true
+        bulkHeader.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true; bulkAction.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true
+        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, attention, searchButton, search, rule, header, empty, scroll, bulkBar])
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(13, after: searchButton); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
         addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor), content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor)])
@@ -84,6 +104,7 @@ private final class AgentTaskTable: NSTableView {
     deinit { for observer in dayObservers { NotificationCenter.default.removeObserver(observer) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.keyCode == 53, bulkSelecting { cancelBulkSelection(); return true }
         if event.modifierFlags.contains(.command), event.modifierFlags.intersection([.option, .control, .shift]).isEmpty, event.charactersIgnoringModifiers?.lowercased() == "f" { showSearch(); return true }
         return super.performKeyEquivalent(with: event)
     }
@@ -92,7 +113,7 @@ private final class AgentTaskTable: NSTableView {
         let previous = self.selected; self.selected = selected
         let mode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
         let view = organization.taskView(mode)
-        if workMode != mode || taskView != view { draggingRows = false }
+        if workMode != mode || taskView != view { draggingRows = false; bulkIDs.removeAll(); bulkSelecting = false }
         workMode = mode; taskView = view
         workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
         add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
@@ -105,8 +126,8 @@ private final class AgentTaskTable: NSTableView {
     @objc private func newTask() { onNew?() }
     @objc private func newWorkspace() { onNewWorkspace?() }
     @objc private func showSearch() { searchVisible.toggle(); search.isHidden = !searchVisible; if searchVisible { window?.makeFirstResponder(search) } else { search.stringValue = ""; applyFilter() } }
-    @objc private func showAttention() { filter = filter == 1 ? 0 : 1; applyFilter() }
-    @objc private func changeFilter(_ sender: NSMenuItem) { filter = sender.tag; applyFilter() }
+    @objc private func showAttention() { cancelBulkSelection(); filter = filter == 1 ? 0 : 1; applyFilter() }
+    @objc private func changeFilter(_ sender: NSMenuItem) { cancelBulkSelection(); filter = sender.tag; applyFilter() }
     @objc private func changeWorkMode() {
         guard AgentWorkMode.allCases.indices.contains(workModePicker.indexOfSelectedItem) else { return }
         filter = 0; search.stringValue = ""; searchVisible = false; search.isHidden = true
@@ -143,6 +164,7 @@ private final class AgentTaskTable: NSTableView {
         var value: [String: Any] = ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
+        if CommandLine.arguments.contains("--task-archive-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
         if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
@@ -180,7 +202,7 @@ private final class AgentTaskTable: NSTableView {
         let narrowed = filter != 0 || !query.isEmpty || taskView.activity != .all || taskView.grouping == .workspace && taskView.workspace != nil
         switch effectiveGrouping {
         case .workspace:
-            var entries = organization?.directories(workMode, tasks: visible) ?? []
+            var entries = organization?.directories(workMode, tasks: visible, includingArchived: filter == 2) ?? []
             let known = Set(entries.map(\.path))
             for path in Set(unpinned.compactMap(\.workspace)).sorted() where !known.contains(path) { entries.append(AgentDirectoryEntry(path: path, mode: workMode)) }
             for entry in entries {
@@ -214,23 +236,44 @@ private final class AgentTaskTable: NSTableView {
         attention.state = filter == 1 ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, filter == 1 ? AgentWorkbenchTheme.selection : .clear)
         for item in viewMenu.itemArray where item.action == #selector(changeFilter(_:)) { item.state = item.tag == filter ? .on : .off }
+        let available = Set(rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil }); bulkIDs.formIntersection(available)
+        if bulkIDs.isEmpty { bulkSelecting = false }; updateBulkBar()
         updating = true; table.reloadData(); updating = false; selectCurrent()
     }
     private func selectCurrent() {
         updating = true; defer { updating = false }
-        if let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }) {
+        if bulkSelecting {
+            table.selectRowIndexes(IndexSet(rows.indices.filter { row in if case .task(let task, _) = rows[row] { return bulkIDs.contains(task.id) }; return false }), byExtendingSelection: false)
+        } else if let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }) {
             if table.selectedRow != row { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound { for row in visible.location..<min(rows.count, NSMaxRange(visible)) {
             guard case .task(let task, _) = rows[row] else { continue }
-            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(task.id == selected)
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == selected)
         } }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { if case .group = rows[row] { return 32 }; return 33 }
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { if case .group(_, let key) = rows[row] { return key != nil }; return true }
-    func tableViewSelectionDidChange(_ notification: Notification) { guard !updating, rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }; onSelect?(task.id) }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { if case .group(_, let key) = rows[row] { return !bulkSelecting && key != nil }; return true }
+    func tableView(_ tableView: NSTableView, selectionIndexesForProposedSelection proposedSelectionIndexes: IndexSet) -> IndexSet {
+        guard bulkSelecting || proposedSelectionIndexes.count > 1 else { return proposedSelectionIndexes }
+        return IndexSet(proposedSelectionIndexes.filter { row in rows.indices.contains(row) && { if case .task = rows[row] { return true }; return false }() })
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !updating else { return }
+        if bulkSelecting || table.selectedRowIndexes.count > 1 {
+            bulkSelecting = true; bulkIDs = Set(table.selectedRowIndexes.compactMap { row in if rows.indices.contains(row), case .task(let task, _) = rows[row] { return task.id }; return nil }); updateBulkBar(); selectCurrent(); return
+        }
+        guard rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }; onSelect?(task.id)
+    }
+    private func updateBulkBar() {
+        bulkBar.isHidden = bulkIDs.isEmpty; bulkCount.stringValue = "已选择 \(bulkIDs.count) 项"
+        bulkAction.title = filter == 2 ? "恢复所选任务" : "归档所选任务"; bulkAction.setAccessibilityLabel(bulkAction.title)
+        bulkAction.isEnabled = !bulkIDs.isEmpty && tasks.filter { bulkIDs.contains($0.id) }.allSatisfy { $0.status != .running }
+    }
+    @objc private func cancelBulkSelection() { bulkSelecting = false; bulkIDs.removeAll(); updateBulkBar(); selectCurrent() }
+    @objc private func archiveBulkSelection() { if onBulkArchive?(bulkIDs.sorted(), filter != 2) == true { cancelBulkSelection() } }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch rows[row] {
         case .group(let title, let path):
@@ -249,7 +292,7 @@ private final class AgentTaskTable: NSTableView {
             NSLayoutConstraint.activate([button.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4), button.widthAnchor.constraint(equalToConstant: 20), button.heightAnchor.constraint(equalToConstant: 26), button.centerYAnchor.constraint(equalTo: view.centerYAnchor), icon.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28), icon.widthAnchor.constraint(equalToConstant: 16), icon.heightAnchor.constraint(equalToConstant: 16), icon.centerYAnchor.constraint(equalTo: view.centerYAnchor), label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 46), label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
             return view
         case .task(let task, let depth):
-            let cell = AgentTaskCell(); cell.select(task.id == selected, animated: false)
+            let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == selected, animated: false)
             let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
             let icon = NSImageView(image: NSImage(systemSymbolName: task.status == .completed ? "circle.fill" : task.status == .running ? "circle.dotted" : task.status == .waiting ? "exclamationmark.circle.fill" : task.status == .failed ? "exclamationmark.circle" : task.status == .stopped ? "stop.circle" : "circle", accessibilityDescription: nil)!)
             icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : .secondaryLabelColor
@@ -267,7 +310,9 @@ private final class AgentTaskTable: NSTableView {
             }
             let item = NSMenuItem(title: "在此新建任务", action: #selector(newInWorkspace(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [path, workMode.rawValue]; menu.addItem(item)
             let pinned = organization?.directories(workMode, tasks: tasks).first(where: { $0.path == path })?.pinned == true
-            for (title, action) in [("设置显示名称…", "rename"), (pinned ? "取消置顶" : "置顶" + workMode.directoryTitle, "pin")] {
+            let archived = organization?.archiveID(path, mode: workMode) != nil
+            item.isEnabled = !archived
+            for (title, action) in [("设置显示名称…", "rename"), (pinned ? "取消置顶" : "置顶" + workMode.directoryTitle, "pin"), (archived ? "恢复" + workMode.directoryTitle : "归档" + workMode.directoryTitle, archived ? "restore" : "archive")] {
                 let entry = NSMenuItem(title: title, action: #selector(directoryAction(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = [path, workMode.rawValue, action]; menu.addItem(entry)
             }
             return menu
@@ -292,7 +337,7 @@ private final class AgentTaskTable: NSTableView {
     @objc private func taskAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { onAction?(value[0], value[1]) } }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
         noteDrag("writer"); if CommandLine.arguments.contains("--task-views-check") { dragDiagnostics["writerRow"] = String(row) }
-        guard filter != 1, effectiveGrouping != .activity, rows.indices.contains(row) else { return nil }
+        guard !bulkSelecting, filter != 1, effectiveGrouping != .activity, rows.indices.contains(row) else { return nil }
         let kind: String, id: String
         switch rows[row] { case .group(_, let key): guard let key else { return nil }; kind = "group"; id = key
         case .task(let task, _): guard effectiveGrouping == .custom, childOwner(task) == nil else { return nil }; kind = "task"; id = task.id }
