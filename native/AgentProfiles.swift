@@ -242,6 +242,8 @@ struct AgentProfileAssignment: Codable {
         }
     }
     func check(_ call: AgentToolCall, task: AgentTaskRecord, store: AgentStore? = nil) throws {
+        guard task.pendingFileRollback == nil else { throw PetError("文件撤回尚未完成，请先在原消息中恢复") }
+        if let store, let workspace = task.workspace, store.hasFileRollback(in: workspace) { throw PetError("此项目有未完成的文件撤回，请先恢复") }
         if let store { try store.teams.check(task, store: store) }
         if let store { for record in [task] + (try ancestors(task, store: store)) { try store.automations.check(call, task: task, owner: record) } }
         for record in [task] + (try ancestors(task, store: store)) {

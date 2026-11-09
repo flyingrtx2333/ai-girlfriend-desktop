@@ -2,13 +2,18 @@ import Foundation
 
 @MainActor enum AgentChanges {
     static func record(_ changes: [AgentChange], taskID: String, turnID: String, store: AgentStore) {
-        guard !changes.isEmpty else { return }
         store.update(taskID) { record in
+            if record.changeRounds == nil { record.changeRounds = []; record.changeTrackingFromID = turnID }
+            if record.changeRounds?.contains(where: { $0.id == turnID }) != true { record.changeRounds?.append(AgentChangeRound(id: turnID)) }
             if record.gitTurn?.id != turnID { record.gitTurn = AgentGitTurn(id: turnID, changes: []) }
             for change in changes {
                 func merged(_ previous: AgentChange) -> AgentChange {
                     var value = previous; value.afterHash = change.afterHash; value.afterKind = change.afterKind; value.afterPermissions = change.afterPermissions
                     if value.origin != change.origin { value.origin = "多项工具" }; return value
+                }
+                if let round = record.changeRounds?.firstIndex(where: { $0.id == turnID }) {
+                    if let i = record.changeRounds?[round].changes.lastIndex(where: { $0.path == change.path && $0.restoredAt == nil }), let previous = record.changeRounds?[round].changes[i], previous.afterState?.matches(change.beforeState) == true, previous.reviewOnly != true, change.reviewOnly != true { record.changeRounds?[round].changes[i] = merged(previous) }
+                    else { record.changeRounds?[round].changes.append(change) }
                 }
                 if let i = record.changes.lastIndex(where: { $0.path == change.path && $0.restoredAt == nil }), let last = record.changes[i].afterState, last.matches(change.beforeState), record.changes[i].reviewOnly != true, change.reviewOnly != true { record.changes[i] = merged(record.changes[i]) }
                 else { record.changes.append(change) }
@@ -22,7 +27,7 @@ import Foundation
         }
     }
     static func restore(_ change: AgentChange, taskID: String, store: AgentStore) throws {
-        guard let task = store.task(taskID), task.status != .running, task.pendingFileCapture == nil, change.restoredAt == nil else { throw PetError("请先停止任务并等待变更记录完成") }
+        guard let task = store.task(taskID), task.status != .running, task.pendingFileCapture == nil, task.pendingFileRollback == nil, change.restoredAt == nil else { throw PetError("请先停止任务并等待变更记录完成") }
         guard change.reviewOnly != true else { throw PetError("执行期间有其他任务操作此项目，请审阅文件后手动处理") }
         let files = try AgentFiles(workspace: task.workspace), url = try files.literalURL(change.path)
         let current = try AgentCapturedFile.read(url.path, files: files, backups: nil)
@@ -42,9 +47,22 @@ import Foundation
             if current.state.kind != "missing" { try files.remove(url) }
         }
         store.update(taskID) { record in
+            markRoundChangesRestored(change, record: &record)
             if let i = record.changes.firstIndex(where: { $0.id == change.id }) { record.changes[i].restoredAt = Date() }
             if let i = record.gitTurn?.changes.firstIndex(where: { $0.path == change.path }) { record.gitTurn?.changes[i].restoredAt = Date() }
             record.events.append(AgentEvent(kind: "change", title: "已撤回 " + String(url.path.dropFirst(files.root.path.count + 1)), status: "completed"))
+        }
+    }
+    static func markRoundChangesRestored(_ change: AgentChange, record: inout AgentTaskRecord) {
+        guard let rounds = record.changeRounds, var state = change.afterState else { return }
+        for r in rounds.indices.reversed() {
+            for i in rounds[r].changes.indices.reversed() {
+                let value = rounds[r].changes[i]
+                guard value.path == change.path, value.restoredAt == nil else { continue }
+                guard value.afterState?.matches(state) == true else { return }
+                record.changeRounds?[r].changes[i].restoredAt = Date(); state = value.beforeState
+                if state.matches(change.beforeState) { return }
+            }
         }
     }
     struct Comparison {

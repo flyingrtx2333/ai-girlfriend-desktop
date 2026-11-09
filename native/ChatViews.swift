@@ -35,6 +35,8 @@ final class ChatMessageRow: NSView {
     private let attachments = AgentAttachmentStrip()
     private let body = NSStackView(), replyActions = NSStackView()
     private let copyReply = NSButton(), helpful = NSButton(), unhelpful = NSButton(), branchReply = NSButton()
+    private let roundActions = NSStackView(), rollbackFiles = NSButton()
+    private var onRoundRollback: (() -> Void)?
     private var replyBinding: String?, copiedReset: DispatchWorkItem?
     private var onCopyReply: (() -> Bool)?, onReplyFeedback: ((String) -> Void)?, onBranchReply: (() -> Void)?
     init(message: ChatMessage, workbench: Bool = false) {
@@ -46,13 +48,18 @@ final class ChatMessageRow: NSView {
         container.layer?.backgroundColor = user && !workbench ? NSColor(white: 0.95, alpha: 1).cgColor : NSColor.clear.cgColor
         container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(body)
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 0; body.translatesAutoresizingMaskIntoConstraints = false
-        for view in [label, attachments, replyActions] as [NSView] { body.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+        for view in [label, attachments, replyActions, roundActions] as [NSView] { body.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
         replyActions.spacing = 8; replyActions.alignment = .centerY; replyActions.isHidden = true
         for (button, title, symbol, action) in [(copyReply, "复制回复", "doc.on.doc", #selector(copyResponse)), (helpful, "有帮助", "hand.thumbsup", #selector(markHelpful)), (unhelpful, "无帮助", "hand.thumbsdown", #selector(markUnhelpful)), (branchReply, "从这条回复创建分支", "arrow.triangle.branch", #selector(branchResponse))] {
             button.title = ""; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.isBordered = false; button.contentTintColor = .secondaryLabelColor
             button.target = self; button.action = action; button.toolTip = title; button.setAccessibilityLabel(title)
             button.widthAnchor.constraint(equalToConstant: 22).isActive = true; button.heightAnchor.constraint(equalToConstant: 22).isActive = true; replyActions.addArrangedSubview(button)
         }; replyActions.addArrangedSubview(NSView())
+        roundActions.spacing = 6; roundActions.alignment = .centerY; roundActions.isHidden = true
+        rollbackFiles.isBordered = false; rollbackFiles.font = .systemFont(ofSize: 12); rollbackFiles.contentTintColor = .secondaryLabelColor
+        rollbackFiles.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil); rollbackFiles.imagePosition = .imageLeading
+        rollbackFiles.target = self; rollbackFiles.action = #selector(rollbackRound); rollbackFiles.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        roundActions.addArrangedSubview(rollbackFiles); roundActions.addArrangedSubview(NSView())
         attachments.maximumRows = 6
         label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
         label.font = .systemFont(ofSize: workbench ? 14 : 15); label.textColor = NSColor(white: 0.12, alpha: 1)
@@ -84,9 +91,17 @@ final class ChatMessageRow: NSView {
         updateBodySpacing()
     }
     private func updateBodySpacing() {
-        body.setCustomSpacing(attachments.isHidden && replyActions.isHidden ? 0 : 6, after: label)
-        body.setCustomSpacing(replyActions.isHidden ? 0 : 6, after: attachments)
+        body.setCustomSpacing(attachments.isHidden && replyActions.isHidden && roundActions.isHidden ? 0 : 6, after: label)
+        body.setCustomSpacing(replyActions.isHidden && roundActions.isHidden ? 0 : 6, after: attachments)
+        body.setCustomSpacing(roundActions.isHidden ? 0 : 6, after: replyActions)
     }
+    func setRoundRollback(visible: Bool, enabled: Bool, recovery: Bool, action: (() -> Void)?) {
+        roundActions.isHidden = !isUser || !visible; onRoundRollback = action; rollbackFiles.isEnabled = enabled
+        rollbackFiles.title = recovery ? "恢复撤回前文件" : "撤回文件"; rollbackFiles.setAccessibilityLabel(rollbackFiles.title)
+        rollbackFiles.toolTip = recovery ? "恢复被中断的撤回操作，保留当前对话" : "撤回从这条要求起的项目文件，保留对话"
+        updateBodySpacing()
+    }
+    @objc private func rollbackRound() { onRoundRollback?() }
     @objc private func copyResponse() {
         guard onCopyReply?() == true else { return }; let binding = replyBinding
         copiedReset?.cancel(); copyReply.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil); copyReply.setAccessibilityValue("已复制")

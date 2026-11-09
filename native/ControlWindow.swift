@@ -93,6 +93,7 @@ final class FormDocumentView: NSView {
     private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
+    private var roundRollbackWindow: AgentRoundRollbackWindow?
     private var taskModelWindow: AgentTaskModelWindow?
     private var contextWindow: AgentContextWindow?
     private var mcpContentWindow: AgentMCPContentWindow?
@@ -461,8 +462,9 @@ final class FormDocumentView: NSView {
         guard let task = currentAgentTask else { return }
         let menu = NSMenu(); menu.autoenablesItems = false
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
-            let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item)
+            let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running && (task.pendingFileRollback == nil || !["fork", "archive"].contains(action)); menu.addItem(item)
         }
+        if task.pendingFileRollback != nil { let item = NSMenuItem(title: "恢复撤回前文件…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "recover-round-files"]; menu.addItem(item) }
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
@@ -1075,7 +1077,7 @@ final class FormDocumentView: NSView {
     }
     func closeOwnedTaskPanels() -> Bool {
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
@@ -1152,6 +1154,10 @@ final class FormDocumentView: NSView {
 @MainActor private extension ControlWindow {
     func updateSendButton() {
         sendButton.toolTip = nil
+        if let task = currentAgentTask, task.pendingFileRollback != nil || task.workspace.map({ companion?.agentStore?.hasFileRollback(in: $0) == true }) == true {
+            sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送"); sendButton.setAccessibilityLabel("发送")
+            sendButton.isEnabled = false; sendButton.toolTip = "请先恢复此项目未完成的文件撤回"; return
+        }
         if currentAgentTask?.archived == true {
             sendButton.image = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: "发送"); sendButton.setAccessibilityLabel("发送")
             sendButton.isEnabled = false; sendButton.toolTip = "任务已归档，请先恢复"; return
@@ -1370,6 +1376,7 @@ final class FormDocumentView: NSView {
                 if !title.isEmpty { tasks.update(id) { $0.title = String(title.prefix(120)) } }
             }
         case "pin": tasks.update(id) { $0.pinned.toggle() }
+        case "recover-round-files": if let pending = task.pendingFileRollback { presentRoundRollback(taskID: id, messageID: pending.messageID) }
         case "work-mode":
             guard task.status != .waiting, companion?.agentRuntime?.isExecuting(id) != true, task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation else { return }
             saveAgentDraft(); tasks.update(id) { $0.workMode = task.organizationMode == .coding ? .general : nil }
@@ -1656,6 +1663,16 @@ final class FormDocumentView: NSView {
     }
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
+    private func presentRoundRollback(taskID: String, messageID: String) {
+        guard let store = companion?.agentStore else { return }
+        if agentTaskID == taskID, !saveAgentDraft() { return }
+        roundRollbackWindow?.window?.performClose(nil)
+        if roundRollbackWindow?.window?.isVisible == true { roundRollbackWindow?.window?.makeKeyAndOrderFront(nil); return }
+        let panel = AgentRoundRollbackWindow(store: store, taskID: taskID, messageID: messageID)
+        panel.beforeApply = { [weak self] in guard let companion = self?.companion else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID]) }
+        panel.onComplete = { [weak self] in self?.renderAgentMessages() }; roundRollbackWindow = panel
+        panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
+    }
     private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {
         guard agentTaskID == taskID, let tasks = companion?.agentStore else { return false }
         do {
@@ -1698,7 +1715,8 @@ final class FormDocumentView: NSView {
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
         let managed = task.kind == "hook" || task.isProjectDocumentation, delegated = task.agent?.ownerID != nil || task.automation != nil
-        let locked = running || task.status == .waiting
+        let rollbackBlocked = task.pendingFileRollback != nil || task.workspace.map { tasks.hasFileRollback(in: $0) } == true
+        let locked = running || task.status == .waiting || rollbackBlocked
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
         executionLocation.isHidden = task.organizationMode == .general
         refreshBranch(task)
@@ -1707,7 +1725,7 @@ final class FormDocumentView: NSView {
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
         gitButton.isEnabled = task.workspace != nil && !managed
         browserButton.isEnabled = !managed
-        resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
+        resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || rollbackBlocked || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
         resultsButton.title = ""; resultsButton.imagePosition = .imageOnly; resultsButton.toolTip = task.plan.isEmpty ? "任务记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
         resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.plan.isEmpty
         renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
@@ -1715,12 +1733,14 @@ final class FormDocumentView: NSView {
         let queueCount = task.queuedCount
         let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : managed && task.status == .completed ? task.statusTitle : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
         setStatus(task.status == .failed || tasks.writeError != nil || queueCount > 0 ? state : tasks.hooks.backgroundTitle(task.id) ?? "", error: task.status == .failed || tasks.writeError != nil || (managed && task.statusTitle == "校验未通过"))
+        if rollbackBlocked { clearButton.isEnabled = false; setStatus(task.pendingFileRollback == nil ? "此项目有未完成的文件撤回，请在所属任务恢复" : "文件撤回未完成，请从任务操作恢复撤回前文件", error: true) }
         let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true
         updateWorkbenchLayout()
         let follow = messageSearch == nil && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
+        let fileRollbackMessages = AgentRoundRollback.availableMessages(task)
         let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let snapshotCalls = Set(task.messages.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "canvas_screenshot" }.suffix(4).map(\.id))
         var inlineSnapshots: [String: AgentAttachment] = [:]
@@ -1780,11 +1800,13 @@ final class FormDocumentView: NSView {
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             if let row = messageRows[message.id] {
                 let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
-                let canBranch = eligible && !running && task.pendingFileCapture == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+                let canBranch = eligible && !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
                 row.setReplyActions(binding: eligible ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch,
                     copy: { [weak self] in self?.replyAction("copy", taskID: owner, messageID: message.id, hash: hash) ?? false },
                     mark: { [weak self] value in _ = self?.replyAction(value, taskID: owner, messageID: message.id, hash: hash) },
                     branch: { [weak self] in _ = self?.replyAction("branch", taskID: owner, messageID: message.id, hash: hash) })
+                row.setRoundRollback(visible: message.isHumanInput && fileRollbackMessages.contains(message.id), enabled: !running && !task.archived && task.pendingFileCapture == nil && task.pendingCalls.isEmpty, recovery: task.pendingFileRollback != nil,
+                    action: { [weak self] in self?.presentRoundRollback(taskID: owner, messageID: message.id) })
             }
             for call in message.toolCalls ?? [] {
                 var visibleCall = call

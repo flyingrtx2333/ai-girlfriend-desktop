@@ -99,9 +99,13 @@ struct AgentFiles: Sendable {
         return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
     func fileHash(_ url: URL, maximum: Int? = nil) throws -> String { try streamFile(url, maximum: maximum) }
-    @discardableResult func copyFile(_ source: URL, from sourceFiles: AgentFiles, to url: URL, permissions: Int = 0o600, expectedHash: String? = nil, expectedTarget: String? = nil, maximum: Int? = nil) throws -> String {
+    private static func temporaryFileName(_ supplied: String?) throws -> String {
+        let value = supplied ?? ".bluefatfish-\(UUID().uuidString).tmp"
+        guard value.utf8.count < 160, value.range(of: "^\\.bluefatfish-[A-Za-z0-9-]+\\.tmp$", options: .regularExpression) != nil else { throw PetError("暂存文件名无效") }; return value
+    }
+    @discardableResult func copyFile(_ source: URL, from sourceFiles: AgentFiles, to url: URL, permissions: Int = 0o600, expectedHash: String? = nil, expectedTarget: String? = nil, maximum: Int? = nil, temporaryName: String? = nil) throws -> String {
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
-        let temporary = ".bluefatfish-\(UUID().uuidString).tmp", fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        let temporary = try Self.temporaryFileName(temporaryName), fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }; defer { close(fd); unlinkat(parent, temporary, 0) }
         let hash = try sourceFiles.streamFile(source, copyingTo: fd, maximum: maximum)
         guard expectedHash == nil || expectedHash == hash else { throw PetError("检查点校验失败") }
@@ -117,10 +121,10 @@ struct AgentFiles: Sendable {
         guard count >= 0, count < bytes.count else { throw PetError("符号链接不可读取") }
         guard let value = String(data: Data(bytes.prefix(count).map { UInt8(bitPattern: $0) }), encoding: .utf8) else { throw PetError("符号链接不是 UTF-8 路径") }; return value
     }
-    func writeSymbolicLink(_ value: String, to url: URL, expectedTarget: String) throws {
+    func writeSymbolicLink(_ value: String, to url: URL, expectedTarget: String, temporaryName: String? = nil) throws {
         guard !value.contains("\0") else { throw PetError("符号链接无效") }
         let (parent, name) = try parentDescriptor(url, create: true); defer { close(parent) }
-        let temporary = ".bluefatfish-\(UUID().uuidString).tmp"; defer { unlinkat(parent, temporary, 0) }
+        let temporary = try Self.temporaryFileName(temporaryName); defer { unlinkat(parent, temporary, 0) }
         guard symlinkat(value, parent, temporary) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") }
         guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }

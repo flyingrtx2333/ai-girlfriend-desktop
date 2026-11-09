@@ -182,6 +182,7 @@ import Foundation
               task.kind != "hook", attachmentIDs.count <= 6, !task.isProjectDocumentation || attachmentIDs.isEmpty,
               attachmentIDs.allSatisfy({ candidate in task.attachments?.contains(where: { $0.id == candidate }) == true }) else { return false }
         guard !task.archived else { submissionError = "任务已归档，请先恢复"; return false }
+        guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; return false }
         if text == "/compact", attachmentIDs.isEmpty {
             let started = analyze(id, recap: false)
             if !started { submissionError = analysisErrors[id] }
@@ -224,6 +225,7 @@ import Foundation
     func start(_ id: String) {
         cancelAnalysis(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; notifyChange(id); return }
         do { try store.projectKnowledge.checkTask(task) }
         catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-generation", title: "项目知识范围已变化", detail: error.localizedDescription, status: "failed")) }; notifyChange(id); return }
         if let reason = store.offices.unsavedReason(workspace: task.workspace) {

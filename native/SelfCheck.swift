@@ -37,6 +37,7 @@ import WebKit
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
+                if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
@@ -80,6 +81,9 @@ import WebKit
         if CommandLine.arguments.contains("--knowledge-cards-check") { await runAgentKnowledgeCardCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-check") { await runAgentKnowledgeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--reply-policy-check") { await runAgentReplyPolicyCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--round-rollback-check") { await runAgentRoundRollbackCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--round-rollback-crash-check") { await runAgentRoundRollbackCrashCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--round-rollback-recovery-check") { await runAgentRoundRollbackRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--terminal-check") { await runAgentTerminalCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--import-check") { await runAgentImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--organization-check") { await runAgentOrganizationCheck(output); NSApp.terminate(nil); return }

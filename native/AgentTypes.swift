@@ -84,6 +84,15 @@ struct AgentChange: Codable, Identifiable {
     var restoredAt: Date?
     var created = Date()
 }
+struct AgentChangeRound: Codable, Identifiable {
+    var id: String
+    var changes: [AgentChange] = []
+    var warning: String?
+}
+struct AgentPendingFileRollback: Codable {
+    var id: String
+    var messageID: String
+}
 struct AgentApproval: Codable, Identifiable {
     var id = UUID().uuidString
     var call: AgentToolCall
@@ -139,6 +148,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var parentID: String?
     var branchMessageID: String?
     var inheritedLimits: AgentInheritedLimits?
+    var changeRounds: [AgentChangeRound]? = []
+    var changeTrackingFromID: String?
+    var pendingFileRollback: AgentPendingFileRollback?
     var model = ""
     var modelOverride: String?
     var modelReceipts: [AgentModelReceipt]?

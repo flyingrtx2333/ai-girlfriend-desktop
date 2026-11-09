@@ -60,9 +60,11 @@ extension AgentChange {
     private var cacheRoots: [String: String] = [:]
     var onChange: ((String) -> Void)?
     init(store: AgentStore) { self.store = store }
+    func isObserving(_ workspace: String) -> Bool { active.values.contains { AgentWorktreeRetention.within($0.capture.workspace, workspace) || AgentWorktreeRetention.within(workspace, $0.capture.workspace) } }
 
     func observe(taskID: String, origin: String, paths: [String]? = nil, requireCheckpoint: Bool = false, operation: () async throws -> AgentToolResult) async throws -> AgentToolResult {
         guard let store, let task = store.task(taskID), let workspace = task.workspace else { return try await operation() }
+        guard !store.hasFileRollback(in: workspace) else { throw PetError("此项目有未完成的文件撤回，请先恢复") }
         guard task.pendingFileCapture == nil, !active.values.contains(where: { $0.taskID == taskID }) else { throw PetError("此任务正在记录文件变更，请稍后重试") }
         func perform() async throws -> AgentToolResult {
             guard let current = store.task(taskID), current.workspace == task.workspace, current.mode == task.mode, current.permission == task.permission, current.agent?.profile.id == task.agent?.profile.id, !current.archived else { throw PetError("任务项目或权限已变化，操作未执行") }
@@ -144,6 +146,9 @@ extension AgentChange {
     }
     private func warn(_ message: String, taskID: String, turnID: String) {
         store?.update(taskID) {
+            if $0.changeRounds == nil { $0.changeRounds = []; $0.changeTrackingFromID = turnID }
+            if $0.changeRounds?.contains(where: { $0.id == turnID }) != true { $0.changeRounds?.append(AgentChangeRound(id: turnID)) }
+            if let i = $0.changeRounds?.firstIndex(where: { $0.id == turnID }) { $0.changeRounds?[i].warning = message }
             if $0.gitTurn?.id != turnID { $0.gitTurn = AgentGitTurn(id: turnID, changes: []) }
             $0.gitTurn?.warning = message; $0.pendingFileCapture = nil
             $0.events.append(AgentEvent(kind: "change", title: "变更记录未完成", detail: message, status: "failed"))

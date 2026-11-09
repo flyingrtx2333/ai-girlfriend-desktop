@@ -89,7 +89,7 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         if let target, let store {
             if let id, store.tasks.contains(where: { $0.id == id && $0.archived && $0.workspace.map { Self.within($0, target) } == true }), !FileManager.default.fileExists(atPath: target) { return }
             let affected = store.tasks.filter { $0.workspace.map { Self.within($0, target) } == true }
-            if affected.contains(where: { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || store.hooks.isRunning($0.id) }) || store.selected?.workspace.map({ Self.within($0, target) }) == true || nativeOperations.values.contains(where: { Self.within(target, $0) || Self.within($0, target) }) { job?.cancel(); git?.cancel() }
+            if affected.contains(where: { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }) || store.selected?.workspace.map({ Self.within($0, target) }) == true || nativeOperations.values.contains(where: { Self.within(target, $0) || Self.within($0, target) }) { job?.cancel(); git?.cancel() }
         }
         changed()
     }
@@ -152,7 +152,7 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         var ancestors = tasks, seen = Set<String>()
         while let task = ancestors.popLast() {
             guard seen.insert(task.id).inserted else { continue }
-            if [.running, .waiting].contains(task.status) || task.pendingFileCapture != nil || store.hooks.isRunning(task.id) { return "关联任务正在运行或等待处理" }
+            if [.running, .waiting].contains(task.status) || task.pendingFileCapture != nil || task.pendingFileRollback != nil || store.hooks.isRunning(task.id) { return "关联任务正在运行或等待处理" }
             if let workspace = task.workspace, nativeOperations.values.contains(where: { Self.within($0, workspace) && Self.within(workspace, $0) }) { return "Git 操作进行中" }
             if let id = task.parentID, let parent = store.tasks.first(where: { $0.id == id }) { ancestors.append(parent) }
         }

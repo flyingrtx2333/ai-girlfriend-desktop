@@ -106,6 +106,7 @@ import Foundation
         value.hookPromptIDs = nil; value.hookContextIDs = nil
         value.modelReceipts = nil; value.contextSnapshot = nil; value.recap = nil; value.gitTurn = nil; value.gitPushReview = nil; value.gitPushReceipt = nil; value.gitRemoteSnapshot = nil
         value.resultHistory = nil
+        value.changeRounds = nil; value.changeTrackingFromID = nil
         value.knowledgeReads = nil
         value.wikiEditReads = nil
         if var job = value.wikiJob { job.plan = AgentWikiPlan(); job.reviewed = nil; job.pageReads = nil; job.update?.diff = ""; job.update?.retained = [:]; job.update?.assets = [:]; job.update?.baseFiles = [:]; job.update?.changesRead = nil; value.wikiJob = job }
@@ -228,6 +229,26 @@ import Foundation
         taskSearchRevision &+= 1; taskSearchRevisions[id] = taskSearchRevision
         try saveIndex(); writeError = nil
     }
+    func recordVersion(_ id: String) throws -> String {
+        guard refreshDeletedRecords(), task(id) != nil else { throw PetError("任务记录不可用") }
+        let files = try AgentFiles(workspace: directory.path), hash = try files.fileHash(files.literalURL(id + ".json"), maximum: 20_000_000)
+        guard hash == taskHashes[id] else { throw PetError("任务记录已变化，请重新打开后重试") }; return hash
+    }
+    func hasFileRollback(in workspace: String, except taskID: String? = nil) -> Bool {
+        tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspace.map { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } == true }
+    }
+    @discardableResult func commitFileRollbackRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL) throws -> String {
+        guard try recordVersion(record.id) == expectedHash, let i = tasks.firstIndex(where: { $0.id == record.id }) else { throw PetError("任务记录已变化，未保存撤回状态") }
+        let files = try AgentFiles(workspace: directory.path), data = try encoder.encode(record)
+        var next = tasks; next[i] = Self.metadata(record)
+        let index = try encoder.encode(Index(selectedID: selectedID, tasks: next))
+        let writes = [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: expectedHash, permissions: 0o600, label: "撤回文件"),
+                      try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, permissions: 0o600, label: "撤回文件")]
+        try AgentKnowledgeFileBatch.commit(writes, backup: transaction, label: "撤回文件") { guard try self.recordVersion(record.id) == expectedHash else { throw PetError("任务记录已变化") } }
+        tasks = next; cache[record.id] = record; taskHashes[record.id] = AgentFiles.hash(data); indexHash = AgentFiles.hash(index); writeError = nil
+        taskSearchRevision &+= 1; taskSearchRevisions[record.id] = taskSearchRevision
+        offices.changed(record.id); worktreeRetention.tasksChanged(record.id); onChange?(); return AgentFiles.hash(data)
+    }
     private func saveIndex() throws {
         guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
         let file = directory.appendingPathComponent("index.json")
@@ -326,6 +347,7 @@ import Foundation
         try commitArchive(changed, directories: [entry])
     }
     private func requireArchivable(_ task: AgentTaskRecord) throws {
+        guard task.pendingFileRollback == nil else { throw PetError("请先恢复“" + task.title + "”未完成的文件撤回") }
         guard task.status != .running, task.pendingFileCapture == nil, !hooks.isRunning(task.id), archiveIsBusy?(task.id) != true else { throw PetError("请先停止“" + task.title + "”的执行，再归档或恢复") }
     }
     private func commitArchive(_ changed: [AgentTaskRecord], directories: [AgentDirectoryEntry]) throws {
@@ -368,7 +390,7 @@ import Foundation
     @discardableResult func fork(_ id: String, through messageID: String? = nil, expectedHash: String? = nil) -> String? {
         let targetID = UUID().uuidString, target = directory.appendingPathComponent(targetID + ".json")
         do {
-            guard refreshDeletedRecords(), var original = task(id), original.status != .running, original.pendingFileCapture == nil else { throw PetError("任务正在执行或记录不可用，未创建分支") }
+            guard refreshDeletedRecords(), var original = task(id), original.status != .running, original.pendingFileCapture == nil, original.pendingFileRollback == nil else { throw PetError("任务正在执行或记录不可用，未创建分支") }
             guard organization.archiveID(original.workspace, mode: original.organizationMode) == nil else { throw PetError("请先恢复此任务的工作区") }
             let files = try AgentFiles(workspace: directory.path), source = try files.literalURL(id + ".json"), sourceHash = try files.fileHash(source, maximum: 20_000_000)
             guard sourceHash == taskHashes[id] else { throw PetError("原任务已变化，请重新打开后重试") }
@@ -386,7 +408,7 @@ import Foundation
             if messageID == nil { original.flushQueuedInputs() }
             original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
             original.workspaceArchiveID = nil
-            original.changes = []; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
+            original.changes = []; original.changeRounds = nil; original.changeTrackingFromID = nil; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
             original.hookRewakePromptID = nil; original.hookRewakeCount = nil
