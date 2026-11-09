@@ -27,6 +27,9 @@ final class ChatMessageRow: NSView {
     let label = NSTextField(wrappingLabelWithString: "")
     private(set) var text = ""
     private var renderedMarkdown = true
+    private var highlightQuery: String?
+    private(set) var searchRange: NSRange?
+    private(set) var searchUsesSource = false
     private let isUser: Bool
     private let workbench: Bool
     private let attachments = AgentAttachmentStrip()
@@ -57,14 +60,34 @@ final class ChatMessageRow: NSView {
         update(message.content)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func update(_ value: String, markdown: Bool = true) {
-        guard text != value || renderedMarkdown != markdown || label.stringValue.isEmpty else { return }; text = value; renderedMarkdown = markdown
+    func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil) {
+        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || label.stringValue.isEmpty else { return }; text = value; renderedMarkdown = markdown; highlightQuery = searchQuery
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
         if workbench { paragraph.lineBreakMode = .byCharWrapping }
         let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: workbench ? 14 : 15), color = NSColor(white: 0.12, alpha: 1)
-        label.attributedStringValue = isUser || !markdown ? NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
-            : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
+        let plain = NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+        var output = isUser || !markdown ? plain : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
+        searchRange = nil; searchUsesSource = false
+        if let searchQuery, !searchQuery.isEmpty {
+            if output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) == nil, content.localizedCaseInsensitiveContains(searchQuery) { output = plain; searchUsesSource = true }
+            if let range = output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) {
+                let selected = NSMutableAttributedString(attributedString: output); searchRange = NSRange(range, in: output.string)
+                selected.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.42), range: searchRange!); output = selected
+            }
+        }
+        label.attributedStringValue = output; label.setAccessibilityHelp(searchRange == nil ? nil : "搜索命中")
         label.invalidateIntrinsicContentSize()
+    }
+    func clearSearchHighlight() { if highlightQuery != nil { update(text, markdown: renderedMarkdown) } }
+    func searchMatchRect() -> NSRect? {
+        guard let range = searchRange, range.length > 0, let cell = label.cell else { return nil }
+        let drawing = cell.drawingRect(forBounds: label.bounds); guard drawing.width > 0 else { return nil }
+        let storage = NSTextStorage(attributedString: label.attributedStringValue), layout = NSLayoutManager(), container = NSTextContainer(size: NSSize(width: drawing.width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0; container.lineBreakMode = label.lineBreakMode
+        storage.addLayoutManager(layout); layout.addTextContainer(container); layout.ensureLayout(for: container)
+        let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: range.location, length: 1), actualCharacterRange: nil)
+        let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
+        return convert(NSRect(x: drawing.minX + rect.minX, y: label.isFlipped ? drawing.minY + rect.minY : drawing.maxY - rect.maxY, width: max(1, rect.width), height: max(1, rect.height)), from: label)
     }
     func fit(width: CGFloat) {
         let maximum = max(40, workbench ? width - 38 : width * (isUser ? 0.86 : 1) - (isUser ? 34 : 4))

@@ -48,6 +48,7 @@ final class FormDocumentView: NSView {
     private var titleLeading: NSLayoutConstraint!
     private let composer = ComposerView(), history = NSScrollView(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
+    private var messageSearch: (taskID: String, messageID: String, query: String)?, pendingMessageReveal = false
     private let status = NSTextField(labelWithString: "")
     private let savedStatus = NSTextField(labelWithString: "")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
@@ -144,6 +145,8 @@ final class FormDocumentView: NSView {
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        taskSidebar.onOpenSearch = { [weak self] id, query, message in self?.selectAgentTask(id, searchQuery: query, messageID: message) }
+        taskSidebar.onSearchQueryChanged = { [weak self] in self?.clearMessageSearchHighlight() }
         taskSidebar.onSearchVersion = { [weak companion] id in companion?.agentStore?.taskSearchRevisions[id] ?? 0 }
         taskSidebar.onSearch = { [weak companion] query, candidates in
             guard let directory = companion?.agentStore?.directory else { return AgentTaskSearch.Result(checked: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0.version) }), issues: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, "任务系统尚未初始化") })) }
@@ -404,6 +407,7 @@ final class FormDocumentView: NSView {
     }
     private func updateWorkbenchLayout(animated: Bool = false) {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
+        let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
@@ -441,6 +445,7 @@ final class FormDocumentView: NSView {
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target }
         messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
+        revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
     @objc private func toggleTaskInspector() {
         guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
@@ -1232,9 +1237,29 @@ final class FormDocumentView: NSView {
         }
         windowDraft = value; composer.delegate = self; composer.needsDisplay = true
     }
-    func selectAgentTask(_ id: String) {
+    private func clearMessageSearchHighlight() {
+        if let messageSearch { messageRows[messageSearch.messageID]?.clearSearchHighlight() }
+        messageSearch = nil; pendingMessageReveal = false
+    }
+    private func messageSearchRect() -> NSRect? {
+        guard let search = messageSearch, search.taskID == agentTaskID, let row = messageRows[search.messageID], let local = row.searchMatchRect(), let document = history.documentView else { return nil }
+        return row.convert(local, to: document)
+    }
+    private var isMessageSearchVisible: Bool { messageSearchRect().map { history.contentView.bounds.intersects($0) } ?? false }
+    private func revealMessageSearch(keepingVisible: Bool = false) {
+        guard pendingMessageReveal || keepingVisible else { return }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        guard let target = messageSearchRect(), let document = history.documentView, pendingMessageReveal || !history.contentView.bounds.intersects(target) else { return }
+        history.contentView.scroll(to: NSPoint(x: 0, y: min(max(0, target.minY - 24), max(0, document.bounds.height - history.contentView.bounds.height))))
+        history.reflectScrolledClipView(history.contentView); pendingMessageReveal = false
+    }
+    func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
-        guard let tasks = companion?.agentStore, tasks.task(id) != nil, saveAgentDraft() else { return }
+        guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft() else { return }
+        clearMessageSearchHighlight()
+        if let searchQuery, let message = AgentTaskSearch.message(in: record, query: searchQuery, preferredID: messageID) {
+            messageSearch = (id, message.id, searchQuery); pendingMessageReveal = true
+        }
         if !navigatingTaskHistory, taskNavigationIndex < 0 || taskNavigation[taskNavigationIndex] != id {
             if taskNavigationIndex + 1 < taskNavigation.count { taskNavigation.removeSubrange((taskNavigationIndex + 1)..<taskNavigation.count) }
             taskNavigation.append(id); taskNavigationIndex = taskNavigation.count - 1
@@ -1631,6 +1656,7 @@ final class FormDocumentView: NSView {
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
+        let keepSearchHitVisible = isMessageSearchVisible
         guard tasks.refreshDeletedRecords() else { composer.isEditable = false; sendButton.isEnabled = false; setStatus(tasks.deletions.issue ?? "永久删除记录无法读取，请检查配置并重新打开应用", error: true); return }
         guard let task = currentAgentTask else {
             let id = tasks.tasks.first(where: { !$0.archived && $0.organizationMode == displayedWorkMode })?.id ?? tasks.create(workMode: displayedWorkMode)
@@ -1674,7 +1700,7 @@ final class FormDocumentView: NSView {
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true
         updateWorkbenchLayout()
-        let follow = renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65
+        let follow = messageSearch == nil && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let snapshotCalls = Set(task.messages.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "canvas_screenshot" }.suffix(4).map(\.id))
@@ -1731,7 +1757,7 @@ final class FormDocumentView: NSView {
         let owner = task.id
         for message in messages {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
-            messageRows[message.id]?.update(message.content, markdown: !streaming)
+            messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch?.query : nil)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             for call in message.toolCalls ?? [] {
                 var visibleCall = call
@@ -1758,6 +1784,7 @@ final class FormDocumentView: NSView {
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
         composer.isEditable = !task.archived && !managed
         window?.contentView?.layoutSubtreeIfNeeded()
+        revealMessageSearch(keepingVisible: keepSearchHitVisible)
         if follow, let document = history.documentView {
             history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
         }
@@ -2035,6 +2062,11 @@ extension ControlWindow {
             value["draftUndoAvailable"] = windowDraft?.undo.canUndo == true; value["draftRedoAvailable"] = windowDraft?.undo.canRedo == true
             value["composerUsesSharedUndo"] = windowDraft.map { composer.undoManager === $0.undo } ?? false
             value["draftPendingSave"] = windowDraft?.pendingSave == true
+            value["historyViewport"] = NSStringFromRect(history.contentView.bounds)
+            if let search = messageSearch, let row = messageRows[search.messageID], let local = row.searchMatchRect(), let document = history.documentView {
+                let rect = row.convert(local, to: document)
+                value["messageSearch"] = ["taskID": search.taskID, "messageID": search.messageID, "query": search.query, "matchRect": NSStringFromRect(rect), "visible": history.contentView.bounds.intersects(rect), "rangeLocation": row.searchRange?.location ?? -1, "rangeLength": row.searchRange?.length ?? 0, "rawSourceShown": row.searchUsesSource] as [String: Any]
+            } else { value["messageSearch"] = NSNull() }
         }
         value["inspectorRequested"] = inspectorRequested; value["inspectorVisible"] = !workbenchInspector.isHidden
         value["locationHidden"] = executionLocation.isHidden; value["branchHidden"] = branchControl.isHidden; value["branch"] = branchControl.title

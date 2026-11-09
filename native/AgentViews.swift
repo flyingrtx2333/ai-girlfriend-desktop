@@ -28,6 +28,8 @@ private final class AgentTaskTable: NSTableView {
     var onAttention: (() -> Void)?
     var onSearch: ((String, [AgentTaskSearch.Candidate]) async -> AgentTaskSearch.Result)?
     var onSearchVersion: ((String) -> UInt64)?
+    var onOpenSearch: ((String, String, String?) -> Void)?
+    var onSearchQueryChanged: (() -> Void)?
     var onNew: (() -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
@@ -202,12 +204,16 @@ private final class AgentTaskTable: NSTableView {
     }
     private func commitSearchSelection() {
         guard !bulkSelecting, let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == listSelection }; return false }) ?? rows.firstIndex(where: { if case .task = $0 { return true }; return false }), case .task(let task, _) = rows[row] else { return }
-        searchSelection = task.id; onSelect?(task.id)
+        searchSelection = task.id
+        if let onOpenSearch, searchSnippet(task) != nil {
+            onOpenSearch(task.id, search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), searchVersions[task.id] == searchVersion(task) ? searchHits[task.id]?.messageID : nil)
+        } else { onSelect?(task.id) }
     }
     private func searchVersion(_ task: AgentTaskRecord) -> String { "\(onSearchVersion?(task.id) ?? 0)|\(task.title)|\(task.summary)" }
     private func beginSearch(_ query: String, scope: [AgentTaskRecord]) {
         let ids = Set(scope.map(\.id))
         if query != searchQuery || ids != searchScope {
+            onSearchQueryChanged?()
             searchTask?.cancel(); searchTask = nil; searchGeneration += 1; searchQuery = query; searchScope = ids
             searchVersions = [:]; searchHits = [:]; searchIssues = [:]; searchBusy = false; searchSelection = nil
         }

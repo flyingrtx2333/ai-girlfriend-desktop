@@ -6,6 +6,14 @@ enum AgentTaskSearch {
     struct Result: Sendable {
         var hits: [String: Hit] = [:], checked: [String: String] = [:], issues: [String: String] = [:]
     }
+    static func message(in record: AgentTaskRecord, query: String, preferredID: String? = nil) -> AgentMessage? {
+        guard !query.isEmpty else { return nil }
+        func matches(_ message: AgentMessage) -> Bool {
+            (message.isHumanInput || message.role == "assistant" && message.nativeContext != true) && message.content.localizedCaseInsensitiveContains(query)
+        }
+        if let preferredID, let message = record.messages.first(where: { $0.id == preferredID }), matches(message) { return message }
+        return record.messages.reversed().first(where: matches)
+    }
     static func excerpt(_ text: String, query: String) -> String {
         guard let range = text.range(of: query, options: .caseInsensitive, locale: .current) else { return String(text.prefix(90)).replacingOccurrences(of: "\n", with: " ") }
         let start = range.lowerBound
@@ -25,10 +33,8 @@ enum AgentTaskSearch {
                     let bytes = try files.readData(files.literalURL(candidate.id + ".json"), maximum: 20_000_000)
                     let record = try JSONDecoder().decode(AgentTaskRecord.self, from: bytes)
                     guard record.id == candidate.id else { throw PetError("任务编号不匹配") }
-                    for message in record.messages.reversed() where message.isHumanInput || message.role == "assistant" && message.nativeContext != true {
-                        if message.content.localizedCaseInsensitiveContains(query) {
-                            result.hits[candidate.id] = Hit(messageID: message.id, role: message.role, excerpt: excerpt(message.content, query: query)); break
-                        }
+                    if let message = message(in: record, query: query) {
+                        result.hits[candidate.id] = Hit(messageID: message.id, role: message.role, excerpt: excerpt(message.content, query: query))
                     }
                 } catch { result.issues[candidate.id] = candidate.title + "：" + error.localizedDescription }
             }
