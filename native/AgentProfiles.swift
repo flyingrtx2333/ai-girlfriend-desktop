@@ -164,7 +164,7 @@ struct AgentProfileAssignment: Codable {
             return (binding.tools.contains(name) || common.contains(name)) && binding.toolPermissions[name] != .deny && (!binding.readOnly || !mutating.contains(name))
         }
     }
-    private func ancestors(_ task: AgentTaskRecord, store: AgentStore?) throws -> [AgentTaskRecord] {
+    func ancestors(_ task: AgentTaskRecord, store: AgentStore?) throws -> [AgentTaskRecord] {
         guard let store else { return [] }
         var result: [AgentTaskRecord] = [], next = task.agent?.ownerID, seen = Set([task.id])
         while let id = next {
@@ -242,6 +242,7 @@ struct AgentProfileAssignment: Codable {
         }
     }
     func check(_ call: AgentToolCall, task: AgentTaskRecord, store: AgentStore? = nil) throws {
+        if let store { try store.sideTasks.requireCanRun(task) }
         guard task.pendingFileRollback == nil else { throw PetError("文件撤回尚未完成，请先在原消息中恢复") }
         if let store, let workspace = task.workspace, store.hasFileRollback(in: workspace) { throw PetError("此项目有未完成的文件撤回，请先恢复") }
         if let store { try store.teams.check(task, store: store) }

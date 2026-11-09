@@ -63,7 +63,8 @@ final class PetWebView: WKWebView {
     var agentRuntime: AgentRuntime?
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
-    var usesAgent: Bool { checkDirectory == nil || ["--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -88,6 +89,7 @@ final class PetWebView: WKWebView {
     var motionTranslation = NSPoint.zero
     var dragged = false
     var closing = false
+    private var terminationPending = false, terminationReady = false
     var onScaleChange: ((Double) -> Void)?
     var onWakeChange: ((Bool, String) -> Void)?
     var scaleSaveTimer: Timer?
@@ -141,14 +143,25 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReady { return .terminateNow }
+        guard !terminationPending else { return .terminateCancel }
         guard attentionWindow?.prepareToClose() != false else { return .terminateCancel }
         if agentStore != nil {
             guard persistTaskDrafts() else { return .terminateCancel }
             for window in taskControls { if !window.closeOwnedTaskPanels() { return .terminateCancel } }
         }
         for window in sender.windows where window.isVisible { if let plan = window.windowController as? AgentWikiPlanWindow, !plan.confirmClosing() { return .terminateCancel } }
-        guard let offices = agentStore?.offices, offices.hasWindows else { return .terminateNow }
-        Task { @MainActor in sender.reply(toApplicationShouldTerminate: await offices.canQuit()) }; return .terminateLater
+        guard let tasks = agentStore else { return .terminateNow }
+        terminationPending = true
+        Task { @MainActor in
+            defer { self.terminationPending = false }
+            if tasks.offices.hasWindows, !(await tasks.offices.canQuit()) { return }
+            self.closing = true; self.agentRuntime?.stopAll(); await tasks.sideTasks.endSession()
+            self.terminationReady = true; sender.terminate(nil)
+        }
+        // Return to the run loop before scheduling cleanup. A nested AppKit
+        // termination loop can otherwise block the calling MainActor task.
+        return .terminateCancel
     }
     func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)

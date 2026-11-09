@@ -183,6 +183,7 @@ import Foundation
               attachmentIDs.allSatisfy({ candidate in task.attachments?.contains(where: { $0.id == candidate }) == true }) else { return false }
         guard !task.archived else { submissionError = "任务已归档，请先恢复"; return false }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; return false }
+        do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; return false }
         if text == "/compact", attachmentIDs.isEmpty {
             let started = analyze(id, recap: false)
             if !started { submissionError = analysisErrors[id] }
@@ -228,6 +229,7 @@ import Foundation
     func start(_ id: String) {
         cancelAnalysis(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; notifyChange(id); return }
         do { try store.projectKnowledge.checkTask(task) }
         catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-generation", title: "项目知识范围已变化", detail: error.localizedDescription, status: "failed")) }; notifyChange(id); return }
@@ -340,6 +342,7 @@ import Foundation
     @discardableResult func analyze(_ id: String, recap: Bool) -> Bool {
         analysisErrorModes[id] = recap
         guard let task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty, task.status != .waiting, analyses.count < 2 else { analysisErrors[id] = "请先停止执行或处理待确认操作"; notifyChange(id); return false }
+        do { try store.sideTasks.requireCanRun(task) } catch { analysisErrors[id] = error.localizedDescription; notifyChange(id); return false }
         if task.kind == AgentKnowledgeCards.kind, (task.modelReceipts?.count ?? 0) >= 30 { analysisErrors[id] = "本次知识卡片已达到模型请求上限"; notifyChange(id); return false }
         if recap && task.messages.isEmpty { analysisErrors[id] = "任务尚无对话记录"; notifyChange(id); return false }
         if !recap, let reason = AgentContext.compactUnavailable(task) { analysisErrors[id] = reason; notifyChange(id); return false }

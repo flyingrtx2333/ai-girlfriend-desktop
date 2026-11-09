@@ -93,6 +93,12 @@ struct AgentPendingFileRollback: Codable {
     var id: String
     var messageID: String
 }
+struct AgentSideTask: Codable {
+    var parentID: String
+    var retained: Bool
+    var sessionID: String
+    var needsReview: Bool?
+}
 struct AgentApproval: Codable, Identifiable {
     var id = UUID().uuidString
     var call: AgentToolCall
@@ -148,6 +154,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var parentID: String?
     var branchMessageID: String?
     var inheritedLimits: AgentInheritedLimits?
+    var sideTask: AgentSideTask?
     var changeRounds: [AgentChangeRound]? = []
     var changeTrackingFromID: String?
     var pendingFileRollback: AgentPendingFileRollback?

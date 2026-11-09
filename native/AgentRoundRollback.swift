@@ -127,7 +127,7 @@ import Foundation
             }
             var recovered = original; recovered.pendingFileRollback = nil; recovered.updated = Date(); recovered.activityAt = recovered.updated
             recovered.events.append(AgentEvent(kind: "change", title: "已恢复撤回前文件", detail: "\(review.entries.count) 个文件；对话记录保留", status: "completed"))
-            _ = try store.commitFileRollbackRecord(recovered, expectedHash: review.taskHash, transaction: folder.appendingPathComponent("recovery-" + UUID().uuidString))
+            _ = try store.commitTaskRecord(recovered, expectedHash: review.taskHash, transaction: folder.appendingPathComponent("recovery-" + UUID().uuidString))
             try? journal.writeData(Data("completed".utf8), to: journal.literalURL("outcome"), permissions: 0o600); return
         }
         let id = UUID().uuidString, folder = try directory(id, taskID: review.taskID, store: store)
@@ -145,7 +145,7 @@ import Foundation
         let records = try AgentFiles(workspace: store.directory.path)
         try journal.copyFile(records.literalURL(review.taskID + ".json"), from: records, to: journal.literalURL("task-before.json"), expectedHash: review.taskHash, maximum: 20_000_000)
         var pending = original; pending.pendingFileRollback = AgentPendingFileRollback(id: id, messageID: review.messageID)
-        let pendingHash = try store.commitFileRollbackRecord(pending, expectedHash: review.taskHash, transaction: folder.appendingPathComponent("pending-record"))
+        let pendingHash = try store.commitTaskRecord(pending, expectedHash: review.taskHash, transaction: folder.appendingPathComponent("pending-record"))
         var attempted: [Int] = [], written: [Int: String] = [:]
         do {
             for entry in entries { guard try files.entryMetadata(files.literalURL(entry.path)).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
@@ -161,7 +161,7 @@ import Foundation
             if let turn = restored.gitTurn?.id, review.roundIDs.contains(turn), let count = restored.gitTurn?.changes.count { for i in 0..<count { restored.gitTurn?.changes[i].restoredAt = now } }
             restored.pendingFileRollback = nil; restored.updated = now; restored.activityAt = now; restored.goalAccepted = nil; restored.completionEvidence = nil; restored.gitReview = nil; restored.gitPushReview = nil
             restored.events.append(AgentEvent(kind: "change", title: "已撤回所选回合及以后的文件", detail: "\(entries.count) 个文件；对话记录保留", status: "completed"))
-            _ = try store.commitFileRollbackRecord(restored, expectedHash: pendingHash, transaction: folder.appendingPathComponent("completed-record"), continuation: continuation)
+            _ = try store.commitTaskRecord(restored, expectedHash: pendingHash, transaction: folder.appendingPathComponent("completed-record"), continuation: continuation)
             try? journal.writeData(Data("completed".utf8), to: journal.literalURL("outcome"), permissions: 0o600)
         } catch {
             var retained: [String] = []
@@ -171,7 +171,7 @@ import Foundation
                     else if try AgentCapturedFile.read(entries[i].path, files: files, backups: nil).state != entries[i].current.state { retained.append(entries[i].path) }
                 } catch { retained.append(entries[i].path) }
             }
-            if retained.isEmpty { do { _ = try store.commitFileRollbackRecord(original, expectedHash: pendingHash, transaction: folder.appendingPathComponent("cancelled-record")) } catch { retained.append("任务记录") } }
+            if retained.isEmpty { do { _ = try store.commitTaskRecord(original, expectedHash: pendingHash, transaction: folder.appendingPathComponent("cancelled-record")) } catch { retained.append("任务记录") } }
             try? journal.writeData(Data((retained.isEmpty ? "cancelled" : "needs-recovery").utf8), to: journal.literalURL("outcome"), permissions: 0o600)
             throw PetError(error.localizedDescription + (retained.isEmpty ? "；本次撤回未保存，文件已恢复" : "；请恢复未完成的文件撤回：" + retained.joined(separator: "、")))
         }

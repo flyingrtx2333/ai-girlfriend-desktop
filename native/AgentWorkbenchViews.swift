@@ -103,6 +103,8 @@ class AgentWorkbenchButton: NSButton {
 @MainActor final class AgentTaskInspector: NSView {
     var onOpen: ((Int, String) -> Void)?
     var onShowAll: ((Int) -> Void)?
+    var onSideTask: ((String) -> Void)?
+    private var sideTasks: [AgentTaskRecord] = []
     private let column = NSStackView(), scroll = NSScrollView(), empty = NSTextField(labelWithString: "暂无记录")
     private var signature = ""
     override init(frame: NSRect) {
@@ -132,12 +134,31 @@ class AgentWorkbenchButton: NSButton {
         button.onOpen = { [weak self] section, value in self?.onOpen?(section, value) }
         return button
     }
-    func update(_ task: AgentTaskRecord) {
+    private func sideTitle(_ task: AgentTaskRecord) -> String {
+        let state = task.sideTask?.needsReview == true ? "需核对文件" : task.pendingFileRollback != nil ? "需恢复文件" : task.sideTask?.sessionID != AgentSideTasks.sessionID ? (task.sideTask?.retained == true ? "已保留" : "其他会话") : task.status.title
+        return (task.title == "新的任务" ? "新的侧任务" : task.title) + " · " + state + (task.sideTask?.retained == false ? " · 临时" : "")
+    }
+    @objc private func moreSideTasks(_ sender: NSButton) {
+        let menu = NSMenu()
+        for task in sideTasks { let item = NSMenuItem(title: sideTitle(task), action: #selector(openSideTask(_:)), keyEquivalent: ""); item.target = self; item.representedObject = task.id; menu.addItem(item) }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+    @objc private func openSideTask(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { onSideTask?(id) } }
+    func update(_ task: AgentTaskRecord, sideTasks: [AgentTaskRecord] = []) {
+        self.sideTasks = sideTasks
         let hooks = Array(task.events.filter { $0.kind == "hook" }.suffix(8))
         let hookSignature = hooks.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.hook?.delivery ?? "")" }.joined()
-        let next = task.id + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + (task.canvases ?? []).map { $0.id + $0.hash }.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature
+        let next = task.id + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + (task.canvases ?? []).map { $0.id + $0.hash }.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature + sideTasks.map { $0.id + sideTitle($0) }.joined()
         guard signature != next else { return }; signature = next
         column.arrangedSubviews.forEach { column.removeArrangedSubview($0); $0.removeFromSuperview() }
+        if !sideTasks.isEmpty {
+            var rows: [NSView] = sideTasks.prefix(8).map { task in
+                let button = AgentInspectorFileButton(title: sideTitle(task), value: task.id, section: 5, symbol: "bubble.left.and.bubble.right")
+                button.font = .systemFont(ofSize: 12); button.onOpen = { [weak self] _, id in self?.onSideTask?(id) }; return button
+            }
+            if sideTasks.count > 8 { rows.append(NSButton(title: "全部侧任务（\(sideTasks.count)）", target: self, action: #selector(moreSideTasks(_:)))) }
+            section("侧任务", views: rows)
+        }
         if !task.plan.isEmpty {
             let rows: [NSView] = task.plan.prefix(8).map { step in
                 let text = NSTextField(wrappingLabelWithString: step.title); text.font = .systemFont(ofSize: 12); text.maximumNumberOfLines = 3

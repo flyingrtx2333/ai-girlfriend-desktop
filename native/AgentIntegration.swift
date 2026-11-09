@@ -3,7 +3,7 @@ import AppKit
 @MainActor extension AppDelegate {
     func ensureAgent() {
         guard agentStore == nil else { return }
-        let extensionHome = checkDirectory != nil && ["--manual-ui", "--attention-live-ui", "--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
+        let extensionHome = usesSideTaskCheck ? checkDirectory!.appendingPathComponent("shared-home") : checkDirectory != nil && ["--manual-ui", "--attention-live-ui", "--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
         let mcpKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.mcp.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let hookKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.hooks.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let tasks = AgentStore(directory: store.directory, legacy: store.messages, extensionHome: extensionHome, mcpKeychain: mcpKeychain, hookKeychain: hookKeychain)
@@ -19,6 +19,9 @@ import AppKit
         tasks.knowledgeCards.runtime = runtime
         tasks.wikiMaintenance.runtime = runtime
         tasks.onChange = { [weak self] in self?.refreshTaskWindows() }
+        tasks.sideTasks.onChange = { [weak self] in self?.refreshTaskWindows() }
+        tasks.sideTasks.beforeDiscard = { [weak self] ids in try self?.requireTaskDeletionAllowed(ids) }
+        tasks.sideTasks.startSession()
         tasks.attention.onChange = { [weak self] in guard let self else { return }; self.taskControls.forEach { $0.refreshAttention() }; self.attentionWindow?.refresh() }
         tasks.organization.onChange = { [weak self] in self?.refreshTaskWindows() }
         tasks.wikiMaintenance.onChange = { [weak self] _ in self?.refreshTaskWindows() }

@@ -146,11 +146,7 @@ extension AgentChange {
     }
     private func warn(_ message: String, taskID: String, turnID: String) {
         store?.update(taskID) {
-            if $0.changeRounds == nil { $0.changeRounds = []; $0.changeTrackingFromID = turnID }
-            if $0.changeRounds?.contains(where: { $0.id == turnID }) != true { $0.changeRounds?.append(AgentChangeRound(id: turnID)) }
-            if let i = $0.changeRounds?.firstIndex(where: { $0.id == turnID }) { $0.changeRounds?[i].warning = message }
-            if $0.gitTurn?.id != turnID { $0.gitTurn = AgentGitTurn(id: turnID, changes: []) }
-            $0.gitTurn?.warning = message; $0.pendingFileCapture = nil
+            AgentChanges.warn(message, turnID: turnID, record: &$0); $0.pendingFileCapture = nil
             $0.events.append(AgentEvent(kind: "change", title: "变更记录未完成", detail: message, status: "failed"))
         }
         onChange?(taskID)

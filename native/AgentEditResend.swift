@@ -37,6 +37,7 @@ import Foundation
         let used = Set(next.messages.flatMap { ($0.attachmentIDs ?? []) + ($0.visuals ?? []).map(\.id) } + (original.draftAttachmentIDs ?? []))
         next.attachments = (original.attachments ?? []).filter { used.contains($0.id) }
         next.id = UUID().uuidString; next.parentID = original.id; next.agent?.ownerID = nil
+        if next.sideTask != nil { try store.sideTasks.bindToSession(&next) }
         next.title = original.title; next.created = original.created; next.updated = Date(); next.activityAt = next.updated; next.pinned = original.pinned
         next.archived = false; next.workspaceArchiveID = nil; next.status = .ready; next.draft = original.draft; next.draftAttachmentIDs = original.draftAttachmentIDs
         next.changes = []; next.changeRounds = []; next.changeTrackingFromID = nil; next.pendingFileCapture = nil; next.pendingFileRollback = nil
@@ -52,7 +53,7 @@ import Foundation
             try store.canvases.copyForFork(sourceID: original.id, targetID: next.id, records: next.canvases ?? [], historical: true)
             try store.extensions.copyForFork(store: store, sourceID: original.id, task: &next)
             if let rollback = review.rollback { try AgentRoundRollback.apply(rollback, store: store, continuation: next) }
-            else { _ = try store.commitFileRollbackRecord(original, expectedHash: review.taskHash, transaction: store.directory.deletingLastPathComponent().appendingPathComponent("edit-transactions/" + next.id), continuation: next) }
+            else { _ = try store.commitTaskRecord(original, expectedHash: review.taskHash, transaction: store.directory.deletingLastPathComponent().appendingPathComponent("edit-transactions/" + next.id), continuation: next, label: "编辑并重发") }
         } catch {
             if !FileManager.default.fileExists(atPath: store.directory.appendingPathComponent(next.id + ".json").path) { try? FileManager.default.removeItem(at: store.directory.appendingPathComponent(next.id)) }
             throw error

@@ -42,7 +42,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -90,6 +90,8 @@ final class FormDocumentView: NSView {
     private var currentAgentTask: AgentTaskRecord? { agentTaskID.flatMap { companion?.agentStore?.task($0) } }
     private var displayedWorkMode = AgentWorkMode.coding
     let taskWindowNumber: Int
+    var sideTaskTabID: String?
+    private var closingSideTask = false, discardingSideTask = false
     private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
@@ -350,6 +352,7 @@ final class FormDocumentView: NSView {
             else { self?.openAgentRecordItem(section: section, value: value) }
         }
         workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
+        workbenchInspector.onSideTask = { [weak self] id in guard let self else { return }; companion?.openSideTask(id, from: self) }
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
         messageColumn.orientation = .vertical; messageColumn.alignment = .leading; messageColumn.spacing = 20; document.addSubview(messageColumn)
@@ -412,7 +415,8 @@ final class FormDocumentView: NSView {
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
-        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty
+        let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
+        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
         let target: CGFloat = showInspector ? 281 : 0
         sidebarWidth.constant = width < 900 ? 218 : 231
@@ -427,8 +431,8 @@ final class FormDocumentView: NSView {
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
         emptyProject.title = companion?.agentStore?.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
         composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
-        workbenchBadge.update(task); workbenchInspector.update(task)
-        taskBack.isEnabled = taskNavigationIndex > 0; taskForward.isEnabled = taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
+        workbenchBadge.update(task); workbenchInspector.update(task, sideTasks: sides)
+        taskBack.isEnabled = sideTaskTabID == nil && taskNavigationIndex > 0; taskForward.isEnabled = sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
         let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
         taskModel.title = modelName; taskModel.setAccessibilityLabel("模型：" + modelName)
         taskModel.isEnabled = task.kind != "hook" && !task.archived && companion?.agentRuntime?.isBusy(task.id) != true && task.pendingCalls.isEmpty
@@ -466,6 +470,10 @@ final class FormDocumentView: NSView {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running && (task.pendingFileRollback == nil || !["fork", "archive"].contains(action)); menu.addItem(item)
         }
         if task.pendingFileRollback != nil { let item = NSMenuItem(title: "恢复撤回前文件…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "recover-round-files"]; menu.addItem(item) }
+        if AgentSideTasks.supported(task) { let item = NSMenuItem(title: "开始侧任务", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "side-task"]; item.isEnabled = companion?.agentStore?.sideTasks.cleaning != true; menu.addItem(item) }
+        if let side = task.sideTask {
+            for (title, action) in [("返回主任务", "side-parent"), ("保留为独立任务", "side-keep")] { let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = action != "side-parent" || companion?.agentStore?.tasks.contains(where: { $0.id == side.parentID }) == true; menu.addItem(item) }
+        }
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", !task.isProjectDocumentation {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
@@ -561,7 +569,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports", "archived"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports", "experiments", "archived"].contains($0.category) }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -755,6 +763,8 @@ final class FormDocumentView: NSView {
             group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            group("experiments", "侧任务", "实验 侧任务 保留 可恢复 对话 标签页 主任务")
+            let sides = AgentSideTaskSettingsView(service: store.sideTasks); row("", sides); sides.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("archived", "已归档", "归档 恢复 工作区 任务 项目")
             let archive = AgentArchivedTasksView(store: store); archivedTasksView = archive
             archive.onWillChange = { [weak self] in self?.saveAgentDraft() }
@@ -1066,9 +1076,33 @@ final class FormDocumentView: NSView {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         dismissExtensionCandidates()
         guard saveAgentDraft() else { return false }
+        if let id = sideTaskTabID, let task = companion?.agentStore?.task(id), let side = task.sideTask, !side.retained,
+           companion?.taskControls.contains(where: { $0 !== self && $0.agentTaskID == id && $0.window != nil }) != true {
+            guard !closingSideTask, closeOwnedTaskPanels() else { return false }
+            let unsafe = task.pendingFileRollback != nil || task.sideTask?.needsReview == true || task.gitTurn?.warning != nil || task.changeRounds?.contains { $0.warning != nil } == true
+            let alert = NSAlert(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
+            alert.informativeText = unsafe ? "文件记录尚未完成，请保留任务以便检查和恢复。" : "这份侧任务及其子任务的对话、草稿、附件不会保留。项目文件保持当前状态。"
+            if !unsafe { alert.addButton(withTitle: "关闭并移除") }; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保留为任务")
+            let answer = alert.runModal()
+            if answer == (unsafe ? .alertSecondButtonReturn : .alertThirdButtonReturn) {
+                do { try companion?.agentStore?.sideTasks.keepAsTask(id); sideTaskTabID = nil; return true } catch { setStatus(error.localizedDescription, error: true); return false }
+            }
+            if !unsafe, answer == .alertFirstButtonReturn { closingSideTask = true; companion?.agentRuntime?.cancel(id); finishClosingSideTask() }
+            return false
+        }
         if taskWindowNumber != 1 { guard closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
         sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
+    }
+    private func finishClosingSideTask() {
+        guard closingSideTask, !discardingSideTask, let id = sideTaskTabID, let tasks = companion?.agentStore else { return }
+        guard companion?.agentRuntime?.isBusy(id) != true, tasks.task(id)?.pendingFileCapture == nil else { setStatus("正在停止并保存文件记录…"); return }
+        discardingSideTask = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { let issue = try await tasks.sideTasks.discard(id); closingSideTask = false; discardingSideTask = false; sideTaskTabID = nil; if let issue { companion?.inputControl.setStatus(issue, error: true) }; window?.close() }
+            catch { closingSideTask = false; discardingSideTask = false; setStatus(error.localizedDescription, error: true) }
+        }
     }
     func windowWillClose(_ notification: Notification) {
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
@@ -1263,6 +1297,10 @@ final class FormDocumentView: NSView {
     func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
         guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft() else { return }
+        if let sideTaskTabID, sideTaskTabID != id {
+            if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
+            else { companion?.showTaskInMainWindow(id); return }
+        } else if sideTaskTabID == nil, record.sideTask != nil { companion?.openSideTask(id, from: self); return }
         clearMessageSearchHighlight()
         if let searchQuery, let message = AgentTaskSearch.message(in: record, query: searchQuery, preferredID: messageID) {
             messageSearch = (id, message.id, searchQuery); pendingMessageReveal = true
@@ -1356,9 +1394,14 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func agentTaskAction(_ id: String, action: String) {
-        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window"].contains(action) else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window", "side-task", "side-parent", "side-keep"].contains(action) else { return }
         if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
         switch action {
+        case "side-task":
+            do { guard saveAgentDraft() else { return }; let child = try tasks.sideTasks.create(parentID: id); companion?.openSideTask(child, from: self) } catch { setStatus(error.localizedDescription, error: true) }; return
+        case "side-parent": if let parent = task.sideTask?.parentID { companion?.showTaskInMainWindow(parent) }; return
+        case "side-keep":
+            do { try tasks.sideTasks.keepAsTask(id); sideTaskTabID = nil; renderAgentMessages() } catch { setStatus(error.localizedDescription, error: true) }; return
         case "new-window": companion?.openTaskWindow(id, from: self); return
         case "read", "unread":
             do { try tasks.setTaskUnread(id, action == "unread"); renderAgentMessages() } catch { setStatus(error.localizedDescription, error: true) }; return
@@ -1705,14 +1748,16 @@ final class FormDocumentView: NSView {
     }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
+        if closingSideTask { finishClosingSideTask(); return }
+        if let id = sideTaskTabID, tasks.task(id) == nil { sideTaskTabID = nil; window?.close(); return }
         let keepSearchHitVisible = isMessageSearchVisible
         guard tasks.refreshDeletedRecords() else { composer.isEditable = false; sendButton.isEnabled = false; setStatus(tasks.deletions.issue ?? "永久删除记录无法读取，请检查配置并重新打开应用", error: true); return }
         guard let task = currentAgentTask else {
-            let id = tasks.tasks.first(where: { !$0.archived && $0.organizationMode == displayedWorkMode })?.id ?? tasks.create(workMode: displayedWorkMode)
+            let id = tasks.tasks.first(where: { !$0.archived && $0.sideTask == nil && $0.organizationMode == displayedWorkMode })?.id ?? tasks.create(workMode: displayedWorkMode)
             selectAgentTask(id); return
         }
         bindAgentDraft(task)
-        window?.title = task.title + " · 小鲸" + (taskWindowNumber == 1 ? "" : "（\(taskWindowNumber)）")
+        window?.title = (task.sideTask != nil && task.title == "新的任务" ? "新的侧任务" : task.title) + " · 小鲸" + (taskWindowNumber == 1 ? "" : "（\(taskWindowNumber)）")
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
@@ -1721,7 +1766,11 @@ final class FormDocumentView: NSView {
         refreshAutomationBadge()
         if displayedTask != task.id { selectAgentTask(task.id); return }
         let taskView = tasks.organization.taskView(task.organizationMode)
-        taskSidebar.refresh(taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks, selected: task.id, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
+        let listing = taskView.grouping != .workspace || taskView.activity != .all ? tasks.taskViewMetadata() : tasks.tasks
+        var hidden = Set(listing.filter { !tasks.sideTasks.sidebarVisible($0) }.map(\.id)), previous = Set<String>()
+        while previous != hidden { previous = hidden; for item in listing where item.agent?.ownerID.map(hidden.contains) == true || item.kind == "hook" && item.parentID.map(hidden.contains) == true { hidden.insert(item.id) } }
+        let sidebarSelection = task.sideTask.flatMap { side in tasks.tasks.contains { $0.id == side.parentID && !$0.archived } ? side.parentID : nil } ?? task.id
+        taskSidebar.refresh(listing.filter { !hidden.contains($0.id) }, selected: sidebarSelection, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
         projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)

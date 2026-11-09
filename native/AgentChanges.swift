@@ -1,6 +1,13 @@
 import Foundation
 
 @MainActor enum AgentChanges {
+    static func warn(_ message: String, turnID: String, record: inout AgentTaskRecord) {
+        if record.changeRounds == nil { record.changeRounds = []; record.changeTrackingFromID = turnID }
+        if record.changeRounds?.contains(where: { $0.id == turnID }) != true { record.changeRounds?.append(AgentChangeRound(id: turnID)) }
+        if let i = record.changeRounds?.firstIndex(where: { $0.id == turnID }) { record.changeRounds?[i].warning = message }
+        if record.gitTurn?.id != turnID { record.gitTurn = AgentGitTurn(id: turnID, changes: []) }
+        record.gitTurn?.warning = message; record.sideTask?.needsReview = true
+    }
     static func record(_ changes: [AgentChange], taskID: String, turnID: String, store: AgentStore) {
         store.update(taskID) { record in
             if record.changeRounds == nil { record.changeRounds = []; record.changeTrackingFromID = turnID }
