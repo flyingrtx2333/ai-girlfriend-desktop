@@ -39,6 +39,7 @@ private final class AgentTaskTable: NSTableView {
     private let empty = NSTextField(labelWithString: "没有匹配的任务")
     private var dayObservers: [NSObjectProtocol] = []
     private var draggingRows = false
+    private var dragDiagnostics: [String: String] = [:]
     private var workMode = AgentWorkMode.coding, organization: AgentOrganization?
     private var taskView = AgentTaskView()
     private var viewMenuSignature = ""
@@ -89,10 +90,12 @@ private final class AgentTaskTable: NSTableView {
     func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization) {
         self.organization = organization
         let previous = self.selected; self.selected = selected
-        workMode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
-        taskView = organization.taskView(workMode)
+        let mode = values.first(where: { $0.id == selected })?.organizationMode ?? .coding
+        let view = organization.taskView(mode)
+        if workMode != mode || taskView != view { draggingRows = false }
+        workMode = mode; taskView = view
         workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
-        heading.stringValue = workMode.directoryTitle; add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
+        add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
         if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(groupKey(path)) }
         let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))"
         let waiting = values.filter { !$0.archived && $0.status == .waiting }.count
@@ -137,9 +140,10 @@ private final class AgentTaskTable: NSTableView {
     }
     private func groupKey(_ path: String) -> String { workMode.rawValue + "\n" + path }
     func organizationSnapshot() -> [String: Any] {
-        ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
+        var value: [String: Any] = ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
+        if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -287,6 +291,7 @@ private final class AgentTaskTable: NSTableView {
     @objc private func toggleChildren(_ sender: NSMenuItem) { guard let id = sender.representedObject as? String else { return }; if expandedTasks.contains(id) { expandedTasks.remove(id) } else { expandedTasks.insert(id) }; applyFilter() }
     @objc private func taskAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { onAction?(value[0], value[1]) } }
     func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> NSPasteboardWriting? {
+        noteDrag("writer"); if CommandLine.arguments.contains("--task-views-check") { dragDiagnostics["writerRow"] = String(row) }
         guard filter != 1, effectiveGrouping != .activity, rows.indices.contains(row) else { return nil }
         let kind: String, id: String
         switch rows[row] { case .group(_, let key): guard let key else { return nil }; kind = "group"; id = key
@@ -295,6 +300,7 @@ private final class AgentTaskTable: NSTableView {
         let item = NSPasteboardItem(); item.setData(data, forType: Self.dragType); return item
     }
     private func drop(_ info: NSDraggingInfo, row: Int) -> (kind: String, id: String, target: String?)? {
+        if CommandLine.arguments.contains("--task-views-check") { dragDiagnostics["sourceClass"] = info.draggingSource.map { String(describing: type(of: $0)) } ?? "none"; dragDiagnostics["sourceIsTable"] = String(info.draggingSource as? NSTableView === table); dragDiagnostics["row"] = String(row); dragDiagnostics["hasData"] = String(info.draggingPasteboard.data(forType: Self.dragType) != nil) }
         guard info.draggingSource as? NSTableView === table, filter != 1, effectiveGrouping != .activity, let data = info.draggingPasteboard.data(forType: Self.dragType), data.count <= 20_000,
               let value = try? JSONSerialization.jsonObject(with: data) as? [String: String], value["mode"] == workMode.rawValue, value["grouping"] == effectiveGrouping.rawValue, let kind = value["kind"], let id = value["id"] else { return nil }
         if kind == "task" {
@@ -305,14 +311,17 @@ private final class AgentTaskTable: NSTableView {
         guard case .group(_, let target) = rows[row], let target, id != target else { return nil }; return (kind, id, target)
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation operation: NSTableView.DropOperation) -> NSDragOperation {
+        noteDrag("validate")
         guard let value = drop(info, row: row) else { return [] }; tableView.setDropRow(row, dropOperation: value.kind == "task" ? .on : .above); return .move
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+        noteDrag("accept")
         guard let value = drop(info, row: row) else { return false }
         return value.kind == "task" ? onAssignGroup?(value.id, value.target, workMode) ?? false : onReorderGroup?(value.id, value.target, workMode, effectiveGrouping) ?? false
     }
-    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) { draggingRows = true }
-    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { draggingRows = false; applyFilter() }
+    private func noteDrag(_ stage: String) { guard CommandLine.arguments.contains("--task-views-check") else { return }; dragDiagnostics[stage] = String((Int(dragDiagnostics[stage] ?? "0") ?? 0) + 1) }
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) { noteDrag("begin"); draggingRows = true }
+    func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { noteDrag("end"); draggingRows = false; applyFilter() }
 }
 
 @MainActor final class AgentToolRow: NSView {

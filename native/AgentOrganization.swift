@@ -21,7 +21,7 @@ enum AgentTaskActivityWindow: String, Codable, CaseIterable {
         return calendar.date(byAdding: .day, value: self == .today ? 0 : self == .week ? -6 : -29, to: calendar.startOfDay(for: now))
     }
 }
-struct AgentTaskView: Codable {
+struct AgentTaskView: Codable, Equatable {
     var grouping = AgentTaskGrouping.workspace
     var workspace: String?
     var activity = AgentTaskActivityWindow.all
