@@ -4,6 +4,29 @@ import Foundation
     static let languages = ["zh", "en", "legacy"]
     private static var finalizing: Set<String> = []
     static func root(branch: String, language: String, taskID: String) -> String { ".bluefatfish/wiki/.generated/" + AgentFiles.hash(Data(branch.utf8)) + "/" + language + "/" + taskID }
+    static func validSharedFile(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !path.isEmpty && path.utf8.count <= 1000 && parts.count <= 32 && !path.hasPrefix("/") && !path.contains("\\") && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) && parts.allSatisfy { !$0.isEmpty && !$0.hasPrefix(".") } && !AgentFiles.sensitive(path)
+    }
+    static func validPageFile(_ path: String) -> Bool { validSharedFile(path) && ["md", "markdown"].contains((path as NSString).pathExtension.lowercased()) }
+    static func manifestDocuments(_ value: AgentWikiManifest) throws -> [AgentWikiPage] {
+        guard let root = value.root else { throw PetError("Wiki 清单缺少目录") }
+        if value.version == 2, let plan = value.plan {
+            let paths = try plan.paths(root: root)
+            return (plan.documents ?? []).map { AgentWikiPage(path: paths[$0.title]!, title: $0.title, parent: $0.parent.flatMap { paths[$0] }) }
+        }
+        guard value.version == 3, let pages = value.structure, !pages.isEmpty, pages.count <= 1000 else { throw PetError("Wiki 清单结构无效") }
+        let paths = Set(pages.map(\.path)), aliases = Set(pages.map { $0.path.precomposedStringWithCanonicalMapping.lowercased() })
+        guard paths.count == pages.count, aliases.count == pages.count else { throw PetError("Wiki 页面路径重复") }
+        let parents = Dictionary(uniqueKeysWithValues: pages.map { ($0.path, $0.parent) })
+        for page in pages {
+            guard page.path.hasPrefix(root + "/"), validPageFile(String(page.path.dropFirst(root.count + 1))), !page.title.isEmpty, page.title.count <= 200, !page.title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), page.parent == nil || paths.contains(page.parent!) else { throw PetError("Wiki 页面或父页面无效") }
+            var seen = Set<String>(), parent: String? = page.path
+            while let path = parent { guard seen.insert(path).inserted, seen.count <= 33 else { throw PetError("Wiki 页面父子结构成环或超过32层") }; parent = parents[path] ?? nil }
+        }
+        guard (value.assets ?? [:]).count <= 1000, (value.assets ?? [:]).allSatisfy({ path, hash in path.hasPrefix(root + "/") && validSharedFile(String(path.dropFirst(root.count + 1))) && !validPageFile(String(path.dropFirst(root.count + 1))) && hash.count == 64 && hash.allSatisfy(\.isHexDigit) }) else { throw PetError("Wiki 附件清单无效") }
+        return pages
+    }
     static func checkScope(_ task: AgentTaskRecord, store: AgentStore) throws {
         guard let job = task.wikiJob else { return }
         guard ["zh", "en"].contains(job.language), UUID(uuidString: task.id) != nil, job.root == root(branch: job.branch, language: job.language, taskID: task.id), try store.knowledgeCards.scope(task).branch == job.branch else { throw PetError("Wiki 分支或语言范围已变化，请重新生成；原文档已保留") }
@@ -14,7 +37,7 @@ import Foundation
         let scope = try store.knowledgeCards.scope(task), url = scope.directory.deletingLastPathComponent().appendingPathComponent("wiki").appendingPathComponent(AgentFiles.hash(Data((scope.branch + "\n" + language).utf8)) + ".json")
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let data = try AgentFiles(workspace: url.deletingLastPathComponent().path).readData(url, maximum: 1_000_000), value = try JSONDecoder().decode(AgentWikiManifest.self, from: data)
-        guard value.version == 2, value.language == language, value.branch == scope.branch, value.root == root(branch: scope.branch, language: language, taskID: value.taskID), let plan = value.plan, Set(try plan.paths(root: value.root!).values) == Set(value.pages.keys) else { throw PetError("Wiki 清单版本或分支范围无效，原文件未修改") }
+        guard [2, 3].contains(value.version ?? 0), UUID(uuidString: value.taskID) != nil, value.language == language, value.branch == scope.branch, value.root == root(branch: scope.branch, language: language, taskID: value.taskID), Set(try manifestDocuments(value).map(\.path)) == Set(value.pages.keys) else { throw PetError("Wiki 清单版本或分支范围无效，原文件未修改") }
         return value
     }
     static func view(store: AgentStore, taskID: String, language: String) throws -> (root: String, pages: [AgentWikiPage], manifest: AgentWikiManifest?) {
@@ -24,12 +47,11 @@ import Foundation
             if language == "zh" { return (".bluefatfish/wiki", try catalog(workspace: task.workspace), try manifest(store: store, taskID: taskID)) }
             return (".bluefatfish/wiki", [], nil)
         }
-        let paths = try published.plan!.paths(root: published.root!)
         let catalog = try catalog(workspace: task.workspace, root: published.root!)
-        let docs = Dictionary(uniqueKeysWithValues: (published.plan!.documents ?? []).map { (paths[$0.title]!, $0) })
+        let docs = Dictionary(uniqueKeysWithValues: try manifestDocuments(published).map { ($0.path, $0) })
         let pages = catalog.map { page -> AgentWikiPage in
             guard let doc = docs[page.path] else { return page }
-            return AgentWikiPage(path: page.path, title: page.title, parent: doc.parent.flatMap { paths[$0] })
+            return AgentWikiPage(path: page.path, title: page.title, parent: doc.parent)
         }
         return (published.root!, pages, published)
     }
@@ -40,6 +62,13 @@ import Foundation
         if store.tasks.contains(where: { $0.kind == "wiki" && $0.workspace == task.workspace && $0.wikiJob?.branch == scope.branch && $0.wikiJob?.language == language && [.ready, .running, .waiting].contains($0.status) && !$0.archived }) { return "生成中" }
         guard let value = try plannedManifest(store: store, taskID: taskID, language: language) else { return language == "zh" ? try status(store: store, taskID: taskID) : "未生成" }
         let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
+        if value.version == 3 {
+            let current = try pages(workspace: task.workspace, root: value.root!)
+            guard Set(current) == Set(value.pages.keys), value.pages.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 512_000)) == $0.value }), (value.assets ?? [:]).allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 20_000_000)) == $0.value }) else { return "已编辑" }
+            guard let hashes = value.sourceHashes, !hashes.isEmpty else { return "待核对" }
+            guard index.snapshot()?.revision == value.revision, hashes.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 512_000)) == $0.value }) else { return "需更新" }
+            return value.origin == "restore" ? "已恢复" : "已导入"
+        }
         guard index.snapshot()?.revision == value.revision else { return "需更新" }
         let current = try pages(workspace: task.workspace, root: value.root!)
         guard Set(current) == Set(value.pages.keys), value.pages.allSatisfy({ (try? index.files.fileHash(index.files.resolve($0.key), maximum: 256_000)) == $0.value }) else { return "已编辑" }
@@ -54,7 +83,7 @@ import Foundation
         store.update(id) {
             $0.kind = "wiki"; $0.parentID = sourceID; $0.permission = source.permission; $0.gitDirectory = source.gitDirectory; $0.model = source.model; $0.modelOverride = source.modelOverride
             $0.wikiJob = AgentWikiJob(language: language, branch: scope.branch, root: root(branch: scope.branch, language: language, taskID: id), configurationHash: config.hash, plan: config.plan, previousRoot: old.pages.isEmpty ? nil : old.root)
-            $0.wikiJob?.baseTaskID = old.manifest?.version == 2 ? old.manifest?.taskID : nil
+            $0.wikiJob?.baseTaskID = [2, 3].contains(old.manifest?.version ?? 0) ? old.manifest?.taskID : nil
             $0.plan = [AgentPlanStep(title: "核对项目与文档规划", status: "in_progress"), AgentPlanStep(title: "逐页生成与核对来源", status: "pending"), AgentPlanStep(title: "回读文档并完成校验", status: "pending")]
         }
         store.selectedID = previousSelection

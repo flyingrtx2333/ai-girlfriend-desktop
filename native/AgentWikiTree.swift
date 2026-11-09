@@ -12,9 +12,10 @@ import AppKit
     private var pages: [AgentWikiPage] = [], roots: [Node] = [], nodes: [String: Node] = [:], expanded: Set<String> = []
     private var applying = false, selectedPath: String?
     private var rootPath = ".bluefatfish/wiki"
-    private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil)
+    private let language = NSPopUpButton(), plan = NSButton(title: "规划", target: nil, action: nil), more = NSPopUpButton(frame: .zero, pullsDown: true)
     var canSelect: ((String) -> Bool)?, onSelect: ((String) -> Void)?, onRefresh: (() -> Void)?
     var onLanguage: ((String) -> Bool)?, onPlan: (() -> Void)?
+    var onSharing: ((String) -> Void)?
     var selectedLanguage: String { ["zh", "en", "legacy"][max(0, min(2, language.indexOfSelectedItem))] }
     var selectedDocument: String? { selectedPath }
     override init(frame: NSRect) {
@@ -31,12 +32,19 @@ import AppKit
         let toolbar = NSStackView(views: [search, refresh]); toolbar.spacing = 4
         language.addItems(withTitles: ["简体中文", "English", "旧版"]); language.controlSize = .small; language.target = self; language.action = #selector(changeLanguage); language.setAccessibilityLabel("Wiki 语言")
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")
-        let options = NSStackView(views: [language, NSView(), plan]); options.spacing = 4
+        more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
+        for (title, value) in [("导出 Wiki 到项目", "export"), ("从项目导入 Wiki…", "import"), ("恢复 Wiki 版本…", "restore"), ("打开共享目录", "open")] { let item = NSMenuItem(title: title, action: #selector(sharingAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value; more.menu?.addItem(item) }
+        more.widthAnchor.constraint(equalToConstant: 25).isActive = true
+        let options = NSStackView(views: [language, NSView(), plan, more]); options.spacing = 4
         for child in [toolbar, options, scroll, empty] { addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor), refresh.widthAnchor.constraint(equalToConstant: 25), options.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4), options.leadingAnchor.constraint(equalTo: leadingAnchor), options.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor), empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor), empty.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 12)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func setLanguage(_ value: String) { language.selectItem(at: ["zh", "en", "legacy"].firstIndex(of: value) ?? 0) }
+    func setSharingState(busy: Bool, writable: Bool) {
+        language.isEnabled = !busy; more.isEnabled = !busy
+        for item in more.itemArray.dropFirst() { item.isEnabled = !busy && selectedLanguage != "legacy" && (writable || item.representedObject as? String == "open") }
+    }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild() }
     private func rebuild() {
         applying = true; defer { applying = false }
@@ -96,6 +104,7 @@ import AppKit
     }
     @objc private func reloadCatalog() { onRefresh?() }
     @objc private func editPlan() { onPlan?() }
+    @objc private func sharingAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? String { onSharing?(value) } }
     @objc private func changeLanguage() { let value = selectedLanguage; if onLanguage?(value) == false { return } }
     @objc private func toggleFolder() { guard outline.clickedRow >= 0 else { return }; if let node = outline.item(atRow: outline.clickedRow) as? Node, !node.children.isEmpty { if outline.isItemExpanded(node) { outline.collapseItem(node) } else { outline.expandItem(node) } } }
     func controlTextDidChange(_ obj: Notification) { rebuild() }

@@ -3,8 +3,9 @@ import Foundation
 struct AgentWikiManifest: Codable {
     var taskID: String; var revision: String; var created: Date; var pages: [String: String]; var sources: [String]
     var version: Int?, branch: String?, language: String?, root: String?, plan: AgentWikiPlan?
+    var structure: [AgentWikiPage]?, sourceHashes: [String: String]?, assets: [String: String]?, origin: String?
 }
-struct AgentWikiPage {
+struct AgentWikiPage: Codable {
     let path: String, title: String
     var parent: String? = nil
 }
@@ -13,7 +14,7 @@ struct AgentWikiPage {
     static let required = ["index.md", "architecture.md", "workflows.md", "conventions.md"].map { ".bluefatfish/wiki/" + $0 }
     static func pages(workspace: String?, root relativeRoot: String = ".bluefatfish/wiki") throws -> [String] {
         let files = try AgentFiles(workspace: workspace), root = files.root.appendingPathComponent(relativeRoot, isDirectory: true)
-        guard relativeRoot == ".bluefatfish/wiki" || relativeRoot.hasPrefix(".bluefatfish/wiki/.generated/") else { throw PetError("Wiki 目录范围无效") }
+        guard relativeRoot == ".bluefatfish/wiki" || relativeRoot.hasPrefix(".bluefatfish/wiki/.generated/") || ["zh", "en"].contains(where: { relativeRoot == ".bluefatfish/repowiki/" + $0 + "/content" }) else { throw PetError("Wiki 目录范围无效") }
         let metadata = try files.entryMetadata(root)
         guard metadata.kind != "missing" else { return [] }
         guard metadata.kind == "directory" else { throw PetError("Wiki 目录不是普通文件夹") }
