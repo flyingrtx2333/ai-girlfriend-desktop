@@ -23,11 +23,14 @@ import UniformTypeIdentifiers
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
     private let compare = NSButton(title: "比较", target: nil, action: nil)
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
+    private let wikiCards = NSButton(title: "知识卡片", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
     var onGenerateWiki: ((String) -> Void)?
+    var onOpenKnowledgeCards: ((String) -> Void)? { didSet { wikiCards.isHidden = sections.selectedSegment != 6 || onOpenKnowledgeCards == nil } }
     private weak var wikiRuntime: AgentRuntime?
     private var onWikiTask: ((String) -> Void)?
     private var wikiGeneration: AgentWikiGenerationState?
+    private var wikiKnowledgeSignature = ""
     private var wikiPlanWindow: AgentWikiPlanWindow?
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: NSAlert?
@@ -93,11 +96,12 @@ import UniformTypeIdentifiers
         save.target = self; save.action = #selector(saveFile); undo.target = self; undo.action = #selector(restoreFile); open.target = self; open.action = #selector(openItem)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         generate.target = self; generate.action = #selector(generateWiki)
+        wikiCards.target = self; wikiCards.action = #selector(openWikiCards)
         newOffice.addItems(withTitles: ["新建", "Word 文稿…", "Excel 表格…", "幻灯片…"]); newOffice.target = self; newOffice.action = #selector(createOffice); newOffice.setAccessibilityLabel("新建办公文件")
         openOffice.target = self; openOffice.action = #selector(chooseOffice)
         compare.target = self; compare.action = #selector(presentConflict); compare.setAccessibilityLabel("比较磁盘文件与草稿")
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, undo, open, compare, save]); actions.spacing = 8
+        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
@@ -114,6 +118,7 @@ import UniformTypeIdentifiers
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
+        wikiCards.isHidden = sections.selectedSegment != 6 || onOpenKnowledgeCards == nil
         wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
         guard let task = store.task(taskID) else { return }
         updateWikiSharingState()
@@ -175,16 +180,23 @@ import UniformTypeIdentifiers
                 try AgentWiki.pauseGeneration(store: store, runtime: runtime, sourceID: taskID, language: language, expectedID: id)
                 state.stringValue = "生成已暂停" + (dirty ? " · 草稿未保存" : "")
             } else {
-                guard snapshot.action != "publishing", wikiPlanWindow?.confirmClosing() != false, canLeave() else { return }
-                let id: String
-                if snapshot.action == "resume", let previous = snapshot.taskID { id = try AgentWiki.resumeGeneration(store: store, runtime: runtime, sourceID: taskID, language: language, expectedID: previous) }
-                else { id = try AgentWiki.start(store: store, runtime: runtime, sourceID: taskID, language: language) }
-                state.stringValue = snapshot.action == "resume" ? "已继续生成" : "已开始生成"; onWikiTask?(id)
+                guard !["publishing", "preparing"].contains(snapshot.action), wikiPlanWindow?.confirmClosing() != false, canLeave() else { return }
+                wikiSharingTask = Task { @MainActor [weak self] in
+                    guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+                    do {
+                        try await connectWikiIndex()
+                        if snapshot.action == "resume", try AgentWiki.generationState(store: store, runtime: runtime, sourceID: taskID, language: language).taskID != snapshot.taskID { throw PetError("生成状态已变化，请刷新后重试") }
+                        let id = try await store.projectKnowledge.start(sourceID: taskID, language: language, runtime: runtime)
+                        guard !Task.isCancelled else { return }
+                        state.stringValue = snapshot.action == "resume" ? "已继续生成" : "已开始生成"; onWikiTask?(id)
+                    } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+                }
             }
         } catch { state.stringValue = error.localizedDescription }
         updateWikiSharingState()
     }
     func enableWikiGeneration(_ action: @escaping () -> Void) { enableWikiGeneration { _ in action() } }
+    @objc private func openWikiCards() { guard ["zh", "en"].contains(wikiTree.selectedLanguage) else { return }; onOpenKnowledgeCards?(wikiTree.selectedLanguage) }
     func enableWikiGeneration(_ action: @escaping (String) -> Void) { onGenerateWiki = action; updateWikiSharingState() }
     func configureWikiRuntime(_ runtime: AgentRuntime, onTask: @escaping (String) -> Void) { wikiRuntime = runtime; onWikiTask = onTask; updateWikiSharingState() }
     private func openWikiPlan() {
@@ -217,8 +229,14 @@ import UniformTypeIdentifiers
             catch { generate.toolTip = error.localizedDescription }
         }
         generate.title = wikiGeneration?.title ?? "生成 Wiki"
-        wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable, canRegenerate: wikiGeneration != nil && wikiGeneration?.action != "publishing")
-        generate.isEnabled = wikiSharingTask == nil && writable && (wikiRuntime == nil ? onGenerateWiki != nil : wikiGeneration != nil) && wikiGeneration?.action != "publishing" && wikiTree.selectedLanguage != "legacy"
+        state.toolTip = nil
+        if !dirty, wikiSharingTask == nil, let id = wikiGeneration?.taskID, let notice = store.projectKnowledge.notice(wikiID: id) {
+            state.toolTip = notice.text
+            if notice.signature != wikiKnowledgeSignature { wikiKnowledgeSignature = notice.signature; state.stringValue = notice.text }
+        }
+        wikiCards.isEnabled = task?.workspace != nil && ["zh", "en"].contains(wikiTree.selectedLanguage)
+        wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable, canRegenerate: wikiGeneration != nil && !["publishing", "preparing"].contains(wikiGeneration?.action ?? ""))
+        generate.isEnabled = wikiSharingTask == nil && writable && (wikiRuntime == nil ? onGenerateWiki != nil : wikiGeneration != nil) && !["publishing", "preparing"].contains(wikiGeneration?.action ?? "") && wikiTree.selectedLanguage != "legacy"
     }
     private func connectWikiIndex() async throws {
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}"), directory = try tools.gitDirectory(for: call)
@@ -342,12 +360,14 @@ import UniformTypeIdentifiers
             guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
             do {
                 let preview = try AgentWiki.previewRegeneration(store: store, runtime: runtime, sourceID: taskID, language: language)
-                let alert = NSAlert(); alert.messageText = "重新生成 Wiki？"
+                let includesCards = try AgentWiki.view(store: store, taskID: taskID, language: language).pages.isEmpty
+                let alert = NSAlert(); alert.messageText = includesCards ? "重新生成 Wiki 与卡片？" : "重新生成 Wiki？"
                 alert.informativeText = "分支：" + preview.branch + " · " + (language == "zh" ? "简体中文" : "English") + "\n" + (preview.documentCount.map { "按当前规划生成 \($0) 页。" } ?? "按当前项目重新规划页面。") + "当前生成将暂停；原任务和文档保留，新版本通过校验后发布。"
                 alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
                 guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
                 try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
-                let id = try AgentWiki.regenerate(preview, store: store, runtime: runtime, sourceID: taskID)
+                try await connectWikiIndex()
+                let id = try await store.projectKnowledge.regenerate(preview, sourceID: taskID, runtime: runtime)
                 state.stringValue = "已重新开始生成"; onWikiTask?(id)
             } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
         }
@@ -621,7 +641,7 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         if CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["wikiSharingBusy"] = wikiSharingTask != nil; result["wikiSharingConfirmation"] = wikiSharingAlert?.messageText ?? ""; result["wikiSharingSheetVisible"] = wikiSharingAlert.map { window?.attachedSheet === $0.window } ?? false; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
-        if CommandLine.arguments.contains("--wiki-generation-check") || CommandLine.arguments.contains("--wiki-updates-check") { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "problem": generate.toolTip ?? ""] }
+        if ["--wiki-generation-check", "--wiki-updates-check", "--project-knowledge-check"].contains(where: CommandLine.arguments.contains) { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "includesCards": wikiGeneration?.includesCards ?? false, "problem": generate.toolTip ?? ""] }
         if CommandLine.arguments.contains("--wiki-updates-check") { result["maintenance"] = ["available": wikiMaintenance != nil, "autoUpdate": wikiMaintenance?.options.autoUpdate ?? false, "autoExport": wikiMaintenance?.options.autoExport ?? false, "notice": store.wikiMaintenance.notice(workspace: store.task(taskID)?.workspace ?? "", language: wikiTree.selectedLanguage)] }
         return result
     }

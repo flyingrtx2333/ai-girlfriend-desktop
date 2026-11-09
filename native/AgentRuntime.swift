@@ -173,7 +173,7 @@ import Foundation
             throw error
         }
     }
-    @discardableResult func submit(_ text: String, taskID: String? = nil, attachmentIDs: [String] = []) -> Bool {
+    @discardableResult func submit(_ text: String, taskID: String? = nil, attachmentIDs: [String] = [], startImmediately: Bool = true) -> Bool {
         submissionError = nil
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty && !attachmentIDs.isEmpty { text = "请查看附件。" }
@@ -217,11 +217,13 @@ import Foundation
             if record.model.isEmpty { record.model = preferences().model }
             record.status = .ready
         }
-        start(id); return true
+        if startImmediately { start(id) } else { notifyChange(id) }; return true
     }
     func start(_ id: String) {
         cancelAnalysis(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        do { try store.projectKnowledge.checkTask(task) }
+        catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-generation", title: "项目知识范围已变化", detail: error.localizedDescription, status: "failed")) }; notifyChange(id); return }
         if let reason = store.offices.unsavedReason(workspace: task.workspace) {
             store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "办公文档未保存", detail: reason, status: "stopped")) }; notifyChange(id); return
         }
@@ -239,11 +241,12 @@ import Foundation
         }; notifyChange(id)
         run.task = Task { [weak self] in await self?.execute(id, run: run) }
     }
-    func cancel(_ id: String) { cancel(id, visited: []) }
+    func cancel(_ id: String) { store.projectKnowledge.cancelPreparation(taskID: id); cancel(id, visited: []) }
     private func cancel(_ id: String, visited: Set<String>) {
         guard !visited.contains(id) else { return }
         var next = visited; next.insert(id)
         cancelAnalysis(id)
+        if let child = store.task(id)?.wikiJob?.knowledgeGeneration?.cardTaskID { cancel(child, visited: next) }
         for child in store.tasks where child.agent?.ownerID == id { cancel(child.id, visited: next) }
         store.desktop.disconnect(id)
         store.canvases.stop(id)
@@ -266,7 +269,7 @@ import Foundation
         notifyChange(id)
         if run == nil { drainQueue() }
     }
-    func stopAll() { for id in Array(active.keys) + queued + Array(analyses.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
+    func stopAll() { store.projectKnowledge.cancelPreparations(); for id in Array(active.keys) + queued + Array(analyses.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
     private func cancelAnalysis(_ id: String) {
         guard let analysis = analyses.removeValue(forKey: id) else { return }
         analysis.task?.cancel(); notifyChange(id)
@@ -494,6 +497,7 @@ import Foundation
     }
     func systemContext(_ task: AgentTaskRecord) throws -> String { try contextPayload(task).text }
     private func contextPayload(_ task: AgentTaskRecord) throws -> (text: String, skills: String) {
+        try store.projectKnowledge.checkTask(task)
         try store.teams.check(task, store: store)
         var context = """
         你是小鲸，一位能够完成实际任务的桌面 Agent。当前模式：\(task.mode.title)。

@@ -416,6 +416,7 @@ import Foundation
                 paths = try await git.filePaths()
             }
             let result = try await index.run(paths: paths, query: call.name == "search_project" ? string("query") : nil, limit: task.kind == AgentKnowledgeCards.kind ? min(3, args["limit"] as? Int ?? 3) : args["limit"] as? Int ?? 12, rebuild: args["rebuild"] as? Bool ?? false)
+            if let revision = task.wikiJob?.knowledgeGeneration?.revision ?? (task.knowledgeJob?.wikiTaskID == nil ? nil : task.knowledgeJob?.sourceRevision), result.index.revision != revision { throw PetError("项目源码已变化，请重新生成 Wiki 与卡片；原任务保留") }
             if task.kind == "wiki", task.wikiRevision == nil { store.update(taskID) { $0.wikiRevision = result.index.revision } }
             if task.kind == AgentKnowledgeCards.kind, task.knowledgeJob?.sourceRevision == nil { store.update(taskID) { $0.knowledgeJob?.sourceRevision = result.index.revision } }
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601

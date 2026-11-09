@@ -20,6 +20,7 @@ import Foundation
     lazy var knowledge = AgentKnowledgeLibrary(profile: directory.deletingLastPathComponent())
     lazy var knowledgeCards = AgentKnowledgeCards(store: self)
     lazy var wikiMaintenance = AgentWikiMaintenance(store: self)
+    lazy var projectKnowledge = AgentProjectKnowledgeGeneration(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private(set) var writeError: String?

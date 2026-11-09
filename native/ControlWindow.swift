@@ -1339,10 +1339,14 @@ final class FormDocumentView: NSView {
         knowledgeWindow?.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
         knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
     }
-    internal func showKnowledgeCards(taskID: String) {
+    internal func showKnowledgeCards(taskID: String, language: String? = nil) {
         guard let store = companion?.agentStore, store.task(taskID)?.workspace != nil else { return }
         if let existing = knowledgeCardWindow { existing.window?.performClose(nil); if existing.window?.isVisible == true { return } }
         knowledgeWindow?.window?.performClose(nil)
+        if let language, let workspace = store.task(taskID)?.workspace {
+            do { var options = try store.knowledgeCards.options(workspace: workspace); if options.language != language { options.language = language; try store.knowledgeCards.setOptions(options, workspace: workspace, expected: store.knowledgeCards.settings().1) } }
+            catch { setStatus(error.localizedDescription, error: true); return }
+        }
         knowledgeCardWindow = AgentKnowledgeCardWindow(store: store, taskID: taskID)
         knowledgeCardWindow?.onOpenTask = { [weak self] id in self?.showAgentTask(id) }
         knowledgeCardWindow?.showWindow(nil); knowledgeCardWindow?.window?.makeKeyAndOrderFront(nil)
@@ -1372,6 +1376,7 @@ final class FormDocumentView: NSView {
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
         recordWindow?.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
+        recordWindow?.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
         if let runtime = companion?.agentRuntime { recordWindow?.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID) } }
         recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
     }
@@ -1395,10 +1400,13 @@ final class FormDocumentView: NSView {
     }
     func generateAgentWiki(sourceID: String, language: String? = nil) {
         guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
-        do {
-            let id = try AgentWiki.start(store: store, runtime: runtime, sourceID: sourceID, language: language ?? store.task(sourceID)?.wikiLanguage ?? "zh")
-            recordWindow?.window?.close(); knowledgeWindow?.window?.close(); selectAgentTask(id)
-        } catch { setStatus(error.localizedDescription, error: true) }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let id = try await store.projectKnowledge.start(sourceID: sourceID, language: language ?? store.task(sourceID)?.wikiLanguage ?? "zh", runtime: runtime)
+                recordWindow?.window?.close(); knowledgeWindow?.window?.close(); selectAgentTask(id)
+            } catch { setStatus(error.localizedDescription, error: true) }
+        }
     }
     func configureApprovalPanel() {
         approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true

@@ -31,6 +31,7 @@ struct AgentKnowledgeCardJob: Codable, Sendable {
     var originalReviewHash: String?
     var writingNotes: [String]?
     var writingNotesRead: Int?
+    var wikiTaskID: String?
 }
 struct AgentKnowledgeCardRead: Codable, Sendable {
     var sha256: String; var ranges: [[Int]]
@@ -234,6 +235,7 @@ struct AgentKnowledgeCardSettings: Codable { var version = 1; var projects: [Str
     }
     func validate(_ task: AgentTaskRecord) throws -> AgentKnowledgeCardBook {
         guard let store, let job = task.knowledgeJob, let revision = job.sourceRevision else { throw PetError("知识卡片缺少已核对的项目索引") }
+        try store.projectKnowledge.checkTask(task)
         guard try writingNotesComplete(task) else { throw PetError("请先读完本次冻结的知识卡片写作说明") }
         let scope = try scope(task), original = try book(task, language: job.language), pending = try drafts(task)
         guard scope.root == job.workspace, scope.branch == job.branch, original.1 == job.baseHash, !pending.isEmpty else { throw PetError("生成范围或原卡片已变化，不能替换") }

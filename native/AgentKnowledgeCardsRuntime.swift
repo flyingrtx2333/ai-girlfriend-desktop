@@ -1,12 +1,15 @@
 import Foundation
 
 @MainActor extension AgentKnowledgeCards {
-    func generate(sourceID: String, language: String, focus: String = "", automatic: Bool = false) async throws -> String {
+    func generate(sourceID: String, language: String, focus: String = "", automatic: Bool = false, preparation: AgentProjectKnowledgePreparation? = nil, startImmediately: Bool = true) async throws -> String {
         guard let store, let runtime, let source = store.task(sourceID), !source.archived, source.kind != "hook" else { throw PetError("请选择可用的项目任务") }
         let scope = try scope(source)
         guard ["zh", "en"].contains(language), focus.count <= 2000 else { throw PetError("生成语言或分析范围无效") }
-        if let active = store.tasks.first(where: { $0.kind == Self.kind && $0.workspace == scope.root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == language && ([.ready, .running, .waiting].contains($0.status) || finalizing.contains($0.id)) && !$0.archived }) { return active.id }
-        let writingNotes = try AgentWikiPlan.load(files: AgentFiles(workspace: scope.root)).plan.knowledgeNotes ?? []
+        if let active = store.tasks.first(where: { $0.kind == Self.kind && $0.workspace == scope.root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == language && ([.ready, .running, .waiting].contains($0.status) || finalizing.contains($0.id)) && !$0.archived }) { if preparation != nil { throw PetError("已有活动卡片任务，请先暂停后生成项目知识") }; return active.id }
+        if let preparation { guard scope.root == preparation.workspace, scope.branch == preparation.branch else { throw PetError("项目知识准备范围已变化") } }
+        let writingNotes: [String]
+        if let preparation { writingNotes = preparation.configuration.plan.knowledgeNotes ?? [] }
+        else { writingNotes = try AgentWikiPlan.load(files: AgentFiles(workspace: scope.root)).plan.knowledgeNotes ?? [] }
         let previous = try book(source, language: language), selection = store.selectedID
         let id = store.create(title: (automatic ? "更新知识卡片 · " : "知识卡片 · ") + URL(fileURLWithPath: scope.root).lastPathComponent + (language == "zh" ? " · 中文" : " · English"), workspace: scope.root, mode: .goal, workMode: source.organizationMode)
         store.update(id) {
@@ -14,6 +17,7 @@ import Foundation
             $0.model = source.model; $0.modelOverride = source.modelOverride
             $0.knowledgeJob = AgentKnowledgeCardJob(workspace: scope.root, branch: scope.branch, language: language, baseHash: previous.1, sourceTaskID: sourceID, automatic: automatic, focus: focus)
             $0.knowledgeJob?.writingNotes = writingNotes
+            $0.knowledgeJob?.sourceRevision = preparation?.revision; $0.knowledgeJob?.wikiTaskID = preparation?.wikiTaskID
             $0.plan = [AgentPlanStep(title: "核对项目源码", status: "in_progress"), AgentPlanStep(title: "保存三类知识卡片", status: "pending"), AgentPlanStep(title: "回读并核对引用", status: "pending")]
         }
         store.selectedID = selection
@@ -30,7 +34,7 @@ import Foundation
         \(notesInstruction)
         产出3至8张，覆盖architecture（架构分工）、spec（真实约定和限制）、tech_stack（实际框架依赖）。有足够依据就保存一张，不必读完整文件。引用仅用本任务实际read_file读过的路径与行号，不把建议当作既有规范；索引不完整或无法核对则如实标明。
         更新已有卡片保留id，使用当前hash，保留有依据的用户补充。保存三类并回读后完成计划，再finish_task提交真实保存调用ID。应用随后核对源码、分支与版本；草稿不等于发布。
-        """, taskID: id) else { store.update(id) { $0.status = .failed }; throw PetError(runtime.submissionError ?? "生成任务未开始") }
+        """, taskID: id, startImmediately: startImmediately) else { store.update(id) { $0.status = .failed }; throw PetError(runtime.submissionError ?? "生成任务未开始") }
         notices[scope.root] = automatic ? "更新中…" : "生成中…"; onChange?(scope.root)
         return id
     }

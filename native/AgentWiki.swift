@@ -79,6 +79,7 @@ struct AgentWikiPage: Codable {
     }
     static func start(store: AgentStore, runtime: AgentRuntime, sourceID: String, language: String = "zh") throws -> String {
         let state = try generationState(store: store, runtime: runtime, sourceID: sourceID, language: language)
+        guard state.action != "preparing" else { throw PetError("正在核对项目，请稍后重试") }
         if state.action == "resume", let id = state.taskID { return try resumeGeneration(store: store, runtime: runtime, sourceID: sourceID, language: language, expectedID: id) }
         if ["pause", "publishing"].contains(state.action), let id = state.taskID { return id }
         return try startPlanned(store: store, runtime: runtime, sourceID: sourceID, language: language)
