@@ -446,6 +446,8 @@ final class FormDocumentView: NSView {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
         if task.importOrigin != nil { let item = NSMenuItem(title: "导入来源…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "import-source"]; menu.addItem(item) }
+        let unread = companion?.agentStore?.organization.isTaskUnread(task.id) == true, read = NSMenuItem(title: unread ? "标记已读" : "标记未读", action: #selector(taskMenuAction(_:)), keyEquivalent: "")
+        read.target = self; read.representedObject = [task.id, unread ? "read" : "unread"]; menu.addItem(read)
         menu.addItem(.separator())
         let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
         let recap = NSMenuItem(title: "任务回顾", action: #selector(showTaskRecap), keyEquivalent: ""); recap.target = self; menu.addItem(recap)
@@ -1184,12 +1186,15 @@ final class FormDocumentView: NSView {
             if taskNavigationIndex + 1 < taskNavigation.count { taskNavigation.removeSubrange((taskNavigationIndex + 1)..<taskNavigation.count) }
             taskNavigation.append(id); taskNavigationIndex = taskNavigation.count - 1
         }
-        saveAgentDraft(); tasks.selectedID = id; displayedTask = id
+        saveAgentDraft(); var readIssue: String?
+        do { try tasks.setTaskUnread(id, false) } catch { readIssue = error.localizedDescription }
+        tasks.selectedID = id; displayedTask = id
         composer.string = tasks.task(id)?.draft ?? ""; composer.needsDisplay = true
         composer.undoManager?.removeAllActions()
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]
         selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
+        if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
     @objc func newAgentTask() {
@@ -1267,9 +1272,11 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func agentTaskAction(_ id: String, action: String) {
-        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || action == "copy-id" else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread"].contains(action) else { return }
         if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
         switch action {
+        case "read", "unread":
+            do { try tasks.setTaskUnread(id, action == "unread"); renderAgentMessages() } catch { setStatus(error.localizedDescription, error: true) }; return
         case "copy-id": NSPasteboard.general.clearContents(); NSPasteboard.general.setString(id, forType: .string)
         case "delete":
             Task { @MainActor [weak self] in

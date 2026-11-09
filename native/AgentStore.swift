@@ -277,6 +277,10 @@ import Foundation
         worktreeRetention.tasksChanged()
         return warnings.isEmpty ? nil : "任务记录已永久删除；" + warnings.joined(separator: "；")
     }
+    func setTaskUnread(_ id: String, _ unread: Bool) throws {
+        guard refreshDeletedRecords(), tasks.contains(where: { $0.id == id }) else { throw PetError(deletions.issue ?? "任务已不存在") }
+        try organization.setTaskUnread(id, unread)
+    }
     func importTargetID(_ base: String) throws -> String {
         guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
         var value = base, visited = Set<String>()

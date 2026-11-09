@@ -84,6 +84,7 @@ private final class AgentTaskTable: NSTableView {
             if !bulkSelecting { bulkIDs.removeAll(); updateBulkBar() }
         }
         table.taskMenu = { [weak self] row in self?.menu(row) }
+        table.target = self; table.action = #selector(openUnreadSelection)
         table.registerForDraggedTypes([Self.dragType]); table.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         empty.font = .systemFont(ofSize: 12); empty.textColor = .secondaryLabelColor; empty.isHidden = true; empty.setAccessibilityLabel("任务筛选状态")
@@ -145,7 +146,7 @@ private final class AgentTaskTable: NSTableView {
         guard next != viewMenuSignature else { return }; viewMenuSignature = next
         guard let menu = viewMenu.menu else { return }; while menu.items.count > 1 { menu.removeItem(at: 1) }
         func item(_ title: String, _ action: Selector?, value: Any? = nil, checked: Bool = false, enabled: Bool = true) -> NSMenuItem { let result = NSMenuItem(title: title, action: action, keyEquivalent: ""); result.target = self; result.representedObject = value; result.state = checked ? .on : .off; result.isEnabled = enabled; return result }
-        for (i, title) in ["全部任务", "需要我", "归档"].enumerated() { let entry = item(title, #selector(changeFilter(_:)), checked: filter == i); entry.tag = i; menu.addItem(entry) }
+        for (i, title) in ["全部任务", "需要我", "归档", "未读"].enumerated() { let entry = item(title, #selector(changeFilter(_:)), checked: filter == i); entry.tag = i; menu.addItem(entry) }
         menu.addItem(.separator())
         let grouping = item("分组方式", nil), groups = NSMenu(); groups.autoenablesItems = false
         for value in AgentTaskGrouping.allCases { groups.addItem(item(value == .workspace ? workMode.directoryTitle : value.title, #selector(changeGrouping(_:)), value: value.rawValue, checked: taskView.grouping == value, enabled: filter != 1)) }; grouping.submenu = groups; menu.addItem(grouping)
@@ -164,6 +165,7 @@ private final class AgentTaskTable: NSTableView {
         var value: [String: Any] = ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
+        value["filter"] = filter; value["unreadTaskIDs"] = tasks.filter { organization?.isTaskUnread($0.id) == true }.map(\.id).sorted()
         if CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
         if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
@@ -181,7 +183,7 @@ private final class AgentTaskTable: NSTableView {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let now = Date(), calendar = Calendar.current
         let visible = tasks.filter { task in
-            (filter == 1 || task.organizationMode == workMode) && (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting)) && (filter == 1 || taskView.includes(task, now: now, calendar: calendar)) && (query.isEmpty || (task.title + "\n" + task.summary).localizedCaseInsensitiveContains(query))
+            (filter == 1 || task.organizationMode == workMode) && (filter == 2 ? task.archived : !task.archived && (filter != 1 || task.status == .waiting) && (filter != 3 || organization?.isTaskUnread(task.id) == true)) && (filter == 1 || taskView.includes(task, now: now, calendar: calendar)) && (query.isEmpty || (task.title + "\n" + task.summary).localizedCaseInsensitiveContains(query))
         }.sorted { effectiveGrouping == .activity ? ($0.activityAt ?? $0.updated) > ($1.activityAt ?? $1.updated) : $0.updated > $1.updated }
         let custom = organization?.customGroups(workMode, tasks: tasks) ?? [], byID = Dictionary(tasks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var memberships: [String: String] = [:]; for group in custom { for id in group.taskIDs { memberships[id] = group.id } }
@@ -229,7 +231,7 @@ private final class AgentTaskTable: NSTableView {
                 if !members.isEmpty { rows.append(.group(title, nil)); for task in members { append(task) } }
             }
         }
-        heading.stringValue = filter == 1 ? "需要我" : filter == 2 ? "归档" : effectiveGrouping == .workspace ? workMode.directoryTitle : effectiveGrouping == .custom ? "自定义分组" : "最近会话"
+        heading.stringValue = filter == 1 ? "需要我" : filter == 2 ? "归档" : filter == 3 ? "未读" : effectiveGrouping == .workspace ? workMode.directoryTitle : effectiveGrouping == .custom ? "自定义分组" : "最近会话"
         if filter != 1 { if taskView.grouping == .workspace, taskView.workspace != nil { heading.stringValue += " · 已筛选" }; if taskView.activity != .all { heading.stringValue += " · " + taskView.activity.title } }
         heading.toolTip = heading.stringValue; heading.lineBreakMode = .byTruncatingTail; rebuildViewMenu()
         empty.isHidden = rows.contains { if case .task = $0 { return true }; return false }; empty.stringValue = narrowed ? "没有匹配的任务" : "暂无任务"
@@ -267,6 +269,10 @@ private final class AgentTaskTable: NSTableView {
         }
         guard rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow] else { return }; onSelect?(task.id)
     }
+    @objc private func openUnreadSelection() {
+        guard !bulkSelecting, rows.indices.contains(table.selectedRow), case .task(let task, _) = rows[table.selectedRow], task.id == selected, organization?.isTaskUnread(task.id) == true else { return }
+        onSelect?(task.id)
+    }
     private func updateBulkBar() {
         bulkBar.isHidden = bulkIDs.isEmpty; bulkCount.stringValue = "已选择 \(bulkIDs.count) 项"
         bulkAction.title = filter == 2 ? "恢复所选任务" : "归档所选任务"; bulkAction.setAccessibilityLabel(bulkAction.title)
@@ -293,12 +299,13 @@ private final class AgentTaskTable: NSTableView {
             return view
         case .task(let task, let depth):
             let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == selected, animated: false)
-            let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
+            let unread = organization?.isTaskUnread(task.id) == true
+            let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
             let icon = NSImageView(image: NSImage(systemSymbolName: task.status == .completed ? "circle.fill" : task.status == .running ? "circle.dotted" : task.status == .waiting ? "exclamationmark.circle.fill" : task.status == .failed ? "exclamationmark.circle" : task.status == .stopped ? "stop.circle" : "circle", accessibilityDescription: nil)!)
             icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : .secondaryLabelColor
             let line = NSStackView(views: [icon, label]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12), icon.heightAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12)])
-            cell.toolTip = task.title + " · " + task.statusTitle; cell.setAccessibilityLabel(task.title + "，" + task.statusTitle); return cell
+            cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "")); return cell
         }
     }
     @objc private func toggleGroup(_ sender: NSButton) { guard rows.indices.contains(sender.tag), case .group(_, let path) = rows[sender.tag], let path else { return }; let key = groupKey(path); if collapsed.contains(key) { collapsed.remove(key) } else { collapsed.insert(key) }; applyFilter() }
@@ -326,6 +333,8 @@ private final class AgentTaskTable: NSTableView {
         }
         if tasks.contains(where: { childOwner($0) == task.id }) { let item = NSMenuItem(title: expandedTasks.contains(task.id) ? "收起子任务" : "展开子任务", action: #selector(toggleChildren(_:)), keyEquivalent: ""); item.target = self; item.representedObject = task.id; menu.addItem(item); menu.addItem(.separator()) }
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档", "archive")] { let item = NSMenuItem(title: title, action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running; menu.addItem(item) }
+        let unread = organization?.isTaskUnread(task.id) == true, read = NSMenuItem(title: unread ? "标记已读" : "标记未读", action: #selector(taskAction(_:)), keyEquivalent: "")
+        read.target = self; read.representedObject = [task.id, unread ? "read" : "unread"]; menu.addItem(read)
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }

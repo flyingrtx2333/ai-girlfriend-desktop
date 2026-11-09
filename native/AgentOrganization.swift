@@ -55,11 +55,22 @@ struct AgentDirectoryEntry: Codable {
         var taskViews: [String: AgentTaskView]?
         var taskGroups: [AgentCustomTaskGroup]?
         var manualOrders: [String: [String]]?
+        var unreadTasks: [String]?
     }
     private let file: URL
     private var document = Document(), loadIssue: String?
     private var openedSignature = "missing"
     private(set) var revision = 0
+    private var unreadTasks = Set<String>()
+    func isTaskUnread(_ id: String) -> Bool { unreadTasks.contains(id) }
+    func setTaskUnread(_ id: String, _ unread: Bool) throws {
+        guard UUID(uuidString: id) != nil else { throw PetError("任务编号无效") }
+        guard unreadTasks.contains(id) != unread else { return }
+        let entry = try AgentFiles(workspace: file.deletingLastPathComponent().path).entryMetadata(file)
+        guard entry.kind == "missing" || entry.kind == "file" && (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("任务组织记录只读，未更改未读标记") }
+        var ids = unreadTasks; if unread { ids.insert(id) } else { ids.remove(id) }
+        var next = document; next.unreadTasks = ids.isEmpty ? nil : ids.sorted(); try save(next)
+    }
     private var deletedArchives = Set<String>()
     func suppressDeletedArchives(_ values: Set<String>) { if deletedArchives != values { deletedArchives = values; revision += 1 } }
     func requireCurrentSignature() throws -> String {
@@ -71,6 +82,7 @@ struct AgentDirectoryEntry: Codable {
         var next = document
         next.directories.removeAll { $0.archiveID.map(workspaceIDs.contains) == true }
         next.selected = next.selected.filter { !taskIDs.contains($0.value) }
+        next.unreadTasks?.removeAll { taskIDs.contains($0) }
         if let selected { next.selected[selected.organizationMode.rawValue] = selected.id }
         if next.taskGroups != nil { for i in next.taskGroups!.indices { next.taskGroups![i].taskIDs.removeAll { taskIDs.contains($0) } } }
         try save(next)
@@ -84,6 +96,8 @@ struct AgentDirectoryEntry: Codable {
             let data = try files.readData(file, maximum: 1_000_000)
             guard try files.entryMetadata(file).signature == before else { throw PetError("任务组织记录正在变化，请重试") }
             document = try JSONDecoder().decode(Document.self, from: data)
+            guard (document.unreadTasks ?? []).allSatisfy({ UUID(uuidString: $0) != nil }) else { throw PetError("未读任务编号无效") }
+            unreadTasks = Set(document.unreadTasks ?? [])
             openedSignature = before
         } catch { loadIssue = "任务组织记录无法读取，原文件已保留：" + error.localizedDescription }
     }
@@ -97,7 +111,7 @@ struct AgentDirectoryEntry: Codable {
         do { try files.writeData(data, to: file, permissions: 0o600, expectedTarget: openedSignature) }
         catch { throw PetError("任务组织记录未保存，请重新打开应用后重试：" + error.localizedDescription) }
         openedSignature = try files.entryMetadata(file).signature
-        document = value; revision += 1
+        document = value; unreadTasks = Set(value.unreadTasks ?? []); revision += 1
     }
     func remember(_ task: AgentTaskRecord) throws {
         guard document.selected[task.organizationMode.rawValue] != task.id else { return }
