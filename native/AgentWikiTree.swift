@@ -42,7 +42,7 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func setLanguage(_ value: String) { language.selectItem(at: ["zh", "en", "legacy"].firstIndex(of: value) ?? 0) }
     func setSharingState(busy: Bool, writable: Bool) {
-        language.isEnabled = !busy; more.isEnabled = !busy
+        language.isEnabled = !busy; more.isEnabled = !busy; plan.isEnabled = !busy
         for item in more.itemArray.dropFirst() { item.isEnabled = !busy && selectedLanguage != "legacy" && (writable || item.representedObject as? String == "open") }
     }
     func show(_ pages: [AgentWikiPage], selected: String?, root: String = ".bluefatfish/wiki") { self.pages = pages; selectedPath = selected; rootPath = root; rebuild() }
