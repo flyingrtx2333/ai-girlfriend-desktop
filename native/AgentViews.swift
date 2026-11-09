@@ -23,6 +23,7 @@ private final class AgentTaskTable: NSTableView {
 
 @MainActor final class AgentTaskSidebar: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     var onSelect: ((String) -> Void)?
+    var onAttention: (() -> Void)?
     var onNew: (() -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
@@ -120,15 +121,15 @@ private final class AgentTaskTable: NSTableView {
         add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
         if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(groupKey(path)) }
         let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))"
-        let waiting = values.filter { !$0.archived && $0.status == .waiting }.count
-        attention.title = waiting > 0 ? "需要我  \(waiting)" : "需要我"
+        if onAttention == nil { setAttentionCount(values.filter { !$0.archived && $0.status == .waiting }.count, enabled: true) }
         if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
     }
     @objc private func newTask() { onNew?() }
     @objc private func newWorkspace() { onNewWorkspace?() }
     @objc private func showSearch() { searchVisible.toggle(); search.isHidden = !searchVisible; if searchVisible { window?.makeFirstResponder(search) } else { search.stringValue = ""; applyFilter() } }
-    @objc private func showAttention() { cancelBulkSelection(); filter = filter == 1 ? 0 : 1; applyFilter() }
-    @objc private func changeFilter(_ sender: NSMenuItem) { cancelBulkSelection(); filter = sender.tag; applyFilter() }
+    func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
+    @objc private func showAttention() { cancelBulkSelection(); if let onAttention { onAttention() } else { filter = filter == 1 ? 0 : 1; applyFilter() } }
+    @objc private func changeFilter(_ sender: NSMenuItem) { if sender.tag == 1, let onAttention { onAttention(); return }; cancelBulkSelection(); filter = sender.tag; applyFilter() }
     @objc private func changeWorkMode() {
         guard AgentWorkMode.allCases.indices.contains(workModePicker.indexOfSelectedItem) else { return }
         filter = 0; search.stringValue = ""; searchVisible = false; search.isHidden = true

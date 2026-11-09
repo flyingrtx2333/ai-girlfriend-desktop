@@ -29,7 +29,17 @@ import AppKit
         let value = AgentWindowDraft(id: id, value: task.draft ?? "", attributes: attributes)
         taskWindowDrafts.setObject(value, forKey: id as NSString); return value
     }
-    func refreshTaskWindows() { for window in taskControls { window.scheduleRender(); window.refreshAutomationBadge() } }
+    func refreshTaskWindows() { agentStore?.attention.refresh(); for window in taskControls { window.scheduleRender(); window.refreshAutomationBadge(); window.refreshAttention() } }
+    func showAttention(settings: Bool = false) {
+        ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { return }
+        if attentionWindow == nil {
+            let window = AgentAttentionWindow(attention: tasks.attention, runtime: runtime)
+            window.onOpenTask = { [weak self] id in guard let self else { return }; let owner = self.taskControl(for: id); owner.showAgentTask(id); owner.show(tab: "chat") }
+            attentionWindow = window
+        }
+        attentionWindow?.showWindow(nil); attentionWindow?.window?.makeKeyAndOrderFront(nil); tasks.attention.refresh(); attentionWindow?.refresh()
+        if settings { attentionWindow?.showSettings() }
+    }
     func persistTaskDrafts(_ id: String? = nil) -> Bool {
         var saved = true
         for window in taskControls where id == nil || window.agentTaskID == id { if !window.saveWindowDraft() { saved = false } }
@@ -48,6 +58,7 @@ import AppKit
         if focusedTaskControl === window { focusedTaskControl = nil }
     }
     func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
+        try attentionWindow?.requireDeletionAllowed(ids)
         for window in taskControls { try window.requireTaskDeletionAllowed(ids) }
     }
     func closeDeletedTaskWindows(_ ids: Set<String>) {

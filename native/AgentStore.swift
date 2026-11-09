@@ -22,6 +22,7 @@ import Foundation
     lazy var knowledgeCards = AgentKnowledgeCards(store: self)
     lazy var wikiMaintenance = AgentWikiMaintenance(store: self)
     lazy var projectKnowledge = AgentProjectKnowledgeGeneration(store: self)
+    lazy var attention = AgentAttention(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]
     private var taskHashes: [String: String] = [:]
@@ -103,6 +104,7 @@ import Foundation
         value.hookContexts = nil; value.hookRejectedAnswers = nil
         value.hookPromptIDs = nil; value.hookContextIDs = nil
         value.modelReceipts = nil; value.contextSnapshot = nil; value.recap = nil; value.gitTurn = nil; value.gitPushReview = nil; value.gitPushReceipt = nil; value.gitRemoteSnapshot = nil
+        value.resultHistory = nil
         value.knowledgeReads = nil
         value.wikiEditReads = nil
         if var job = value.wikiJob { job.plan = AgentWikiPlan(); job.reviewed = nil; job.pageReads = nil; job.update?.diff = ""; job.update?.retained = [:]; job.update?.assets = [:]; job.update?.baseFiles = [:]; job.update?.changesRead = nil; value.wikiJob = job }
@@ -196,6 +198,9 @@ import Foundation
         let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
         let eventsChanged = !messagesChanged && (value.events.count != previous.events.count || zip(value.events, previous.events).contains { pair in pair.0.id != pair.1.id || pair.0.status != pair.1.status || pair.0.detail != pair.1.detail || pair.0.duration != pair.1.duration })
         value.activityAt = messagesChanged || eventsChanged ? value.updated : previous.activityAt ?? Self.metadata(previous).activityAt
+        for result in [AgentTaskResult.capture(previous, at: previous.activityAt ?? previous.updated), AgentTaskResult.capture(value, at: value.updated)].compactMap({ $0 }) {
+            if value.resultHistory?.contains(where: { $0.id == result.id }) != true { if value.resultHistory == nil { value.resultHistory = [] }; value.resultHistory?.append(result) }
+        }
         cache[id] = value; tasks[index] = Self.metadata(value)
         let coreScopeChanged = previous.workspace != value.workspace || previous.mode != value.mode || previous.permission != value.permission
         let agentScopeChanged = previous.agent?.profile.id != value.agent?.profile.id || previous.agent?.ownerID != value.agent?.ownerID || previous.agent?.readOnly != value.agent?.readOnly || previous.agent?.network != value.agent?.network || previous.agent?.permissionCeiling != value.agent?.permissionCeiling

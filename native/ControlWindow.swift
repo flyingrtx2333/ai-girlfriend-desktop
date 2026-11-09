@@ -42,7 +42,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("archived", "归档", "archivebox")]
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -224,6 +224,7 @@ final class FormDocumentView: NSView {
             taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar); chatSidebarViews.append(taskSidebar)
             NSLayoutConstraint.activate([taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 184), taskSidebar.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 18), taskSidebar.bottomAnchor.constraint(equalTo: sideFooter.topAnchor, constant: -20)])
             taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
+            taskSidebar.onAttention = { [weak self] in self?.companion?.showAttention() }
             taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
             taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
         }
@@ -259,6 +260,7 @@ final class FormDocumentView: NSView {
         let brand = stack([icon, title], spacing: 9); content.addSubview(brand)
         taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar)
         taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
+        taskSidebar.onAttention = { [weak self] in self?.companion?.showAttention() }
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
         taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProjectDirectory() }
         taskSidebar.onNewInWorkspace = { [weak self] path, mode in
@@ -730,6 +732,8 @@ final class FormDocumentView: NSView {
         let worktrees = NSButton(title: "工作树", target: self, action: #selector(showWorktrees))
         row("", stack([memory, extensions, worktrees, NSView()], spacing: 8))
         if let store = companion?.agentStore {
+            group("attention", "需要我", "需要我 待办 问题 审批 结果 已处理 来源 通知")
+            row("", NSButton(title: "管理需要我", target: self, action: #selector(openAttentionSettings)))
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel)
             group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
@@ -1556,6 +1560,7 @@ final class FormDocumentView: NSView {
         knowledgeLibraryWindow?.showWindow(nil); knowledgeLibraryWindow?.window?.makeKeyAndOrderFront(nil)
     }
     @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
+    @objc func openAttentionSettings() { companion?.showAttention(settings: true) }
     private func openAgentRecordItem(section: Int, value: String) {
         if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
@@ -1933,6 +1938,7 @@ extension ControlWindow {
     }
     func persistAgentDraft() { attachmentImport?.cancel(); saveAgentDraft() }
     func saveWindowDraft() -> Bool { saveAgentDraft() }
+    func refreshAttention() { if let attention = companion?.agentStore?.attention { taskSidebar.setAttentionCount(attention.pendingCount, enabled: attention.settings.enabled) } }
     func undoManager(for view: NSTextView) -> UndoManager? { view === composer ? windowDraft?.undo : nil }
     func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
         guard let store = companion?.agentStore else { return ["attachmentUI": false] }

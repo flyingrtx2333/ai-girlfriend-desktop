@@ -404,6 +404,7 @@ import Foundation
         store.update(taskID) { record in
             if let i = record.approvals.lastIndex(where: { $0.call.id == callID && $0.decision == nil }) {
                 record.approvals[i].decision = decision
+                record.approvals[i].decidedAt = Date()
                 record.approvals[i].answerAttachments = attachmentIDs.isEmpty ? nil : attachmentIDs
                 record.approvals[i].answerMessage = message
                 record.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }
@@ -665,7 +666,7 @@ import Foundation
                             let message = approval?.answerMessage ?? AgentMessage(role: "user", content: String(answer.dropFirst(7)), attachmentIDs: approval?.answerAttachments)
                             if try await !admitPrompt(message, id: id, secret: key) {
                                 store.update(id) { record in
-                                    if let i = record.approvals.lastIndex(where: { $0.id == approval?.id }) { record.approvals[i].decision = nil; record.approvals[i].answerMessage = nil; record.approvals[i].answerAttachments = nil }
+                                    if let i = record.approvals.lastIndex(where: { $0.id == approval?.id }) { record.approvals[i].decision = nil; record.approvals[i].decidedAt = nil; record.approvals[i].answerMessage = nil; record.approvals[i].answerAttachments = nil }
                                     for attachment in message.attachmentIDs ?? [] { if record.draftAttachmentIDs == nil { record.draftAttachmentIDs = [] }; if record.draftAttachmentIDs?.contains(attachment) != true { record.draftAttachmentIDs?.append(attachment) } }
                                     record.status = .waiting
                                     if let i = record.events.firstIndex(where: { $0.id == eventID }) { record.events[i].status = "waiting" }

@@ -3,7 +3,7 @@ import AppKit
 @MainActor extension AppDelegate {
     func ensureAgent() {
         guard agentStore == nil else { return }
-        let extensionHome = checkDirectory != nil && ["--manual-ui", "--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
+        let extensionHome = checkDirectory != nil && ["--manual-ui", "--attention-live-ui", "--extension-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--mcp-content-check", "--worktree-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--organization-check", "--import-check", "--terminal-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) ? checkDirectory!.appendingPathComponent("shared-home") : FileManager.default.homeDirectoryForCurrentUser
         let mcpKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.mcp.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let hookKeychain = checkDirectory.map { PetKeychain(service: "com.xjs.bluefatfish.hooks.check." + AgentFiles.hash(Data($0.path.utf8))) }
         let tasks = AgentStore(directory: store.directory, legacy: store.messages, extensionHome: extensionHome, mcpKeychain: mcpKeychain, hookKeychain: hookKeychain)
@@ -19,6 +19,7 @@ import AppKit
         tasks.knowledgeCards.runtime = runtime
         tasks.wikiMaintenance.runtime = runtime
         tasks.onChange = { [weak self] in self?.refreshTaskWindows() }
+        tasks.attention.onChange = { [weak self] in guard let self else { return }; self.taskControls.forEach { $0.refreshAttention() }; self.attentionWindow?.refresh() }
         tasks.organization.onChange = { [weak self] in self?.refreshTaskWindows() }
         tasks.wikiMaintenance.onChange = { [weak self] _ in self?.refreshTaskWindows() }
         tasks.knowledgeCards.onChange = { [weak self] root in for window in self?.taskControls ?? [] { window.refreshKnowledgeCards(workspace: root) } }
@@ -64,11 +65,12 @@ import AppKit
         }
         tasks.automations.onNotice = { [weak self] run in
             guard let self, !self.closing else { return }; self.taskControls.forEach { $0.refreshAutomationBadge() }
-            if self.checkDirectory == nil { self.automationNotifications.post(run) }
+            if self.checkDirectory == nil, tasks.attention.settings.automationNotifications { self.automationNotifications.post(run) }
         }
         automationNotifications.onOpen = { [weak self] id in guard let self else { return }; let window = self.taskControl(for: id); window.showAgentTask(id); window.show(tab: "chat") }
         tasks.worktreeRetention.onChange = { [weak self] in for window in self?.taskControls ?? [] { window.refreshWorktreeRetention() } }
         if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume(); tasks.wikiMaintenance.resume() }
+        tasks.attention.refresh()
     }
     private func completeAgentResponse(id: String, text: String) {
         guard agentStore?.selectedID == id, agentStore?.task(id)?.automation == nil, !text.isEmpty else { return }

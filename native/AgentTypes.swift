@@ -93,7 +93,23 @@ struct AgentApproval: Codable, Identifiable {
     var decision: String?
     var answerAttachments: [String]?
     var answerMessage: AgentMessage?
+    var decidedAt: Date?
     var created = Date()
+}
+struct AgentTaskResult: Codable, Identifiable {
+    var id: String
+    var messageID: String?, eventID: String?
+    var summary: String
+    var status: AgentTaskStatus
+    var created: Date
+    var plan: [String]?
+    static func capture(_ task: AgentTaskRecord, at date: Date) -> Self? {
+        guard [.completed, .failed, .stopped].contains(task.status), task.messages.contains(where: \.isHumanInput) || task.agent?.ownerID != nil || task.automation != nil else { return nil }
+        let message = task.hasConfirmedKnowledgeCompletion ? nil : task.messages.last { $0.role == "assistant" && !$0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
+        let event = task.status == .completed ? task.events.last { $0.title == "finish_task" && $0.status == "completed" } : task.events.last { $0.kind == "state" && $0.status == task.status.rawValue }
+        guard let key = task.status == .completed ? message?.id ?? event?.id : event?.id else { return nil }
+        return Self(id: task.status.rawValue + ":" + key, messageID: task.status == .completed ? message?.id : nil, eventID: event?.id, summary: task.summary, status: task.status, created: date, plan: task.mode == .plan && !task.plan.isEmpty && task.status == .completed ? task.plan.map(\.title) : nil)
+    }
 }
 struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
@@ -111,6 +127,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var plan: [AgentPlanStep] = []
     var changes: [AgentChange] = []
     var approvals: [AgentApproval] = []
+    var resultHistory: [AgentTaskResult]?
     var pendingCalls: [AgentToolCall] = []
     var artifacts: [String] = []
     var sources: [String] = []

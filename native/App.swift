@@ -57,6 +57,7 @@ final class PetWebView: WKWebView {
     weak var focusedTaskControl: ControlWindow?
     var nextTaskWindowNumber = 2
     let taskWindowDrafts = NSMapTable<NSString, AgentWindowDraft>(keyOptions: .strongMemory, valueOptions: .weakMemory)
+    var attentionWindow: AgentAttentionWindow?
     lazy var screenCompanion = ScreenCompanion(host: self)
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
@@ -140,6 +141,7 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard attentionWindow?.prepareToClose() != false else { return .terminateCancel }
         if agentStore != nil {
             guard persistTaskDrafts() else { return .terminateCancel }
             for window in taskControls { if !window.closeOwnedTaskPanels() { return .terminateCancel } }

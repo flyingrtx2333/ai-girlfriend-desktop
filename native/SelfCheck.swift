@@ -24,23 +24,29 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        if CommandLine.arguments.contains("--manual-ui") {
-            // Isolated manual acceptance uses the production UI; only model transmission is blocked.
+        let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
+        if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
+            // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
             var requests = 0
             do {
                 ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务未初始化") }
-                runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") }
+                if attentionLiveUI {
+                    let budget = try prepareAttentionLiveUI(output); requests = budget.used
+                    runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
+                } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
+                if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
-                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": true], "manual-ui-process-" + pid + ".json")
+                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
                     if let name = try? String(contentsOf: output.appendingPathComponent("capture-manual-ui-" + pid), encoding: .utf8), name != capture, name.range(of: "^[a-z0-9-]{1,60}$", options: .regularExpression) != nil {
                         capture = name; var value = control.organizationSnapshot(); value["appPID"] = getpid(); value["binaryHash"] = hash; value["modelRequests"] = requests
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
+                        value["attention"] = attentionWindow?.checkState() ?? [:]
                         value["tasks"] = tasks.tasks.map { ["id": $0.id, "title": $0.title, "mode": $0.organizationMode.rawValue, "archived": $0.archived, "unread": tasks.organization.isTaskUnread($0.id)] as [String: Any] }
                         try write(value, "native-manual-ui-" + pid + "-" + name + ".json")
                     }; await wait(0.25)
