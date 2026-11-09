@@ -3,6 +3,7 @@ import Foundation
 @MainActor extension AgentWiki {
     static let languages = ["zh", "en", "legacy"]
     private static var finalizing: Set<String> = []
+    static func isFinalizing(_ id: String) -> Bool { finalizing.contains(id) }
     static func root(branch: String, language: String, taskID: String) -> String { ".bluefatfish/wiki/.generated/" + AgentFiles.hash(Data(branch.utf8)) + "/" + language + "/" + taskID }
     static func validSharedFile(_ path: String) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)

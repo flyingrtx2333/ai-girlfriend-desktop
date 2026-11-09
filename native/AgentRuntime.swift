@@ -598,6 +598,7 @@ import Foundation
             drainQueue()
         }
         do {
+            try Task.checkCancellation(); guard active[id]?.token == run.token else { return }
             try await store.offices.prepareForExecution(workspace: store.task(id)?.workspace)
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)

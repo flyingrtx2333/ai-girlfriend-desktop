@@ -25,6 +25,9 @@ import UniformTypeIdentifiers
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
     var onGenerateWiki: ((String) -> Void)?
+    private weak var wikiRuntime: AgentRuntime?
+    private var onWikiTask: ((String) -> Void)?
+    private var wikiGeneration: AgentWikiGenerationState?
     private var wikiPlanWindow: AgentWikiPlanWindow?
     private var wikiSharingTask: Task<Void, Never>?
     private var wikiSharingAlert: NSAlert?
@@ -144,6 +147,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     func refreshLiveRecords(_ id: String) {
+        if window?.isVisible == true, sections.selectedSegment == 6 { updateWikiSharingState(); return }
         guard id == taskID, window?.isVisible == true, [3, 4].contains(sections.selectedSegment), !dirty, let task = store.task(taskID) else { return }
         let next = sections.selectedSegment == 3
             ? task.changes.map { "\($0.id)|\($0.afterHash ?? "")|\($0.afterKind ?? "")|\($0.restoredAt?.description ?? "")" }.joined() + task.status.rawValue + (task.pendingFileCapture?.id ?? "")
@@ -154,9 +158,28 @@ import UniformTypeIdentifiers
         if let index = items.firstIndex(where: { $0.value == previous }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
         if let clip, let origin { clip.scroll(to: origin); text.enclosingScrollView?.reflectScrolledClipView(clip) }
     }
-    @objc private func generateWiki() { if wikiSharingTask == nil, wikiTree.selectedLanguage != "legacy", wikiPlanWindow?.confirmClosing() != false, canLeave() { onGenerateWiki?(wikiTree.selectedLanguage) } }
+    @objc private func generateWiki() {
+        guard wikiSharingTask == nil, wikiTree.selectedLanguage != "legacy" else { return }
+        guard let runtime = wikiRuntime else { if wikiPlanWindow?.confirmClosing() != false, canLeave() { onGenerateWiki?(wikiTree.selectedLanguage) }; return }
+        do {
+            let language = wikiTree.selectedLanguage
+            guard let snapshot = wikiGeneration else { throw PetError("请刷新 Wiki 生成状态") }
+            if snapshot.action == "pause", let id = snapshot.taskID {
+                try AgentWiki.pauseGeneration(store: store, runtime: runtime, sourceID: taskID, language: language, expectedID: id)
+                state.stringValue = "生成已暂停" + (dirty ? " · 草稿未保存" : "")
+            } else {
+                guard snapshot.action != "publishing", wikiPlanWindow?.confirmClosing() != false, canLeave() else { return }
+                let id: String
+                if snapshot.action == "resume", let previous = snapshot.taskID { id = try AgentWiki.resumeGeneration(store: store, runtime: runtime, sourceID: taskID, language: language, expectedID: previous) }
+                else { id = try AgentWiki.start(store: store, runtime: runtime, sourceID: taskID, language: language) }
+                state.stringValue = snapshot.action == "resume" ? "已继续生成" : "已开始生成"; onWikiTask?(id)
+            }
+        } catch { state.stringValue = error.localizedDescription }
+        updateWikiSharingState()
+    }
     func enableWikiGeneration(_ action: @escaping () -> Void) { enableWikiGeneration { _ in action() } }
-    func enableWikiGeneration(_ action: @escaping (String) -> Void) { onGenerateWiki = action; generate.isEnabled = wikiTree.selectedLanguage != "legacy" }
+    func enableWikiGeneration(_ action: @escaping (String) -> Void) { onGenerateWiki = action; updateWikiSharingState() }
+    func configureWikiRuntime(_ runtime: AgentRuntime, onTask: @escaping (String) -> Void) { wikiRuntime = runtime; onWikiTask = onTask; updateWikiSharingState() }
     private func openWikiPlan() {
         guard wikiSharingTask == nil else { return }
         do {
@@ -177,8 +200,14 @@ import UniformTypeIdentifiers
             if let workspace = task?.workspace { wikiCitation = try AgentWiki.citation(store: store, workspace: workspace); wikiTree.setCitationState(wikiCitation?.enabled) }
             else { wikiCitation = nil; wikiTree.setCitationState(nil) }
         } catch { wikiCitation = nil; wikiTree.setCitationState(nil, problem: error.localizedDescription) }
-        wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable)
-        generate.isEnabled = wikiSharingTask == nil && onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
+        wikiGeneration = nil
+        if let runtime = wikiRuntime, wikiTree.selectedLanguage != "legacy" {
+            do { wikiGeneration = try AgentWiki.generationState(store: store, runtime: runtime, sourceID: taskID, language: wikiTree.selectedLanguage); generate.toolTip = nil }
+            catch { generate.toolTip = error.localizedDescription }
+        }
+        generate.title = wikiGeneration?.title ?? "生成 Wiki"
+        wikiTree.setSharingState(busy: wikiSharingTask != nil, writable: writable, canRegenerate: wikiGeneration != nil && wikiGeneration?.action != "publishing")
+        generate.isEnabled = wikiSharingTask == nil && writable && (wikiRuntime == nil ? onGenerateWiki != nil : wikiGeneration != nil) && wikiGeneration?.action != "publishing" && wikiTree.selectedLanguage != "legacy"
     }
     private func connectWikiIndex() async throws {
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}"), directory = try tools.gitDirectory(for: call)
@@ -222,6 +251,7 @@ import UniformTypeIdentifiers
             catch { state.stringValue = error.localizedDescription }; return
         }
         guard !dirty else { state.stringValue = "请先保存当前文档，草稿已保留"; return }
+        if action == "regenerate" { regenerateWiki(); return }
         state.stringValue = action == "export" ? "正在导出 Wiki…" : "正在读取 Wiki…"
         wikiSharingTask = Task { @MainActor [weak self] in
             guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
@@ -244,6 +274,24 @@ import UniformTypeIdentifiers
                 try Task.checkCancellation(); try await AgentWiki.importWiki(preview, store: store, taskID: taskID, restoring: action == "restore")
                 if activeSection == 6, wikiTree.selectedLanguage == language { wikiTree.show([], selected: nil); refresh() }
                 state.stringValue = "已\(action == "restore" ? "恢复" : "导入") \(preview.metadata.documents.count) 页 Wiki"
+            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
+        }
+        updateWikiSharingState()
+    }
+    private func regenerateWiki() {
+        guard let runtime = wikiRuntime, wikiPlanWindow?.confirmClosing() != false else { return }
+        let language = wikiTree.selectedLanguage
+        wikiSharingTask = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
+            do {
+                let preview = try AgentWiki.previewRegeneration(store: store, runtime: runtime, sourceID: taskID, language: language)
+                let alert = NSAlert(); alert.messageText = "重新生成 Wiki？"
+                alert.informativeText = "分支：" + preview.branch + " · " + (language == "zh" ? "简体中文" : "English") + "\n" + (preview.documentCount.map { "按当前规划生成 \($0) 页。" } ?? "按当前项目重新规划页面。") + "当前生成将暂停；原任务和文档保留，新版本通过校验后发布。"
+                alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
+                guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
+                try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                let id = try AgentWiki.regenerate(preview, store: store, runtime: runtime, sourceID: taskID)
+                state.stringValue = "已重新开始生成"; onWikiTask?(id)
             } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
         }
         updateWikiSharingState()
@@ -516,6 +564,7 @@ import UniformTypeIdentifiers
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         if CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["wikiSharingBusy"] = wikiSharingTask != nil; result["wikiSharingConfirmation"] = wikiSharingAlert?.messageText ?? ""; result["wikiSharingSheetVisible"] = wikiSharingAlert.map { window?.attachedSheet === $0.window } ?? false; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
+        if CommandLine.arguments.contains("--wiki-generation-check") { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "problem": generate.toolTip ?? ""] }
         return result
     }
     func checkMarkdown() -> [String: Bool] {

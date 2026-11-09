@@ -1372,6 +1372,7 @@ final class FormDocumentView: NSView {
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
         recordWindow?.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
+        if let runtime = companion?.agentRuntime { recordWindow?.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID) } }
         recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {

@@ -77,6 +77,9 @@ struct AgentWikiPage: Codable {
         return "已生成"
     }
     static func start(store: AgentStore, runtime: AgentRuntime, sourceID: String, language: String = "zh") throws -> String {
+        let state = try generationState(store: store, runtime: runtime, sourceID: sourceID, language: language)
+        if state.action == "resume", let id = state.taskID { return try resumeGeneration(store: store, runtime: runtime, sourceID: sourceID, language: language, expectedID: id) }
+        if ["pause", "publishing"].contains(state.action), let id = state.taskID { return id }
         return try startPlanned(store: store, runtime: runtime, sourceID: sourceID, language: language)
     }
     static func validate(_ task: AgentTaskRecord) throws -> (hashes: [String: String], sources: [String]) {
