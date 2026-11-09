@@ -164,7 +164,7 @@ private final class AgentTaskTable: NSTableView {
         var value: [String: Any] = ["mode": workMode.rawValue, "picker": workModePicker.titleOfSelectedItem ?? "", "heading": heading.stringValue,
          "tasks": rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil },
          "directories": rows.compactMap { row -> String? in if case .group(let name, let path) = row, path != nil { return name }; return nil }, "attention": attention.title, "grouping": taskView.grouping.rawValue, "workspaceFilter": taskView.workspace as Any? ?? NSNull(), "activityFilter": taskView.activity.rawValue, "sort": organization?.sorting(workMode).rawValue ?? "recent"]
-        if CommandLine.arguments.contains("--task-archive-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
+        if CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") { value["bulkIDs"] = bulkIDs.sorted(); value["bulkAction"] = bulkAction.title; value["bulkVisible"] = !bulkBar.isHidden }
         if CommandLine.arguments.contains("--task-views-check") { value["drag"] = dragDiagnostics; value["draggingRows"] = draggingRows }; return value
     }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
@@ -329,6 +329,11 @@ private final class AgentTaskTable: NSTableView {
         if task.agent?.ownerID == nil, task.automation == nil, task.kind != "hook", task.kind != "wiki" {
             let item = NSMenuItem(title: task.organizationMode == .coding ? "移至通用" : "移至编程", action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "work-mode"]; item.isEnabled = ![.running, .waiting].contains(task.status); menu.addItem(item)
         }
+        let export = NSMenuItem(title: "导出历史", action: nil, keyEquivalent: ""), formats = NSMenu(); formats.autoenablesItems = false
+        for format in AgentTaskExport.Format.allCases { let item = NSMenuItem(title: format.title, action: #selector(taskAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "export:" + format.rawValue]; formats.addItem(item) }; export.submenu = formats; menu.addItem(export)
+        let copyID = NSMenuItem(title: "复制任务编号", action: #selector(taskAction(_:)), keyEquivalent: ""); copyID.target = self; copyID.representedObject = [task.id, "copy-id"]; menu.addItem(copyID)
+        menu.addItem(.separator())
+        let remove = NSMenuItem(title: "永久删除…", action: #selector(taskAction(_:)), keyEquivalent: ""); remove.target = self; remove.representedObject = [task.id, "delete"]; remove.isEnabled = task.status != .running; menu.addItem(remove)
         return menu
     }
     @objc private func newInWorkspace(_ sender: NSMenuItem) { if let values = sender.representedObject as? [String], values.count == 2, let mode = AgentWorkMode(rawValue: values[1]) { onNewInWorkspace?(values[0], mode) } }

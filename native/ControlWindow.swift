@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 final class ComposerView: NSTextView {
     var placeholder = "发消息…" { didSet { needsDisplay = true } }
@@ -448,6 +449,11 @@ final class FormDocumentView: NSView {
         menu.addItem(.separator())
         let records = NSMenuItem(title: "完整任务记录", action: #selector(showAgentRecords), keyEquivalent: ""); records.target = self; menu.addItem(records)
         let recap = NSMenuItem(title: "任务回顾", action: #selector(showTaskRecap), keyEquivalent: ""); recap.target = self; menu.addItem(recap)
+        let export = NSMenuItem(title: "导出历史", action: nil, keyEquivalent: ""), formats = NSMenu(); formats.autoenablesItems = false
+        for format in AgentTaskExport.Format.allCases { let item = NSMenuItem(title: format.title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, "export:" + format.rawValue]; formats.addItem(item) }; export.submenu = formats; menu.addItem(export)
+        let copyID = NSMenuItem(title: "复制任务编号", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); copyID.target = self; copyID.representedObject = [task.id, "copy-id"]; menu.addItem(copyID)
+        menu.addItem(.separator())
+        let remove = NSMenuItem(title: "永久删除…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); remove.target = self; remove.representedObject = [task.id, "delete"]; remove.isEnabled = task.status != .running; menu.addItem(remove)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
     }
     @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
@@ -723,6 +729,7 @@ final class FormDocumentView: NSView {
             let archive = AgentArchivedTasksView(store: store); archivedTasksView = archive
             archive.onWillChange = { [weak self] in self?.saveAgentDraft() }
             archive.onChange = { [weak self] in self?.renderAgentMessages() }
+            archive.onDelete = { [weak self] ids, workspaces in try await self?.deleteAgentTasks(ids, workspaceIDs: workspaces) }
             row("", archive); archive.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
@@ -1260,8 +1267,15 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func agentTaskAction(_ id: String, action: String) {
-        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running else { return }
+        guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || action == "copy-id" else { return }
+        if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
         switch action {
+        case "copy-id": NSPasteboard.general.clearContents(); NSPasteboard.general.setString(id, forType: .string)
+        case "delete":
+            Task { @MainActor [weak self] in
+                do { if let issue = try await self?.deleteAgentTasks([id], workspaceIDs: []) { self?.setStatus(issue, error: true) } }
+                catch { self?.setStatus(error.localizedDescription, error: true) }
+            }; return
         case "rename":
             let alert = NSAlert(); alert.messageText = "重命名任务"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
             let input = NSTextField(string: task.title); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); alert.accessoryView = input
@@ -1301,6 +1315,42 @@ final class FormDocumentView: NSView {
         let id = store.selectedID ?? store.create(workMode: mode)
         if displayedTask != id { selectAgentTask(id) } else { renderAgentMessages() }
         archivedTasksView?.refresh()
+    }
+    private func deleteAgentTasks(_ ids: [String], workspaceIDs: [String]) async throws -> String? {
+        guard let store = companion?.agentStore else { throw PetError("任务未初始化") }
+        saveAgentDraft(); let mode = store.selected?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
+        try recordWindow?.requireDeletionAllowed(plan.ids)
+        let alert = NSAlert(); alert.alertStyle = .warning
+        alert.messageText = workspaceIDs.isEmpty ? "永久删除\(plan.records.count)项任务？" : "永久删除\(workspaceIDs.count)个工作区及\(plan.records.count)项任务？"
+        let names = plan.workspaceTitles + plan.titles
+        alert.informativeText = names.prefix(20).joined(separator: "\n") + (names.count > 20 ? "\n及其余\(names.count - 20)项" : "") + "\n\n对话、草稿、任务附件和检查点将不可恢复。项目文件和 Git 工作树保留。"
+        alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "永久删除"); alert.buttons[1].hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return nil }
+        try recordWindow?.requireDeletionAllowed(plan.ids)
+        let issue = try await store.permanentlyDelete(plan)
+        recordWindow?.closeDeletedTask(plan.ids)
+        taskNavigation.removeAll { plan.ids.contains($0) }; taskNavigationIndex = store.selectedID.flatMap { taskNavigation.firstIndex(of: $0) } ?? taskNavigation.count - 1
+        finishArchive(mode); return issue
+    }
+    private func exportAgentTask(_ id: String, format: AgentTaskExport.Format) {
+        guard let store = companion?.agentStore, let task = store.task(id), let window else { return }
+        let history = AgentTaskExport.snapshot(task), panel = NSSavePanel()
+        panel.title = "导出任务历史"; panel.allowedContentTypes = [format == .json ? .json : UTType(filenameExtension: "md") ?? .plainText]
+        let title = task.title.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.controlCharacters)).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        panel.nameFieldStringValue = String((title.isEmpty ? "任务历史" : title).prefix(100)) + "." + format.suffix
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                do {
+                    guard store.task(id) != nil else { throw PetError("任务已永久删除，未导出") }
+                    let target = try AgentTaskExport.destination(url, profile: store.directory.deletingLastPathComponent(), application: Bundle.main.bundleURL)
+                    let data = try await Task.detached(priority: .utility) { try AgentTaskExport.data(history, format: format) }.value
+                    guard store.task(id) != nil else { throw PetError("任务已永久删除，未导出") }
+                    try target.files.writeData(data, to: target.url, permissions: 0o600, expectedTarget: target.signature)
+                    self?.setStatus("已导出 " + target.url.lastPathComponent)
+                } catch { self?.setStatus(error.localizedDescription, error: true) }
+            }
+        }
     }
     @objc func chooseProject() {
         guard let task = companion?.agentStore?.selected else { return }
@@ -1519,7 +1569,9 @@ final class FormDocumentView: NSView {
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
     func renderAgentMessages() {
-        guard let tasks = companion?.agentStore, let task = tasks.selected else { return }
+        guard let tasks = companion?.agentStore else { return }
+        guard tasks.refreshDeletedRecords() else { composer.isEditable = false; sendButton.isEnabled = false; setStatus(tasks.deletions.issue ?? "永久删除记录无法读取，请检查配置并重新打开应用", error: true); return }
+        guard let task = tasks.selected else { selectAgentTask(tasks.create(workMode: tasks.selectionFallbackMode)); return }
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
@@ -1888,10 +1940,11 @@ extension ControlWindow {
     }
     func refreshDataImport() { dataImportView?.refresh() }
     func archiveReadback() -> [String: Any] {
-        guard CommandLine.arguments.contains("--task-archive-check"), let store = companion?.agentStore else { return [:] }
+        guard CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check"), let store = companion?.agentStore else { return [:] }
         return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": store.selectedID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "sendEnabled": sendButton.isEnabled, "composerEditable": composer.isEditable, "settingsCategory": settingsCategory,
                 "tasks": store.tasks.compactMap { store.task($0.id) }.map { ["id": $0.id, "title": $0.title, "workspace": $0.workspace as Any? ?? NSNull(), "mode": $0.organizationMode.rawValue, "archived": $0.archived, "archiveID": $0.workspaceArchiveID as Any? ?? NSNull(), "draft": $0.draft ?? ""] },
-                "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] }]
+                "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] },
+                "deletions": ["ids": store.deletions.taskIDs.sorted(), "workspaces": store.deletions.workspaceIDs.sorted(), "pending": store.deletions.pendingCount, "working": store.deletions.working, "issue": store.deletions.issue as Any? ?? NSNull()]]
     }
     func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
     func switchWorkMode(_ mode: AgentWorkMode) {

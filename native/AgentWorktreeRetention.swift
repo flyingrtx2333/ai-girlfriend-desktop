@@ -98,8 +98,12 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         else { nativeOperations[owner] = nil }
         tasksChanged()
     }
+    func hasNativeOperation(_ workspace: String?) -> Bool {
+        guard let workspace else { return false }; return nativeOperations.values.contains { Self.within($0, workspace) || Self.within(workspace, $0) }
+    }
     private func changed() {
         debounce?.cancel(); timer?.invalidate(); timer = nil; nextCheck = nil
+        if let store, !store.refreshDeletedRecords() { cancelWork(); releaseOwner(); status = store.deletions.issue ?? "任务记录不可用，自动回收已暂停"; onChange?(); return }
         guard store != nil, error == nil, policy.enabled else { cancelWork(); releaseOwner(); status = error.map { "回收设置：" + $0 } ?? "自动回收未开启"; onChange?(); return }
         let work = DispatchWorkItem { [weak self] in self?.beginCheck() }; debounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)

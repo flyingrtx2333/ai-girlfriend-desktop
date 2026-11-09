@@ -13,6 +13,7 @@ import Foundation
     let worktreeRetention: AgentWorktreeRetention
     let desktop: AgentDesktop
     let organization: AgentOrganization
+    let deletions: AgentTaskDeletion
     lazy var projectChanges = AgentProjectChanges(store: self)
     lazy var canvases = AgentCanvas(store: self)
     lazy var offices = AgentOffice(store: self)
@@ -26,6 +27,8 @@ import Foundation
     private var taskHashes: [String: String] = [:]
     private var indexHash: String?
     private var applyingArchive = false
+    private var deletionRevision = -1
+    private(set) var selectionFallbackMode = AgentWorkMode.coding
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
     var archiveIsBusy: ((String) -> Bool)?
@@ -55,6 +58,8 @@ import Foundation
         worktreeRetention = AgentWorktreeRetention(profile: directory)
         desktop = AgentDesktop(profile: directory)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        deletions = AgentTaskDeletion(directory: self.directory)
+        organization.suppressDeletedArchives(deletions.workspaceIDs)
         var previousSelection: String?
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {
             indexHash = AgentFiles.hash(data)
@@ -63,13 +68,14 @@ import Foundation
         }
         let files = (try? FileManager.default.contentsOfDirectory(at: self.directory, includingPropertiesForKeys: nil)) ?? []
         let indexedIDs = Set(tasks.map(\.id))
-        for file in files where file.pathExtension == "json" && !indexedIDs.contains(file.deletingPathExtension().lastPathComponent) {
+        for file in files where file.pathExtension == "json" && !indexedIDs.contains(file.deletingPathExtension().lastPathComponent) && !deletions.taskIDs.contains(file.deletingPathExtension().lastPathComponent) {
             guard let data = try? Data(contentsOf: file), let task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data),
                   UUID(uuidString: task.id) != nil, file.deletingPathExtension().lastPathComponent == task.id else { continue }
             var recovered = task; Self.recover(&recovered)
             tasks.append(Self.metadata(recovered))
         }
         tasks.sort { $0.updated > $1.updated }
+        tasks.removeAll { deletions.taskIDs.contains($0.id) }; deletionRevision = deletions.revision
         if tasks.isEmpty {
             var task = AgentTaskRecord(title: legacy.isEmpty ? "新的任务" : "之前的对话", mode: .ask)
             task.kind = "companion"
@@ -82,6 +88,7 @@ import Foundation
     @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil) -> String {
         var task = AgentTaskRecord(title: title, workspace: workspace, mode: mode)
         task.workMode = workMode == .coding ? nil : workMode
+        selectionFallbackMode = task.organizationMode
         if let token = organization.archiveID(workspace, mode: task.organizationMode) { task.archived = true; task.workspaceArchiveID = token }
         tasks.insert(Self.metadata(task), at: 0); cache[task.id] = task; selectedID = task.id
         do { try save(task.id); try organization.remember(task) } catch { writeError = error.localizedDescription }
@@ -104,6 +111,7 @@ import Foundation
         return value
     }
     func installImportedRecord(_ value: AgentTaskRecord) throws {
+        guard refreshDeletedRecords(), !deletions.taskIDs.contains(value.id) else { throw PetError(deletions.issue ?? "此任务已永久删除，请重新导入为新任务") }
         var value = value
         guard UUID(uuidString: value.id) != nil, value.importOrigin != nil, ![.running, .waiting].contains(value.status), value.pendingCalls.isEmpty, value.approvals.isEmpty, value.automation == nil, value.agent == nil, value.team == nil else { throw PetError("导入任务包含不能继承的运行状态") }
         if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
@@ -115,6 +123,7 @@ import Foundation
         tasks.sort { $0.updated > $1.updated }; trimCache(keeping: value.id)
     }
     func task(_ id: String) -> AgentTaskRecord? {
+        guard refreshDeletedRecords(), !deletions.taskIDs.contains(id) else { return nil }
         if let cached = cache[id] { return cached }
         guard UUID(uuidString: id) != nil, let data = try? Data(contentsOf: directory.appendingPathComponent(id + ".json")),
               var task = try? JSONDecoder().decode(AgentTaskRecord.self, from: data), task.id == id else { return nil }
@@ -134,8 +143,20 @@ import Foundation
     }
     func taskViewMetadata() -> [AgentTaskRecord] {
         // Older indexes lack activity dates; load each missing entry once without rewriting its task file.
-        for i in tasks.indices where tasks[i].activityAt == nil { if let value = task(tasks[i].id) { tasks[i] = Self.metadata(value) } else { tasks[i].activityAt = tasks[i].updated } }
+        _ = refreshDeletedRecords()
+        for id in tasks.filter({ $0.activityAt == nil }).map(\.id) { if let value = task(id), let i = tasks.firstIndex(where: { $0.id == id }) { tasks[i] = Self.metadata(value) } else if let i = tasks.firstIndex(where: { $0.id == id }) { tasks[i].activityAt = tasks[i].updated } }
         return tasks
+    }
+    @discardableResult func refreshDeletedRecords() -> Bool {
+        do {
+            try deletions.refresh()
+            if deletionRevision != deletions.revision {
+                let mode = tasks.first(where: { $0.id == selectedID })?.organizationMode ?? selectionFallbackMode
+                let ids = deletions.taskIDs; tasks.removeAll { ids.contains($0.id) }; cache = cache.filter { !ids.contains($0.key) }; taskHashes = taskHashes.filter { !ids.contains($0.key) }
+                organization.suppressDeletedArchives(deletions.workspaceIDs); deletionRevision = deletions.revision
+                if let selectedID, ids.contains(selectedID) { selectionFallbackMode = mode; applyingArchive = true; self.selectedID = tasks.first(where: { !$0.archived && $0.organizationMode == mode })?.id; applyingArchive = false }
+            }; return true
+        } catch { writeError = error.localizedDescription; return false }
     }
     private static func recover(_ task: inout AgentTaskRecord) {
         if let capture = task.pendingFileCapture {
@@ -166,9 +187,10 @@ import Foundation
         while cache.count > 4, let old = cache.keys.first(where: { $0 != id && $0 != selectedID && cache[$0]?.status != .running && cache[$0]?.pendingFileCapture == nil && !hooks.isRunning($0) }) { cache[old] = nil }
     }
     func update(_ id: String, persist: Bool = true, _ body: (inout AgentTaskRecord) -> Void) {
-        guard let index = tasks.firstIndex(where: { $0.id == id }), var value = task(id) else { return }
+        guard var value = task(id) else { return }
         let wasArchived = value.archived, previous = value
         body(&value); value.updated = Date()
+        guard refreshDeletedRecords(), let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
         let eventsChanged = !messagesChanged && (value.events.count != previous.events.count || zip(value.events, previous.events).contains { pair in pair.0.id != pair.1.id || pair.0.status != pair.1.status || pair.0.detail != pair.1.detail || pair.0.duration != pair.1.duration })
@@ -197,10 +219,70 @@ import Foundation
         try saveIndex(); writeError = nil
     }
     private func saveIndex() throws {
+        guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
         let file = directory.appendingPathComponent("index.json")
         let data = try encoder.encode(Index(selectedID: selectedID, tasks: tasks)); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         indexHash = AgentFiles.hash(data)
+    }
+    func prepareDeletion(_ ids: [String], workspaceIDs: [String] = []) throws -> AgentTaskDeletionPlan {
+        guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
+        guard Set(ids).count == ids.count, Set(workspaceIDs).count == workspaceIDs.count, !ids.isEmpty || !workspaceIDs.isEmpty, !deletions.working, !dataImport.active else { throw PetError("删除范围无效或正在导入／清理任务，请稍候") }
+        let files = try AgentFiles(workspace: directory.path), current = try files.entryMetadata(files.literalURL("index.json"))
+        guard current.kind == "file", try files.fileHash(files.literalURL("index.json"), maximum: 20_000_000) == indexHash else { throw PetError("任务列表已变化，请重新打开应用后重试") }
+        let entries = AgentWorkMode.allCases.flatMap { organization.directories($0, tasks: tasks, includingArchived: true) }.filter { $0.archiveID.map(workspaceIDs.contains) == true }
+        guard entries.count == workspaceIDs.count else { throw PetError("工作区归档已变化，请刷新后重试") }
+        var selected = Set(ids)
+        for entry in entries { selected.formUnion(tasks.filter { $0.workspace == entry.path && $0.organizationMode == entry.mode }.map(\.id)) }
+        guard selected.allSatisfy({ id in tasks.contains(where: { $0.id == id }) }) else { throw PetError("任务已不存在，请刷新后重试") }
+        var previous = Set<String>()
+        while previous != selected {
+            previous = selected
+            for task in tasks where task.agent?.ownerID.map(selected.contains) == true || task.kind == "hook" && task.parentID.map(selected.contains) == true { selected.insert(task.id) }
+        }
+        try offices.requireDeletionAllowed(selected)
+        var records: [AgentTaskPurge] = [], titles: [String] = []
+        for id in selected.sorted() {
+            guard let metadata = tasks.first(where: { $0.id == id }) else { throw PetError("任务已变化") }
+            let url = try files.literalURL(id + ".json"), entry = try files.entryMetadata(url)
+            guard ["file", "missing"].contains(entry.kind) else { throw PetError("任务记录已变成链接或目录，未删除") }
+            if entry.kind == "file", let hash = taskHashes[id], try files.fileHash(url, maximum: Int.max) != hash { throw PetError("任务记录已被另一实例修改，请重新打开应用后重试") }
+            let task = cache[id] ?? metadata
+            guard task.id == id else { throw PetError("任务记录编号不匹配，未删除") }
+            try requireArchivable(cache[id] ?? task)
+            guard !worktreeRetention.hasNativeOperation(task.workspace) else { throw PetError("此项目正在处理文件或 Git 操作，请完成后再删除任务") }
+            let folder = try files.entryMetadata(files.literalURL(id))
+            var record = AgentTaskPurge(id: id, recordSignature: entry.signature, directorySignature: folder.kind == "missing" ? nil : folder.signature, directoryIdentity: try AgentTaskDeletion.directoryIdentity(files, name: id))
+            if let origin = task.importOrigin, !tasks.contains(where: { !selected.contains($0.id) && $0.importOrigin?.snapshot == origin.snapshot }) {
+                let expected = AgentFiles.hash(Data((origin.key + ":" + origin.rawHash).utf8)) + ".jsonl"
+                guard origin.snapshot == expected else { throw PetError("导入副本编号不匹配，未删除任务") }
+                record.importSnapshot = expected; record.importHash = origin.rawHash
+            }
+            records.append(record); titles.append(task.title)
+        }
+        return AgentTaskDeletionPlan(records: records, titles: titles, workspaceIDs: workspaceIDs, workspaceTitles: entries.map { $0.title + " · " + $0.mode.title }, indexHash: indexHash, organizationSignature: try organization.requireCurrentSignature(), deletionSignature: deletions.signature)
+    }
+    func permanentlyDelete(_ plan: AgentTaskDeletionPlan) async throws -> String? {
+        guard refreshDeletedRecords(), !deletions.working, !dataImport.active else { throw PetError(deletions.issue ?? "任务正在导入或清理，请稍候") }
+        let current = try prepareDeletion(plan.records.map(\.id), workspaceIDs: plan.workspaceIDs)
+        guard current.ids == plan.ids, current.indexHash == plan.indexHash, current.organizationSignature == plan.organizationSignature, current.deletionSignature == plan.deletionSignature,
+              zip(current.records, plan.records).allSatisfy({ pair in pair.0.id == pair.1.id && pair.0.recordSignature == pair.1.recordSignature && pair.0.directorySignature == pair.1.directorySignature && pair.0.directoryIdentity == pair.1.directoryIdentity && pair.0.importSnapshot == pair.1.importSnapshot }) else { throw PetError("确认期间任务或删除范围已变化，请重新确认") }
+        try deletions.commit(plan.records, workspaces: plan.workspaceIDs, expected: plan.deletionSignature)
+        _ = refreshDeletedRecords()
+        for id in plan.ids { browser.close(id); canvases.close(id); desktop.disconnect(id); mcp.disconnect(owner: id); hooks.cancel(id); onArchive?(id); offices.closeDeletedTask(id) }
+        var warnings: [String] = []
+        do { try organization.forgetDeletedRecords(taskIDs: deletions.taskIDs, workspaceIDs: deletions.workspaceIDs, selected: tasks.first { $0.id == selectedID }) } catch { warnings.append("组织记录尚未清理：" + error.localizedDescription) }
+        do { try saveIndex() } catch { warnings.append("索引尚未更新：" + error.localizedDescription) }
+        if let issue = await deletions.cleanup() { warnings.append(issue) }
+        worktreeRetention.tasksChanged()
+        return warnings.isEmpty ? nil : "任务记录已永久删除；" + warnings.joined(separator: "；")
+    }
+    func importTargetID(_ base: String) throws -> String {
+        guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
+        var value = base, visited = Set<String>()
+        while deletions.taskIDs.contains(value) {
+            guard visited.insert(value).inserted else { throw PetError("导入编号冲突") }; value = AgentImportReaders.targetID("reimport:" + value)
+        }; return value
     }
     func setArchived(_ ids: [String], archived: Bool) throws {
         let unique = Set(ids); guard !unique.isEmpty, unique.count == ids.count else { throw PetError("请选择任务") }

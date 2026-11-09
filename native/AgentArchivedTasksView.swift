@@ -11,9 +11,12 @@ import AppKit
     private let store: AgentStore, tabs = NSSegmentedControl(labels: ["工作区", "任务"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), project = NSPopUpButton(), table = NSTableView()
     private let state = NSTextField(labelWithString: ""), restore = NSButton(title: "恢复", target: nil, action: nil)
+    private let remove = NSButton(title: "永久删除…", target: nil, action: nil), clear = NSButton(title: "清空当前列表…", target: nil, action: nil)
     private var rows: [Item] = [], signature = "", projectPath: String?
+    private var busy = false, operationIssue: String?
     var onWillChange: (() -> Void)?
     var onChange: (() -> Void)?
+    var onDelete: (([String], [String]) async throws -> String?)? { didSet { updateAction() } }
     init(store: AgentStore) {
         self.store = store; super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
         tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("归档类型")
@@ -24,8 +27,10 @@ import AppKit
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
         state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3; state.setAccessibilityLabel("归档状态")
         restore.target = self; restore.action = #selector(restoreSelection); restore.bezelStyle = .rounded
+        remove.target = self; remove.action = #selector(deleteSelection); clear.target = self; clear.action = #selector(deleteVisible)
+        for button in [remove, clear] { button.bezelStyle = .rounded; button.hasDestructiveAction = true }
         let filters = NSStackView(views: [search, project]); filters.spacing = 8
-        let actions = NSStackView(views: [state, NSView(), restore]); actions.spacing = 8
+        let actions = NSStackView(views: [state, NSView(), clear, remove, restore]); actions.spacing = 8
         let column = NSStackView(views: [tabs, filters, list, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), list.heightAnchor.constraint(equalToConstant: 318), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 160), project.widthAnchor.constraint(lessThanOrEqualToConstant: 210)])
@@ -34,17 +39,17 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func changeTab() { projectPath = nil; signature = ""; refresh() }
-    @objc private func changeProject() { projectPath = project.selectedItem?.representedObject as? String; signature = ""; refresh() }
-    func controlTextDidChange(_ obj: Notification) { signature = ""; refresh() }
+    @objc private func changeTab() { operationIssue = nil; projectPath = nil; signature = ""; refresh() }
+    @objc private func changeProject() { operationIssue = nil; projectPath = project.selectedItem?.representedObject as? String; signature = ""; refresh() }
+    func controlTextDidChange(_ obj: Notification) { operationIssue = nil; signature = ""; refresh() }
     func refresh() {
-        let next = "\(store.organization.revision)|\(tabs.selectedSegment)|\(search.stringValue)|\(projectPath ?? "")|" + store.tasks.map { "\($0.id)|\($0.title)|\($0.updated)|\($0.archived)" }.joined(separator: "\n")
+        let next = "\(store.organization.revision)|\(store.deletions.revision)|\(busy)|\(tabs.selectedSegment)|\(search.stringValue)|\(projectPath ?? "")|" + store.tasks.map { "\($0.id)|\($0.title)|\($0.updated)|\($0.archived)" }.joined(separator: "\n")
         guard next != signature else { return }; signature = next
         let selection = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : nil
         project.isHidden = tabs.selectedSegment == 0
         project.removeAllItems(); project.addItem(withTitle: "全部项目")
-        let paths = Set(store.tasks.filter(\.archived).compactMap(\.workspace)).sorted()
-        if let projectPath, !paths.contains(projectPath) { self.projectPath = nil }
+        var projectPaths = Set(store.tasks.filter(\.archived).compactMap(\.workspace)); if let projectPath { projectPaths.insert(projectPath) }
+        let paths = projectPaths.sorted()
         for path in paths { project.addItem(withTitle: URL(fileURLWithPath: path).lastPathComponent); project.lastItem?.representedObject = path; project.lastItem?.toolTip = path }
         project.selectItem(at: project.itemArray.firstIndex { $0.representedObject as? String == projectPath } ?? 0)
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,11 +60,28 @@ import AppKit
         } else { rows = store.tasks.filter { $0.archived && (projectPath == nil || $0.workspace == projectPath) }.map(Item.task) }
         rows = rows.filter { query.isEmpty || ($0.title + "\n" + ($0.path ?? "")).localizedCaseInsensitiveContains(query) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         table.reloadData(); table.deselectAll(nil); if let selection, let row = rows.firstIndex(where: { $0.id == selection }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-        state.textColor = .secondaryLabelColor; state.stringValue = rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"; updateAction()
+        state.textColor = operationIssue == nil ? .secondaryLabelColor : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"); updateAction()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) { updateAction() }
-    private func updateAction() { restore.isEnabled = rows.indices.contains(table.selectedRow); restore.title = tabs.selectedSegment == 0 ? "恢复工作区" : "恢复任务" }
+    private func updateAction() {
+        let allowed = !busy && !store.deletions.working && store.deletions.issue == nil
+        restore.isEnabled = allowed && rows.indices.contains(table.selectedRow); restore.title = tabs.selectedSegment == 0 ? "恢复工作区" : "恢复任务"
+        remove.isEnabled = allowed && onDelete != nil && rows.indices.contains(table.selectedRow); clear.isEnabled = allowed && onDelete != nil && !rows.isEmpty
+    }
+    @objc private func deleteSelection() { guard rows.indices.contains(table.selectedRow) else { return }; delete([rows[table.selectedRow]]) }
+    @objc private func deleteVisible() { delete(rows) }
+    private func delete(_ selected: [Item]) {
+        guard !busy, !selected.isEmpty, let action = onDelete else { return }
+        let ids = selected.compactMap { item -> String? in if case .task(let task) = item { return task.id }; return nil }
+        let archives = selected.compactMap { item -> String? in if case .workspace(let entry, _) = item { return entry.archiveID }; return nil }
+        busy = true; operationIssue = nil; signature = ""; refresh()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { busy = false; signature = ""; refresh(); onChange?() }
+            do { operationIssue = try await action(ids, archives) } catch { operationIssue = error.localizedDescription }
+        }
+    }
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }; let item = rows[row]
         let title = NSTextField(labelWithString: item.title), detail = NSTextField(labelWithString: item.mode.title + " · " + (item.path ?? "无工作区"))
@@ -76,7 +98,7 @@ import AppKit
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }
     }
     func checkState() -> [String: Any] {
-        guard CommandLine.arguments.contains("--task-archive-check") else { return [:] }
-        return ["tab": tabs.selectedSegment, "query": search.stringValue, "project": projectPath as Any? ?? NSNull(), "rows": rows.map { ["id": $0.id, "title": $0.title, "path": $0.path as Any? ?? NSNull(), "mode": $0.mode.rawValue] }, "selected": rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id as Any : NSNull(), "state": state.stringValue, "canRestore": restore.isEnabled]
+        guard CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check") else { return [:] }
+        return ["tab": tabs.selectedSegment, "query": search.stringValue, "project": projectPath as Any? ?? NSNull(), "rows": rows.map { ["id": $0.id, "title": $0.title, "path": $0.path as Any? ?? NSNull(), "mode": $0.mode.rawValue] }, "selected": rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id as Any : NSNull(), "state": state.stringValue, "canRestore": restore.isEnabled, "canDelete": remove.isEnabled, "canClear": clear.isEnabled, "busy": busy]
     }
 }

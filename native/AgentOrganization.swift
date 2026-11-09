@@ -60,6 +60,21 @@ struct AgentDirectoryEntry: Codable {
     private var document = Document(), loadIssue: String?
     private var openedSignature = "missing"
     private(set) var revision = 0
+    private var deletedArchives = Set<String>()
+    func suppressDeletedArchives(_ values: Set<String>) { if deletedArchives != values { deletedArchives = values; revision += 1 } }
+    func requireCurrentSignature() throws -> String {
+        if let loadIssue { throw PetError(loadIssue) }
+        guard try AgentFiles(workspace: file.deletingLastPathComponent().path).entryMetadata(file).signature == openedSignature else { throw PetError("任务组织记录已变化，请重新打开应用后重试") }
+        return openedSignature
+    }
+    func forgetDeletedRecords(taskIDs: Set<String>, workspaceIDs: Set<String>, selected: AgentTaskRecord?) throws {
+        var next = document
+        next.directories.removeAll { $0.archiveID.map(workspaceIDs.contains) == true }
+        next.selected = next.selected.filter { !taskIDs.contains($0.value) }
+        if let selected { next.selected[selected.organizationMode.rawValue] = selected.id }
+        if next.taskGroups != nil { for i in next.taskGroups!.indices { next.taskGroups![i].taskIDs.removeAll { taskIDs.contains($0) } } }
+        try save(next)
+    }
     init(profile: URL) {
         file = profile.appendingPathComponent("organization.json")
         guard FileManager.default.fileExists(atPath: file.path) else { return }
@@ -95,13 +110,16 @@ struct AgentDirectoryEntry: Codable {
     }
     func register(_ path: String, mode: AgentWorkMode) throws {
         let canonical = try AgentFiles(workspace: path).root.path
+        if document.directories.contains(where: { $0.path == canonical && $0.mode == mode && $0.archiveID.map(deletedArchives.contains) == true }) {
+            var next = document; next.directories.removeAll { $0.path == canonical && $0.mode == mode }; next.directories.append(AgentDirectoryEntry(path: canonical, mode: mode)); try save(next); return
+        }
         guard archiveID(canonical, mode: mode) == nil else { throw PetError("此" + mode.directoryTitle + "已归档，请先在设置中恢复") }
         guard !document.directories.contains(where: { $0.path == canonical && $0.mode == mode }) else { return }
         var next = document; next.directories.append(AgentDirectoryEntry(path: canonical, mode: mode)); try save(next)
     }
-    func archiveID(_ path: String?, mode: AgentWorkMode) -> String? { document.directories.first { $0.path == path && $0.mode == mode }?.archiveID }
+    func archiveID(_ path: String?, mode: AgentWorkMode) -> String? { document.directories.first { $0.path == path && $0.mode == mode && $0.archiveID.map(deletedArchives.contains) != true }?.archiveID }
     func directories(_ mode: AgentWorkMode, tasks: [AgentTaskRecord], includingArchived: Bool = false) -> [AgentDirectoryEntry] {
-        var values = document.directories.filter { $0.mode == mode }
+        var values = document.directories.filter { $0.mode == mode && $0.archiveID.map(deletedArchives.contains) != true }
         var activity: [String: Date] = [:], created: [String: Date] = [:]
         for task in tasks where task.organizationMode == mode && (includingArchived || !task.archived) {
             guard let path = task.workspace else { continue }

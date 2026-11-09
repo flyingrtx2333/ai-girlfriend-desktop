@@ -39,6 +39,10 @@ import UniformTypeIdentifiers
     private var wikiMaintenanceNotice = ""
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var dirty = false, activeSection = 0, saving = false
+    func requireDeletionAllowed(_ ids: Set<String>) throws {
+        if ids.contains(taskID), dirty || saving || wikiSharingTask != nil { throw PetError("请先保存或关闭此任务未保存或正在处理的记录窗口") }
+    }
+    func closeDeletedTask(_ ids: Set<String>) { if ids.contains(taskID) { close() } }
     private var fileBOM: Bool { fileFormat.bom }
     private var openedFile: URL?
     private var fileContent: String { (fileBOM ? "\u{FEFF}" : "") + text.string }

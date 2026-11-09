@@ -92,6 +92,10 @@ struct AgentOfficeEditError: LocalizedError {
     }
     func closeAll() { for window in Array(windows.values) { window.finishClose() }; windows.removeAll() }
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.cancelToolOperation() } }
+    func requireDeletionAllowed(_ ids: Set<String>) throws {
+        if windows.values.contains(where: { ids.contains($0.taskID) && ($0.dirty || $0.working) }) { throw PetError("请先保存或关闭此任务未保存或正在处理的办公文档") }
+    }
+    func closeDeletedTask(_ id: String) { for window in Array(windows.values) where window.taskID == id { window.finishClose() } }
     nonisolated static func snapshot(files: AgentFiles, file: URL) throws -> AgentOfficeSnapshot {
         let metadata = try files.entryMetadata(file)
         guard metadata.kind == "file" else { throw PetError("办公文件不存在或已变成链接") }

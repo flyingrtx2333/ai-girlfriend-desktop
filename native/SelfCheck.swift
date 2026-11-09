@@ -31,6 +31,9 @@ import WebKit
         if CommandLine.arguments.contains("--project-knowledge-check") { await runAgentProjectKnowledgeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--project-knowledge-sharing-check") { await runAgentProjectKnowledgeSharingCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-views-check") { await runAgentTaskViewCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--task-records-crash-check") { await runAgentTaskRecordsCrashCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--task-records-recovery-check") { await runAgentTaskRecordsRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--task-records-check") { await runAgentTaskRecordsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-archive-check") { await runAgentTaskArchiveCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--repo-wiki-overview-check") { await runAgentRepoWikiOverviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-editing-check") { await runAgentKnowledgeEditingCheck(output); NSApp.terminate(nil); return }

@@ -10,6 +10,12 @@ import AppKit
         let keychain = checkDirectory != nil && CommandLine.arguments.contains("--live-agent") ? PetKeychain(service: "com.xjs.bluefatfish.credentials") : store.keychain
         let runtime = AgentRuntime(store: tasks, keychain: keychain) { [weak self] in self?.store.preferences ?? PetPreferences() }
         agentStore = tasks; agentRuntime = runtime
+        if tasks.deletions.pendingCount > 0 {
+            Task { @MainActor [weak self] in
+                let issue = await tasks.deletions.cleanup()
+                if let issue { self?.control.setStatus(issue, error: true) }; self?.control.scheduleRender()
+            }
+        }
         tasks.knowledgeCards.runtime = runtime
         tasks.wikiMaintenance.runtime = runtime
         tasks.wikiMaintenance.onChange = { [weak self] _ in self?.control.scheduleRender() }

@@ -65,9 +65,10 @@ struct AgentImportBatch: Codable {
             if let loadIssue { throw PetError(loadIssue) }
             let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
             let duplicates = Dictionary(grouping: records, by: \.id)
-            preview = records.map { record in
+            preview = try records.map { record in
                 var value = record
                 guard value.issue == nil else { return value }
+                value.targetID = try store.importTargetID(value.targetID)
                 if duplicates[value.id, default: []].count > 1 { value.issue = "同编号存在多份来源，请分别选择来源目录"; return value }
                 if let task = store.task(value.targetID) {
                     guard let origin = task.importOrigin, origin.key == value.id else { value.issue = "目标任务编号已被占用，未覆盖"; return value }
@@ -140,6 +141,7 @@ struct AgentImportBatch: Codable {
     private func releaseLock() { if lock >= 0 { flock(lock, LOCK_UN); close(lock); lock = -1 } }
     private func install(_ document: AgentImportDocument, candidate: AgentImportCandidate) throws {
         let identity = candidate.targetID
+        guard try store.importTargetID(identity) == identity else { throw PetError("目标任务已永久删除，请重新检测后导入") }
         if let task = store.task(identity) {
             guard let origin = task.importOrigin, origin.key == candidate.id else { throw PetError("目标任务编号已被占用，未覆盖") }
             if origin.sourceHash == candidate.sourceHash {
