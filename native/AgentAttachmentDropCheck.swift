@@ -57,6 +57,9 @@ import AppKit
         } catch { failure = error.localizedDescription }
         values["checks"] = checks; values["success"] = failure == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; values["appPID"] = getpid(); values["blockedModelAttempts"] = requests
         values["backgroundComponentCheck"] = usesBackgroundAttachmentCheck; values["activationCount"] = attachmentCheckActivations; values["applicationActive"] = NSApp.isActive; values["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
+        values["visibleWindows"] = NSApp.windows.filter(\.isVisible).map { ["class": NSStringFromClass(type(of: $0)), "title": $0.title, "frame": NSStringFromRect($0.frame), "alpha": $0.alphaValue, "key": $0.isKeyWindow] as [String: Any] }
+        values["screenFrames"] = NSScreen.screens.map { NSStringFromRect($0.frame) }
+        values["onScreenWindowCount"] = NSApp.windows.filter { window in window.isVisible && window.alphaValue > 0 && NSScreen.screens.contains { $0.frame.intersects(window.frame) } }.count
         if let failure { values["error"] = failure }
         if let binary = Bundle.main.executableURL { values["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("attachment-drop-result.json"), options: .atomic)
