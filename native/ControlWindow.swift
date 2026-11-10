@@ -1395,7 +1395,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func chooseExecutor() {
         guard let store = companion?.agentStore, let task = currentAgentTask, task.canChooseExecutor else { return }
-        let menu = NSMenu()
+        let menu = NSMenu(); menu.autoenablesItems = false
         func item(_ title: String, _ value: String, selected: Bool = false, available: Bool = true) {
             let entry = NSMenuItem(title: title, action: #selector(selectExecutor(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = value; entry.state = selected ? .on : .off; entry.isEnabled = available; menu.addItem(entry)
         }
@@ -1405,7 +1405,11 @@ final class FormDocumentView: NSView {
             if !profiles.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "自定义 Agent")) }
             for value in profiles { item(value.name, "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
             if !teams.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "Agent 团队")) }
-            for value in teams { let available = (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil; item(value.name + (available ? "" : " · 成员不可用"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available) }
+            for value in teams {
+                let available = (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil
+                let sameProject = value.workspace.map { (try? AgentFiles(workspace: task.workspace).root.path) == $0 } ?? true
+                item(value.name + (sameProject ? (available ? "" : " · 成员不可用") : " · 其他项目"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available)
+            }
         } catch { setStatus(error.localizedDescription, error: true) }
         menu.addItem(.separator()); item("管理 Agent…", "manage-agents"); item("管理团队…", "manage-teams")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workbenchEmptyTitle.bounds.height + 4), in: workbenchEmptyTitle)
