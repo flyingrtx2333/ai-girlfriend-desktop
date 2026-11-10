@@ -249,6 +249,8 @@ import Foundation
     }
     func prepareInput(_ text: String, attachmentIDs: [String], task: AgentTaskRecord) throws -> AgentMessage {
         var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)
+        let snapshots = (task.attachments ?? []).filter { attachmentIDs.contains($0.id) && $0.desktopCapture?.appShot == true }
+        if !snapshots.isEmpty { message.visuals = snapshots.suffix(AgentAttachmentVisuals.maximumImages(preferences())).map { .init(id: $0.id, part: 1) }; message.visualsDelivered = false }
         if let rule = try store.rules.ruleInput(text, task: task) { message.localRuleReferences = [rule] }
         else if let rule = try store.extensions.plugins.ruleInput(text, task: task) { message.ruleReferences = [rule] }
         if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {

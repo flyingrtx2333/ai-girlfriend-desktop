@@ -55,12 +55,17 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         let root = try directory(store: store, taskID: taskID, id: id), files = try AgentFiles(workspace: root.path)
         return try JSONDecoder().decode(AgentDocumentContent.self, from: files.readData(root.appendingPathComponent("content.json"), maximum: 2_000_000))
     }
-    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil) async throws -> AgentAttachment {
+    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil, appShotText: String? = nil) async throws -> AgentAttachment {
         guard let task = store.task(taskID), task.kind != "wiki", !task.archived else { throw PetError("当前任务不能添加附件") }
         try store.sideTasks.requireOpen(task)
         guard !draft || (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
         if let error = store.writeError { throw PetError("任务尚未保存：" + error) }
+        if let appShotText {
+            guard draft, desktopCapture?.appShot == true, appShotText.utf8.count <= AgentAppShotCapture.textLimit,
+                  desktopCapture?.textHash == AgentFiles.hash(Data(appShotText.utf8)), desktopCapture?.textExcerpt == AgentAppShotCapture.prefix(appShotText, bytes: 1200) else { throw PetError("窗口快照文字或来源校验失败") }
+        } else if desktopCapture?.appShot == true { throw PetError("窗口快照缺少可访问文字记录") }
         let selected = try validatedSource(original, allowOpaque: mcpSource != nil), type = selected.pathExtension.lowercased()
+        if appShotText != nil { guard type == "png", capture == nil, mcpSource == nil, canvasCapture == nil else { throw PetError("窗口快照必须是独立 PNG 附件") } }
         let id = UUID().uuidString, destination = try directory(store: store, taskID: taskID, id: id)
         let stage = destination.deletingLastPathComponent().appendingPathComponent(".import-" + id, isDirectory: true)
         let job = Task.detached(priority: .utility) { () async throws -> AgentAttachment in
@@ -78,7 +83,9 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             let scratch = stage.appendingPathComponent("parser-tmp", isDirectory: true)
             try fm.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let document: AgentDocumentContent
-            if mcpSource != nil, AgentMCPContent.opaqueTypes.contains(type) {
+            if let appShotText {
+                document = AgentDocumentContent(format: "image", parts: [.init(title: "窗口可访问文字", text: appShotText, partial: desktopCapture?.textTruncated == true)], totalParts: 1, partial: desktopCapture?.textTruncated == true, notes: appShotText.isEmpty ? ["窗口未提供可访问文字"] : [])
+            } else if mcpSource != nil, AgentMCPContent.opaqueTypes.contains(type) {
                 document = AgentDocumentContent(format: type, parts: [.init(title: "文件", text: "")], totalParts: 1, notes: [type == "gz" ? "压缩数据未展开，不能据此推断文件内容" : ["wav", "mp3", "m4a", "ogg", "flac", "aac"].contains(type) ? "音频尚未转写或发送给模型，不能声称已经收听" : "二进制内容未解析，不能据此推断内容"])
             } else { document = try await AgentDocument.extract(local, scratch: scratch) }
             try Task.checkCancellation()

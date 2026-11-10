@@ -4,6 +4,7 @@ import ScreenCaptureKit
 
 struct AgentDesktopCapture: Codable, Sendable {
     var application: String; var bundleID: String; var windowTitle: String; var windowID: UInt32; var created: Date
+    var appShot: Bool?; var textExcerpt: String?; var textHash: String?; var textTruncated: Bool?; var method: String?
 }
 
 @MainActor final class AgentDesktop {
@@ -183,18 +184,14 @@ struct AgentDesktopCapture: Codable, Sendable {
         }
         return try result(["windows": rows, "connection_requires_approval": true])
     }
-    struct Image { var image: CGImage; var data: Data; var hash: String }
+    typealias Image = AgentWindowCapture.Image
     private func image(_ target: Target) async throws -> Image {
         try validate(target)
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard let window = content.windows.first(where: { $0.windowID == target.windowID && $0.owningApplication?.processID == target.pid && $0.frame == target.frame && $0.isOnScreen }) else { throw PetError("目标窗口已关闭、移动或改变尺寸，请重新连接") }
-        let scale = min(1, 1536 / max(window.frame.width, window.frame.height)), config = SCStreamConfiguration()
-        config.width = max(1, Int(window.frame.width * scale)); config.height = max(1, Int(window.frame.height * scale)); config.showsCursor = false; config.capturesAudio = false; config.scalesToFit = true; config.ignoreShadowsSingleWindow = true
-        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+        let image = try await AgentWindowCapture.image(window)
         try Task.checkCancellation(); try validate(target); _ = try ready()
-        let bitmap = NSBitmapImageRep(cgImage: image)
-        guard let data = bitmap.representation(using: .png, properties: [:]), data.count <= 20_000_000 else { throw PetError("窗口截图过大，请缩小窗口") }
-        return Image(image: image, data: data, hash: AgentFiles.hash(data))
+        return image
     }
     private func attach(_ image: Image, target: Target, taskID: String, store: AgentStore) async throws -> AgentAttachment {
         let directory = store.directory.appendingPathComponent(".desktop-" + UUID().uuidString)

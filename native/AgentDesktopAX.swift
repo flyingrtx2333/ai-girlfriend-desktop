@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import ScreenCaptureKit
 
 @MainActor enum AgentDesktopAX {
     struct Node {
@@ -23,6 +24,19 @@ import Carbon
         return CGRect(origin: point, size: size)
     }
     private static func sameFrame(_ a: CGRect, _ b: CGRect) -> Bool { abs(a.minX - b.minX) < 2 && abs(a.minY - b.minY) < 2 && abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2 }
+    static func documentURL(_ window: AXUIElement) throws -> URL? {
+        guard let value = try attribute(window, kAXDocumentAttribute) as? String, let url = URL(string: value), url.isFileURL else { return nil }; return url
+    }
+    static func frontmostTarget(_ app: NSRunningApplication, windows: [SCWindow]) throws -> (AgentDesktop.Target, AXUIElement) {
+        let element = AXUIElementCreateApplication(app.processIdentifier); AXUIElementSetMessagingTimeout(element, 0.35)
+        guard let value = try attribute(element, kAXFocusedWindowAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { throw PetError("前台应用没有可读取的当前窗口") }
+        let focused = value as! AXUIElement
+        guard let rect = try frame(focused), rect.width > 50, rect.height > 50 else { throw PetError("前台窗口尺寸无效") }
+        let matches = windows.filter { $0.owningApplication?.processID == app.processIdentifier && $0.isOnScreen && sameFrame($0.frame, rect) }
+        guard matches.count == 1, let window = matches.first else { throw PetError("无法唯一识别前台窗口，请重新选择后截图") }
+        let target = AgentDesktop.Target(id: UUID().uuidString, owner: "appshot", pid: app.processIdentifier, launched: app.launchDate, bundleURL: app.bundleURL, bundleID: app.bundleIdentifier ?? "", application: app.localizedName ?? "应用", windowID: window.windowID, title: window.title ?? "未命名窗口", frame: rect)
+        return (target, focused)
+    }
     static func read(_ target: AgentDesktop.Target, window previous: AXUIElement? = nil) throws -> Snapshot {
         try Task.checkCancellation()
         let app = AXUIElementCreateApplication(target.pid); AXUIElementSetMessagingTimeout(app, 0.35)

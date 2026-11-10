@@ -852,6 +852,8 @@ final class FormDocumentView: NSView {
         if let store = companion?.agentStore {
             group("attention", "需要我", "需要我 待办 问题 审批 结果 已处理 来源 通知")
             row("", NSButton(title: "管理需要我", target: self, action: #selector(openAttentionSettings)))
+            group("computer", "AppShot", "AppShot 窗口快照 前台 截图 可访问文字 全局 快捷键")
+            let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel)
             group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
@@ -2196,6 +2198,16 @@ final class FormDocumentView: NSView {
     func attachBrowserCapture(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
         try await attachTaskCapture(taskID: taskID, note: note) { tasks in _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks) }
     }
+    func prepareAppShot() throws -> String {
+        guard let task = currentAgentTask, window?.isVisible == true, composer.isEditable, !task.archived, !task.isProjectDocumentation, task.kind != "hook", attachmentImport == nil else { throw PetError("请先打开一个可以添加附件的任务") }
+        guard (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
+        guard saveAgentDraft() else { throw PetError("请先保存任务草稿") }; return task.id
+    }
+    func attachAppShot(_ shot: AgentAppShotCapture, taskID: String) async throws -> AgentAttachment {
+        var file: AgentAttachment?
+        try await attachTaskCapture(taskID: taskID, note: "") { tasks in file = try await shot.attach(store: tasks, taskID: taskID) }
+        guard let file else { throw PetError("窗口快照未添加") }; return file
+    }
     func attachCanvasCapture(_ shot: AgentCanvasShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
         let context = "画布「" + shot.capture.title + "」的批注（源码版本 " + String(shot.capture.sourceHash.prefix(12)) + "）：" + note
         try await attachTaskCapture(taskID: taskID, note: context) { tasks in _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks) }
@@ -2375,6 +2387,8 @@ extension ControlWindow {
         if CommandLine.arguments.contains("--manual-ui") {
             value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
             value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
+            value["appShot"] = companion?.appShot.checkState() ?? [:]
+            value["appShotDraftAttachments"] = (currentAgentTask?.attachments ?? []).filter { (currentAgentTask?.draftAttachmentIDs ?? []).contains($0.id) && $0.desktopCapture?.appShot == true }.map { ["id": $0.id, "name": $0.name, "textHash": $0.desktopCapture?.textHash ?? "", "sourceWindowID": $0.desktopCapture?.windowID ?? 0] as [String: Any] }
             value["fileIngress"] = composer.fileIngressDiagnostics; value["fileDragTypes"] = composer.registeredDraggedTypes.map(\.rawValue); value["fileDropOwner"] = composer.dragOwner as Any? ?? NSNull()
             if let window {
                 let rect = composer.convert(composer.bounds, to: nil), drag = NSPasteboard(name: .drag)

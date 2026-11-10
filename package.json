@@ -94,7 +94,8 @@
     "native:check-agent-drafts": "node scripts/check-native-agent-drafts.mjs",
     "native:check-automation-drafts": "node scripts/check-native-automation-drafts.mjs",
     "native:check-live-conversation-creation": "node scripts/check-live-conversation-creation.mjs",
-    "native:check-shortcuts": "node scripts/check-native-shortcuts.mjs"
+    "native:check-shortcuts": "node scripts/check-native-shortcuts.mjs",
+    "native:check-appshot": "node scripts/check-native-appshot.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

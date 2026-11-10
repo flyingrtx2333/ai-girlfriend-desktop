@@ -53,6 +53,7 @@ final class PetWebView: WKWebView {
         return value
     }()
     var shortcutMenuItems: [AgentShortcutCommand: NSMenuItem] = [:]
+    lazy var appShot = AgentAppShot(host: self)
     let checkDirectory: URL?
     var pet: PetPanel!
     var web: WKWebView!
@@ -72,11 +73,11 @@ final class PetWebView: WKWebView {
     var fileOpenJob: Task<Void, Never>?
     var fileOpenEvents: [[String: Any]] = []
     var attachmentCheckActivations = 0
-    var usesBackgroundAttachmentCheck: Bool { checkDirectory != nil && ["--background-attachment-check", "--background-component-check"].contains(where: CommandLine.arguments.contains) && !CommandLine.arguments.contains("--manual-ui") && ["--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--rules-metadata-replay-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check"].contains(where: CommandLine.arguments.contains) }
+    var usesBackgroundAttachmentCheck: Bool { checkDirectory != nil && ["--background-attachment-check", "--background-component-check"].contains(where: CommandLine.arguments.contains) && !CommandLine.arguments.contains("--manual-ui") && ["--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--rules-metadata-replay-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check"].contains(where: CommandLine.arguments.contains) }
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
-    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -137,13 +138,14 @@ final class PetWebView: WKWebView {
         workspace.addObserver(self, selector: #selector(frontApplicationChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(powerChanged), name: .NSProcessInfoPowerStateDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        if checkDirectory == nil { ensureAgent(); if !store.keychain.contains("chat") { control.show(tab: "settings") } }
+        if checkDirectory == nil { ensureAgent(); _ = appShot; if !store.keychain.contains("chat") { control.show(tab: "settings") } }
         applicationLaunched = true; importOpenedFiles()
     }
     func applicationWillTerminate(_ notification: Notification) {
         fileOpenJob?.cancel()
         if agentStore != nil { for window in taskControls { window.persistAgentDraft() } }
         closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); agentStore?.worktreeRetention.stop(); stopSpeech()
+        appShot.stop()
         agentStore?.knowledgeCards.stop()
         agentStore?.wikiMaintenance.stop()
         agentStore?.browser.closeAll()
@@ -172,6 +174,7 @@ final class PetWebView: WKWebView {
             defer { self.terminationPending = false }
             if tasks.offices.hasWindows, !(await tasks.offices.canQuit()) { return }
             self.closing = true; self.agentRuntime?.stopAll(); await tasks.sideTasks.endSession()
+            await self.appShot.cancelAndWait()
             self.terminationReady = true; sender.terminate(nil)
         }
         // Return to the run loop before scheduling cleanup. A nested AppKit
@@ -194,6 +197,7 @@ final class PetWebView: WKWebView {
         appMenu.addItem(withTitle: "退出蓝色大肥鱼", action: #selector(quit), keyEquivalent: "q").target = self
         item.submenu = appMenu; main.addItem(item)
         setupShortcutMenu(main, app: appMenu)
+        appMenu.insertItem(withTitle: "截取当前窗口", action: #selector(captureAppShot), keyEquivalent: "", at: 1).target = self
         let edit = NSMenu(title: "编辑"), editItem = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
         for (title, action, key) in [("撤销", "undo:", "z"), ("剪切", "cut:", "x"), ("复制", "copy:", "c"), ("粘贴", "paste:", "v"), ("全选", "selectAll:", "a")] {
             edit.addItem(withTitle: title, action: Selector(action), keyEquivalent: key)
@@ -218,6 +222,7 @@ final class PetWebView: WKWebView {
             m.addItem(item)
         }
         add("聊天", #selector(openChat)); add("设置", #selector(openSettings))
+        add("截取当前窗口", #selector(captureAppShot))
         if store.preferences.wakeEnabled { add("停止录音", #selector(stopRecording)) }
         m.addItem(.separator())
         add(pet?.isVisible == true ? "收起角色" : "显示角色", #selector(togglePet))
@@ -710,6 +715,12 @@ private extension NSRect { var area: CGFloat { isNull ? 0 : width * height } }
 
 @main struct BlueFatFish {
     @MainActor static func main() {
+        if Bundle.main.object(forInfoDictionaryKey: "BlueFatFishAcceptanceOnly") as? Bool == true {
+            let args = CommandLine.arguments
+            guard let index = args.firstIndex(of: "--check"), args.indices.contains(index + 1), args[index + 1].hasPrefix("/") else {
+                FileHandle.standardError.write(Data("此候选仅用于独立目录验收，请通过验收入口打开。\n".utf8)); exit(64)
+            }
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--make-icons"), CommandLine.arguments.count > index + 1 {
             makeIcons(directory: URL(fileURLWithPath: CommandLine.arguments[index + 1])); return
         }
