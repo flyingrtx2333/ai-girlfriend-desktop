@@ -93,6 +93,12 @@ async function verify() {
       await sleep(250);
     }
     if (!ui) report ??= await maybe('mcp-input-report.json');
+    if (!ui && report?.success !== true) {
+      const failure = { output, appPID: pid, binaryHash, libraryHash, success: false, nativeReport: report ?? null };
+      await writeFile(path.join(output, 'mcp-input-driver-failure.json'), JSON.stringify(failure, null, 2));
+      console.log(JSON.stringify({ output, appPID: pid, success: false, error: report?.error ?? 'Native checks did not complete successfully.' }));
+      process.exitCode = 1; return;
+    }
     const created = await read('mcp-input-created.json'), first = await read('profile/agent/' + created.taskID + '.json'), other = await read('profile/agent/' + created.otherTaskID + '.json');
     const common = {
       exactSignedProcessExited: !!pid && actualCommand(pid) !== command,

@@ -90,7 +90,7 @@ import AppKit
             row.addArrangedSubview(text); text.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
             getters[field.key] = {
                 let value = text.stringValue
-                if field.kind == .string { return value.isEmpty && !field.required ? nil : value }
+                if field.kind == .string { return value.isEmpty && (field.initial as? String) != "" ? nil : value }
                 if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
                 return try field.number(value)
             }

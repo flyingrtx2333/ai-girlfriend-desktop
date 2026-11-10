@@ -21,8 +21,8 @@ import AppKit
         sourceTitle = title
         guard !title.isEmpty else { throw PetError("公开 README 缺少标题") }
         func config(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self) }
-        stdio = try tasks.mcp.save(config(["name": "官方 MCP · 本机", "type": "stdio", "command": node, "args": [entry], "timeoutSeconds": 4]))
-        http = try tasks.mcp.save(config(["name": "官方 MCP · HTTP", "type": "http", "url": endpoint, "timeoutSeconds": 4]))
+        stdio = try tasks.mcp.save(config(["name": "官方 MCP · 本机", "type": "stdio", "command": node, "args": [entry], "env": [:], "timeoutSeconds": 5]))
+        http = try tasks.mcp.save(config(["name": "官方 MCP · HTTP", "type": "http", "url": endpoint, "timeoutSeconds": 5]))
         taskID = tasks.create(title: "公开 README 问询", workspace: workspace.path, mode: .agent)
         otherID = tasks.create(title: "另一项问答", mode: .ask, workMode: .general)
         guard runtime.submit(sourceTitle, taskID: taskID, startImmediately: false) else { throw PetError("公开正文未保存") }
@@ -68,7 +68,10 @@ import AppKit
         var invalid = values; invalid["integer"] = 101
         do { try inputs.respond(taskID: taskID, id: request.id, action: .accept, values: invalid); checks["invalidIntegerKeepsRequestOpen"] = false }
         catch { checks["invalidIntegerKeepsRequestOpen"] = inputs.first(taskID: taskID)?.id == request.id }
-        try await Task.sleep(for: .milliseconds(4300))
+        var missing = values; missing["name"] = nil
+        do { try inputs.respond(taskID: taskID, id: request.id, action: .accept, values: missing); checks["requiredFieldCannotBeOmitted"] = false }
+        catch { checks["requiredFieldCannotBeOmitted"] = inputs.first(taskID: taskID)?.id == request.id }
+        try await Task.sleep(for: .milliseconds(5300))
         checks["userWaitDoesNotConsumeToolTimeout"] = inputs.first(taskID: taskID)?.id == request.id && mcp.connected(stdio.id, owner: taskID)
         try inputs.respond(taskID: taskID, id: request.id, action: .accept, values: values)
         let reply = try raw(try await job.value); actual["accepted"] = reply
