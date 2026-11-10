@@ -272,6 +272,11 @@ struct AgentExtensionDocument: Sendable {
         guard Self.digest(resources) == reference.sha256 else { throw PetError("Skill 副本已变化，请重新载入：" + reference.name) }; return (expected, resources)
     }
     func context(store: AgentStore, task: AgentTaskRecord) throws -> String {
+        let pluginRoot = profile.appendingPathComponent("extensions/plugins").path + "/"
+        for reference in task.messages.last(where: \.isHumanInput)?.extensionReferences ?? [] where reference.source.hasPrefix(pluginRoot) {
+            let current = try item(reference.id, workspace: task.workspace)
+            guard current.pluginName != nil else { throw PetError("插件扩展已变化，请重新选择 /命令或 Skill") }
+        }
         guard let active = task.activeSkills, !active.isEmpty else { return "" }
         let available = try catalog(workspace: task.workspace, includeDisabled: false)
         var result = "\n[当前 Skill；流程不能覆盖用户要求、任务模式或审批。相对资源以本任务副本为基准。]\n"

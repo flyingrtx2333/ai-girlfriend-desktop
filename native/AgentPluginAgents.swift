@@ -110,11 +110,10 @@ struct AgentPluginAgentDefinition {
                 profile.id = Self.mcpUUID("agent:" + item.instanceID + ":" + definition.key)
                 profile.name = item.id + ":" + definition.key; profile.enabled = item.receipt.enabled
                 profile.pluginSource = AgentPluginAgentReference(name: item.id, installationID: item.instanceID, activationID: item.receipt.activationID ?? item.receiptHash, key: definition.key, sha256: item.receipt.hashes[definition.path]!)
-                let root = item.root.appendingPathComponent("payload")
                 profile.skills = try definition.skills.map { name in
                     let key = name.hasPrefix(item.id + ":") ? String(name.dropFirst(item.id.count + 1)) : name
                     guard let skill = item.receipt.components.first(where: { $0.kind == .skill && $0.name == key }) else { throw PetError("插件 Agent 引用的 Skill 不存在：" + name) }
-                    return String(AgentFiles.hash(Data(root.appendingPathComponent(skill.path).path.utf8)).prefix(24))
+                    return Self.extensionID(skill.path, installation: item)
                 }
                 profile.mcpServers = try definition.servers.map { name in
                     let key = name.hasPrefix(item.id + ":") ? String(name.dropFirst(item.id.count + 1)) : name

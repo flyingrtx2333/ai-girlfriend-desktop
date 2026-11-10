@@ -56,8 +56,10 @@ import Foundation
             guard let self else { return }
             let item = try? self.store.extensions.plugins.installation(name)
             let introducesRules = item?.receipt.enabled == true && item?.rules.isEmpty == false
+            let extensionRoot = self.store.extensions.plugins.profile.appendingPathComponent("extensions/plugins/" + name + "/payload").path + "/"
             for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" {
-                if introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true { self.cancel(task.id) }
+                let references = (task.activeSkills ?? []) + (task.messages.last(where: \.isHumanInput)?.extensionReferences ?? []) + (task.queuedMessages ?? []).flatMap { $0.extensionReferences ?? [] }
+                if introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true || references.contains(where: { $0.source.hasPrefix(extensionRoot) }) { self.cancel(task.id) }
             }
         }
         store.rules.onChange = { [weak self] id, workspace, automatic in

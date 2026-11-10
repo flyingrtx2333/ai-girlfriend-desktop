@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = NSButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let source = NSButton(title: "打开来源", target: nil, action: nil)
+    private let update = NSButton(title: "更新插件…", target: nil, action: nil), history = NSPopUpButton(frame: .zero, pullsDown: true)
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
     private var connectors: [AgentMCPServer] = []
     private var agents: [AgentProfile] = []
@@ -28,6 +29,7 @@ import UniformTypeIdentifiers
         search.placeholderString = "搜索插件"; search.delegate = self
         upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled); use.target = self; use.action = #selector(useComponent); remove.target = self; remove.action = #selector(removePackage)
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList)); source.target = self; source.action = #selector(revealPackage)
+        update.target = self; update.action = #selector(updatePackage); history.target = self; history.action = #selector(restoreRevision); history.setAccessibilityLabel("插件历史版本")
         let header = NSStackView(views: [search, refresh, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
@@ -39,7 +41,7 @@ import UniformTypeIdentifiers
         readme.isEditable = false; readme.isRichText = false; readme.isSelectable = true; readme.font = .systemFont(ofSize: 12); readme.textContainerInset = NSSize(width: 12, height: 12); readme.isVerticallyResizable = true; readme.autoresizingMask = [.width]; readme.textContainer?.widthTracksTextView = true; readme.setAccessibilityLabel("插件说明")
         let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
         let actions = NSStackView(views: [enabled, NSView(), use]); actions.spacing = 8
-        let footer = NSStackView(views: [state, NSView(), source, remove]); footer.spacing = 8
+        let footer = NSStackView(views: [state, NSView(), history, update, source, remove]); footer.spacing = 8
         for view in [header, scrolls[0], title, metadata, actions, scrolls[1], document, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.heightAnchor.constraint(equalToConstant: 28),
@@ -88,6 +90,12 @@ import UniformTypeIdentifiers
             do { readme.string = try service.readme(item); entries = try store.extensions.catalog(workspace: workspace).filter { $0.pluginName == item.id }; connectors = store.mcp.servers.filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles().filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }; rules = try service.ruleItems().filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }
         }
         components.reloadData(); if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
+        history.removeAllItems(); history.addItem(withTitle: "历史版本")
+        let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
+        for revision in (selected?.receipt.revisions ?? []).reversed() {
+            let item = NSMenuItem(title: (revision.version?.isEmpty == false ? revision.version! : "未标版本") + " · " + formatter.string(from: revision.created), action: nil, keyEquivalent: "")
+            item.representedObject = revision.directory; item.toolTip = revision.sourceName; history.menu?.addItem(item)
+        }
     }
     private var selectedRuleIndex: Int? { let index = components.selectedRow - entries.count - connectors.count - agents.count - hooks.count; return rules.indices.contains(index) ? index : nil }
     private func showRule(_ item: AgentPluginRuleItem) {
@@ -95,6 +103,7 @@ import UniformTypeIdentifiers
     }
     private func updateControls() {
         let idle = job == nil; list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
+        update.isEnabled = idle && selected != nil; history.isEnabled = idle && selected?.receipt.revisions?.isEmpty == false
         let connector = connectors.indices.contains(components.selectedRow - entries.count)
         let agent = agents.indices.contains(components.selectedRow - entries.count - connectors.count)
         let hook = hooks.indices.contains(components.selectedRow - entries.count - connectors.count - agents.count)
@@ -118,30 +127,54 @@ import UniformTypeIdentifiers
         do { let item = try store.extensions.item(entries[components.selectedRow].id, workspace: workspace); try onInsert(item); close() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func revealPackage() { if let item = selected { NSWorkspace.shared.activateFileViewerSelecting([item.root]) } }
-    @objc private func importPackage() {
+    @objc private func importPackage() { choosePackage(replacing: nil) }
+    @objc private func updatePackage() { if let selected { choosePackage(replacing: selected) } }
+    private func choosePackage(replacing installed: AgentPluginInstallation?) {
         guard let window else { return }; let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.prompt = "检查插件"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             state.stringValue = "读取插件…"; job = Task { [weak self] in
                 guard let self else { return }; defer { job = nil; updateControls() }
-                do { let package = try await service.inspect(url); try Task.checkCancellation(); review(package) }
+                do {
+                    let package = try await service.inspect(url); try Task.checkCancellation()
+                    let target = try installed ?? service.catalog().first { $0.id == package.metadata.name }
+                    if let target, target.id != package.metadata.name { throw PetError("新包名称与所选插件不同，未更新") }
+                    review(package, replacing: target)
+                }
                 catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
             }; updateControls()
         }
     }
-    private func review(_ package: AgentPluginPackage) {
-        guard let window else { return }; let alert = NSAlert(); alert.messageText = "安装「\(package.metadata.title)」？"; alert.informativeText = [package.metadata.version, package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
-        alert.addButton(withTitle: "安装"); alert.addButton(withTitle: "取消")
+    @objc private func restoreRevision() {
+        guard let selected, let directory = history.selectedItem?.representedObject as? String, let revision = selected.receipt.revisions?.first(where: { $0.directory == directory }) else { return }
+        do { review(try service.package(revision, of: selected), replacing: selected, restoring: true) }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false) {
+        guard let window else { return }; let alert = NSAlert(); let action = installed == nil ? "安装" : restoring ? "恢复" : "更新"
+        alert.messageText = action + "「\(package.metadata.title)」？"
+        let version = installed.map { ($0.metadata.version.isEmpty ? "未标版本" : $0.metadata.version) + " → " + (package.metadata.version.isEmpty ? "未标版本" : package.metadata.version) } ?? package.metadata.version
+        alert.informativeText = [version, package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · ") + (installed == nil ? "" : "\n完成后停用；旧任务记录和本机配置保留，组件需重新选择及配置。")
+        alert.addButton(withTitle: installed == nil ? "安装" : action + "并停用"); alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
         var rows = package.receipt.components.map { ($0.kind == .skill ? "Skill · " : "命令 · ") + package.metadata.name + ":" + $0.name }
         rows += package.mcpServers.map { "MCP · " + package.metadata.name + ":" + $0.key + "\n" + $0.destination + ($0.fields.isEmpty ? "" : "\n" + $0.fields.joined(separator: ", ")) }
         rows += package.agents.map { "Agent · " + package.metadata.name + ":" + $0.key + "\n" + $0.summary + "\n\n" + $0.profile.instructions }
         for config in package.hooks { for hook in config.preview { rows.append("Hook · " + package.metadata.name + ":" + hook.name + "\n" + hook.event.rawValue + "\n" + hook.display) } }
         for rule in package.rules { rows.append("规则 · " + package.metadata.name + ":" + rule.key + "\n" + rule.trigger.title + (rule.patterns.isEmpty ? "" : " · " + rule.patterns.joined(separator: ", ")) + "\n\n" + rule.body) }
-        let text = NSTextView(); text.isEditable = false; text.font = .systemFont(ofSize: 12); text.string = rows.joined(separator: "\n\n"); text.autoresizingMask = [.width]; text.isVerticallyResizable = true; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("待安装的插件组件")
+        if let installed {
+            let old = installed.receipt.hashes, new = package.receipt.hashes
+            let changes = Set(old.keys).union(new.keys).sorted().filter { old[$0] != new[$0] }
+            rows.insert(changes.prefix(100).map { (old[$0] == nil ? "新增 · " : new[$0] == nil ? "移除 · " : "变更 · ") + $0 }.joined(separator: "\n") + (changes.count > 100 ? "\n另有\(changes.count - 100)项，完整内容保留在包内。" : ""), at: 0)
+        }
+        let text = NSTextView(); text.isEditable = false; text.font = .systemFont(ofSize: 12); text.string = rows.joined(separator: "\n\n"); text.autoresizingMask = [.width]; text.isVerticallyResizable = true; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel(installed == nil ? "待安装的插件组件" : "待更新的插件组件")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: min(240, CGFloat(text.string.components(separatedBy: "\n").count * 24 + 18)))); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            do { let item = try service.install(package); search.stringValue = ""; reload(select: item.id); state.stringValue = "已安装"; onChange?() } catch { state.stringValue = error.localizedDescription }
+            guard let self else { return }; guard response == .alertFirstButtonReturn else { reload(select: installed?.id); return }
+            do {
+                let item: AgentPluginInstallation
+                if let installed { item = try service.update(package, replacing: installed) } else { item = try service.install(package) }
+                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil ? "" : "，已停用"); onChange?()
+            } catch { state.stringValue = error.localizedDescription }
         }
     }
     @objc private func removePackage() {

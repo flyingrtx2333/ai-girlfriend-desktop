@@ -308,6 +308,16 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 
 原生复现：`node scripts/check-native-plugin-rules.mjs --app <严格签名候选绝对路径>`。独立目录保存真实ZIP、公开README副本、实际Git忽略规则匹配结果和实际命令父／子进程，使用 `--plugin-rule-check --background-component-check`，禁止模型传输。每次保留自己的目录与原进程，不复用、清空或重放旧记录。
 
+## 本地插件更新与历史恢复
+
+插件窗口的「更新插件…」读取同名ZIP；「导入插件…」遇到已安装名称也进入更新审阅。确认前显示版本变化、增删改文件与新包组件能力，更新和恢复均需明确确认。内容相同或审阅后安装状态已变化时拒绝发布。此处是本地ZIP更新，不包含市场更新或依赖解析。
+
+候选在同一父目录完整写入并核对后，通过目录原子交换发布；被替换目录作为隐藏历史副本保留原始文件与安装记录。「历史版本」先核对原件，再进入恢复审阅；恢复也会保存被替换版本。更新／恢复完成后插件停用并获得新安装身份，旧任务、模型覆盖、MCP与Hook配置保留，旧角色／规则／Skill／连接授权不能自动转用到新版本。用户重新启用后仍需重新选择组件和配置连接。更新前取消依赖的实际任务及连接，防止执行中混用版本。
+
+发布前进程中断时保留原可见版本和未发布候选；重开仅报告未关联副本，不自动发布或清理。历史副本和原配置目前不自动清除；移除可见插件不会删除这些副本。上限为2000条历史索引及500 KB安装记录，达到上限时先备份再移除／重新导入。
+
+复现：`npm run native:check-plugin-updates -- --app <严格签名候选绝对路径>`。独立目录使用实际ZIP、公开README、原生工具与真实Node／sleep／MCP进程，禁止模型传输；在完整候选准备后实际结束本轮检查进程，再由新进程核对原版本、未发布副本及重新审阅发布。保留原始失败与中断记录，不重放旧目录，不替换日常应用。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
