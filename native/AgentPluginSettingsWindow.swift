@@ -16,8 +16,8 @@ import AppKit
         scopes.selectedSegment = item.workspace == nil ? 0 : 1; scopes.setEnabled(service.sharedHome != nil, forSegment: 0)
         for index in [1, 2] { scopes.setEnabled(workspace != nil, forSegment: index) }; scopes.target = self; scopes.action = #selector(changeScope); scopes.setAccessibilityLabel("插件设置范围")
         value.addItems(withTitles: ["继承上层", "启用", "停用"]); value.target = self; value.action = #selector(changeValue); value.setAccessibilityLabel("插件启用声明")
-        let name = NSTextField(labelWithString: item.metadata.title + " · " + item.metadata.name + "@local"); name.font = .systemFont(ofSize: 14, weight: .semibold)
-        for label in [source, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle }
+        let name = NSTextField(labelWithString: item.metadata.title + " · " + item.metadata.name + "@local"); name.font = .systemFont(ofSize: 14, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for label in [source, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         save.target = self; save.action = #selector(saveSetting)
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshSetting))
         let footer = NSStackView(views: [state, NSView(), refresh, save]); footer.spacing = 10
