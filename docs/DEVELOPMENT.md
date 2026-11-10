@@ -318,6 +318,8 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 
 复现：`npm run native:check-plugin-updates -- --app <严格签名候选绝对路径>`。独立目录使用实际ZIP、公开README、原生工具与真实Node／sleep／MCP进程，禁止模型传输；在完整候选准备后实际结束本轮检查进程，再由新进程核对原版本、未发布副本及重新审阅发布。保留原始失败与中断记录，不重放旧目录，不替换日常应用。
 
+本轮更新检查28项及8项独立核对、中断恢复4项及7项独立核对通过；最终签名版本的17项窗口独立核对通过。实际窗口包含确认与取消、Esc、版本差异、更新停用、历史恢复、窄窗口和新进程重开；41份持久文件在重开前后逐字节一致。报告见本地 `evidence/agent/bluefatfish-plugin-updates-ui-实际 ip2gizy6/plugin-update-window-report.json`。本轮模型请求0，日常应用未替换。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
