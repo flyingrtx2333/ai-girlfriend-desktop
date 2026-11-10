@@ -82,7 +82,7 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
                   "abcdefghijklmnopqrstuvwxyz0123456789,./;[]\\-='\t".contains(value.key),
                   value.flags.contains(.command) || command == .planMode && value == .init("\t", .shift) else { throw PetError("请使用 ⌘ 加字母、数字或常用标点；计划模式也可使用 ⇧⇥") }
             guard value.key != "\t" || command == .planMode && value == .init("\t", .shift), !reserved.contains(value) else { throw PetError(value.display + "用于文本编辑或系统操作，请换一个组合") }
-            if let previous = used[value] { throw PetError(value.display + "已用于“" + previous.title + "”") }
+            if let previous = used[value] { throw PetError(value.display + "在“" + previous.title + "”和“" + command.title + "”中重复") }
             used[value] = command
         }
     }

@@ -12,11 +12,11 @@ import AppKit
         let toolbar = NSStackView(views: [restore, reload, NSView()]); toolbar.spacing = 8; addArrangedSubview(toolbar)
         for command in AgentShortcutCommand.allCases {
             let title = NSTextField(labelWithString: command.title), button = NSButton(title: "", target: self, action: #selector(record(_:))), reset = NSButton(title: "恢复默认", target: self, action: #selector(restore(_:)))
-            title.font = .systemFont(ofSize: 13); title.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            title.font = .systemFont(ofSize: 13); title.widthAnchor.constraint(equalToConstant: 148).isActive = true
             button.tag = AgentShortcutCommand.allCases.firstIndex(of: command)!; reset.tag = button.tag
             button.bezelStyle = .rounded; button.font = .monospacedSystemFont(ofSize: 13, weight: .medium); button.widthAnchor.constraint(equalToConstant: 106).isActive = true
             button.setAccessibilityLabel(command.title + "快捷键"); reset.setAccessibilityLabel(command.title + "恢复默认"); reset.bezelStyle = .inline; reset.font = .systemFont(ofSize: 11)
-            let line = NSStackView(views: [title, button, reset]); line.spacing = 12; line.alignment = .centerY
+            let line = NSStackView(views: [title, button, reset, NSView()]); line.spacing = 12; line.alignment = .centerY
             addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             buttons[command] = button; resets[command] = reset
         }

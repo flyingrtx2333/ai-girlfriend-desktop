@@ -194,6 +194,10 @@ final class FormDocumentView: NSView {
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        composer.onShortcut = { [weak self] event in
+            guard let self, self.canPerformShortcut(.planMode), self.companion?.shortcuts.binding(.planMode).matches(event) == true else { return false }
+            self.performShortcut(.planMode); return true
+        }
         composer.attachmentOwner = { [weak self] in
             guard let self, selectedTab == "chat", attachmentImport == nil, let task = currentAgentTask,
                   !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { return nil }
@@ -676,10 +680,6 @@ final class FormDocumentView: NSView {
         composer.isRichText = false; composer.allowsUndo = true; composer.isAutomaticQuoteSubstitutionEnabled = false
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
-        composer.onShortcut = { [weak self] event in
-            guard let self, self.canPerformShortcut(.planMode), self.companion?.shortcuts.binding(.planMode).matches(event) == true else { return false }
-            self.performShortcut(.planMode); return true
-        }
         composer.onInputChanged = { [weak self] in self?.composerChanged() }
         composer.onExtensionKey = { [weak self] key in
             guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
