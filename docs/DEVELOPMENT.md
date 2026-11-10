@@ -327,3 +327,7 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 原生复现：`npm run native:check-rules -- --app <严格签名候选绝对路径>`。独立目录使用实际公开README、兼容目录、规则ZIP和Node／sleep进程，保存所有文件、原始报告及可恢复删除的目标位置；不发送模型请求，不重放旧目录或替换日常应用。原生检查证明文件与运行层行为，不等同于实际窗口删除或真实模型遵循规则的效果。
 
 同一签名候选的38项规则检查和38项相关插件兼容检查均通过，各8项独立核对通过。实际窗口完成12阶段／21项独立核对，记录在本地 `evidence/agent/bluefatfish-local-rules-WbFKpr/local-rules-window-report.json`：项目和无工作区用户规则保存、版本冲突保留两侧内容、启停、草稿与发送后的绑定、退出保护和重开恢复。一次发送为预期的传输前受阻尝试，外部请求及回执0；重开尝试0。已取消的原生命令首次载入时保留现有快照恢复警告，此后9份任务重开原字节一致。误开的无参数实例已单独结束，31项日常校验值未变。窗口只打开并取消废纸篓确认，不宣称做过窗口最终删除；16次真实规则验收另行计量。
+
+真实规则入口：`npm run native:check-live-rules -- --prepare-only` 创建独立公开输入，不授予请求权限。取得本轮明确授权后，保存 `rules-live-authorization.json`，字段为 `scope: "rules"`、`maximumRequests: 16`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`；再传入 `--directory <该目录> --app <严格签名候选>`。原生使用 `--rules-live-check --live-agent --background-component-check`，只读角色限于文件、终端和规则工具，逐次持久计数，包含压缩请求；目录、模型或配置变化即停止，不重放已有任务、账本或开始标记。沿用钥匙串凭据，授权文件不含Token。
+
+首轮 `bluefatfish-rules-live-VwF0gu` 实际用满16／16次（14次会话、2次压缩），16份真实回执全部保留。始终规则的无工作区系统查询、手动README审阅、模型判断规则选择已产生真实答复并与实际来源核对；答复仍有未在数值旁写单位、把启动命令一并列为构建步骤的格式／范围细节。文件规则已在实际读取后激活，且两份文件确已读取，但模型误把名称、SHA当作规则id，两次失败后耗尽额度，没有最终答复。该项保留失败，不把整体标为通过；修正载入规则的编号显示和读取提示后，须另行获批再复验。报告见本地 `evidence/agent/bluefatfish-rules-live-VwF0gu/rules-live-report.json`。
