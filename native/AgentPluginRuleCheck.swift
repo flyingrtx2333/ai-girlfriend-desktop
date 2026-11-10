@@ -31,9 +31,11 @@ import Darwin
             let decision = try await tools.execute(call("read_rule", ["id": rule("decision").id]))
             checks["actualReadRuleLoadsCurrentBodyOnlyIntoDynamicContext"] = try context(id).contains("RULE_DECISION_BODY_482") && !decision.text.contains("RULE_DECISION_BODY_482") && decision.text.contains(rule("decision").reference.sha256)
             checks["ruleLoadingDoesNotChangeTaskPermissions"] = tasks.task(id)?.mode == .ask && tasks.task(id)?.permission == originalPermission
-            let otherBefore = try Data(contentsOf: tasks.directory.appendingPathComponent(other + ".json"))
             _ = try await otherTools.execute(call("read_file", ["path": "src/vendor/excluded.ts", "limit": 2]))
             checks["excludedActualFileDoesNotActivateGlob"] = try !context(other).contains("RULE_GLOB_684") && tasks.task(other)?.activeRules?.isEmpty != false
+            // Successful reads now remember local-rule directories in their own
+            // task. Compare isolation after that intentional local mutation.
+            let otherBefore = try Data(contentsOf: tasks.directory.appendingPathComponent(other + ".json"))
             let read = try await tools.execute(call("read_file", ["path": "src/api.ts", "limit": 2]))
             checks["actualPublicFileReadActivatesMatchingRule"] = try !read.failed && !read.text.isEmpty && context(id).contains("RULE_GLOB_684") && Data(contentsOf: project.appendingPathComponent("src/api.ts")) == source
             checks["matchingRuleDoesNotCrossTasks"] = try !context(other).contains("RULE_GLOB_684") && Data(contentsOf: tasks.directory.appendingPathComponent(other + ".json")) == otherBefore

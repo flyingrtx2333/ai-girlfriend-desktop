@@ -60,6 +60,12 @@ import Foundation
                 if introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true { self.cancel(task.id) }
             }
         }
+        store.rules.onChange = { [weak self] id, workspace, automatic in
+            guard let self else { return }
+            for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" && (workspace == nil || task.workspace == workspace) {
+                if automatic || task.localRuleIDs?.contains(id) == true || task.activeLocalRules?.contains(where: { $0.id == id && $0.workspace == task.workspace }) == true { self.cancel(task.id) }
+            }
+        }
         store.teams.onChange = { [weak self] teamID in
             guard let self else { return }
             for task in self.store.tasks where task.team?.team.id == teamID { self.cancel(task.id) }
@@ -229,7 +235,8 @@ import Foundation
     }
     func prepareInput(_ text: String, attachmentIDs: [String], task: AgentTaskRecord) throws -> AgentMessage {
         var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)
-        if let rule = try store.extensions.plugins.ruleInput(text, task: task) { message.ruleReferences = [rule] }
+        if let rule = try store.rules.ruleInput(text, task: task) { message.localRuleReferences = [rule] }
+        else if let rule = try store.extensions.plugins.ruleInput(text, task: task) { message.ruleReferences = [rule] }
         if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {
             guard !task.isProjectDocumentation else { throw PetError("请在普通任务中生成画布") }
             message.extensionInstructions = "[用户选择内置 /canvas。按需载入canvas工具，生成可交互画布；保留原始要求，使用实际数据，完成前核对渲染结果。]"
@@ -520,7 +527,7 @@ import Foundation
         result.arguments = String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self); return result
     }
     func systemContext(_ task: AgentTaskRecord) throws -> String { try contextPayload(task).text }
-    private func contextPayload(_ task: AgentTaskRecord) throws -> (text: String, skills: String, rulePlugins: [String]) {
+    private func contextPayload(_ task: AgentTaskRecord) throws -> (text: String, skills: String, rulePlugins: [String], localRules: [String]) {
         try store.projectKnowledge.checkTask(task)
         try store.teams.check(task, store: store)
         var context = """
@@ -614,8 +621,8 @@ import Foundation
                 } catch { throw PetError("无法载入 \(path)：" + error.localizedDescription) }
             }
         }
-        let rules = try store.extensions.plugins.ruleContext(task)
-        return (context + rules.text, skills, rules.plugins)
+        let rules = try store.rules.context(task)
+        return (context + rules.text, skills, rules.plugins, rules.local)
     }
     private func execute(_ id: String, run: Run) async {
         var hookSecret = ""
@@ -761,6 +768,7 @@ import Foundation
                 if task.kind == AgentKnowledgeCards.kind, (task.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片已使用30次模型请求，请缩小分析范围后重试；已有记录和草稿保留") }
                 let payload = try contextPayload(task), system = payload.text
                 if task.rulePlugins != payload.rulePlugins { store.update(id) { $0.rulePlugins = payload.rulePlugins } }
+                if task.localRuleIDs != payload.localRules { store.update(id) { $0.localRuleIDs = payload.localRules } }
                 _ = try await hook(.instructions, id: id, trigger: AgentFiles.hash(Data(system.utf8)), fields: ["instructions": system], secret: key)
                 if flushHookContext(id) { task = store.task(id)! }
                 let definitions = try toolDefinitions(task, preferences: p)

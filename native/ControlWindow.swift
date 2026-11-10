@@ -2007,7 +2007,7 @@ final class FormDocumentView: NSView {
         let manager = AgentExtensionWindow(store: store, taskID: id)
         manager.onStartAgent = { [weak self] taskID in self?.selectAgentTask(taskID) }
         manager.onBrowseMCP = { [weak self] server in self?.presentMCPContent(taskID: id, serverID: server) }
-        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) }; manager.onInsertRule = { [weak self] item in try self?.insertRule(item, taskID: id) } }
+        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) }; manager.onInsertRule = { [weak self] item in try self?.insertRule(item, taskID: id) }; manager.onInsertLocalRule = { [weak self] item in try self?.insertLocalRule(item, taskID: id) } }
         extensionWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
@@ -2027,12 +2027,21 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
         let current = try store.extensions.plugins.currentRule(item.id)
         guard current.reference == item.reference else { throw PetError("规则来源已变化，请刷新插件") }
+        insertRuleInvocation(current.name, taskID: taskID)
+    }
+    private func insertLocalRule(_ item: AgentLocalRuleItem, taskID: String) throws {
+        guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
+        let current = try store.rules.current(item.id, task: task)
+        guard current.definition != nil, current.sha256 == item.sha256, current.signature == item.signature else { throw PetError("规则来源已变化，请刷新规则") }
+        insertRuleInvocation(current.invocation, taskID: taskID)
+    }
+    private func insertRuleInvocation(_ invocation: String, taskID: String) {
         dismissExtensionCandidates(); saveAgentDraft()
         if displayedTask != taskID { selectAgentTask(taskID) }
         let previous = composer.string
         if previous.hasPrefix("@rule:"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
-            composer.string = "@rule:" + current.name + " " + previous.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else { composer.string = "@rule:" + current.name + " " + previous }
+            composer.string = "@rule:" + invocation + " " + previous.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else { composer.string = "@rule:" + invocation + " " + previous }
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }

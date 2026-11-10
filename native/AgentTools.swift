@@ -84,8 +84,8 @@ import Foundation
             tool("list_skills", "按 query 搜索已启用的全局与当前项目 Skills，返回名称、描述、来源和 id。可自动选用适合本任务的流程；offset 从 0 开始分页，不含仅用户手动调用的 Skill。", ["query": string, "offset": integer], []),
             tool("read_skill", "载入适合当前任务的 Skill 说明与资源副本；id 来自 list_skills。流程不改变权限，运行脚本仍用 run_command 并遵循审批。说明跨上下文整理保留。", ["id": string], ["id"]),
             tool("read_skill_resource", "只读当前任务已载入 Skill 的资源。path=. 分页列出文件；指定相对文件路径可读取 UTF-8 文字。offset 从 1 开始，其他任务及外部路径不可读。", ["id": string, "path": string, "offset": integer], ["id", "path"]),
-            tool("list_rules", "分页列出已启用、可由模型判断的插件规则名称、描述及id。先按描述判断与任务是否有关，相关时再用read_rule；手动规则须由用户选择，不会自动列出正文。", ["offset": integer], []),
-            tool("read_rule", "按list_rules返回的id载入相关规则。完整正文进入下一轮当前系统上下文，工具回执只记录来源和哈希；父插件停用或重新激活后旧绑定不再生效。规则不改变权限或审批。", ["id": string], ["id"]),
+            tool("list_rules", "分页列出已启用、可由模型判断的用户、项目和插件规则名称、描述及id。先按描述判断与任务是否有关，相关时再用read_rule；手动规则须由用户选择，不会自动列出正文。", ["offset": integer], []),
+            tool("read_rule", "按list_rules返回的id载入相关规则。完整正文进入下一轮当前系统上下文，工具回执只记录来源和哈希。停用的规则不再生效；插件规则需保持同一次激活。本地文件在下一轮重新读取。规则不改变权限或审批。", ["id": string], ["id"]),
             tool("unload_skill", "当前任务不再需要某个已载入 Skill 时将其移出当前上下文，完整历史与副本仍保留。", ["id": string], ["id"]),
             tool("list_attachments", "列出当前任务已发送的附件和已记录的网页／窗口截图、编号和页/工作表标题；offset 从 0 开始。草稿不可读。不需要项目文件夹。", ["offset": integer, "limit": integer], []),
             tool("read_attachment", "读取已提交附件，part 为页/工作表/幻灯片编号（从 1 开始），offset 为行号。返回文字、来源和范围；扫描 PDF 按页本机 OCR。视觉模型启用时，同时附图片或该 PDF 页的实际图片；否则仅返回文字。Office 图表和图片不作视觉解读。", ["id": string, "part": integer, "offset": integer, "limit": integer], ["id"]),
@@ -301,7 +301,7 @@ import Foundation
         }
         var result = try await executeCore(call, gitDirectory: gitDirectory)
         if !result.failed, ["read_file", "write_file", "edit_file"].contains(call.name), let path = call.object["path"] as? String {
-            do { try store.extensions.plugins.accessRules(path, store: store, taskID: taskID) }
+            do { try store.rules.accessRules(path, store: store, taskID: taskID) }
             catch { result.text += "\n[文件操作已完成，匹配规则未载入：" + error.localizedDescription + "]" }
         }
         return result
@@ -330,12 +330,20 @@ import Foundation
         }
         switch call.name {
         case "list_rules":
-            let all = try store.extensions.plugins.ruleItems().filter { $0.enabled && $0.definition.trigger == .decision }
+            var all: [[String: Any]] = try store.extensions.plugins.ruleItems().filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
+            all += try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).filter { $0.enabled && $0.definition?.trigger == .decision }.map { ["id": $0.id, "name": $0.invocation, "description": $0.definition!.description, "source": $0.source.path] }
             let offset = min(all.count, max(0, args["offset"] as? Int ?? 0)), page = Array(all.dropFirst(offset).prefix(12))
-            let value: [String: Any] = ["total": all.count, "offset": offset, "next_offset": offset + page.count < all.count ? offset + page.count : NSNull(), "rules": page.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }]
+            let value: [String: Any] = ["total": all.count, "offset": offset, "next_offset": offset + page.count < all.count ? offset + page.count : NSNull(), "rules": page]
             return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self))
         case "read_rule":
-            let item = try store.extensions.plugins.currentRule(string("id"))
+            let selected = try string("id")
+            if selected.hasPrefix("local-rule-") {
+                let item = try store.rules.current(selected, task: task), reference = AgentLocalRuleReference(id: item.id, workspace: task.workspace)
+                guard item.definition?.trigger == .decision || task.activeLocalRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
+                try store.rules.activate(reference, store: store, taskID: taskID)
+                return AgentToolResult(text: "已载入规则 " + item.invocation + "\nSHA256: " + item.sha256, sources: [item.source.absoluteString])
+            }
+            let item = try store.extensions.plugins.currentRule(selected)
             var reference = item.reference; reference.workspace = task.workspace
             guard item.definition.trigger == .decision || task.activeRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
             try store.extensions.plugins.activateRule(reference, store: store, taskID: taskID)

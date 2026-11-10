@@ -4,6 +4,7 @@ import Foundation
     let directory: URL
     let browser = AgentBrowser()
     let extensions: AgentExtensions
+    let rules: AgentRules
     let mcp: AgentMCP
     let hooks: AgentHooks
     let agents: AgentProfiles
@@ -54,6 +55,7 @@ import Foundation
         self.directory = directory.appendingPathComponent("agent", isDirectory: true)
         organization = AgentOrganization(profile: directory)
         extensions = AgentExtensions(profile: directory, sharedHome: extensionHome)
+        rules = AgentRules(profile: directory, sharedHome: extensionHome, plugins: extensions.plugins)
         mcp = AgentMCP(profile: directory, keychain: mcpKeychain, plugins: extensions.plugins)
         hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain, plugins: extensions.plugins)
         agents = AgentProfiles(profile: directory, plugins: extensions.plugins)

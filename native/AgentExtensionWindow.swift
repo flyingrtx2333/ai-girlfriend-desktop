@@ -17,10 +17,12 @@ import UniformTypeIdentifiers
     private var agentWindow: AgentProfileWindow?
     private var teamWindow: AgentTeamWindow?
     private var pluginWindow: AgentPluginWindow?
+    private var ruleWindow: AgentRuleWindow?
     var onStartAgent: ((String) -> Void)?
     var onBrowseMCP: ((String?) -> Void)?
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
     var onInsertRule: ((AgentPluginRuleItem) throws -> Void)?
+    var onInsertLocalRule: ((AgentLocalRuleItem) throws -> Void)?
     private var workspace: String? { store.task(taskID)?.workspace }
     private var kind: AgentExtensionKind { kinds.selectedSegment == 1 ? .command : .skill }
     init(store: AgentStore, taskID: String) {
@@ -56,7 +58,8 @@ import UniformTypeIdentifiers
         }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let detailHeader = NSStackView(views: [enabled, location, NSView(), use]); detailHeader.spacing = 10
-        let listActions = NSStackView(views: [add, importButton, NSView()]); listActions.spacing = 8
+        let rules = NSButton(title: "规则", target: self, action: #selector(showRules))
+        let listActions = NSStackView(views: [add, importButton, rules, NSView()]); listActions.spacing = 8
         let footer = NSStackView(views: [state, NSView(), reveal, remove, save]); footer.spacing = 8
         for view in [header, list, viewer, detailHeader, listActions, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -70,6 +73,11 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    @objc private func showRules() {
+        guard canLeave() else { return }
+        if let window = ruleWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentRuleWindow(store: store, taskID: taskID); manager.onInsert = onInsertLocalRule; ruleWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+    }
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
@@ -225,7 +233,10 @@ import UniformTypeIdentifiers
         let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { if canLeave() { job?.cancel(); return true }; return false }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let child = ruleWindow?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } }
+        if canLeave() { job?.cancel(); return true }; return false
+    }
     func checkLayout(_ output: URL) -> [String: Bool] {
         showWindow(nil); var checks = ["extensionEditorMatchesActualFile": selected.flatMap { try? store.extensions.document($0).0 } == editor.string, "extensionEnableAndSourceControls": enabled.isEnabled && reveal.isEnabled]
         if let item = selected, item.enabled, let row = items.firstIndex(where: { $0.id == item.id }) {
