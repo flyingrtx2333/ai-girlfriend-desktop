@@ -93,7 +93,7 @@ import AppKit
         guard let id = sender.representedObject as? String else { return }
         if selectedMembers.contains(id) { selectedMembers.remove(id) } else { guard selectedMembers.count < 4 else { state.stringValue = "最多四名成员"; return }; selectedMembers.insert(id) }; refreshMembers(); changed()
     }
-    private func updateControls() { let selected = selectedID != nil; for item in [name, purpose, leader, members, enabled] as [NSControl] { item.isEnabled = selected }; instructions.isEditable = selected; save.isEnabled = dirty; use.isEnabled = selected && !dirty && enabled.state == .on }
+    private func updateControls() { let selected = selectedID != nil; for item in [name, purpose, leader, members, enabled] as [NSControl] { item.isEnabled = selected }; instructions.isEditable = selected; save.isEnabled = dirty; use.isEnabled = selected && !dirty && enabled.state == .on && (selectedID.map { (try? store.teams.team($0, store: store, workspace: workspace)) != nil } ?? false) }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
