@@ -38,8 +38,13 @@ import AppKit
             checks["realDocumentExtractionContainsOriginalReadme"] = content.parts.contains { $0.text.contains("蓝色大肥鱼") || $0.text.contains("BlueFatFish") || $0.text.contains("小鲸") }
             let quota = tasks.create(title: "附件数量上限", mode: .ask, workMode: .general)
             for _ in 0..<6 { _ = try await AgentAttachments.importFile(readme, store: tasks, taskID: quota) }
+            tasks.update(quota) { $0.draft = "保留已满附件的原草稿" }; control.showAgentTask(quota)
             let quotaBefore = try bytes(quota)
             checks["fullDraftRejectsWholeIncomingBatchWithoutChangingRecord"] = try control.beginAttachmentImport([readme, image], store: tasks, taskID: quota) == nil && bytes(quota) == quotaBefore && tasks.task(quota)?.draftAttachmentIDs?.count == 6
+            let rejectedBoard = NSPasteboard.withUniqueName(), rejectedItem = NSPasteboardItem(); defer { rejectedBoard.releaseGlobally() }
+            guard rejectedItem.setString(image.absoluteString, forType: .fileURL), rejectedItem.setString(image.lastPathComponent, forType: .string), rejectedBoard.writeObjects([rejectedItem]) else { throw PetError("原生文件粘贴板未写入") }
+            let consumed = input.readSelection(from: rejectedBoard); _ = control.saveWindowDraft()
+            checks["rejectedFileFlavorCannotFallBackToFilenameText"] = try consumed && input.string == "保留已满附件的原草稿" && bytes(quota) == quotaBefore && tasks.task(quota)?.draftAttachmentIDs?.count == 6
             let readonly = tasks.create(title: "只读保存检查", mode: .ask, workMode: .general), readonlyBefore = try bytes(readonly), index = tasks.directory.appendingPathComponent("index.json")
             try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: index.path)
             do { _ = try await AgentAttachments.importFile(readme, store: tasks, taskID: readonly); checks["actualReadonlyIndexRejectsAttachmentSave"] = false } catch { checks["actualReadonlyIndexRejectsAttachmentSave"] = true }

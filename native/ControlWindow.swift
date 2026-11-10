@@ -27,9 +27,10 @@ final class ComposerView: NSTextView {
     override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
         noteFileIngress("read:" + type.rawValue)
         guard type == .fileURL else { return super.readSelection(from: pasteboard, type: type) }
+        // Consume recognized files even when rejected, so AppKit cannot retry their names as text.
         guard isEditable, let owner = attachmentOwner?(), dragOwner == nil || dragOwner == owner,
-              let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return false }
-        let accepted = onImportFiles?(urls, owner) ?? false; noteFileIngress(accepted ? "accepted" : "rejected"); return accepted
+              let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { noteFileIngress("rejected"); return true }
+        let accepted = onImportFiles?(urls, owner) ?? false; noteFileIngress(accepted ? "accepted" : "rejected"); return true
     }
     override func resignFirstResponder() -> Bool {
         let result = super.resignFirstResponder(); if result { onEditingEnded?() }; return result
@@ -2213,6 +2214,10 @@ extension ControlWindow {
         value["nativeWindowNumber"] = window?.windowNumber ?? 0
         if CommandLine.arguments.contains("--manual-ui") {
             value["fileIngress"] = composer.fileIngressDiagnostics; value["fileDragTypes"] = composer.registeredDraggedTypes.map(\.rawValue); value["fileDropOwner"] = composer.dragOwner as Any? ?? NSNull()
+            if let window {
+                let rect = composer.convert(composer.bounds, to: nil), drag = NSPasteboard(name: .drag)
+                value["fileDropGeometry"] = ["windowFrame": NSStringFromRect(window.frame), "composerInWindow": NSStringFromRect(rect), "composerOnScreen": NSStringFromRect(window.convertToScreen(rect)), "mouseInWindow": NSStringFromPoint(window.mouseLocationOutsideOfEventStream), "mouseButtons": NSEvent.pressedMouseButtons, "composerFirstResponder": window.firstResponder === composer, "windowKey": window.isKeyWindow, "backingScale": window.backingScaleFactor, "dragPasteboardTypes": drag.types?.map(\.rawValue) ?? [], "dragPasteboardChangeCount": drag.changeCount] as [String: Any]
+            }
             value["draftUndoAvailable"] = windowDraft?.undo.canUndo == true; value["draftRedoAvailable"] = windowDraft?.undo.canRedo == true
             value["composerUsesSharedUndo"] = windowDraft.map { composer.undoManager === $0.undo } ?? false
             value["draftPendingSave"] = windowDraft?.pendingSave == true
