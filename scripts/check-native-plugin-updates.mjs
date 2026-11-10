@@ -15,7 +15,7 @@ async function dailyHashes() {
   for (const name of await readdir(path.join(folder, 'agent')).catch(e => { if (e.code === 'ENOENT') return []; throw e; })) if (/^[A-Fa-f0-9-]{36}\.json$/.test(name)) names.push('agent/' + name);
   const values = {}; for (const name of names) values[name] = await readFile(path.join(folder, name)).then(hash).catch(e => { if (e.code === 'ENOENT') return null; throw e; }); return values;
 }
-await mkdir(path.join(output, 'real project')); await writeFile(path.join(output, 'real project/source.txt'), await readFile(path.join(root, 'README.md'))); await writeFile(path.join(output, 'node-path.txt'), process.execPath);
+await mkdir(path.join(output, 'real project')); await mkdir(path.join(output, 'shared-home')); await writeFile(path.join(output, 'real project/source.txt'), await readFile(path.join(root, 'README.md'))); await writeFile(path.join(output, 'node-path.txt'), process.execPath);
 await writeFile(path.join(output, 'real project/slow.cjs'), "const fs=require('node:fs'),cp=require('node:child_process');const child=cp.spawn('/bin/sleep',['30'],{stdio:'ignore'});fs.writeFileSync('slow-pids.json',JSON.stringify({pid:process.pid,child:child.pid}));setTimeout(()=>console.log('finished actual process'),30000);\n");
 const prepared = spawnSync(process.env.BLUEFATFISH_CHECK_PYTHON || '/opt/homebrew/bin/python3', ['-c', String.raw`import json,pathlib,sys,zipfile
 p=pathlib.Path(sys.argv[1]);node=sys.argv[2];plugin_root='$'+'{QODER_PLUGIN_ROOT}';resource='$'+'{RESOURCE_PATH}'

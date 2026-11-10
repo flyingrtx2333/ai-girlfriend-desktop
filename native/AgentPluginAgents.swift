@@ -109,7 +109,7 @@ struct AgentPluginAgentDefinition {
                 var profile = definition.profile
                 profile.id = Self.mcpUUID("agent:" + item.instanceID + ":" + definition.key)
                 profile.name = item.metadata.name + ":" + definition.key; profile.enabled = item.enabled
-                profile.pluginSource = AgentPluginAgentReference(name: item.id, installationID: item.instanceID, activationID: item.receipt.activationID ?? item.receiptHash, key: definition.key, sha256: item.receipt.hashes[definition.path]!)
+                profile.pluginSource = AgentPluginAgentReference(name: item.id, installationID: item.instanceID, activationID: item.activationID, key: definition.key, sha256: item.receipt.hashes[definition.path]!)
                 profile.skills = try definition.skills.map { name in
                     let key = name.hasPrefix(item.metadata.name + ":") ? String(name.dropFirst(item.metadata.name.count + 1)) : name
                     guard let skill = item.receipt.components.first(where: { $0.kind == .skill && $0.name == key }) else { throw PetError("插件 Agent 引用的 Skill 不存在：" + name) }
@@ -125,9 +125,8 @@ struct AgentPluginAgentDefinition {
         }; return result
     }
     func validateAgent(_ reference: AgentPluginAgentReference, workspace: String? = nil) throws {
-        try requireScope(reference.name, workspace: workspace)
-        let item = try installation(reference.name)
-        guard item.enabled, item.instanceID == reference.installationID, (item.receipt.activationID ?? item.receiptHash) == reference.activationID, item.agents.contains(where: { $0.key == reference.key && item.receipt.hashes[$0.path] == reference.sha256 }) else { throw PetError("所属插件已停用、移除或更新，请重新选择 Agent") }
+        let item = try requireScope(reference.name, workspace: workspace)
+        guard item.enabled, item.instanceID == reference.installationID, item.activationID == reference.activationID, item.agents.contains(where: { $0.key == reference.key && item.receipt.hashes[$0.path] == reference.sha256 }) else { throw PetError("所属插件已停用、移除或更新，请重新选择 Agent") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }
 }

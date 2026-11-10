@@ -87,12 +87,12 @@ import Darwin
             let copyBase = URL(fileURLWithPath: c).appendingPathComponent(".bluefatfish/plugins"); try FileManager.default.createDirectory(at: copyBase, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: active.root, to: copyBase.appendingPathComponent(active.metadata.name))
             let shared = try plugins.catalog(workspace: c, onlyScope: true).first!
-            checks["actualSharedCopyKeepsPackageBytesButNotLocalApprovalOrIdentity"] = try pluginUpdateHashes(shared.root) == initialProjectBytes && shared.receipt.enabled && !shared.locallyReviewed && !shared.enabled && shared.instanceID != active.instanceID
+            checks["actualSharedCopyKeepsPackageBytesButNotLocalApprovalOrIdentity"] = try pluginUpdateHashes(shared.root) == initialProjectBytes && shared.requestedEnabled && !shared.locallyReviewed && !shared.enabled && shared.instanceID != active.instanceID
             checks["unreviewedSharedCopyDoesNotSuppressExistingUserPlugin"] = try plugins.catalog(workspace: c).map(\.id) == [user.id] && plugins.ruleContext(tasks.task(tasks.create(title: "共享副本未审阅", workspace: c, mode: .ask, workMode: .general))!).text.contains("PLUGIN_RULE_VERSION_1")
             let template = try plugins.content(".mcp.json", installation: shared)
             let sharedTree = try pluginUpdateHashes(URL(fileURLWithPath: a).appendingPathComponent(".bluefatfish"))
             checks["sharedFilesContainTemplatesAndNoLocalConnectorValues"] = String(decoding: template, as: UTF8.self).contains("${RESOURCE_PATH}") && !String(decoding: template, as: UTF8.self).contains(a) && Set(sharedTree.keys) == Set(initialProjectBytes.keys.map { "plugins/" + active.metadata.name + "/" + $0 })
-            let fresh = AgentPlugins(profile: store.directory)
+            let fresh = AgentPlugins(profile: store.directory, sharedHome: plugins.sharedHome)
             checks["freshServiceRetainsExactLocalReviewAndKeepsSharedCopyUnapproved"] = try fresh.installation(active.id).enabled && !fresh.installation(shared.id).enabled && fresh.catalog(workspace: c).map(\.id) == [user.id]
             try phase("actual-project-update-cancels-only-own-processes")
             let node = try String(contentsOf: output.appendingPathComponent("node-path.txt"), encoding: .utf8)
@@ -107,17 +107,24 @@ import Darwin
             let pa = try JSONSerialization.jsonObject(with: Data(contentsOf: pidA)) as! [String: Int], pb = try JSONSerialization.jsonObject(with: Data(contentsOf: pidB)) as! [String: Int]
             let aPIDs = [Int32(pa["pid"]!), Int32(pa["child"]!), mcpA], bPIDs = [Int32(pb["pid"]!), Int32(pb["child"]!), mcpB]; actualPIDs += Array(aPIDs.prefix(2)) + Array(bPIDs.prefix(2))
             active = try plugins.installation(active.id)
+            if CommandLine.arguments.contains("--plugin-settings-check") {
+                let document = try plugins.settingDocument(.local, workspace: a)
+                try plugins.setPluginSetting(false, name: active.metadata.name, scope: .local, workspace: a, expectedHash: document.hash)
+                checks["actualLocalSettingStopsOnlyOwnCommandsChildrenAndMCP"] = await until { !runtime.isRunning(slowA) && aPIDs.allSatisfy { kill($0, 0) != 0 } }
+                checks["otherProjectProcessesStayAliveAfterActualLocalSettingChange"] = runtime.isRunning(slowB) && bPIDs.allSatisfy { kill($0, 0) == 0 } && tasks.mcp.token(serverB.id, owner: bTask) == tokenB
+            }
             let updated = try plugins.update(one, replacing: active)
-            checks["actualProjectUpdateStopsOnlyProjectCommandsChildrenAndMCP"] = await until { !runtime.isRunning(slowA) && aPIDs.allSatisfy { kill($0, 0) != 0 } }
+            checks[CommandLine.arguments.contains("--plugin-settings-check") ? "projectUpdateKeepsAlreadyStoppedProjectProcessesTerminal" : "actualProjectUpdateStopsOnlyProjectCommandsChildrenAndMCP"] = await until { !runtime.isRunning(slowA) && aPIDs.allSatisfy { kill($0, 0) != 0 } }
             checks["otherProjectCommandsAndMCPRemainActuallyAlive"] = runtime.isRunning(slowB) && bPIDs.allSatisfy { kill($0, 0) == 0 } && tasks.mcp.token(serverB.id, owner: bTask) == tokenB
             report["projectCancelledPIDs"] = aPIDs.map(Int.init); report["otherProjectSurvivingPIDs"] = bPIDs.map(Int.init)
             checks["projectUpdateRetainsUserPackageAndOriginalRoleTaskBytes"] = try pluginUpdateHashes(activeUser.root) == userBytes && Data(contentsOf: roleFile) == roleBytes && !updated.enabled && updated.locallyReviewed && updated.metadata.version == "1.0.0"
             guard let revision = updated.receipt.revisions?.last else { throw PetError("项目历史未保存") }
             checks["projectHistoryStaysInsideProjectAndRetainsOriginalBytes"] = try pluginUpdateHashes(plugins.revision(revision, of: updated).root) == initialProjectBytes
-            let restored = try plugins.update(plugins.package(revision, of: updated), replacing: updated)
+            var restored = try plugins.update(plugins.package(revision, of: updated), replacing: updated)
             checks["projectRestoreUsesOriginalResourcesWithFreshDisabledIdentity"] = restored.metadata.version == "2.0.0" && restored.receipt.hashes == two.receipt.hashes && !restored.enabled && restored.instanceID != active.instanceID && restored.receipt.revisions?.count == 2
             runtime.cancel(slowB); tasks.mcp.disconnect(owner: bTask)
             checks["otherProjectProcessesExitOnlyAfterExplicitOwnCleanup"] = await until { !runtime.isRunning(slowB) && bPIDs.allSatisfy { kill($0, 0) != 0 } }
+            if CommandLine.arguments.contains("--plugin-settings-check") { checks.merge(try await checkAgentPluginSettings(output, tasks: tasks, runtime: runtime, a: a, b: b)) { _, new in new }; restored = try plugins.installation(restored.id) }
             try phase("external-change-and-replayed-receipt-cannot-reactivate")
             try plugins.setEnabled(restored, true); let approved = try plugins.installation(restored.id), receiptFile = approved.root.appendingPathComponent("receipt.json"), approvedBytes = try Data(contentsOf: receiptFile)
             var changed = approved.receipt; changed.activationID = UUID().uuidString; try JSONEncoder().encode(changed).write(to: receiptFile, options: .atomic)
@@ -173,7 +180,7 @@ import Darwin
             let plugins = tasks.extensions.plugins, id = marker["projectPluginID"] as! String, current = try plugins.installation(id), visible = marker["visibleFiles"] as! [String: String]
             let grant = plugins.profile.appendingPathComponent("extensions/project-plugin-approvals.json")
             checks["actualKilledProjectUpdateRetainsVisibleOriginalBytes"] = try current.receiptHash == marker["visibleReceiptHash"] as? String && pluginUpdateHashes(current.root) == visible
-            checks["actualRevocationSurvivesCrashWithoutReactivatingOldSharedFlag"] = try current.receipt.enabled && current.locallyReviewed && !current.enabled && AgentFiles.hash(try Data(contentsOf: grant)) == marker["revokedGrantSHA256"] as? String
+            checks["actualRevocationSurvivesCrashWithoutReactivatingOldSharedFlag"] = try current.requestedEnabled && current.locallyReviewed && !current.enabled && AgentFiles.hash(try Data(contentsOf: grant)) == marker["revokedGrantSHA256"] as? String
             let directory = marker["unpublishedDirectory"] as! String, candidate = current.root.deletingLastPathComponent().appendingPathComponent(directory), candidateBytes = try pluginUpdateHashes(candidate)
             _ = try plugins.catalog(workspace: current.workspace, onlyScope: true)
             checks["unpublishedProjectCandidateRemainsUnlinkedAndReported"] = current.receipt.revisions?.contains { $0.directory == directory } != true && plugins.warnings.contains { $0.contains("未关联") }

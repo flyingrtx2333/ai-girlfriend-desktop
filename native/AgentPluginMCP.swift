@@ -108,7 +108,7 @@ extension AgentPluginInstallation {
                 }
                 server.id = id; server.plugin = reference; server.configured = existing != nil; server.pluginEnabled = item.enabled
                 server.credentialRevision = existing?.revision
-                server.revision = Self.mcpUUID((existing?.revision ?? "unconfigured") + (item.receipt.activationID ?? item.receiptHash) + item.receipt.sourceHash)
+                server.revision = Self.mcpUUID((existing?.revision ?? "unconfigured") + item.activationID + item.receipt.sourceHash)
                 server.enabled = item.enabled && existing?.enabled == true
                 result.append(server)
             }
@@ -116,8 +116,7 @@ extension AgentPluginInstallation {
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     func validateMCP(_ reference: AgentPluginMCPReference, workspace: String? = nil) throws {
-        try requireScope(reference.name, workspace: workspace)
-        let item = try installation(reference.name)
+        let item = try requireScope(reference.name, workspace: workspace)
         guard item.instanceID == reference.installationID, item.enabled, item.mcpServers.contains(where: { $0.key == reference.key }) else { throw PetError("所属插件已停用、移除或更新") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }

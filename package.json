@@ -31,7 +31,7 @@
     "native:check-rules": "node scripts/check-native-rules.mjs",
     "native:check-instructions": "node scripts/check-native-instructions.mjs",
     "native:check-plugin-scopes": "node scripts/check-native-plugin-scopes.mjs",
-"native:check-plugin-updates": "node scripts/check-native-plugin-updates.mjs",
+    "native:check-plugin-updates": "node scripts/check-native-plugin-updates.mjs",
     "native:check-live-rules": "node scripts/check-live-rules.mjs",
     "native:check-mcp": "node scripts/check-native-mcp.mjs",
     "native:check-hooks": "node scripts/check-native-hooks.mjs",
@@ -87,7 +87,8 @@
     "native:check-video": "node scripts/check-native-video.mjs",
     "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs",
     "native:check-task-archive": "node scripts/check-native-task-archive.mjs",
-    "native:check-task-records": "node scripts/check-native-task-records.mjs"
+    "native:check-task-records": "node scripts/check-native-task-records.mjs",
+    "native:check-plugin-settings": "node scripts/check-native-plugin-scopes.mjs --plugin-settings-check"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

@@ -3,6 +3,8 @@ import Foundation
 struct AgentPluginLocalReview: Codable {
     var reviewedHash: String
     var activeHash: String?
+    var configurationHash: String? = nil
+    var activationID: String? = nil
 }
 
 @MainActor extension AgentPlugins {
@@ -54,7 +56,7 @@ struct AgentPluginLocalReview: Codable {
         guard FileManager.default.fileExists(atPath: file.path) else { return [:] }
         let values = try JSONDecoder().decode([String: AgentPluginLocalReview].self, from: files.readData(file, maximum: 512_000))
         func digest(_ hash: String) -> Bool { hash.count == 64 && hash.allSatisfy(\.isHexDigit) }
-        guard values.count <= 2048, values.allSatisfy({ key, value in (try? Self.scope(key).workspace) != nil && digest(value.reviewedHash) && (value.activeHash.map(digest) ?? true) }) else { throw PetError("项目插件本机审阅记录无效，请在设置目录核对") }
+        guard values.count <= 2048, values.allSatisfy({ key, value in (try? Self.scope(key).workspace) != nil && digest(value.reviewedHash) && (value.activeHash.map(digest) ?? true) && (value.configurationHash.map(digest) ?? true) && (value.activationID.map { UUID(uuidString: $0) != nil } ?? true) }) else { throw PetError("项目插件本机审阅记录无效，请在设置目录核对") }
         return values
     }
     private func saveProjectApprovals(_ values: [String: AgentPluginLocalReview]) throws {
@@ -70,12 +72,13 @@ struct AgentPluginLocalReview: Codable {
     }
     func recordProjectReview(_ item: AgentPluginInstallation, active: Bool) throws {
         guard item.workspace != nil else { return }
-        var values = try projectApprovals(); values[item.id] = AgentPluginLocalReview(reviewedHash: try Self.reviewFingerprint(item.receipt), activeHash: active ? item.receiptHash : nil)
+        var values = try projectApprovals(); values[item.id] = AgentPluginLocalReview(reviewedHash: try Self.reviewFingerprint(item.receipt), activeHash: active ? item.receiptHash : nil, configurationHash: item.selection?.hash, activationID: UUID().uuidString)
         try saveProjectApprovals(values)
     }
     func validateProjectActivations(_ workspace: String?) throws {
         guard let workspace else { return }; let root = try AgentFiles(workspace: workspace).root.path
         for (id, review) in try projectApprovals() where review.activeHash != nil && (try? Self.scope(id).workspace) == root {
+            if let item = try? installation(id), item.locallyReviewed, item.receiptHash == review.activeHash, item.selection?.enabled == false { continue }
             guard let item = try? installation(id), item.locallyReviewed, item.enabled, item.receiptHash == review.activeHash else { throw PetError("项目插件来源已变化，请在“插件 → 项目”重新审阅或全部停用：" + ((try? Self.scope(id).name) ?? "")) }
         }
     }
@@ -90,17 +93,18 @@ struct AgentPluginLocalReview: Codable {
         for id in ids { values[id]?.activeHash = nil }; try saveProjectApprovals(values)
         for id in ids { notify(id) }
         var failures: [String] = []
-        for item in try scopeCatalog(root).items where item.receipt.enabled {
+        for item in try scopeCatalog(root).items where item.receipt.enabled || item.selection?.enabled == true {
             do { try setEnabled(item, false) } catch { failures.append(item.metadata.name + "：" + error.localizedDescription) }
         }
         return failures
     }
-    func requireScope(_ id: String, workspace: String?) throws {
+    @discardableResult func requireScope(_ id: String, workspace: String?) throws -> AgentPluginInstallation {
         if let required = try Self.scope(id).workspace {
             guard let workspace, try AgentFiles(workspace: workspace).root.path == required else { throw PetError("此插件仅属于原项目，请重新选择当前项目的插件") }
         }
         if (try Self.scope(id).workspace) != nil, !(try installation(id)).locallyReviewed { throw PetError("项目插件来源尚未在本机审阅，请先在插件窗口审阅并启用") }
-        guard try catalog(workspace: workspace).contains(where: { $0.id == id }) else { throw PetError("此插件已由当前项目的同名插件覆盖，请重新选择组件") }
+        guard let item = try catalog(workspace: workspace).first(where: { $0.id == id }) else { throw PetError("此插件已由当前项目的同名插件覆盖，请重新选择组件") }
+        guard item.enabled else { throw PetError("插件已停用或需本机审阅，请在插件窗口核对启用设置") }; return item
     }
     func isEffective(_ id: String, workspace: String?) -> Bool { (try? catalog(workspace: workspace).contains { $0.id == id }) == true }
 }

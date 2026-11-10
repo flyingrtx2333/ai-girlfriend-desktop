@@ -70,7 +70,7 @@ struct AgentExtensionDocument: Sendable {
     private struct Settings: Codable { var disabled: Set<String> = [] }
     init(profile: URL, sharedHome: URL? = FileManager.default.homeDirectoryForCurrentUser) {
         let root = profile.standardizedFileURL.resolvingSymlinksInPath()
-        self.profile = root; self.sharedHome = sharedHome; plugins = AgentPlugins(profile: root)
+        self.profile = root; self.sharedHome = sharedHome; plugins = AgentPlugins(profile: root, sharedHome: sharedHome)
     }
     private var settingsFile: URL { profile.appendingPathComponent("extensions/settings.json") }
     private func settings() throws -> Settings {

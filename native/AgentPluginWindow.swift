@@ -10,6 +10,8 @@ import UniformTypeIdentifiers
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = NSButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
+    private let settings = NSButton(title: "启用设置", target: nil, action: nil)
+    private var settingsWindow: AgentPluginSettingsWindow?
     private let source = NSButton(title: "打开来源", target: nil, action: nil)
     private let update = NSButton(title: "更新插件…", target: nil, action: nil), history = NSPopUpButton(frame: .zero, pullsDown: true)
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
@@ -34,7 +36,8 @@ import UniformTypeIdentifiers
         upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled); use.target = self; use.action = #selector(useComponent); remove.target = self; remove.action = #selector(removePackage)
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList)); source.target = self; source.action = #selector(revealPackage)
         disableAll.target = self; disableAll.action = #selector(disableProject); update.target = self; update.action = #selector(updatePackage); history.target = self; history.action = #selector(restoreRevision); history.setAccessibilityLabel("插件历史版本")
-        let header = NSStackView(views: [scopes, search, refresh, upload]); header.spacing = 8
+        settings.target = self; settings.action = #selector(openSettings)
+        let header = NSStackView(views: [scopes, search, refresh, settings, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier(label))); table.headerView = nil; table.delegate = self; table.dataSource = self; table.rowHeight = table === list ? 44 : 30; table.setAccessibilityLabel(label)
@@ -88,7 +91,7 @@ import UniformTypeIdentifiers
             items = all.filter { query.isEmpty || $0.metadata.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) || $0.metadata.description.localizedCaseInsensitiveContains(query) }
             list.delegate = nil; list.reloadData(); let row = items.firstIndex(where: { $0.id == (id ?? selected?.id) }) ?? (items.isEmpty ? -1 : 0)
             if row >= 0 { list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { list.deselectAll(nil) }; list.delegate = self; open(row)
-            state.stringValue = service.warnings.isEmpty ? (selected?.workspace != nil && selected?.receipt.enabled == true && selected?.locallyApproved == false ? "需本机审阅后启用" : items.isEmpty ? "暂无插件" : "\(items.count) 项") : service.warnings.joined(separator: "；"); state.toolTip = state.stringValue
+            state.stringValue = service.warnings.isEmpty ? (selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false ? "需本机审阅后启用" : items.isEmpty ? "暂无插件" : "\(items.count) 项") : service.warnings.joined(separator: "；"); state.toolTip = state.stringValue
         } catch { state.stringValue = error.localizedDescription }; updateControls()
     }
     private func open(_ row: Int) {
@@ -112,14 +115,21 @@ import UniformTypeIdentifiers
     private func updateControls() {
         let idle = job == nil; scopes.isEnabled = idle; scopes.setEnabled(workspace != nil, forSegment: 1); list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
         disableAll.isHidden = scopeWorkspace == nil; disableAll.isEnabled = idle && service.hasProjectActivations(scopeWorkspace)
+        settings.isEnabled = idle && selected != nil
         update.isEnabled = idle && selected != nil; history.isEnabled = idle && selected?.receipt.revisions?.isEmpty == false
         let connector = connectors.indices.contains(components.selectedRow - entries.count)
         let agent = agents.indices.contains(components.selectedRow - entries.count - connectors.count)
         let hook = hooks.indices.contains(components.selectedRow - entries.count - connectors.count - agents.count)
         use.title = connector ? "配置连接器" : agent ? "配置 Agent" : hook ? "配置 Hooks" : "在任务中使用"
-        let available = selected.map { $0.enabled && service.isEffective($0.id, workspace: workspace) } ?? false
+        let available = selected.map { (try? service.requireScope($0.id, workspace: workspace)) != nil } ?? false
         let configurable = selected?.locallyReviewed != false
         use.isEnabled = idle && (connector ? configurable && onConfigureMCP != nil : agent ? configurable && onConfigureAgent != nil : hook ? configurable && onConfigureHook != nil : selectedRuleIndex != nil ? available && onInsertRule != nil : available && entries.indices.contains(components.selectedRow) && onInsert != nil)
+    }
+    @objc private func openSettings() {
+        if let window = settingsWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        guard let selected else { return }
+        let editor = AgentPluginSettingsWindow(service: service, item: selected, workspace: workspace)
+        editor.onChange = { [weak self] in self?.reload(select: selected.id); self?.onChange?() }; settingsWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func disableProject() {
         guard let workspace = scopeWorkspace else { return }

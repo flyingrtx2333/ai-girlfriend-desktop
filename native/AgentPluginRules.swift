@@ -40,7 +40,7 @@ struct AgentPluginRuleItem: Identifiable {
     static func ruleMatches(_ patterns: [String], path: String) throws -> Bool { try AgentRuleDocument.matches(patterns, path: path) }
     func ruleItems(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentPluginRuleItem] {
         try catalog(workspace: workspace, onlyScope: onlyScope).flatMap { item in item.rules.map { rule in
-            let reference = AgentPluginRuleReference(name: item.id, installationID: item.instanceID, activationID: item.receipt.activationID ?? item.receiptHash, key: rule.key, sha256: item.receipt.hashes[rule.path]!)
+            let reference = AgentPluginRuleReference(name: item.id, installationID: item.instanceID, activationID: item.activationID, key: rule.key, sha256: item.receipt.hashes[rule.path]!)
             return AgentPluginRuleItem(id: Self.mcpUUID("rule:" + item.instanceID + ":" + rule.key), name: item.metadata.name + ":" + rule.key, source: item.root.appendingPathComponent("payload/" + rule.path), enabled: item.enabled, definition: rule, reference: reference)
         } }
     }
@@ -49,9 +49,8 @@ struct AgentPluginRuleItem: Identifiable {
         try validateRuleParent(item.reference, workspace: workspace); return item
     }
     private func validateRuleParent(_ reference: AgentPluginRuleReference, workspace: String?) throws {
-        try requireScope(reference.name, workspace: workspace)
-        let item = try installation(reference.name)
-        guard item.enabled, item.instanceID == reference.installationID, (item.receipt.activationID ?? item.receiptHash) == reference.activationID else { throw PetError("所属插件已停用、移除或更新") }
+        let item = try requireScope(reference.name, workspace: workspace)
+        guard item.enabled, item.instanceID == reference.installationID, item.activationID == reference.activationID else { throw PetError("所属插件已停用、移除或更新") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }
     func ruleInput(_ text: String, task: AgentTaskRecord) throws -> AgentPluginRuleReference? {

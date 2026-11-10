@@ -228,7 +228,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         for setting in settings.values where setting.enabled && !present.contains(setting.definition.id) && (setting.definition.workspace == nil || setting.definition.workspace == workspace) {
             if let reference = setting.definition.plugin, !plugins.isEffective(reference.name, workspace: workspace) { continue }
             var item = setting.definition; item.diagnostic = "来源已移除或不可读，请停用或修复配置"
-            if let reference = item.plugin { item.pluginEnabled = pluginParentActive(reference) }
+            if let reference = item.plugin { item.pluginEnabled = pluginParentActive(reference, workspace: workspace) }
             items.append(item)
         }
         return items
@@ -238,7 +238,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     func setEnabled(_ item: AgentHookDefinition, _ enabled: Bool, workspace: String?) throws {
         if enabled {
             guard let current = try catalog(workspace: workspace).first(where: { $0.id == item.id }), current.signature == item.signature, current.diagnostic == nil, current.pluginEnabled != false else { throw PetError("Hook 已变化、所属插件未启用或有诊断错误，请刷新后核对") }
-            try validatePlugin(current)
+            try validatePlugin(current, workspace: workspace)
         }
         var updated = settings; updated[item.id] = AgentHookSetting(enabled: enabled, definition: item)
         guard updated.count <= 256 else { throw PetError("已保存的 Hook 授权最多256项") }
@@ -246,16 +246,17 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         do { try persistSettings() } catch { settings = previous; throw error }
         if !enabled { for list in jobs.values { for job in list.values where job.hookID == item.id { cancel(job) } } }
     }
-    private func pluginParentActive(_ reference: AgentPluginHookReference) -> Bool {
+    private func pluginParentActive(_ reference: AgentPluginHookReference, workspace: String? = nil) -> Bool {
+        if let item = (try? plugins.catalog(workspace: workspace)).flatMap({ $0.first { $0.id == reference.name } }) { return item.instanceID == reference.installationID && item.enabled }
         if (try? AgentPlugins.scope(reference.name).workspace) != nil { return (try? plugins.installation(reference.name)).map { $0.instanceID == reference.installationID && $0.enabled } ?? false }
         if let item = try? plugins.installation(reference.name) { return item.instanceID == reference.installationID && item.enabled }
         guard AgentExtensions.validName(reference.name), !reference.name.contains(":") else { return true }
         return FileManager.default.fileExists(atPath: profile.appendingPathComponent("extensions/plugins/" + reference.name).path)
     }
-    func pluginConfigurationFailure(_ reference: AgentPluginHookReference, error: Error) -> [AgentHookDefinition] {
+    func pluginConfigurationFailure(_ reference: AgentPluginHookReference, error: Error, workspace: String? = nil) -> [AgentHookDefinition] {
         warnings.append(reference.name + "：" + error.localizedDescription)
         return settings.values.filter { $0.definition.plugin == reference }.map { setting in
-            var item = setting.definition; item.diagnostic = error.localizedDescription; item.pluginEnabled = pluginParentActive(reference); return item
+            var item = setting.definition; item.diagnostic = error.localizedDescription; item.pluginEnabled = pluginParentActive(reference, workspace: workspace); return item
         }
     }
     private func persistSettings() throws {
@@ -336,7 +337,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         do {
             try Task.checkCancellation()
             guard let current = store.task(taskID), sameScope(current, task), job.cancelReason == nil else { throw CancellationError() }
-            try validatePlugin(hook)
+            try validatePlugin(hook, workspace: current.workspace)
             if hook.runsInBackground {
                 guard let fresh = try catalog(workspace: current.workspace).first(where: { $0.id == hook.id }), fresh.signature == hook.signature, trusted(fresh) else { throw AgentHookHalt("Hook 配置已变化，未启动：" + hook.name) }
             }
@@ -405,7 +406,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             guard let latest = store.task(taskID), sameScope(latest, task), job.cancelReason == nil else { throw CancellationError() }
             let latestLimits = try store.agents.limits(latest, store: store)
             guard latestLimits == limits else { throw AgentHookHalt("Hook 执行范围已变化，结果未加入上下文") }
-            try validatePlugin(hook)
+            try validatePlugin(hook, workspace: latest.workspace)
             if hook.runsInBackground {
                 guard let fresh = try catalog(workspace: latest.workspace).first(where: { $0.id == hook.id }), fresh.signature == hook.signature, trusted(fresh) else { throw AgentHookHalt("后台 Hook 来源已变化，结果未加入上下文") }
             }

@@ -29,22 +29,30 @@ struct AgentPluginInstallation: Identifiable {
     var workspace: String? = nil
     var locallyReviewed = true
     var locallyApproved = true
+    var selection: AgentPluginSelection? = nil
+    var localActivationID: String? = nil
     var mcpServers: [AgentPluginMCPDefinition] = []
     var agents: [AgentPluginAgentDefinition] = []
     var hooks: [AgentPluginHookDefinition] = []
     var rules: [AgentPluginRuleDefinition] = []
     var id: String { AgentPlugins.scopedID(receipt.name, workspace: workspace) }
-    var enabled: Bool { receipt.enabled && locallyReviewed && locallyApproved }
+    var requestedEnabled: Bool { workspace == nil ? receipt.enabled && selection?.enabled != false : selection?.enabled ?? receipt.enabled }
+    var enabled: Bool { requestedEnabled && locallyReviewed && locallyApproved }
+    var activationID: String {
+        let original = localActivationID ?? receipt.activationID ?? receiptHash
+        return selection.map { AgentFiles.hash(Data((original + ":" + $0.hash).utf8)) } ?? original
+    }
 }
 
 @MainActor final class AgentPlugins {
     let profile: URL
+    let sharedHome: URL?
     private(set) var warnings: [String] = []
     private var observers: [UUID: (String) -> Void] = [:]
     func observeChanges(_ action: @escaping (String) -> Void) -> UUID { let id = UUID(); observers[id] = action; return id }
     func removeObserver(_ id: UUID) { observers[id] = nil }
     func notify(_ name: String) { for action in Array(observers.values) { action(name) } }
-    init(profile: URL) { self.profile = profile }
+    init(profile: URL, sharedHome: URL? = nil) { self.profile = profile; self.sharedHome = sharedHome }
     func folder(_ id: String) throws -> URL {
         let scope = try Self.scope(id), files = try AgentFiles(workspace: scope.workspace ?? profile.path)
         guard scope.workspace == nil || files.root.path == scope.workspace else { throw PetError("项目位置已变化，请重新选择插件") }
@@ -171,10 +179,12 @@ struct AgentPluginInstallation: Identifiable {
         for component in receipt.components { guard AgentExtensions.validName(component.name), receipt.hashes[component.path] != nil, AgentArchive.validPath(component.path) else { throw PetError("插件组件记录无效") } }
         let hash = AgentFiles.hash(data)
         let review = scope.workspace == nil ? nil : try projectApprovals()[name]
-        let approved = scope.workspace == nil || review?.activeHash == hash
+        let selection = try pluginSelection(info.name, workspace: scope.workspace)
+        let approved = scope.workspace == nil || (review?.activeHash == hash && review?.configurationHash == selection?.hash)
         let fingerprint = try Self.reviewFingerprint(receipt)
         let reviewed = scope.workspace == nil || review?.reviewedHash == fingerprint
         var installed = AgentPluginInstallation(metadata: info, receipt: receipt, root: root, receiptHash: hash, workspace: scope.workspace, locallyReviewed: reviewed, locallyApproved: approved)
+        installed.selection = selection; installed.localActivationID = review?.activationID
         installed.mcpServers = try Self.mcpDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         installed.agents = try Self.agentDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         try Self.validateAgentReferences(installed.agents, name: name, components: receipt.components, servers: installed.mcpServers)
@@ -273,7 +283,8 @@ struct AgentPluginInstallation: Identifiable {
         let user = onlyScope && canonical != nil ? (items: [AgentPluginInstallation](), names: Set<String>(), warnings: [String]()) : try scopeCatalog(nil)
         warnings = user.warnings + (project?.warnings ?? [])
         if onlyScope { return project?.items ?? user.items }
-        return ((project?.items.filter(\.locallyReviewed) ?? []) + user.items.filter { !(project?.names.contains($0.metadata.name) ?? false) }).sorted { $0.metadata.title.localizedStandardCompare($1.metadata.title) == .orderedAscending }
+        let effectiveUser = try user.items.filter { !(project?.names.contains($0.metadata.name) ?? false) }.map { item in var item = item; item.selection = try pluginSelection(item.metadata.name, workspace: canonical); return item }
+        return ((project?.items.filter(\.locallyReviewed) ?? []) + effectiveUser).sorted { $0.metadata.title.localizedStandardCompare($1.metadata.title) == .orderedAscending }
     }
     private func payload(_ item: AgentPluginInstallation) throws -> AgentFiles { try AgentFiles(workspace: item.root.appendingPathComponent("payload").path) }
     func content(_ path: String, installation: AgentPluginInstallation, maximum: Int = 2_000_000) throws -> Data {
@@ -281,9 +292,20 @@ struct AgentPluginInstallation: Identifiable {
         guard AgentFiles.hash(data) == installation.receipt.hashes[path] else { throw PetError("插件文件已变化，请重新导入：" + path) }; return data
     }
     func setEnabled(_ item: AgentPluginInstallation, _ enabled: Bool) throws {
-        let current = try installation(item.id); guard current.receiptHash == item.receiptHash else { throw PetError("插件状态已变化，请刷新") }
+        let current = try installation(item.id); guard current.receiptHash == item.receiptHash, current.selection?.hash == item.selection?.hash else { throw PetError("插件状态已变化，请刷新") }
         if enabled { for path in current.receipt.hashes.keys { _ = try content(path, installation: current) } }
-        if current.workspace != nil { try revokeProjectApproval(current.id); notify(current.id) }
+        if let workspace = current.workspace {
+            try revokeProjectApproval(current.id); notify(current.id)
+            if !enabled || current.selection?.enabled != true {
+                let document = try settingDocument(.local, workspace: workspace)
+                try setPluginSetting(enabled, name: current.metadata.name, scope: .local, workspace: workspace, expectedHash: document.hash)
+            }
+            try recordProjectReview(installation(current.id), active: enabled); notify(current.id); return
+        }
+        if sharedHome != nil {
+            let document = try settingDocument(.user, workspace: nil)
+            try setPluginSetting(enabled, name: current.metadata.name, scope: .user, workspace: nil, expectedHash: document.hash)
+        }
         var receipt = current.receipt; receipt.enabled = enabled; receipt.activationID = UUID().uuidString
         let data = try JSONEncoder().encode(receipt), files = try AgentFiles(workspace: current.root.path)
         try files.writeData(data, to: files.literalURL("receipt.json"), permissions: 0o600)
