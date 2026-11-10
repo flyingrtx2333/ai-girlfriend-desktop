@@ -1,7 +1,7 @@
 import AppKit
 
 enum AgentShortcutCommand: String, CaseIterable {
-    case settings, newTask, searchTasks, previousTask, nextTask, taskInspector, newWindow, planMode
+    case settings, newTask, searchTasks, previousTask, nextTask, taskInspector, newWindow, planMode, switchTask, leftSidebar
     var title: String {
         switch self {
         case .settings: return "设置"
@@ -12,6 +12,8 @@ enum AgentShortcutCommand: String, CaseIterable {
         case .taskInspector: return "任务记录"
         case .newWindow: return "在新窗口打开任务"
         case .planMode: return "切换计划模式"
+        case .switchTask: return "切换任务"
+        case .leftSidebar: return "左侧栏"
         }
     }
     var defaultBinding: AgentShortcutBinding {
@@ -24,6 +26,8 @@ enum AgentShortcutCommand: String, CaseIterable {
         case .taskInspector: return .init("b", [.command, .shift])
         case .newWindow: return .init("n", [.command, .shift])
         case .planMode: return .init("\t", .shift)
+        case .switchTask: return .init("g", .command)
+        case .leftSidebar: return .init("b", .command)
         }
     }
 }
@@ -46,7 +50,7 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
 }
 
 @MainActor final class AgentShortcuts {
-    private struct Document: Codable { var version = 1; var bindings: [String: AgentShortcutBinding] }
+    private struct Document: Codable { var version = 2; var bindings: [String: AgentShortcutBinding] }
     let directory: URL
     private(set) var error: String?
     private(set) var overrides: [String: AgentShortcutBinding] = [:]
@@ -64,8 +68,17 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
                 guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "bindings"],
                       let bindings = raw["bindings"] as? [String: Any], bindings.values.allSatisfy({ ($0 as? [String: Any]).map { Set($0.keys) == ["key", "modifiers"] } == true }) else { throw PetError("快捷键配置包含不支持的字段") }
                 let value = try JSONDecoder().decode(Document.self, from: data)
-                guard value.version == 1, value.bindings.keys.allSatisfy({ AgentShortcutCommand(rawValue: $0) != nil }) else { throw PetError("快捷键配置版本或操作无效") }
-                try validate(value.bindings); overrides = value.bindings; revision = AgentFiles.hash(data)
+                guard [1, 2].contains(value.version), value.bindings.keys.allSatisfy({ AgentShortcutCommand(rawValue: $0) != nil }) else { throw PetError("快捷键配置版本或操作无效") }
+                var effective = value.bindings
+                if value.version == 1 {
+                    let added: [AgentShortcutCommand] = [.switchTask, .leftSidebar]
+                    guard added.allSatisfy({ effective[$0.rawValue] == nil }) else { throw PetError("旧版快捷键配置包含新版操作") }
+                    let used = Set(AgentShortcutCommand.allCases.filter { !added.contains($0) }.map { effective[$0.rawValue] ?? $0.defaultBinding })
+                    // Reading never rewrites a user's file. Keep older custom bindings;
+                    // colliding new defaults remain cleared until explicitly configured.
+                    for command in added where used.contains(command.defaultBinding) { effective[command.rawValue] = .cleared }
+                }
+                try validate(effective); overrides = effective; revision = AgentFiles.hash(data)
             }
             error = nil
         } catch { self.error = "快捷键配置未载入：" + error.localizedDescription }
@@ -130,7 +143,7 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard menuItem.action == #selector(performApplicationShortcut(_:)), let raw = menuItem.representedObject as? String, let command = AgentShortcutCommand(rawValue: raw) else { return true }
-        guard NSApp.modalWindow == nil, NSApp.keyWindow?.attachedSheet == nil else { return false }
+        guard NSApp.modalWindow == nil, NSApp.keyWindow?.attachedSheet == nil, NSApp.keyWindow?.sheetParent == nil else { return false }
         if command == .settings { return true }
         return (NSApp.keyWindow?.windowController as? ControlWindow)?.canPerformShortcut(command) == true
     }

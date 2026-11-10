@@ -152,6 +152,7 @@ final class FormDocumentView: NSView {
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
     private var worktreePolicyPanel: AgentWorktreePolicyView?
     private var dataImportView: AgentDataImportView?
+    private var taskSwitcher: AgentTaskSwitcher?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
     private let executionLocation = AgentWorkbenchButton()
@@ -170,12 +171,14 @@ final class FormDocumentView: NSView {
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
-    private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton()
+    private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
+    private let workbenchSidebar = NSView()
     private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchLower = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = NSView(), headerInspectorRule = NSView()
     private var inspectorWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
+    private var workbenchSidebarWidth: NSLayoutConstraint!, navigationLeading: NSLayoutConstraint!, sidebarRequested = true
     private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
     private var workbenchChrome: [NSView] = [], inspectorRequested = true
     private var taskNavigation: [String] = [], taskNavigationIndex = -1, navigatingTaskHistory = false
@@ -325,11 +328,14 @@ final class FormDocumentView: NSView {
         window.backgroundColor = AgentWorkbenchTheme.sidebar; window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         let content = SidebarBackground(); content.wantsLayer = true; window.contentView = content
+        workbenchSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(workbenchSidebar)
+        workbenchSidebarWidth = workbenchSidebar.widthAnchor.constraint(equalToConstant: 231)
+        NSLayoutConstraint.activate([workbenchSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), workbenchSidebar.topAnchor.constraint(equalTo: content.topAnchor), workbenchSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor), workbenchSidebarWidth])
         let icon = NSImageView(image: NSImage(systemSymbolName: "fish", accessibilityDescription: "小鲸")!)
         icon.contentTintColor = AgentWorkbenchTheme.accent; icon.imageScaling = .scaleProportionallyUpOrDown; icon.widthAnchor.constraint(equalToConstant: 33).isActive = true; icon.heightAnchor.constraint(equalToConstant: 25).isActive = true
         let title = NSTextField(labelWithString: "小鲸"); title.font = .systemFont(ofSize: 16, weight: .semibold)
-        let brand = stack([icon, title], spacing: 9); content.addSubview(brand)
-        taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar)
+        let brand = stack([icon, title], spacing: 9); workbenchSidebar.addSubview(brand)
+        taskSidebar.translatesAutoresizingMaskIntoConstraints = false; workbenchSidebar.addSubview(taskSidebar)
         taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
         taskSidebar.onAttention = { [weak self] in self?.companion?.showAttention() }
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
@@ -369,21 +375,22 @@ final class FormDocumentView: NSView {
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageLeading; button.contentTintColor = .labelColor
             button.heightAnchor.constraint(equalToConstant: 28).isActive = true
         }
-        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, library, knowledge, extensions, settingsNav], vertical: true, spacing: 6); content.addSubview(footer)
+        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, library, knowledge, extensions, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
         for button in [automationButton as NSView, library, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
-        chatSidebarViews = [brand, taskSidebar, footer]
+        chatSidebarViews = [workbenchSidebar]
         let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor; main.layer?.cornerRadius = 0
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
         sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 231)
         let leftRule = NSView(); leftRule.wantsLayer = true; leftRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: content.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: main.leadingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24)])
+        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: workbenchSidebar.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: workbenchSidebar.trailingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: workbenchSidebar.bottomAnchor, constant: -24)])
         for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
         }
-        let navigation = stack([taskBack, taskForward], spacing: 2); main.addSubview(navigation)
+        AgentWorkbenchTheme.toolbar(sidebarToggle, title: "收起左侧栏", symbol: "sidebar.left"); sidebarToggle.target = self; sidebarToggle.action = #selector(toggleLeftSidebar)
+        let navigation = stack([sidebarToggle, taskBack, taskForward], spacing: 2); main.addSubview(navigation)
         pageTitle.font = .systemFont(ofSize: 18, weight: .semibold); pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle); main.addSubview(workbenchBadge)
-        titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 94)
+        titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 126)
         projectButton.target = self; projectButton.action = #selector(chooseProject); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
         browserButton.target = self; browserButton.action = #selector(showAgentBrowser); AgentWorkbenchTheme.toolbar(browserButton, title: "浏览器", symbol: "rectangle.on.rectangle")
         desktopButton.target = self; desktopButton.action = #selector(showDesktopSettings); AgentWorkbenchTheme.toolbar(desktopButton, title: "电脑操作", symbol: "computermouse")
@@ -397,7 +404,8 @@ final class FormDocumentView: NSView {
         buildWorkbenchConversation()
         headerInspectorRule.wantsLayer = true; headerInspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
-        NSLayoutConstraint.activate([navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18), navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 76), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24), settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36)])
+        navigationLeading = navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18)
+        NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 76), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24), settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36)])
         buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbenchConversation() {
@@ -470,6 +478,7 @@ final class FormDocumentView: NSView {
     }
     private func updateWorkbenchLayout(animated: Bool = false) {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
+        taskSwitcher?.refresh()
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
@@ -477,7 +486,12 @@ final class FormDocumentView: NSView {
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
         let target: CGFloat = showInspector ? 281 : 0
-        sidebarWidth.constant = width < 900 ? 218 : 231
+        workbenchSidebarWidth.constant = width < 900 ? 218 : 231
+        sidebarWidth.constant = configuring ? 231 : sidebarRequested ? workbenchSidebarWidth.constant : 0
+        workbenchSidebar.isHidden = configuring || !sidebarRequested
+        navigationLeading.constant = sidebarRequested ? 18 : 82
+        titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
+        sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
         let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - target - 760) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !showInspector; headerInspectorRule.isHidden = !showInspector
@@ -515,18 +529,33 @@ final class FormDocumentView: NSView {
         guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
         inspectorRequested.toggle(); updateWorkbenchLayout(animated: true)
     }
+    @objc private func toggleLeftSidebar() {
+        guard selectedTab == "chat" else { return }
+        if sidebarRequested { window?.makeFirstResponder(composer) }
+        sidebarRequested.toggle(); updateWorkbenchLayout(); refreshShortcutControls()
+    }
+    private func showTaskSwitcher() {
+        guard let tasks = companion?.agentStore, let window, taskSwitcher == nil, saveAgentDraft() else { return }
+        show(tab: "chat")
+        taskSwitcher = AgentTaskSwitcher(store: tasks, selected: agentTaskID, onSelect: { [weak self] id in self?.selectAgentTask(id) }, onClose: { [weak self] in self?.taskSwitcher = nil })
+        taskSwitcher?.begin(in: window)
+    }
     func refreshShortcutControls() {
         guard let shortcuts = companion?.shortcuts else { return }
         taskSidebar.refreshShortcuts(shortcuts); shortcutSettings?.refresh()
         for (button, command) in [(taskBack, AgentShortcutCommand.previousTask), (taskForward, .nextTask)] {
             let value = shortcuts.binding(command); button.toolTip = command.title + (value == .cleared ? "" : " · " + value.display)
         }
+        let value = shortcuts.binding(.leftSidebar)
+        sidebarToggle.toolTip = (sidebarRequested ? "收起左侧栏" : "显示左侧栏") + (value == .cleared ? "" : " · " + value.display)
     }
     func canPerformShortcut(_ command: AgentShortcutCommand) -> Bool {
         guard companion?.usesAgent == true, window?.attachedSheet == nil else { return false }
         switch command {
         case .settings: return true
         case .newTask, .searchTasks: return true
+        case .switchTask: return currentAgentTask != nil
+        case .leftSidebar: return selectedTab == "chat"
         case .newWindow: return currentAgentTask != nil
         case .previousTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex > 0
         case .nextTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
@@ -539,7 +568,9 @@ final class FormDocumentView: NSView {
         switch command {
         case .settings: show(tab: "settings")
         case .newTask: newAgentTask()
-        case .searchTasks: show(tab: "chat"); taskSidebar.focusSearch()
+        case .searchTasks: sidebarRequested = true; show(tab: "chat"); refreshShortcutControls(); taskSidebar.focusSearch()
+        case .switchTask: showTaskSwitcher()
+        case .leftSidebar: toggleLeftSidebar()
         case .previousTask: previousAgentTask()
         case .nextTask: nextAgentTask()
         case .taskInspector: toggleTaskInspector()
@@ -901,7 +932,7 @@ final class FormDocumentView: NSView {
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
         contentSurface.showsSettings = configuring; settingsPageIcon.isHidden = !configuring
-        titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? 94 : 28
+        titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? (sidebarRequested ? 126 : 190) : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : .secondaryLabelColor
         workbenchChrome.forEach { $0.isHidden = configuring }
@@ -1206,6 +1237,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        taskSwitcher?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
         composer.delegate = nil; windowDraft = nil
@@ -2385,6 +2417,8 @@ extension ControlWindow {
         value["windowNumber"] = taskWindowNumber; value["windowTitle"] = window?.title ?? ""; value["windowVisible"] = window?.isVisible == true
         value["nativeWindowNumber"] = window?.windowNumber ?? 0
         if CommandLine.arguments.contains("--manual-ui") {
+            value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
+            value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
             value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
             value["appShot"] = companion?.appShot.checkState() ?? [:]
