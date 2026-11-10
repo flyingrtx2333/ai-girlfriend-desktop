@@ -172,13 +172,15 @@ final class PetWebView: WKWebView {
         return .terminateCancel
     }
     func setupMenu() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.isVisible = !usesBackgroundAttachmentCheck
-        if let image = NSImage(systemSymbolName: "fish.fill", accessibilityDescription: "蓝色大肥鱼") {
-            image.isTemplate = true; statusItem.button?.image = image
-        } else { statusItem.button?.title = "鲸" }
-        statusItem.button?.toolTip = "蓝色大肥鱼"
-        statusItem.menu = menu()
+        if !usesBackgroundAttachmentCheck {
+            statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            statusItem?.isVisible = true
+            if let image = NSImage(systemSymbolName: "fish.fill", accessibilityDescription: "蓝色大肥鱼") {
+                image.isTemplate = true; statusItem?.button?.image = image
+            } else { statusItem?.button?.title = "鲸" }
+            statusItem?.button?.toolTip = "蓝色大肥鱼"
+            statusItem?.menu = menu()
+        }
         let main = NSMenu(), appMenu = NSMenu(), item = NSMenuItem()
         appMenu.addItem(withTitle: "停止录音", action: #selector(stopRecording), keyEquivalent: "\u{1b}").target = self
         appMenu.addItem(.separator())
@@ -317,13 +319,13 @@ final class PetWebView: WKWebView {
     }
     @objc func toggleWake() {
         store.preferences.wakeEnabled.toggle(); wakeError = nil; try? store.savePreferences()
-        appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
+        appliedWake = nil; syncWakePreference(); statusItem?.menu = menu()
     }
     @objc func listenNow() {
         screenCompanion.interaction(); cancelConversation(); pendingVoiceListen = true
         if !store.preferences.wakeEnabled {
             store.preferences.wakeEnabled = true; wakeError = nil; wakeStatus = "等待授权"
-            try? store.savePreferences(); appliedWake = nil; syncWakePreference(); statusItem.menu = menu()
+            try? store.savePreferences(); appliedWake = nil; syncWakePreference(); statusItem?.menu = menu()
         }
         startPendingVoiceListen()
     }
@@ -337,7 +339,7 @@ final class PetWebView: WKWebView {
         pendingVoiceListen = false; store.preferences.wakeEnabled = false; wakeError = nil; wakeStatus = "未开启"
         voiceWake.stop(); appliedWake = nil; screenCompanion.interaction(); cancelConversation()
         if !draft.isEmpty { inputControl.keepInterruptedVoiceDraft(draft) }
-        try? store.savePreferences(); publishVoiceState(); statusItem.menu = menu(); showBubble(message, duration: 2.5)
+        try? store.savePreferences(); publishVoiceState(); statusItem?.menu = menu(); showBubble(message, duration: 2.5)
     }
     func voiceEvent(_ event: VoiceWake.Event) {
         if !store.preferences.wakeEnabled {
@@ -359,15 +361,15 @@ final class PetWebView: WKWebView {
             wakeError = error; wakeStatus = error; store.preferences.wakeEnabled = false
             try? store.savePreferences(); appliedWake = nil; syncWakePreference()
             inputControl.setStatus(error, error: true); showBubble(error)
-            statusItem.menu = menu()
+            statusItem?.menu = menu()
         }
         publishVoiceState()
     }
     private func publishVoiceState() {
         onWakeChange?(store.preferences.wakeEnabled, wakeStatus)
-        statusItem.button?.toolTip = store.preferences.wakeEnabled ? "语音唤醒：\(wakeStatus)" : "蓝色大肥鱼"
-        statusItem.button?.image = NSImage(systemSymbolName: wakeStatus == "聆听中" ? "mic.fill" : "fish.fill", accessibilityDescription: wakeStatus)
-        statusItem.button?.image?.isTemplate = true
+        statusItem?.button?.toolTip = store.preferences.wakeEnabled ? "语音唤醒：\(wakeStatus)" : "蓝色大肥鱼"
+        statusItem?.button?.image = NSImage(systemSymbolName: wakeStatus == "聆听中" ? "mic.fill" : "fish.fill", accessibilityDescription: wakeStatus)
+        statusItem?.button?.image?.isTemplate = true
         let listening = store.preferences.wakeEnabled && wakeStatus == "聆听中"
         if bubble?.isVisible == true, let button = bubbleStopButton, button.isHidden != !listening, let text = bubbleLabel?.stringValue {
             showBubble(text)
@@ -481,7 +483,7 @@ final class PetWebView: WKWebView {
         let payload = body["payload"] as? [String: Any] ?? [:]
         switch action {
         case "ready":
-            ready = true; if !usesBackgroundAttachmentCheck { pet.orderFrontRegardless() }; updateVisibility(); statusItem.menu = menu()
+            ready = true; if !usesBackgroundAttachmentCheck { pet.orderFrontRegardless() }; updateVisibility(); statusItem?.menu = menu()
             if selectedAgentBusy || agentStore?.selected?.status == .waiting { agentAnimationPhase = ""; refreshAgentAnimation() }
             if checkDirectory != nil { Task { await runSelfCheck() } }
         case "hit": if dragOrigin == nil { pet.ignoresMouseEvents = !(payload["hit"] as? Bool ?? false) }
@@ -510,13 +512,13 @@ final class PetWebView: WKWebView {
     @objc func openChat() { screenCompanion.interaction(); inputControl.show(tab: "chat") }
     @objc func openSettings() { screenCompanion.interaction(); inputControl.show(tab: "settings") }
     @objc func observeScreen() { screenCompanion.observe() }
-    @objc func pauseScreenObservation() { screenCompanion.toggleQuiet(); statusItem.menu = menu() }
+    @objc func pauseScreenObservation() { screenCompanion.toggleQuiet(); statusItem?.menu = menu() }
     @objc func accessibilityChat() -> Bool { openChat(); return true }
     @objc func accessibilitySettings() -> Bool { openSettings(); return true }
     @objc func togglePet() {
         if pet.isVisible { stopSpeech(); pet.orderOut(nil); bubble?.orderOut(nil) }
         else { pet.orderFrontRegardless() }
-        updateVisibility(); statusItem.menu = menu()
+        updateVisibility(); statusItem?.menu = menu()
     }
     @objc func toggleTop() { store.preferences.alwaysOnTop.toggle(); try? store.savePreferences(); applyPreferences() }
     @objc func toggleMotion() { store.preferences.performance = store.preferences.performance == "paused" ? "auto" : "paused"; try? store.savePreferences(); applyPreferences() }
