@@ -22,6 +22,7 @@ import UniformTypeIdentifiers
     private var requestedEncoding: AgentTextEncoding?, encodings: [String: AgentTextEncoding] = [:], fileFormat = AgentTextFormat()
     private let save = NSButton(title: "保存", target: nil, action: nil), undo = NSButton(title: "撤回修改", target: nil, action: nil), open = NSButton(title: "打开", target: nil, action: nil)
     private let compare = NSButton(title: "比较", target: nil, action: nil)
+    private let allowInstruction = NSButton(title: "允许引用…", target: nil, action: nil), revokeInstruction = NSPopUpButton()
     private let generate = NSButton(title: "生成／更新", target: nil, action: nil)
     private let wikiCards = NSButton(title: "知识卡片", target: nil, action: nil)
     private let newOffice = NSPopUpButton(), openOffice = NSButton(title: "打开文件…", target: nil, action: nil)
@@ -105,8 +106,10 @@ import UniformTypeIdentifiers
         newOffice.addItems(withTitles: ["新建", "Word 文稿…", "Excel 表格…", "幻灯片…"]); newOffice.target = self; newOffice.action = #selector(createOffice); newOffice.setAccessibilityLabel("新建办公文件")
         openOffice.target = self; openOffice.action = #selector(chooseOffice)
         compare.target = self; compare.action = #selector(presentConflict); compare.setAccessibilityLabel("比较磁盘文件与草稿")
+        allowInstruction.target = self; allowInstruction.action = #selector(allowInstructionFile)
+        revokeInstruction.target = self; revokeInstruction.action = #selector(revokeInstructionFile); revokeInstruction.setAccessibilityLabel("撤销指令引用允许")
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [state, NSView(), newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
+        let actions = NSStackView(views: [state, NSView(), allowInstruction, revokeInstruction, newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
@@ -122,6 +125,7 @@ import UniformTypeIdentifiers
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
+        allowInstruction.isHidden = true; revokeInstruction.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
         wikiCards.isHidden = sections.selectedSegment != 6 || onOpenKnowledgeCards == nil
         wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
@@ -454,7 +458,15 @@ import UniformTypeIdentifiers
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
                 let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
-                text.isEditable = task.status != .running; save.isHidden = false; save.isEnabled = text.isEditable; return
+                text.isEditable = scope != .effectiveInstructions && task.status != .running && (!scope.isInstructions || task.status != .waiting)
+                save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
+                allowInstruction.isHidden = scope != .effectiveInstructions; revokeInstruction.isHidden = allowInstruction.isHidden
+                allowInstruction.isEnabled = !task.archived && ![.running, .waiting].contains(task.status) && store.instructions.report(task).issues.contains(where: \.needsPermission)
+                revokeInstruction.removeAllItems(); revokeInstruction.addItem(withTitle: "撤销允许")
+                for grant in task.instructionGrants ?? [] where grant.workspace == task.workspace {
+                    let item = NSMenuItem(title: URL(fileURLWithPath: grant.path).lastPathComponent, action: nil, keyEquivalent: ""); item.representedObject = grant.path; item.toolTip = grant.path; revokeInstruction.menu?.addItem(item)
+                }
+                revokeInstruction.isEnabled = revokeInstruction.numberOfItems > 1; return
             }
             if sections.selectedSegment == 2 {
                 if let url = URL(string: value), url.isFileURL, AgentVideoSnapshot.supports(url) { let files = try AgentFiles(workspace: task.workspace); try showVideo(files.resolve(url.path), files: files) }
@@ -553,6 +565,22 @@ import UniformTypeIdentifiers
                 sourceWindow?.close(); sourceWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
             }
         } catch { state.stringValue = error.localizedDescription }
+    }
+    @objc private func allowInstructionFile() {
+        guard let window, let task = store.task(taskID), canLeave() else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.prompt = "允许引用"
+        panel.message = "允许所选文件作为此任务的项目指令引用。"
+        if let pending = store.instructions.report(task).issues.first(where: \.needsPermission) { panel.directoryURL = URL(fileURLWithPath: pending.path).deletingLastPathComponent() }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let file = panel.url else { return }
+            do { try self.store.instructions.allow(file, store: self.store, taskID: self.taskID); self.loadSelection(AgentMemoryScope.effectiveInstructions.rawValue) }
+            catch { self.state.stringValue = error.localizedDescription }
+        }
+    }
+    @objc private func revokeInstructionFile() {
+        guard let path = revokeInstruction.selectedItem?.representedObject as? String else { return }
+        do { try store.instructions.revoke(path, store: store, taskID: taskID); loadSelection(AgentMemoryScope.effectiveInstructions.rawValue) }
+        catch { state.stringValue = error.localizedDescription }
     }
     @objc private func saveFile() {
         guard let path = selection, let task = store.task(taskID) else { return }

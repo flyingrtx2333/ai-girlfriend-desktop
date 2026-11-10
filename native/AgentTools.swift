@@ -300,6 +300,10 @@ import Foundation
             return try await store.projectChanges.observe(taskID: taskID, origin: origin) { try await self.executeCore(call, gitDirectory: gitDirectory) }
         }
         var result = try await executeCore(call, gitDirectory: gitDirectory)
+        if !result.failed, call.name == "read_file", let path = call.object["path"] as? String {
+            do { if try store.instructions.access(path, store: store, taskID: taskID) { result.text += "\n[已发现该文件目录的项目指令，后续上下文使用当前有效来源。]" } }
+            catch { result.text += "\n[文件读取已完成，项目指令发现未保存：" + error.localizedDescription + "]" }
+        }
         if !result.failed, ["read_file", "write_file", "edit_file"].contains(call.name), let path = call.object["path"] as? String {
             let before = store.task(taskID)
             do {

@@ -5,6 +5,7 @@ import Foundation
     let browser = AgentBrowser()
     let extensions: AgentExtensions
     let rules: AgentRules
+    let instructions: AgentInstructions
     let mcp: AgentMCP
     let hooks: AgentHooks
     let agents: AgentProfiles
@@ -56,6 +57,7 @@ import Foundation
         organization = AgentOrganization(profile: directory)
         extensions = AgentExtensions(profile: directory, sharedHome: extensionHome)
         rules = AgentRules(profile: directory, sharedHome: extensionHome, plugins: extensions.plugins)
+        instructions = AgentInstructions(profile: directory, sharedHome: extensionHome)
         mcp = AgentMCP(profile: directory, keychain: mcpKeychain, plugins: extensions.plugins)
         hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain, plugins: extensions.plugins)
         agents = AgentProfiles(profile: directory, plugins: extensions.plugins)

@@ -214,6 +214,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var activeLocalRules: [AgentLocalRuleReference]?
     var localRuleIDs: [String]?
     var ruleDirectories: [AgentRuleDirectory]?
+    var instructionDirectories: [AgentRuleDirectory]?
+    var instructionGrants: [AgentInstructionGrant]?
     var hookSession: String?, hookCwd: String?
     var hookContexts: [String: String]?, hookRejectedAnswers: [AgentMessage]?
     var hookStopBlocks: Int?

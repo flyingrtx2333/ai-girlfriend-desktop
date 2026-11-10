@@ -29,6 +29,7 @@
     "native:check-browser": "node scripts/check-native-browser.mjs",
     "native:check-extensions": "node scripts/check-native-extensions.mjs",
     "native:check-rules": "node scripts/check-native-rules.mjs",
+    "native:check-instructions": "node scripts/check-native-instructions.mjs",
     "native:check-live-rules": "node scripts/check-live-rules.mjs",
     "native:check-mcp": "node scripts/check-native-mcp.mjs",
     "native:check-hooks": "node scripts/check-native-hooks.mjs",

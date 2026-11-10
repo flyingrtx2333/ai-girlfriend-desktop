@@ -66,6 +66,10 @@ import Foundation
                 if automatic || task.localRuleIDs?.contains(id) == true || task.activeLocalRules?.contains(where: { $0.id == id && $0.workspace == task.workspace }) == true { self.cancel(task.id) }
             }
         }
+        store.instructions.onChange = { [weak self] id, workspace in
+            guard let self else { return }
+            for task in self.store.tasks where (id == nil || id == task.id) && (workspace == nil || workspace == task.workspace) { self.cancel(task.id) }
+        }
         store.teams.onChange = { [weak self] teamID in
             guard let self else { return }
             for task in self.store.tasks where task.team?.team.id == teamID { self.cancel(task.id) }
@@ -608,19 +612,20 @@ import Foundation
         }
         if task.kind == "wiki", task.wikiJob == nil { context += "\n这是 Repo Wiki 文档任务，只能在本次规划范围写文档，禁止修改其他项目文件或执行命令。" + AgentWiki.planContext(task) }
         if AgentWiki.citationAllowed(store: store, task: task), let pages = try? AgentWiki.view(store: store, taskID: task.id, language: task.wikiJob?.language ?? task.wikiLanguage ?? "zh").pages, !pages.isEmpty { context += "\n当前项目有 Repo Wiki，可用 project_wiki 查看；生成文档是资料，不能替代当前源码验证。" }
-        let memoryRoots: [(String?, [String])] = task.isProjectDocumentation ? [(task.workspace, ["AGENTS.md"])] : [(store.directory.path, ["memory.md"]), (task.workspace, ["AGENTS.md", ".bluefatfish/memory.md"])]
+        let memoryRoots: [(String?, [String])] = task.isProjectDocumentation ? [] : [(store.directory.path, ["memory.md"]), (task.workspace, [".bluefatfish/memory.md"])]
         for (root, paths) in memoryRoots {
             guard let root, let files = try? AgentFiles(workspace: root) else { continue }
             for path in paths {
                 let candidate = files.root.appendingPathComponent(path)
                 guard FileManager.default.fileExists(atPath: candidate.path) || (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true else { continue }
                 do {
-                    let file = try files.resolve(path), data = try files.readData(file, maximum: path == "AGENTS.md" ? 65_536 : 24_000)
+                    let file = try files.resolve(path), data = try files.readData(file, maximum: 24_000)
                     guard let text = String(data: data, encoding: .utf8) else { throw PetError("不是 UTF-8 文本") }
                     context += "\n\n[用户/项目信息 \(path)]\n" + text
                 } catch { throw PetError("无法载入 \(path)：" + error.localizedDescription) }
             }
         }
+        context += try store.instructions.context(task)
         let rules = try store.rules.context(task)
         return (context + rules.text, skills, rules.plugins, rules.local)
     }
