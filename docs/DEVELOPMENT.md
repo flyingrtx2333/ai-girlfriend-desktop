@@ -332,7 +332,7 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 
 ## 插件启用声明
 
-插件窗口的「启用设置」按[Qoder配置层级](https://docs.qoder.com/cli/settings)读取／保存`~/.qoder/settings.json`、`<项目>/.qoder/settings.json`与`<项目>/.qoder/settings.local.json`的`enabledPlugins`。本机覆盖项目、项目覆盖用户，仅覆盖当前完整ID（本地包为`name@local`）；删除该层条目恢复继承。其他字段和其他插件ID保留，过期保存拒绝覆盖，刷新保留该层未保存的选择。项目本机文件建议加入项目忽略列表。
+插件窗口的「启用设置」按[Qoder配置层级](https://docs.qoder.com/cli/settings)读取／保存`~/.qoder/settings.json`、`<项目>/.qoder/settings.json`与`<项目>/.qoder/settings.local.json`的`enabledPlugins`。本机覆盖项目、项目覆盖用户，仅覆盖当前完整ID（本地包为`name@local`）；删除该层条目恢复继承。其他字段和其他插件ID保留，过期保存拒绝覆盖，刷新保留该层未保存的选择；窗口中的有效状态同时显示实际生效的层级。项目本机文件建议加入项目忽略列表。
 
 启用声明与本机批准共同生效。项目包的启停写入本机设置及批准文件，保持共享收据、资源和历史原字节；共享`true`本身不能批准新副本。已有两字段批准记录在没有新声明时继续读取，不自动重写。显式停用后，旧批准记录不能覆盖新的本机`false`；更新／恢复也仍需重新审阅。用户包保留既有收据启用门槛，已有配置`true`不会自动启动刚更新的包。
 
