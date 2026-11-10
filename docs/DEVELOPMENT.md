@@ -346,6 +346,8 @@ Skill、命令、Agent、MCP、Hook和规则在当前任务工作区使用同一
 
 复现：`npm run native:check-plugin-directories -- --app <严格签名候选绝对路径>`。在独立目录使用公开文件、实际二进制资源和Node／sleep／MCP／Hook进程，检查六组件、目录快照、无清单、更新／恢复、项目范围和中断恢复；禁止模型传输。输出样式、工作流、依赖安装与`bin/`运行尚未接入。
 
+本轮60项原生检查及8项独立核对、6项实际中断恢复及7项独立核对、22项窗口核对均通过；实际退出重开前后57份持久文件逐字节一致，原草稿与两份历史保持。窗口使用真实目录和独立来源写入进程，保留49次CUA调用、8张原始截图；模型请求0，日常应用未替换。首轮忽略普通文件导致后续Hooks漏读的失败原件与修正后复验均保留，报告见本地`evidence/agent/bluefatfish-plugin-directories-窗口 Tw2Jx5/plugin-directory-window-report.json`。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
