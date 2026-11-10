@@ -368,7 +368,9 @@ Skill、命令、Agent、MCP、Hook和规则在当前任务工作区使用同一
 
 自动化窗口的「用小鲸创建」会保留原任务草稿，并准备新的`/automation `会话草稿，不自动发送。输入`/`可选择内置自动化入口；发送后只载入`automations`工具组。`draft_automation`只接受名称、任务指令、时间计划和输出方式，最多8份、同调用幂等，任务索引不复制正文。所有草稿保持未启用、只读和逐次审批；项目由原任务确定，无工作区时在表单补选，保存后才标记。其他任务或分支不能接管原草稿。
 
-`schedule`包含`frequency`及`time_zone`；`once`需含时区的ISO8601 `at`，`daily`需`hour`／`minute`，`weekly`另需`weekdays`（日=1至六=7），`interval`需`interval_minutes`且可选`at`。循环可选`expires_at`，不同频率的字段不能混用。表单支持计划启用开关、下一次运行预览和间隔起点。`npm run native:check-automation-drafts -- --app <严格签名候选>`使用独立配置与实际工具，不授权模型请求；`--prepare-only`只准备公开README，`--hold-ui`保留检查窗口。运行与窗口验收中，真实模型生成效果待独立验收。
+`schedule`包含`frequency`及`time_zone`；`once`需含时区的ISO8601 `at`，`daily`需`hour`／`minute`，`weekly`另需`weekdays`（日=1至六=7），`interval`需`interval_minutes`且可选`at`。循环可选`expires_at`，不同频率的字段不能混用。表单支持计划启用开关、下一次运行预览和间隔起点。`npm run native:check-automation-drafts -- --app <严格签名候选>`使用独立配置与实际工具，不授权模型请求；`--prepare-only`只准备公开README，`--hold-ui`保留检查窗口。已开始的原生目录不能重放；复用结果检查窗口可使用`--check <目录> --manual-ui --automation-draft-ui`，仍阻止模型传输。
+
+最终候选30项本机检查、8项独立核对和25项实际窗口核对通过，覆盖保存冲突、四种计划及未来间隔起点、旧工作模式恢复、实际表单编辑保留、启用／暂停、独立时区核算和命令候选；退出重开后的13份持久文件逐字节一致。临时计划均暂停，0次模型请求或实际发送，真实模型生成效果待独立验收，日常应用未替换。完整本地证据见`evidence/agent/automation-drafts-archive-20261111-011725`。
 
 ## 插件 Agent 的独立真实模型验收
 
