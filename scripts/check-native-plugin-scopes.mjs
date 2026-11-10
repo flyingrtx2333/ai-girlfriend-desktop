@@ -8,7 +8,7 @@ import os from 'node:os';
 
 const i = process.argv.indexOf('--app'), app = i < 0 ? null : process.argv[i + 1];
 if (!app && !process.argv.includes('--prepare-only')) throw new Error('Pass the exact signed candidate with --app');
-const root = fileURLToPath(new URL('../', import.meta.url)), output = await mkdtemp(path.join(os.tmpdir(), process.argv.includes('--plugin-settings-check') ? 'bluefatfish-plugin-settings-配置 ' : 'bluefatfish-plugin-scopes-项目 '));
+const root = fileURLToPath(new URL('../', import.meta.url)), output = await mkdtemp(path.join(os.tmpdir(), process.argv.includes('--plugin-directory-check') ? 'bluefatfish-plugin-directories-目录 ' : process.argv.includes('--plugin-settings-check') ? 'bluefatfish-plugin-settings-配置 ' : 'bluefatfish-plugin-scopes-项目 '));
 const hash = value => createHash('sha256').update(value).digest('hex'), pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function dailyHashes() {
   const folder = path.join(os.homedir(), 'Library/Application Support/BlueFatFish'), names = ['settings.json', 'history.json', 'organization.json', 'agent/index.json', 'extensions/agents.json', 'extensions/mcp.json', 'extensions/hook-settings.json', 'extensions/plugin-agent-models.json', 'extensions/project-plugin-approvals.json'];
@@ -18,7 +18,7 @@ async function dailyHashes() {
 await mkdir(path.join(output, 'real project')); await writeFile(path.join(output, 'real project/source.txt'), await readFile(path.join(root, 'README.md'))); await writeFile(path.join(output, 'node-path.txt'), process.execPath);
 await writeFile(path.join(output, 'real project/slow.cjs'), "const fs=require('node:fs'),cp=require('node:child_process');const child=cp.spawn('/bin/sleep',['30'],{stdio:'ignore'});fs.writeFileSync('slow-pids.json',JSON.stringify({pid:process.pid,child:child.pid}));setTimeout(()=>console.log('finished actual process'),30000);\n");
 const prepared = spawnSync(process.env.BLUEFATFISH_CHECK_PYTHON || '/opt/homebrew/bin/python3', ['-c', String.raw`import json,pathlib,sys,zipfile
-p=pathlib.Path(sys.argv[1]);node=sys.argv[2];plugin_root='$'+'{QODER_PLUGIN_ROOT}';resource='$'+'{RESOURCE_PATH}'
+p=pathlib.Path(sys.argv[1]);node=sys.argv[2];directory_mode=sys.argv[3]=='directory';plugin_root='$'+'{QODER_PLUGIN_ROOT}';resource='$'+'{RESOURCE_PATH}'
 server=r'''import fs from 'node:fs';import crypto from 'node:crypto';import readline from 'node:readline';
 const rl=readline.createInterface({input:process.stdin});
 rl.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}if(m.id===undefined)return;let result={};
@@ -33,11 +33,20 @@ for version in [1,2]:
  if version==2:files['agents/implementer.md']='---\nname: implementer\ndescription: Explicit project edits\ntools: [read_file, write_file]\nreadOnly: false\nnetwork: false\n---\nOnly edit the project when the user explicitly asks.\n'
  with zipfile.ZipFile(p/('lifecycle-v'+str(version)+'.zip'),'w',zipfile.ZIP_DEFLATED) as z:
   for name,text in files.items():z.writestr(name,text)
+ if directory_mode:
+  folder=p/('directory-v'+str(version))/'目录 插件'
+  for name,text in files.items():
+   target=folder/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
+  if version==1:
+   convention=p/'convention-tools'
+   for name,text in files.items():
+    if name=='.qoder-plugin/plugin.json':continue
+    target=convention/('mcp.json' if name=='.mcp.json' else name);target.parent.mkdir(parents=True,exist_ok=True);target.write_text(text)
  if version==2:
   files['.qoder-plugin/plugin.json']=json.dumps({**manifest,'name':'other-tools'})
   with zipfile.ZipFile(p/'other-plugin.zip','w',zipfile.ZIP_DEFLATED) as z:
    for name,text in files.items():z.writestr(name,text)
-`, output, process.execPath], { encoding: 'utf8' });
+`, output, process.execPath, process.argv.includes('--plugin-directory-check') ? 'directory' : 'zip'], { encoding: 'utf8' });
 if (prepared.status !== 0) throw new Error(prepared.stderr || 'ZIP preparation failed');
 await mkdir(path.join(output, 'other project')); await mkdir(path.join(output, 'copied project')); await mkdir(path.join(output, 'shared-home'));
 await writeFile(path.join(output, 'other project/source.txt'), await readFile(path.join(root, 'docs/AGENT-READING.md')));
@@ -45,13 +54,14 @@ await writeFile(path.join(output, 'copied project/source.txt'), await readFile(p
 await writeFile(path.join(output, 'other project/slow.cjs'), await readFile(path.join(output, 'real project/slow.cjs')));
 const before = await dailyHashes(), inputs = {};
 for (const name of ['lifecycle-v1.zip', 'lifecycle-v2.zip', 'other-plugin.zip', 'real project/source.txt', 'other project/source.txt', 'copied project/source.txt', 'real project/slow.cjs', 'other project/slow.cjs', 'node-path.txt']) inputs[name] = hash(await readFile(path.join(output, name)));
+if (process.argv.includes('--plugin-directory-check')) { async function collect(folder) { for (const entry of await readdir(path.join(output, folder), { withFileTypes: true })) { const name = path.join(folder, entry.name); if (entry.isDirectory()) await collect(name); else inputs[name] = hash(await readFile(path.join(output, name))); } } for (const folder of ['directory-v1', 'directory-v2', 'convention-tools']) await collect(folder); }
 await writeFile(path.join(output, 'production-before.json'), JSON.stringify(before, null, 2)); await writeFile(path.join(output, 'input-hashes.json'), JSON.stringify(inputs, null, 2));
 if (process.argv.includes('--prepare-only')) { console.log(JSON.stringify({ output, preparedOnly: true, modelTransmission: 'blocked' })); process.exit(0); }
 const signed = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', path.resolve(app)], { encoding: 'utf8' }); if (signed.status !== 0) throw new Error(signed.stderr);
 const binaryHash = hash(await readFile(path.join(app, 'Contents/MacOS/BlueFatFish'))); console.log(JSON.stringify({ output, binaryHash, modelTransmission: 'blocked' }));
 const alive = pid => { const state = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' }).stdout.trim(); return state.length > 0 && !state.startsWith('Z'); };
 async function result(name, timeout = 180_000) { const until = Date.now() + timeout; while (Date.now() < until) { try { return JSON.parse(await readFile(path.join(output, name), 'utf8')); } catch (e) { if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e; } await pause(100); } throw new Error('Observation deadline reached: preserve this exact process and records; do not replay'); }
-const opened = spawnSync('/usr/bin/open', ['-g', '-n', path.resolve(app), '--args', '--check', output, '--plugin-scope-check', ...(process.argv.includes('--plugin-settings-check') ? ['--plugin-settings-check'] : []), '--background-component-check'], { encoding: 'utf8' }); if (opened.status !== 0) throw new Error(opened.stderr);
+const opened = spawnSync('/usr/bin/open', ['-g', '-n', path.resolve(app), '--args', '--check', output, '--plugin-scope-check', ...(process.argv.includes('--plugin-settings-check') ? ['--plugin-settings-check'] : []), ...(process.argv.includes('--plugin-directory-check') ? ['--plugin-directory-check'] : []), '--background-component-check'], { encoding: 'utf8' }); if (opened.status !== 0) throw new Error(opened.stderr);
 const native = await result('plugin-scope-result.json');
 for (let j = 0; j < 100 && alive(native.appPID); j++) await pause(100);
 native.independent = { actualApplicationExited: !alive(native.appPID), allSixActualCommandAndConnectorProcessesExited: native.actualPIDs?.length === 6 && native.actualPIDs.every(pid => !alive(pid)), binaryMatchesCandidate: native.binaryHash === binaryHash, dailyProfileUnchanged: isDeepStrictEqual(before, await dailyHashes()), publicSourcesAndArchivesUnchanged: (await Promise.all(Object.entries(inputs).map(async ([name, h]) => hash(await readFile(path.join(output, name))) === h))).every(Boolean), actualIndependentSourceHashesMatch: native.sourceHashes?.['real project/source.txt'] === inputs['real project/source.txt'] && native.sourceHashes?.['other project/source.txt'] === inputs['other project/source.txt'], noModelOrActiveJobs: native.blockedModelAttempts === 0 && native.activeJobs === false, backgroundRemainsInactive: native.activationCount === 0 && native.applicationActive === false && native.visibleWindowCount === 0 };
@@ -62,7 +72,7 @@ for (const name of await readdir(path.join(output, 'profile/agent'))) if (name.e
 function launch(flag) { const r = spawnSync('/usr/bin/open', ['-g', '-n', path.resolve(app), '--args', '--check', output, flag, '--background-component-check'], { encoding: 'utf8' }); if (r.status !== 0) throw new Error(r.stderr); }
 async function ended(pid) { for (let j = 0; j < 100 && alive(pid); j++) await pause(100); return !alive(pid); }
 launch('--plugin-scope-crash-check'); const preparedCrash = await result('plugin-scope-crash-prepared.json');
-const args = spawnSync('/bin/ps', ['-p', String(preparedCrash.appPID), '-o', 'command='], { encoding: 'utf8' }).stdout;
+const args = spawnSync('/bin/ps', ['-ww', '-p', String(preparedCrash.appPID), '-o', 'command='], { encoding: 'utf8' }).stdout;
 if (!alive(preparedCrash.appPID) || !args.includes(path.resolve(app) + '/Contents/MacOS/BlueFatFish') || !args.includes('--check ' + output) || !args.includes('--plugin-scope-crash-check') || preparedCrash.localActivationRevokedBeforePublication !== true) throw new Error('The exact original revoked-before-publish process is not confirmed live; no signal sent');
 process.kill(preparedCrash.appPID, 'SIGKILL'); if (!await ended(preparedCrash.appPID)) throw new Error('Original killed process is still live; do not restart');
 await writeFile(path.join(output, 'plugin-scope-actual-kill.json'), JSON.stringify({ appPID: preparedCrash.appPID, signal: 'SIGKILL', exactProcessVerifiedBeforeSignal: true, processActuallyEnded: true, preparedMarker: preparedCrash }, null, 2));

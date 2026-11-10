@@ -158,7 +158,7 @@ import UniformTypeIdentifiers
     @objc private func importPackage() { choosePackage(replacing: nil) }
     @objc private func updatePackage() { if let selected { choosePackage(replacing: selected) } }
     private func choosePackage(replacing installed: AgentPluginInstallation?) {
-        guard let window else { return }; let targetWorkspace = installed?.workspace ?? scopeWorkspace; let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.prompt = "检查插件"
+        guard let window else { return }; let targetWorkspace = installed?.workspace ?? scopeWorkspace; let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip, .folder]; panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = false; panel.prompt = "检查插件"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             state.stringValue = "读取插件…"; job = Task { [weak self] in

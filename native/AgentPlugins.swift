@@ -72,7 +72,12 @@ struct AgentPluginInstallation: Identifiable {
         guard author.count <= 200, !author.contains("\0") else { throw PetError("插件作者信息无效") }
         return (AgentPluginMetadata(name: name, title: try text("displayName", fallback: name), version: try text("version"), author: author, description: try text("description")), value)
     }
-    private static func package(_ files: [String: Data], sourceName: String, sourceHash: String) throws -> AgentPluginPackage {
+    private static func package(_ files: [String: Data], sourceName: String, sourceHash: String, inferredName: String? = nil) throws -> AgentPluginPackage {
+        var files = files
+        if files[".qoder-plugin/plugin.json"] == nil && files[".claude-plugin/plugin.json"] == nil, let inferredName {
+            guard validName(inferredName) else { throw PetError("没有插件清单时，文件夹名称须使用小写字母、数字和连字符；也可添加 .qoder-plugin/plugin.json 指定名称") }
+            files[".qoder-plugin/plugin.json"] = try JSONSerialization.data(withJSONObject: ["name": inferredName], options: [.sortedKeys])
+        }
         guard !files.isEmpty, files.count <= 2000, files.allSatisfy({ AgentArchive.validPath($0.key) && $0.value.count <= 2_000_000 }), files.values.reduce(0, { $0 + $1.count }) <= 20_000_000 else { throw PetError("插件资源超过数量或大小上限") }
         let manifests = [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"].filter { files[$0] != nil }
         guard let manifest = manifests.first else { throw PetError("插件缺少 .qoder-plugin/plugin.json 或 .claude-plugin/plugin.json") }
@@ -135,7 +140,15 @@ struct AgentPluginInstallation: Identifiable {
         return AgentPluginPackage(metadata: info, receipt: receipt, files: files, mcpServers: mcpServers, agents: agents, hooks: hooks, rules: rules)
     }
     func inspect(_ archive: URL) async throws -> AgentPluginPackage {
-        guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择一个插件 ZIP 文件") }
+        let metadata = try archive.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard metadata.isSymbolicLink != true else { throw PetError("请选择插件原文件夹或ZIP，不支持链接") }
+        if metadata.isDirectory == true {
+            let scan = Task.detached(priority: .userInitiated) { try AgentArchive.directoryResources(archive, hiddenRoots: [".qoder-plugin", ".claude-plugin", ".mcp.json"]) }
+            let files = try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() })
+            try Task.checkCancellation()
+            return try Self.package(files, sourceName: archive.lastPathComponent + "/", sourceHash: AgentExtensions.digest(files), inferredName: archive.lastPathComponent)
+        }
+        guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择插件文件夹或ZIP") }
         let input = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try input.readData(input.literalURL(archive.lastPathComponent), maximum: 20_000_000)
         let scratch = profile.appendingPathComponent(".plugin-review-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); defer { try? FileManager.default.removeItem(at: scratch) }

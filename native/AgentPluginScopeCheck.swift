@@ -11,7 +11,8 @@ import Darwin
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务未初始化") }
             runtime.modelRequestCheck = { attempts += 1; throw PetError("项目插件检查禁止模型请求") }
             let plugins = tasks.extensions.plugins, a = try AgentFiles(workspace: output.appendingPathComponent("real project").path).root.path, b = try AgentFiles(workspace: output.appendingPathComponent("other project").path).root.path, c = try AgentFiles(workspace: output.appendingPathComponent("copied project").path).root.path
-            let one = try await plugins.inspect(output.appendingPathComponent("lifecycle-v1.zip")), two = try await plugins.inspect(output.appendingPathComponent("lifecycle-v2.zip"))
+            let directoryMode = CommandLine.arguments.contains("--plugin-directory-check")
+            let one = try await plugins.inspect(output.appendingPathComponent(directoryMode ? "directory-v1/目录 插件" : "lifecycle-v1.zip")), two = try await plugins.inspect(output.appendingPathComponent(directoryMode ? "directory-v2/目录 插件" : "lifecycle-v2.zip"))
             try phase("install-independent-user-and-project-packages")
             let user = try plugins.install(one); try plugins.setEnabled(user, true); let activeUser = try plugins.installation(user.id)
             let project = try plugins.install(two, workspace: a)
@@ -125,6 +126,7 @@ import Darwin
             runtime.cancel(slowB); tasks.mcp.disconnect(owner: bTask)
             checks["otherProjectProcessesExitOnlyAfterExplicitOwnCleanup"] = await until { !runtime.isRunning(slowB) && bPIDs.allSatisfy { kill($0, 0) != 0 } }
             if CommandLine.arguments.contains("--plugin-settings-check") { checks.merge(try await checkAgentPluginSettings(output, tasks: tasks, runtime: runtime, a: a, b: b)) { _, new in new }; restored = try plugins.installation(restored.id) }
+            if directoryMode { checks.merge(try await checkAgentPluginDirectory(output, tasks: tasks, runtime: runtime)) { _, new in new } }
             try phase("external-change-and-replayed-receipt-cannot-reactivate")
             try plugins.setEnabled(restored, true); let approved = try plugins.installation(restored.id), receiptFile = approved.root.appendingPathComponent("receipt.json"), approvedBytes = try Data(contentsOf: receiptFile)
             var changed = approved.receipt; changed.activationID = UUID().uuidString; try JSONEncoder().encode(changed).write(to: receiptFile, options: .atomic)

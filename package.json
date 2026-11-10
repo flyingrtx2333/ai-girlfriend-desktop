@@ -88,7 +88,8 @@
     "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs",
     "native:check-task-archive": "node scripts/check-native-task-archive.mjs",
     "native:check-task-records": "node scripts/check-native-task-records.mjs",
-    "native:check-plugin-settings": "node scripts/check-native-plugin-scopes.mjs --plugin-settings-check"
+    "native:check-plugin-settings": "node scripts/check-native-plugin-scopes.mjs --plugin-settings-check",
+    "native:check-plugin-directories": "node scripts/check-native-plugin-scopes.mjs --plugin-directory-check"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",
