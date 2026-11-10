@@ -1448,7 +1448,7 @@ final class FormDocumentView: NSView {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
         } else if sideTaskTabID == nil, record.sideTask != nil { companion?.openSideTask(id, from: self); return }
-        clearMessageSearchHighlight()
+        if taskFind.isHidden || id != agentTaskID || searchQuery != nil { clearMessageSearchHighlight() }
         if id != agentTaskID || searchQuery != nil { taskFind.reset() }
         if let searchQuery, let message = AgentTaskSearch.message(in: record, query: searchQuery, preferredID: messageID) {
             messageSearch = MessageSearch(taskID: id, messageID: message.id, query: searchQuery); pendingMessageReveal = true
