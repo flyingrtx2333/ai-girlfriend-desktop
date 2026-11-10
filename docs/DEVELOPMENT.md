@@ -320,6 +320,16 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 
 本轮更新检查28项及8项独立核对、中断恢复4项及7项独立核对通过；最终签名版本的17项窗口独立核对通过。实际窗口包含确认与取消、Esc、版本差异、更新停用、历史恢复、窄窗口和新进程重开；41份持久文件在重开前后逐字节一致。报告见本地 `evidence/agent/bluefatfish-plugin-updates-ui-实际 ip2gizy6/plugin-update-window-report.json`。本轮模型请求0，日常应用未替换。
 
+## 项目级插件
+
+插件窗口可切换「用户／项目」；项目指当前任务所选的准确文件夹。项目包与版本历史保存为 `.bluefatfish/plugins/<插件名>/receipt.json` 和 `payload/`，可随项目复制。用户目录、子目录、其他工作树及同内容副本分别绑定，项目未选择时项目入口不可用。两个范围可安装同名的不同版本，启停、更新、恢复及组件身份独立。
+
+本机审阅与启用记录保存在应用配置目录的 `extensions/project-plugin-approvals.json`，MCP凭据、Hook配置与角色模型覆盖也继续保存在本机。未经本机审阅的共享副本保持停用，不覆盖已有用户插件。经本机审阅的项目同名包优先，包括明确停用的项目包；更新及恢复默认停用。项目文件或激活记录外部变化会阻止继续执行，须重新审阅或在项目范围「全部停用」；该操作先撤销本机启用，再尝试保存项目的停用状态，来源无法写入时显示需核对的数量。
+
+项目范围同时约束命令／Skill及缓存资源、插件角色、规则、MCP目录／函数／连接，以及Hooks。组件在当前任务重新解析；变更项目后旧角色、资源或连接引用不能续用。项目插件变化取消该项目的执行与连接，其他项目保持独立。全局团队仍由用户级角色配置；项目插件角色可创建任务和供当前项目的Agent查找，项目级团队编排仍待补齐。
+
+复现：`npm run native:check-plugin-scopes -- --app <严格签名候选绝对路径>`。独立目录使用实际ZIP、公开README与现有项目文档、Node／sleep、MCP及Hooks；禁止模型传输。原生流程之后保留首次任务原件，真正结束停在本机撤销之后、目录交换之前的检查进程，再由新进程核对原版本、撤销状态、未发布副本与重新审阅发布。每次保留自己的目录和进程，不重放旧记录。Qoder CLI的`settings.json`／`settings.local.json`插件声明、目录导入、市场与依赖管理仍待兼容；此处不宣称这些能力已经完成。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。

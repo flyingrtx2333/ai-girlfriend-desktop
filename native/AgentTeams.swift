@@ -45,17 +45,17 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     }
     func encode(_ values: [AgentTeam]) throws -> String { String(decoding: try encoder.encode(Document(teams: values)), as: UTF8.self) }
     func list() throws -> [AgentTeam] { try decode(document().0) }
-    private func roles(_ team: AgentTeam, store: AgentStore, enabled: Bool) throws -> [AgentProfile] {
-        let agents = try store.agents.list()
+    private func roles(_ team: AgentTeam, store: AgentStore, enabled: Bool, workspace: String? = nil) throws -> [AgentProfile] {
+        let agents = try store.agents.list(workspace: workspace)
         let values = try ([team.leaderID] + team.memberIDs).map { id -> AgentProfile in
             guard let role = agents.first(where: { $0.id == id }), !enabled || role.enabled else { throw PetError("团队成员已停用或不存在，请检查自定义 Agent") }; return role
         }
         guard let leader = values.first, leader.availableTools.isSuperset(of: ["list_agents", "delegate_task"]), leader.toolPermissions?["delegate_task"] != .deny, leader.toolPermissions?["list_agents"] != .deny else { throw PetError("负责人需要查找 Agent 与委派子任务权限") }
         return values
     }
-    func team(_ id: String, store: AgentStore) throws -> AgentTeam {
+    func team(_ id: String, store: AgentStore, workspace: String? = nil) throws -> AgentTeam {
         guard let value = try list().first(where: { $0.id == id && $0.enabled }) else { throw PetError("团队未启用或已不存在") }
-        _ = try roles(value, store: store, enabled: true); return value
+        _ = try roles(value, store: store, enabled: true, workspace: workspace); return value
     }
     func save(_ text: String, expectedHash: String?, store: AgentStore, activating: String? = nil) throws {
         let values = try decode(text), previous = try document()
@@ -91,25 +91,25 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     }
     func check(_ task: AgentTaskRecord, store: AgentStore) throws {
         guard let saved = try binding(task, store: store) else { return }
-        let live = try team(saved.id, store: store)
+        let live = try team(saved.id, store: store, workspace: task.workspace)
         guard live.leaderID == saved.leaderID, let role = task.agent?.profile.id,
               (role == saved.leaderID && task.team != nil) || (saved.memberIDs.contains(role) && live.memberIDs.contains(role)) else { throw PetError("团队角色已改变，请重新发起任务") }
     }
     func checkDelegate(_ id: String, owner: AgentTaskRecord, store: AgentStore) throws {
         try check(owner, store: store)
         guard let saved = try binding(owner, store: store) else { return }
-        let live = try team(saved.id, store: store)
+        let live = try team(saved.id, store: store, workspace: owner.workspace)
         guard saved.memberIDs.contains(id), live.memberIDs.contains(id), id != owner.agent?.profile.id else { throw PetError("团队只可委派给本次任务中已配置的其他成员") }
     }
     func configureDraft(_ id: String, taskID: String, store: AgentStore) throws {
-        let value = try team(id, store: store)
+        let value = try team(id, store: store, workspace: store.task(taskID)?.workspace)
         try store.agents.configureDraft(value.leaderID, taskID: taskID, store: store)
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         if let error = store.writeError { throw PetError("团队任务未保存：" + error) }
     }
     func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil) throws -> String {
         if let owner, try binding(owner, store: store) != nil { throw PetError("团队任务不能委派到另一个团队") }
-        let value = try team(id, store: store)
+        let value = try team(id, store: store, workspace: workspace)
         let taskID = try store.agents.createTask(value.leaderID, store: store, workspace: workspace, owner: owner, workMode: workMode)
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         return taskID

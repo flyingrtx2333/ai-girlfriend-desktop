@@ -10,7 +10,10 @@ struct AgentPluginMCPDefinition {
 }
 
 extension AgentPluginInstallation {
-    var instanceID: String { receipt.installationID ?? AgentPlugins.mcpUUID(id + receipt.sourceHash + String(receipt.installedAt.timeIntervalSince1970)) }
+    var instanceID: String {
+        let original = receipt.installationID ?? AgentPlugins.mcpUUID(id + receipt.sourceHash + String(receipt.installedAt.timeIntervalSince1970))
+        return workspace == nil ? original : AgentPlugins.mcpUUID(id + ":" + original)
+    }
 }
 
 @MainActor extension AgentPlugins {
@@ -81,7 +84,7 @@ extension AgentPluginInstallation {
             return credential && text.contains("${") ? "" : text
         }
         var value = definition.value
-        value["name"] = item.id + ":" + definition.key; value["timeoutSeconds"] = (value.removeValue(forKey: "timeout") as? Double ?? 60_000) / 1000
+        value["name"] = item.metadata.name + ":" + definition.key; value["timeoutSeconds"] = (value.removeValue(forKey: "timeout") as? Double ?? 60_000) / 1000
         value.removeValue(forKey: "description"); value.removeValue(forKey: "disabled")
         for field in ["command", "url", "cwd"] { if let text = value[field] as? String { value[field] = expand(text) } }
         if let command = value["command"] as? String, !command.hasPrefix("/"), !command.contains("/") {
@@ -91,30 +94,31 @@ extension AgentPluginInstallation {
         for field in ["env", "headers"] { if let variables = value[field] as? [String: String] { value[field] = variables.mapValues { expand($0, credential: true) } } }
         return value
     }
-    func mcpServers(saved: [AgentMCPServer]) throws -> [AgentMCPServer] {
+    func mcpServers(saved: [AgentMCPServer], workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentMCPServer] {
         var result = saved.filter { $0.plugin == nil }
-        for item in try catalog() {
+        for item in try catalog(workspace: workspace, onlyScope: onlyScope) {
             for definition in item.mcpServers {
                 let reference = AgentPluginMCPReference(name: item.id, installationID: item.instanceID, key: definition.key), id = Self.mcpUUID(item.instanceID + ":" + definition.key)
                 let existing = saved.first { $0.id == id && $0.plugin == reference }
-                var server = existing ?? AgentMCPServer(name: item.id + ":" + definition.key, type: definition.value["type"] as? String ?? "stdio")
+                var server = existing ?? AgentMCPServer(name: item.metadata.name + ":" + definition.key, type: definition.value["type"] as? String ?? "stdio")
                 if existing == nil {
                     let value = try mcpConfiguration(reference)
                     server.command = value["command"] as? String; server.args = value["args"] as? [String] ?? []; server.url = value["url"] as? String; server.workingDirectory = value["cwd"] as? String
                     server.environmentKeys = (value["env"] as? [String: String] ?? [:]).keys.sorted(); server.headerKeys = (value["headers"] as? [String: String] ?? [:]).keys.sorted(); server.timeoutSeconds = value["timeoutSeconds"] as? Double ?? 60
                 }
-                server.id = id; server.plugin = reference; server.configured = existing != nil; server.pluginEnabled = item.receipt.enabled
+                server.id = id; server.plugin = reference; server.configured = existing != nil; server.pluginEnabled = item.enabled
                 server.credentialRevision = existing?.revision
                 server.revision = Self.mcpUUID((existing?.revision ?? "unconfigured") + (item.receipt.activationID ?? item.receiptHash) + item.receipt.sourceHash)
-                server.enabled = item.receipt.enabled && existing?.enabled == true
+                server.enabled = item.enabled && existing?.enabled == true
                 result.append(server)
             }
         }
         return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-    func validateMCP(_ reference: AgentPluginMCPReference) throws {
+    func validateMCP(_ reference: AgentPluginMCPReference, workspace: String? = nil) throws {
+        try requireScope(reference.name, workspace: workspace)
         let item = try installation(reference.name)
-        guard item.instanceID == reference.installationID, item.receipt.enabled, item.mcpServers.contains(where: { $0.key == reference.key }) else { throw PetError("所属插件已停用、移除或更新") }
+        guard item.instanceID == reference.installationID, item.enabled, item.mcpServers.contains(where: { $0.key == reference.key }) else { throw PetError("所属插件已停用、移除或更新") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }
 }

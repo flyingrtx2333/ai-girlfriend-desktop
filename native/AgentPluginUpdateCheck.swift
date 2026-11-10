@@ -2,7 +2,7 @@ import AppKit
 import Darwin
 
 @MainActor extension AppDelegate {
-    private func pluginUpdateHashes(_ root: URL) throws -> [String: String] {
+    func pluginUpdateHashes(_ root: URL) throws -> [String: String] {
         let files = try AgentFiles(workspace: root.path)
         guard let iterator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { throw PetError("版本目录不可读取") }
         var result: [String: String] = [:]

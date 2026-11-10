@@ -28,7 +28,7 @@ import Foundation
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
     func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }; store.browser.stop(taskID); store.canvases.stop(taskID); store.offices.stop(taskID); store.desktop.disconnect(taskID); store.mcp.disconnect(owner: taskID) }
     func gitDirectory(for call: AgentToolCall) throws -> String? {
-        if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID) ?? call, task: task, store: store) }
+        if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call, task: task, store: store) }
         if (["index_project", "search_project"] + AgentKnowledgeCards.tools).contains(call.name), let task = store.task(taskID) {
             let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
             if !FileManager.default.fileExists(atPath: index.files.root.appendingPathComponent(".git").path) { return nil }
@@ -160,7 +160,7 @@ import Foundation
         return tools
     }
     func approvalReason(for call: AgentToolCall, gitDirectory: String? = nil) throws -> String? {
-        let call = try store.mcp.routedCall(call, owner: taskID) ?? call
+        let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
         task.permission = try store.agents.executionPermission(task, store: store)
         try checkHookTool(call, task: task)
@@ -291,7 +291,7 @@ import Foundation
     }
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
-        let call = try store.mcp.routedCall(call, owner: taskID) ?? call
+        let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         if call.name == "run_command", let task = store.task(taskID), try store.agents.limits(task, store: store).readOnly {
             return try await executeCore(call, gitDirectory: gitDirectory)
         }
@@ -342,7 +342,7 @@ import Foundation
         }
         switch call.name {
         case "list_rules":
-            var all: [[String: Any]] = try store.extensions.plugins.ruleItems().filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
+            var all: [[String: Any]] = try store.extensions.plugins.ruleItems(workspace: task.workspace).filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
             all += try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).filter { $0.enabled && $0.definition?.trigger == .decision }.map { ["id": $0.id, "name": $0.invocation, "description": $0.definition!.description, "source": $0.source.path] }
             let offset = min(all.count, max(0, args["offset"] as? Int ?? 0)), page = Array(all.dropFirst(offset).prefix(12))
             let value: [String: Any] = ["total": all.count, "offset": offset, "next_offset": offset + page.count < all.count ? offset + page.count : NSNull(), "rules": page]
@@ -355,7 +355,7 @@ import Foundation
                 try store.rules.activate(reference, store: store, taskID: taskID)
                 return AgentToolResult(text: "已载入规则 " + item.invocation + "\nSHA256: " + item.sha256, sources: [item.source.absoluteString])
             }
-            let item = try store.extensions.plugins.currentRule(selected)
+            let item = try store.extensions.plugins.currentRule(selected, workspace: task.workspace)
             var reference = item.reference; reference.workspace = task.workspace
             guard item.definition.trigger == .decision || task.activeRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
             try store.extensions.plugins.activateRule(reference, store: store, taskID: taskID)
@@ -363,11 +363,11 @@ import Foundation
         case "list_agents":
             let team = try store.teams.binding(task, store: store)
             let skills = (try? store.extensions.catalog(workspace: task.workspace, includeDisabled: false)) ?? []
-            let values = try store.agents.list(enabledOnly: true).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in
-                return ["id": value.id, "name": value.name, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": store.mcp.servers.first(where: { $0.id == id })?.name ?? "不可用"] }]
+            let values = try store.agents.list(enabledOnly: true, workspace: task.workspace).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in
+                return ["id": value.id, "name": value.name, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": store.mcp.availableServers(workspace: task.workspace).first(where: { $0.id == id })?.name ?? "不可用"] }]
             }
             let teams: [[String: Any]] = try team == nil ? store.teams.list().compactMap { value in
-                guard (try? store.teams.team(value.id, store: store)) != nil else { return nil }
+                guard (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil else { return nil }
                 return ["id": value.id, "name": value.name, "description": value.description, "leader_id": value.leaderID, "member_ids": value.memberIDs]
             } : []
             return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: ["agents": values, "teams": teams], options: [.sortedKeys]), as: UTF8.self))

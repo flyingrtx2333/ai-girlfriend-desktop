@@ -21,9 +21,10 @@ struct AgentMCPServer: Codable, Identifiable {
     private let plugins: AgentPlugins?
     private var savedServers: [AgentMCPServer] = [], pluginObserver: UUID?
     private(set) var loadError: String?
-    var servers: [AgentMCPServer] {
+    var servers: [AgentMCPServer] { availableServers(workspace: nil) }
+    func availableServers(workspace: String?, onlyScope: Bool = false) -> [AgentMCPServer] {
         guard let plugins else { return savedServers.filter { $0.plugin == nil } }
-        return (try? plugins.mcpServers(saved: savedServers)) ?? savedServers.filter { $0.plugin == nil }
+        return (try? plugins.mcpServers(saved: savedServers, workspace: workspace, onlyScope: onlyScope)) ?? savedServers.filter { $0.plugin == nil }
     }
     var onChange: (() -> Void)?
     private var contentObservers: [UUID: () -> Void] = [:]
@@ -31,11 +32,11 @@ struct AgentMCPServer: Codable, Identifiable {
     func removeContentObserver(_ id: UUID) { contentObservers[id] = nil }
     private func notify() { onChange?(); for action in Array(contentObservers.values) { action() } }
     private final class Session {
-        let id = UUID().uuidString, revision: String, client = MCPConnection()
+        let id = UUID().uuidString, revision: String, workspace: String?, client = MCPConnection()
         var catalog = Data("[]".utf8), connected = false, redactions: [String] = [], schemaNames = Set<String>(), schemaOrder: [String] = [], info: [String: Any] = [:]
         var capabilities: [String: Any] = [:], content: [String: Data] = [:], epochs: [String: String] = [:]
         var resourceVersions: [String: Int] = [:], subscriptions = Set<String>(), links: [[String: Any]] = []
-        init(_ revision: String) { self.revision = revision }
+        init(_ revision: String, workspace: String?) { self.revision = revision; self.workspace = workspace }
         var token: String { String(AgentFiles.hash(Data((id + ":" + AgentFiles.hash(catalog)).utf8)).prefix(32)) }
         func contentToken(_ kind: String) -> String {
             let keys = kind == "prompts" ? ["prompts"] : ["resources", "templates"]
@@ -58,12 +59,15 @@ struct AgentMCPServer: Codable, Identifiable {
         } catch { loadError = error.localizedDescription; savedServers = [] }
         pluginObserver = plugins?.observeChanges { [weak self] name in
             guard let self else { return }
-            for id in self.savedServers.filter({ $0.plugin?.name == name }).map(\.id) { self.disconnect(serverID: id) }; self.notify()
+            for id in self.savedServers.filter({ $0.plugin?.name == name }).map(\.id) { self.disconnect(serverID: id) }
+            if let project = try? AgentPlugins.scope(name).workspace {
+                for key in self.sessions.keys.filter({ self.sessions[$0]?.workspace == project }) { self.disconnectKey(key) }
+            }; self.notify()
         }
     }
-    func server(_ id: String, revision: String? = nil) throws -> AgentMCPServer {
+    func server(_ id: String, revision: String? = nil, workspace: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
-        guard let server = servers.first(where: { $0.id == id }) else { throw PetError("MCP 连接器不存在或已移除") }
+        guard let server = availableServers(workspace: workspace).first(where: { $0.id == id }) else { throw PetError("MCP 连接器不存在或已移除") }
         guard server.configured != false else { throw PetError("请先在 MCP 管理器中保存插件连接器配置") }
         guard server.pluginEnabled != false, server.enabled else { throw PetError("MCP 连接器或所属插件已停用") }
         guard server.timeoutSeconds.isFinite, (5...600).contains(server.timeoutSeconds), server.environmentKeys.count <= 64, (server.headerKeys ?? []).count <= 64 else { throw PetError("MCP 配置无效，请重新保存") }
@@ -89,16 +93,17 @@ struct AgentMCPServer: Codable, Identifiable {
         else { value["command"] = server?.command ?? "/opt/homebrew/bin/node"; value["args"] = server?.args ?? []; value["env"] = Dictionary(uniqueKeysWithValues: (server?.environmentKeys ?? []).map { ($0, Self.placeholder) }); value["cwd"] = server?.workingDirectory }
         return String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
     }
-    @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil) throws -> AgentMCPServer {
+    @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil, workspace: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
         guard text.utf8.count <= 64_000, let value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw PetError("请输入有效的 MCP JSON 配置") }
         let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !name.contains("\0"), name.count <= 160,
               let type = value["type"] as? String, ["stdio", "http"].contains(type) else { throw PetError("需要名称和 type（stdio 或 http）") }
-        let old = id.flatMap { id in servers.first { $0.id == id } }
+        let scopedServers = availableServers(workspace: workspace)
+        let old = id.flatMap { id in scopedServers.first { $0.id == id } }
         if id != nil && (old == nil || old?.revision != expectedRevision) { throw PetError("配置已由其他窗口更新，请重新打开后编辑") }
-        guard !servers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }), savedServers.count < 128 || savedServers.contains(where: { $0.id == id }), old != nil || savedServers.filter({ $0.plugin == nil }).count < 64 else { throw PetError("连接器重名或数量超过限制") }
+        guard !scopedServers.contains(where: { $0.id != id && $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }), savedServers.count < 128 || savedServers.contains(where: { $0.id == id }), old != nil || savedServers.filter({ $0.plugin == nil }).count < 64 else { throw PetError("连接器重名或数量超过限制") }
         if let old, let reference = old.plugin {
             guard name == old.name, type == old.type, let plugins else { throw PetError("插件连接器的名称和类型由插件声明") }
             let template = try plugins.mcpConfiguration(reference)
@@ -154,11 +159,11 @@ struct AgentMCPServer: Codable, Identifiable {
         savedServers = updated.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         disconnect(serverID: server.id)
         if let old, old.configured != false { try? keychain.write("", account: account(old)) }
-        notify(); return servers.first(where: { $0.id == server.id }) ?? server
+        notify(); return availableServers(workspace: workspace).first(where: { $0.id == server.id }) ?? server
     }
-    func setEnabled(_ id: String, _ enabled: Bool) throws {
+    func setEnabled(_ id: String, _ enabled: Bool, workspace: String? = nil) throws {
         guard let index = savedServers.firstIndex(where: { $0.id == id }) else { throw PetError("请先保存连接器配置") }
-        if enabled, let reference = savedServers[index].plugin { guard let plugins else { throw PetError("所属插件不可用") }; try plugins.validateMCP(reference) }
+        if enabled, let reference = savedServers[index].plugin { guard let plugins else { throw PetError("所属插件不可用") }; try plugins.validateMCP(reference, workspace: workspace) }
         if !enabled {
             var updated = savedServers; updated[index].enabled = false
             try persist(updated); savedServers = updated; disconnect(serverID: id); notify(); return
@@ -189,26 +194,30 @@ struct AgentMCPServer: Codable, Identifiable {
         return secrets
     }
     private func key(_ owner: String, _ server: String) -> String { owner + "/" + server }
-    func status(_ id: String, owner: String) -> String {
-        guard let server = servers.first(where: { $0.id == id }) else { return "已移除" }
+    func status(_ id: String, owner: String, workspace: String? = nil) -> String {
+        guard let server = availableServers(workspace: workspace).first(where: { $0.id == id }) else { return "已移除" }
         if server.pluginEnabled == false { return "所属插件已停用" }; if server.configured == false { return "待配置" }; if !server.enabled { return "已停用" }
         return states[key(owner, id)] ?? "未连接"
     }
+    private func disconnectKey(_ key: String) {
+        guard let session = sessions.removeValue(forKey: key) else { return }; states[key] = "已断开"
+        Task { await session.client.disconnect() }
+    }
     func disconnect(owner: String? = nil, serverID: String? = nil) {
-        for (key, session) in sessions where (owner == nil || key.hasPrefix(owner! + "/")) && (serverID == nil || key.hasSuffix("/" + serverID!)) {
-            sessions[key] = nil; states[key] = "已断开"
-            Task { await session.client.disconnect() }
+        for (key, _) in sessions where (owner == nil || key.hasPrefix(owner! + "/")) && (serverID == nil || key.hasSuffix("/" + serverID!)) {
+            disconnectKey(key)
         }; notify()
     }
-    func connected(_ id: String, owner: String) -> Bool { guard let current = try? server(id), let session = sessions[key(owner, id)] else { return false }; return session.connected && session.revision == current.revision }
+    func connected(_ id: String, owner: String) -> Bool { guard let session = sessions[key(owner, id)], let current = try? server(id, workspace: session.workspace) else { return false }; return session.connected && session.revision == current.revision }
     func token(_ id: String, owner: String) -> String? { connected(id, owner: owner) ? sessions[key(owner, id)]?.token : nil }
     @discardableResult func connect(_ id: String, revision: String, owner: String, workspace: String?) async throws -> [String: Any] {
-        let server = try server(id, revision: revision), sessionKey = key(owner, id)
-        if let reference = server.plugin { try plugins?.validateMCP(reference) }
-        if let current = sessions[sessionKey], current.connected, current.revision == revision {
+        let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }
+        let server = try server(id, revision: revision, workspace: workspace), sessionKey = key(owner, id)
+        if let reference = server.plugin { try plugins?.validateMCP(reference, workspace: workspace) }
+        if let current = sessions[sessionKey], current.connected, current.revision == revision, current.workspace == workspace {
             return ["server": server.name, "connection": current.token, "serverInfo": current.info, "tool_count": (try JSONSerialization.jsonObject(with: current.catalog) as? [Any])?.count ?? 0, "reused": true]
         }
-        let session = Session(revision)
+        let session = Session(revision, workspace: workspace)
         disconnect(owner: owner, serverID: id); sessions[sessionKey] = session; states[sessionKey] = "连接中"; notify()
         do {
             await session.client.onChange { [weak self, weak session] kind, uri in
@@ -233,7 +242,7 @@ struct AgentMCPServer: Codable, Identifiable {
                 info = try await session.client.connectHTTP(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", headers: headers, timeout: server.timeoutSeconds)
             }
             session.catalog = try await session.client.tools(timeout: server.timeoutSeconds)
-            try Task.checkCancellation(); _ = try self.server(id, revision: revision)
+            try Task.checkCancellation(); _ = try self.server(id, revision: revision, workspace: workspace)
             guard sessions[sessionKey] === session else { throw PetError("连接已被关闭") }
             session.connected = true; states[sessionKey] = "已连接"; notify()
             let initialize = try JSONSerialization.jsonObject(with: info) as? [String: Any]
@@ -247,7 +256,8 @@ struct AgentMCPServer: Codable, Identifiable {
     }
     private func session(_ id: String, owner: String, token: String) throws -> (AgentMCPServer, Session) {
         let server: AgentMCPServer
-        do { server = try self.server(id); if let reference = server.plugin { try plugins?.validateMCP(reference) } }
+        guard let saved = sessions[key(owner, id)] else { throw PetError("MCP 连接已结束，请重新连接") }
+        do { server = try self.server(id, workspace: saved.workspace); if let reference = server.plugin { try plugins?.validateMCP(reference, workspace: saved.workspace) } }
         catch { disconnect(serverID: id); throw error }
         guard let session = sessions[key(owner, id)], session.connected, session.revision == server.revision, session.token == token else { throw PetError("MCP 连接或工具目录已变化，请重新连接/读取后批准；旧调用不会重放") }
         return (server, session)
@@ -426,16 +436,16 @@ struct AgentMCPServer: Codable, Identifiable {
     }
     func subscribed(_ preview: AgentMCPContentPreview) -> Bool { preview.uri.map { sessions[key(preview.owner, preview.server.id)]?.subscriptions.contains($0) == true } ?? false }
     func supportsSubscription(_ preview: AgentMCPContentPreview) -> Bool { (sessions[key(preview.owner, preview.server.id)]?.capabilities["resources"] as? [String: Any])?["subscribe"] as? Bool == true }
-    func summary(owner: String, allowedServers: Set<String>? = nil) throws -> String {
+    func summary(owner: String, allowedServers: Set<String>? = nil, workspace: String? = nil) throws -> String {
         if let loadError { throw PetError(loadError) }
-        let rows: [[String: Any]] = servers.filter { allowedServers?.contains($0.id) ?? true }.map { server in
+        let rows: [[String: Any]] = availableServers(workspace: workspace).filter { allowedServers?.contains($0.id) ?? true }.map { server in
             var value: [String: Any] = ["id": server.id, "name": server.name, "type": server.type, "enabled": server.enabled, "configured": server.configured != false, "configuration": server.revision, "destination": server.destination, "connection": token(server.id, owner: owner) as Any? ?? NSNull()]
-            if let plugin = server.plugin { value["plugin"] = plugin.name }; return value
+            if let plugin = server.plugin { value["plugin"] = (try? AgentPlugins.scope(plugin.name).name) ?? "插件"; value["scope"] = (try? AgentPlugins.scope(plugin.name).workspace) == nil ? "user" : "project" }; return value
         }
         return String(decoding: try JSONSerialization.data(withJSONObject: ["servers": rows], options: [.sortedKeys]), as: UTF8.self)
     }
-    func context(owner: String) -> String {
-        let rows = servers.compactMap { server -> [String: Any]? in
+    func context(owner: String, workspace: String? = nil) -> String {
+        let rows = availableServers(workspace: workspace).compactMap { server -> [String: Any]? in
             guard let session = sessions[key(owner, server.id)], session.connected else { return nil }
             return ["server_id": server.id, "name": server.name, "connection": session.token, "schemas_read": Array(session.schemaOrder.suffix(6))]
         }
@@ -454,10 +464,10 @@ struct AgentMCPServer: Codable, Identifiable {
     // Deliver the server's actual parameter schema to the model API. Wrapping
     // arbitrary arguments in another JSON object encourages double escaping
     // and consumes scarce context with copied session identifiers.
-    func modelDefinitions(owner: String, mode: AgentMode, maximum: Int = 6) throws -> [[String: Any]] {
+    func modelDefinitions(owner: String, mode: AgentMode, maximum: Int = 6, workspace: String? = nil) throws -> [[String: Any]] {
         guard [.agent, .goal].contains(mode) else { return [] }
         var definitions: [[String: Any]] = []
-        for server in servers where server.enabled {
+        for server in availableServers(workspace: workspace) where server.enabled {
             guard let session = sessions[key(owner, server.id)], session.connected, session.revision == server.revision else { continue }
             let tools = try JSONSerialization.jsonObject(with: session.catalog) as? [[String: Any]] ?? []
             for name in session.schemaOrder.suffix(6) {
@@ -467,9 +477,9 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         return Array(definitions.suffix(max(1, min(12, maximum))))
     }
-    func routedCall(_ call: AgentToolCall, owner: String) throws -> AgentToolCall? {
+    func routedCall(_ call: AgentToolCall, owner: String, workspace: String? = nil) throws -> AgentToolCall? {
         guard Self.isModelToolName(call.name) else { return nil }
-        for server in servers where server.enabled {
+        for server in availableServers(workspace: workspace) where server.enabled {
             guard let session = sessions[key(owner, server.id)], session.connected, session.revision == server.revision else { continue }
             for name in session.schemaNames where modelName(serverID: server.id, token: session.token, tool: name) == call.name {
                 let object: [String: Any] = ["server_id": server.id, "connection": session.token, "tool": name, "arguments": call.object]
@@ -478,10 +488,10 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         throw PetError("MCP 工具名或连接无效；用 list_mcp_servers 核对连接，再用 list_mcp_tools(query=工具原名) 获取实际 model_tool。不要拼接名称或重放旧操作")
     }
-    func decorate(_ call: AgentToolCall, owner: String) -> AgentToolCall {
-        var result = call; result.displayName = (try? routedCall(call, owner: owner))?.displayName
+    func decorate(_ call: AgentToolCall, owner: String, workspace: String? = nil) -> AgentToolCall {
+        var result = call; result.displayName = (try? routedCall(call, owner: owner, workspace: workspace))?.displayName
         if let title = ["list_mcp_servers": "连接器目录", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "list_mcp_resources": "MCP 资料目录", "read_mcp_resource": "读取 MCP 资料", "disconnect_mcp": "断开 MCP"][call.name] {
-            let name = servers.first { $0.id == call.object["server_id"] as? String }?.name
+            let name = availableServers(workspace: workspace).first { $0.id == call.object["server_id"] as? String }?.name
             result.displayName = title + (name.map { " · " + $0 } ?? "")
         }
         return result

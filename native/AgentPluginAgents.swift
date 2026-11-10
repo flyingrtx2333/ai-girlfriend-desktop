@@ -102,21 +102,21 @@ struct AgentPluginAgentDefinition {
         let profile = AgentProfile(name: key, description: description, instructions: document.body, model: model, permission: permission, tools: available.sorted(), readOnly: readOnly, network: network, toolPermissions: denied.isEmpty ? nil : Dictionary(uniqueKeysWithValues: denied.map { ($0, .deny) }))
         return AgentPluginAgentDefinition(key: key, path: path, profile: profile, skills: skillNames, servers: servers)
     }
-    func agentProfiles() throws -> [AgentProfile] {
+    func agentProfiles(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentProfile] {
         var result: [AgentProfile] = []
-        for item in try catalog() {
+        for item in try catalog(workspace: workspace, onlyScope: onlyScope) {
             for definition in item.agents {
                 var profile = definition.profile
                 profile.id = Self.mcpUUID("agent:" + item.instanceID + ":" + definition.key)
-                profile.name = item.id + ":" + definition.key; profile.enabled = item.receipt.enabled
+                profile.name = item.metadata.name + ":" + definition.key; profile.enabled = item.enabled
                 profile.pluginSource = AgentPluginAgentReference(name: item.id, installationID: item.instanceID, activationID: item.receipt.activationID ?? item.receiptHash, key: definition.key, sha256: item.receipt.hashes[definition.path]!)
                 profile.skills = try definition.skills.map { name in
-                    let key = name.hasPrefix(item.id + ":") ? String(name.dropFirst(item.id.count + 1)) : name
+                    let key = name.hasPrefix(item.metadata.name + ":") ? String(name.dropFirst(item.metadata.name.count + 1)) : name
                     guard let skill = item.receipt.components.first(where: { $0.kind == .skill && $0.name == key }) else { throw PetError("插件 Agent 引用的 Skill 不存在：" + name) }
                     return Self.extensionID(skill.path, installation: item)
                 }
                 profile.mcpServers = try definition.servers.map { name in
-                    let key = name.hasPrefix(item.id + ":") ? String(name.dropFirst(item.id.count + 1)) : name
+                    let key = name.hasPrefix(item.metadata.name + ":") ? String(name.dropFirst(item.metadata.name.count + 1)) : name
                     guard item.mcpServers.contains(where: { $0.key == key }) else { throw PetError("插件 Agent 引用的 MCP 不存在：" + name) }
                     return Self.mcpUUID(item.instanceID + ":" + key)
                 }
@@ -124,18 +124,19 @@ struct AgentPluginAgentDefinition {
             }
         }; return result
     }
-    func validateAgent(_ reference: AgentPluginAgentReference) throws {
+    func validateAgent(_ reference: AgentPluginAgentReference, workspace: String? = nil) throws {
+        try requireScope(reference.name, workspace: workspace)
         let item = try installation(reference.name)
-        guard item.receipt.enabled, item.instanceID == reference.installationID, (item.receipt.activationID ?? item.receiptHash) == reference.activationID, item.agents.contains(where: { $0.key == reference.key && item.receipt.hashes[$0.path] == reference.sha256 }) else { throw PetError("所属插件已停用、移除或更新，请重新选择 Agent") }
+        guard item.enabled, item.instanceID == reference.installationID, (item.receipt.activationID ?? item.receiptHash) == reference.activationID, item.agents.contains(where: { $0.key == reference.key && item.receipt.hashes[$0.path] == reference.sha256 }) else { throw PetError("所属插件已停用、移除或更新，请重新选择 Agent") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }
 }
 
 @MainActor extension AgentProfiles {
-    func currentProfile(_ snapshot: AgentProfile) throws -> AgentProfile {
-        let current = try profile(snapshot.id)
+    func currentProfile(_ snapshot: AgentProfile, workspace: String? = nil) throws -> AgentProfile {
+        let current = try profile(snapshot.id, workspace: workspace)
         guard current.pluginSource == snapshot.pluginSource else { throw PetError("插件 Agent 已变化，请重新选择执行者") }
-        if let source = snapshot.pluginSource { try plugins.validateAgent(source) }; return current
+        if let source = snapshot.pluginSource { try plugins.validateAgent(source, workspace: workspace) }; return current
     }
     private func pluginModels() throws -> ([String: String], String?) {
         let files = try AgentFiles(workspace: directory.path), url = try files.literalURL("extensions/plugin-agent-models.json")
@@ -143,13 +144,14 @@ struct AgentPluginAgentDefinition {
         let data = try files.readData(url, maximum: 65_536), values = try JSONDecoder().decode([String: String].self, from: data)
         guard values.count <= 128, values.allSatisfy({ UUID(uuidString: $0.key) != nil && $0.value.count <= 200 && !$0.value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }) else { throw PetError("插件 Agent 模型设置无效") }; return (values, AgentFiles.hash(data))
     }
-    func packagedProfiles() throws -> [AgentProfile] {
+    func packagedProfiles(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentProfile] {
         let models = try pluginModels().0
-        return try plugins.agentProfiles().map { var profile = $0; if let model = models[profile.id] { profile.model = model }; return profile }
+        return try plugins.agentProfiles(workspace: workspace, onlyScope: onlyScope).map { var profile = $0; if let model = models[profile.id] { profile.model = model }; return profile }
     }
     func pluginModelVersion() throws -> String? { try pluginModels().1 }
     func savePluginModel(_ snapshot: AgentProfile, model: String, expectedHash: String?) throws {
-        guard let live = try packagedProfiles().first(where: { $0.id == snapshot.id }), live.pluginSource == snapshot.pluginSource, model.count <= 200, !model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("插件 Agent 或模型已变化，请刷新") }
+        let workspace = try snapshot.pluginSource.flatMap { try AgentPlugins.scope($0.name).workspace }
+        guard let live = try packagedProfiles(workspace: workspace).first(where: { $0.id == snapshot.id }), live.pluginSource == snapshot.pluginSource, model.count <= 200, !model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("插件 Agent 或模型已变化，请刷新") }
         var (values, hash) = try pluginModels(); guard hash == expectedHash else { throw PetError("插件 Agent 模型设置已变化，请重新读取") }
         values[snapshot.id] = model
         guard values.count <= 128 else { throw PetError("插件 Agent 模型设置最多128项") }

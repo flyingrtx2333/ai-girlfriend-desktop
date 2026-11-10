@@ -91,6 +91,9 @@ import WebKit
         if CommandLine.arguments.contains("--plugin-rule-check") { await runAgentPluginRuleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--local-rule-check") { await runAgentRuleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--instruction-check") { await runAgentInstructionCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--plugin-scope-crash-check") { await runAgentPluginScopeCrashCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--plugin-scope-recovery-check") { await runAgentPluginScopeRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--plugin-scope-check") { await runAgentPluginScopeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-check") { await runAgentPluginUpdateCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-crash-check") { await runAgentPluginUpdateCrashCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-recovery-check") { await runAgentPluginUpdateRecoveryCheck(output); NSApp.terminate(nil); return }

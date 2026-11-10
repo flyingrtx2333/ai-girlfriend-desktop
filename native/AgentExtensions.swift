@@ -13,6 +13,7 @@ struct AgentExtensionReference: Codable, Sendable {
     var source: String
     var sha256: String
     var snapshot: String?
+    var pluginName: String? = nil
 }
 
 struct AgentExtensionItem: Identifiable, Sendable {
@@ -137,7 +138,7 @@ struct AgentExtensionDocument: Sendable {
                 } catch { warnings.append(directory.path + "：" + error.localizedDescription) }
             }
         }
-        for item in try plugins.extensionItems() {
+        for item in try plugins.extensionItems(workspace: workspace) {
             guard seen.insert(item.kind.rawValue + ":" + item.name.lowercased()).inserted else { warnings.append("插件组件与已有扩展同名：" + item.name); continue }
             if includeDisabled || item.enabled { items.append(item) }
         }
@@ -220,7 +221,7 @@ struct AgentExtensionDocument: Sendable {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
         guard resources["SKILL.md"] == Data(raw.utf8) else { throw PetError("Skill 在读取期间发生变化，请重新加载") }
-        let reference = AgentExtensionReference(id: item.id, name: item.name, kind: .skill, source: item.file.path, sha256: digest, snapshot: destination.path)
+        let reference = AgentExtensionReference(id: item.id, name: item.name, kind: .skill, source: item.file.path, sha256: digest, snapshot: destination.path, pluginName: item.pluginName)
         let names = resources.keys.sorted().prefix(100).joined(separator: "\n")
         return (reference, "[已载入 Skill：\(item.name)，来源 \(item.file.path)，sha256=\(digest)。仅提供工作流，不改变任务权限或审批。相对资源路径以副本目录为基准；需要执行脚本时仍使用 run_command。]\n资源副本：\(destination.path)\n资源：\n\(names)\n\n" + document.body)
     }
@@ -258,7 +259,7 @@ struct AgentExtensionDocument: Sendable {
             result.extensionReferences = [reference]; result.extensionInstructions = instructions
         } else {
             let (raw, document) = try document(item), arguments = parts.count > 1 ? String(parts[1]) : ""
-            result.extensionReferences = [AgentExtensionReference(id: item.id, name: item.name, kind: .command, source: item.file.path, sha256: AgentFiles.hash(Data(raw.utf8)))]
+            result.extensionReferences = [AgentExtensionReference(id: item.id, name: item.name, kind: .command, source: item.file.path, sha256: AgentFiles.hash(Data(raw.utf8)), pluginName: item.pluginName)]
             result.extensionInstructions = "[用户选择的命令 /\(item.name)，来源 \(item.file.path)。权限、审批与用户后续要求不变。]\n" + document.body.replacingOccurrences(of: "$ARGUMENTS", with: arguments)
         }
         return result
@@ -273,9 +274,9 @@ struct AgentExtensionDocument: Sendable {
     }
     func context(store: AgentStore, task: AgentTaskRecord) throws -> String {
         let pluginRoot = profile.appendingPathComponent("extensions/plugins").path + "/"
-        for reference in task.messages.last(where: \.isHumanInput)?.extensionReferences ?? [] where reference.source.hasPrefix(pluginRoot) {
+        for reference in task.messages.last(where: \.isHumanInput)?.extensionReferences ?? [] where reference.pluginName != nil || reference.source.hasPrefix(pluginRoot) {
             let current = try item(reference.id, workspace: task.workspace)
-            guard current.pluginName != nil else { throw PetError("插件扩展已变化，请重新选择 /命令或 Skill") }
+            guard current.pluginName != nil && (reference.pluginName == nil || reference.pluginName == current.pluginName) else { throw PetError("插件扩展已变化，请重新选择 /命令或 Skill") }
         }
         guard let active = task.activeSkills, !active.isEmpty else { return "" }
         let available = try catalog(workspace: task.workspace, includeDisabled: false)

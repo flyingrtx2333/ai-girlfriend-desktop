@@ -21,10 +21,13 @@ import Foundation
         return tools
     }
     func approvalReason(_ call: AgentToolCall, task: AgentTaskRecord) throws -> String? {
+        if let id = call.object["server_id"] as? String {
+            guard availableServers(workspace: task.workspace).contains(where: { $0.id == id }) else { throw PetError("此 MCP 不属于当前项目，请重新选择连接器") }
+        }
         guard task.kind != "wiki" else { throw PetError("Wiki 任务不能使用外部连接器") }
         if Self.externalOperations.contains(call.name), ![.agent, .goal].contains(task.mode) { throw PetError("当前模式不能连接或调用 MCP，请切换到 Agent 模式") }
         if call.name == "connect_mcp" {
-            let server = try server(required(call, "server_id"), revision: required(call, "configuration"))
+            let server = try server(required(call, "server_id"), revision: required(call, "configuration"), workspace: task.workspace)
             return "连接 MCP：\(server.name)\n\(server.destination)\n" + (server.type == "stdio" ? "本机程序使用当前账户权限，不受项目隔离约束。" : "外部服务按其自身权限运行。")
         }
         if call.name == "call_mcp_tool" {
@@ -42,7 +45,7 @@ import Foundation
         _ = try approvalReason(call, task: task)
         var result: [String: Any]
         switch call.name {
-        case "list_mcp_servers": return AgentToolResult(text: try summary(owner: task.id, allowedServers: task.agent?.mcpServers))
+        case "list_mcp_servers": return AgentToolResult(text: try summary(owner: task.id, allowedServers: task.agent?.mcpServers, workspace: task.workspace))
         case "connect_mcp": result = try await connect(required(call, "server_id"), revision: required(call, "configuration"), owner: task.id, workspace: task.workspace)
         case "list_mcp_tools":
             let query = String((call.object["query"] as? String ?? "").prefix(300))

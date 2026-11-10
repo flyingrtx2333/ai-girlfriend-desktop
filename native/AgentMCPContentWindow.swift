@@ -65,13 +65,13 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private func populateServers() {
         let previous = serverID, allowed = store.task(taskID)?.agent?.mcpServers
         servers.removeAllItems()
-        for server in store.mcp.servers where server.enabled && (allowed?.contains(server.id) ?? true) { servers.addItem(withTitle: server.name); servers.lastItem?.representedObject = server.id }
+        for server in store.mcp.availableServers(workspace: workspace) where server.enabled && (allowed?.contains(server.id) ?? true) { servers.addItem(withTitle: server.name); servers.lastItem?.representedObject = server.id }
         if let previous, let item = servers.itemArray.first(where: { $0.representedObject as? String == previous }) { servers.select(item) }
     }
     private func taskScope(_ serverID: String, operation: String = "connect_mcp") throws -> AgentTaskRecord {
         guard let task = store.task(taskID), !task.archived, task.kind != "wiki", task.kind != "hook", task.workspace == workspace else { throw PetError("任务或项目已改变，请重新打开 MCP 资料") }
         guard [.agent, .goal].contains(task.mode) else { throw PetError("请先切换到 Agent 或目标模式") }
-        _ = try store.mcp.server(serverID)
+        _ = try store.mcp.server(serverID, workspace: task.workspace)
         let call = AgentToolCall(id: "mcp-context", name: operation, arguments: String(decoding: try JSONSerialization.data(withJSONObject: ["server_id": serverID]), as: UTF8.self))
         try store.agents.check(call, task: task, store: store); return task
     }
@@ -85,7 +85,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     @objc private func start() {
         guard job == nil, let id = serverID else { return }
         launch {
-            let task = try self.taskScope(id), server = try self.store.mcp.server(id)
+            let task = try self.taskScope(id), server = try self.store.mcp.server(id, workspace: self.workspace)
             _ = try await self.store.mcp.connect(id, revision: server.revision, owner: self.sessionOwner, workspace: task.workspace)
             try await self.fetchList(refresh: false, append: false)
         }
@@ -198,7 +198,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         read.title = kind == "prompts" ? "预览" : "读取"; read.isEnabled = connected && selected != nil && !busy && scopeError == nil && catalogCurrent
         add.title = kind == "prompts" ? "加入草稿" : "加入附件"; add.isEnabled = !busy && !inserted && scopeError == nil && preview.map(store.mcp.previewCurrent) == true
         track.isHidden = preview?.kind != "resources"; track.isEnabled = !busy && scopeError == nil && preview.map(store.mcp.supportsSubscription) == true; track.state = preview.map(store.mcp.subscribed) == true ? .on : .off
-        if let server = id.flatMap({ try? store.mcp.server($0) }) { destination.stringValue = server.destination; destination.toolTip = server.destination }
+        if let server = id.flatMap({ try? store.mcp.server($0, workspace: workspace) }) { destination.stringValue = server.destination; destination.toolTip = server.destination }
         else { destination.stringValue = "" }
         if let scopeError { state.stringValue = scopeError }
         else if connected, !catalog.isEmpty, !catalogCurrent { state.stringValue = "目录已更新，请刷新" }

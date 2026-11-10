@@ -55,11 +55,13 @@ import Foundation
         _ = store.extensions.plugins.observeChanges { [weak self] name in
             guard let self else { return }
             let item = try? self.store.extensions.plugins.installation(name)
-            let introducesRules = item?.receipt.enabled == true && item?.rules.isEmpty == false
-            let extensionRoot = self.store.extensions.plugins.profile.appendingPathComponent("extensions/plugins/" + name + "/payload").path + "/"
+            let project = try? AgentPlugins.scope(name).workspace
+            let extensionRoot = (try? self.store.extensions.plugins.folder(name).appendingPathComponent("payload").path).map { $0 + "/" }
             for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" {
+                if let project, (try? AgentFiles(workspace: task.workspace).root.path) != project { continue }
                 let references = (task.activeSkills ?? []) + (task.messages.last(where: \.isHumanInput)?.extensionReferences ?? []) + (task.queuedMessages ?? []).flatMap { $0.extensionReferences ?? [] }
-                if introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true || references.contains(where: { $0.source.hasPrefix(extensionRoot) }) { self.cancel(task.id) }
+                let introducesRules = item?.enabled == true && item?.rules.isEmpty == false && self.store.extensions.plugins.isEffective(name, workspace: task.workspace)
+                if project != nil || introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true || references.contains(where: { reference in reference.pluginName == name || extensionRoot.map { reference.source.hasPrefix($0) } == true }) { self.cancel(task.id) }
             }
         }
         store.rules.onChange = { [weak self] id, workspace, automatic in
@@ -327,7 +329,7 @@ import Foundation
     }
     func toolDefinitions(_ task: AgentTaskRecord, preferences: PetPreferences) throws -> [[String: Any]] {
         var definitions = AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.isProjectDocumentation ? nil : task.toolGroups ?? [])
-        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6) }
+        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6, workspace: task.workspace) }
         if task.kind == AgentKnowledgeCards.kind, let phase = try store.knowledgeCards.stage(task) {
             definitions = definitions.filter { ($0["function"] as? [String: Any])?["name"] as? String == phase.tool }
             if let kind = phase.kind {
@@ -381,7 +383,7 @@ import Foundation
             defer { if self.analyses[id]?.token == analysis.token { self.analyses[id] = nil; self.notifyChange(id) } }
             do {
                 try self.store.teams.check(task, store: self.store)
-                if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role) }
+                if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role, workspace: task.workspace) }
                 let p = try self.taskPreferences(id), key = try self.keychain.read("chat")
                 if recap { try await self.generateRecap(id, preferences: p, key: key) }
                 else {
@@ -505,13 +507,13 @@ import Foundation
     private func hookTool(_ call: AgentToolCall, id: String) throws -> (String, [String: Any]) {
         // Invalid or stale names still need a tool error in the conversation.
         // Execution performs strict routing inside its per-call error handler.
-        let routed = (try? store.mcp.routedCall(call, owner: id)) ?? call
+        let routed = (try? store.mcp.routedCall(call, owner: id, workspace: store.task(id)?.workspace)) ?? call
         let aliases = ["run_command": "Bash", "write_file": "Write", "edit_file": "Edit", "read_file": "Read", "list_directory": "Glob", "search_files": "Grep"]
         var name = aliases[call.name] ?? call.name, input = call.object
         var fields: [String: Any] = ["tool_use_id": call.id, "original_request_name": call.name]
         if routed.name == "call_mcp_tool" {
             let serverID = routed.object["server_id"] as? String ?? "", tool = routed.object["tool"] as? String ?? ""
-            let server = store.mcp.servers.first { $0.id == serverID }
+            let server = store.mcp.availableServers(workspace: store.task(id)?.workspace).first { $0.id == serverID }
             name = "mcp__" + (server?.name ?? serverID) + "__" + tool
             input = routed.object["arguments"] as? [String: Any] ?? [:]
             fields["mcp_context"] = ["server_id": serverID, "server_name": server?.name ?? serverID, "tool_name": tool]
@@ -587,7 +589,7 @@ import Foundation
         if let binding = task.automation { context += "\n[自动化：\(binding.name)]\n本轮由用户保存的计划触发。范围仅限指定项目，遵循当前审批、只读和联网限制；以真实结果核对交付。必要信息缺失或需要确认时按实际流程等待用户，不能假定已获许可。合并任务中保留历史，但不重放结果未知的旧操作。" }
         let skills = (task.isProjectDocumentation || task.isKnowledgeEditing) ? "" : try store.extensions.context(store: store, task: task)
         context += skills
-        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id) }
+        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id, workspace: task.workspace) }
         if !task.isProjectDocumentation, task.agent == nil { context += "\n\n[角色设定]\n" + String(preferences().persona.prefix(4000)) }
         if let binding = task.agent {
             context += "\n\n[自定义 Agent：\(binding.profile.name)]\n" + binding.profile.instructions
@@ -596,7 +598,7 @@ import Foundation
             if let owner = binding.ownerID { context += "\n这是独立委派任务，仅接收本任务的要求，不具有主任务 \(owner) 的聊天历史。依据实际工具结果完成明确子任务，结果会返回主任务；不要声称整个主任务因此完成。" }
         } else if !task.isProjectDocumentation, tools.contains("delegate_task") { context += "\n需要专门职责时，用 load_tools 的 agents 组查找已启用 Agent，再通过 delegate_task 交付明确要求和必要资料。委派不复制本次会话，子任务保持独立权限与记录；以工具返回的真实最终结果核对完成，不能把创建或分派当作完成。" }
         if let team = task.team?.team {
-            let members = try store.agents.list().filter { team.memberIDs.contains($0.id) }
+            let members = try store.agents.list(workspace: task.workspace).filter { team.memberIDs.contains($0.id) }
             context += "\n\n[团队：\(team.name)；你是负责人]\n" + team.instructions
             context += "\n本次成员：" + members.map { "\($0.name) (\($0.id))：\($0.description)" }.joined(separator: "；")
             context += "\n只委派给本次成员，按实际需要明确分工；先等待所需成员真实完成，再核对其工具结果与产物后汇总。成员失败或未完成时明确报告，不能写成已完成。"
@@ -646,7 +648,7 @@ import Foundation
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)
             if let binding = store.task(id)?.agent {
-                _ = try store.agents.currentProfile(binding.profile)
+                _ = try store.agents.currentProfile(binding.profile, workspace: store.task(id)?.workspace)
             }
             run.preferences = p
             store.update(id) { $0.model = p.model }
@@ -805,7 +807,7 @@ import Foundation
                     self.notifyChange(id)
                 }
                 try Task.checkCancellation(); guard active[id]?.token == run.token else { return }
-                turn.calls = turn.calls.map { store.mcp.decorate($0, owner: id) }
+                turn.calls = turn.calls.map { store.mcp.decorate($0, owner: id, workspace: store.task(id)?.workspace) }
                 let priorIDs = Set(task.messages.flatMap { ($0.toolCalls ?? []).map(\.id) })
                 let deliveredImages = visuals.isEmpty ? Set<AgentVisualPart>() : Set(AgentAttachmentVisuals.references(context, maximum: AgentAttachmentVisuals.maximumImages(p)).values.flatMap { $0 })
                 guard turn.calls.allSatisfy({ !priorIDs.contains($0.id) }) else { throw PetError("模型重复使用了工具调用编号，请继续任务重试") }

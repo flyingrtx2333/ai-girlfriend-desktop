@@ -107,8 +107,8 @@ import AppKit
     }
     private func refreshExecutors(selected: String) {
         executor.removeAllItems(); executor.addItem(withTitle: "小鲸"); executor.lastItem?.representedObject = "default"
-        for value in (try? store.agents.list(enabledOnly: true)) ?? [] { executor.addItem(withTitle: "Agent · " + value.name); executor.lastItem?.representedObject = "agent:" + value.id }
-        for value in (try? store.teams.list()) ?? [] where (try? store.teams.team(value.id, store: store)) != nil { executor.addItem(withTitle: "团队 · " + value.name); executor.lastItem?.representedObject = "team:" + value.id }
+        for value in (try? store.agents.list(enabledOnly: true, workspace: workspace.stringValue.isEmpty ? nil : workspace.stringValue)) ?? [] { executor.addItem(withTitle: "Agent · " + value.name); executor.lastItem?.representedObject = "agent:" + value.id }
+        for value in (try? store.teams.list()) ?? [] where (try? store.teams.team(value.id, store: store, workspace: workspace.stringValue.isEmpty ? nil : workspace.stringValue)) != nil { executor.addItem(withTitle: "团队 · " + value.name); executor.lastItem?.representedObject = "team:" + value.id }
         if let item = executor.itemArray.first(where: { $0.representedObject as? String == selected }) { executor.select(item) } else { executor.addItem(withTitle: "执行者不可用"); executor.lastItem?.representedObject = selected; executor.select(executor.lastItem) }
     }
     private func refreshDays() {
@@ -188,7 +188,7 @@ import AppKit
     @objc private func chooseWorkspace() {
         guard selectedID != nil, opened?.archived != true else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择项目"
-        guard panel.runModal() == .OK, let path = panel.url?.resolvingSymlinksInPath().path else { return }; workspace.stringValue = path; changed()
+        guard panel.runModal() == .OK, let path = panel.url?.resolvingSymlinksInPath().path else { return }; workspace.stringValue = path; refreshExecutors(selected: executor.selectedItem?.representedObject as? String ?? "default"); changed()
     }
     @objc private func changeAwake() { do { try service.setKeepAwake(awake.state == .on) } catch { awake.state = service.keepAwake ? .on : .off; state.stringValue = error.localizedDescription } }
     @objc private func requestNotifications() { Task { do { guard let action = onRequestNotifications else { throw PetError("通知设置暂不可用") }; state.stringValue = try await action() ? "桌面通知已开启" : "请在系统设置中允许通知" } catch { state.stringValue = error.localizedDescription } } }

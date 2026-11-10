@@ -26,11 +26,15 @@ struct AgentPluginPackage {
 }
 struct AgentPluginInstallation: Identifiable {
     var metadata: AgentPluginMetadata, receipt: AgentPluginReceipt, root: URL, receiptHash: String
+    var workspace: String? = nil
+    var locallyReviewed = true
+    var locallyApproved = true
     var mcpServers: [AgentPluginMCPDefinition] = []
     var agents: [AgentPluginAgentDefinition] = []
     var hooks: [AgentPluginHookDefinition] = []
     var rules: [AgentPluginRuleDefinition] = []
-    var id: String { receipt.name }
+    var id: String { AgentPlugins.scopedID(receipt.name, workspace: workspace) }
+    var enabled: Bool { receipt.enabled && locallyReviewed && locallyApproved }
 }
 
 @MainActor final class AgentPlugins {
@@ -39,13 +43,14 @@ struct AgentPluginInstallation: Identifiable {
     private var observers: [UUID: (String) -> Void] = [:]
     func observeChanges(_ action: @escaping (String) -> Void) -> UUID { let id = UUID(); observers[id] = action; return id }
     func removeObserver(_ id: UUID) { observers[id] = nil }
-    private func notify(_ name: String) { for action in Array(observers.values) { action(name) } }
+    func notify(_ name: String) { for action in Array(observers.values) { action(name) } }
     init(profile: URL) { self.profile = profile }
-    private func folder(_ name: String) throws -> URL {
-        guard Self.validName(name) else { throw PetError("插件名称须为64字以内的小写字母、数字和连字符") }
-        return try AgentFiles(workspace: profile.path).literalURL("extensions/plugins/" + name)
+    func folder(_ id: String) throws -> URL {
+        let scope = try Self.scope(id), files = try AgentFiles(workspace: scope.workspace ?? profile.path)
+        guard scope.workspace == nil || files.root.path == scope.workspace else { throw PetError("项目位置已变化，请重新选择插件") }
+        return try files.literalURL((scope.workspace == nil ? "extensions/plugins/" : ".bluefatfish/plugins/") + scope.name)
     }
-    private static func validName(_ name: String) -> Bool {
+    nonisolated static func validName(_ name: String) -> Bool {
         name.count <= 64 && name.range(of: "^[a-z0-9]+(?:-[a-z0-9]+)*$", options: .regularExpression) != nil
     }
     private static func metadata(_ data: Data) throws -> (AgentPluginMetadata, [String: Any]) {
@@ -130,13 +135,14 @@ struct AgentPluginInstallation: Identifiable {
         let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"], hiddenRoots: [".qoder-plugin", ".claude-plugin", ".mcp.json"])
         return try Self.package(files, sourceName: archive.lastPathComponent, sourceHash: AgentFiles.hash(data))
     }
-    @discardableResult func install(_ candidate: AgentPluginPackage) throws -> AgentPluginInstallation {
-        guard try catalog().count < 64 else { throw PetError("插件数量已达到64项") }
+    @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil) throws -> AgentPluginInstallation {
+        let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }, existing = try catalog(workspace: workspace, onlyScope: true)
+        guard existing.count < 64 else { throw PetError("此范围插件数量已达到64项") }
         let package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
-        guard try catalog().reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64 else { throw PetError("插件 MCP 总数最多64项") }
-        guard try catalog().reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128 else { throw PetError("插件 Hooks 总数最多128项") }
-        guard try catalog().reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("插件规则总数最多256项") }
-        let target = try folder(package.metadata.name), files = try AgentFiles(workspace: profile.path), (parentFD, name) = try files.parentDescriptor(target, create: true)
+        guard existing.reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64 else { throw PetError("插件 MCP 总数最多64项") }
+        guard existing.reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128 else { throw PetError("插件 Hooks 总数最多128项") }
+        guard existing.reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("插件规则总数最多256项") }
+        let id = Self.scopedID(package.metadata.name, workspace: workspace), target = try folder(id), files = try AgentFiles(workspace: workspace ?? profile.path), (parentFD, name) = try files.parentDescriptor(target, create: true)
         defer { Darwin.close(parentFD) }
         guard try files.entryMetadata(target).kind == "missing" else { throw PetError("同名插件已安装，请先查看现有版本") }
         let temporaryName = ".plugin-" + UUID().uuidString, temporary = target.deletingLastPathComponent().appendingPathComponent(temporaryName)
@@ -144,24 +150,31 @@ struct AgentPluginInstallation: Identifiable {
         var published = false; defer { if !published { try? FileManager.default.removeItem(at: temporary) } }
         try write(package, receipt: package.receipt, at: temporary)
         guard renameatx_np(parentFD, temporaryName, parentFD, name, UInt32(RENAME_EXCL)) == 0 else { throw PetError("插件未安装，目标可能已存在") }; published = true
-        let installed = try installation(package.metadata.name); notify(installed.id); return installed
+        let installed = try installation(id); try recordProjectReview(installed, active: false)
+        notify(installed.id); return try installation(id)
     }
     func installation(_ name: String) throws -> AgentPluginInstallation {
         try installation(name, at: folder(name))
     }
     private func installation(_ name: String, at root: URL) throws -> AgentPluginInstallation {
+        let scope = try Self.scope(name)
         guard root.resolvingSymlinksInPath() == root else { throw PetError("插件目录不能是链接") }
         let files = try AgentFiles(workspace: root.path), data = try files.readData(files.literalURL("receipt.json"), maximum: 500_000), receipt = try JSONDecoder().decode(AgentPluginReceipt.self, from: data)
-        guard receipt.name == name, receipt.hashes.count <= 2000, !receipt.hashes.isEmpty, receipt.components.count <= 500, receipt.hashes.allSatisfy({ AgentArchive.validPath($0.key) && $0.value.count == 64 && $0.value.allSatisfy(\.isHexDigit) }), [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"].contains(receipt.manifest) else { throw PetError("插件安装记录无效") }
+        guard receipt.name == scope.name, receipt.hashes.count <= 2000, !receipt.hashes.isEmpty, receipt.components.count <= 500, receipt.hashes.allSatisfy({ AgentArchive.validPath($0.key) && $0.value.count == 64 && $0.value.allSatisfy(\.isHexDigit) }), [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"].contains(receipt.manifest) else { throw PetError("插件安装记录无效") }
         let revisions = receipt.revisions ?? []
         guard revisions.count <= 2000, Set(revisions.map(\.directory)).count == revisions.count, revisions.allSatisfy({ Self.validRevision($0) }) else { throw PetError("插件历史版本记录无效") }
         let payloadURL = root.appendingPathComponent("payload")
         guard payloadURL.resolvingSymlinksInPath() == payloadURL else { throw PetError("插件资源目录不能是链接") }
         let payload = try AgentFiles(workspace: payloadURL.path), definition = try payload.readData(payload.literalURL(receipt.manifest), maximum: 65_536)
         guard AgentFiles.hash(definition) == receipt.hashes[receipt.manifest] else { throw PetError("插件清单已变化，请重新导入") }
-        let (info, value) = try Self.metadata(definition); guard info.name == name else { throw PetError("插件名称与安装记录不一致") }
+        let (info, value) = try Self.metadata(definition); guard info.name == scope.name else { throw PetError("插件名称与安装记录不一致") }
         for component in receipt.components { guard AgentExtensions.validName(component.name), receipt.hashes[component.path] != nil, AgentArchive.validPath(component.path) else { throw PetError("插件组件记录无效") } }
-        var installed = AgentPluginInstallation(metadata: info, receipt: receipt, root: root, receiptHash: AgentFiles.hash(data))
+        let hash = AgentFiles.hash(data)
+        let review = scope.workspace == nil ? nil : try projectApprovals()[name]
+        let approved = scope.workspace == nil || review?.activeHash == hash
+        let fingerprint = try Self.reviewFingerprint(receipt)
+        let reviewed = scope.workspace == nil || review?.reviewedHash == fingerprint
+        var installed = AgentPluginInstallation(metadata: info, receipt: receipt, root: root, receiptHash: hash, workspace: scope.workspace, locallyReviewed: reviewed, locallyApproved: approved)
         installed.mcpServers = try Self.mcpDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         installed.agents = try Self.agentDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         try Self.validateAgentReferences(installed.agents, name: name, components: receipt.components, servers: installed.mcpServers)
@@ -188,7 +201,7 @@ struct AgentPluginInstallation: Identifiable {
     func revision(_ revision: AgentPluginRevision, of item: AgentPluginInstallation) throws -> AgentPluginInstallation {
         let current = try installation(item.id)
         guard current.receiptHash == item.receiptHash, current.receipt.revisions?.contains(revision) == true, Self.validRevision(revision) else { throw PetError("插件历史版本已变化，请刷新") }
-        let root = try AgentFiles(workspace: profile.path).literalURL("extensions/plugins/" + revision.directory)
+        let root = try AgentFiles(workspace: current.root.deletingLastPathComponent().path).literalURL(revision.directory)
         let snapshot = try installation(item.id, at: root)
         guard snapshot.receiptHash == revision.receiptHash else { throw PetError("历史版本原件已变化，未载入") }
         guard revision.version == nil || revision.version == snapshot.metadata.version else { throw PetError("历史版本名称与原件不一致") }
@@ -196,7 +209,11 @@ struct AgentPluginInstallation: Identifiable {
         return snapshot
     }
     func package(_ revision: AgentPluginRevision, of item: AgentPluginInstallation) throws -> AgentPluginPackage {
-        let snapshot = try self.revision(revision, of: item); var files: [String: Data] = [:], total = 0
+        try packageContents(self.revision(revision, of: item))
+    }
+    func reviewPackage(_ item: AgentPluginInstallation) throws -> AgentPluginPackage { try packageContents(unchanged(item)) }
+    private func packageContents(_ snapshot: AgentPluginInstallation) throws -> AgentPluginPackage {
+        var files: [String: Data] = [:], total = 0
         for path in snapshot.receipt.hashes.keys {
             let data = try content(path, installation: snapshot); total += data.count
             guard total <= 20_000_000 else { throw PetError("历史插件资源超过20 MB") }; files[path] = data
@@ -205,9 +222,9 @@ struct AgentPluginInstallation: Identifiable {
     }
     @discardableResult func update(_ candidate: AgentPluginPackage, replacing reviewed: AgentPluginInstallation, onPrepared: (() throws -> Void)? = nil) throws -> AgentPluginInstallation {
         let current = try unchanged(reviewed), package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
-        guard package.metadata.name == current.id else { throw PetError("新包名称与所选插件不同，未更新") }
+        guard package.metadata.name == current.metadata.name else { throw PetError("新包名称与所选插件不同，未更新") }
         guard package.receipt.hashes != current.receipt.hashes else { throw PetError("插件内容与当前版本一致") }
-        let others = try catalog().filter { $0.id != current.id }
+        let others = try catalog(workspace: current.workspace, onlyScope: true).filter { $0.id != current.id }
         guard others.reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64,
               others.reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128,
               others.reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("更新后的插件组件总数超过上限") }
@@ -216,7 +233,7 @@ struct AgentPluginInstallation: Identifiable {
         let record = AgentPluginRevision(directory: ".plugin-revision-" + UUID().uuidString, receiptHash: current.receiptHash, created: Date(), version: current.metadata.version, sourceName: current.receipt.sourceName)
         receipt.revisions = (current.receipt.revisions ?? []) + [record]
         guard try JSONEncoder().encode(receipt).count <= 500_000 else { throw PetError("插件历史索引超过500 KB，请先备份后移除并重新导入插件") }
-        let files = try AgentFiles(workspace: profile.path), (parent, name) = try files.parentDescriptor(current.root, create: false)
+        let files = try AgentFiles(workspace: current.workspace ?? profile.path), (parent, name) = try files.parentDescriptor(current.root, create: false)
         defer { Darwin.close(parent) }
         let temporary = current.root.deletingLastPathComponent().appendingPathComponent(record.directory)
         guard mkdirat(parent, record.directory, 0o700) == 0 else { throw PetError("无法准备插件更新，原版本保留") }
@@ -227,6 +244,7 @@ struct AgentPluginInstallation: Identifiable {
         try onPrepared?(); _ = try unchanged(current)
         var expectedRoot = stat()
         guard fstatat(parent, name, &expectedRoot, AT_SYMLINK_NOFOLLOW) == 0, expectedRoot.st_mode & S_IFMT == S_IFDIR else { throw PetError("原插件目录已变化") }
+        if current.workspace != nil { try revokeProjectApproval(current.id) }
         notify(current.id); _ = try unchanged(current)
         guard renameatx_np(parent, name, parent, record.directory, UInt32(RENAME_SWAP)) == 0 else { throw PetError("插件未更新，当前版本和已保存历史保留") }
         published = true
@@ -238,7 +256,8 @@ struct AgentPluginInstallation: Identifiable {
             for path in old.receipt.hashes.keys { _ = try content(path, installation: old) }
             let installed = try installation(current.id)
             guard installed.receiptHash == staged.receiptHash else { throw PetError("发布后的插件状态已变化") }
-            notify(current.id); return installed
+            try recordProjectReview(installed, active: false)
+            notify(current.id); return try installation(current.id)
         } catch {
             let visible = try? installation(current.id)
             if visible?.receiptHash == staged.receiptHash, renameatx_np(parent, name, parent, record.directory, UInt32(RENAME_SWAP)) == 0 {
@@ -247,18 +266,14 @@ struct AgentPluginInstallation: Identifiable {
             notify(current.id); throw PetError("插件更新状态需要核对，两份原件均已保留：" + temporary.path)
         }
     }
-    func catalog() throws -> [AgentPluginInstallation] {
-        warnings = []; let base = profile.appendingPathComponent("extensions/plugins")
-        guard FileManager.default.fileExists(atPath: base.path) else { return [] }
-        let children = try FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]); guard children.count <= 64 else { throw PetError("插件数量超过64项") }
-        let installed = children.compactMap { url -> AgentPluginInstallation? in
-            do { guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw PetError("插件目录不能是链接") }; return try installation(url.lastPathComponent) }
-            catch { warnings.append(url.lastPathComponent + "：" + error.localizedDescription); return nil }
-        }.sorted { $0.metadata.title.localizedStandardCompare($1.metadata.title) == .orderedAscending }
-        let linked = Set(installed.flatMap { ($0.receipt.revisions ?? []).map(\.directory) })
-        let unlinked = try FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix(".plugin-revision-") && !linked.contains($0.lastPathComponent) }
-        if !unlinked.isEmpty { warnings.append("\(unlinked.count)份未关联的版本副本保留在：" + base.path) }
-        return installed
+    func catalog(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentPluginInstallation] {
+        warnings = []
+        let canonical = try workspace.map { try AgentFiles(workspace: $0).root.path }
+        let project = try canonical.map { try scopeCatalog($0) }
+        let user = onlyScope && canonical != nil ? (items: [AgentPluginInstallation](), names: Set<String>(), warnings: [String]()) : try scopeCatalog(nil)
+        warnings = user.warnings + (project?.warnings ?? [])
+        if onlyScope { return project?.items ?? user.items }
+        return ((project?.items.filter(\.locallyReviewed) ?? []) + user.items.filter { !(project?.names.contains($0.metadata.name) ?? false) }).sorted { $0.metadata.title.localizedStandardCompare($1.metadata.title) == .orderedAscending }
     }
     private func payload(_ item: AgentPluginInstallation) throws -> AgentFiles { try AgentFiles(workspace: item.root.appendingPathComponent("payload").path) }
     func content(_ path: String, installation: AgentPluginInstallation, maximum: Int = 2_000_000) throws -> Data {
@@ -268,8 +283,11 @@ struct AgentPluginInstallation: Identifiable {
     func setEnabled(_ item: AgentPluginInstallation, _ enabled: Bool) throws {
         let current = try installation(item.id); guard current.receiptHash == item.receiptHash else { throw PetError("插件状态已变化，请刷新") }
         if enabled { for path in current.receipt.hashes.keys { _ = try content(path, installation: current) } }
+        if current.workspace != nil { try revokeProjectApproval(current.id); notify(current.id) }
         var receipt = current.receipt; receipt.enabled = enabled; receipt.activationID = UUID().uuidString
-        let files = try AgentFiles(workspace: current.root.path); try files.writeData(JSONEncoder().encode(receipt), to: files.literalURL("receipt.json"), permissions: 0o600)
+        let data = try JSONEncoder().encode(receipt), files = try AgentFiles(workspace: current.root.path)
+        try files.writeData(data, to: files.literalURL("receipt.json"), permissions: 0o600)
+        if current.workspace != nil && enabled { try recordProjectReview(installation(current.id), active: true) }
         notify(current.id)
     }
     func trash(_ item: AgentPluginInstallation) throws {
@@ -283,15 +301,15 @@ struct AgentPluginInstallation: Identifiable {
         for path in ["README.md", "readme.md"] where item.receipt.hashes[path] != nil { return String(String(decoding: try content(path, installation: item), as: UTF8.self).prefix(80_000)) }
         return item.metadata.description
     }
-    func extensionItems() throws -> [AgentExtensionItem] {
+    func extensionItems(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentExtensionItem] {
         var result: [AgentExtensionItem] = []
-        for plugin in try catalog() {
+        for plugin in try catalog(workspace: workspace, onlyScope: onlyScope) {
             for component in plugin.receipt.components {
                 do {
                     let data = try content(component.path, installation: plugin, maximum: 65_536)
                     guard let raw = String(data: data, encoding: .utf8) else { throw PetError("插件组件不是 UTF-8") }
                     let doc = try AgentExtensionDocument(raw), files = try payload(plugin), file = try files.literalURL(component.path)
-                    result.append(AgentExtensionItem(id: Self.extensionID(component.path, installation: plugin), name: plugin.id + ":" + component.name, description: doc.metadata["description"] ?? "", kind: component.kind, file: file, root: component.kind == .skill ? file.deletingLastPathComponent() : files.root, scope: "插件 · " + plugin.metadata.title, managed: false, enabled: plugin.receipt.enabled, manualOnly: doc.metadata["disable-model-invocation"]?.lowercased() == "true", sha256: AgentFiles.hash(data), pluginName: plugin.id))
+                    result.append(AgentExtensionItem(id: Self.extensionID(component.path, installation: plugin), name: plugin.metadata.name + ":" + component.name, description: doc.metadata["description"] ?? "", kind: component.kind, file: file, root: component.kind == .skill ? file.deletingLastPathComponent() : files.root, scope: (plugin.workspace == nil ? "插件 · " : "项目插件 · ") + plugin.metadata.title, managed: false, enabled: plugin.enabled, manualOnly: doc.metadata["disable-model-invocation"]?.lowercased() == "true", sha256: AgentFiles.hash(data), pluginName: plugin.id))
                 } catch { warnings.append(plugin.id + "：" + error.localizedDescription) }
             }
         }
@@ -303,10 +321,10 @@ struct AgentPluginInstallation: Identifiable {
     func validate(_ item: AgentExtensionItem, resources: [String: Data]? = nil) throws {
         guard let owner = item.pluginName else { return }
         let plugin = try installation(owner), files = try payload(plugin)
-        guard let component = plugin.receipt.components.first(where: { plugin.id + ":" + $0.name == item.name && $0.kind == item.kind }), try files.literalURL(component.path) == item.file else { throw PetError("插件组件不属于此插件") }
+        guard let component = plugin.receipt.components.first(where: { plugin.metadata.name + ":" + $0.name == item.name && $0.kind == item.kind }), try files.literalURL(component.path) == item.file else { throw PetError("插件组件不属于此插件") }
         _ = try content(component.path, installation: plugin, maximum: 65_536)
         if let resources {
-            guard plugin.receipt.enabled else { throw PetError("插件已停用") }
+            guard plugin.enabled else { throw PetError("插件已停用") }
             let prefix = files.relative(item.root) + "/", expected = Dictionary(uniqueKeysWithValues: plugin.receipt.hashes.filter { $0.key.hasPrefix(prefix) }.map { (String($0.key.dropFirst(prefix.count)), $0.value) })
             guard resources.mapValues(AgentFiles.hash) == expected else { throw PetError("插件 Skill 资源已变化，请重新导入") }
         }

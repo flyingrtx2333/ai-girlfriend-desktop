@@ -144,8 +144,8 @@ struct AgentAutomationAssignment: Codable {
         if runnable {
             let files = try AgentFiles(workspace: value.workspace)
             guard files.root.path == value.workspace else { throw PetError("项目目录已改变，请重新选择") }
-            if value.executor.hasPrefix("agent:"), let store { _ = try store.agents.profile(String(value.executor.dropFirst(6))) }
-            if value.executor.hasPrefix("team:"), let store { _ = try store.teams.team(String(value.executor.dropFirst(5)), store: store) }
+            if value.executor.hasPrefix("agent:"), let store { _ = try store.agents.profile(String(value.executor.dropFirst(6)), workspace: value.workspace) }
+            if value.executor.hasPrefix("team:"), let store { _ = try store.teams.team(String(value.executor.dropFirst(5)), store: store, workspace: value.workspace) }
         }
     }
     func save(_ value: AgentAutomation, expected: AgentAutomation?) throws {

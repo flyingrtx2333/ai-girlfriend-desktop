@@ -40,6 +40,7 @@ import UniformTypeIdentifiers
             state.leadingAnchor.constraint(equalTo: header.leadingAnchor), state.trailingAnchor.constraint(equalTo: header.trailingAnchor), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), state.heightAnchor.constraint(equalToConstant: 18)
         ]); reload()
     }
+    var scopeWorkspace: String? { workspace }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

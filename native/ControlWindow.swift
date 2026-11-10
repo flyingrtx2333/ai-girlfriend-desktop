@@ -489,7 +489,7 @@ final class FormDocumentView: NSView {
         } else { taskContext.title = ""; taskContext.imagePosition = .imageOnly; taskContext.toolTip = "查看上下文估算与任务回顾" }
         taskContext.setAccessibilityLabel("上下文" + (taskContext.title.isEmpty ? "" : " " + taskContext.title))
         workbenchLower.isHidden = resumeButton.isHidden && modelCaption.isHidden
-        let hasMCP = companion?.agentStore?.mcp.servers.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
+        let hasMCP = companion?.agentStore?.mcp.availableServers(workspace: task.workspace).contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
         taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
         let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
         let available = width - sidebarWidth.constant - target - columnInset * 2 - 22
@@ -1401,11 +1401,11 @@ final class FormDocumentView: NSView {
         }
         item("小鲸", "default", selected: task.agent == nil)
         do {
-            let profiles = try store.agents.list(enabledOnly: true), teams = try store.teams.list().filter(\.enabled)
+            let profiles = try store.agents.list(enabledOnly: true, workspace: task.workspace), teams = try store.teams.list().filter(\.enabled)
             if !profiles.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "自定义 Agent")) }
             for value in profiles { item(value.name, "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
             if !teams.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "Agent 团队")) }
-            for value in teams { let available = (try? store.teams.team(value.id, store: store)) != nil; item(value.name + (available ? "" : " · 成员不可用"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available) }
+            for value in teams { let available = (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil; item(value.name + (available ? "" : " · 成员不可用"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available) }
         } catch { setStatus(error.localizedDescription, error: true) }
         menu.addItem(.separator()); item("管理 Agent…", "manage-agents"); item("管理团队…", "manage-teams")
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: workbenchEmptyTitle.bounds.height + 4), in: workbenchEmptyTitle)
@@ -2025,7 +2025,7 @@ final class FormDocumentView: NSView {
     }
     private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
-        let current = try store.extensions.plugins.currentRule(item.id)
+        let current = try store.extensions.plugins.currentRule(item.id, workspace: task.workspace)
         guard current.reference == item.reference else { throw PetError("规则来源已变化，请刷新插件") }
         insertRuleInvocation(current.name, taskID: taskID)
     }
@@ -2379,7 +2379,7 @@ extension ControlWindow {
         if let stoppedTask, tasks.task(stoppedTask) != nil {
             setSize(NSSize(width: 1200, height: 800)); selectAgentTask(stoppedTask); await capture("workbench-stopped")
             checks["actualStoppedTaskHasResumeAndStoppedState"] = tasks.task(stoppedTask)?.status == .stopped && !resumeButton.isHidden && !workbenchBadge.isHidden
-            if let binding = tasks.task(stoppedTask)?.agent, (try? tasks.agents.profile(binding.profile.id)) == nil {
+            if let binding = tasks.task(stoppedTask)?.agent, (try? tasks.agents.profile(binding.profile.id, workspace: tasks.task(stoppedTask)?.workspace)) == nil {
                 resumeAgentTask()
                 for _ in 0..<40 { if tasks.task(stoppedTask)?.status == .failed { break }; try? await Task.sleep(nanoseconds: 50_000_000) }
                 renderAgentMessages(); await capture("workbench-real-disabled-error")

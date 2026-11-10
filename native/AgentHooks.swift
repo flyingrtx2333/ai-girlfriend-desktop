@@ -208,6 +208,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     }
     func catalog(workspace: String?) throws -> [AgentHookDefinition] {
         if let loadError { throw PetError(loadError) }; warnings = []
+        try plugins.validateProjectActivations(workspace)
         var sources: [(URL, String, String?)] = [(profile.appendingPathComponent("extensions/hooks.json"), "全局", nil)]
         if let sharedHome { sources += [(sharedHome.appendingPathComponent(".qoder/settings.json"), "共享全局", nil)] }
         if let workspace {
@@ -222,9 +223,10 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                 items += try parse(data, file: file, scope: scope, workspace: workspace)
             } catch { warnings.append(file.lastPathComponent + "：" + error.localizedDescription) }
         }
-        items += try pluginItems()
+        items += try pluginItems(workspace: workspace)
         let present = Set(items.map(\.id))
         for setting in settings.values where setting.enabled && !present.contains(setting.definition.id) && (setting.definition.workspace == nil || setting.definition.workspace == workspace) {
+            if let reference = setting.definition.plugin, !plugins.isEffective(reference.name, workspace: workspace) { continue }
             var item = setting.definition; item.diagnostic = "来源已移除或不可读，请停用或修复配置"
             if let reference = item.plugin { item.pluginEnabled = pluginParentActive(reference) }
             items.append(item)
@@ -245,7 +247,8 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         if !enabled { for list in jobs.values { for job in list.values where job.hookID == item.id { cancel(job) } } }
     }
     private func pluginParentActive(_ reference: AgentPluginHookReference) -> Bool {
-        if let item = try? plugins.installation(reference.name) { return item.instanceID == reference.installationID && item.receipt.enabled }
+        if (try? AgentPlugins.scope(reference.name).workspace) != nil { return (try? plugins.installation(reference.name)).map { $0.instanceID == reference.installationID && $0.enabled } ?? false }
+        if let item = try? plugins.installation(reference.name) { return item.instanceID == reference.installationID && item.enabled }
         guard AgentExtensions.validName(reference.name), !reference.name.contains(":") else { return true }
         return FileManager.default.fileExists(atPath: profile.appendingPathComponent("extensions/plugins/" + reference.name).path)
     }

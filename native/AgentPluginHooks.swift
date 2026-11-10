@@ -58,10 +58,10 @@ struct AgentPluginHookDefinition {
             }
         }
     }
-    func hookReferences() throws -> [AgentPluginHookReference] {
-        try catalog().flatMap { item in item.hooks.map { AgentPluginHookReference(name: item.id, installationID: item.instanceID, key: $0.key) } }
+    func hookReferences(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentPluginHookReference] {
+        try catalog(workspace: workspace, onlyScope: onlyScope).flatMap { item in item.hooks.map { AgentPluginHookReference(name: item.id, installationID: item.instanceID, key: $0.key) } }
     }
-    func hookConfiguration(_ reference: AgentPluginHookReference) throws -> (data: Data, file: URL, root: URL, fingerprint: Data, enabled: Bool) {
+    func hookConfiguration(_ reference: AgentPluginHookReference) throws -> (data: Data, file: URL, root: URL, fingerprint: Data, enabled: Bool, workspace: String?, title: String) {
         let item = try installation(reference.name)
         guard item.instanceID == reference.installationID, UUID(uuidString: item.instanceID) != nil, let definition = item.hooks.first(where: { $0.key == reference.key }) else { throw PetError("插件 Hook 已移除或更新，请刷新") }
         let root = item.root.appendingPathComponent("payload"), file = try AgentFiles(workspace: profile.path).literalURL("extensions/plugin-hooks/" + item.instanceID + "/" + String(AgentFiles.hash(Data(reference.key.utf8)).prefix(24)) + ".json")
@@ -78,27 +78,28 @@ struct AgentPluginHookDefinition {
             }; events[event] = groups
         }; object["hooks"] = events
         let fingerprint: [String: Any] = ["installation": item.instanceID, "activation": item.receipt.activationID ?? item.receiptHash, "hashes": item.receipt.hashes]
-        return (try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), file, root, try JSONSerialization.data(withJSONObject: fingerprint, options: [.sortedKeys]), item.receipt.enabled)
+        return (try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), file, root, try JSONSerialization.data(withJSONObject: fingerprint, options: [.sortedKeys]), item.enabled, item.workspace, item.metadata.name)
     }
-    func validateHook(_ reference: AgentPluginHookReference) throws {
+    func validateHook(_ reference: AgentPluginHookReference, workspace: String? = nil) throws {
+        try requireScope(reference.name, workspace: workspace)
         let item = try installation(reference.name)
-        guard item.instanceID == reference.installationID, item.receipt.enabled, item.hooks.contains(where: { $0.key == reference.key }) else { throw PetError("所属插件已停用、移除或更新") }
+        guard item.instanceID == reference.installationID, item.enabled, item.hooks.contains(where: { $0.key == reference.key }) else { throw PetError("所属插件已停用、移除或更新") }
         for path in item.receipt.hashes.keys { _ = try content(path, installation: item) }
     }
 }
 
 @MainActor extension AgentHooks {
-    func pluginItems() throws -> [AgentHookDefinition] {
+    func pluginItems(workspace: String?) throws -> [AgentHookDefinition] {
         var result: [AgentHookDefinition] = []
-        for reference in try plugins.hookReferences() {
+        for reference in try plugins.hookReferences(workspace: workspace) {
             do {
             let config = try plugins.hookConfiguration(reference), files = try AgentFiles(workspace: profile.path)
             let configured = FileManager.default.fileExists(atPath: config.file.path), data = configured ? try files.readData(config.file, maximum: 128_000) : config.data
             try validatePluginConfiguration(data, canonical: config.data)
-            var hooks = try parse(data, file: config.file, scope: "插件 · " + reference.name, workspace: nil, resource: config.root, fingerprintSuffix: config.fingerprint, inspectResources: false, inspectCredentials: configured)
+            var hooks = try parse(data, file: config.file, scope: (config.workspace == nil ? "插件 · " : "项目插件 · ") + config.title, workspace: config.workspace, resource: config.root, fingerprintSuffix: config.fingerprint, inspectResources: false, inspectCredentials: configured)
             for i in hooks.indices {
                 hooks[i].plugin = reference; hooks[i].pluginEnabled = config.enabled
-                hooks[i].name = reference.name + ":" + hooks[i].name
+                hooks[i].name = config.title + ":" + hooks[i].name
                 if !configured { hooks[i].diagnostic = "请先保存插件 Hooks 配置，再启用处理器" }
             }; result += hooks
             } catch { result += pluginConfigurationFailure(reference, error: error) }
@@ -123,5 +124,5 @@ struct AgentPluginHookDefinition {
         _ = try parse(data, file: config.file, scope: "插件", workspace: nil, resource: config.root, inspectResources: false, inspectCredentials: false)
         try commitConfiguration(data, target: config.file) { try files.writeData($0, to: config.file, permissions: 0o600) }
     }
-    func validatePlugin(_ hook: AgentHookDefinition) throws { if let reference = hook.plugin { try plugins.validateHook(reference) } }
+    func validatePlugin(_ hook: AgentHookDefinition) throws { if let reference = hook.plugin { try plugins.validateHook(reference, workspace: hook.workspace) } }
 }
