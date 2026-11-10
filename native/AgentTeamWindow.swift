@@ -120,7 +120,7 @@ import AppKit
         do {
             guard let i = values.firstIndex(where: { $0.id == selectedID }), let leaderID = leader.selectedItem?.representedObject as? String else { throw PetError("请选择负责人") }
             values[i].name = name.stringValue; values[i].description = purpose.stringValue; values[i].instructions = instructions.string; values[i].leaderID = leaderID; values[i].memberIDs = selectedMembers.sorted(); values[i].enabled = enabled.state == .on
-            let text = try store.teams.encode(values); _ = try store.teams.decode(text)
+            let text = try store.teams.encode(values); _ = try store.teams.decode(text, draft: true)
             let prior = try store.agents.document(), preparedAgents = try store.agents.encode(store.agents.decode(prior.0) + pendingAgents)
             if !pendingAgents.isEmpty { try store.agents.save(preparedAgents, expectedHash: prior.1) }
             do { try store.teams.save(text, expectedHash: openedHash, store: store, activating: selectedID, workspace: workspace) }

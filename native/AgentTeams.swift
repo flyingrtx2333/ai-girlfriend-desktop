@@ -32,7 +32,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("团队配置不是 UTF-8") }
         _ = try decode(text); return (text, AgentFiles.hash(data))
     }
-    func decode(_ text: String) throws -> [AgentTeam] {
+    func decode(_ text: String, draft: Bool = false) throws -> [AgentTeam] {
         guard text.utf8.count <= 512_000, let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
               Set(object.keys) == ["teams"], let entries = object["teams"] as? [[String: Any]], entries.count <= 32 else { throw PetError("配置需要 teams 数组，最多 32 项、512KB") }
         let keys: Set<String> = ["id", "name", "description", "instructions", "leaderID", "memberIDs", "enabled"]
@@ -49,8 +49,9 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
                   value.memberIDs.allSatisfy({ UUID(uuidString: $0) != nil }) else { throw PetError("团队需要唯一名称、指令、一名负责人及一到四名不同成员") }
             if let path = value.workspace { guard path.hasPrefix("/"), path.utf8.count <= 4000, !path.contains("\0"), URL(fileURLWithPath: path).standardizedFileURL.path == path else { throw PetError("团队项目路径无效") } }
             let roles = Set([value.leaderID] + value.memberIDs)
+            guard (value.roleSources?.count ?? 0) <= 5 else { throw PetError("团队成员来源超过五项") }
             for (id, source) in value.roleSources ?? [:] {
-                guard roles.contains(id), UUID(uuidString: source.installationID) != nil, !source.activationID.isEmpty, source.activationID.utf8.count <= 256,
+                guard UUID(uuidString: id) != nil, draft || roles.contains(id), UUID(uuidString: source.installationID) != nil, !source.activationID.isEmpty, source.activationID.utf8.count <= 256,
                       source.sha256.count == 64, source.sha256.allSatisfy(\.isHexDigit), AgentExtensions.validName(source.key), !source.key.contains(":"),
                       try AgentPlugins.scope(source.name).workspace.map({ $0 == value.workspace }) ?? true else { throw PetError("团队成员来源与项目不匹配") }
             }
@@ -78,7 +79,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         let values = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in profile.pluginSource.map { (profile.id, $0) } }); return values.isEmpty ? nil : values
     }
     func save(_ text: String, expectedHash: String?, store: AgentStore, activating: String? = nil, workspace: String? = nil) throws {
-        var values = try decode(text); let previous = try document()
+        var values = try decode(text, draft: true); let previous = try document()
         guard previous.1 == expectedHash else { throw PetError("团队配置已改变，请重新读取后保存") }
         let previousTeams = try decode(previous.0)
         for i in values.indices {
