@@ -12,7 +12,8 @@ import QuartzCore
             drawImage(image, withFrame: NSRect(x: frame.minX + 28, y: frame.midY - 8, width: 16, height: 16), in: controlView)
         }
         var text = super.titleRect(forBounds: frame); text.origin.x = frame.minX + 46
-        text.size.width = max(0, frame.maxX - text.minX - (shortcut == nil ? 8 : 30))
+        let shortcutWidth = shortcut.map { ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width + 12 } ?? 8
+        text.size.width = max(0, frame.maxX - text.minX - shortcutWidth)
         _ = drawTitle(attributedTitle, withFrame: text, in: controlView)
         if let shortcut {
             let value = NSAttributedString(string: shortcut, attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor])
@@ -68,6 +69,7 @@ import QuartzCore
         let cell = AgentSidebarCell(textCell: button.title); cell.group = group; cell.folder = folder; cell.shortcut = shortcut
         button.cell = cell; button.setButtonType(.momentaryPushIn); button.target = target; button.action = action
     }
+    static func shortcut(_ button: NSButton, _ value: String?) { (button.cell as? AgentSidebarCell)?.shortcut = value; button.needsDisplay = true }
 }
 
 class AgentWorkbenchButton: NSButton {

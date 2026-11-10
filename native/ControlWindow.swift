@@ -6,6 +6,7 @@ final class ComposerView: NSTextView {
     var onSend: (() -> Void)?
     var onInputChanged: (() -> Void)?
     var onExtensionKey: ((UInt16) -> Bool)?
+    var onShortcut: ((NSEvent) -> Bool)?
     var onEditingEnded: (() -> Void)?
     var attachmentOwner: (() -> String?)?
     var onImportFiles: (([URL], String) -> Bool)?
@@ -48,8 +49,14 @@ final class ComposerView: NSTextView {
         let result = super.resignFirstResponder(); if result { onEditingEnded?() }; return result
     }
     override func keyDown(with event: NSEvent) {
-        if !hasMarkedText(), onExtensionKey?(event.keyCode) == true { return }; super.keyDown(with: event)
+        if !hasMarkedText(), onShortcut?(event) == true { return }
+        if !hasMarkedText(), event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty, onExtensionKey?(event.keyCode) == true { return }; super.keyDown(with: event)
     }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if !hasMarkedText(), onShortcut?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    override func insertBacktab(_ sender: Any?) { window?.selectPreviousKeyView(sender) }
     override func didChangeText() { super.didChangeText(); needsDisplay = true; onInputChanged?() }
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -79,7 +86,8 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
@@ -204,7 +212,7 @@ final class FormDocumentView: NSView {
         }
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
-        refreshPreferences()
+        refreshPreferences(); refreshShortcutControls()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
         if windowNumber == 1 {
@@ -368,7 +376,6 @@ final class FormDocumentView: NSView {
         for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
         }
-        taskBack.keyEquivalent = "["; taskBack.keyEquivalentModifierMask = .command; taskForward.keyEquivalent = "]"; taskForward.keyEquivalentModifierMask = .command
         let navigation = stack([taskBack, taskForward], spacing: 2); main.addSubview(navigation)
         pageTitle.font = .systemFont(ofSize: 18, weight: .semibold); pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle); main.addSubview(workbenchBadge)
@@ -504,6 +511,40 @@ final class FormDocumentView: NSView {
         guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
         inspectorRequested.toggle(); updateWorkbenchLayout(animated: true)
     }
+    func refreshShortcutControls() {
+        guard let shortcuts = companion?.shortcuts else { return }
+        taskSidebar.refreshShortcuts(shortcuts); shortcutSettings?.refresh()
+        for (button, command) in [(taskBack, AgentShortcutCommand.previousTask), (taskForward, .nextTask)] {
+            let value = shortcuts.binding(command); button.toolTip = command.title + (value == .cleared ? "" : " · " + value.display)
+        }
+    }
+    func canPerformShortcut(_ command: AgentShortcutCommand) -> Bool {
+        guard companion?.usesAgent == true, window?.attachedSheet == nil else { return false }
+        switch command {
+        case .settings: return true
+        case .newTask, .searchTasks: return true
+        case .newWindow: return currentAgentTask != nil
+        case .previousTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex > 0
+        case .nextTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
+        case .taskInspector: return selectedTab == "chat" && currentAgentTask != nil
+        case .planMode: return selectedTab == "chat" && currentAgentTask != nil && window?.firstResponder === composer && modePopup.isEnabled && currentAgentTask?.automation == nil && currentAgentTask?.status != .running && currentAgentTask?.status != .waiting
+        }
+    }
+    func performShortcut(_ command: AgentShortcutCommand) {
+        guard canPerformShortcut(command) else { return }
+        switch command {
+        case .settings: show(tab: "settings")
+        case .newTask: newAgentTask()
+        case .searchTasks: show(tab: "chat"); taskSidebar.focusSearch()
+        case .previousTask: previousAgentTask()
+        case .nextTask: nextAgentTask()
+        case .taskInspector: toggleTaskInspector()
+        case .newWindow: if let id = agentTaskID { companion?.openTaskWindow(id, from: self) }
+        case .planMode:
+            let mode: AgentMode = currentAgentTask?.mode == .plan ? .agent : .plan
+            modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: mode)!); agentOptionsChanged()
+        }
+    }
     @objc private func previousAgentTask() {
         guard taskNavigationIndex > 0 else { return }; taskNavigationIndex -= 1; navigatingTaskHistory = true; defer { navigatingTaskHistory = false }; selectAgentTask(taskNavigation[taskNavigationIndex])
     }
@@ -616,7 +657,7 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["worktrees", "computer", "imports", "experiments", "archived"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["shortcuts", "worktrees", "computer", "imports", "experiments", "archived"].contains($0.category) }
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -635,6 +676,10 @@ final class FormDocumentView: NSView {
         composer.isRichText = false; composer.allowsUndo = true; composer.isAutomaticQuoteSubstitutionEnabled = false
         composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]
         composer.onSend = { [weak self] in self?.send() }
+        composer.onShortcut = { [weak self] event in
+            guard let self, self.canPerformShortcut(.planMode), self.companion?.shortcuts.binding(.planMode).matches(event) == true else { return false }
+            self.performShortcut(.planMode); return true
+        }
         composer.onInputChanged = { [weak self] in self?.composerChanged() }
         composer.onExtensionKey = { [weak self] key in
             guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
@@ -739,6 +784,11 @@ final class FormDocumentView: NSView {
         }
         for value in [endpoint, model, persona, apiKey, voiceKey, voiceEndpoint, voiceID, voiceModel, wakePhrase] { field(value) }
         for (control, label) in [(voiceEnabled, "语音回复"), (wakeEnabled, "启用语音唤醒"), (onTop, "窗口置顶")] { control.setAccessibilityLabel(label) }
+        if let shortcuts = companion?.shortcuts {
+            group("shortcuts", "键盘快捷键", "快捷键 键盘 shortcuts keyboard 按键 组合 导航 新建 搜索 计划")
+            let panel = AgentShortcutSettingsView(shortcuts: shortcuts); shortcutSettings = panel; row("", panel)
+            panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+        }
         group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
         model.completes = false; model.numberOfVisibleItems = 8
@@ -2323,6 +2373,8 @@ extension ControlWindow {
         value["windowNumber"] = taskWindowNumber; value["windowTitle"] = window?.title ?? ""; value["windowVisible"] = window?.isVisible == true
         value["nativeWindowNumber"] = window?.windowNumber ?? 0
         if CommandLine.arguments.contains("--manual-ui") {
+            value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
+            value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
             value["fileIngress"] = composer.fileIngressDiagnostics; value["fileDragTypes"] = composer.registeredDraggedTypes.map(\.rawValue); value["fileDropOwner"] = composer.dragOwner as Any? ?? NSNull()
             if let window {
                 let rect = composer.convert(composer.bounds, to: nil), drag = NSPasteboard(name: .drag)

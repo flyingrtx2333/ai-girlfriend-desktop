@@ -25,6 +25,7 @@ import WebKit
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
+        if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
             // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
             var requests = 0

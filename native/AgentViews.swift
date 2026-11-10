@@ -73,8 +73,6 @@ private final class AgentTaskTable: NSTableView {
             button.isBordered = false; button.alignment = .left; button.font = .systemFont(ofSize: 15); button.contentTintColor = .labelColor; button.target = self; button.action = action
             button.heightAnchor.constraint(equalToConstant: 32).isActive = true; button.setAccessibilityLabel(title)
         }
-        create.keyEquivalent = "n"; create.keyEquivalentModifierMask = .command
-        searchButton.keyEquivalent = "k"; searchButton.keyEquivalentModifierMask = .command; searchButton.toolTip = "搜索任务 · ⌘K"
         search.placeholderString = "搜索任务"; search.setAccessibilityLabel("搜索任务"); search.delegate = self; search.target = self; search.action = #selector(applyFilter); search.controlSize = .small; search.isHidden = true
         workModePicker.addItems(withTitles: AgentWorkMode.allCases.map(\.title)); workModePicker.isBordered = false; workModePicker.font = .systemFont(ofSize: 13, weight: .medium); workModePicker.target = self; workModePicker.action = #selector(changeWorkMode); workModePicker.setAccessibilityLabel("工作模式"); workModePicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
         heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = .secondaryLabelColor
@@ -139,6 +137,14 @@ private final class AgentTaskTable: NSTableView {
         if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
     }
     @objc private func newTask() { onNew?() }
+    func refreshShortcuts(_ shortcuts: AgentShortcuts) {
+        for (button, command) in [(create, AgentShortcutCommand.newTask), (searchButton, .searchTasks)] {
+            let value = shortcuts.binding(command)
+            AgentWorkbenchTheme.shortcut(button, value == .cleared ? nil : value.display)
+            button.toolTip = command.title + (value == .cleared ? "" : " · " + value.display); button.needsDisplay = true
+        }
+    }
+    func focusSearch() { if !searchVisible { showSearch() } else { window?.makeFirstResponder(search) } }
     @objc private func newWorkspace() { onNewWorkspace?() }
     @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
     private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }
