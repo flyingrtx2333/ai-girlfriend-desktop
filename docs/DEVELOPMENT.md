@@ -313,3 +313,5 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
 
 原生入口为 `--plugin-agent-live-check --live-agent --background-component-check`，仅在独立目录启用真实钥匙串凭据。请求限于本轮公开项目及只读插件角色，调用前持久保存独立账本；配置变化、越过12次或文件版本冲突时停止。启动标记保留原进程与已开始的任务，同一目录不会自动重放，其他模型验收的额度与旧账本不转用。原始模型回执、工具事件、失败和答复均保留；控制器机械检查通过后，仍须独立核对真实README与实际答复，不能只凭状态认定内容正确。
+
+已完成的本轮目录 `bluefatfish-plugin-agent-live-VgxIAz` 使用8／12次，含6次会话和2次上下文压缩，8份原始回执均保留。两项真实任务分别完成README引用事实与只读角色拒写，原件行号、232行总数和源码哈希独立一致；该目录不可重放。记录见本地 `evidence/agent/bluefatfish-plugin-agent-live-VgxIAz/plugin-agent-live-report.json`。插件规则另经38项原生检查（两种构建各一轮）及8个窗口阶段／43项独立回读，模型遵循规则的质量尚未使用本轮角色额度验收。
