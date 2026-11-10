@@ -142,7 +142,7 @@ import AppKit
             checks["usesActualFailedModelTaskAndGlobReference"] = task.status == .failed && task.modelReceipts?.count == 7 && item.definition?.trigger == .glob && reference.workspace == task.workspace
             checks["originalWrongInvocationAndHashRemainRecorded"] = wrongIDs == [item.invocation, item.sha256]
             checks["loadedRuleExposesItsExactResolvableToolID"] = context.contains("id=" + reference.id) && item.id == reference.id
-            checks["loadedBodyAndAlreadyActiveHintArePresent"] = context.contains(item.definition!.body) && context.contains("无需再次调用read_rule")
+            checks["loadedBodyAndAlreadyActiveHintArePresent"] = context.contains(item.definition!.body) && context.contains("无需再次调用read_rule") && context.contains("答复前完成相关规则规定的读取和核对步骤")
             checks["sourceHashIsSeparatelyLabeled"] = context.contains("sha256=" + item.sha256) && item.sha256 != reference.id
             checks["readonlyAskScopeRemainsIntact"] = task.mode == .ask && task.agent?.readOnly == true && task.agent?.network == false
             let definition = AgentTools.definitions(mode: .ask).first { ($0["function"] as? [String: Any])?["name"] as? String == "read_rule" }?["function"] as? [String: Any]
@@ -155,6 +155,58 @@ import AppKit
         report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("rules-metadata-replay-result.json"), options: .atomic)
+    }
+
+    func runAgentRulesGlobRetryCheck(_ output: URL) async {
+        var report: [String: Any] = [:], checks: [String: Bool] = [:], budget: AgentRulesLiveBudget?, newID: String?
+        do {
+            guard CommandLine.arguments.contains("--live-agent"), !["--manual-ui", "--rules-live-check", "--rules-glob-live-check"].contains(where: CommandLine.arguments.contains), let argument = CommandLine.arguments.firstIndex(of: "--retry-task"), argument + 1 < CommandLine.arguments.count else { throw PetError("缺少单项复验的原任务编号") }
+            let oldID = CommandLine.arguments[argument + 1]; guard UUID(uuidString: oldID) != nil else { throw PetError("原任务编号无效") }
+            let files = try AgentFiles(workspace: output.path), oldURL = try files.literalURL("profile/agent/" + oldID + ".json"), oldBytes = try files.readData(oldURL, maximum: 20_000_000)
+            let old = try JSONDecoder().decode(AgentTaskRecord.self, from: oldBytes)
+            guard old.id == oldID, old.status == .completed, old.modelReceipts?.count == 2, let assignment = old.agent, assignment.readOnly, !assignment.network, let prompt = old.messages.first(where: \.isHumanInput)?.content else { throw PetError("原任务不是已保留的两次只读复验") }
+            let initialFile = try files.literalURL("rules-glob-live-result.json"), initialBytes = try files.readData(initialFile)
+            guard let initial = try JSONSerialization.jsonObject(with: initialBytes) as? [String: Any], initial["success"] as? Bool == false, initial["usedRequests"] as? Int == 2, initial["maximumRequests"] as? Int == 6, initial["taskIDs"] as? [String] == [oldID], let oldPID = initial["appPID"] as? Int, kill(pid_t(oldPID), 0) != 0 else { throw PetError("原进程尚未结束或原始复验结果不匹配") }
+            let marker = output.appendingPathComponent("rules-glob-retry-started.json")
+            guard !FileManager.default.fileExists(atPath: marker.path) else { throw PetError("已开始过单项续验，保留原进程和记录，不重放") }
+            let production = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish")
+            var preferences = PreferencesStore(directory: production).preferences
+            preferences.voiceEnabled = false; preferences.wakeEnabled = false; preferences.screenObservationEnabled = false
+            let limit = try AgentRulesLiveBudget(output: output, preferences: preferences, globOnly: true); budget = limit
+            guard limit.used == 2 else { throw PetError("两次旧请求账本已变化，停止续验") }
+            store.preferences = preferences; try store.savePreferences(); ensureAgent()
+            guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统未初始化") }
+            let project = output.appendingPathComponent("project"), role = try tasks.agents.profile(assignment.profile.id)
+            guard old.workspace == project.path, role.readOnly, !role.network, role.model.isEmpty, Set(role.tools) == ["read_file", "run_command", "list_rules", "read_rule"] else { throw PetError("原角色或项目范围已变化") }
+            let id = try tasks.agents.createTask(role.id, store: tasks, workspace: project.path, workMode: .general); newID = id
+            tasks.update(id) { $0.title = "文件规则同题续验"; $0.mode = .ask }
+            try JSONSerialization.data(withJSONObject: ["appPID": getpid(), "previousTaskID": oldID, "taskID": id, "usedAtStart": 2, "maximumRequests": 6]).write(to: marker, options: .atomic)
+            runtime.modelRequestCheck = { [weak self] in
+                let executing = tasks.tasks.filter { runtime.isExecuting($0.id) }
+                guard let self, executing.count == 1, executing.first?.id == id, let task = tasks.task(id), task.workspace == project.path, task.model == "deepseek-flash", task.mode == .ask, task.agent?.profile.id == role.id, task.agent?.readOnly == true, task.agent?.network == false, task.agent?.tools == Set(role.tools) else { throw PetError("请求不属于本轮唯一的只读续验任务") }
+                try limit.request(preferences: self.store.preferences)
+            }
+            guard runtime.submit(prompt, taskID: id) else { throw PetError(runtime.submissionError ?? "同一原始问题未提交") }
+            let end = Date().addingTimeInterval(240)
+            while runtime.isRunning(id) && Date() < end { await wait(0.1) }
+            if runtime.isRunning(id) { runtime.cancel(id); throw PetError("单项续验观察到期，保留原记录") }
+            guard let task = tasks.task(id), task.status == .completed else { throw PetError(tasks.task(id)?.events.last(where: { $0.status == "failed" })?.detail ?? "单项续验未完成") }
+            let completed = Set(task.events.filter { $0.kind == "tool" && $0.status == "completed" }.compactMap(\.toolCallID)), calls = task.messages.flatMap { $0.toolCalls ?? [] }.filter { completed.contains($0.id) }
+            let workspace = try AgentFiles(workspace: project.path), paths = try calls.filter { $0.name == "read_file" }.compactMap { call in try (call.object["path"] as? String).map { workspace.relative(try workspace.resolve($0)) } }
+            checks["sameOriginalQuestionUsesNewTaskWithoutReplacingOldReply"] = task.messages.first(where: \.isHumanInput)?.content == prompt && id != oldID
+            checks["actualDocsReadActivatesGlobBeforePackageComparison"] = task.activeLocalRules?.isEmpty == false && paths.firstIndex(of: "docs/README.md").map { first in paths.firstIndex(of: "package.json").map { $0 > first } ?? false } == true
+            checks["actualReplyHasRealPinnedModelReceipts"] = task.messages.contains(where: \.isReply) && task.modelReceipts?.contains { $0.completed && $0.requestedModel == "deepseek-flash" } == true
+            checks["onlyReadOnlyToolsAndNoRuleIDFailure"] = calls.allSatisfy { ["read_file", "run_command", "list_rules", "read_rule", "load_tools", "update_plan", "finish_task", "read_task_history"].contains($0.name) } && !task.events.contains { $0.title == "read_rule" && $0.status == "failed" }
+            checks["oldTaskAndInitialResultRemainOriginalBytes"] = try files.readData(oldURL, maximum: 20_000_000) == oldBytes && files.readData(initialFile) == initialBytes
+            checks["sameLedgerIncludesOldTwoWithinSixTotal"] = (3...6).contains(limit.used) && (task.modelReceipts?.count ?? 0) + 2 == limit.used
+            report["previousTaskID"] = oldID; report["taskIDs"] = [id]; report["readPaths"] = paths; report["answers"] = [task.messages.last(where: \.isReply)?.content ?? ""]
+        } catch { report["error"] = error.localizedDescription }
+        agentRuntime?.stopAll(); let end = Date().addingTimeInterval(8); while agentRuntime?.isWorking == true && Date() < end { await wait(0.03) }
+        report["newTaskID"] = newID; report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && agentRuntime?.isWorking != true
+        report["appPID"] = getpid(); report["usedRequests"] = budget?.used ?? 2; report["usedAtStart"] = 2; report["maximumRequests"] = 6; report["requiresIndependentAnswerReview"] = true
+        report["activeJobs"] = agentRuntime?.isWorking == true; report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
+        if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("rules-glob-retry-result.json"), options: .atomic)
     }
 }
 

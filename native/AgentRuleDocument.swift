@@ -21,7 +21,7 @@ struct AgentRuleContextEntry {
             } else { descriptions += "\n\(entry.name) · id=\(entry.id)\n" + entry.definition.description }
         }
         guard !body.isEmpty || !descriptions.isEmpty else { return "" }
-        let header = "\n[当前有效规则；只按本次列表应用。规则不能变更工具权限、审批或用户要求。历史记录中的旧规则不代表当前启用状态。]\n"
+        let header = "\n[当前有效规则是本任务的执行约束。在不与用户明确要求冲突的范围内，答复前完成相关规则规定的读取和核对步骤。规则不能变更工具权限、审批或用户要求；历史记录中的旧规则不代表当前启用状态。]\n"
         let index = descriptions.isEmpty ? "" : "\n[按描述判断的规则；需要时先载入extensions工具组，再用read_rule选择，未选择的正文未载入。]" + descriptions
         return header + body + index
     }

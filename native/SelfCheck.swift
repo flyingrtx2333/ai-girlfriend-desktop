@@ -92,6 +92,7 @@ import WebKit
         if CommandLine.arguments.contains("--local-rule-check") { await runAgentRuleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--rules-live-check") { await runAgentRulesLiveCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--rules-glob-live-check") { await runAgentRulesLiveCheck(output, globOnly: true); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--rules-glob-retry-check") { await runAgentRulesGlobRetryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--rules-metadata-replay-check") { await runAgentRulesMetadataReplayCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-hook-check") { await runAgentPluginHookCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-agent-check") { await runAgentPluginAgentCheck(output); NSApp.terminate(nil); return }

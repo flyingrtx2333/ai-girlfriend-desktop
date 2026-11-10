@@ -50,7 +50,7 @@ import Darwin
             catch { checks["symlinkCannotActivateOutsideWorkspaceRules"] = try Data(contentsOf: tasks.directory.appendingPathComponent(other + ".json")) == failedBefore }
             let read = try await tools.execute(call("read_file", ["path": "src/deep/api.ts", "limit": 3]))
             let accessed = try context(id)
-            checks["actualReadActivatesProjectAndWorkspaceRelativeUserGlobs"] = !read.failed && accessed.contains("LOCAL_GLOB_427") && accessed.contains("USER_GLOB_328")
+            checks["actualReadActivatesProjectAndWorkspaceRelativeUserGlobs"] = !read.failed && accessed.contains("LOCAL_GLOB_427") && accessed.contains("USER_GLOB_328") && read.text.contains("本次文件操作已激活匹配规则")
             checks["actualReadDiscoversOnlyWorkspaceAncestorRuleDirectories"] = accessed.contains("NESTED_NATIVE_617") && accessed.contains("NESTED_QODER_716") && accessed.contains("NESTED_GLOB_914") && !accessed.contains("RULE_PARENT_OUTSIDE_815") && task(id).ruleDirectories?.map(\.path) == ["src", "src/deep"]
             checks["fileActivationDoesNotCrossTasksOrChangePublicSource"] = try !context(other).contains("LOCAL_GLOB_427") && !context(other).contains("NESTED_NATIVE_617") && Data(contentsOf: sourceURL) == source
             _ = try await otherTools.execute(call("read_file", ["path": "src/vendor/excluded.ts", "limit": 1]))

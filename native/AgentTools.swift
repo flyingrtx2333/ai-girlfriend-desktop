@@ -301,7 +301,14 @@ import Foundation
         }
         var result = try await executeCore(call, gitDirectory: gitDirectory)
         if !result.failed, ["read_file", "write_file", "edit_file"].contains(call.name), let path = call.object["path"] as? String {
-            do { try store.rules.accessRules(path, store: store, taskID: taskID) }
+            let before = store.task(taskID)
+            do {
+                try store.rules.accessRules(path, store: store, taskID: taskID)
+                let current = store.task(taskID)
+                let addedLocal = (current?.activeLocalRules ?? []).contains { before?.activeLocalRules?.contains($0) != true }
+                let addedPlugin = (current?.activeRules ?? []).contains { before?.activeRules?.contains($0) != true }
+                if addedLocal || addedPlugin { result.text += "\n[本次文件操作已激活匹配规则；答复前请完成当前系统上下文中对应规则规定的读取和核对步骤。]" }
+            }
             catch { result.text += "\n[文件操作已完成，匹配规则未载入：" + error.localizedDescription + "]" }
         }
         return result
