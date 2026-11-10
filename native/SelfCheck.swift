@@ -93,6 +93,7 @@ import WebKit
         if CommandLine.arguments.contains("--instruction-check") { await runAgentInstructionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-crash-check") { await runAgentPluginScopeCrashCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-recovery-check") { await runAgentPluginScopeRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--agent-draft-check") { await runAgentProfileDraftCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-team-check") { await runAgentPluginTeamCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-check") { await runAgentPluginScopeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-check") { await runAgentPluginUpdateCheck(output); NSApp.terminate(nil); return }

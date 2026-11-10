@@ -78,7 +78,10 @@ struct AgentProfileAssignment: Codable {
         directory = profile; self.plugins = plugins ?? AgentPlugins(profile: profile)
         _ = self.plugins.observeChanges { [weak self] name in self?.onPluginChange?(name) }
     }
-    private func file() throws -> URL { try AgentFiles(workspace: directory.path).resolve("extensions/agents.json") }
+    private func file() throws -> URL {
+        let files = try AgentFiles(workspace: directory.path), raw = files.root.appendingPathComponent("extensions/agents.json"), url = try files.literalURL(raw.path)
+        guard url == raw, try files.resolve(raw.path) == raw else { throw PetError("Agent 配置不能是链接") }; return url
+    }
     func document() throws -> (String, String?) {
         let url = try file()
         guard FileManager.default.fileExists(atPath: url.path) else { return ("{\n  \"agents\": []\n}", nil) }
@@ -140,9 +143,8 @@ struct AgentProfileAssignment: Codable {
         let values = try decode(text), previous = try document()
         guard previous.1 == expectedHash else { throw PetError("Agent 配置已改变，请重新读取后保存") }
         let old = try decode(previous.0), data = Data(try encode(values).utf8), url = try file()
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        let write = try AgentKnowledgeFileWrite(files: AgentFiles(workspace: directory.path), path: url.path, data: data, expectedHash: previous.1, missing: previous.1 == nil, permissions: 0o600, label: "Agent 配置")
+        try write.requireCurrent(); try write.files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         for item in old where item.enabled {
             let next = values.first { $0.id == item.id && $0.enabled }
             if next == nil || next?.tools != item.tools || next?.permission != item.permission || next?.readOnly != item.readOnly || next?.network != item.network || next?.skills != item.skills || next?.mcpServers != item.mcpServers || next?.toolPermissions != item.toolPermissions || next?.mcpToolPermissions != item.mcpToolPermissions { onDisable?(item.id) }

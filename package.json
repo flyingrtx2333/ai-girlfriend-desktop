@@ -90,7 +90,8 @@
     "native:check-task-records": "node scripts/check-native-task-records.mjs",
     "native:check-plugin-settings": "node scripts/check-native-plugin-scopes.mjs --plugin-settings-check",
     "native:check-plugin-directories": "node scripts/check-native-plugin-scopes.mjs --plugin-directory-check",
-    "native:check-plugin-teams": "node scripts/check-native-plugin-scopes.mjs --plugin-team-check"
+    "native:check-plugin-teams": "node scripts/check-native-plugin-scopes.mjs --plugin-team-check",
+    "native:check-agent-drafts": "node scripts/check-native-agent-drafts.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

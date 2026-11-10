@@ -570,6 +570,9 @@ import Foundation
         }
         let loaded = Set(AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.isProjectDocumentation ? nil : task.toolGroups ?? []).compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
         let tools = (task.agent?.tools ?? Set(AgentTools.names)).intersection(loaded)
+        if !task.isProjectDocumentation, !task.isKnowledgeEditing, task.kind != "hook", task.agent == nil {
+            context += "\n用户要求创建本机 Agent 时，先载入 agents 工具组，用 draft_agent 生成名称、职责与指令草稿。请用户在会话卡片中继续配置模型、权限和扩展并保存；草稿不是已创建的 Agent，不替用户启用或直接委派。"
+        }
         context += store.knowledgeCards.context(task)
         if !task.isProjectDocumentation, !task.isKnowledgeEditing, task.kind != "hook", !(task.agent?.tools ?? Set(AgentTools.names)).isDisjoint(with: AgentKnowledgeLibrary.tools) { context += try store.knowledge.hint(task) }
         if let origin = task.importOrigin {

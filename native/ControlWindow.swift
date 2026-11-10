@@ -1430,6 +1430,22 @@ final class FormDocumentView: NSView {
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
     }
+    func configureAgentProfileDraft(_ id: String, taskID: String) throws {
+        guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开 Agent 草稿") }
+        let draft = try AgentProfileDrafts.load(id, taskID: taskID, store: store)
+        let manager: AgentProfileWindow
+        if let existing = profileWindow, existing.window?.isVisible == true {
+            guard existing.workspace == store.task(taskID)?.workspace else { throw PetError("请先完成已打开项目的 Agent 配置") }; manager = existing
+        } else { manager = AgentProfileWindow(store: store, workspace: store.task(taskID)?.workspace, workMode: store.task(taskID)?.organizationMode) }
+        try manager.configureDraft(draft)
+        if try store.agents.decode(store.agents.document().0).contains(where: { $0.id == draft.profile.id }) { try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: draft.profile.id, store: store) }
+        manager.onSaved = { [weak self, weak store] profileID in
+            guard let store, profileID == draft.profile.id else { return }
+            try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: profileID, store: store); self?.renderAgentMessages()
+        }
+        manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager
+        manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+    }
     func agentTaskAction(_ id: String, action: String) {
         guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window", "side-task", "side-parent", "side-keep"].contains(action) else { return }
         if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
@@ -1847,6 +1863,10 @@ final class FormDocumentView: NSView {
             if let callID = result.toolCallID, snapshotCalls.contains(callID), let file = result.visuals?.compactMap({ fileMap[$0.id] }).first(where: { $0.canvasCapture != nil }) { inlineSnapshots[callID] = file }
         }
         var ids: [String] = []
+        let agentDrafts = Array((task.agentDrafts ?? []).prefix(8))
+        let profileDocument = agentDrafts.isEmpty ? nil : try? tasks.agents.document()
+        let profiles = profileDocument.flatMap { try? tasks.agents.decode($0.0) } ?? []
+        for draft in agentDrafts { ids.append("agent-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + (profileDocument?.1 ?? "missing") + ":" + String(task.archived)) }
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
@@ -1876,6 +1896,16 @@ final class FormDocumentView: NSView {
                         messageColumn.addArrangedSubview(snapshot); snapshot.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                     }
                 }
+            }
+            for draft in agentDrafts {
+                let saved = draft.savedAt != nil || profiles.contains { $0.id == draft.profile.id }
+                let issue: String?
+                if draft.taskID != task.id { issue = "原任务的 Agent 草稿" }
+                else if profileDocument == nil { issue = "Agent 配置无法读取" }
+                else { do { _ = try AgentProfileDrafts.checked(draft, taskID: task.id, agents: tasks.agents); issue = task.archived ? "请先恢复原任务" : nil } catch { issue = "Agent 草稿无法读取" } }
+                let row = AgentProfileDraftRow(draft, saved: saved, available: profiles.contains { $0.id == draft.profile.id }, issue: issue)
+                row.onConfigure = { [weak self] in do { try self?.configureAgentProfileDraft(draft.id, taskID: task.id) } catch { self?.setStatus(error.localizedDescription, error: true) } }
+                messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
             }
             if task.status == .completed {
                 for path in task.artifacts.prefix(4) {

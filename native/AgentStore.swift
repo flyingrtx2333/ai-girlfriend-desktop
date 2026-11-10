@@ -111,7 +111,7 @@ import Foundation
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
         value.activityAt = task.activityAt ?? task.events.map(\.created).max() ?? (task.messages.isEmpty ? task.created : task.updated)
-        value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []; value.canvases = nil
+        value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []; value.canvases = nil; value.agentDrafts = nil
         value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.queuedMessages = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
         value.hookContexts = nil; value.hookRejectedAnswers = nil
         value.hookPromptIDs = nil; value.hookContextIDs = nil

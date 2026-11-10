@@ -166,6 +166,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var contextSnapshot: AgentContextSnapshot?
     var recap: AgentTaskRecap?
     var toolGroups: [String]?
+    var agentDrafts: [AgentProfileDraft]?
     var draft: String?
     var kind: String?
     var queuedInputs: [String]?

@@ -17,7 +17,7 @@ import Foundation
         "project_knowledge": ["read_project_knowledge", "edit_project_knowledge", "read_project_wiki", "edit_project_wiki", "read_file", "search_project"],
         "attachments": ["list_attachments", "read_attachment", "search_attachment"],
         "extensions": ["list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_rules", "read_rule"], "mcp": AgentMCP.tools,
-        "agents": ["list_agents", "delegate_task"]
+        "agents": ["list_agents", "delegate_task", "draft_agent"]
     ]
     private static let wikiTools: Set<String> = ["list_directory", "read_file", "search_project", "index_project", "project_wiki", "plan_wiki", "write_file", "edit_file", "update_plan", "ask_user", "finish_task", "read_task_history", "git_status"]
     let store: AgentStore
@@ -65,7 +65,7 @@ import Foundation
         return url
     }
 
-    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "plan_wiki", "read_project_wiki", "edit_project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_rules", "read_rule", "list_agents", "delegate_task"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
+    static let names = ["list_directory", "read_file", "search_files", "index_project", "search_project", "project_wiki", "plan_wiki", "read_project_wiki", "edit_project_wiki", "list_attachments", "read_attachment", "search_attachment", "write_file", "edit_file", "run_command", "web_search", "fetch_url", "update_plan", "ask_user", "finish_task", "read_task_history", "read_memory", "write_memory", "list_skills", "read_skill", "read_skill_resource", "unload_skill", "list_rules", "read_rule", "list_agents", "delegate_task", "draft_agent"] + AgentGit.tools + AgentBrowser.tools + AgentMCP.tools + AgentDesktop.tools + AgentCanvas.tools + AgentOffice.tools + AgentKnowledgeLibrary.tools + AgentKnowledgeCards.tools + ["load_tools"]
     private func checkHookTool(_ call: AgentToolCall, task: AgentTaskRecord) throws {
         guard task.kind == "hook" else { return }
         guard AgentHookModel.safeTools.contains(call.name), task.hookTools?.contains(call.name) == true else { throw PetError("校验任务不允许此工具：" + call.name) }
@@ -79,6 +79,7 @@ import Foundation
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
+            tool("draft_agent", "用户要求创建本机 Agent 时，按用途、范围和预期结果生成 name、description、instructions 草稿，在会话中审阅。只保存本任务草稿，不创建、启用或委派 Agent。请用户点卡片“继续配置”，在原生表单核对模型、权限和扩展并保存，成功后才能在新任务选择。", ["name": string, "description": string, "instructions": string], ["name", "description", "instructions"]),
             tool("list_agents", "列出当前设备已启用且可委派的 Agent/团队、职责、工具及选定扩展；团队任务只列本次成员。不创建任务或调用模型。", [:], []),
             tool("delegate_task", "将明确子任务交给 list_agents 返回的角色：agent_id 或 team_id 只选一个，另附简短 prompt。成员已有职责指令，只补充必要资料与交付要求，不复制会话或重复大段配置；每轮只委派一项。等待实际完成后返回结果与 child_task_id，成员审批和提问也出现在负责人面板。停止主任务会停止子任务。分派成功不代表完成。", ["agent_id": string, "team_id": string, "prompt": string], ["prompt"]),
             tool("list_skills", "按 query 搜索已启用的全局与当前项目 Skills，返回名称、描述、来源和 id。可自动选用适合本任务的流程；offset 从 0 开始分页，不含仅用户手动调用的 Skill。", ["query": string, "offset": integer], []),
@@ -149,7 +150,7 @@ import Foundation
             let name = (definition["function"] as? [String: Any])?["name"] as? String ?? ""
             return ![.ask, .plan].contains(mode) || !AgentOffice.writes.contains(name)
         }
-        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 知识库/索引/Wiki/记忆；project_knowledge Wiki/知识卡片编辑与源码；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
+        tools.append(tool("load_tools", "按需替换工具组：files 文件；terminal 终端；web 联网；browser 浏览器；desktop 指定窗口的电脑操作；canvas 可交互画布；office 办公文件；git 版本管理；worktrees 工作树管理；knowledge 知识库/索引/Wiki/记忆；project_knowledge Wiki/知识卡片编辑与源码；attachments 附件；extensions Skills；mcp 外部连接器；agents 自定义 Agent 草稿与委派。下一轮提供所选工具，权限和审批不变。", ["groups": ["type": "array", "items": ["type": "string", "enum": Self.groups.keys.sorted()], "maxItems": Self.groups.count]], ["groups"]))
         if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
         if kind != "wiki" { tools.removeAll { ($0["function"] as? [String: Any])?["name"] as? String == "plan_wiki" } }
         if kind == AgentKnowledgeCards.kind { tools.removeAll { item in !AgentKnowledgeCards.generationTools.contains((item["function"] as? [String: Any])?["name"] as? String ?? "") } }
@@ -360,6 +361,8 @@ import Foundation
             guard item.definition.trigger == .decision || task.activeRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
             try store.extensions.plugins.activateRule(reference, store: store, taskID: taskID)
             return AgentToolResult(text: "已载入规则 " + item.name + "\nSHA256: " + reference.sha256, sources: [item.source.absoluteString])
+        case "draft_agent":
+            return try AgentProfileDrafts.create(call, taskID: taskID, store: store)
         case "list_agents":
             try store.teams.check(task, store: store)
             let team = try store.teams.binding(task, store: store)

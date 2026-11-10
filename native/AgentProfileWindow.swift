@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
     let workspace: String?
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
+    var onSaved: ((String) throws -> Void)?
     private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), model = NSTextField(), instructions = NSTextView()
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -64,7 +65,7 @@ import UniformTypeIdentifiers
     var scopeWorkspace: String? { workspace }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private static func toolTitle(_ name: String) -> String {
-        let names = ["list_directory": "浏览文件", "read_file": "读取文件", "search_files": "搜索文件", "write_file": "写入文件", "edit_file": "编辑文件", "run_command": "终端命令", "web_search": "联网搜索", "fetch_url": "读取网页", "list_agents": "查找 Agent", "delegate_task": "委派子任务", "update_plan": "执行计划", "ask_user": "向用户提问", "read_task_history": "读取本任务历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "search_project": "项目检索", "index_project": "更新项目索引", "project_wiki": "读取项目 Wiki", "git_status": "Git 状态", "git_diff": "Git 差异", "git_commit": "Git 提交", "git_init": "初始化 Git", "git_create_worktree": "创建工作树", "list_attachments": "列出附件", "read_attachment": "读取附件", "search_attachment": "搜索附件", "browser_open": "打开网页", "browser_tabs": "浏览器标签页", "browser_read": "读取页面", "browser_screenshot": "网页截图", "browser_action": "网页操作", "browser_close": "关闭浏览器", "load_tools": "按需载入工具", "list_skills": "查找 Skills", "read_skill": "载入 Skill", "read_skill_resource": "读取 Skill 资源", "unload_skill": "移出 Skill", "list_mcp_servers": "列出 MCP", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "call_mcp_tool": "调用 MCP 工具", "disconnect_mcp": "断开 MCP"]
+        let names = ["list_directory": "浏览文件", "read_file": "读取文件", "search_files": "搜索文件", "write_file": "写入文件", "edit_file": "编辑文件", "run_command": "终端命令", "web_search": "联网搜索", "fetch_url": "读取网页", "list_agents": "查找 Agent", "delegate_task": "委派子任务", "draft_agent": "生成 Agent 草稿", "update_plan": "执行计划", "ask_user": "向用户提问", "read_task_history": "读取本任务历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "search_project": "项目检索", "index_project": "更新项目索引", "project_wiki": "读取项目 Wiki", "git_status": "Git 状态", "git_diff": "Git 差异", "git_commit": "Git 提交", "git_init": "初始化 Git", "git_create_worktree": "创建工作树", "list_attachments": "列出附件", "read_attachment": "读取附件", "search_attachment": "搜索附件", "browser_open": "打开网页", "browser_tabs": "浏览器标签页", "browser_read": "读取页面", "browser_screenshot": "网页截图", "browser_action": "网页操作", "browser_close": "关闭浏览器", "load_tools": "按需载入工具", "list_skills": "查找 Skills", "read_skill": "载入 Skill", "read_skill_resource": "读取 Skill 资源", "unload_skill": "移出 Skill", "list_mcp_servers": "列出 MCP", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "call_mcp_tool": "调用 MCP 工具", "disconnect_mcp": "断开 MCP"]
         let desktopNames = ["desktop_status": "电脑操作状态", "desktop_windows": "查找应用窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取指定窗口", "desktop_screenshot": "截取指定窗口", "desktop_action": "操作指定窗口", "desktop_disconnect": "断开窗口连接"]
         let canvasNames = ["canvas_create": "生成画布", "canvas_read": "读取画布", "canvas_update": "更新画布", "canvas_edit": "编辑画布", "canvas_restore": "恢复画布版本", "canvas_inspect": "核对画布", "canvas_screenshot": "截取画布", "canvas_list": "任务画布"]
         let knowledgeNames = ["list_knowledge": "列出知识库", "search_knowledge": "检索知识库", "read_knowledge": "读取知识文件", "read_project_knowledge": "读取知识卡片", "edit_project_knowledge": "更新知识卡片", "save_knowledge_card": "保存卡片草稿"]
@@ -106,6 +107,17 @@ import UniformTypeIdentifiers
         model.isEnabled = hasValue; instructions.isEditable = hasValue && !packaged; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue
     }
     func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload() }
+    func configureDraft(_ draft: AgentProfileDraft) throws {
+        _ = try AgentProfileDrafts.checked(draft, taskID: draft.taskID, agents: store.agents)
+        if dirty { guard selectedID == draft.profile.id else { throw PetError("请先保存或关闭已打开的 Agent 更改") }; return }
+        let document = try store.agents.document(), current = try store.agents.list(workspace: workspace)
+        let existing = current.first { $0.id == draft.profile.id && $0.pluginSource == nil }
+        guard draft.savedAt == nil || existing != nil else { throw PetError("此草稿保存的 Agent 已移除，原草稿保留") }
+        openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current
+        if existing == nil { values.append(draft.profile) }
+        loading = true; table.reloadData(); loading = false; open(draft.profile.id)
+        if existing == nil { changed(); window?.makeFirstResponder(name) }
+    }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
@@ -185,9 +197,11 @@ import UniformTypeIdentifiers
     @objc private func saveProfile() {
         do {
             capture()
+            let savedID = selectedID
             if let value = values.first(where: { $0.id == selectedID }), value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
             else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
             dirty = false; reload(); state.stringValue = "已保存"
+            if let savedID { do { try onSaved?(savedID) } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription } }
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let id = try store.agents.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
