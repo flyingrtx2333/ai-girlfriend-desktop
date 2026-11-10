@@ -92,7 +92,8 @@
     "native:check-plugin-directories": "node scripts/check-native-plugin-scopes.mjs --plugin-directory-check",
     "native:check-plugin-teams": "node scripts/check-native-plugin-scopes.mjs --plugin-team-check",
     "native:check-agent-drafts": "node scripts/check-native-agent-drafts.mjs",
-    "native:check-automation-drafts": "node scripts/check-native-automation-drafts.mjs"
+    "native:check-automation-drafts": "node scripts/check-native-automation-drafts.mjs",
+    "native:check-live-conversation-creation": "node scripts/check-live-conversation-creation.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

@@ -100,6 +100,8 @@ import WebKit
         if CommandLine.arguments.contains("--plugin-scope-recovery-check") { await runAgentPluginScopeRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--agent-draft-check") { await runAgentProfileDraftCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-draft-check") { await runAgentAutomationDraftCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--conversation-creation-preflight-check") { await runAgentConversationCreationPreflight(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--conversation-creation-live-check") { await runAgentConversationCreationLiveCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-team-check") { await runAgentPluginTeamCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-check") { await runAgentPluginScopeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-check") { await runAgentPluginUpdateCheck(output); NSApp.terminate(nil); return }

@@ -372,6 +372,14 @@ Skill、命令、Agent、MCP、Hook和规则在当前任务工作区使用同一
 
 最终候选30项本机检查、8项独立核对和25项实际窗口核对通过，覆盖保存冲突、四种计划及未来间隔起点、旧工作模式恢复、实际表单编辑保留、启用／暂停、独立时区核算和命令候选；退出重开后的13份持久文件逐字节一致。临时计划均暂停，0次模型请求或实际发送，真实模型生成效果待独立验收，日常应用未替换。完整本地证据见`evidence/agent/automation-drafts-archive-20261111-011725`。
 
+## 会话创建角色与计划的独立真实模型验收
+
+`npm run native:check-live-conversation-creation -- --prepare-only`只准备公开README和验收目标，不授予模型请求权限。`--preflight --app <签名候选>`在另一个独立目录检查缺失／无效授权、链接、旧账本及禁止重放，不能调用模型。真实入口还须匹配同一候选的`--preflight-report`。
+
+另行批准本轮最多20次后，才在准备目录保存`conversation-creation-authorization.json`：`scope: "conversation-creation"`、`maximumRequests: 20`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512`、绝对`directory`、候选二进制SHA256 `candidateHash`和`input-hashes.json`的SHA256 `inputsHash`。旧额度和账本不转用，每次会话／压缩请求前保留新尝试，候选、输入、授权或配置变化即停止。
+
+运行`npm run native:check-live-conversation-creation -- --directory <准备目录> --app <签名候选> --preflight-report <前置结果>`后，角色和计划均须在实际表单中审阅保存。角色保存仅选择模型并启用，保持生成的名称、职责及指令、只读、逐次审批、不联网和三项文件读取工具；关闭编辑窗口后在目录写`continue-role-use`继续真实读取。一次性计划保持模型生成的名称、任务指令及五分钟后的指定时刻，在表单选择刚保存的角色并明确启用。检查等待真实定时器，不手动补跑；最终窗口复核后写`finish-conversation-creation-ui`，保存结果并退出。所有阶段、任务、回执和请求账本保留，不重放已开始的目录。此入口准备中，尚未取得本轮请求授权或完成真实模型验收。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
