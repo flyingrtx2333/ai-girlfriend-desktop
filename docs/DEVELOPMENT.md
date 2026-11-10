@@ -331,3 +331,7 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 真实规则入口：`npm run native:check-live-rules -- --prepare-only` 创建独立公开输入，不授予请求权限。取得本轮明确授权后，保存 `rules-live-authorization.json`，字段为 `scope: "rules"`、`maximumRequests: 16`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`；再传入 `--directory <该目录> --app <严格签名候选>`。原生使用 `--rules-live-check --live-agent --background-component-check`，只读角色限于文件、终端和规则工具，逐次持久计数，包含压缩请求；目录、模型或配置变化即停止，不重放已有任务、账本或开始标记。沿用钥匙串凭据，授权文件不含Token。
 
 首轮 `bluefatfish-rules-live-VwF0gu` 实际用满16／16次（14次会话、2次压缩），16份真实回执全部保留。始终规则的无工作区系统查询、手动README审阅、模型判断规则选择已产生真实答复并与实际来源核对；答复仍有未在数值旁写单位、把启动命令一并列为构建步骤的格式／范围细节。文件规则已在实际读取后激活，且两份文件确已读取，但模型误把名称、SHA当作规则id，两次失败后耗尽额度，没有最终答复。该项保留失败，不把整体标为通过；修正载入规则的编号显示和读取提示后，须另行获批再复验。报告见本地 `evidence/agent/bluefatfish-rules-live-VwF0gu/rules-live-report.json`。
+
+已载入规则现在分别标记实际id与sha256，明确正文已生效；read_rule说明和无效编号错误指向可用编号。只读回放使用 `--rules-metadata-replay-check --background-component-check`，`replay-source.json` 指向原始真实失败目录、任务id及受保护文件哈希；不重放模型或修改原任务。相同候选的用户／项目规则38项及插件规则38项检查均通过，实际失败记录的8项回放核对通过。
+
+仅复验文件规则时，加 `--glob-only` 准备新目录并运行；原生使用 `--rules-glob-live-check`。必须另行批准并保存 `rules-glob-live-authorization.json`，`scope: "rules-glob"`、`maximumRequests: 6`，其余模型／预算和目录字段相同。该入口只执行原第四项，使用独立6次账本，未获批不创建请求账本或开始验收；旧16次记录不重置、不转移，也不重跑前三项。

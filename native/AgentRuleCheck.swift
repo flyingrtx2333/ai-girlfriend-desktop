@@ -108,7 +108,8 @@ import Darwin
             try capStore.extensions.plugins.setEnabled(capPlugin, true)
             _ = try capStore.rules.create(name: "limit", text: String(repeating: "B", count: 60_000), project: false, task: capStore.selected!)
             let capped = try capStore.rules.context(capStore.selected!).text
-            checks["pluginAndLocalRulesShareOne100000CharacterBodyLimit"] = capped.filter { $0 == "A" }.count == 60_000 && capped.filter { $0 == "B" }.count == 40_000 && capped.contains("已截断")
+            func bodyCount(_ character: Character) -> Int { capped.components(separatedBy: "\n").filter { !$0.isEmpty && $0.allSatisfy { $0 == character } }.reduce(0) { $0 + $1.count } }
+            checks["pluginAndLocalRulesShareOne100000CharacterBodyLimit"] = bodyCount("A") == 60_000 && bodyCount("B") == 40_000 && capped.contains("已截断")
             let slow = tasks.create(title: "规则变化实际取消", workspace: project.path, mode: .agent, workMode: .general)
             guard runtime.submit(input, taskID: slow, startImmediately: false) else { throw PetError(runtime.submissionError ?? "未保存规则选择") }
             let node = try String(contentsOf: output.appendingPathComponent("node-path.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)

@@ -17,7 +17,7 @@ struct AgentRuleContextEntry {
         for entry in entries {
             if entry.loaded {
                 let text = String(entry.definition.body.prefix(remaining)); remaining -= text.count
-                body += "\n[规则 \(entry.name) · \(entry.sha256)]\n" + text + (text.count < entry.definition.body.count ? "\n[规则正文超过100000字符总上限，已截断]" : "")
+                body += "\n[已载入规则 \(entry.name) · id=\(entry.id) · sha256=\(entry.sha256)]\n[正文已在当前上下文生效，无需再次调用read_rule。]\n" + text + (text.count < entry.definition.body.count ? "\n[规则正文超过100000字符总上限，已截断]" : "")
             } else { descriptions += "\n\(entry.name) · id=\(entry.id)\n" + entry.definition.description }
         }
         guard !body.isEmpty || !descriptions.isEmpty else { return "" }

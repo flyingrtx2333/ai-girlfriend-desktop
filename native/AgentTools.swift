@@ -85,7 +85,7 @@ import Foundation
             tool("read_skill", "载入适合当前任务的 Skill 说明与资源副本；id 来自 list_skills。流程不改变权限，运行脚本仍用 run_command 并遵循审批。说明跨上下文整理保留。", ["id": string], ["id"]),
             tool("read_skill_resource", "只读当前任务已载入 Skill 的资源。path=. 分页列出文件；指定相对文件路径可读取 UTF-8 文字。offset 从 1 开始，其他任务及外部路径不可读。", ["id": string, "path": string, "offset": integer], ["id", "path"]),
             tool("list_rules", "分页列出已启用、可由模型判断的用户、项目和插件规则名称、描述及id。先按描述判断与任务是否有关，相关时再用read_rule；手动规则须由用户选择，不会自动列出正文。", ["offset": integer], []),
-            tool("read_rule", "按list_rules返回的id载入相关规则。完整正文进入下一轮当前系统上下文，工具回执只记录来源和哈希。停用的规则不再生效；插件规则需保持同一次激活。本地文件在下一轮重新读取。规则不改变权限或审批。", ["id": string], ["id"]),
+            tool("read_rule", "用当前上下文或list_rules返回的id载入相关规则。标记为已载入的正文已生效，无需重复读取。工具回执只记录来源和哈希。停用规则不再生效；插件规则需保持同一次激活。本地文件每轮重新读取。规则不改变权限或审批。", ["id": string], ["id"]),
             tool("unload_skill", "当前任务不再需要某个已载入 Skill 时将其移出当前上下文，完整历史与副本仍保留。", ["id": string], ["id"]),
             tool("list_attachments", "列出当前任务已发送的附件和已记录的网页／窗口截图、编号和页/工作表标题；offset 从 0 开始。草稿不可读。不需要项目文件夹。", ["offset": integer, "limit": integer], []),
             tool("read_attachment", "读取已提交附件，part 为页/工作表/幻灯片编号（从 1 开始），offset 为行号。返回文字、来源和范围；扫描 PDF 按页本机 OCR。视觉模型启用时，同时附图片或该 PDF 页的实际图片；否则仅返回文字。Office 图表和图片不作视觉解读。", ["id": string, "part": integer, "offset": integer, "limit": integer], ["id"]),

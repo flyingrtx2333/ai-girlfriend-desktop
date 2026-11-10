@@ -2,24 +2,27 @@ import AppKit
 
 @MainActor final class AgentRulesLiveBudget {
     private struct Attempt: Codable { var id = UUID().uuidString; var created = Date() }
-    private struct Ledger: Codable { var version = 1, maximum = 16; var configuration: String; var attempts: [Attempt] = [] }
+    private struct Ledger: Codable { var version = 1; var maximum: Int; var configuration: String; var attempts: [Attempt] = [] }
     private let directory: URL, file: URL, configuration: String
+    let maximum: Int
     private var ledger: Ledger, signature = "missing"
     var used: Int { ledger.attempts.count }
-    init(output: URL, preferences: PetPreferences) throws {
-        directory = output; file = output.appendingPathComponent("rules-live-request-ledger.json")
-        let files = try AgentFiles(workspace: output.path), data = try files.readData(files.literalURL("rules-live-authorization.json"), maximum: 16_384)
-        guard let auth = try JSONSerialization.jsonObject(with: data) as? [String: Any], auth["scope"] as? String == "rules",
-              auth["maximumRequests"] as? Int == 16, auth["contextLimit"] as? Int == 8192, auth["replyLimit"] as? Int == 512, auth["model"] as? String == "deepseek-flash",
+    init(output: URL, preferences: PetPreferences, globOnly: Bool = false) throws {
+        let stem = globOnly ? "rules-glob-live" : "rules-live", scope = globOnly ? "rules-glob" : "rules"
+        maximum = globOnly ? 6 : 16
+        directory = output; file = output.appendingPathComponent(stem + "-request-ledger.json")
+        let files = try AgentFiles(workspace: output.path), data = try files.readData(files.literalURL(stem + "-authorization.json"), maximum: 16_384)
+        guard let auth = try JSONSerialization.jsonObject(with: data) as? [String: Any], auth["scope"] as? String == scope,
+              auth["maximumRequests"] as? Int == maximum, auth["contextLimit"] as? Int == 8192, auth["replyLimit"] as? Int == 512, auth["model"] as? String == "deepseek-flash",
               (auth["directory"] as? String).map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath() }) == output.resolvingSymlinksInPath(),
-              preferences.contextLimit == 8192, preferences.outputLimit == 512, preferences.model == "deepseek-flash" else { throw PetError("缺少本轮规则最多16次的明确授权，或 deepseek-flash、8192／512 配置已变化") }
+              preferences.contextLimit == 8192, preferences.outputLimit == 512, preferences.model == "deepseek-flash" else { throw PetError("缺少本轮规则最多\(maximum)次的明确授权，或 deepseek-flash、8192／512 配置已变化") }
         configuration = Self.fingerprint(preferences)
         if FileManager.default.fileExists(atPath: file.path) {
             signature = try files.entryMetadata(file).signature
             ledger = try JSONDecoder().decode(Ledger.self, from: files.readData(file, maximum: 65_536))
-            guard ledger.version == 1, ledger.maximum == 16, ledger.configuration == configuration, ledger.attempts.count <= 16, Set(ledger.attempts.map(\.id)).count == ledger.attempts.count,
+            guard ledger.version == 1, ledger.maximum == maximum, ledger.configuration == configuration, ledger.attempts.count <= maximum, Set(ledger.attempts.map(\.id)).count == ledger.attempts.count,
                   try files.entryMetadata(file).signature == signature else { throw PetError("规则 请求账本或配置已变化，保留原记录") }
-        } else { ledger = Ledger(configuration: configuration); try save(ledger) }
+        } else { ledger = Ledger(maximum: maximum, configuration: configuration); try save(ledger) }
     }
     private static func fingerprint(_ p: PetPreferences) -> String { AgentFiles.hash(Data([p.endpoint, p.model, String(p.contextLimit), String(p.outputLimit)].joined(separator: "\n").utf8)) }
     private func save(_ value: Ledger) throws {
@@ -28,23 +31,25 @@ import AppKit
         signature = try files.entryMetadata(file).signature; ledger = value
     }
     func request(preferences: PetPreferences) throws {
-        guard Self.fingerprint(preferences) == configuration, used < 16 else { throw PetError("规则真实请求已达16次或配置已变化，原记录与未完成任务保留") }
+        guard Self.fingerprint(preferences) == configuration, used < maximum else { throw PetError("规则真实请求已达\(maximum)次或配置已变化，原记录与未完成任务保留") }
         var next = ledger; next.attempts.append(Attempt()); try save(next)
     }
 }
 
 @MainActor extension AppDelegate {
-    func runAgentRulesLiveCheck(_ output: URL) async {
+    func runAgentRulesLiveCheck(_ output: URL, globOnly: Bool = false) async {
         var report: [String: Any] = [:], checks: [String: Bool] = [:], budget: AgentRulesLiveBudget?, ids: [String] = []
+        let stem = globOnly ? "rules-glob-live" : "rules-live", maximum = globOnly ? 6 : 16
         do {
             guard CommandLine.arguments.contains("--live-agent"), !["--manual-ui", "--local-rule-check", "--plugin-rule-check", "--plugin-agent-live-check"].contains(where: CommandLine.arguments.contains) else { throw PetError("真实规则验收不能混用其他检查入口") }
+            guard CommandLine.arguments.contains(globOnly ? "--rules-glob-live-check" : "--rules-live-check"), !CommandLine.arguments.contains(globOnly ? "--rules-live-check" : "--rules-glob-live-check") else { throw PetError("规则验收范围与入口不一致") }
             let production = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish")
             var preferences = PreferencesStore(directory: production).preferences
             preferences.voiceEnabled = false; preferences.wakeEnabled = false; preferences.screenObservationEnabled = false
-            let limit = try AgentRulesLiveBudget(output: output, preferences: preferences); budget = limit
-            let marker = output.appendingPathComponent("rules-live-started.json")
+            let limit = try AgentRulesLiveBudget(output: output, preferences: preferences, globOnly: globOnly); budget = limit
+            let marker = output.appendingPathComponent(stem + "-started.json")
             guard !FileManager.default.fileExists(atPath: marker.path), limit.used == 0 else { throw PetError("本目录已开始真实规则验收，保留原任务与账本，不重放") }
-            try JSONSerialization.data(withJSONObject: ["appPID": getpid(), "maximumRequests": 16]).write(to: marker, options: .atomic)
+            try JSONSerialization.data(withJSONObject: ["appPID": getpid(), "maximumRequests": maximum]).write(to: marker, options: .atomic)
             store.preferences = preferences; try store.savePreferences(); ensureAgent()
             guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统未初始化") }
             let project = output.appendingPathComponent("project"), sourceNames = ["README.md", "docs/README.md", "package.json"]
@@ -83,13 +88,14 @@ import AppKit
                 return try completedCalls(task).filter { $0.name == "read_file" }.compactMap { call in try (call.object["path"] as? String).map { files.relative(try files.resolve($0)) } }
             }
             for (index, value) in cases.enumerated() {
+                if globOnly && index != 3 { continue }
                 let id = try tasks.agents.createTask(role.id, store: tasks, workspace: value.1, workMode: .general); ids.append(id); allowed[id] = value.1 ?? "<none>"
                 tasks.update(id) { $0.title = value.0; $0.mode = .ask }
                 guard runtime.submit(value.2, taskID: id) else { throw PetError(runtime.submissionError ?? "真实规则输入未提交") }
                 let end = Date().addingTimeInterval(240)
                 while runtime.isRunning(id) && Date() < end { await wait(0.1) }
                 if runtime.isRunning(id) { runtime.cancel(id); throw PetError("真实规则观察到期，保留原进程结果和账本，不重放") }
-                guard let task = tasks.task(id), task.status == .completed else { throw PetError("真实规则任务未完成：" + (tasks.task(id)?.summary ?? value.0)) }
+                guard let task = tasks.task(id), task.status == .completed else { throw PetError("真实规则任务未完成：" + (tasks.task(id)?.events.last(where: { $0.status == "failed" })?.detail ?? value.0)) }
                 checks["case\(index + 1)HasActualModelReply"] = task.messages.contains(where: \.isReply) && task.modelReceipts?.contains(where: { $0.completed && $0.requestedModel == "deepseek-flash" }) == true
                 let calls = completedCalls(task)
                 switch index {
@@ -103,21 +109,52 @@ import AppKit
                     let paths = try readPaths(task)
                     checks["actualDocsReadActivatesGlobBeforePackageComparison"] = task.activeLocalRules?.contains(where: { $0.id == glob.id }) == true && paths.firstIndex(of: "docs/README.md").map { first in paths.firstIndex(of: "package.json").map { $0 > first } ?? false } == true
                 }
-                report["completedCases"] = index + 1
+                report["completedCases"] = ids.count
             }
             let finished = ids.compactMap(tasks.task)
             checks["allPublicSourcesRemainOriginal"] = try originals.allSatisfy { try Data(contentsOf: project.appendingPathComponent($0.key)) == $0.value }
             checks["onlyGrantedReadOnlyToolsExecuted"] = finished.allSatisfy { completedCalls($0).allSatisfy { ["read_file", "run_command", "list_rules", "read_rule", "load_tools", "update_plan", "finish_task", "read_task_history"].contains($0.name) } && $0.agent?.readOnly == true && $0.agent?.network == false }
-            checks["separateBoundedLedgerRetainsEveryAttempt"] = (1...16).contains(limit.used) && finished.reduce(0) { $0 + ($1.modelReceipts?.count ?? 0) } <= limit.used
+            checks["separateBoundedLedgerRetainsEveryAttempt"] = (1...maximum).contains(limit.used) && finished.reduce(0) { $0 + ($1.modelReceipts?.count ?? 0) } <= limit.used
             report["rules"] = [always, manual, decision, glob].map { ["id": $0.id, "name": $0.invocation, "sha256": $0.sha256, "trigger": $0.definition!.trigger.rawValue] }
             report["sourceHashes"] = originals.mapValues(AgentFiles.hash)
         } catch { report["error"] = error.localizedDescription }
         agentRuntime?.stopAll(); let end = Date().addingTimeInterval(8); while agentRuntime?.isWorking == true && Date() < end { await wait(0.03) }
         report["taskIDs"] = ids; report["answers"] = ids.map { agentStore?.task($0)?.messages.last(where: \.isReply)?.content ?? "" }; report["requiresIndependentAnswerReview"] = true
         report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 } && agentRuntime?.isWorking != true
-        report["appPID"] = getpid(); report["usedRequests"] = budget?.used ?? 0; report["maximumRequests"] = 16; report["activeJobs"] = agentRuntime?.isWorking == true; report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
+        report["appPID"] = getpid(); report["usedRequests"] = budget?.used ?? 0; report["maximumRequests"] = maximum; report["globOnly"] = globOnly; report["activeJobs"] = agentRuntime?.isWorking == true; report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
-        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("rules-live-result.json"), options: .atomic)
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent(stem + "-result.json"), options: .atomic)
+    }
+
+    func runAgentRulesMetadataReplayCheck(_ output: URL) async {
+        var report: [String: Any] = [:], checks: [String: Bool] = [:]
+        do {
+            guard let input = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("replay-source.json"))) as? [String: Any] else { throw PetError("回放输入需要JSON对象") }
+            guard let path = input["directory"] as? String, let id = input["taskID"] as? String, UUID(uuidString: id) != nil, let hashes = input["hashes"] as? [String: String], !hashes.isEmpty else { throw PetError("缺少原始真实失败记录") }
+            let root = URL(fileURLWithPath: path), files = try AgentFiles(workspace: path)
+            func originalBytesMatch() throws -> Bool { try hashes.allSatisfy { name, hash in try files.fileHash(files.literalURL(name), maximum: 20_000_000) == hash } }
+            guard try originalBytesMatch() else { throw PetError("原始记录已经变化，停止只读回放") }
+            let task = try JSONDecoder().decode(AgentTaskRecord.self, from: files.readData(files.literalURL("profile/agent/" + id + ".json"), maximum: 20_000_000))
+            let rules = AgentRules(profile: root.appendingPathComponent("profile"), sharedHome: root.appendingPathComponent("shared-home"), plugins: AgentPlugins(profile: root.appendingPathComponent("profile")))
+            guard let reference = task.activeLocalRules?.first else { throw PetError("原始文件规则未激活") }
+            let item = try rules.current(reference.id, task: task), context = try rules.context(task).text
+            let wrongIDs = task.messages.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "read_rule" }.compactMap { $0.object["id"] as? String }
+            checks["usesActualFailedModelTaskAndGlobReference"] = task.status == .failed && task.modelReceipts?.count == 7 && item.definition?.trigger == .glob && reference.workspace == task.workspace
+            checks["originalWrongInvocationAndHashRemainRecorded"] = wrongIDs == [item.invocation, item.sha256]
+            checks["loadedRuleExposesItsExactResolvableToolID"] = context.contains("id=" + reference.id) && item.id == reference.id
+            checks["loadedBodyAndAlreadyActiveHintArePresent"] = context.contains(item.definition!.body) && context.contains("无需再次调用read_rule")
+            checks["sourceHashIsSeparatelyLabeled"] = context.contains("sha256=" + item.sha256) && item.sha256 != reference.id
+            checks["readonlyAskScopeRemainsIntact"] = task.mode == .ask && task.agent?.readOnly == true && task.agent?.network == false
+            let definition = AgentTools.definitions(mode: .ask).first { ($0["function"] as? [String: Any])?["name"] as? String == "read_rule" }?["function"] as? [String: Any]
+            checks["toolDescriptionExplainsAlreadyLoadedRules"] = (definition?["description"] as? String)?.contains("无需重复读取") == true
+            guard let ledger = try JSONSerialization.jsonObject(with: files.readData(files.literalURL("rules-live-request-ledger.json"))) as? [String: Any] else { throw PetError("原始请求账本无效") }
+            checks["original16AttemptsAndAllSourceBytesRemainUnchanged"] = try (ledger["attempts"] as? [Any])?.count == 16 && originalBytesMatch()
+            report["actualSourceTaskID"] = id; report["ruleContext"] = context; report["protectedOriginalFiles"] = hashes.count
+        } catch { report["error"] = error.localizedDescription }
+        report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["appPID"] = getpid(); report["modelRequests"] = 0
+        report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
+        if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("rules-metadata-replay-result.json"), options: .atomic)
     }
 }
 

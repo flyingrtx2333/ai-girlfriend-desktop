@@ -45,7 +45,7 @@ struct AgentPluginRuleItem: Identifiable {
         } }
     }
     func currentRule(_ id: String) throws -> AgentPluginRuleItem {
-        guard let item = try ruleItems().first(where: { $0.id == id && $0.enabled }) else { throw PetError("规则已停用、移除或更新，请刷新插件") }
+        guard let item = try ruleItems().first(where: { $0.id == id && $0.enabled }) else { throw PetError("未找到已启用的规则id，请使用当前上下文或list_rules中的编号；停用、移除或更新后请重新选择规则") }
         try validateRuleParent(item.reference); return item
     }
     private func validateRuleParent(_ reference: AgentPluginRuleReference) throws {
