@@ -72,7 +72,7 @@ import UniformTypeIdentifiers
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; manager.onConfigureAgent = { [weak self] id in self?.openAgent(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showMCP() {
         openMCP(nil)
@@ -86,8 +86,11 @@ import UniformTypeIdentifiers
         let manager = AgentHookWindow(service: store.hooks, workspace: workspace); hookWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showAgents() {
-        if let window = agentWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        openAgent(nil)
+    }
+    private func openAgent(_ id: String?) {
+        if let manager = agentWindow, let window = manager.window, window.isVisible { if let id { manager.selectProfile(id) }; window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showTeams() {
         if let window = teamWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }

@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = NSTextField(labelWithString: "")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
+    private var openedPluginModelHash: String?
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
         self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
@@ -80,7 +81,7 @@ import UniformTypeIdentifiers
     }
     private func selectRow(_ id: String?) { loading = true; defer { loading = false }; if let index = values.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } else { table.deselectAll(nil) } }
     private func reload() {
-        do { let (text, hash) = try store.agents.document(); values = try store.agents.decode(text); openedHash = hash; loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
+        do { openedHash = try store.agents.document().1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = try store.agents.list(); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
         catch { state.stringValue = error.localizedDescription }
     }
     private func open(_ id: String?) {
@@ -89,15 +90,21 @@ import UniformTypeIdentifiers
         permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0); readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; enabled.state = value?.enabled == true ? .on : .off; selectedTools = Set(value?.tools ?? [])
         selectedSkills = Set(value?.skills ?? []); selectedMCP = Set(value?.mcpServers ?? []); toolPermissions = value?.toolPermissions ?? [:]; mcpPermissions = value?.mcpToolPermissions ?? []
         refreshMenus()
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value == nil ? "暂无 Agent" : ""
+        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value?.pluginSource.map { "由插件管理 · " + $0.name } ?? (value == nil ? "暂无 Agent" : "")
     }
     private func capture() {
         guard let i = values.firstIndex(where: { $0.id == selectedID }) else { return }
+        if values[i].pluginSource != nil { values[i].model = model.stringValue; return }
         values[i].name = name.stringValue; values[i].description = purpose.stringValue; values[i].model = model.stringValue; values[i].instructions = instructions.string
         values[i].permission = AgentPermissionMode.allCases[max(0, permission.indexOfSelectedItem)]; values[i].readOnly = readOnly.state == .on; values[i].network = network.state == .on; values[i].enabled = enabled.state == .on; values[i].tools = selectedTools.sorted()
         values[i].skills = selectedSkills.isEmpty ? nil : selectedSkills.sorted(); values[i].mcpServers = selectedMCP.isEmpty ? nil : selectedMCP.sorted(); values[i].toolPermissions = toolPermissions.isEmpty ? nil : toolPermissions; values[i].mcpToolPermissions = mcpPermissions.isEmpty ? nil : mcpPermissions
     }
-    private func updateControls() { let hasValue = selectedID != nil; for item in [name, purpose, model, permission, tools, skills, mcp, readOnly, network, enabled] as [NSControl] { item.isEnabled = hasValue }; instructions.isEditable = hasValue; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue }
+    private func updateControls() {
+        let hasValue = selectedID != nil, packaged = values.first { $0.id == selectedID }?.pluginSource != nil
+        for item in [name, purpose, permission, tools, skills, mcp, readOnly, network, enabled] as [NSControl] { item.isEnabled = hasValue && !packaged }
+        model.isEnabled = hasValue; instructions.isEditable = hasValue && !packaged; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue
+    }
+    func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload() }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
@@ -174,7 +181,14 @@ import UniformTypeIdentifiers
         while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(suffix)"; suffix += 1 }
         values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name)
     }
-    @objc private func saveProfile() { do { capture(); try store.agents.save(store.agents.encode(values), expectedHash: openedHash); dirty = false; reload(); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
+    @objc private func saveProfile() {
+        do {
+            capture()
+            if let value = values.first(where: { $0.id == selectedID }), value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
+            else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
+            dirty = false; reload(); state.stringValue = "已保存"
+        } catch { state.stringValue = error.localizedDescription }
+    }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let id = try store.agents.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
     @objc private func importProfiles() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }

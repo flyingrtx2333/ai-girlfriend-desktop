@@ -33,6 +33,7 @@ struct AgentProfile: Codable, Identifiable {
     var mcpServers: [String]?
     var toolPermissions: [String: AgentToolPermission]?
     var mcpToolPermissions: [AgentMCPToolPermission]?
+    var pluginSource: AgentPluginAgentReference?
     var availableTools: Set<String> {
         Set(tools).union((skills ?? []).isEmpty ? [] : AgentProfiles.skillTools).union((mcpServers ?? []).isEmpty ? [] : AgentMCP.tools)
     }
@@ -64,14 +65,19 @@ struct AgentProfileAssignment: Codable {
 
 @MainActor final class AgentProfiles {
     let directory: URL
+    let plugins: AgentPlugins
     var onDisable: ((String) -> Void)?
+    var onPluginChange: ((String) -> Void)?
     private struct Document: Codable { var agents: [AgentProfile] }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     static let toolNames = Set(AgentTools.names).subtracting(["finish_task"])
     static let mutating: Set<String> = ["write_file", "edit_file", "write_memory", "edit_project_knowledge", "git_init", "git_commit", "git_create_worktree", "git_push", "git_recycle_worktree", "git_restore_worktree", "desktop_action", "office_create", "office_edit"]
     nonisolated static let skillTools: Set<String> = ["list_skills", "read_skill", "read_skill_resource", "unload_skill"]
     static let unsupported = Set<String>()
-    init(profile: URL) { directory = profile }
+    init(profile: URL, plugins: AgentPlugins? = nil) {
+        directory = profile; self.plugins = plugins ?? AgentPlugins(profile: profile)
+        _ = self.plugins.observeChanges { [weak self] name in self?.onPluginChange?(name) }
+    }
     private func file() throws -> URL { try AgentFiles(workspace: directory.path).resolve("extensions/agents.json") }
     func document() throws -> (String, String?) {
         let url = try file()
@@ -82,7 +88,8 @@ struct AgentProfileAssignment: Codable {
         return (text, AgentFiles.hash(data))
     }
     func list(enabledOnly: Bool = false) throws -> [AgentProfile] {
-        let values = try decode(document().0)
+        let values = try decode(document().0) + packagedProfiles()
+        guard Set(values.map(\.id)).count == values.count else { throw PetError("Agent 编号重复") }
         return enabledOnly ? values.filter(\.enabled) : values
     }
     func profile(_ id: String) throws -> AgentProfile {
@@ -128,7 +135,7 @@ struct AgentProfileAssignment: Codable {
         }
         return values
     }
-    func encode(_ agents: [AgentProfile]) throws -> String { String(decoding: try encoder.encode(Document(agents: agents)), as: UTF8.self) }
+    func encode(_ agents: [AgentProfile]) throws -> String { String(decoding: try encoder.encode(Document(agents: agents.filter { $0.pluginSource == nil })), as: UTF8.self) }
     func save(_ text: String, expectedHash: String?) throws {
         let values = try decode(text), previous = try document()
         guard previous.1 == expectedHash else { throw PetError("Agent 配置已改变，请重新读取后保存") }
@@ -180,7 +187,7 @@ struct AgentProfileAssignment: Codable {
             result = Self.tighter(result, store.automations.permission(record))
             result = Self.tighter(result, record.permission)
             result = Self.tighter(result, record.inheritedLimits?.permission ?? .automatic)
-            if let agent = record.agent { result = Self.tighter(result, try profile(agent.profile.id).permission) }
+            if let agent = record.agent { result = Self.tighter(result, try currentProfile(agent.profile).permission) }
         }
         return result
     }
@@ -188,7 +195,7 @@ struct AgentProfileAssignment: Codable {
         guard let binding = task.agent, binding.permissionCeiling == .automatic, store.automations.permission(task) == .automatic, (task.inheritedLimits?.permission ?? .automatic) == .automatic else { return false }
         return try ancestors(task, store: store).allSatisfy { record in
             guard record.permission == .automatic, store.automations.permission(record) == .automatic, (record.inheritedLimits?.permission ?? .automatic) == .automatic else { return false }
-            return try record.agent.map { try profile($0.profile.id).permission == .automatic } ?? true
+            return try record.agent.map { try currentProfile($0.profile).permission == .automatic } ?? true
         }
     }
     func limits(_ task: AgentTaskRecord, store: AgentStore? = nil) throws -> (readOnly: Bool, network: Bool) {
@@ -199,7 +206,7 @@ struct AgentProfileAssignment: Codable {
             let automation = store?.automations.limits(record) ?? (readOnly: record.automation?.readOnly == true, network: record.automation?.network ?? true)
             readOnly = readOnly || automation.readOnly; network = network && automation.network
             guard let binding = record.agent else { continue }
-            let current = try profile(binding.profile.id)
+            let current = try currentProfile(binding.profile)
             readOnly = readOnly || binding.readOnly || current.readOnly || [.ask, .plan].contains(binding.modeCeiling)
             network = network && binding.network && current.network
         }
@@ -207,7 +214,7 @@ struct AgentProfileAssignment: Codable {
     }
     func permission(_ call: AgentToolCall, task: AgentTaskRecord, store: AgentStore? = nil) throws -> AgentToolPermission {
         guard let binding = task.agent else { return .inherit }
-        let current = try profile(binding.profile.id)
+        let current = try currentProfile(binding.profile)
         var rule = AgentToolPermission.intersection(binding.profile.toolPermissions?[call.name], current.toolPermissions?[call.name])
         if let ceiling = binding.toolPermissionCeiling?[call.name], [.ask, .deny].contains(ceiling) { rule = .tighter(rule, ceiling) }
         if call.name == "call_mcp_tool", let id = call.object["server_id"] as? String, let name = call.object["tool"] as? String {
@@ -224,7 +231,7 @@ struct AgentProfileAssignment: Codable {
     }
     func checkSkill(_ id: String, task: AgentTaskRecord) throws {
         guard let binding = task.agent else { return }
-        let current = try profile(binding.profile.id)
+        let current = try currentProfile(binding.profile)
         guard binding.skills.contains(id), (current.skills ?? []).contains(id) else { throw PetError("此 Skill 未分配给当前 Agent") }
     }
     func filterDefinitions(_ values: [[String: Any]], task: AgentTaskRecord, store: AgentStore) throws -> [[String: Any]] {
@@ -252,7 +259,7 @@ struct AgentProfileAssignment: Codable {
             if record.inheritedLimits?.network == false, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentMCP.externalOperations + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || AgentMCP.isModelToolName(call.name) || call.name == "run_command" && call.object["network"] as? Bool == true { throw PetError("分支保留原任务禁止外部连接的范围") }
         }
         guard let binding = task.agent else { return }
-        let current = try profile(binding.profile.id)
+        let current = try currentProfile(binding.profile)
         let limits = try limits(task, store: store)
         if binding.ownerID != nil, task.workspace != binding.workspace { throw PetError("委派任务不能切换项目范围") }
         let routed = AgentMCP.isModelToolName(call.name) ? "外部连接器" : call.name
@@ -288,7 +295,7 @@ struct AgentProfileAssignment: Codable {
             var tools = binding.tools, servers = binding.mcpServers, rules = binding.toolPermissionCeiling ?? [:]
             var mcpRules = binding.mcpPermissionCeiling ?? []
             for record in [original] + owners {
-                guard let role = record.agent else { continue }; let live = try profile(role.profile.id)
+                guard let role = record.agent else { continue }; let live = try currentProfile(role.profile)
                 let common = Self.skillTools.union(["load_tools", "update_plan", "ask_user", "read_task_history", "finish_task"])
                 tools = tools.intersection(role.tools.union(common)).intersection(live.availableTools.union(common))
                 if record.id == original.id { binding.profile.skills = binding.skills.intersection(live.skills ?? []).sorted() }

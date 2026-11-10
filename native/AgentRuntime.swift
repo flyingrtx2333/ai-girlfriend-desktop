@@ -48,6 +48,10 @@ import Foundation
             guard let self else { return }
             for task in self.store.tasks where task.agent?.profile.id == profileID { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
         }
+        store.agents.onPluginChange = { [weak self] name in
+            guard let self else { return }
+            for task in self.store.tasks where task.agent?.profile.pluginSource?.name == name { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
+        }
         store.teams.onChange = { [weak self] teamID in
             guard let self else { return }
             for task in self.store.tasks where task.team?.team.id == teamID { self.cancel(task.id) }
@@ -355,7 +359,7 @@ import Foundation
             defer { if self.analyses[id]?.token == analysis.token { self.analyses[id] = nil; self.notifyChange(id) } }
             do {
                 try self.store.teams.check(task, store: self.store)
-                if let role = task.agent?.profile.id { _ = try self.store.agents.profile(role) }
+                if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role) }
                 let p = try self.taskPreferences(id), key = try self.keychain.read("chat")
                 if recap { try await self.generateRecap(id, preferences: p, key: key) }
                 else {
@@ -618,7 +622,7 @@ import Foundation
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)
             if let binding = store.task(id)?.agent {
-                _ = try store.agents.profile(binding.profile.id)
+                _ = try store.agents.currentProfile(binding.profile)
             }
             run.preferences = p
             store.update(id) { $0.model = p.model }
