@@ -460,7 +460,7 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
-        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
+        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty
         let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
