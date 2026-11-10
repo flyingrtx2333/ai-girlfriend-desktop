@@ -112,7 +112,7 @@ import UniformTypeIdentifiers
         if let window = configWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         do {
             let document = try service.pluginDocument(reference)
-            let editor = AgentHookConfigWindow(text: document.text, title: "插件 Hooks · " + reference.name) { [weak self] text in
+            let editor = AgentHookConfigWindow(text: document.text, title: "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)) { [weak self] text in
                 guard let self else { return }
                 try service.savePluginDocument(text, reference: reference, original: document.original, expectedHash: document.hash); reload()
             }; configWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
