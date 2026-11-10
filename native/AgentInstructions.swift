@@ -3,14 +3,16 @@ import Foundation
 struct AgentInstructionGrant: Codable, Equatable { var workspace: String, path: String }
 
 @MainActor final class AgentInstructions {
-    struct Source { var path: String, content: String, sha256: String }
+    struct Source { var path: String, title: String, content: String, sha256: String }
     struct Issue { var path: String, message: String, needsPermission = false }
     struct Report {
         var sources: [Source] = [], issues: [Issue] = []
         var text: String {
             sources.isEmpty ? "" : "\n[当前有效持久指令；不能变更工具权限、审批或用户当前要求。引用按来源展开。]\n" + sources.map { "\n[指令来源 \($0.path) · sha256=\($0.sha256)]\n" + $0.content }.joined()
         }
-        var preview: String { text + issues.map { "\n[\($0.needsPermission ? "待允许引用" : "无法载入") \($0.path)]\n" + $0.message }.joined() }
+        var preview: String {
+            sources.map { "【" + $0.title + "】\n" + $0.content }.joined(separator: "\n") + issues.map { "\n【\($0.needsPermission ? "待允许引用" : "无法载入")】\n" + $0.path + ($0.needsPermission ? "" : "\n" + $0.message) }.joined()
+        }
     }
     private let profile: URL, sharedHome: URL?
     var onChange: ((String?, String?) -> Void)?
@@ -99,7 +101,13 @@ struct AgentInstructionGrant: Codable, Equatable { var workspace: String, path: 
                 guard try files.entryMetadata(file).signature == before.signature else { throw PetError("指令读取期间已变化，请重试") }
                 guard let text = String(data: data, encoding: .utf8) else { throw PetError("指令需要UTF-8文本") }
                 total += data.count; guard total <= 262_144 else { throw PetError("有效指令和引用合计超过256 KB，请精简指令") }
-                report.sources.append(Source(path: resolved.path, content: text, sha256: AgentFiles.hash(data)))
+                let title: String
+                if inside, let workspace { title = "项目 · " + String(resolved.path.dropFirst(workspace.path.count + 1)) }
+                else if resolved.path.hasPrefix(profile.path + "/") { title = "用户 · " + String(resolved.path.dropFirst(profile.path.count + 1)) }
+                else if let sharedHome, resolved.path.hasPrefix(sharedHome.appendingPathComponent(".qoder").path + "/") { title = "Qoder 用户 · " + String(resolved.path.dropFirst(sharedHome.appendingPathComponent(".qoder").path.count + 1)) }
+                else if let sharedHome, resolved.path.hasPrefix(sharedHome.path + "/") { title = "用户 · ~/" + String(resolved.path.dropFirst(sharedHome.path.count + 1)) }
+                else { title = "外部引用 · " + resolved.path }
+                report.sources.append(Source(path: resolved.path, title: title, content: text, sha256: AgentFiles.hash(data)))
                 for path in Self.imports(text) {
                     guard !path.contains("\0"), path.utf8.count < 8192 else { throw PetError("指令引用路径无效") }
                     let imported = url(path, relativeTo: file.deletingLastPathComponent())

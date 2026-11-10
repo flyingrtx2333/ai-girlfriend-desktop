@@ -1,8 +1,10 @@
 import AppKit
+import Darwin
 
 @MainActor extension AppDelegate {
     func runAgentInstructionCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], attempts = 0
+        func waitUntil(_ test: () -> Bool) async -> Bool { let end = Date().addingTimeInterval(10); while !test() && Date() < end { await wait(0.03) }; return test() }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统未初始化") }
             runtime.modelRequestCheck = { attempts += 1; throw PetError("指令原生检查禁止模型请求") }
@@ -47,7 +49,7 @@ import AppKit
             do { _ = try context(id) } catch { rejected = error.localizedDescription.contains("有效指令") }
             checks["externalImportIsVisibleButUnreadUntilExplicitAllowance"] = rejected && blocked.issues.contains { $0.needsPermission && $0.path == external.path } && !blocked.preview.contains("EXTERNAL_ALLOWED_639")
             let effective = try AgentMemory.snapshot(.effectiveInstructions, store: tasks, taskID: id)
-            checks["effectiveInstructionsAreReadonlyAndShowSourceAndPendingPath"] = effective.content.contains(rootFile.path) && effective.content.contains(external.path) && effective.content.contains("sha256=")
+            checks["effectiveInstructionsAreReadonlyAndShowSourceAndPendingPath"] = effective.content.contains("项目 · AGENTS.md") && effective.content.contains(external.path) && effective.content.contains("ROOT_INSTRUCTIONS_731") && !effective.content.contains("sha256=")
             do { _ = try AgentMemory.save(.effectiveInstructions, content: "replace", expectedHash: effective.hash, store: tasks, taskID: id); checks["effectiveViewCannotReplaceSource"] = false }
             catch { checks["effectiveViewCannotReplaceSource"] = try Data(contentsOf: rootFile) != Data("replace".utf8) }
             try service.allow(external, store: tasks, taskID: id)
@@ -60,6 +62,18 @@ import AppKit
             checks["actualStoredTaskRetainsDiscoveryAndExactWorkspaceFileAllowance"] = decoded.instructionDirectories == task(id).instructionDirectories && decoded.instructionGrants == [AgentInstructionGrant(workspace: project.path, path: external.path)] && service.report(decoded).text.contains("EXTERNAL_ALLOWED_639")
             try service.revoke(external.path, store: tasks, taskID: id)
             checks["revocationImmediatelyRemovesExternalBodyAndPreservesSource"] = try !service.report(task(id)).preview.contains("EXTERNAL_ALLOWED_639") && service.report(task(id)).issues.contains(where: \.needsPermission) && Data(contentsOf: external) == Data("EXTERNAL_ALLOWED_639\n".utf8)
+            let slow = tasks.create(title: "撤销指令实际取消", workspace: project.path, mode: .agent, workMode: .general)
+            try service.allow(external, store: tasks, taskID: slow)
+            guard runtime.submit("核对本任务的命令取消，不发送模型请求。", taskID: slow, startImmediately: false) else { throw PetError(runtime.submissionError ?? "命令取消输入未保存") }
+            let node = try String(contentsOf: output.appendingPathComponent("node-path.txt"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            let pending = try call("run_command", ["command": "'" + node.replacingOccurrences(of: "'", with: "'\\''") + "' slow.cjs", "timeout_seconds": 40, "network": false])
+            tasks.update(slow) { $0.permission = .automatic; $0.pendingCalls = [pending] }; runtime.start(slow)
+            let pidFile = project.appendingPathComponent("slow-pids.json")
+            guard await waitUntil({ FileManager.default.fileExists(atPath: pidFile.path) && runtime.isRunning(slow) }), let pids = try JSONSerialization.jsonObject(with: Data(contentsOf: pidFile)) as? [String: Int], let parentProcess = pids["pid"], let childProcess = pids["child"] else { throw PetError("实际指令撤销进程尚未启动") }
+            checks["allowedInstructionTaskOwnsActualLiveParentAndChild"] = kill(pid_t(parentProcess), 0) == 0 && kill(pid_t(childProcess), 0) == 0
+            try service.revoke(external.path, store: tasks, taskID: slow)
+            checks["revocationCancelsActualTaskAndBothProcesses"] = await waitUntil { !runtime.isRunning(slow) && kill(pid_t(parentProcess), 0) != 0 && kill(pid_t(childProcess), 0) != 0 }
+            report["actualCancelledPIDs"] = [parentProcess, childProcess]
             try rootOriginal.write(to: rootFile, options: .atomic)
             let child = output.appendingPathComponent("ancestor repo/packages/app"), ancestorID = tasks.create(title: "仓库上级指令允许", workspace: child.path, mode: .ask, workMode: .general)
             let parent = output.appendingPathComponent("ancestor repo/AGENTS.md"), parentReport = service.report(task(ancestorID))
@@ -80,7 +94,7 @@ import AppKit
             checks["noModelReceiptsOrSyntheticAssistantReplies"] = tasks.tasks.allSatisfy { (tasks.task($0.id)?.modelReceipts ?? []).isEmpty && tasks.task($0.id)?.messages.contains(where: \.isReply) != true }
             report["checkedTaskID"] = id; report["uiTaskID"] = other; report["sourceHash"] = AgentFiles.hash(original); report["initialContext"] = initial; report["effectiveContext"] = try context(id)
         } catch { report["error"] = error.localizedDescription }
-        agentRuntime?.stopAll()
+        agentRuntime?.stopAll(); let end = Date().addingTimeInterval(8); while agentRuntime?.isWorking == true && Date() < end { await wait(0.03) }
         report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         report["appPID"] = getpid(); report["blockedModelAttempts"] = attempts; report["activeJobs"] = agentRuntime?.isWorking == true; report["activationCount"] = attachmentCheckActivations; report["applicationActive"] = NSApp.isActive; report["visibleWindowCount"] = NSApp.windows.filter(\.isVisible).count
         report["scope"] = "Actual user/project/nested instruction files, recursive imports, successful native file reads, exact external-file allowances and revocation, workspace isolation and stored task records. No external model requests; model instruction following and window behavior are not claimed."
