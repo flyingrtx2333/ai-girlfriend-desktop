@@ -137,6 +137,7 @@ import AppKit
         metadata.stringValue = item.kind.title + " · " + item.source.title + " · " + item.sender + " · " + date
         let text = item.body + (item.handled ? "\n\n" + outcome(item) : "")
         body.string = text; open.isHidden = false
+        if item.mcpInputID != nil { reply.string = ""; replySavedText = ""; replyLoaded = false; updateActions(); return }
         mark.isHidden = item.callID != nil; mark.title = item.handled ? "标记待处理" : "标记已处理"
         if item.kind == .question {
             if changed || !replyLoaded {
@@ -160,7 +161,7 @@ import AppKit
     }
     @discardableResult private func persistReply() -> Bool {
         draftSave?.cancel(); draftSave = nil
-        guard let item = selected, item.kind == .question, reply.string != replySavedText else { return true }
+        guard let item = selected, item.kind == .question, item.mcpInputID == nil, reply.string != replySavedText else { return true }
         do {
             try attention.saveReply(item, text: reply.string); replySavedText = reply.string
             if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = .secondaryLabelColor }

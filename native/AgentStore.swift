@@ -68,6 +68,7 @@ import Foundation
         desktop = AgentDesktop(profile: directory)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         deletions = AgentTaskDeletion(directory: self.directory)
+        mcp.taskStore = self
         organization.suppressDeletedArchives(deletions.workspaceIDs)
         var previousSelection: String?
         if let data = try? Data(contentsOf: self.directory.appendingPathComponent("index.json")), let index = try? JSONDecoder().decode(Index.self, from: data) {

@@ -13,6 +13,7 @@ struct AgentAttentionItem: Identifiable, Equatable, Sendable {
     var kind: AgentAttentionKind, source: AgentAttentionSource
     var created: Date, handledAt: Date?, decision: String?
     var callID: String?, requestSignature: String?
+    var mcpInputID: String?
     var canExecutePlan = false
     var handled: Bool { decision != nil || handledAt != nil }
     var date: Date { handledAt ?? created }
@@ -162,7 +163,7 @@ struct AgentAttentionItem: Identifiable, Equatable, Sendable {
         let records = store.tasks.filter { !$0.archived && $0.kind != "hook" }
         // Streaming text does not change handled requests; refresh it at the next execution state transition.
         let keys = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0.status.rawValue + ":" + $0.title + ":" + ($0.status == .running ? "streaming" : $0.updated.description)) })
-        let next = keys.keys.sorted().map { $0 + ":" + keys[$0]! }.joined(separator: "\n")
+        let next = keys.keys.sorted().map { $0 + ":" + keys[$0]! }.joined(separator: "\n") + "\n" + store.mcp.userInputs.requests.map(\.id).joined(separator: "\n")
         guard force || next != signature else { return }; signature = next
         refreshTask?.cancel(); generation += 1; let ticket = generation, directory = store.directory, previous = force ? [:] : cache
         loading = true
@@ -188,8 +189,13 @@ struct AgentAttentionItem: Identifiable, Equatable, Sendable {
                 guard let self, !Task.isCancelled, generation == ticket, settings.enabled, let store = self.store else { return }
                 guard store.refreshDeletedRecords() else { throw PetError(store.deletions.issue ?? "任务删除记录不可用") }
                 let live = Set(store.tasks.filter { !$0.archived }.map(\.id)); cache = result.0.filter { live.contains($0.key) }
-                items = cache.values.flatMap(\.items).filter { settings.sources.contains($0.source.rawValue) && settings.kinds.contains($0.kind.rawValue) }.map { value in
-                    var item = value; if item.callID == nil { item.handledAt = document.handled[item.id] }; return item
+                let questions = store.mcp.userInputs.requests.compactMap { request -> AgentAttentionItem? in
+                    guard let task = store.tasks.first(where: { $0.id == request.taskID && !$0.archived }) else { return nil }
+                    let source: AgentAttentionSource = task.automation != nil ? .automation : task.agent?.ownerID != nil ? .agent : .local
+                    return AgentAttentionItem(id: "mcp-input:" + request.id, taskID: task.id, title: task.title, summary: String(request.message.prefix(240)), body: request.message, sender: request.serverName, kind: .question, source: source, created: request.received, handledAt: nil, decision: nil, mcpInputID: request.id)
+                }
+                items = (cache.values.flatMap(\.items) + questions).filter { settings.sources.contains($0.source.rawValue) && settings.kinds.contains($0.kind.rawValue) }.map { value in
+                    var item = value; if item.callID == nil && item.mcpInputID == nil { item.handledAt = document.handled[item.id] }; return item
                 }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
                 issue = result.1.isEmpty ? nil : "\(result.1.count) 项记录未载入：" + result.1.prefix(2).joined(separator: "；")
                 loading = false; refreshTask = nil; revision += 1; onChange?()

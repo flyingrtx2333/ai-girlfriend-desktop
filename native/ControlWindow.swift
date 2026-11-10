@@ -99,6 +99,8 @@ final class FormDocumentView: NSView {
     }
     private var messageSearch: MessageSearch?, pendingMessageReveal = false
     private let taskFind = AgentTaskFindBar()
+    private let mcpInputRow = NSStackView(), mcpInputButton = NSButton()
+    private var mcpInputPanel: AgentMCPUserInputPanel?
     private let status = NSTextField(labelWithString: "")
     private let savedStatus = NSTextField(labelWithString: "")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
@@ -482,7 +484,10 @@ final class FormDocumentView: NSView {
         let lower = workbenchLower; lower.orientation = .horizontal; lower.spacing = 8; lower.addArrangedSubview(resumeButton); lower.addArrangedSubview(NSView()); lower.addArrangedSubview(modelCaption)
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
         configureApprovalPanel()
-        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
+        mcpInputRow.orientation = .horizontal; mcpInputRow.addArrangedSubview(mcpInputButton); mcpInputRow.addArrangedSubview(NSView()); mcpInputRow.isHidden = true
+        mcpInputButton.target = self; mcpInputButton.action = #selector(showMCPUserInput); mcpInputButton.setAccessibilityLabel("回答连接器问询")
+        mcpInputButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
         conversation.addSubview(column)
         workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
         workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
@@ -1265,6 +1270,10 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        if let panel = mcpInputPanel {
+            try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
+            panel.dismiss(); mcpInputPanel = nil
+        }
         taskFind.reset()
         taskSwitcher?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
@@ -1886,6 +1895,14 @@ final class FormDocumentView: NSView {
     }
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
+    @objc private func showMCPUserInput() {
+        guard let window, window.attachedSheet == nil, let id = agentTaskID,
+              let inputs = companion?.agentStore?.mcp.userInputs, let request = inputs.first(taskID: id) else { return }
+        let panel = AgentMCPUserInputPanel(request: request, inputs: inputs)
+        mcpInputPanel = panel
+        panel.onClose = { [weak self, weak panel] in if self?.mcpInputPanel === panel { self?.mcpInputPanel = nil } }
+        panel.present(in: window)
+    }
     private func presentRoundRollback(taskID: String, messageID: String) {
         guard let store = companion?.agentStore else { return }
         if agentTaskID == taskID, !saveAgentDraft() { return }
@@ -2103,6 +2120,10 @@ final class FormDocumentView: NSView {
             }
             approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived; approvalPanel.isHidden = false
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
+        let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
+        mcpInputRow.isHidden = mcpRequest == nil
+        if let mcpRequest { mcpInputButton.title = "回答 " + String(mcpRequest.serverName.prefix(32)) }
+        if let panel = mcpInputPanel, panel.request.id != mcpRequest?.id { panel.dismiss(); mcpInputPanel = nil }
         composer.isEditable = !task.archived && !managed
         taskFind.update(taskID: task.id, sources: taskFindSources(task))
         window?.contentView?.layoutSubtreeIfNeeded()
@@ -2452,6 +2473,7 @@ extension ControlWindow {
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["taskFind"] = taskFind.checkState()
+            value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]
             value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
             value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
             value["appShot"] = companion?.appShot.checkState() ?? [:]

@@ -25,6 +25,7 @@ import WebKit
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
+        if CommandLine.arguments.contains("--mcp-input-check") { await runAgentMCPUserInputCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-find-check") { await runAgentTaskFindCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appshot-check") { await runAgentAppShotCheck(output); NSApp.terminate(nil); return }
@@ -46,12 +47,15 @@ import WebKit
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
+                let mcpInput = CommandLine.arguments.contains("--mcp-input-ui") && !attentionLiveUI ? try AgentMCPInputCheck(output: output, tasks: tasks, runtime: runtime) : nil
+                if let mcpInput { control.showAgentTask(mcpInput.taskID) }
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
                 try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
+                    mcpInput?.pollUI()
                     if let name = try? String(contentsOf: output.appendingPathComponent("capture-manual-ui-" + pid), encoding: .utf8), name != capture, name.range(of: "^[a-z0-9-]{1,60}$", options: .regularExpression) != nil {
                         capture = name; var value = control.organizationSnapshot(); value["appPID"] = getpid(); value["binaryHash"] = hash; value["modelRequests"] = requests
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
