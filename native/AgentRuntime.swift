@@ -257,6 +257,9 @@ import Foundation
         } else if text.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit" {
             guard !task.isProjectDocumentation, [.agent, .goal].contains(task.mode) else { throw PetError("请在普通Agent任务中编辑项目知识") }
             message.extensionInstructions = "[用户选择内置 /knowledge-edit。应用已载入project_knowledge工具组。按用户指定对象，用read_project_knowledge读取卡片或read_project_wiki读取Wiki及hash，再read_file核对实际源码，只用edit_project_knowledge或edit_project_wiki修改指定内容，保留其他事实、卡片、页面和引用；遵循单次批准，写后回读。原始用户要求保持不变。]"
+        } else if text.split(whereSeparator: \.isWhitespace).first == "/automation" {
+            guard !task.isProjectDocumentation, task.kind != "hook", task.automation == nil, task.agent?.ownerID == nil else { throw PetError("请在普通任务中创建自动化") }
+            message.extensionInstructions = "[用户选择内置 /automation，应用已载入 automations 工具组。" + AgentAutomationDrafts.instructions + "]"
         } else { message = try store.extensions.expand(message, store: store, taskID: task.id) }
         return message
     }
@@ -572,6 +575,7 @@ import Foundation
         let tools = (task.agent?.tools ?? Set(AgentTools.names)).intersection(loaded)
         if !task.isProjectDocumentation, !task.isKnowledgeEditing, task.kind != "hook", task.agent == nil {
             context += "\n用户要求创建本机 Agent 时，先载入 agents 工具组，用 draft_agent 生成名称、职责与指令草稿。请用户在会话卡片中继续配置模型、权限和扩展并保存；草稿不是已创建的 Agent，不替用户启用或直接委派。"
+            context += "\n" + AgentAutomationDrafts.instructions
         }
         context += store.knowledgeCards.context(task)
         if !task.isProjectDocumentation, !task.isKnowledgeEditing, task.kind != "hook", !(task.agent?.tools ?? Set(AgentTools.names)).isDisjoint(with: AgentKnowledgeLibrary.tools) { context += try store.knowledge.hint(task) }

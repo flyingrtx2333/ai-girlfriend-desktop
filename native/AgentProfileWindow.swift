@@ -69,7 +69,7 @@ import UniformTypeIdentifiers
         let desktopNames = ["desktop_status": "电脑操作状态", "desktop_windows": "查找应用窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取指定窗口", "desktop_screenshot": "截取指定窗口", "desktop_action": "操作指定窗口", "desktop_disconnect": "断开窗口连接"]
         let canvasNames = ["canvas_create": "生成画布", "canvas_read": "读取画布", "canvas_update": "更新画布", "canvas_edit": "编辑画布", "canvas_restore": "恢复画布版本", "canvas_inspect": "核对画布", "canvas_screenshot": "截取画布", "canvas_list": "任务画布"]
         let knowledgeNames = ["list_knowledge": "列出知识库", "search_knowledge": "检索知识库", "read_knowledge": "读取知识文件", "read_project_knowledge": "读取知识卡片", "edit_project_knowledge": "更新知识卡片", "save_knowledge_card": "保存卡片草稿"]
-        return names[name] ?? desktopNames[name] ?? canvasNames[name] ?? knowledgeNames[name] ?? name
+        return name == "draft_automation" ? "起草自动化" : names[name] ?? desktopNames[name] ?? canvasNames[name] ?? knowledgeNames[name] ?? name
     }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

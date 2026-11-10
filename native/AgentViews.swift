@@ -489,7 +489,7 @@ private final class AgentTaskTable: NSTableView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func useWorkbenchStyle() { workbench = true; buttonLeading.constant = 46; button.font = .systemFont(ofSize: 14); statusGlyph.isHidden = false; wantsLayer = true; layer?.masksToBounds = true }
     func update(call: AgentToolCall, event: AgentEvent?) {
-        let names = ["read_file": "读取", "list_directory": "浏览", "search_files": "搜索文件", "write_file": "写入", "edit_file": "编辑", "run_command": "终端", "web_search": "联网搜索", "fetch_url": "读取网页", "update_plan": "更新计划", "ask_user": "需要你", "finish_task": "核对结果", "read_task_history": "查回历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "StructuredOutput": "校验结论", "list_agents": "查找 Agent", "delegate_task": "委派任务", "draft_agent": "Agent 草稿"]
+        let names = ["read_file": "读取", "list_directory": "浏览", "search_files": "搜索文件", "write_file": "写入", "edit_file": "编辑", "run_command": "终端", "web_search": "联网搜索", "fetch_url": "读取网页", "update_plan": "更新计划", "ask_user": "需要你", "finish_task": "核对结果", "read_task_history": "查回历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "StructuredOutput": "校验结论", "list_agents": "查找 Agent", "delegate_task": "委派任务", "draft_agent": "Agent 草稿", "draft_automation": "自动化草稿"]
         let state = event?.status ?? "running"
         let symbol = state == "completed" ? (workbench ? "checkmark.circle.fill" : "checkmark.circle") : state == "failed" ? "exclamationmark.circle" : state == "waiting" ? "hand.raised" : state == "stopped" ? "stop.circle" : "circle.dotted"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: state)

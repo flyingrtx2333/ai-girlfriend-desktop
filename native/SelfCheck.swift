@@ -34,6 +34,11 @@ import WebKit
                     let budget = try prepareAttentionLiveUI(output); requests = budget.used
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
+                if CommandLine.arguments.contains("--automation-draft-ui") {
+                    guard !attentionLiveUI else { throw PetError("自动化草稿窗口不调用模型") }
+                    tasks.automations.start(store: tasks, runtime: runtime)
+                    guard tasks.automations.isStarted else { throw PetError(tasks.automations.error ?? "自动化调度未启动") }
+                }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
@@ -94,6 +99,7 @@ import WebKit
         if CommandLine.arguments.contains("--plugin-scope-crash-check") { await runAgentPluginScopeCrashCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-recovery-check") { await runAgentPluginScopeRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--agent-draft-check") { await runAgentProfileDraftCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--automation-draft-check") { await runAgentAutomationDraftCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-team-check") { await runAgentPluginTeamCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-check") { await runAgentPluginScopeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-check") { await runAgentPluginUpdateCheck(output); NSApp.terminate(nil); return }

@@ -364,6 +364,12 @@ Skill、命令、Agent、MCP、Hook和规则在当前任务工作区使用同一
 
 未保存表单保留输入；重复打开同一草稿只聚焦原编辑，其他草稿不能覆盖当前编辑。保存沿用文件版本核对并拒绝链接及只读目标，冲突保留外部配置和表单。保存成功但任务标记暂未写入时，再打开相同草稿会读取原UUID对应的保存结果，不重复创建。分支保留的原任务草稿只能回原任务继续配置。新增`npm run native:check-agent-drafts -- --app <严格签名候选>`，使用公开README及实际文件／原生工具，不授权模型请求；`--hold-ui`保留实际窗口供独立验收。最终候选的25项本机检查、6项独立核对和25项实际窗口核对已通过，包含真实角色读取、权限拒绝、独立写入后的保存冲突、表单编辑保留、角色保存与任务选择；实际退出重开后的12份持久文件逐字节一致。卡片颜色按有效外观更新，正常与窄窗口均已复核。0次模型尝试或实际发送，真实模型生成角色配置的效果仍待独立验收；日常应用未替换。完整本地证据见`evidence/agent/agent-drafts-archive-20261111-002838`。
 
+## 在会话中起草自动化
+
+自动化窗口的「用小鲸创建」会保留原任务草稿，并准备新的`/automation `会话草稿，不自动发送。输入`/`可选择内置自动化入口；发送后只载入`automations`工具组。`draft_automation`只接受名称、任务指令、时间计划和输出方式，最多8份、同调用幂等，任务索引不复制正文。所有草稿保持未启用、只读和逐次审批；项目由原任务确定，无工作区时在表单补选，保存后才标记。其他任务或分支不能接管原草稿。
+
+`schedule`包含`frequency`及`time_zone`；`once`需含时区的ISO8601 `at`，`daily`需`hour`／`minute`，`weekly`另需`weekdays`（日=1至六=7），`interval`需`interval_minutes`且可选`at`。循环可选`expires_at`，不同频率的字段不能混用。表单支持计划启用开关、下一次运行预览和间隔起点。`npm run native:check-automation-drafts -- --app <严格签名候选>`使用独立配置与实际工具，不授权模型请求；`--prepare-only`只准备公开README，`--hold-ui`保留检查窗口。运行与窗口验收中，真实模型生成效果待独立验收。
+
 ## 插件 Agent 的独立真实模型验收
 
 `node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。

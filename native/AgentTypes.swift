@@ -167,6 +167,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var recap: AgentTaskRecap?
     var toolGroups: [String]?
     var agentDrafts: [AgentProfileDraft]?
+    var automationDrafts: [AgentAutomationDraft]?
     var draft: String?
     var kind: String?
     var queuedInputs: [String]?
@@ -264,6 +265,7 @@ struct AgentTaskRecord: Codable, Identifiable {
         for reference in message.ruleReferences ?? [] { activateRule(reference) }
         for reference in message.localRuleReferences ?? [] { activateLocalRule(reference) }
         if message.isHumanInput, message.extensionInstructions != nil, message.content.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit", !isProjectDocumentation, [.agent, .goal].contains(mode) { toolGroups = ["project_knowledge"] }
+        if message.isHumanInput, message.extensionInstructions != nil, message.content.split(whereSeparator: \.isWhitespace).first == "/automation", !isProjectDocumentation, kind != "hook", automation == nil, agent?.ownerID == nil { toolGroups = ["automations"] }
         for reference in message.extensionReferences ?? [] where reference.kind == .skill {
             if activeSkills == nil { activeSkills = [] }
             activeSkills?.removeAll { $0.id == reference.id }; activeSkills?.append(reference)

@@ -5,6 +5,8 @@ import AppKit
     let service: AgentAutomations
     var onOpen: ((String) -> Void)?
     var onRequestNotifications: (() async throws -> Bool)?
+    var onCreateWithAssistant: (() throws -> Void)?
+    var onSaved: ((String) throws -> Void)?
     private let list = NSTableView(), history = NSTableView(), sections = NSSegmentedControl(labels: ["计划", "运行记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let archived = NSPopUpButton(), awake = NSButton(checkboxWithTitle: "保持设备唤醒", target: nil, action: nil)
     private let name = AgentAutomationTextField(), workspace = AgentAutomationTextField(), model = AgentAutomationTextField(), zone = AgentAutomationTextField(), time = AgentAutomationTextField(), interval = AgentAutomationTextField(), prompt = NSTextView()
@@ -12,6 +14,7 @@ import AppKit
     private var scheduleGrid: NSGridView!
     private let once = NSDatePicker(), expiry = NSDatePicker(), expiring = NSButton(checkboxWithTitle: "到期暂停", target: nil, action: nil)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), notify = NSButton(checkboxWithTitle: "运行结果通知", target: nil, action: nil)
+    private let enabled = NSButton(checkboxWithTitle: "启用计划", target: nil, action: nil)
     private let next = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: ""), detail = NSTextField(wrappingLabelWithString: "")
     private let save = NSButton(title: "保存", target: nil, action: nil), pause = NSButton(title: "暂停", target: nil, action: nil), run = NSButton(title: "立即运行", target: nil, action: nil), archive = NSButton(title: "归档", target: nil, action: nil)
     private let workspaceButton = NSButton(title: "选择…", target: nil, action: nil)
@@ -30,7 +33,9 @@ import AppKit
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("automations")); list.addTableColumn(column); list.headerView = nil; list.rowHeight = 52; list.delegate = self; list.dataSource = self; list.setAccessibilityLabel("自动化列表")
         let sidebar = NSScrollView(); sidebar.documentView = list; sidebar.hasVerticalScroller = true
         let add = NSButton(title: "新建自动化", target: self, action: #selector(create)); archive.target = self; archive.action = #selector(archiveDefinition)
-        let listActions = NSStackView(views: [add, archive]); listActions.spacing = 6
+        let assistant = NSButton(title: "用小鲸创建", target: self, action: #selector(createWithAssistant))
+        let manualActions = NSStackView(views: [add, archive]); manualActions.spacing = 6
+        let listActions = NSStackView(views: [assistant, manualActions]); listActions.orientation = .vertical; listActions.alignment = .leading; listActions.spacing = 8
         sections.selectedSegment = 0; sections.target = self; sections.action = #selector(changeSection)
         awake.state = service.keepAwake ? .on : .off; awake.target = self; awake.action = #selector(changeAwake)
         let notifications = NSButton(title: "桌面通知", target: self, action: #selector(requestNotifications))
@@ -43,13 +48,13 @@ import AppKit
         executor.target = self; executor.action = #selector(changed); frequency.action = #selector(frequencyChanged)
         for (control, label) in [(executor, "自动化执行者"), (frequency, "计划频率"), (weekdays, "每周运行日期"), (output, "任务输出方式"), (permission, "执行授权")] { control.setAccessibilityLabel(label) }
         for picker in [once, expiry] { picker.datePickerStyle = .textFieldAndStepper; picker.datePickerElements = [.yearMonthDay, .hourMinuteSecond]; picker.target = self; picker.action = #selector(changed); picker.setAccessibilityLabel(picker === once ? "运行日期" : "到期日期") }
-        for button in [expiring, readOnly, network, notify] { button.target = self; button.action = #selector(changed) }
+        for button in [expiring, readOnly, network, notify, enabled] { button.target = self; button.action = #selector(changed) }
         permission.toolTip = "按当前工具与项目范围执行。需要确认的操作仍会等待处理。"; readOnly.toolTip = "终端也不能写入项目；外部 MCP 无法保证只读，因此停用。"
         frequency.toolTip = "应用需在计划时段运行。错过超过一分钟时记入历史，不补跑。"
         let clockRow = NSStackView(views: [time, weekdays]); clockRow.spacing = 8; time.widthAnchor.constraint(equalToConstant: 90).isActive = true
         let expireRow = NSStackView(views: [expiring, expiry]); expireRow.spacing = 8
         let scope = NSStackView(views: [readOnly, network]); scope.spacing = 14
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "下次"), next]])
+        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "状态"), enabled], [NSTextField(labelWithString: "下次"), next]])
         scheduleGrid = grid
         grid.column(at: 0).width = 60; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill; grid.columnSpacing = 12; grid.rowSpacing = 10
         next.font = .systemFont(ofSize: 11); next.textColor = .secondaryLabelColor; next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -88,6 +93,16 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+    func configureDraft(_ draft: AgentAutomationDraft) throws {
+        let draft = try AgentAutomationDrafts.load(draft.id, taskID: draft.taskID, store: store)
+        guard !dirty || selectedID == draft.automation.id else { throw PetError("请先保存或关闭当前自动化更改") }
+        if dirty { return }
+        let saved = service.values.first { $0.id == draft.automation.id }
+        guard draft.savedAt == nil || saved != nil else { throw PetError("自动化已移除，原草稿保留") }
+        newValue = saved == nil ? draft.automation : nil; selectedID = draft.automation.id
+        archived.selectItem(at: saved?.archived == true ? 1 : 0); reload(); open(saved ?? draft.automation)
+        dirty = saved == nil; sections.selectedSegment = 0; changeSection(); updateControls()
+    }
     private func reload() {
         let savedSelection = selectedID
         definitions = service.values.filter { $0.archived == (archived.indexOfSelectedItem == 1) }; if let newValue { definitions.append(newValue) }
@@ -101,7 +116,7 @@ import AppKit
         let schedule = value?.schedule ?? AgentAutomationSchedule(); zone.stringValue = schedule.timeZone; time.stringValue = String(format: "%02d:%02d", schedule.hour, schedule.minute); interval.stringValue = String(schedule.intervalMinutes); selectedDays = Set(schedule.weekdays)
         frequency.selectItem(at: AgentAutomationFrequency.allCases.firstIndex(of: schedule.frequency) ?? 0); once.dateValue = schedule.date; once.timeZone = TimeZone(identifier: schedule.timeZone); expiry.dateValue = schedule.expiration ?? Date().addingTimeInterval(86_400 * 30); expiry.timeZone = once.timeZone; expiring.state = schedule.expiration == nil ? .off : .on
         output.selectItem(at: AgentAutomationOutput.allCases.firstIndex(of: value?.output ?? .independent) ?? 0); permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0)
-        readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; notify.state = value?.notify == false ? .off : .on
+        readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; notify.state = value?.notify == false ? .off : .on; enabled.state = value?.enabled == true ? .on : .off
         refreshExecutors(selected: value?.executor ?? "default"); refreshDays(); updateScheduleRows(); dirty = false; prompt.undoManager?.removeAllActions(); state.stringValue = service.error ?? (value == nil ? "暂无自动化" : "")
         if let i = definitions.firstIndex(where: { $0.id == value?.id }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; updateControls()
     }
@@ -118,13 +133,16 @@ import AppKit
     @objc private func toggleDay(_ sender: NSMenuItem) { if selectedDays.contains(sender.tag) { selectedDays.remove(sender.tag) } else { selectedDays.insert(sender.tag) }; refreshDays(); changed() }
     private func updateScheduleRows() {
         let kind = AgentAutomationFrequency.allCases[max(0, frequency.indexOfSelectedItem)]
-        scheduleGrid.row(at: 5).isHidden = kind != .once; scheduleGrid.row(at: 6).isHidden = ![.daily, .weekly].contains(kind); scheduleGrid.row(at: 7).isHidden = kind != .interval; scheduleGrid.row(at: 9).isHidden = kind == .once
+        scheduleGrid.row(at: 5).isHidden = ![.once, .interval].contains(kind); scheduleGrid.row(at: 6).isHidden = ![.daily, .weekly].contains(kind); scheduleGrid.row(at: 7).isHidden = kind != .interval; scheduleGrid.row(at: 9).isHidden = kind == .once
         weekdays.isHidden = kind != .weekly; expiry.isEnabled = expiring.state == .on
-        next.stringValue = selectedID == nil ? "" : opened == nil ? "未保存" : opened!.archived ? "已归档" : opened!.nextRun.map { AgentAutomations.dateText($0, zone: opened!.schedule.timeZone) } ?? (opened!.enabled ? "已到期" : "已暂停")
+        if selectedID == nil { next.stringValue = "" }
+        else if opened?.archived == true { next.stringValue = "已归档" }
+        else if let value = try? capture() { next.stringValue = (value.schedule.next(after: Date()).map { AgentAutomations.dateText($0, zone: value.schedule.timeZone) } ?? "无有效运行时间") + (value.enabled ? "" : " · 未启用") }
+        else { next.stringValue = "请检查时间和时区" }
     }
     private func updateControls() {
         let selected = selectedID != nil, stored = opened != nil, archived = opened?.archived == true
-        for view in [name, workspace, workspaceButton, model, zone, time, interval, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify] as [NSControl] { view.isEnabled = selected && !archived }
+        for view in [name, workspace, workspaceButton, model, zone, time, interval, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
         model.isEnabled = selected && !archived && executor.selectedItem?.representedObject as? String == "default"; prompt.isEditable = selected && !archived
         save.isEnabled = dirty; run.isEnabled = stored && !dirty && !archived; pause.isEnabled = run.isEnabled; pause.title = opened?.enabled == true ? "暂停" : "启用"; archive.isEnabled = stored && !dirty; archive.title = archived ? "恢复" : "归档"; save.title = stored ? "保存" : "创建"
         expiry.isEnabled = selected && !archived && expiring.state == .on
@@ -164,12 +182,12 @@ import AppKit
         result.name = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
         result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
         let parts = time.stringValue.split(separator: ":"); guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]), let interval = Int(interval.stringValue) else { throw PetError("时间使用 HH:mm，间隔使用整数分钟") }; result.schedule.hour = hour; result.schedule.minute = minute; result.schedule.intervalMinutes = interval
-        result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; return result
+        result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on; return result
     }
     func controlTextDidChange(_ obj: Notification) { if obj.object as? NSTextField === zone, let value = TimeZone(identifier: zone.stringValue) { once.timeZone = value; expiry.timeZone = value }; changed() }
     func textDidChange(_ notification: Notification) { changed() }
-    @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
-    @objc private func frequencyChanged() { updateScheduleRows(); changed() }
+    @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateScheduleRows(); updateControls() }
+    @objc private func frequencyChanged() { if frequency.indexOfSelectedItem == AgentAutomationFrequency.allCases.firstIndex(of: .interval) { once.dateValue = Date() }; changed() }
     @objc private func changeSection() { formScroll.isHidden = sections.selectedSegment == 1; records.isHidden = !formScroll.isHidden; if !records.isHidden { loadHistory() } }
     @objc private func filterHistory() { offset = 0; loadHistory() }
     @objc private func refreshHistory() { reload() }
@@ -180,7 +198,11 @@ import AppKit
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         var value = AgentAutomation(name: "", prompt: "", workspace: store.selected?.workspace ?? ""); value.workMode = store.selected?.workMode; value.enabled = true; newValue = value; selectedID = value.id; archived.selectItem(at: 0); reload(); open(value); dirty = true; updateControls(); sections.selectedSegment = 0; changeSection(); window?.makeFirstResponder(name)
     }
-    @objc private func saveDefinition() { do { let value = try capture(); try service.save(value, expected: opened); newValue = nil; dirty = false; selectedID = value.id; reload(); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
+    @objc private func saveDefinition() { do { let value = try capture(); try service.save(value, expected: opened); newValue = nil; dirty = false; selectedID = value.id; reload(); try onSaved?(value.id); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
+    @objc private func createWithAssistant() {
+        do { guard !dirty else { throw PetError("请先保存或关闭当前自动化更改") }; guard let action = onCreateWithAssistant else { throw PetError("会话入口暂不可用") }; try action(); window?.orderOut(nil) }
+        catch { state.stringValue = error.localizedDescription }
+    }
     @objc private func togglePause() { do { guard let opened, !dirty else { throw PetError("请先保存更改") }; try service.setPaused(opened.id, paused: opened.enabled); reload() } catch { state.stringValue = error.localizedDescription } }
     @objc private func runNow() { do { guard let opened, !dirty else { throw PetError("请先保存更改") }; try service.runNow(opened.id); sections.selectedSegment = 1; changeSection() } catch { state.stringValue = error.localizedDescription } }
     @objc private func archiveDefinition() { do { guard var value = opened, !dirty else { throw PetError("请先保存更改") }; value.archived.toggle(); value.enabled = false; try service.save(value, expected: opened); reload() } catch { state.stringValue = error.localizedDescription } }

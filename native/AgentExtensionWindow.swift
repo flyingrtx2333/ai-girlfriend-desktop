@@ -281,20 +281,27 @@ import UniformTypeIdentifiers
     private let table = AgentExtensionTable()
     private(set) var items: [AgentExtensionItem] = []
     var onPick: ((AgentExtensionItem) -> Void)?
+    var onAutomation: (() -> Void)?
+    private var automation = false
+    var candidateCount: Int { items.count + (automation ? 1 : 0) }
     override func loadView() {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("workflow"))); table.headerView = nil
         table.rowHeight = 44; table.delegate = self; table.dataSource = self; table.target = self; table.action = #selector(pick)
         table.setAccessibilityLabel("命令与 Skills 候选"); scroll.documentView = table; view = scroll
     }
-    func setItems(_ items: [AgentExtensionItem]) { loadViewIfNeeded(); self.items = items; table.reloadData(); if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) } }
-    func move(_ amount: Int) { guard !items.isEmpty else { return }; let row = min(items.count - 1, max(0, table.selectedRow + amount)); table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func setItems(_ items: [AgentExtensionItem], automation: Bool = false) { loadViewIfNeeded(); self.items = items; self.automation = automation; table.reloadData(); if candidateCount > 0 { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) } }
+    func move(_ amount: Int) { guard candidateCount > 0 else { return }; let row = min(candidateCount - 1, max(0, table.selectedRow + amount)); table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
+    func numberOfRows(in tableView: NSTableView) -> Int { candidateCount }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let item = items[row], title = NSTextField(labelWithString: "/" + item.invocation + " · " + item.scope); title.font = .systemFont(ofSize: 12, weight: .medium)
-        let description = NSTextField(labelWithString: item.description); description.font = .systemFont(ofSize: 11); description.textColor = .secondaryLabelColor
+        let item = automation && row == 0 ? nil : items[row - (automation ? 1 : 0)]
+        let title = NSTextField(labelWithString: item.map { "/" + $0.invocation + " · " + $0.scope } ?? "/automation · 自动化"); title.font = .systemFont(ofSize: 12, weight: .medium)
+        let description = NSTextField(labelWithString: item?.description ?? "按目标与时间起草计划"); description.font = .systemFont(ofSize: 11); description.textColor = .secondaryLabelColor
         for field in [title, description] { field.lineBreakMode = .byTruncatingTail }
         let stack = NSStackView(views: [title, description]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3; return stack
     }
-    @objc func pick() { if items.indices.contains(table.selectedRow) { onPick?(items[table.selectedRow]) } }
+    @objc func pick() {
+        if automation && table.selectedRow == 0 { onAutomation?(); return }
+        let row = table.selectedRow - (automation ? 1 : 0); if items.indices.contains(row) { onPick?(items[row]) }
+    }
 }

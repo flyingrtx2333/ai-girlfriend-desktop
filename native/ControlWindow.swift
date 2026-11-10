@@ -203,6 +203,7 @@ final class FormDocumentView: NSView {
             return await AgentTaskSearch.find(query, candidates: candidates, directory: directory)
         }
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
+        if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
         refreshPreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
@@ -460,7 +461,7 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
-        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty
+        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
         let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
@@ -1446,6 +1447,17 @@ final class FormDocumentView: NSView {
         manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager
         manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
+    func configureAutomationDraft(_ id: String, taskID: String) throws {
+        guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
+        let draft = try AgentAutomationDrafts.load(id, taskID: taskID, store: store), manager = preparedAutomationWindow(store)
+        try manager.configureDraft(draft)
+        if store.automations.values.contains(where: { $0.id == draft.automation.id }) { try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: draft.automation.id, store: store) }
+        manager.onSaved = { [weak self, weak store] automationID in
+            guard let store, automationID == draft.automation.id else { return }
+            try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: automationID, store: store); self?.renderAgentMessages()
+        }
+        automationWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+    }
     func agentTaskAction(_ id: String, action: String) {
         guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window", "side-task", "side-parent", "side-keep"].contains(action) else { return }
         if action.hasPrefix("export:"), let format = AgentTaskExport.Format(rawValue: String(action.dropFirst(7))) { exportAgentTask(id, format: format); return }
@@ -1864,9 +1876,14 @@ final class FormDocumentView: NSView {
         }
         var ids: [String] = []
         let agentDrafts = Array((task.agentDrafts ?? []).prefix(8))
+        let automationDrafts = Array((task.automationDrafts ?? []).prefix(8))
         let profileDocument = agentDrafts.isEmpty ? nil : try? tasks.agents.document()
         let profiles = profileDocument.flatMap { try? tasks.agents.decode($0.0) } ?? []
         for draft in agentDrafts { ids.append("agent-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + (profileDocument?.1 ?? "missing") + ":" + String(task.archived)) }
+        for draft in automationDrafts {
+            let saved = tasks.automations.values.first { $0.id == draft.automation.id }
+            ids.append("automation-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + AgentFiles.hash((try? JSONEncoder().encode(saved)) ?? Data()) + ":" + String(task.archived) + ":" + String(tasks.automations.isStarted))
+        }
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
@@ -1905,6 +1922,15 @@ final class FormDocumentView: NSView {
                 else { do { _ = try AgentProfileDrafts.checked(draft, taskID: task.id, agents: tasks.agents); issue = task.archived ? "请先恢复原任务" : nil } catch { issue = "Agent 草稿无法读取" } }
                 let row = AgentProfileDraftRow(draft, saved: saved, available: profiles.contains { $0.id == draft.profile.id }, issue: issue)
                 row.onConfigure = { [weak self] in do { try self?.configureAgentProfileDraft(draft.id, taskID: task.id) } catch { self?.setStatus(error.localizedDescription, error: true) } }
+                messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+            }
+            for draft in automationDrafts {
+                let issue: String?
+                if draft.taskID != task.id { issue = "原任务的自动化草稿" }
+                else if !tasks.automations.isStarted { issue = "自动化调度未启动" }
+                else { do { _ = try AgentAutomationDrafts.checked(draft, taskID: task.id, service: tasks.automations); issue = task.archived ? "请先恢复原任务" : nil } catch { issue = "自动化草稿无法读取" } }
+                let row = AgentAutomationDraftRow(draft, saved: tasks.automations.values.first { $0.id == draft.automation.id }, issue: issue)
+                row.onConfigure = { [weak self] in do { try self?.configureAutomationDraft(draft.id, taskID: task.id) } catch { self?.setStatus(error.localizedDescription, error: true) } }
                 messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
             }
             if task.status == .completed {
@@ -1999,12 +2025,23 @@ final class FormDocumentView: NSView {
     @objc func showDesktopSettings() { desktopSettings?.refreshState(); settingsCategory = "computer"; show(tab: "settings") }
     func refreshWorktreeRetention() { worktreePolicyPanel?.refreshState(); if companion?.usesAgent == true { scheduleRender() } }
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
-    @objc func showAutomations() {
-        guard let store = companion?.agentStore else { return }; saveAgentDraft()
-        if let window = automationWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+    @objc private func automationDefinitionsChanged() { refreshAutomationBadge(); scheduleRender() }
+    private func preparedAutomationWindow(_ store: AgentStore) -> AgentAutomationWindow {
+        if let existing = automationWindow, existing.window?.isVisible == true { return existing }
         let manager = AgentAutomationWindow(store: store)
         manager.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat"); self?.refreshAutomationBadge() }
         manager.onRequestNotifications = { [weak self] in guard let self else { throw PetError("应用已关闭") }; return try await self.companion?.automationNotifications.request() ?? false }
+        manager.onCreateWithAssistant = { [weak self, weak store] in
+            guard let self, let store, saveAgentDraft() else { throw PetError("请先保存当前会话草稿") }
+            let id = try AgentAutomationDrafts.createConversation(store: store, sourceID: currentAgentTask?.id)
+            selectAgentTask(id); show(tab: "chat"); window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(composer)
+        }
+        return manager
+    }
+    @objc func showAutomations() {
+        guard let store = companion?.agentStore, saveAgentDraft() else { return }
+        if let window = automationWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        let manager = preparedAutomationWindow(store)
         automationWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); refreshAutomationBadge()
     }
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
@@ -2085,8 +2122,13 @@ final class FormDocumentView: NSView {
         do {
             let query = String(composer.string.dropFirst())
             let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false).filter { query.isEmpty || $0.invocation.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query) }.prefix(12)
-            guard !items.isEmpty else { dismissExtensionCandidates(); return }
-            extensionPickerTask = task.id; extensionPicker.setItems(Array(items))
+            let automation = !task.isProjectDocumentation && task.automation == nil && task.agent?.ownerID == nil && (query.isEmpty || "automation".localizedCaseInsensitiveContains(query) || "自动化".contains(query))
+            guard !items.isEmpty || automation else { dismissExtensionCandidates(); return }
+            extensionPickerTask = task.id; extensionPicker.setItems(Array(items), automation: automation)
+            extensionPicker.onAutomation = { [weak self] in
+                guard let self, let id = extensionPickerTask, id == displayedTask, let task = store.task(id), !task.archived, saveAgentDraft() else { return }
+                dismissExtensionCandidates(); composer.string = "/automation "; composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText(); window?.makeFirstResponder(composer)
+            }
             extensionPicker.onPick = { [weak self] item in
                 guard let self, let id = extensionPickerTask, id == displayedTask else { return }
                 do { try insertExtension(item, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
@@ -2094,7 +2136,7 @@ final class FormDocumentView: NSView {
             guard let window else { dismissExtensionCandidates(); return }
             extensionPanel.contentViewController = extensionPicker
             let anchor = window.convertToScreen(composer.convert(composer.visibleRect, to: nil))
-            let bounds = window.screen?.visibleFrame ?? window.frame, width = min(420, bounds.width), height = CGFloat(min(264, items.count * 44 + 4))
+            let bounds = window.screen?.visibleFrame ?? window.frame, width = min(420, bounds.width), height = CGFloat(min(264, extensionPicker.candidateCount * 44 + 4))
             let x = min(bounds.maxX - width, max(bounds.minX, anchor.minX)), y = min(bounds.maxY - height, max(bounds.minY, anchor.maxY + 6))
             extensionPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
             extensionPanel.contentView?.wantsLayer = true; extensionPanel.contentView?.layer?.cornerRadius = 8; extensionPanel.contentView?.layer?.masksToBounds = true

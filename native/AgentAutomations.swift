@@ -101,6 +101,11 @@ struct AgentAutomationAssignment: Codable {
     deinit { timer?.invalidate(); if ownerFD >= 0 { close(ownerFD) }; if let activity { ProcessInfo.processInfo.endActivity(activity) } }
     private var config: URL { directory.appendingPathComponent("definitions.json") }
     private var runsDirectory: URL { directory.appendingPathComponent("runs", isDirectory: true) }
+    private func files() throws -> AgentFiles {
+        let parent = try AgentFiles(workspace: directory.deletingLastPathComponent().path)
+        guard try parent.resolve("automations").path == directory.path, try parent.literalURL("automations").path == directory.path else { throw PetError("自动化目录不能使用符号链接") }
+        return try AgentFiles(workspace: directory.path)
+    }
     func start(store: AgentStore, runtime: AgentRuntime) {
         guard !isStarted else { return }; self.store = store; self.runtime = runtime
         do {
@@ -118,25 +123,27 @@ struct AgentAutomationAssignment: Codable {
     private func changed() { NotificationCenter.default.post(name: Self.changed, object: self) }
     private func load() throws {
         guard FileManager.default.fileExists(atPath: config.path) else { values = []; revision = nil; return }
-        let data = try AgentFiles(workspace: directory.path).readData(config, maximum: 2_000_000)
+        let files = try files(), url = try files.literalURL("definitions.json")
+        guard try files.resolve("definitions.json") == url, try files.entryMetadata(url).kind == "file" else { throw PetError("自动化配置必须是普通文件") }
+        let data = try files.readData(url, maximum: 2_000_000)
         guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "keepAwake", "automations"],
-              let entries = raw["automations"] as? [[String: Any]], entries.allSatisfy({ Set($0.keys).isSubset(of: ["id", "name", "prompt", "workspace", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived", "nextRun", "mergedTaskID", "current"]) }) else { throw PetError("自动化配置包含不支持的字段") }
+              let entries = raw["automations"] as? [[String: Any]], entries.allSatisfy({ Set($0.keys).isSubset(of: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived", "nextRun", "mergedTaskID", "current"]) }) else { throw PetError("自动化配置包含不支持的字段") }
         let document = try JSONDecoder().decode(Document.self, from: data)
         guard document.version == 1, document.automations.count <= 64, Set(document.automations.map(\.id)).count == document.automations.count else { throw PetError("自动化配置版本或数量无效") }
         for value in document.automations { try validate(value, runnable: false) }
         values = document.automations; keepAwake = document.keepAwake; revision = AgentFiles.hash(data)
     }
     private func persist() throws {
-        let current = FileManager.default.fileExists(atPath: config.path) ? try AgentFiles.hash(Data(contentsOf: config)) : nil
-        guard current == revision else { throw PetError("自动化配置已被其他程序更改，请重启应用重新读取") }
         let data = try encoder.encode(Document(keepAwake: keepAwake, automations: values))
-        try data.write(to: config, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+        let write = try AgentKnowledgeFileWrite(files: files(), path: config.path, data: data, expectedHash: revision, missing: revision == nil, permissions: 0o600, label: "自动化配置")
+        try write.requireCurrent(); try write.files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         revision = AgentFiles.hash(data); error = nil
     }
-    func validate(_ value: AgentAutomation, runnable: Bool) throws {
+    func validate(_ value: AgentAutomation, runnable: Bool, allowMissingWorkspace: Bool = false) throws {
         guard UUID(uuidString: value.id) != nil, !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.name.count <= 80,
               !value.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.prompt.utf8.count <= 40_000,
-              value.workspace.hasPrefix("/"), value.workspace.utf8.count <= 4096, value.model.count <= 200,
+              !value.name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              (allowMissingWorkspace && value.workspace.isEmpty || value.workspace.hasPrefix("/")), value.workspace.utf8.count <= 4096, !value.workspace.contains("\0"), value.model.count <= 200,
               TimeZone(identifier: value.schedule.timeZone) != nil, (0...23).contains(value.schedule.hour), (0...59).contains(value.schedule.minute),
               (1...525_600).contains(value.schedule.intervalMinutes), value.schedule.weekdays.allSatisfy({ (1...7).contains($0) }), Set(value.schedule.weekdays).count == value.schedule.weekdays.count,
               value.schedule.frequency != .weekly || !value.schedule.weekdays.isEmpty,
@@ -157,7 +164,7 @@ struct AgentAutomationAssignment: Codable {
         guard index != nil || values.count < 64 else { throw PetError("最多保存64个自动化") }
         var next = value; next.current = old?.current; next.mergedTaskID = old?.mergedTaskID
         if let old, old.workspace != value.workspace || old.executor != value.executor || old.output != value.output { next.mergedTaskID = nil }
-        if next.schedule.frequency == .interval, old?.schedule.frequency != .interval || old?.schedule.intervalMinutes != next.schedule.intervalMinutes { next.schedule.date = Date() }
+        if next.schedule.frequency == .interval, old?.schedule.frequency != .interval || old?.schedule.intervalMinutes != next.schedule.intervalMinutes, next.schedule.date <= Date() { next.schedule.date = Date() }
         next.nextRun = next.enabled && !next.archived ? next.schedule.next(after: Date()) : nil
         if next.enabled, !next.archived, next.nextRun == nil { throw PetError("计划已过期，或到期时间早于下一次运行") }
         let previous = values
