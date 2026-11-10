@@ -93,7 +93,12 @@ final class FormDocumentView: NSView {
     private var titleLeading: NSLayoutConstraint!
     private let composer = ComposerView(), history = NSScrollView(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
-    private var messageSearch: (taskID: String, messageID: String, query: String)?, pendingMessageReveal = false
+    private struct MessageSearch {
+        var taskID: String, messageID: String, query: String
+        var displayRange: NSRange? = nil, displayText: String? = nil
+    }
+    private var messageSearch: MessageSearch?, pendingMessageReveal = false
+    private let taskFind = AgentTaskFindBar()
     private let status = NSTextField(labelWithString: "")
     private let savedStatus = NSTextField(labelWithString: "")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
@@ -211,7 +216,16 @@ final class FormDocumentView: NSView {
             return self.beginAttachmentImport(urls, store: tasks, taskID: owner) != nil
         }
         taskSidebar.onOpenSearch = { [weak self] id, query, message in self?.selectAgentTask(id, searchQuery: query, messageID: message) }
-        taskSidebar.onSearchQueryChanged = { [weak self] in self?.clearMessageSearchHighlight() }
+        taskSidebar.onSearchQueryChanged = { [weak self] in self?.taskFind.reset(); self?.clearMessageSearchHighlight() }
+        taskFind.onMatch = { [weak self] query, match in
+            guard let self, let id = agentTaskID, taskFind.taskID == id else { return }
+            clearMessageSearchHighlight()
+            if let match, !taskFind.isHidden, messageRows[match.source.messageID]?.label.stringValue == match.source.text {
+                messageSearch = MessageSearch(taskID: id, messageID: match.source.messageID, query: query, displayRange: match.range, displayText: match.source.text); pendingMessageReveal = true
+            }
+            renderAgentMessages()
+        }
+        taskFind.onClose = { [weak self] in guard let self, selectedTab == "chat" else { return }; self.window?.makeFirstResponder(composer) }
         taskSidebar.onSearchVersion = { [weak companion] id in companion?.agentStore?.taskSearchRevisions[id] ?? 0 }
         taskSidebar.onSearch = { [weak companion] query, candidates in
             guard let directory = companion?.agentStore?.directory else { return AgentTaskSearch.Result(checked: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0.version) }), issues: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, "任务系统尚未初始化") })) }
@@ -468,7 +482,7 @@ final class FormDocumentView: NSView {
         let lower = workbenchLower; lower.orientation = .horizontal; lower.spacing = 8; lower.addArrangedSubview(resumeButton); lower.addArrangedSubview(NSView()); lower.addArrangedSubview(modelCaption)
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
         configureApprovalPanel()
-        let column = stack([emptyBefore, workbenchEmpty, history, approvalPanel, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
+        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
         conversation.addSubview(column)
         workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
         workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
@@ -540,6 +554,18 @@ final class FormDocumentView: NSView {
         taskSwitcher = AgentTaskSwitcher(store: tasks, selected: agentTaskID, onSelect: { [weak self] id in self?.selectAgentTask(id) }, onClose: { [weak self] in self?.taskSwitcher = nil })
         taskSwitcher?.begin(in: window)
     }
+    private func taskFindSources(_ task: AgentTaskRecord) -> [AgentTaskFind.Source] {
+        task.messages.compactMap { message in
+            guard !message.content.isEmpty, ["user", "assistant"].contains(message.role), message.nativeContext != true, let row = messageRows[message.id] else { return nil }
+            return AgentTaskFind.Source(messageID: message.id, text: row.label.stringValue)
+        }
+    }
+    private func showTaskFind() {
+        guard let task = currentAgentTask else { return }
+        if taskFind.isHidden { taskSidebar.dismissSearch(); clearMessageSearchHighlight(); renderAgentMessages() }
+        taskFind.open(taskID: task.id, sources: taskFindSources(task))
+        window?.contentView?.layoutSubtreeIfNeeded()
+    }
     func refreshShortcutControls() {
         guard let shortcuts = companion?.shortcuts else { return }
         taskSidebar.refreshShortcuts(shortcuts); shortcutSettings?.refresh()
@@ -556,6 +582,7 @@ final class FormDocumentView: NSView {
         case .newTask, .searchTasks: return true
         case .switchTask: return currentAgentTask != nil
         case .leftSidebar: return selectedTab == "chat"
+        case .findInTask: return selectedTab == "chat" && currentAgentTask != nil
         case .newWindow: return currentAgentTask != nil
         case .previousTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex > 0
         case .nextTask: return selectedTab == "chat" && sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
@@ -568,7 +595,8 @@ final class FormDocumentView: NSView {
         switch command {
         case .settings: show(tab: "settings")
         case .newTask: newAgentTask()
-        case .searchTasks: sidebarRequested = true; show(tab: "chat"); refreshShortcutControls(); taskSidebar.focusSearch()
+        case .searchTasks: taskFind.reset(); clearMessageSearchHighlight(); sidebarRequested = true; show(tab: "chat"); refreshShortcutControls(); taskSidebar.focusSearch()
+        case .findInTask: showTaskFind()
         case .switchTask: showTaskSwitcher()
         case .leftSidebar: toggleLeftSidebar()
         case .previousTask: previousAgentTask()
@@ -927,7 +955,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
     private func changeTab() {
-        if selectedTab != "chat" { dismissExtensionCandidates() }
+        if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
@@ -1237,6 +1265,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        taskFind.reset()
         taskSwitcher?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
@@ -1420,8 +1449,9 @@ final class FormDocumentView: NSView {
             else { companion?.showTaskInMainWindow(id); return }
         } else if sideTaskTabID == nil, record.sideTask != nil { companion?.openSideTask(id, from: self); return }
         clearMessageSearchHighlight()
+        if id != agentTaskID || searchQuery != nil { taskFind.reset() }
         if let searchQuery, let message = AgentTaskSearch.message(in: record, query: searchQuery, preferredID: messageID) {
-            messageSearch = (id, message.id, searchQuery); pendingMessageReveal = true
+            messageSearch = MessageSearch(taskID: id, messageID: message.id, query: searchQuery); pendingMessageReveal = true
         }
         if !navigatingTaskHistory, taskNavigationIndex < 0 || taskNavigation[taskNavigationIndex] != id {
             if taskNavigationIndex + 1 < taskNavigation.count { taskNavigation.removeSubrange((taskNavigationIndex + 1)..<taskNavigation.count) }
@@ -1949,7 +1979,7 @@ final class FormDocumentView: NSView {
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true
         updateWorkbenchLayout()
-        let follow = messageSearch == nil && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
+        let follow = messageSearch == nil && taskFind.isHidden && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
         let fileRollbackMessages = AgentRoundRollback.availableMessages(task)
         let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -2035,7 +2065,8 @@ final class FormDocumentView: NSView {
         let owner = task.id
         for message in messages {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
-            messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch?.query : nil)
+            let search = messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch : nil
+            messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: search?.query, searchDisplayRange: search?.displayRange, searchDisplayText: search?.displayText)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             if let row = messageRows[message.id] {
                 let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
@@ -2073,6 +2104,7 @@ final class FormDocumentView: NSView {
             approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived; approvalPanel.isHidden = false
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
         composer.isEditable = !task.archived && !managed
+        taskFind.update(taskID: task.id, sources: taskFindSources(task))
         window?.contentView?.layoutSubtreeIfNeeded()
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
         if follow, let document = history.documentView {
@@ -2419,6 +2451,7 @@ extension ControlWindow {
         if CommandLine.arguments.contains("--manual-ui") {
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
+            value["taskFind"] = taskFind.checkState()
             value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
             value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
             value["appShot"] = companion?.appShot.checkState() ?? [:]

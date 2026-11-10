@@ -28,6 +28,7 @@ final class ChatMessageRow: NSView {
     private(set) var text = ""
     private var renderedMarkdown = true
     private var highlightQuery: String?
+    private var highlightDisplayRange: NSRange?, highlightDisplayText: String?
     private(set) var searchRange: NSRange?
     private(set) var searchUsesSource = false
     private let isUser: Bool
@@ -116,8 +117,9 @@ final class ChatMessageRow: NSView {
     @objc private func markHelpful() { onReplyFeedback?("helpful") }
     @objc private func markUnhelpful() { onReplyFeedback?("unhelpful") }
     @objc private func branchResponse() { onBranchReply?() }
-    func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil) {
-        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || label.stringValue.isEmpty else { return }; text = value; renderedMarkdown = markdown; highlightQuery = searchQuery
+    func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil, searchDisplayRange: NSRange? = nil, searchDisplayText: String? = nil) {
+        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || label.stringValue.isEmpty else { return }
+        text = value; renderedMarkdown = markdown; highlightQuery = searchQuery; highlightDisplayRange = searchDisplayRange; highlightDisplayText = searchDisplayText
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
         if workbench { paragraph.lineBreakMode = .byCharWrapping }
         let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: workbench ? 14 : 15), color = NSColor(white: 0.12, alpha: 1)
@@ -125,10 +127,15 @@ final class ChatMessageRow: NSView {
         var output = isUser || !markdown ? plain : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
         searchRange = nil; searchUsesSource = false
         if let searchQuery, !searchQuery.isEmpty {
-            if output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) == nil, content.localizedCaseInsensitiveContains(searchQuery) { output = plain; searchUsesSource = true }
-            if let range = output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) {
-                let selected = NSMutableAttributedString(attributedString: output); searchRange = NSRange(range, in: output.string)
-                selected.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.42), range: searchRange!); output = selected
+            if let range = searchDisplayRange {
+                if searchDisplayText == output.string, range.location >= 0, range.location <= output.length, range.length > 0, range.length <= output.length - range.location { searchRange = range }
+            } else {
+                if output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) == nil, content.localizedCaseInsensitiveContains(searchQuery) { output = plain; searchUsesSource = true }
+                if let range = output.string.range(of: searchQuery, options: .caseInsensitive, locale: .current) { searchRange = NSRange(range, in: output.string) }
+            }
+            if let range = searchRange {
+                let selected = NSMutableAttributedString(attributedString: output)
+                selected.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.42), range: range); output = selected
             }
         }
         label.attributedStringValue = output; label.setAccessibilityHelp(searchRange == nil ? nil : "搜索命中")

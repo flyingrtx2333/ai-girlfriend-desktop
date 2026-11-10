@@ -46,9 +46,9 @@ const publicTask = await read(`profile/agent/${created.publicTaskID}.json`), gen
 const independent = {
   exactSignedProcess: !!command && result.appPID === pid && result.binaryHash === binaryHash,
   actualProcessExited: !alive(),
-  persistedCombinationMatchesIndependentReadback: config.version === 2 && Object.keys(config.bindings).length === 1 && config.bindings.searchTasks.key === 'j' && config.bindings.searchTasks.modifiers === 1572864,
-  realApplicationConfigRestored: profile.version === 2 && Object.keys(profile.bindings).length === 0,
-  actualLegacyMigrationRetainsCustomAndClearedKeys: original.version === 1 && original.bindings.newTask.key === 'g' && original.bindings.searchTasks.key === 'b' && migrated.version === 2 && migrated.bindings.newTask.key === 'g' && migrated.bindings.searchTasks.key === 'b' && migrated.bindings.switchTask.key === '' && migrated.bindings.leftSidebar.key === '',
+  persistedCombinationMatchesIndependentReadback: config.version === 3 && Object.keys(config.bindings).length === 1 && config.bindings.searchTasks.key === 'j' && config.bindings.searchTasks.modifiers === 1572864,
+  realApplicationConfigRestored: profile.version === 3 && Object.keys(profile.bindings).length === 0,
+  actualLegacyMigrationRetainsCustomAndClearedKeys: original.version === 1 && original.bindings.newTask.key === 'g' && original.bindings.searchTasks.key === 'b' && migrated.version === 3 && migrated.bindings.newTask.key === 'g' && migrated.bindings.searchTasks.key === 'b' && migrated.bindings.switchTask.key === '' && migrated.bindings.leftSidebar.key === '',
   publicSourceAndStoredDraftUnchanged: hash(await readFile(path.join(output, 'workspace/README.md'))) === hash(publicSource) && created.sourceHash === hash(publicSource) && publicTask.draft === publicSource.toString('utf8'),
   actualCreatedTaskModesAndArchiveState: (publicTask.workMode ?? 'coding') === 'coding' && generalTask.workMode === 'general' && archivedTask.archived && !publicTask.messages.length && !generalTask.messages.length,
   modelWasNeverRequested: result.blockedModelAttempts === 0,

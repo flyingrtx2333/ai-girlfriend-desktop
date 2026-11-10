@@ -18,7 +18,7 @@ import AppKit
                 let after = try bytes(); checks[name] = rejected && after == before
             }
             let defaults = AgentShortcutCommand.allCases.map { value.binding($0) }
-            checks["tenUniqueDefaultsWithoutCreatingConfig"] = value.error == nil && defaults.count == 10 && Set(defaults).count == 10 && !FileManager.default.fileExists(atPath: config.path)
+            checks["elevenUniqueDefaultsWithoutCreatingConfig"] = value.error == nil && defaults.count == 11 && Set(defaults).count == 11 && !FileManager.default.fileExists(atPath: config.path)
             try value.set(.init("n", [.command, .option]), for: .newTask)
             checks["customBindingPersistsAndReopens"] = AgentShortcuts(directory: root).binding(.newTask) == .init("n", [.command, .option])
             checks["configOwnerOnly"] = (try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600
@@ -45,7 +45,7 @@ import AppKit
             checks["symlinkLoadRejected"] = linked.error != nil
             do { try linked.reset(); checks["symlinkWriteRejectedTargetPreserved"] = false }
             catch { checks["symlinkWriteRejectedTargetPreserved"] = try Data(contentsOf: target) == good }
-            try FileManager.default.removeItem(at: config); try Data("{\"version\":3,\"bindings\":{}}".utf8).write(to: config)
+            try FileManager.default.removeItem(at: config); try Data("{\"version\":4,\"bindings\":{}}".utf8).write(to: config)
             let future = AgentShortcuts(directory: root)
             try rejects("unknownVersionPreserved") { try future.reset() }
             try Data("{\"version\":1,\"bindings\":{},\"future\":true}".utf8).write(to: config)

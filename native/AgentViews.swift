@@ -119,7 +119,6 @@ private final class AgentTaskTable: NSTableView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.keyCode == 53, bulkSelecting { cancelBulkSelection(); return true }
-        if event.modifierFlags.contains(.command), event.modifierFlags.intersection([.option, .control, .shift]).isEmpty, event.charactersIgnoringModifiers?.lowercased() == "f" { showSearch(); return true }
         return super.performKeyEquivalent(with: event)
     }
     func refresh(_ values: [AgentTaskRecord], selected: String?, organization: AgentOrganization, searchRevision: UInt64 = 0) {
@@ -145,6 +144,7 @@ private final class AgentTaskTable: NSTableView {
         }
     }
     func focusSearch() { if !searchVisible { showSearch() } else { window?.makeFirstResponder(search) } }
+    func dismissSearch() { if searchVisible { closeSearch() } }
     @objc private func newWorkspace() { onNewWorkspace?() }
     @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
     private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }

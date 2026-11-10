@@ -1,7 +1,7 @@
 import AppKit
 
 enum AgentShortcutCommand: String, CaseIterable {
-    case settings, newTask, searchTasks, previousTask, nextTask, taskInspector, newWindow, planMode, switchTask, leftSidebar
+    case settings, newTask, searchTasks, previousTask, nextTask, taskInspector, newWindow, planMode, switchTask, leftSidebar, findInTask
     var title: String {
         switch self {
         case .settings: return "设置"
@@ -14,6 +14,7 @@ enum AgentShortcutCommand: String, CaseIterable {
         case .planMode: return "切换计划模式"
         case .switchTask: return "切换任务"
         case .leftSidebar: return "左侧栏"
+        case .findInTask: return "当前任务查找"
         }
     }
     var defaultBinding: AgentShortcutBinding {
@@ -28,6 +29,7 @@ enum AgentShortcutCommand: String, CaseIterable {
         case .planMode: return .init("\t", .shift)
         case .switchTask: return .init("g", .command)
         case .leftSidebar: return .init("b", .command)
+        case .findInTask: return .init("f", .command)
         }
     }
 }
@@ -50,7 +52,7 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
 }
 
 @MainActor final class AgentShortcuts {
-    private struct Document: Codable { var version = 2; var bindings: [String: AgentShortcutBinding] }
+    private struct Document: Codable { var version = 3; var bindings: [String: AgentShortcutBinding] }
     let directory: URL
     private(set) var error: String?
     private(set) var overrides: [String: AgentShortcutBinding] = [:]
@@ -68,10 +70,10 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
                 guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "bindings"],
                       let bindings = raw["bindings"] as? [String: Any], bindings.values.allSatisfy({ ($0 as? [String: Any]).map { Set($0.keys) == ["key", "modifiers"] } == true }) else { throw PetError("快捷键配置包含不支持的字段") }
                 let value = try JSONDecoder().decode(Document.self, from: data)
-                guard [1, 2].contains(value.version), value.bindings.keys.allSatisfy({ AgentShortcutCommand(rawValue: $0) != nil }) else { throw PetError("快捷键配置版本或操作无效") }
+                guard [1, 2, 3].contains(value.version), value.bindings.keys.allSatisfy({ AgentShortcutCommand(rawValue: $0) != nil }) else { throw PetError("快捷键配置版本或操作无效") }
                 var effective = value.bindings
-                if value.version == 1 {
-                    let added: [AgentShortcutCommand] = [.switchTask, .leftSidebar]
+                if value.version < 3 {
+                    let added: [AgentShortcutCommand] = (value.version == 1 ? [.switchTask, .leftSidebar] : []) + [.findInTask]
                     guard added.allSatisfy({ effective[$0.rawValue] == nil }) else { throw PetError("旧版快捷键配置包含新版操作") }
                     let used = Set(AgentShortcutCommand.allCases.filter { !added.contains($0) }.map { effective[$0.rawValue] ?? $0.defaultBinding })
                     // Reading never rewrites a user's file. Keep older custom bindings;

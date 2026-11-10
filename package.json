@@ -95,6 +95,7 @@
     "native:check-automation-drafts": "node scripts/check-native-automation-drafts.mjs",
     "native:check-live-conversation-creation": "node scripts/check-live-conversation-creation.mjs",
     "native:check-shortcuts": "node scripts/check-native-shortcuts.mjs",
+    "native:check-task-find": "node scripts/check-native-task-find.mjs",
     "native:check-appshot": "node scripts/check-native-appshot.mjs"
   },
   "dependencies": {

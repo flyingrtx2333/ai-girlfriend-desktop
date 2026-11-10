@@ -25,6 +25,7 @@ import WebKit
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
+        if CommandLine.arguments.contains("--task-find-check") { await runAgentTaskFindCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appshot-check") { await runAgentAppShotCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
