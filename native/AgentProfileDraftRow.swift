@@ -4,7 +4,7 @@ import AppKit
     var onConfigure: (() -> Void)?
     init(_ draft: AgentProfileDraft, saved: Bool, available: Bool, issue: String? = nil) {
         super.init(frame: .zero)
-        wantsLayer = true; layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor; layer?.cornerRadius = 10
+        wantsLayer = true; layer?.cornerRadius = 10; layer?.borderWidth = 1
         let name = NSTextField(labelWithString: String(draft.profile.name.prefix(60)))
         name.font = .systemFont(ofSize: 14, weight: .semibold); name.lineBreakMode = .byTruncatingTail
         let status = NSTextField(labelWithString: issue ?? (saved ? (available ? "Agent · 已保存" : "Agent · 已移除") : "Agent 草稿 · 未保存"))
@@ -22,5 +22,12 @@ import AppKit
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14), content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), content.topAnchor.constraint(equalTo: topAnchor, constant: 12), content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12), document.heightAnchor.constraint(equalToConstant: 150)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
     @objc private func openConfiguration() { onConfigure?() }
 }
