@@ -46,11 +46,17 @@ import Foundation
         store.archiveIsBusy = { [weak self] id in self?.isBusy(id) == true }
         store.agents.onDisable = { [weak self] profileID in
             guard let self else { return }
-            for task in self.store.tasks where task.agent?.profile.id == profileID { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
+            for task in self.store.tasks {
+                let team = task.team?.team ?? task.agent?.teamCeiling
+                if task.agent?.profile.id == profileID || team?.leaderID == profileID || team?.memberIDs.contains(profileID) == true { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
+            }
         }
         store.agents.onPluginChange = { [weak self] name in
             guard let self else { return }
-            for task in self.store.tasks where task.agent?.profile.pluginSource?.name == name { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
+            for task in self.store.tasks {
+                let team = task.team?.team ?? task.agent?.teamCeiling
+                if task.agent?.profile.pluginSource?.name == name || team?.roleSources?.values.contains(where: { $0.name == name }) == true { self.cancel(task.id); self.store.mcp.disconnect(owner: task.id) }
+            }
         }
         _ = store.extensions.plugins.observeChanges { [weak self] name in
             guard let self else { return }
@@ -76,7 +82,7 @@ import Foundation
         }
         store.teams.onChange = { [weak self] teamID in
             guard let self else { return }
-            for task in self.store.tasks where task.team?.team.id == teamID { self.cancel(task.id) }
+            for task in self.store.tasks where task.team?.team.id == teamID || task.agent?.teamCeiling?.id == teamID { self.cancel(task.id) }
         }
         store.hooks.onAsyncResult = { [weak self] id, eventID, origin, wake in self?.receiveBackgroundHook(id, eventID: eventID, origin: origin, wake: wake) }
     }

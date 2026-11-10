@@ -361,6 +361,7 @@ import Foundation
             try store.extensions.plugins.activateRule(reference, store: store, taskID: taskID)
             return AgentToolResult(text: "已载入规则 " + item.name + "\nSHA256: " + reference.sha256, sources: [item.source.absoluteString])
         case "list_agents":
+            try store.teams.check(task, store: store)
             let team = try store.teams.binding(task, store: store)
             let skills = (try? store.extensions.catalog(workspace: task.workspace, includeDisabled: false)) ?? []
             let values = try store.agents.list(enabledOnly: true, workspace: task.workspace).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in

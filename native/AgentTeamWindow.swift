@@ -15,7 +15,7 @@ import AppKit
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
         self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Agent 团队"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "Agent 团队" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("teams")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42; table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("Agent 团队列表")
@@ -51,7 +51,7 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let value = values[row], text = NSTextField(labelWithString: value.name + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
+        let value = values[row], text = NSTextField(labelWithString: value.name + (value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "") + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = [value.description, value.workspace ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"); return text
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !loading, values.indices.contains(table.selectedRow) else { return }
@@ -59,7 +59,7 @@ import AppKit
     }
     private func selectRow() { loading = true; defer { loading = false }; if let index = values.firstIndex(where: { $0.id == selectedID }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } else { table.deselectAll(nil) } }
     private func reload() {
-        do { let document = try store.teams.document(); values = try store.teams.decode(document.0); openedHash = document.1; agents = try store.agents.list(); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
+        do { let document = try store.teams.document(); values = try store.teams.decode(document.0); openedHash = document.1; agents = try store.agents.list(workspace: workspace); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
         catch { state.stringValue = error.localizedDescription }
     }
     private func open(_ id: String?) {
@@ -68,9 +68,13 @@ import AppKit
         selectedMembers = Set(value?.memberIDs ?? []); refreshRoles(leaderID: value?.leaderID)
         dirty = false; instructions.undoManager?.removeAllActions(); selectRow(); loading = false; updateControls(); state.stringValue = value == nil ? "暂无团队" : ""
     }
+    private func roleTitle(_ value: AgentProfile) -> String {
+        let scope = value.pluginSource.map { (try? AgentPlugins.scope($0.name).workspace) != nil ? " · 项目插件" : " · 用户插件" } ?? ""
+        return value.name + scope + (value.enabled ? "" : value.pluginSource == nil ? " · 未启用" : " · 请先启用插件")
+    }
     private func refreshRoles(leaderID: String?) {
         leader.removeAllItems()
-        for value in agents + pendingAgents { leader.addItem(withTitle: value.name + (value.enabled ? "" : " · 未启用")); leader.lastItem?.representedObject = value.id }
+        for value in agents + pendingAgents { leader.addItem(withTitle: roleTitle(value)); leader.lastItem?.representedObject = value.id }
         if let id = leaderID, let item = leader.itemArray.first(where: { $0.representedObject as? String == id }) { leader.select(item) }
         else if let id = leaderID { leader.addItem(withTitle: "负责人不可用"); leader.lastItem?.representedObject = id; leader.select(leader.lastItem) }
         refreshMembers()
@@ -80,7 +84,7 @@ import AppKit
         let leaderID = leader.selectedItem?.representedObject as? String
         let roles = agents + pendingAgents
         for value in roles where value.id != leaderID {
-            let item = NSMenuItem(title: value.name + (value.enabled ? "" : " · 未启用"), action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value.id; item.state = selectedMembers.contains(value.id) ? .on : .off; members.menu?.addItem(item)
+            let item = NSMenuItem(title: roleTitle(value), action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value.id; item.state = selectedMembers.contains(value.id) ? .on : .off; members.menu?.addItem(item)
         }
         for id in selectedMembers where !roles.contains(where: { $0.id == id }) { let item = NSMenuItem(title: "成员不可用", action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = id; item.state = .on; members.menu?.addItem(item) }
     }
@@ -95,14 +99,14 @@ import AppKit
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
     @objc private func create() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        do { agents = try store.agents.list(); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
+        do { agents = try store.agents.list(workspace: workspace); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func createTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let alert = NSAlert(); alert.messageText = "代码审阅团队"; alert.informativeText = "负责人协调代码审阅员与测试分析员，核对风险、证据和缺失测试，汇总实际结论。只读项目。\n\n保存时创建三个 Agent；启用团队时同时启用成员。"; alert.addButton(withTitle: "使用模板"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            agents = try store.agents.list(); var lead = AgentTemplates.profiles[3], reviewer = AgentTemplates.profiles[0], tester = AgentTemplates.profiles[0]
+            agents = try store.agents.list(workspace: workspace); var lead = AgentTemplates.profiles[3], reviewer = AgentTemplates.profiles[0], tester = AgentTemplates.profiles[0]
             tester.name = "测试分析员"; tester.description = "核对测试覆盖与可触发的回归风险"; tester.instructions = "只读相关源码与测试，核对边界条件和回归场景。仅报告有依据的缺口，给出触发输入、预期结果与建议验证。不得修改文件或运行会改动项目的测试。"
             pendingAgents = []
             for role in [lead, reviewer, tester] { var value = role; let base = value.name; var index = 2; while (agents + pendingAgents).contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }; pendingAgents.append(value) }
@@ -117,10 +121,10 @@ import AppKit
             guard let i = values.firstIndex(where: { $0.id == selectedID }), let leaderID = leader.selectedItem?.representedObject as? String else { throw PetError("请选择负责人") }
             values[i].name = name.stringValue; values[i].description = purpose.stringValue; values[i].instructions = instructions.string; values[i].leaderID = leaderID; values[i].memberIDs = selectedMembers.sorted(); values[i].enabled = enabled.state == .on
             let text = try store.teams.encode(values); _ = try store.teams.decode(text)
-            let prior = try store.agents.document()
-            if !pendingAgents.isEmpty { try store.agents.save(store.agents.encode(store.agents.decode(prior.0) + pendingAgents), expectedHash: prior.1) }
-            do { try store.teams.save(text, expectedHash: openedHash, store: store, activating: selectedID) }
-            catch { if !pendingAgents.isEmpty { try? store.agents.save(prior.0, expectedHash: store.agents.document().1) }; throw error }
+            let prior = try store.agents.document(), preparedAgents = try store.agents.encode(store.agents.decode(prior.0) + pendingAgents)
+            if !pendingAgents.isEmpty { try store.agents.save(preparedAgents, expectedHash: prior.1) }
+            do { try store.teams.save(text, expectedHash: openedHash, store: store, activating: selectedID, workspace: workspace) }
+            catch { if !pendingAgents.isEmpty { try? store.agents.save(prior.0, expectedHash: AgentFiles.hash(Data(preparedAgents.utf8))) }; throw error }
             pendingAgents = []; dirty = false; reload(); state.stringValue = "已保存"
         } catch { state.stringValue = error.localizedDescription }
     }
@@ -129,7 +133,7 @@ import AppKit
     func windowDidBecomeKey(_ notification: Notification) {
         guard dirty else { reload(); return }
         let id = leader.selectedItem?.representedObject as? String
-        do { agents = try store.agents.list(); refreshRoles(leaderID: id) } catch { state.stringValue = error.localizedDescription }
+        do { agents = try store.agents.list(workspace: workspace); refreshRoles(leaderID: id) } catch { state.stringValue = error.localizedDescription }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if dirty { let alert = NSAlert(); alert.messageText = "放弃未保存的团队更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改"); return alert.runModal() == .alertSecondButtonReturn }; return true

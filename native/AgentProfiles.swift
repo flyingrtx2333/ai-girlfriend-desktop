@@ -317,6 +317,10 @@ struct AgentProfileAssignment: Codable {
         task.automation = nil
     }
     @discardableResult func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil) throws -> String {
+        if let owner {
+            let source = try owner.workspace.map { try AgentFiles(workspace: $0).root.path }, target = try workspace.map { try AgentFiles(workspace: $0).root.path }
+            guard source == target else { throw PetError("委派任务必须沿用所属任务的项目") }
+        }
         let value = try profile(id, workspace: workspace)
         if let owner { try store.teams.checkDelegate(id, owner: owner, store: store) }
         let selection = store.selectedID
