@@ -106,6 +106,9 @@ class AgentWorkbenchButton: NSButton {
     var onOpen: ((Int, String) -> Void)?
     var onShowAll: ((Int) -> Void)?
     var onSideTask: ((String) -> Void)?
+    var onOpenTerminal: (() -> Void)?
+    var canOpenTerminal = true { didSet { addTab.isHidden = !canOpenTerminal } }
+    private let addTab = AgentWorkbenchButton()
     private var sideTasks: [AgentTaskRecord] = []
     private let column = NSStackView(), scroll = NSScrollView(), empty = NSTextField(labelWithString: "暂无记录")
     private var signature = ""
@@ -113,7 +116,9 @@ class AgentWorkbenchButton: NSButton {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true; layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor
         let heading = NSTextField(labelWithString: "记录"); heading.font = .systemFont(ofSize: 16, weight: .semibold)
         let more = AgentWorkbenchButton(title: "", target: self, action: #selector(showLog)); AgentWorkbenchTheme.toolbar(more, title: "完整记录", symbol: "ellipsis")
-        let header = NSStackView(views: [heading, NSView(), more]); header.spacing = 8
+        AgentWorkbenchTheme.toolbar(addTab, title: "添加标签页", symbol: "plus")
+        addTab.target = self; addTab.action = #selector(showTabMenu(_:))
+        let header = NSStackView(views: [heading, NSView(), addTab, more]); header.spacing = 6
         let line = AgentWorkbenchTheme.rule(), document = FormDocumentView()
         column.orientation = .vertical; column.alignment = .leading; column.spacing = 22; column.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(column); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document
@@ -125,6 +130,14 @@ class AgentWorkbenchButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func showLog() { onShowAll?(4) }
+    @objc private func showTabMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let open = NSMenuItem(title: "打开终端", action: #selector(openTerminal), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+    @objc private func openTerminal() { onOpenTerminal?() }
     private func section(_ title: String, views: [NSView]) {
         let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 14, weight: .semibold)
         let group = NSStackView(views: [label] + views); group.orientation = .vertical; group.alignment = .leading; group.spacing = 10

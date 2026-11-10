@@ -178,6 +178,8 @@ final class FormDocumentView: NSView {
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
+    private let terminalButton = AgentWorkbenchButton(), terminalSplit = AgentTerminalSplitView()
+    private var terminalPanel: AgentTerminalPanel?
     private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
     private let workbenchSidebar = NSView()
     private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
@@ -409,10 +411,12 @@ final class FormDocumentView: NSView {
         titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 126)
         projectButton.target = self; projectButton.action = #selector(chooseProject); AgentWorkbenchTheme.toolbar(projectButton, title: "选择项目", symbol: "folder")
         browserButton.target = self; browserButton.action = #selector(showAgentBrowser); AgentWorkbenchTheme.toolbar(browserButton, title: "浏览器", symbol: "rectangle.on.rectangle")
+        terminalButton.target = self; terminalButton.action = #selector(toggleTaskTerminal)
+        AgentWorkbenchTheme.toolbar(terminalButton, title: "打开终端", symbol: "terminal")
         desktopButton.target = self; desktopButton.action = #selector(showDesktopSettings); AgentWorkbenchTheme.toolbar(desktopButton, title: "电脑操作", symbol: "computermouse")
         gitButton.target = self; gitButton.action = #selector(showAgentGit); AgentWorkbenchTheme.toolbar(gitButton, title: "Git", symbol: "arrow.triangle.branch")
         resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务记录", symbol: "sidebar.right")
-        let actions = stack([projectButton, browserButton, desktopButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
+        let actions = stack([projectButton, browserButton, terminalButton, desktopButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
         let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
         workbenchChrome = [navigation, actions, workbenchBadge]
         settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(settingsPageIcon)
@@ -425,15 +429,18 @@ final class FormDocumentView: NSView {
         buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbenchConversation() {
-        let conversation = NSView(); conversation.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(conversation); chat.addSubview(workbenchInspector)
+        let conversation = terminalSplit.conversation
+        terminalSplit.translatesAutoresizingMaskIntoConstraints = false
+        chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector)
         inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
         inspectorRule.wantsLayer = true; inspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
-        NSLayoutConstraint.activate([conversation.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversation.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), conversation.topAnchor.constraint(equalTo: chat.topAnchor), conversation.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
+        NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
             if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
             else { self?.openAgentRecordItem(section: section, value: value) }
         }
         workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
+        workbenchInspector.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         workbenchInspector.onSideTask = { [weak self] id in guard let self else { return }; companion?.openSideTask(id, from: self) }
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
@@ -500,6 +507,10 @@ final class FormDocumentView: NSView {
         taskSwitcher?.refresh()
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
+        terminalPanel?.selectTask(configuring ? nil : task)
+        terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+        workbenchInspector.canOpenTerminal = terminalButton.isEnabled
+        updateTerminalDock()
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
         let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
@@ -1257,6 +1268,7 @@ final class FormDocumentView: NSView {
         }
         if taskWindowNumber != 1 { guard closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
+        stopTaskTerminals()
         sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
     }
     private func finishClosingSideTask() {
@@ -1270,6 +1282,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        stopTaskTerminals()
         if let panel = mcpInputPanel {
             try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
             panel.dismiss(); mcpInputPanel = nil
@@ -1280,6 +1293,10 @@ final class FormDocumentView: NSView {
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
         composer.delegate = nil; windowDraft = nil
         companion?.removeTaskWindow(self); companion?.updatePetWorkspaceOcclusion()
+    }
+    func stopTaskTerminals() {
+        terminalPanel?.stopAll()
+        updateTerminalDock()
     }
     func closeOwnedTaskPanels() -> Bool {
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
@@ -1759,6 +1776,34 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, let task = currentAgentTask else { return }
         do { _ = try store.browser.show(taskID: task.id, title: task.title) }
         catch { setStatus(error.localizedDescription, error: true) }
+    }
+    @objc private func toggleTaskTerminal() {
+        if terminalPanel?.isShown == true { terminalPanel?.hidePanel() }
+        else { openTaskTerminal() }
+    }
+    private func openTaskTerminal() {
+        guard selectedTab == "chat", let companion, let store = companion.agentStore, let task = currentAgentTask else { return }
+        let panel = terminalPanel ?? AgentTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        terminalPanel = panel
+        panel.onHide = { [weak self] in
+            guard let self else { return }
+            updateTerminalDock()
+            window?.makeFirstResponder(composer)
+        }
+        panel.selectTask(task)
+        do {
+            try panel.open()
+            updateTerminalDock()
+            window?.contentView?.layoutSubtreeIfNeeded()
+            panel.focus()
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func updateTerminalDock() {
+        let shown = selectedTab == "chat" && terminalPanel?.isShown == true
+        terminalSplit.showTerminal(shown ? terminalPanel : nil)
+        let title = shown ? "收起终端" : "打开终端"
+        terminalButton.setAccessibilityLabel(title)
+        terminalButton.toolTip = title
     }
     @objc func showAgentGit() {
         guard let store = companion?.agentStore, let id = agentTaskID else { return }
@@ -2474,6 +2519,9 @@ extension ControlWindow {
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["taskFind"] = taskFind.checkState()
             value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]
+            if companion?.checkDirectory != nil {
+                value["terminalPanel"] = terminalPanel?.verificationSnapshot() ?? ["shown": false, "states": []]
+            }
             value["shortcutBindings"] = Dictionary(uniqueKeysWithValues: AgentShortcutCommand.allCases.map { ($0.rawValue, companion?.shortcuts.binding($0).display ?? "") })
             value["shortcutContext"] = ["tab": selectedTab, "category": settingsCategory, "mode": currentAgentTask?.mode.rawValue ?? "", "composerFocused": window?.firstResponder === composer, "planEnabled": canPerformShortcut(.planMode)] as [String: Any]
             value["appShot"] = companion?.appShot.checkState() ?? [:]

@@ -628,8 +628,7 @@ import Foundation
         case "run_command":
             let command = try string("command")
             guard !command.isEmpty, command.utf8.count <= 30_000 else { throw PetError("命令为空或过长") }
-            let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("tmp", isDirectory: true)
-            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let scratch = try store.terminalTaskDirectory(taskID)
             let workspace = try task.workspace.map { try AgentFiles(workspace: $0).root } ?? scratch
             let process = AgentCommand(); commands[call.id] = process; defer { commands[call.id] = nil }
             let git = task.gitDirectory.flatMap { candidate -> URL? in guard (try? AgentGit.metadata(workspace: task.workspace).path) == candidate else { return nil }; return URL(fileURLWithPath: candidate) }

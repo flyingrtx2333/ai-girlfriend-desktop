@@ -143,7 +143,12 @@ final class PetWebView: WKWebView {
     }
     func applicationWillTerminate(_ notification: Notification) {
         fileOpenJob?.cancel()
-        if agentStore != nil { for window in taskControls { window.persistAgentDraft() } }
+        if agentStore != nil {
+            for window in taskControls {
+                window.persistAgentDraft()
+                window.stopTaskTerminals()
+            }
+        }
         closing = true; screenCompanion.suspend(); chatTask?.cancel(); agentRuntime?.stopAll(); agentStore?.automations.stop(); agentStore?.worktreeRetention.stop(); stopSpeech()
         appShot.stop()
         agentStore?.knowledgeCards.stop()

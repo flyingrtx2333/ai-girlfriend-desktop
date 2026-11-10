@@ -322,7 +322,7 @@ import Foundation
             let task = cache[id] ?? metadata
             guard task.id == id else { throw PetError("任务记录编号不匹配，未删除") }
             try requireArchivable(cache[id] ?? task)
-            guard !worktreeRetention.hasNativeOperation(task.workspace) else { throw PetError("此项目正在处理文件或 Git 操作，请完成后再删除任务") }
+            guard !worktreeRetention.hasNativeOperation(task.workspace) else { throw PetError("此项目正在使用终端或处理文件、Git 操作，请结束后再删除任务") }
             let folder = try files.entryMetadata(files.literalURL(id))
             var record = AgentTaskPurge(id: id, recordSignature: entry.signature, directorySignature: folder.kind == "missing" ? nil : folder.signature, directoryIdentity: try AgentTaskDeletion.directoryIdentity(files, name: id))
             if let origin = task.importOrigin, !tasks.contains(where: { !selected.contains($0.id) && $0.importOrigin?.snapshot == origin.snapshot }) {
@@ -490,5 +490,14 @@ import Foundation
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }
         let url = directory.appendingPathComponent(id, isDirectory: true).appendingPathComponent("checkpoints", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); return url
+    }
+
+    func terminalTaskDirectory(_ id: String) throws -> URL {
+        let url = try backupDirectory(id).deletingLastPathComponent().appendingPathComponent("tmp", isDirectory: true)
+        let expected = directory.resolvingSymlinksInPath().appendingPathComponent(id, isDirectory: true).appendingPathComponent("tmp", isDirectory: true)
+        guard url.resolvingSymlinksInPath().path == expected.path else { throw PetError("任务终端目录已变化") }
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard url.resolvingSymlinksInPath().path == expected.path else { throw PetError("任务终端目录已变化") }
+        return expected
     }
 }

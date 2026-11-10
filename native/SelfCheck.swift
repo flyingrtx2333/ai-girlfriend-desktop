@@ -47,6 +47,28 @@ import WebKit
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
+                if CommandLine.arguments.contains("--terminal-panel-fixtures") {
+                    guard !attentionLiveUI else { throw PetError("终端窗口验收不调用模型") }
+                    let project = try AgentFiles(workspace: output.appendingPathComponent("workspace").path)
+                    let worktree = try AgentFiles(workspace: output.appendingPathComponent("worktree").path)
+                    let metadata = try AgentGit.metadata(workspace: project.root.path)
+                    guard try AgentGit.metadata(workspace: worktree.root.path) == metadata, worktree.root != project.root else {
+                        throw PetError("缺少独立的实际 Git 工作树")
+                    }
+                    let source = try project.resolve("README.md")
+                    let data = try project.readData(source, maximum: 100_000)
+                    guard let title = String(data: data, encoding: .utf8)?.split(separator: "\n").first else { throw PetError("缺少公开 README") }
+                    let first = tasks.create(title: "项目终端", workspace: project.root.path, mode: .ask)
+                    let other = tasks.create(title: "无工作区终端", mode: .ask, workMode: .general)
+                    let isolated = tasks.create(title: "工作树终端", workspace: worktree.root.path)
+                    guard runtime.submit(String(title), taskID: first, startImmediately: false) else { throw PetError("公开正文未保存") }
+                    tasks.update(first) { $0.sources = [source.absoluteString]; $0.draft = "项目任务的草稿。" }
+                    tasks.update(other) { $0.draft = "无工作区任务的草稿。" }
+                    tasks.update(isolated) { $0.worktreeOrigin = AgentWorktreeOrigin(root: project.root.path, metadata: metadata.path, path: worktree.root.path) }
+                    let records = ["project": first, "standalone": other, "worktree": isolated, "sourceHash": AgentFiles.hash(data)]
+                    try JSONSerialization.data(withJSONObject: records, options: .sortedKeys).write(to: output.appendingPathComponent("terminal-panel-fixtures.json"), options: .atomic)
+                    control.showAgentTask(first)
+                }
                 let mcpInput = CommandLine.arguments.contains("--mcp-input-ui") && !attentionLiveUI ? try AgentMCPInputCheck(output: output, tasks: tasks, runtime: runtime) : nil
                 if let mcpInput { control.showAgentTask(mcpInput.taskID) }
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
