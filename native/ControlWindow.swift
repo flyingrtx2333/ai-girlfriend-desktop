@@ -17,6 +17,18 @@ final class ComposerView: NSTextView {
     }
     override var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.readablePasteboardTypes.filter { $0 != .fileURL } }
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] { [.fileURL] + super.acceptableDragTypes.filter { $0 != .fileURL } }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let result = super.draggingEntered(sender); noteFileIngress("entered:\(result.rawValue)"); return result
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let result = super.draggingUpdated(sender); noteFileIngress("updated:\(result.rawValue)"); return result
+    }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let result = super.prepareForDragOperation(sender); noteFileIngress("prepare:\(result)"); return result
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let result = super.performDragOperation(sender); noteFileIngress("perform:\(result)"); return result
+    }
     override func dragOperation(for draggingInfo: NSDraggingInfo, type: NSPasteboard.PasteboardType) -> NSDragOperation {
         noteFileIngress("drag:" + type.rawValue)
         guard type == .fileURL else { return super.dragOperation(for: draggingInfo, type: type) }
