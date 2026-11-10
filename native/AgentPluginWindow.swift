@@ -11,9 +11,11 @@ import UniformTypeIdentifiers
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
     private var connectors: [AgentMCPServer] = []
     private var agents: [AgentProfile] = []
+    private var hooks: [AgentHookDefinition] = []
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
     var onConfigureMCP: ((String) -> Void)? { didSet { updateControls() } }
     var onConfigureAgent: ((String) -> Void)? { didSet { updateControls() } }
+    var onConfigureHook: ((String) -> Void)? { didSet { updateControls() } }
     var onChange: (() -> Void)?
     private var service: AgentPlugins { store.extensions.plugins }
     init(store: AgentStore, workspace: String?) {
@@ -49,13 +51,14 @@ import UniformTypeIdentifiers
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? items.count : entries.count + connectors.count + agents.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? items.count : entries.count + connectors.count + agents.count + hooks.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let label = NSTextField(labelWithString: ""); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingTail
         if tableView === list, items.indices.contains(row) { let item = items[row]; label.stringValue = (item.receipt.enabled ? "● " : "○ ") + item.metadata.title; label.toolTip = item.id }
         else if entries.indices.contains(row) { let item = entries[row]; label.stringValue = (item.kind == .skill ? "Skill · " : "命令 · ") + item.name; label.toolTip = "/" + item.invocation }
         else if tableView === components, connectors.indices.contains(row - entries.count) { let server = connectors[row - entries.count]; label.stringValue = "MCP · " + server.name; label.toolTip = server.destination }
         else if tableView === components, agents.indices.contains(row - entries.count - connectors.count) { let agent = agents[row - entries.count - connectors.count]; label.stringValue = "Agent · " + agent.name; label.toolTip = agent.description }
+        else if tableView === components, hooks.indices.contains(row - entries.count - connectors.count - agents.count) { let hook = hooks[row - entries.count - connectors.count - agents.count]; label.stringValue = "Hook · " + hook.name; label.toolTip = hook.event.rawValue }
         return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -73,19 +76,20 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }; updateControls()
     }
     private func open(_ row: Int) {
-        selected = items.indices.contains(row) ? items[row] : nil; entries = []; connectors = []; agents = []; title.stringValue = ""; metadata.stringValue = ""; readme.string = ""; enabled.state = .off
+        selected = items.indices.contains(row) ? items[row] : nil; entries = []; connectors = []; agents = []; hooks = []; title.stringValue = ""; metadata.stringValue = ""; readme.string = ""; enabled.state = .off
         if let item = selected {
             title.stringValue = item.metadata.title; metadata.stringValue = [item.metadata.version, item.metadata.author, item.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "); enabled.state = item.receipt.enabled ? .on : .off
-            do { readme.string = try service.readme(item); entries = try store.extensions.catalog(workspace: workspace).filter { $0.pluginName == item.id }; connectors = store.mcp.servers.filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles().filter { $0.pluginSource?.name == item.id } } catch { state.stringValue = error.localizedDescription }
+            do { readme.string = try service.readme(item); entries = try store.extensions.catalog(workspace: workspace).filter { $0.pluginName == item.id }; connectors = store.mcp.servers.filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles().filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }
         }
-        components.reloadData(); if !entries.isEmpty || !connectors.isEmpty || !agents.isEmpty { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
+        components.reloadData(); if !entries.isEmpty || !connectors.isEmpty || !agents.isEmpty || !hooks.isEmpty { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
     }
     private func updateControls() {
         let idle = job == nil; list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
         let connector = connectors.indices.contains(components.selectedRow - entries.count)
         let agent = agents.indices.contains(components.selectedRow - entries.count - connectors.count)
-        use.title = connector ? "配置连接器" : agent ? "配置 Agent" : "在任务中使用"
-        use.isEnabled = idle && (connector ? onConfigureMCP != nil : agent ? onConfigureAgent != nil : selected?.receipt.enabled == true && entries.indices.contains(components.selectedRow) && onInsert != nil)
+        let hook = hooks.indices.contains(components.selectedRow - entries.count - connectors.count - agents.count)
+        use.title = connector ? "配置连接器" : agent ? "配置 Agent" : hook ? "配置 Hooks" : "在任务中使用"
+        use.isEnabled = idle && (connector ? onConfigureMCP != nil : agent ? onConfigureAgent != nil : hook ? onConfigureHook != nil : selected?.receipt.enabled == true && entries.indices.contains(components.selectedRow) && onInsert != nil)
     }
     @objc private func toggleEnabled() {
         guard let item = selected else { return }
@@ -97,6 +101,8 @@ import UniformTypeIdentifiers
         if connectors.indices.contains(index) { onConfigureMCP?(connectors[index].id); return }
         let agent = index - connectors.count
         if agents.indices.contains(agent) { onConfigureAgent?(agents[agent].id); return }
+        let hook = agent - agents.count
+        if hooks.indices.contains(hook) { onConfigureHook?(hooks[hook].id); return }
         guard entries.indices.contains(components.selectedRow), let onInsert else { return }
         do { let item = try store.extensions.item(entries[components.selectedRow].id, workspace: workspace); try onInsert(item); close() } catch { state.stringValue = error.localizedDescription }
     }
@@ -115,7 +121,10 @@ import UniformTypeIdentifiers
     private func review(_ package: AgentPluginPackage) {
         guard let window else { return }; let alert = NSAlert(); alert.messageText = "安装「\(package.metadata.title)」？"; alert.informativeText = [package.metadata.version, package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
         alert.addButton(withTitle: "安装"); alert.addButton(withTitle: "取消")
-        let rows = package.receipt.components.map { ($0.kind == .skill ? "Skill · " : "命令 · ") + package.metadata.name + ":" + $0.name } + package.mcpServers.map { "MCP · " + package.metadata.name + ":" + $0.key + "\n" + $0.destination + ($0.fields.isEmpty ? "" : "\n" + $0.fields.joined(separator: ", ")) } + package.agents.map { "Agent · " + package.metadata.name + ":" + $0.key + "\n" + $0.summary + "\n\n" + $0.profile.instructions }
+        var rows = package.receipt.components.map { ($0.kind == .skill ? "Skill · " : "命令 · ") + package.metadata.name + ":" + $0.name }
+        rows += package.mcpServers.map { "MCP · " + package.metadata.name + ":" + $0.key + "\n" + $0.destination + ($0.fields.isEmpty ? "" : "\n" + $0.fields.joined(separator: ", ")) }
+        rows += package.agents.map { "Agent · " + package.metadata.name + ":" + $0.key + "\n" + $0.summary + "\n\n" + $0.profile.instructions }
+        for config in package.hooks { for hook in config.preview { rows.append("Hook · " + package.metadata.name + ":" + hook.name + "\n" + hook.event.rawValue + "\n" + hook.display) } }
         let text = NSTextView(); text.isEditable = false; text.font = .systemFont(ofSize: 12); text.string = rows.joined(separator: "\n\n"); text.autoresizingMask = [.width]; text.isVerticallyResizable = true; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("待安装的插件组件")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: min(240, CGFloat(text.string.components(separatedBy: "\n").count * 24 + 18)))); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
         alert.beginSheetModal(for: window) { [weak self] response in

@@ -16,6 +16,7 @@ struct AgentHookDefinition: Codable, Identifiable {
     var url: String?, headerNames: [String]?, prompt: String?, model: String?, tools: [String]?, maxTurns: Int?, sourceHash: String?
     var asynchronous: Bool?, asyncRewake: Bool?, rewakeMessage: String?, rewakeSummary: String?, statusMessage: String?
     var shell: String?, arguments: [String]?, environmentNames: [String]?, condition: String?, allowedEnvVars: [String]?, once: Bool?
+    var plugin: AgentPluginHookReference?, pluginEnabled: Bool?
     var runsInBackground: Bool { asynchronous == true || asyncRewake == true }
     var display: String {
         let body: String
@@ -51,25 +52,31 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
 
 @MainActor final class AgentHooks {
     let profile: URL, sharedHome: URL?
+    let plugins: AgentPlugins
     private var settings: [String: AgentHookSetting] = [:]
     @MainActor private final class Job {
         let hookID: String, background: Bool, title: String, source: String
+        let pluginName: String?
         var childID: String?
         var cancelReason: String?
         var task: Task<AgentHookEffect, Error>?
-        init(_ hook: AgentHookDefinition) { hookID = hook.id; background = hook.runsInBackground; title = hook.statusMessage ?? hook.name; source = hook.source }
+        init(_ hook: AgentHookDefinition) { hookID = hook.id; background = hook.runsInBackground; title = hook.statusMessage ?? hook.name; source = hook.source; pluginName = hook.plugin?.name }
     }
     private var jobs: [String: [String: Job]] = [:]
     let http: AgentHookHTTP, credentials: AgentHookCredentials
     private(set) var loadError: String?
     private(set) var warnings: [String] = []
     var onAsyncResult: ((String, String, String?, Bool) -> Void)?
-    init(profile: URL, sharedHome: URL?, keychain: PetKeychain? = nil) {
-        self.profile = profile; self.sharedHome = sharedHome
+    init(profile: URL, sharedHome: URL?, keychain: PetKeychain? = nil, plugins: AgentPlugins? = nil) {
+        self.profile = profile; self.sharedHome = sharedHome; self.plugins = plugins ?? AgentPlugins(profile: profile)
         credentials = AgentHookCredentials(profile: profile, keychain: keychain); http = AgentHookHTTP(credentials: credentials)
         let file = profile.appendingPathComponent("extensions/hook-settings.json")
         do { if FileManager.default.fileExists(atPath: file.path) { settings = try JSONDecoder().decode([String: AgentHookSetting].self, from: Data(contentsOf: file)); guard settings.count <= 256 else { throw PetError("Hooks 数量超过 256") } } }
         catch { loadError = "Hooks 设置无法读取：" + error.localizedDescription }
+        _ = self.plugins.observeChanges { [weak self] name in
+            guard let self else { return }
+            for list in self.jobs.values { for job in list.values where job.pluginName == name { self.cancel(job) } }
+        }
     }
     var isWorking: Bool { !jobs.values.allSatisfy(\.isEmpty) }
     func isRunning(_ id: String) -> Bool { jobs[id]?.isEmpty == false || jobs.values.contains { $0.values.contains { $0.childID == id } } }
@@ -96,10 +103,13 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         guard current.1 == expectedHash else { throw PetError("配置已变化，请重新打开后编辑") }
         _ = try parse(Data(text.utf8), file: target, scope: project ? "项目" : "全局", workspace: project ? workspace : nil)
         let files = try AgentFiles(workspace: project ? workspace : profile.path)
-        let changed = try credentials.save(Data(text.utf8), file: target) { data, changed in
+        try commitConfiguration(Data(text.utf8), target: target) { data in try files.writeData(data, to: files.resolve(project ? ".bluefatfish/hooks.json" : "extensions/hooks.json"), permissions: 0o600) }
+    }
+    func commitConfiguration(_ data: Data, target: URL, write: (Data) throws -> Void) throws {
+        let changed = try credentials.save(data, file: target) { data, changed in
             let previous = settings
             for id in changed where settings[id] != nil { settings[id]?.enabled = false }
-            do { try persistSettings(); try files.writeData(data, to: files.resolve(project ? ".bluefatfish/hooks.json" : "extensions/hooks.json"), permissions: 0o600) }
+            do { try persistSettings(); try write(data) }
             catch { settings = previous; do { try persistSettings() } catch { loadError = "Hook 授权保存失败，请修复文件权限后重启" }; throw error }
         }
         for id in changed {
@@ -107,11 +117,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         }
         for list in jobs.values { for job in list.values where job.source == target.path { cancel(job) } }
     }
-    private func parse(_ data: Data, file: URL, scope: String, workspace: String?) throws -> [AgentHookDefinition] {
+    func parse(_ data: Data, file: URL, scope: String, workspace: String?, resource: URL? = nil, fingerprintSuffix: Data = Data(), inspectResources: Bool = true, inspectCredentials: Bool = true) throws -> [AgentHookDefinition] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let events = object["hooks"] as? [String: Any] else { throw PetError("Hooks 配置需要 hooks 对象") }
-        let resource = file.deletingLastPathComponent().appendingPathComponent("hooks", isDirectory: true)
-        var fingerprint = data, resourceDiagnostic: String?
-        if FileManager.default.fileExists(atPath: resource.path) {
+        let resource = resource ?? file.deletingLastPathComponent().appendingPathComponent("hooks", isDirectory: true)
+        var fingerprint = data + fingerprintSuffix, resourceDiagnostic: String?
+        if inspectResources && FileManager.default.fileExists(atPath: resource.path) {
             do {
                 guard (try FileManager.default.attributesOfItem(atPath: resource.path))[.type] as? FileAttributeType != .typeSymbolicLink else { throw PetError("hooks 目录不能是符号链接") }
                 let files = try AgentFiles(workspace: resource.path)
@@ -153,7 +163,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                         do {
                             _ = try AgentHookHTTP.endpoint(item.url); try AgentHookHTTP.validateHeaders(handler["headers"])
                             item.allowedEnvVars = try AgentHookHTTP.allowedEnvironment(handler["allowedEnvVars"])
-                            if (handler["headers"] as? [String: String])?.values.contains(AgentHookHTTP.placeholder) == true && !credentials.available(item) { throw PetError("HTTP Header 凭据未配置，请编辑后重新保存") }
+                            if inspectCredentials && (handler["headers"] as? [String: String])?.values.contains(AgentHookHTTP.placeholder) == true && !credentials.available(item) { throw PetError("HTTP Header 凭据未配置，请编辑后重新保存") }
                         } catch { item.diagnostic = error.localizedDescription }
                     }
                     if type == "command", item.diagnostic == nil {
@@ -165,7 +175,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                                 guard let shell = item.shell, ["bash", "powershell"].contains(shell) else { throw PetError("shell 支持 bash 或 powershell；args 模式忽略 shell") }
                                 if shell == "powershell", !["/opt/homebrew/bin/pwsh", "/usr/local/bin/pwsh"].contains(where: FileManager.default.isExecutableFile(atPath:)) { throw PetError("未安装 PowerShell，请先安装 pwsh 或选择 bash") }
                             }
-                            if (handler["env"] as? [String: String])?.values.contains(AgentHookCredentials.placeholder) == true && !credentials.available(item) { throw PetError("env 凭据未配置，请编辑后重新保存") }
+                            if inspectCredentials && (handler["env"] as? [String: String])?.values.contains(AgentHookCredentials.placeholder) == true && !credentials.available(item) { throw PetError("env 凭据未配置，请编辑后重新保存") }
                         } catch { item.diagnostic = error.localizedDescription }
                     }
                     if ["prompt", "agent"].contains(type) {
@@ -212,20 +222,38 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                 items += try parse(data, file: file, scope: scope, workspace: workspace)
             } catch { warnings.append(file.lastPathComponent + "：" + error.localizedDescription) }
         }
+        items += try pluginItems()
         let present = Set(items.map(\.id))
         for setting in settings.values where setting.enabled && !present.contains(setting.definition.id) && (setting.definition.workspace == nil || setting.definition.workspace == workspace) {
-            var item = setting.definition; item.diagnostic = "来源已移除或不可读，请停用或修复配置"; items.append(item)
+            var item = setting.definition; item.diagnostic = "来源已移除或不可读，请停用或修复配置"
+            if let reference = item.plugin { item.pluginEnabled = pluginParentActive(reference) }
+            items.append(item)
         }
         return items
     }
-    func enabled(_ item: AgentHookDefinition) -> Bool { settings[item.id]?.enabled == true }
+    func enabled(_ item: AgentHookDefinition) -> Bool { settings[item.id]?.enabled == true && item.pluginEnabled != false }
     func trusted(_ item: AgentHookDefinition) -> Bool { enabled(item) && settings[item.id]?.definition.signature == item.signature && item.diagnostic == nil }
     func setEnabled(_ item: AgentHookDefinition, _ enabled: Bool, workspace: String?) throws {
-        if enabled { guard let current = try catalog(workspace: workspace).first(where: { $0.id == item.id }), current.signature == item.signature, current.diagnostic == nil else { throw PetError("Hook 已变化或有诊断错误，请刷新后核对") } }
+        if enabled {
+            guard let current = try catalog(workspace: workspace).first(where: { $0.id == item.id }), current.signature == item.signature, current.diagnostic == nil, current.pluginEnabled != false else { throw PetError("Hook 已变化、所属插件未启用或有诊断错误，请刷新后核对") }
+            try validatePlugin(current)
+        }
         var updated = settings; updated[item.id] = AgentHookSetting(enabled: enabled, definition: item)
+        guard updated.count <= 256 else { throw PetError("已保存的 Hook 授权最多256项") }
         let previous = settings; settings = updated
         do { try persistSettings() } catch { settings = previous; throw error }
         if !enabled { for list in jobs.values { for job in list.values where job.hookID == item.id { cancel(job) } } }
+    }
+    private func pluginParentActive(_ reference: AgentPluginHookReference) -> Bool {
+        if let item = try? plugins.installation(reference.name) { return item.instanceID == reference.installationID && item.receipt.enabled }
+        guard AgentExtensions.validName(reference.name), !reference.name.contains(":") else { return true }
+        return FileManager.default.fileExists(atPath: profile.appendingPathComponent("extensions/plugins/" + reference.name).path)
+    }
+    func pluginConfigurationFailure(_ reference: AgentPluginHookReference, error: Error) -> [AgentHookDefinition] {
+        warnings.append(reference.name + "：" + error.localizedDescription)
+        return settings.values.filter { $0.definition.plugin == reference }.map { setting in
+            var item = setting.definition; item.diagnostic = error.localizedDescription; item.pluginEnabled = pluginParentActive(reference); return item
+        }
     }
     private func persistSettings() throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -305,6 +333,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         do {
             try Task.checkCancellation()
             guard let current = store.task(taskID), sameScope(current, task), job.cancelReason == nil else { throw CancellationError() }
+            try validatePlugin(hook)
             if hook.runsInBackground {
                 guard let fresh = try catalog(workspace: current.workspace).first(where: { $0.id == hook.id }), fresh.signature == hook.signature, trusted(fresh) else { throw AgentHookHalt("Hook 配置已变化，未启动：" + hook.name) }
             }
@@ -346,10 +375,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                 default:
                     var environment = commandEnvironment
                     environment["QODER_PROJECT_DIR"] = task.workspace ?? scratch.path; environment["QODER_HOOK_ROOT"] = hook.root; environment["BLUEFATFISH_HOOK_EVENT"] = event.rawValue
+                    if hook.plugin != nil { for name in AgentPlugins.hookRootVariables { environment[name] = hook.root } }
                     let shell: String?, command: String
                     if hook.arguments == nil && hook.shell == "powershell" {
                         guard let pwsh = ["/opt/homebrew/bin/pwsh", "/usr/local/bin/pwsh"].first(where: FileManager.default.isExecutableFile(atPath:)) else { throw AgentHookHalt("未安装 PowerShell") }
-                        shell = pwsh; command = "$QODER_PROJECT_DIR=$env:QODER_PROJECT_DIR; $QODER_HOOK_ROOT=$env:QODER_HOOK_ROOT; " + hook.command
+                        shell = pwsh; command = "$QODER_PROJECT_DIR=$env:QODER_PROJECT_DIR; $QODER_HOOK_ROOT=$env:QODER_HOOK_ROOT; " + (hook.plugin == nil ? "" : "$QODER_PLUGIN_ROOT=$env:QODER_PLUGIN_ROOT; $CLAUDE_PLUGIN_ROOT=$env:CLAUDE_PLUGIN_ROOT; $PLUGIN_ROOT=$env:PLUGIN_ROOT; ") + hook.command
                     } else { shell = hook.shell == "bash" ? "/bin/bash" : nil; command = hook.command }
                     return try await AgentCommand().run(command: command, workspace: task.workspace.map { URL(fileURLWithPath: $0) } ?? scratch, scratch: scratch, network: hook.network, timeout: hook.timeout, readOnly: limits.readOnly, maximumOutput: 64_000, protectedData: profile, inputFile: input, readRoots: [URL(fileURLWithPath: hook.root)], environment: environment, arguments: hook.arguments, shell: shell, inheritEnvironment: true)
                 }
@@ -372,6 +402,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             guard let latest = store.task(taskID), sameScope(latest, task), job.cancelReason == nil else { throw CancellationError() }
             let latestLimits = try store.agents.limits(latest, store: store)
             guard latestLimits == limits else { throw AgentHookHalt("Hook 执行范围已变化，结果未加入上下文") }
+            try validatePlugin(hook)
             if hook.runsInBackground {
                 guard let fresh = try catalog(workspace: latest.workspace).first(where: { $0.id == hook.id }), fresh.signature == hook.signature, trusted(fresh) else { throw AgentHookHalt("后台 Hook 来源已变化，结果未加入上下文") }
             }

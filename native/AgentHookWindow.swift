@@ -52,7 +52,7 @@ import UniformTypeIdentifiers
     func tableViewSelectionDidChange(_ notification: Notification) { showSelection() }
     private func showSelection() {
         selected = items.indices.contains(table.selectedRow) ? items[table.selectedRow] : nil
-        enabled.isEnabled = selected != nil; reveal.isEnabled = selected != nil
+        enabled.isEnabled = selected != nil && selected?.pluginEnabled != false; reveal.isEnabled = selected != nil
         clear.isHidden = !["http", "command"].contains(selected?.type ?? ""); clear.isEnabled = selected?.headerNames?.isEmpty == false || selected?.environmentNames?.isEmpty == false
         guard let item = selected else { command.string = ""; location.stringValue = ""; enabled.state = .off; return }
         enabled.state = service.enabled(item) ? .on : .off
@@ -60,7 +60,8 @@ import UniformTypeIdentifiers
         let timeout = item.timeout.isFinite && (1...600).contains(item.timeout) ? " · \(Int(item.timeout))s" : ""
         location.stringValue = item.type + " · " + item.event.rawValue + (item.matcher.isEmpty ? "" : " · " + item.matcher) + timeout + (item.runsInBackground ? item.asyncRewake == true ? " · 后台唤醒" : " · 后台" : "") + (item.network ? " · 联网" : "")
         location.toolTip = item.source
-        if let diagnostic = item.diagnostic { state.stringValue = diagnostic }
+        if item.pluginEnabled == false { state.stringValue = "所属插件已停用，请先在插件管理中启用" }
+        else if let diagnostic = item.diagnostic { state.stringValue = diagnostic }
         else if service.enabled(item) && !service.trusted(item) { state.stringValue = "配置或脚本已变化，重新启用前需审核" }
     }
     private func reload(select id: String? = nil) {
@@ -74,6 +75,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func refreshList() { reload() }
+    func selectHook(_ id: String) { reload(select: id) }
     @objc private func revealSource() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.source)]) } }
     @objc private func clearCredentials() {
         guard let selected, let window else { return }
@@ -102,7 +104,19 @@ import UniformTypeIdentifiers
             if response == .alertFirstButtonReturn { do { try service.setEnabled(item, true, workspace: workspace) } catch { state.stringValue = error.localizedDescription } }; reload(select: item.id)
         }
     }
-    @objc private func editConfig() { openConfig(imported: nil) }
+    @objc private func editConfig() {
+        if let reference = selected?.plugin { openPluginConfig(reference) } else { openConfig(imported: nil) }
+    }
+    private func openPluginConfig(_ reference: AgentPluginHookReference) {
+        if let window = configWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        do {
+            let document = try service.pluginDocument(reference)
+            let editor = AgentHookConfigWindow(text: document.text, title: "插件 Hooks · " + reference.name) { [weak self] text in
+                guard let self else { return }
+                try service.savePluginDocument(text, reference: reference, original: document.original, expectedHash: document.hash); reload()
+            }; configWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+        } catch { state.stringValue = error.localizedDescription }
+    }
     private func openConfig(imported: String?) {
         if let window = configWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         do {

@@ -72,7 +72,7 @@ import UniformTypeIdentifiers
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; manager.onConfigureAgent = { [weak self] id in self?.openAgent(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; manager.onConfigureAgent = { [weak self] id in self?.openAgent(id) }; manager.onConfigureHook = { [weak self] id in self?.openHook(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showMCP() {
         openMCP(nil)
@@ -82,8 +82,11 @@ import UniformTypeIdentifiers
         let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; if let id { manager.selectServer(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showHooks() {
-        if let window = hookWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentHookWindow(service: store.hooks, workspace: workspace); hookWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        openHook(nil)
+    }
+    private func openHook(_ id: String?) {
+        if let manager = hookWindow, let window = manager.window, window.isVisible { if let id { manager.selectHook(id) }; window.makeKeyAndOrderFront(nil); return }
+        let manager = AgentHookWindow(service: store.hooks, workspace: workspace); hookWindow = manager; if let id { manager.selectHook(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showAgents() {
         openAgent(nil)

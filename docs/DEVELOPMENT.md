@@ -293,3 +293,9 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 同一 `--manual-ui --task-search-fixtures` 入口增加一条完整实际 README 用户输入，未创建助手回复。记录见 `evidence/agent/bluefatfish-search-location-_x0hdbrr/task-search-location-report.json`：18项窗口、4项重启及9项独立核对通过。最终候选 `7a314c08704451d5e4e926e35dff60880491db10ab9fa24b03e772caa53c6d2e` 实测旧助手正文、长消息末段、Emoji、Markdown 字面匹配、两个窗口分别定位／清除和重排后的阅读位置。11份任务退出重启字节一致，实际追加两条输入仅改变本轮对应任务；两次模型尝试被传输前阻止，重启计数0，新增外部请求及回执0，原85份真实回执未变。
 
 首版因记录栏出现而丢失命中位置的1项失败和14项通过保留在 `evidence/agent/bluefatfish-search-location-m38l35p6`，未改写为成功。原始独立核对误把被既有输入规则去掉的末尾换行算入已保存正文，初始 false、实际差别及更正依据分别保留。验收项目使用冻结时的 README；后续 README 和两份验收文档只更新使用说明、主分支约定及证据，不影响同一已验证运行源码。日常安装及原 Wiki／Qoder 数据未替换。
+
+## 插件 Hooks 原生复现
+
+运行 `node scripts/check-native-plugin-hooks.mjs --app <严格签名候选绝对路径>`。脚本在独立中文且带空格的临时目录准备公开README／package.json、实际ZIP及本地鉴权HTTP服务，使用 `--plugin-hook-check --background-component-check`；不调用模型，不替换日常应用。保留全部输入、实际任务、进程编号和原始报告，原进程结束后才核对结果；超时保留现场，不自动重启。34项原生检查和9项独立核对分别记录在 `plugin-hook-result.json` 与 `plugin-hook-driver-report.json`。
+
+插件处理器从「插件 → 配置 Hooks」进入现有管理器，编辑配置只保存本机 env／Headers 值和钥匙串凭据。安装保持停用，不自动授予执行权限；父插件启用后仍需明确审核每个处理器。父插件停用、资源变化或重新激活使旧绑定失效，沿用现有进程取消和上下文交付检查。实际窗口复查使用同一独立目录仅带 `--manual-ui`，不再次执行原生检查或重置旧记录；发送会被模型传输保护阻止，不将受阻尝试当成真实模型答复。
