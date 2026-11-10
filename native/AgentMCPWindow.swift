@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
     init(service: AgentMCP, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "MCP 连接器"; window.minSize = NSSize(width: 740, height: 520); window.center(); window.isReleasedWhenClosed = false
+        window.title = "MCP 连接器" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 740, height: 520); window.center(); window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
@@ -98,7 +98,7 @@ import UniformTypeIdentifiers
         connect.isEnabled = current?.enabled == true && !dirty && job == nil && !connected
         disconnect.isEnabled = selected != nil && (connected || job != nil)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
-        access.stringValue = (selected?.plugin.map { "插件 " + $0.name + " · " } ?? "") + (selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
+        access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }

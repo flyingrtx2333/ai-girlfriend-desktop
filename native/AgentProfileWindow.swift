@@ -17,7 +17,7 @@ import UniformTypeIdentifiers
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
         self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "自定义 Agent"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "自定义 Agent" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("agents")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42

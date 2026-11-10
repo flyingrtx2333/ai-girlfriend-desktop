@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
     init(service: AgentHooks, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Hooks"; window.minSize = NSSize(width: 700, height: 420); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "Hooks" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 700, height: 420); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
         super.init(window: window)
         let content = NSView(); window.contentView = content
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("Hooks 配置范围")
