@@ -299,3 +299,17 @@ Repo Wiki 项目总览：侧栏「项目知识」可在无工作区对话中打�
 运行 `node scripts/check-native-plugin-hooks.mjs --app <严格签名候选绝对路径>`。脚本在独立中文且带空格的临时目录准备公开README／package.json、实际ZIP及本地鉴权HTTP服务，使用 `--plugin-hook-check --background-component-check`；不调用模型，不替换日常应用。保留全部输入、实际任务、进程编号和原始报告，原进程结束后才核对结果；超时保留现场，不自动重启。34项原生检查和9项独立核对分别记录在 `plugin-hook-result.json` 与 `plugin-hook-driver-report.json`。
 
 插件处理器从「插件 → 配置 Hooks」进入现有管理器，编辑配置只保存本机 env／Headers 值和钥匙串凭据。安装保持停用，不自动授予执行权限；父插件启用后仍需明确审核每个处理器。父插件停用、资源变化或重新激活使旧绑定失效，沿用现有进程取消和上下文交付检查。实际窗口复查使用同一独立目录仅带 `--manual-ui`，不再次执行原生检查或重置旧记录；发送会被模型传输保护阻止，不将受阻尝试当成真实模型答复。
+
+## 插件规则
+
+规则从 `rules/**/*.md` 发现，也可通过清单 `rules` 相对文件／目录或路径数组明确选择。后两种声明沿用本应用现有组件路径约定，不据此宣称CLI插件清单格式完整兼容。每项可使用 `trigger: always_on / manual / model_decision / glob`，兼容 `alwaysApply`、`paths`、单个或数组 `glob`；明确的trigger优先。模型判断需要描述，文件匹配以任务工作区为基准，支持Git忽略规则常见的根目录锚点、递归通配符、字符组及有序排除。规则正文总计最多100000字符，超限明确标记。
+
+在插件列表中选择规则可查看触发方式及只读正文，通过「在任务中使用」把 `@rule:<插件>:<规则>` 加入原草稿；发送后才写入当前任务绑定。也支持要求开头的 `@rule <插件>:<规则>`。模型判断规则先提供描述，经 `list_rules`／`read_rule` 选择后把实际正文加入当前系统上下文，不把正文复制进工具历史。文件规则在文件工具成功读取／写入／编辑之后激活；搜索结果、任意终端访问及系统编辑器访问尚不视为这种激活。规则不能扩大权限或审批，父插件停用／重新激活使旧的手动、模型与文件绑定失效，原历史仍保留。用户／项目独立规则管理与其余完整记忆发现机制继续实现。
+
+原生复现：`node scripts/check-native-plugin-rules.mjs --app <严格签名候选绝对路径>`。独立目录保存真实ZIP、公开README副本、实际Git忽略规则匹配结果和实际命令父／子进程，使用 `--plugin-rule-check --background-component-check`，禁止模型传输。每次保留自己的目录与原进程，不复用、清空或重放旧记录。
+
+## 插件 Agent 的独立真实模型验收
+
+`node scripts/check-live-plugin-agents.mjs --prepare-only` 只准备公开README及只读角色ZIP，不授予模型请求权限。获得用户本轮明确批准后，才在返回目录保存 `plugin-agent-live-authorization.json`：`scope: "plugin-agent"`、`maximumRequests: 12`、`model: "deepseek-flash"`、`contextLimit: 8192`、`replyLimit: 512` 与该目录的绝对 `directory`。随后运行 `node scripts/check-live-plugin-agents.mjs --directory <该目录> --app <严格签名候选>`。
+
+原生入口为 `--plugin-agent-live-check --live-agent --background-component-check`，仅在独立目录启用真实钥匙串凭据。请求限于本轮公开项目及只读插件角色，调用前持久保存独立账本；配置变化、越过12次或文件版本冲突时停止。启动标记保留原进程与已开始的任务，同一目录不会自动重放，其他模型验收的额度与旧账本不转用。原始模型回执、工具事件、失败和答复均保留；控制器机械检查通过后，仍须独立核对真实README与实际答复，不能只凭状态认定内容正确。

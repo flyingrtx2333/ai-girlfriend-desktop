@@ -20,6 +20,7 @@ import UniformTypeIdentifiers
     var onStartAgent: ((String) -> Void)?
     var onBrowseMCP: ((String?) -> Void)?
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
+    var onInsertRule: ((AgentPluginRuleItem) throws -> Void)?
     private var workspace: String? { store.task(taskID)?.workspace }
     private var kind: AgentExtensionKind { kinds.selectedSegment == 1 ? .command : .skill }
     init(store: AgentStore, taskID: String) {
@@ -72,7 +73,7 @@ import UniformTypeIdentifiers
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; manager.onConfigureAgent = { [weak self] id in self?.openAgent(id) }; manager.onConfigureHook = { [weak self] id in self?.openHook(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onInsertRule = onInsertRule; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id in self?.openMCP(id) }; manager.onConfigureAgent = { [weak self] id in self?.openAgent(id) }; manager.onConfigureHook = { [weak self] id in self?.openHook(id) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     @objc private func showMCP() {
         openMCP(nil)

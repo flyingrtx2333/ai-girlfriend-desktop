@@ -17,12 +17,14 @@ struct AgentPluginPackage {
     var mcpServers: [AgentPluginMCPDefinition] = []
     var agents: [AgentPluginAgentDefinition] = []
     var hooks: [AgentPluginHookDefinition] = []
+    var rules: [AgentPluginRuleDefinition] = []
 }
 struct AgentPluginInstallation: Identifiable {
     var metadata: AgentPluginMetadata, receipt: AgentPluginReceipt, root: URL, receiptHash: String
     var mcpServers: [AgentPluginMCPDefinition] = []
     var agents: [AgentPluginAgentDefinition] = []
     var hooks: [AgentPluginHookDefinition] = []
+    var rules: [AgentPluginRuleDefinition] = []
     var id: String { receipt.name }
 }
 
@@ -60,13 +62,13 @@ struct AgentPluginInstallation: Identifiable {
             let a = try JSONSerialization.jsonObject(with: files[manifest]!) as? NSDictionary, b = try JSONSerialization.jsonObject(with: files[other]!) as? NSDictionary
             guard a == b else { throw PetError("插件的两份 manifest 内容不一致") }
         }
-        let unsupported = ["rules", "settings", "outputStyles", "workflowsPath", "workflowsPaths", "permissions", "sdk", "dependencies"]
+        let unsupported = ["settings", "outputStyles", "workflowsPath", "workflowsPaths", "permissions", "sdk", "dependencies"]
         for key in unsupported where value[key] != nil {
             let item = value[key]!
             if (item as? [Any])?.isEmpty == true || (item as? [String: Any])?.isEmpty == true || item is NSNull { continue }
             throw PetError("此插件包含尚未接入的 \(key)，未安装")
         }
-        guard !files.keys.contains(where: { ["rules/", "output-styles/", "workflows/"].contains(where: $0.hasPrefix) }) else { throw PetError("此插件包含尚未接入的规则或工作流，未安装") }
+        guard !files.keys.contains(where: { ["output-styles/", "workflows/"].contains(where: $0.hasPrefix) }) else { throw PetError("此插件包含尚未接入的输出样式或工作流，未安装") }
         func paths(_ key: String, fallback: String) throws -> [String] {
             let raw: [String]
             if value[key] == nil { raw = [fallback] }
@@ -107,10 +109,11 @@ struct AgentPluginInstallation: Identifiable {
         try validateAgentReferences(agents, name: info.name, components: components, servers: mcpServers)
         let hooks = try hookDefinitions(value, paths: Set(files.keys)) { path in guard let data = files[path] else { throw PetError("插件 Hook 不存在") }; return data }
         let hookCount = hooks.reduce(0) { $0 + $1.preview.count }
-        guard !(components.isEmpty && mcpServers.isEmpty && agents.isEmpty && hookCount == 0), components.count + mcpServers.count + agents.count + hookCount <= 500 else { throw PetError("插件须包含1至500项 Skills、命令、Agent、Hooks 或 MCP 连接器") }
+        let rules = try ruleDefinitions(value, paths: Set(files.keys)) { path in guard let data = files[path] else { throw PetError("插件规则不存在") }; return data }
+        guard !(components.isEmpty && mcpServers.isEmpty && agents.isEmpty && hookCount == 0 && rules.isEmpty), components.count + mcpServers.count + agents.count + hookCount + rules.count <= 500 else { throw PetError("插件须包含1至500项 Skills、命令、Agent、规则、Hooks 或 MCP 连接器") }
         let receipt = AgentPluginReceipt(name: info.name, manifest: manifest, components: components, hashes: files.mapValues(AgentFiles.hash), sourceName: sourceName, sourceHash: sourceHash, installedAt: Date(), installationID: UUID().uuidString, activationID: UUID().uuidString)
         guard try JSONEncoder().encode(receipt).count <= 500_000 else { throw PetError("插件资源索引过大，请缩小插件包") }
-        return AgentPluginPackage(metadata: info, receipt: receipt, files: files, mcpServers: mcpServers, agents: agents, hooks: hooks)
+        return AgentPluginPackage(metadata: info, receipt: receipt, files: files, mcpServers: mcpServers, agents: agents, hooks: hooks, rules: rules)
     }
     func inspect(_ archive: URL) async throws -> AgentPluginPackage {
         guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择一个插件 ZIP 文件") }
@@ -126,6 +129,7 @@ struct AgentPluginInstallation: Identifiable {
         let package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
         guard try catalog().reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64 else { throw PetError("插件 MCP 总数最多64项") }
         guard try catalog().reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128 else { throw PetError("插件 Hooks 总数最多128项") }
+        guard try catalog().reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("插件规则总数最多256项") }
         let target = try folder(package.metadata.name), files = try AgentFiles(workspace: profile.path), (parentFD, name) = try files.parentDescriptor(target, create: true)
         defer { Darwin.close(parentFD) }
         guard try files.entryMetadata(target).kind == "missing" else { throw PetError("同名插件已安装，请先查看现有版本") }
@@ -154,6 +158,7 @@ struct AgentPluginInstallation: Identifiable {
         installed.agents = try Self.agentDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         try Self.validateAgentReferences(installed.agents, name: name, components: receipt.components, servers: installed.mcpServers)
         installed.hooks = try Self.hookDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 128_000) }
+        installed.rules = try Self.ruleDefinitions(value, paths: Set(receipt.hashes.keys)) { try self.content($0, installation: installed, maximum: 65_536) }
         return installed
     }
     func catalog() throws -> [AgentPluginInstallation] {

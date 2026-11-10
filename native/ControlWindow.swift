@@ -2007,7 +2007,7 @@ final class FormDocumentView: NSView {
         let manager = AgentExtensionWindow(store: store, taskID: id)
         manager.onStartAgent = { [weak self] taskID in self?.selectAgentTask(taskID) }
         manager.onBrowseMCP = { [weak self] server in self?.presentMCPContent(taskID: id, serverID: server) }
-        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) } }
+        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) }; manager.onInsertRule = { [weak self] item in try self?.insertRule(item, taskID: id) } }
         extensionWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
     }
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
@@ -2020,6 +2020,19 @@ final class FormDocumentView: NSView {
             let tail = String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             composer.string = "/" + current.invocation + " " + tail
         } else { composer.string = "/" + current.invocation + " " + previous }
+        composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
+        show(tab: "chat"); window?.makeFirstResponder(composer)
+    }
+    private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
+        guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
+        let current = try store.extensions.plugins.currentRule(item.id)
+        guard current.reference == item.reference else { throw PetError("规则来源已变化，请刷新插件") }
+        dismissExtensionCandidates(); saveAgentDraft()
+        if displayedTask != taskID { selectAgentTask(taskID) }
+        let previous = composer.string
+        if previous.hasPrefix("@rule:"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
+            composer.string = "@rule:" + current.name + " " + previous.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else { composer.string = "@rule:" + current.name + " " + previous }
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }

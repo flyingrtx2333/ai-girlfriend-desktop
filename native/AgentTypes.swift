@@ -37,6 +37,7 @@ struct AgentMessage: Codable, Identifiable {
     var visualsDelivered: Bool?
     var extensionInstructions: String?
     var extensionReferences: [AgentExtensionReference]?
+    var ruleReferences: [AgentPluginRuleReference]?
     var hookRejected: Bool?
     var isHumanInput: Bool { role == "user" && nativeContext != true && hookRejected != true }
     var isReply: Bool { role == "assistant" && nativeContext != true && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (toolCalls ?? []).isEmpty }
@@ -207,6 +208,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var canvases: [AgentCanvasRecord]?
     var draftAttachmentIDs: [String]?
     var activeSkills: [AgentExtensionReference]?
+    var activeRules: [AgentPluginRuleReference]?
+    var rulePlugins: [String]?
     var hookSession: String?, hookCwd: String?
     var hookContexts: [String: String]?, hookRejectedAnswers: [AgentMessage]?
     var hookStopBlocks: Int?
@@ -251,6 +254,7 @@ struct AgentTaskRecord: Codable, Identifiable {
         queuedInputs = []; queuedMessages = []
     }
     mutating func activateExtensions(_ message: AgentMessage) {
+        for reference in message.ruleReferences ?? [] { activateRule(reference) }
         if message.isHumanInput, message.extensionInstructions != nil, message.content.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit", !isProjectDocumentation, [.agent, .goal].contains(mode) { toolGroups = ["project_knowledge"] }
         for reference in message.extensionReferences ?? [] where reference.kind == .skill {
             if activeSkills == nil { activeSkills = [] }
