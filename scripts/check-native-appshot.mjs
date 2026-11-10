@@ -36,11 +36,14 @@ else {
   const file = await read('actual-attachment.json'), document = await read(`profile/agent/${result.taskID}/attachments/${file.id}/content.json`), png = await readFile(path.join(output, 'actual-window.png'));
   const names = (await readdir(path.join(output, 'profile/agent'))).filter(name => /^[A-Fa-f0-9-]{36}\.json$/.test(name)), tasks = await Promise.all(names.map(name => read('profile/agent/' + name)));
   const other = tasks.find(task => task.id === result.otherTaskID), actual = tasks.find(task => task.id === result.taskID);
+  const wire = await read('actual-wire.json'), parts = wire.flatMap(message => Array.isArray(message.content) ? message.content : []), images = parts.filter(part => part.type === 'image_url');
+  const actualJpeg = images.length === 1 && typeof images[0].image_url?.url === 'string' && images[0].image_url.url.startsWith('data:image/jpeg;base64,') ? Buffer.from(images[0].image_url.url.slice('data:image/jpeg;base64,'.length), 'base64') : Buffer.alloc(0);
   const independent = {
     actualSignedProcessAndExit: !!command && result.appPID === pid && result.binaryHash === binaryHash && !alive(),
     actualPublicSourceUnchanged: hash(await readFile(path.join(output, 'workspace/README.md'))) === hash(publicSource) && result.sourceHash === hash(publicSource),
     actualPngDimensionsAndHashMatchAttachment: png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && png.readUInt32BE(16) === file.width && png.readUInt32BE(20) === file.height && hash(png) === file.sha256,
     fullAccessibleTextHashMatchesActualRecord: hash(Buffer.from(document.parts[0].text)) === file.desktopCapture.textHash && document.parts[0].text.includes('本轮只核对实际窗口快照') && file.desktopCapture.appShot,
+    actualSerializedImageAndAccessibleText: actualJpeg[0] === 0xff && actualJpeg[1] === 0xd8 && actualJpeg.at(-2) === 0xff && actualJpeg.at(-1) === 0xd9 && wire.some(message => typeof message.content === 'string' && message.content.includes('本轮只核对实际窗口快照')),
     actualUnsentOtherTaskPreserved: other?.draft === '另一个任务的未发送草稿' && !other?.attachments?.length && !other?.messages?.length,
     submittedReferenceBelongsToActualTaskOnly: actual?.messages.length === 1 && actual.messages[0].attachmentIDs.includes(file.id) && actual.messages[0].visuals[0].id === file.id,
     modelNeverRequestedAndNoAssistantReceipt: result.blockedModelAttempts === 0 && tasks.every(task => !task.modelReceipts?.length && !task.messages.some(message => message.role === 'assistant')),

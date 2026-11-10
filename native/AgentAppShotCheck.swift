@@ -12,9 +12,12 @@ import AppKit
             let workspace = output.appendingPathComponent("workspace"), source = try String(contentsOf: workspace.appendingPathComponent("README.md"), encoding: .utf8)
             let original = "本轮只核对实际窗口快照，不发送模型。\n" + source.components(separatedBy: "\n").prefix(8).joined(separator: "\n")
             let id = tasks.create(workspace: workspace.path, mode: .ask); tasks.update(id) { $0.draft = original }; control.showAgentTask(id); control.show(tab: "chat")
+            guard let window = control.window else { throw PetError("候选任务窗口不存在") }
+            window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
             let deadline = Date().addingTimeInterval(3)
-            while NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid(), Date() < deadline { await wait(0.05) }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid(), let window = control.window else { throw PetError("候选应用未在前台，未截取其他应用") }
+            while (NSWorkspace.shared.frontmostApplication?.processIdentifier != getpid() || NSApp.keyWindow !== window || !window.isVisible), Date() < deadline { await wait(0.05) }
+            try write(["frontmostOwnProcess": NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid(), "keyWindowMatches": NSApp.keyWindow === window, "visible": window.isVisible, "windowNumber": window.windowNumber], "appshot-window-readiness.json")
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid(), NSApp.keyWindow === window, window.isVisible else { throw PetError("候选任务窗口尚未获得焦点，未截取其他应用") }
             checks["globalShortcutInitiallyDisabled"] = appShot.shortcut == .disabled
             let beforePermissions = tasks.desktop.status
             let shot = try await AgentAppShotCapture.frontmost(expectedApplication: NSRunningApplication.current, expectedOwnWindow: window.windowNumber)
@@ -51,13 +54,19 @@ import AppKit
             let inputs = try await AgentAttachmentVisuals.prepare(messages: context, store: tasks, taskID: id, preferences: preferences)
             checks["actualImagePreparedWithoutTransmission"] = inputs.values.flatMap { $0 }.count == 1 && (inputs.values.flatMap { $0 }.first?.image.width ?? 0) > 100
             let wire = AgentAttachmentVisuals.wire(messages: context, inputs: inputs), data = try JSONSerialization.data(withJSONObject: wire)
-            checks["actualPNGAndTextReachRequestPayloadOnlyAfterSubmit"] = String(decoding: data, as: UTF8.self).contains("data:image/jpeg;base64,") && String(decoding: data, as: UTF8.self).contains("本轮只核对实际窗口快照")
+            try data.write(to: output.appendingPathComponent("actual-wire.json"))
+            guard let serialized = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw PetError("实际图片上下文序列化失败") }
+            let parts = serialized.flatMap { $0["content"] as? [[String: Any]] ?? [] }
+            let imageURLs = parts.compactMap { ($0["image_url"] as? [String: Any])?["url"] as? String }
+            let texts = serialized.compactMap { $0["content"] as? String } + parts.compactMap { $0["text"] as? String }
+            checks["actualPNGAndTextReachRequestPayloadOnlyAfterSubmit"] = imageURLs.count == 1 && imageURLs.first == inputs.values.flatMap { $0 }.first.map { "data:image/jpeg;base64," + $0.image.jpeg.base64EncodedString() } && texts.contains { $0.contains("本轮只核对实际窗口快照") }
             try appShot.setShortcut(.command)
             checks["localShortcutConfigPersistedWithoutExternalMonitor"] = appShot.shortcut == .command && appShot.checkState()["globalMonitor"] as? Bool == false
             appShot.reload(); checks["shortcutReopens"] = appShot.shortcut == .command
             try appShot.setShortcut(.disabled)
             checks["disableRemovesMonitors"] = appShot.checkState()["localMonitor"] as? Bool == false && appShot.checkState()["globalMonitor"] as? Bool == false
             checks["systemPermissionsUnchanged"] = beforePermissions["accessibility"] as? Bool == tasks.desktop.status["accessibility"] as? Bool && beforePermissions["screen_recording"] as? Bool == tasks.desktop.status["screen_recording"] as? Bool
+            checks["snapshotDoesNotEnableComputerControlOrConnectWindow"] = tasks.desktop.status["enabled"] as? Bool == false && tasks.desktop.status["connected_tasks"] as? Int == 0
             checks["noModelAttemptAssistantReceiptOrJob"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty && !runtime.isRunning($0.id) }
             let metadata = try JSONEncoder().encode(file)
             try metadata.write(to: output.appendingPathComponent("actual-attachment.json"))

@@ -17,6 +17,7 @@ import ApplicationServices
     init(host: AppDelegate) throws {
         guard let directory = host.checkDirectory, CommandLine.arguments.contains("--manual-ui"), !CommandLine.arguments.contains("--live-agent"), host.agentRuntime?.modelRequestCheck != nil,
               Bundle.main.bundleIdentifier == "com.xjs.bluefatfish.appshot-check", let binary = Bundle.main.executableURL else { throw PetError("外部窗口验收必须使用独立候选和禁止模型传输的窗口入口") }
+        guard Array(CommandLine.arguments.dropFirst()) == ["--check", directory.path, "--manual-ui", "--appshot-external-ui"] else { throw PetError("外部窗口验收入口参数不符，不合并其他模型验收入口") }
         self.directory = directory.resolvingSymlinksInPath(); self.host = host
         let files = try AgentFiles(workspace: directory.path), url = try files.literalURL("appshot-external-authorization.json")
         guard try files.resolve("appshot-external-authorization.json") == url, try files.entryMetadata(url).kind == "file" else { throw PetError("缺少本轮独立外部窗口验收授权") }
