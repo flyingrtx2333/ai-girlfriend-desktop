@@ -5,6 +5,8 @@ import AppKit
     func prepareWorktreeWorkspaceUI(_ output: URL) async throws -> WorktreeWorkspaceFixture {
         guard !CommandLine.arguments.contains("--live-agent") else { throw PetError("工作树页面验收不调用模型") }
         ensureAgent(); guard let tasks = agentStore else { throw PetError("任务未初始化") }
+        guard !tasks.worktreeRetention.policy.enabled else { throw PetError("页面验收需要关闭独立资料的自动回收") }
+        tasks.worktreeRetention.start(store: tasks)
         let fm = FileManager.default, repo = output.appendingPathComponent("public-project"), tmp = output.appendingPathComponent("tmp")
         try fm.createDirectory(at: repo, withIntermediateDirectories: true); try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
         func git(_ args: [String], at root: URL? = nil) async throws -> String {
@@ -36,6 +38,8 @@ import AppKit
     func reopenWorktreeWorkspaceUI(_ output: URL) throws {
         let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("worktree-workspace-fixtures.json"))) as? [String: Any]
         guard let id = fixture?["taskID"] as? String, agentStore?.task(id) != nil else { throw PetError("保留的工作树任务不存在") }
+        guard let tasks = agentStore, !tasks.worktreeRetention.policy.enabled else { throw PetError("页面验收需要关闭独立资料的自动回收") }
+        tasks.worktreeRetention.start(store: tasks)
         control.showAgentTask(id); control.show(tab: "chat"); control.showAgentGit()
     }
     func runWorktreeWorkspaceCheck(_ output: URL) async {
@@ -124,8 +128,59 @@ import AppKit
             checks["allModelUsageRemainsEmpty"] = requests == 0 && tasks.tasks.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["workspace"] = fixture.workspace.path; report["createdWorkspace"] = createdPath; report["createdTaskID"] = created.id; report["backupID"] = backupID
             await gitPage.checkWorkspace(message: ""); await second.checkWorkspace(message: ""); host.finish()
+            let global = try await checkGlobalWorktreeSettings(fixture)
+            checks.merge(global.0) { _, next in next }; report.merge(global.1) { _, next in next }
+            checks["allModelUsageRemainsEmpty"] = requests == 0 && tasks.tasks.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["modelRequests"] = requests; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-report.json"))
+    }
+
+    private func checkGlobalWorktreeSettings(_ fixture: WorktreeWorkspaceFixture) async throws -> ([String: Bool], [String: Any]) {
+        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        guard let tasks = agentStore, let window = control.window else { throw PetError("设置验收缺少任务窗口") }
+        control.showAgentTask(fixture.standaloneID)
+        guard let settings = control.checkWorktreeSettingsPage() as? AgentWorktreeSettingsWindow else { throw PetError("工作树设置未进入右侧页面") }
+        let policy = settings.policy, original = tasks.worktreeRetention.policy
+        checks["globalSettingsWorkWithoutSelectedWorkspace"] = tasks.task(fixture.standaloneID)?.workspace == nil && policy.workspaceReadback()["manageEnabled"] as? Bool == true
+        policy.checkWorkspace(project: fixture.workspace.path, idleSeconds: 7 * 86400)
+        checks["globalPolicyDraftDoesNotChangeSavedPolicy"] = policy.hasPendingChanges && tasks.worktreeRetention.policy == original
+        policy.checkWorkspace(action: "manage")
+        guard let manager = control.checkWorktreeSettingsPage(open: false) as? AgentWorktreeWindow else { throw PetError("全局管理未进入同一设置页") }
+        await manager.checkWorkspace(path: fixture.child.path)
+        func inspect(_ label: String) async {
+            for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                window.appearance = NSAppearance(named: theme)
+                for (kind, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+                    window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
+                    let state = await control.taskWorkspaceReadback(); report[label + "-" + appearance + "-" + kind] = state
+                    let page = state[label == "global-manager" ? "settingsWorktreeManager" : "settingsWorktrees"] as? [String: Any] ?? [:]
+                    for (key, value) in page["checks"] as? [String: Bool] ?? [:] { checks[label + "-" + appearance + "-" + kind + "-" + key] = value }
+                    checks[label + "-" + appearance + "-" + kind + "-sameSettingsWindow"] = state["mainPage"] as? String == "settings" && settings.presentingWindow === window && settings.window?.isVisible == false
+                }
+            }
+        }
+        await inspect("global-manager")
+        // Closing a hosted child uses the same callback as the Settings back button.
+        manager.close()
+        checks["globalManagerBackRetainsExactPolicyDraftAndProject"] = control.checkWorktreeSettingsPage(open: false) === settings && policy.hasPendingChanges && policy.workspaceReadback()["idleSeconds"] as? Double == 7 * 86400 && policy.workspaceReadback()["selectedProject"] as? String == fixture.workspace.path && tasks.worktreeRetention.policy == original
+        await inspect("global-policy")
+        policy.checkWorkspace(action: "save")
+        let savedFile = tasks.worktreeRetention.directory.appendingPathComponent("policy.json"), saved = try JSONDecoder().decode(AgentWorktreeRetentionPolicy.self, from: Data(contentsOf: savedFile))
+        checks["globalPolicySavesActualDisabledSevenDayPolicy"] = !saved.enabled && saved.archivedOnly && saved.idleSeconds == 7 * 86400 && !policy.hasPendingChanges
+        policy.refreshState()
+        checks["globalPolicySaveFeedbackSurvivesServiceRefresh"] = (policy.workspaceReadback()["state"] as? String)?.hasPrefix("已保存 · ") == true
+        control.show(tab: "chat")
+        guard let reopened = control.checkWorktreeSettingsPage() as? AgentWorktreeSettingsWindow else { throw PetError("工作树设置无法重新进入") }
+        checks["globalPolicyReentryReadsSavedPolicy"] = reopened !== settings && reopened.policy.workspaceReadback()["idleSeconds"] as? Double == 7 * 86400 && !reopened.policy.hasPendingChanges
+        reopened.policy.checkWorkspace(project: fixture.workspace.path, action: "manage")
+        guard let nextManager = control.checkWorktreeSettingsPage(open: false) as? AgentWorktreeWindow else { throw PetError("再次打开全局管理失败") }
+        await nextManager.checkWorkspace(path: fixture.child.path, action: "open")
+        let selected = await control.taskWorkspaceReadback()
+        checks["globalManagerOpensAssociatedTaskAndLeavesSettings"] = control.agentTaskID == fixture.childID && selected["mainPage"] as? String == "chat" && reopened.settingsHostWindow == nil && nextManager.settingsHostWindow == nil
+        checks["globalSettingsPreserveOriginalTaskInput"] = tasks.task(fixture.taskID)?.draft == "保留工作树任务输入。" && tasks.task(fixture.secondID)?.draft == "保留另一任务输入。"
+        checks["globalSettingsKeepAutomaticRecycleDisabled"] = !tasks.worktreeRetention.policy.enabled
+        window.appearance = nil; window.setContentSize(NSSize(width: 1200, height: 774))
+        return (checks, report)
     }
 }

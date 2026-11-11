@@ -1771,4 +1771,20 @@ DOCX／XLSX／PPTX 进入当前任务的独立文件标签页，复用真实编�
 
 证据：`evidence/agent/worktree-workspace-idg1a22x/acceptance-index.json`、`final-06/source-staged-proof.json`、`core-results-final-06.json`、`before-final06-unchanged-proof.json`、`final06-upgrade-proof.json`、`originals-current.json` 与 `cua-final/`；最终原生报告在 `worktree-workspace-command-LcpvbB/`、`git-workspace-command-oYE57q/`、`task-workspace-command-bIb8ff/`，实际窗口原资料在 `worktree-workspace-command-m76N28/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-worktree-workspace`；`--manual-ui` 和 `--reopen <原目录>` 保留实际窗口和原资料，不调用模型。
 
-剩余：设置中「管理工作树…」的全局入口仍是独立窗口，需接入设置右侧页面；最终窗口的回收／恢复点击、视频与浏览器工作区、统一组件、标签页持久恢复和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)。P0／P1／P2 的完整目标尚未完成。
+本阶段完成时，设置中「管理工作树…」的全局入口仍是独立窗口，后续迁移见下一节。指定临时记录的最终窗口回收／恢复点击、视频与浏览器工作区、统一组件、标签页持久恢复和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)。P0／P1／P2 的完整目标尚未完成。
+
+## 设置内的全局工作树管理（2026-11-12）
+
+「设置 → 工作树」通过原设置页面承载保留策略、已登记项目和管理子页，返回时保留项目与未应用的策略。无工作区任务也可管理已有项目；关联任务从当前设置窗口跳转，离开未应用策略时可继续编辑。保存状态按实际配置版本显示，目录服务刷新后仍保持反馈。复用原工作树管理页、策略存储与回收服务，自动回收的启用确认和冲突核对保留；没有更改存储格式、回收范围或权限。
+
+改造前原保留回收核心 **47 项**通过。最终同一优化程序通过 **309 项**：工作树页面 232、原保留回收核心 47、原设置布局 30。实际仓库、原始索引、暂存与工作字节、忽略文件、外部工作树及备份引用均独立核对。此数与上一节任务内阶段的 450 项分别对应各自程序，不累加。页面验收全程关闭自动回收；原保留核心另在独立目录验证真实到期计时与保护条件，结束时策略关闭。本轮模型请求为 0，旧模型额度未转用。
+
+最终实际窗口从问答／无工作区任务打开全局设置，在右侧进入管理，再返回核对 7 天未应用草稿及原项目；离开时选择继续编辑，确认磁盘尚无策略文件后，实际应用这份关闭状态的设置。随后跳转关联工作树任务并返回原任务，原输入保持。浅深色、1200×774 正常窗口和 800×550 窄窗口的列表／详情、操作栏及返回入口均有原始画面。同一程序正常退出后，使用原资料重开，已保存的 7 天、关闭的开关、项目列表、浅色外观和原任务输入可重新读到。此组实际窗口没有执行回收；上一节 `m76N28` 中指定临时记录的最终点击仍等待明确确认。
+
+主流程与同版重开共 **35 次 CUA 调用、70 份原始记录、8 张原始 JPEG**。页面重建期间的瞬时辅助功能错误保留，随后重新读取实际状态；README 两张新图直接复制原始字节。早期验收中的空项目列表来自隔离环境未启动目录服务，正常入口原本会启动。仅补齐验收初始化并断言自动回收关闭，未为此改动产品目录或回收后端；失败报告、调试窗口原件及首次检查入口可见范围导致的失败构建均保留。
+
+初始 8 份资料的文件与权限保留，全部 5 项任务的正文、草稿、模型配置、事件和授权保持。保存设置及正常退出后共有 12 份持久文件；同版重开后权限全部保持、10 份逐字节一致，只有原任务的 Git 审阅时间和任务索引刷新，设置、外观、历史与回收策略逐字节一致。源仓库索引、暂存和工作版本、子工作树实际内容、外部检出保持；9 份日常资料及 23 份旧真实模型原件不变。
+
+最终冻结 **291 份原生输入及 2 份配套配置／脚本**，140 份办公资源与原验收资源一致。签名前 SHA256 `04c6eedb1534a5a7d90267e79ef2e0a252edaa33ce0dbb6f45a9c093385ae863`，显式本地签名后 `b930a7ec25a09884bebb32ff2a17cfa6d6be6bec2e85060ce3cac3b5efb68f13`；签名详情为 `Signature=adhoc`，严格核对通过，无需私人证书或钥匙串解锁。源码、构建、程序、缓存、临时文件与证据留在外置项目目录；日常包仍为 `bf6a50e` 的原程序及签名，尚未替换。
+
+证据：`evidence/agent/worktree-settings-lce_zq3i/acceptance-index.json`、`settings-final-01/source-staged-proof.json`、`settings-final-01/signature-details.txt`、`profile-preservation-proof.json`、`ui-before-apply-proof.json`、`ui-final-proof.json`、`ui-reopen-proof.json`、`originals-current.json`、`cua-final/` 与 `cua-reopen/`。最终页面报告在 `evidence/agent/worktree-workspace-command-687Kdy/`，原设置和保留检查在本轮目录的 `settings-final-01-settings/`、`settings-final-01-retention/`，实际窗口原资料为 `worktree-workspace-command-v9Yh1O/`。复验沿用 `BLUEFATFISH_APP=<独立验收包路径> npm run native:check-worktree-workspace`，不调用模型；完整剩余项继续按 [Qoder TODO](QODER-PARITY-TODO.md) 推进。

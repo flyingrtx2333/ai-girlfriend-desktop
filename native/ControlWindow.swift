@@ -93,7 +93,7 @@ final class FormDocumentView: NSView {
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
     private let settingsCategories = [("model", "模型", "cpu"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
-    private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory"])
+    private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
@@ -164,7 +164,7 @@ final class FormDocumentView: NSView {
     private let taskContext = AgentWorkbenchButton()
     private var worktreeWindow: AgentWorktreeWindow?
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
-    private var worktreePolicyPanel: AgentWorktreePolicyView?
+    private weak var worktreePolicyPanel: AgentWorktreePolicyView?
     private var dataImportView: AgentDataImportView?
     private var taskSwitcher: AgentTaskSwitcher?
     private var archivedTasksView: AgentArchivedTasksView?
@@ -892,6 +892,11 @@ final class FormDocumentView: NSView {
             if let selection { manager.selectProfile(selection) }; return manager
         case "teams":
             let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: mode); manager.onUse = use; return manager
+        case "worktrees":
+            let manager = AgentWorktreeSettingsWindow(store: store) { [weak self] id in
+                guard let self, self.canLeaveMainPage() else { return }; self.showAgentTask(id); self.show(tab: "chat")
+            }
+            worktreePolicyPanel = manager.policy; return manager
         case "memory":
             guard let taskID else { return nil }
             return AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true)
@@ -956,7 +961,7 @@ final class FormDocumentView: NSView {
             generalSettingsSave?.isHidden = true
             let id = agentTaskID ?? companion?.agentStore?.selectedID
             let task = id.flatMap { companion?.agentStore?.task($0) }, workspace = task?.workspace
-            _ = settingsPageHost.show(category: settingsCategory, identity: (id ?? "") + "|" + (workspace ?? ""), scope: workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置") { [weak self] kind in
+            _ = settingsPageHost.show(category: settingsCategory, identity: (id ?? "") + "|" + (workspace ?? ""), scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置") { [weak self] kind in
                 self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
             }
             return
@@ -1156,7 +1161,8 @@ final class FormDocumentView: NSView {
             ("teams", "teams", "智能体团队", "Team 团队 成员 负责人"),
             ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
             ("memory", "memory", "记忆与指令", "AGENTS 全局 项目记忆 用户指令"),
-            ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式")
+            ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
+            ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {
             guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
             group(category, title, keywords)
@@ -1169,9 +1175,6 @@ final class FormDocumentView: NSView {
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel)
-            group("worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
-            let panel = AgentWorktreePolicyView(store: store) { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
-            worktreePolicyPanel = panel; row("", panel)
             group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
@@ -1581,6 +1584,7 @@ final class FormDocumentView: NSView {
     func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
         try taskWorkspace.requireDeletionAllowed(ids)
+        if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
         for page in knowledgePageHost.controllers {
             if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
             if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
@@ -1590,6 +1594,8 @@ final class FormDocumentView: NSView {
     func closeDeletedTaskRecords(_ ids: Set<String>) {
         recordWindow?.closeDeletedTask(ids)
         taskWorkspace.finish(tasks: ids)
+        if let manager = settingsPageHost.currentController as? AgentWorktreeWindow, ids.contains(manager.boundTaskID) { manager.close() }
+        worktreePolicyPanel?.refreshState()
         if knowledgePageHost.controllers.contains(where: { ($0 as? AgentRecordWindow)?.belongsToTasks(ids) == true || ($0 as? AgentKnowledgeCardWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeLibraryWindow)?.boundTaskID.map(ids.contains) == true }) { knowledgePageHost.finish() }
     }
     func checkAttentionNavigation() throws -> [String: Any] {
@@ -2202,7 +2208,16 @@ final class FormDocumentView: NSView {
             if let creation = page as? AgentWorktreeCreationWindow, creation.isPageVisible { value["worktreeCreation"] = creation.workspaceReadback() }
             if let manager = page as? AgentWorktreeWindow, manager.isPageVisible { value["worktrees"] = manager.workspaceReadback() }
         }
+        if selectedTab == "settings", settingsCategory == "worktrees" {
+            value["settingsWorktrees"] = worktreePolicyPanel?.workspaceReadback() ?? [:]
+            value["settingsController"] = settingsPageHost.currentController.map { String(describing: type(of: $0)) } ?? ""
+            if let manager = settingsPageHost.currentController as? AgentWorktreeWindow { value["settingsWorktreeManager"] = manager.workspaceReadback() }
+        }
         value["documents"] = documents; value["offices"] = offices; value["canvases"] = canvases; value["documentOpen"] = taskDocumentOpenState; return value
+    }
+    internal func checkWorktreeSettingsPage(open: Bool = true) -> AgentSettingsPageController? {
+        guard AgentTaskWorkspace.readbackEnabled else { return nil }
+        if open, !showSettingsCategory("worktrees") { return nil }; return settingsPageHost.currentController
     }
     private func refreshKnowledgeNavigation() {
         AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)

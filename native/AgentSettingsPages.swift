@@ -95,6 +95,7 @@ import AppKit
     private var category = "", identity = ""
     private var makePage: ((String) -> AgentSettingsPageController?)?
     var currentController: AgentSettingsPageController? { entries.last?.controller }
+    var controllers: [AgentSettingsPageController] { entries.map(\.controller) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -157,7 +158,7 @@ import AppKit
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
-        header.isHidden = category == "hooks" && entries.count == 1
+        header.isHidden = ["hooks", "worktrees"].contains(category) && entries.count == 1
     }
     @objc private func goBack() {
         guard entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
