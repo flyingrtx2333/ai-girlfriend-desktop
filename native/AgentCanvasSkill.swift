@@ -67,14 +67,14 @@ struct AgentCanvasSkillSpecification {
     }
 }
 
-@MainActor final class AgentCanvasSkillWindow: NSWindowController {
+@MainActor final class AgentCanvasSkillWindow: AgentSettingsPageController {
     private let canvas: AgentCanvas, taskID: String, id: String, sourceHash: String
     private let name = NSTextField(), trigger = NSTextField(), sources = NSTextField(), formatting = NSTextField(), state = NSTextField(labelWithString: "")
     init(canvas: AgentCanvas, taskID: String, record: AgentCanvasRecord) {
         self.canvas = canvas; self.taskID = taskID; id = record.id; sourceHash = record.hash
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 260), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "打包画布 Skill"; window.isReleasedWhenClosed = false; window.center()
-        super.init(window: window); let content = NSView(); window.contentView = content
+        super.init(window: window); let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         name.stringValue = "canvas-" + record.id.prefix(8).lowercased(); trigger.stringValue = "需要生成与「" + record.title + "」相同结构的画布时使用"
         sources.stringValue = "当前任务中用户提供的实际数据和要求"; formatting.stringValue = "沿用模板布局、色彩和交互；数值和文案依据当前实际输入生成"
         let form = NSStackView(); form.orientation = .vertical; form.alignment = .leading; form.spacing = 14

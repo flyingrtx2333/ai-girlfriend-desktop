@@ -16,19 +16,24 @@ import Darwin
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
 }
 
-@MainActor final class AgentCanvasWindow: NSWindowController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, NSTextViewDelegate {
-    private let canvas: AgentCanvas, taskID: String
+@MainActor final class AgentCanvasWindow: AgentSettingsPageController, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, NSTextViewDelegate {
+    private let canvas: AgentCanvas
+    let taskID: String
     private let picker = NSPopUpButton(), mode = NSSegmentedControl(labels: ["预览", "源码"], trackingMode: .selectOne, target: nil, action: nil), versions = NSPopUpButton(), exports = NSPopUpButton()
     private let save = NSButton(title: "保存", target: nil, action: nil), annotate = NSButton(title: "批注", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
-    private let content = NSView(), state = NSTextField(labelWithString: ""), editor = NSTextView(), editorScroll = NSScrollView(), preview = NSView()
+    private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface), state = NSTextField(labelWithString: ""), editor = NSTextView(), editorScroll = NSScrollView(), preview = NSView()
     private(set) var web: WKWebView!
     private(set) var selectedID: String?
-    private var loadedHash: String?, requestedHash: String?, editorHash: String?, dirty = false, closed = false, nativeLoading = false
+    private var loadedHash: String?, requestedHash: String?, editorHash: String?, closed = false, nativeLoading = false
+    private var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
     private var renderTask: Task<Void, Error>?, uiTask: Task<Void, Never>?, timeout: Task<Void, Never>?, watcher: DispatchSourceFileSystemObject?, watchTask: Task<Void, Never>?
     private var pending: CheckedContinuation<Any, Error>?, generation = UUID(), annotationWindow: AgentBrowserAnnotationWindow?
     private var draftTask: Task<Void, Never>?
     private var skillWindow: AgentCanvasSkillWindow?
     var onClose: (() -> Void)?
+    var onWorkspaceChange: (() -> Void)?
+    var workspaceHasUnsavedChanges: Bool { dirty }
+    var workspaceIsClosed: Bool { closed }
     init(canvas: AgentCanvas, taskID: String) {
         self.canvas = canvas; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -46,10 +51,13 @@ import Darwin
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; save.isHidden = true
         editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 13, weight: .regular); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.textContainerInset = NSSize(width: 18, height: 16); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.delegate = self; editor.setAccessibilityLabel("画布 TSX 源码")
         editorScroll.documentView = editor; editorScroll.hasVerticalScroller = true; editorScroll.isHidden = true
+        editor.drawsBackground = false; editor.textColor = .labelColor; editorScroll.drawsBackground = false; editorScroll.scrollerStyle = .overlay
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
-        let toolbar = NSStackView(views: [picker, mode, NSView(), reload, versions, annotate, exports, save]); toolbar.spacing = 8
+        let primary = NSStackView(views: [picker, mode, NSView(), reload]), secondary = NSStackView(views: [versions, annotate, exports, NSView(), save]); primary.spacing = 8; secondary.spacing = 8
+        let toolbar = NSStackView(views: [primary, secondary]); toolbar.orientation = .vertical; toolbar.alignment = .leading; toolbar.spacing = 8
+        for row in [primary, secondary] { row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true }
         for view in [toolbar, preview, editorScroll, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), toolbar.heightAnchor.constraint(equalToConstant: 30), preview.leadingAnchor.constraint(equalTo: content.leadingAnchor), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor), preview.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -4), editorScroll.leadingAnchor.constraint(equalTo: preview.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: preview.trailingAnchor), editorScroll.topAnchor.constraint(equalTo: preview.topAnchor), editorScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor), state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8), state.heightAnchor.constraint(equalToConstant: 16)])
+        NSLayoutConstraint.activate([toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), preview.leadingAnchor.constraint(equalTo: content.leadingAnchor), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor), preview.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -4), editorScroll.leadingAnchor.constraint(equalTo: preview.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: preview.trailingAnchor), editorScroll.topAnchor.constraint(equalTo: preview.topAnchor), editorScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor), state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8), state.heightAnchor.constraint(equalToConstant: 16)])
         resetWeb()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -88,7 +96,7 @@ import Darwin
             guard canLeave() else { throw PetError("请先处理未保存的源码") }; cancelRender(); selectedID = id; loadedHash = nil; editorHash = nil; watch(id)
             if let draft = value.record.draft { editor.string = draft; editorHash = value.record.draftHash; dirty = true; mode.selectedSegment = 1; changeCanvasMode() }
         }
-        showWindow(nil); window?.makeKeyAndOrderFront(nil)
+        if settingsHostWindow == nil { showWindow(nil); window?.makeKeyAndOrderFront(nil) }
         refreshCatalog()
         if !dirty, editorHash != value.record.hash { editor.string = value.code; editorHash = value.record.hash; editor.undoManager?.removeAllActions() }
         if loadedHash == value.record.hash { return }
@@ -127,7 +135,7 @@ import Darwin
     private func refreshCatalog() {
         let records = canvas.records(taskID); picker.removeAllItems()
         for record in records { picker.addItem(withTitle: record.title); picker.lastItem?.representedObject = record.id }
-        if let i = records.firstIndex(where: { $0.id == selectedID }) { picker.selectItem(at: i); window?.title = "画布 · " + records[i].title }
+        if let i = records.firstIndex(where: { $0.id == selectedID }) { picker.selectItem(at: i); window?.title = "画布 · " + records[i].title; onWorkspaceChange?() }
         versions.removeAllItems(); versions.addItem(withTitle: "版本")
         if let record = records.first(where: { $0.id == selectedID }) {
             let formatter = DateFormatter(); formatter.dateFormat = "MM-dd HH:mm:ss"
@@ -182,12 +190,16 @@ import Darwin
         guard try canvas.source(id, taskID: taskID).record.hash == source.record.hash else { throw PetError("截图期间画布源码已变化，请重试") }
         return AgentCanvasShot(image: image, capture: AgentCanvasCapture(canvasID: id, title: source.record.title, sourceHash: source.record.hash))
     }
-    @objc private func changeCanvas() { guard let id = picker.selectedItem?.representedObject as? String else { return }; run { try await self.open(id) } }
+    @objc private func changeCanvas() {
+        guard let id = picker.selectedItem?.representedObject as? String else { return }
+        if settingsHostWindow != nil { refreshCatalog(); run { _ = try await self.canvas.show(id, taskID: self.taskID) } }
+        else { run { try await self.open(id) } }
+    }
     @objc private func changeCanvasMode() { let source = mode.selectedSegment == 1; editorScroll.isHidden = !source; preview.isHidden = source; save.isHidden = !source; annotate.isEnabled = !source }
     @objc private func reloadDocument() { guard canLeave(), let id = selectedID else { return }; loadedHash = nil; editorHash = nil; run { try await self.open(id) } }
     @objc private func saveSource() {
         guard let id = selectedID, let hash = editorHash else { return }
-        do { _ = try canvas.update(id, source: editor.string, expected: hash, taskID: taskID); dirty = false; draftTask?.cancel(); canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID); editorHash = nil; run { try await self.open(id) } } catch { state.stringValue = error.localizedDescription }
+        do { _ = try canvas.update(id, source: editor.string, expected: hash, taskID: taskID); dirty = false; state.stringValue = ""; draftTask?.cancel(); canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID); editorHash = nil; run { try await self.open(id) } } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func restoreVersion() {
         guard canLeave(), let id = selectedID, let hash = versions.selectedItem?.representedObject as? String else { versions.selectItem(at: 0); return }
@@ -208,7 +220,7 @@ import Darwin
         guard kind > 0, let id = selectedID else { return }
         if kind == 4 {
             guard !dirty else { state.stringValue = "请先保存源码后打包"; return }
-            do { let record = try canvas.source(id, taskID: taskID).record; let manager = AgentCanvasSkillWindow(canvas: canvas, taskID: taskID, record: record); skillWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) } catch { state.stringValue = error.localizedDescription }
+            do { let record = try canvas.source(id, taskID: taskID).record; let manager = AgentCanvasSkillWindow(canvas: canvas, taskID: taskID, record: record); skillWindow = manager; presentSettingsChild(manager) } catch { state.stringValue = error.localizedDescription }
             return
         }
         run {
@@ -243,12 +255,43 @@ import Darwin
         }
     }
     private func canLeave() -> Bool {
-        guard dirty else { return true }; let alert = NSAlert(); alert.messageText = "放弃未保存的源码？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
+        guard dirty else { return true }; let alert = NSAlert(); alert.messageText = "放弃未保存的源码？"; alert.informativeText = window?.title ?? "画布"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; draftTask?.cancel(); if let id = selectedID { canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID) }; return true
     }
+    func prepareWorkspaceNavigation() -> Bool {
+        guard !closed else { return false }
+        guard !dirty || selectedID.map({ canvas.saveDraft(editor.string, hash: editorHash, id: $0, taskID: taskID) }) == true else { state.stringValue = "源码草稿未保存，请先保留编辑内容"; return false }
+        draftTask?.cancel(); return true
+    }
+    func workspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        let frames = [picker, mode, versions, annotate, exports, reload, save].filter { !$0.isHiddenOrHasHiddenAncestor }.map { content.convert($0.bounds, from: $0) }
+        return ["taskID": taskID, "canvasID": selectedID ?? "", "source": editor.string, "editorHash": editorHash ?? "", "loadedHash": loadedHash ?? "", "dirty": dirty, "closed": closed, "rendering": renderTask != nil, "state": state.stringValue, "sourceVisible": !editorScroll.isHidden,
+            "checks": ["canvasUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "canvasHasNoFloatingWindow": window?.isVisible != true, "canvasToolbarFits": !frames.isEmpty && frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "canvasHasUsableSize": web.bounds.width >= 450 && web.bounds.height >= 250]]
+    }
+    func checkWorkspaceSource(_ text: String? = nil, action: String = "source") async {
+        guard AgentTaskWorkspace.readbackEnabled else { return }
+        if action == "source" { mode.selectedSegment = 1; changeCanvasMode() }
+        if let text { editor.string = text; textDidChange(Notification(name: NSText.didChangeNotification, object: editor)) }
+        if action == "save" { saveSource(); await uiTask?.value }
+        if action == "skill" { exports.selectItem(at: 4); exportDocument() }
+    }
+    override func prepareForWorkspaceClose() async -> Bool {
+        let accepted = canLeaveSettings()
+        if !accepted {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.closed, let id = self.selectedID else { return }
+                try? self.canvas.onPresent?(self, id); self.presentingWindow?.makeKeyAndOrderFront(nil)
+            }
+        }; return accepted
+    }
+    override func settingsWillLeave() { finishClose() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }
-    func windowWillClose(_ notification: Notification) {
+    func windowWillClose(_ notification: Notification) { finishClose() }
+    func finishClose() {
+        guard !closed else { return }; closed = true
         if dirty, let id = selectedID { canvas.saveDraft(editor.string, hash: editorHash, id: id, taskID: taskID) }
-        closed = true; draftTask?.cancel(); stop(); watcher?.cancel(); watchTask?.cancel(); annotationWindow?.close(); skillWindow?.close(); web.loadHTMLString("", baseURL: nil); onClose?()
+        draftTask?.cancel(); stop(); watcher?.cancel(); watchTask?.cancel(); annotationWindow?.close(); skillWindow?.close(); web.loadHTMLString("", baseURL: nil); onClose?(); onClose = nil
+        if settingsHostWindow != nil { close() } else { window?.close() }
     }
 }

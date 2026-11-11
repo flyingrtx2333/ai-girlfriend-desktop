@@ -24,6 +24,7 @@ import AppKit
         guard let window else { return true }
         return window.delegate?.windowShouldClose?(window) ?? true
     }
+    func prepareForWorkspaceClose() async -> Bool { canLeaveSettings() }
     func settingsDidAppear() {
         if let window { window.delegate?.windowDidBecomeKey?(Notification(name: NSWindow.didBecomeKeyNotification, object: window)) }
     }

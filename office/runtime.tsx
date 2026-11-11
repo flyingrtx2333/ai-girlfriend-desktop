@@ -51,6 +51,17 @@ async function presentationFonts() {
 function LoadedEditor({ Component, properties, format, token }: { Component: React.ComponentType<any>; properties: any; format: string; token: number }) {
   const reference = useRef<any>(null);
   const preparing = useRef(false);
+  const fitPage = useCallback(() => {
+    if (format !== 'docx' || token !== generation || rootElement.clientWidth < 100) return;
+    const value = reference.current;
+    // Measure the actual page from the pinned SDK, including landscape/custom
+    // paper. Changing the viewport must not change the document's page setup.
+    const page = rootElement.querySelector('.paged-editor__page');
+    const zoom = value?.getZoom(), width = page?.getBoundingClientRect().width;
+    if (!zoom || !width) return;
+    const next = Math.max(0.1, Math.min(1, (rootElement.clientWidth - 96) / (width / zoom)));
+    if (Math.abs(next - zoom) > 0.005) value.setZoom(next);
+  }, []);
   const assign = useCallback((value: any) => {
     reference.current = value;
     if (token === generation && value && ready) editor = value;
@@ -67,6 +78,11 @@ function LoadedEditor({ Component, properties, format, token }: { Component: Rea
       }
       if (token === generation) becameReady(value);
     })().catch(error => { if (token === generation) failure(error); });
+  }, []);
+  useEffect(() => {
+    if (format !== 'docx') return;
+    const observer = new ResizeObserver(fitPage); observer.observe(rootElement);
+    return () => observer.disconnect();
   }, []);
   useEffect(() => {
     if (format !== 'docx') return;
@@ -90,7 +106,7 @@ function LoadedEditor({ Component, properties, format, token }: { Component: Rea
   }, []);
   // Native policy guards every write; inert locks interaction without issuing
   // concurrent SDK read-only commands against a changing presentation version.
-  return <Component {...properties} readOnly={false} {...(format === 'docx' ? { ref: assign } : { onReady: accept })} />;
+  return <Component {...properties} readOnly={false} {...(format === 'docx' ? { ref: assign, onFirstPagePainted: fitPage } : { onReady: accept })} />;
 }
 function becameReady(value: any) {
   if (fatal) return;
@@ -118,7 +134,7 @@ async function load(url: string, name: string, locked: boolean) {
   if (format === 'docx') {
     const [module, locale] = await Promise.all([import('@betteroffice/docx-react'), import('@betteroffice/docx-i18n/zh-CN')]);
     await import('@betteroffice/docx-react/styles.css');
-    Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n: locale.default, showFileOpen: false, showHelpMenu: false, colorMode: 'light' };
+    Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n: locale.default, showFileOpen: false, showHelpMenu: false, colorMode: 'system' };
   } else if (format === 'xlsx') {
     const [module, locale] = await Promise.all([import('@betteroffice/xlsx-react'), import('@betteroffice/xlsx-i18n/zh-CN')]);
     Component = module.XlsxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: sheetLocale(locale.default) };

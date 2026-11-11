@@ -3,19 +3,22 @@ import WebKit
 import UniformTypeIdentifiers
 import Darwin
 
-@MainActor final class AgentOfficeWindow: NSWindowController, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+@MainActor final class AgentOfficeWindow: AgentSettingsPageController, NSWindowDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     unowned let office: AgentOffice
     private let store: AgentStore
     let taskID: String, files: AgentFiles, file: URL
-    private(set) var dirty = false, working = false, openedHash = "", openedSignature = "", openedPermissions = 0o644
+    private(set) var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
+    private(set) var working = false, openedHash = "", openedSignature = "", openedPermissions = 0o644
     private let save = NSButton(title: "保存", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil), saveCopy = NSButton(title: "另存为…", target: nil, action: nil)
-    private let state = NSTextField(labelWithString: ""), content = NSView()
+    private let state = NSTextField(labelWithString: ""), content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
     private var opening: Task<Void, Error>?, uiTask: Task<Void, Never>?, watchTask: Task<Void, Never>?
     private var shell: CheckedContinuation<Void, Error>?, shellTimeout: Task<Void, Never>?, watcher: DispatchSourceFileSystemObject?
     private var toolEpoch = UUID()
     var onClose: (() -> Void)?
+    var onWorkspaceChange: (() -> Void)?
+    var workspaceIsClosed: Bool { closed }
     init(office: AgentOffice, store: AgentStore, taskID: String, files: AgentFiles, file: URL) {
         self.office = office; self.store = store; self.taskID = taskID; self.files = files; self.file = file
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -26,13 +29,16 @@ import Darwin
         reload.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "重新载入"); reload.title = ""; reload.toolTip = "重新载入"; reload.setAccessibilityLabel("重新载入办公文件")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let name = NSTextField(labelWithString: file.lastPathComponent); name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let bar = NSStackView(views: [name, NSView(), state, reload, saveCopy, save]); bar.spacing = 9
+        state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let heading = NSStackView(views: [name, NSView(), state]), actions = NSStackView(views: [reload, NSView(), saveCopy, save]); heading.spacing = 9; actions.spacing = 9
+        let bar = NSStackView(views: [heading, actions]); bar.orientation = .vertical; bar.alignment = .leading; bar.spacing = 8
+        for row in [heading, actions] { row.widthAnchor.constraint(equalTo: bar.widthAnchor).isActive = true }
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .nonPersistent(); configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.userContentController.add(self, name: "office")
         configuration.userContentController.addUserScript(WKUserScript(source: "document.addEventListener('click',event=>{const input=event.target;if(input instanceof HTMLInputElement&&input.type==='file'&&!input.accept.includes('image')){event.preventDefault();window.webkit.messageHandlers.office.postMessage({action:'open-request'});}},true);", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: configuration); web.navigationDelegate = self; web.uiDelegate = self; web.setAccessibilityLabel("办公文档编辑器")
         for view in [bar, web!] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), bar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), bar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), bar.heightAnchor.constraint(equalToConstant: 28), web.leadingAnchor.constraint(equalTo: content.leadingAnchor), web.trailingAnchor.constraint(equalTo: content.trailingAnchor), web.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 9), web.bottomAnchor.constraint(equalTo: content.bottomAnchor), state.widthAnchor.constraint(lessThanOrEqualToConstant: 380), reload.widthAnchor.constraint(equalToConstant: 28)])
+        NSLayoutConstraint.activate([bar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), bar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), bar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), web.leadingAnchor.constraint(equalTo: content.leadingAnchor), web.trailingAnchor.constraint(equalTo: content.trailingAnchor), web.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 9), web.bottomAnchor.constraint(equalTo: content.bottomAnchor), state.widthAnchor.constraint(lessThanOrEqualToConstant: 300), reload.widthAnchor.constraint(equalToConstant: 28)])
         updateAvailability()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -48,7 +54,7 @@ import Darwin
     }
     func open() async throws {
         guard !closed else { throw PetError("办公窗口已关闭") }
-        showWindow(nil); window?.makeKeyAndOrderFront(nil)
+        if settingsHostWindow == nil { showWindow(nil); window?.makeKeyAndOrderFront(nil) }
         if ready { return }; if let opening { try await opening.value; return }
         guard !dirty else { throw PetError("此窗口仍有未保存的编辑，请先保留内容或关闭窗口") }
         let operation = Task { @MainActor [weak self] in
@@ -196,7 +202,7 @@ import Darwin
         uiTask = Task { [weak self] in guard let self else { return }; defer { uiTask = nil }; do { if ready { try await verifyClean() }; guard canDiscard() else { return }; dirty = false; window?.isDocumentEdited = false; ready = false; try await open() } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func saveAs() {
-        guard ready, !working, manuallyWritable, let window else { return }
+        guard ready, !working, manuallyWritable, let window = presentingWindow else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: file.pathExtension) ?? .data]; panel.directoryURL = file.deletingLastPathComponent(); panel.nameFieldStringValue = file.deletingPathExtension().lastPathComponent + " 副本." + file.pathExtension
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let target = panel.url, let self else { return }
@@ -220,7 +226,7 @@ import Darwin
         }
     }
     private func chooseFile() {
-        guard !working, let window else { return }
+        guard !working, let window = presentingWindow else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = AgentOffice.formats.compactMap { UTType(filenameExtension: $0) }; panel.directoryURL = files.root; panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
@@ -251,6 +257,50 @@ import Darwin
         let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.informativeText = file.lastPathComponent; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         return alert.runModal() == .alertSecondButtonReturn
     }
+    func prepareWorkspaceNavigation() -> Bool {
+        guard !working || opening != nil && !dirty, uiTask == nil else { state.stringValue = "正在处理，请稍候"; return false }; return true
+    }
+    override func prepareForWorkspaceClose() async -> Bool {
+        if closed { return true }
+        if working { return opening != nil && !dirty }
+        guard uiTask == nil, presentingWindow?.attachedSheet == nil else { return false }
+        var accepted = false
+        defer {
+            if !accepted {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.closed else { return }
+                    try? self.office.onPresent?(self); self.presentingWindow?.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
+        do { if ready { try await verifyClean() }; accepted = canDiscard(); return accepted }
+        catch { state.stringValue = error.localizedDescription; return false }
+    }
+    override func settingsDidAppear() { updateAvailability() }
+    override func settingsWillLeave() { finishClose() }
+    func workspaceReadback() async -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        let controls = [save, reload, saveCopy].filter { !$0.isHiddenOrHasHiddenAncestor }
+        let frames = controls.map { content.convert($0.bounds, from: $0) }
+        var value: [String: Any] = ["taskID": taskID, "file": file.path, "dirty": dirty, "working": working, "closed": closed, "ready": ready, "openedHash": openedHash, "state": state.stringValue,
+            "loopbackURL": base?.absoluteString ?? "", "snapshot": snapshot?.folder.path ?? "", "saveEnabled": save.isEnabled,
+            "checks": ["officeUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "officeHasNoFloatingWindow": window?.isVisible != true, "officeToolbarFits": !frames.isEmpty && frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "officeEditorHasUsableSize": web.bounds.width >= 450 && web.bounds.height >= 250]]
+        if ready, !working, !closed {
+            value["editor"] = try? await evaluate("return BlueFatFishOffice.state()")
+            if file.pathExtension.lowercased() == "docx", let page = try? await evaluate("const p=document.querySelector('.paged-editor__page')?.getBoundingClientRect(); return {width:innerWidth,pageWidth:p?.width??0,pageLeft:p?.left??0,pageRight:p?.right??0,dark:!!document.querySelector('.docx-editor.dark')}") as? [String: Any] {
+                value["page"] = page
+                var checks = value["checks"] as? [String: Bool] ?? [:]
+                checks["officePageFitsWidth"] = (page["pageWidth"] as? Double ?? 0) > 0 && (page["pageRight"] as? Double ?? .infinity) <= (page["width"] as? Double ?? 0) + 1 && (page["pageLeft"] as? Double ?? -1) >= -1
+                checks["officeChromeMatchesAppearance"] = (page["dark"] as? Bool) == (presentingWindow?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+                value["checks"] = checks
+            }
+        }
+        return value
+    }
+    func checkWorkspaceEdit(_ request: [String: Any]) async throws {
+        guard AgentTaskWorkspace.readbackEnabled else { throw PetError("仅限工作区验收") }
+        _ = try await evaluate("return await BlueFatFishOffice.edit(request)", args: ["request": request]); try await verifyClean()
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if working { if opening != nil && !dirty { finishClose(); return true }; state.stringValue = "正在处理，请稍候"; return false }
         guard uiTask == nil else { return false }
@@ -264,7 +314,9 @@ import Darwin
         finishShell(.failure(CancellationError())); server?.stop(); server = nil
         web.configuration.userContentController.removeScriptMessageHandler(forName: "office"); web.navigationDelegate = nil; web.uiDelegate = nil; web.stopLoading(); web.loadHTMLString("", baseURL: nil)
         if let snapshot { try? FileManager.default.removeItem(at: snapshot.folder) }; snapshot = nil
-        window?.delegate = nil; window?.close(); onClose?(); onClose = nil
+        window?.delegate = nil
+        if settingsHostWindow != nil { close() } else { window?.close() }
+        onClose?(); onClose = nil
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { finishShell(.failure(error)); state.stringValue = error.localizedDescription }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { finishShell(.failure(error)); state.stringValue = error.localizedDescription }
@@ -276,7 +328,7 @@ import Darwin
     }
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
-        guard manuallyWritable, !working, let window else { completionHandler(nil); return }
+        guard manuallyWritable, !working, let window = presentingWindow else { completionHandler(nil); return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.image]; panel.allowsMultipleSelection = parameters.allowsMultipleSelection; panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { response in completionHandler(response == .OK ? panel.urls : nil) }
     }

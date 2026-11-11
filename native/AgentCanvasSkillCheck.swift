@@ -102,7 +102,7 @@ import AppKit
                     let deadline = Date().addingTimeInterval(1200)
                     while Date() < deadline, !fm.fileExists(atPath: output.appendingPathComponent("finish-canvas-skill-ui").path) { try approve(); await wait(0.1) }
                 }
-                if let currentWindow = tasks.canvases.windows[id] { report["renderedAfterUI"] = try await currentWindow.inspect() }
+                if let currentWindow = tasks.canvases.windows.values.first(where: { $0.taskID == id }) { report["renderedAfterUI"] = try await currentWindow.inspect() }
                 let final = tasks.task(id)!
                 report["live"] = ["taskID": id, "canvasID": canvas.id, "sourceHash": final.canvases?.first?.hash ?? "", "model": preferences.model, "requests": final.modelReceipts?.count ?? 0, "inputTokens": final.inputTokens, "outputTokens": final.outputTokens, "renderedBeforeUI": observed, "skillID": selected.id, "approvals": final.approvals.filter { $0.decision == "allow" }.count]
             }

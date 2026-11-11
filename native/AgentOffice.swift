@@ -15,6 +15,7 @@ struct AgentOfficeEditError: LocalizedError {
     static let writes: Set<String> = ["office_create", "office_edit"]
     private weak var store: AgentStore?
     private(set) var windows: [String: AgentOfficeWindow] = [:]
+    var onPresent: ((AgentOfficeWindow) throws -> Void)?
     init(store: AgentStore) { self.store = store }
     static func supports(_ path: String) -> Bool { formats.contains(URL(fileURLWithPath: path).pathExtension.lowercased()) }
     static func definitions() -> [[String: Any]] {
@@ -55,13 +56,18 @@ struct AgentOfficeEditError: LocalizedError {
         let (files, url) = try file(path, taskID: taskID)
         _ = try task(taskID, root: files.root)
         if let existing = windows[url.path] {
-            guard existing.taskID == taskID else { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); throw PetError("此文件已在另一个任务打开，请先保存并关闭") }
+            guard existing.taskID == taskID else {
+                if let onPresent { try onPresent(existing) } else { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil) }
+                throw PetError("此文件已在另一个任务打开，请先保存并关闭")
+            }
+            try onPresent?(existing)
             try await existing.open(); return existing
         }
         guard windows.count < 4, let store else { throw PetError("最多同时打开4份办公文件，请先关闭一份") }
         let window = AgentOfficeWindow(office: self, store: store, taskID: taskID, files: files, file: url)
         windows[url.path] = window
         window.onClose = { [weak self, weak window] in if self?.windows[url.path] === window { self?.windows[url.path] = nil } }
+        do { try onPresent?(window) } catch { window.finishClose(); throw error }
         try await window.open(); return window
     }
     func changed(_ taskID: String) { for window in windows.values { window.updateAvailability() } }
@@ -88,7 +94,7 @@ struct AgentOfficeEditError: LocalizedError {
         let alert = NSAlert(); alert.messageText = "仍有未保存的办公文档"; alert.informativeText = unsaved.map { $0.file.lastPathComponent }.sorted().joined(separator: "\n")
         alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改并退出")
         if alert.runModal() == .alertSecondButtonReturn { return true }
-        unsaved.first?.showWindow(nil); unsaved.first?.window?.makeKeyAndOrderFront(nil); return false
+        if let first = unsaved.first { if let onPresent { try? onPresent(first) } else { first.showWindow(nil); first.window?.makeKeyAndOrderFront(nil) } }; return false
     }
     func closeAll() { for window in Array(windows.values) { window.finishClose() }; windows.removeAll() }
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.cancelToolOperation() } }

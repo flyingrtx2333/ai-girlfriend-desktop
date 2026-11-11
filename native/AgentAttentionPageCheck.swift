@@ -41,6 +41,7 @@ import AppKit
             checks["eachTaskWindowOwnsItsInbox"] = otherPage !== page && otherPage.presentingWindow === other.window && page.presentingWindow === control.window
             checks["secondWindowLoadsSharedReplyWithoutMovingFirstView"] = otherPage.checkChooseTask(child) && otherPage.checkState()["reply"] as? String == "公开的需要我答复草稿。" && page.isVisible
             other.window?.performClose(nil)
+            for _ in 0..<100 { if other.window?.isVisible != true { break }; await wait(0.01) }
             checks["closingOtherWindowKeepsMainInboxAndDraft"] = other.window?.isVisible != true && page.isVisible && tasks.task(id)?.draft == "原任务尚未发送的草稿。"
             control.showAttentionPage()
             for (key, decision) in [("allow", "allow"), ("deny", "deny"), ("childQuestion", "公开的原生答复")] {
@@ -57,7 +58,7 @@ import AppKit
             guard page.checkChooseTask(parent) else { throw PetError("缺少仍待答复的父请求") }
             page.checkSetReply("保留父任务的公开答复草稿。")
             guard page.prepareToClose() else { throw PetError("答复草稿未保存") }
-            checks.merge(control.checkAttentionSaveFailure()) { _, new in new }
+            checks.merge(await control.checkAttentionSaveFailure()) { _, new in new }
             guard let record = tasks.task(parent), let item = AgentAttentionItem.project(record).first(where: { $0.kind == .question && !$0.handled }) else { throw PetError("问题原件丢失") }
             checks["savedReplyReopensFromOriginalProfile"] = try AgentAttention(store: tasks).replyDraft(item) == "保留父任务的公开答复草稿。"
             checks["nativeRequestsContainNoInventedAssistantOrCompletedReceipt"] = tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && !($0.modelReceipts ?? []).contains { $0.completed } }

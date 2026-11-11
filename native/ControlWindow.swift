@@ -151,6 +151,7 @@ final class FormDocumentView: NSView {
     let taskWindowNumber: Int
     var sideTaskTabID: String?
     private var closingSideTask = false, discardingSideTask = false
+    private var closeWindowTask: Task<Void, Never>?, windowCloseApproved = false
     private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
@@ -528,7 +529,7 @@ final class FormDocumentView: NSView {
         taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
         taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .document(let path): self?.showTaskDocument(path) }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
@@ -1504,12 +1505,21 @@ final class FormDocumentView: NSView {
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if windowCloseApproved { return true }
+        guard closeWindowTask == nil else { return false }
         guard canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
         guard saveAgentDraft() else { return false }
+        closeWindowTask = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { closeWindowTask = nil }
+            if await prepareWindowClose(sender) { windowCloseApproved = true; sender.performClose(nil); windowCloseApproved = false }
+        }
+        return false
+    }
+    private func prepareWindowClose(_ sender: NSWindow) async -> Bool {
         if let id = sideTaskTabID, let task = companion?.agentStore?.task(id), let side = task.sideTask, !side.retained,
            companion?.taskControls.contains(where: { $0 !== self && $0.agentTaskID == id && $0.window != nil }) != true {
-            guard !closingSideTask, closeOwnedTaskPanels() else { return false }
+            guard !closingSideTask, await closeOwnedTaskPanels() else { return false }
             let unsafe = task.pendingFileRollback != nil || task.sideTask?.needsReview == true || task.gitTurn?.warning != nil || task.changeRounds?.contains { $0.warning != nil } == true
             let alert = NSAlert(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
             alert.informativeText = unsafe ? "文件记录尚未完成，请保留任务以便检查和恢复。" : "这份侧任务及其子任务的对话、草稿、附件不会保留。项目文件保持当前状态。"
@@ -1521,7 +1531,7 @@ final class FormDocumentView: NSView {
             if !unsafe, answer == .alertFirstButtonReturn { closingSideTask = true; companion?.agentRuntime?.cancel(id); finishClosingSideTask() }
             return false
         }
-        if taskWindowNumber != 1 { guard closeOwnedTaskPanels() else { return false }; return true }
+        if taskWindowNumber != 1 { guard await closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
         stopTaskTerminals()
         sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
@@ -1556,11 +1566,11 @@ final class FormDocumentView: NSView {
         terminalPanel?.stopAll()
         updateTerminalDock()
     }
-    func closeOwnedTaskPanels() -> Bool {
+    func closeOwnedTaskPanels() async -> Bool {
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave() else { return false }
-        guard taskWorkspace.canFinish() else { return false }
+        guard await taskWorkspace.canFinish() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
@@ -1634,7 +1644,7 @@ final class FormDocumentView: NSView {
         showAutomations()
         return ["checks": checks, "frames": frames]
     }
-    func checkAttentionSaveFailure() -> [String: Bool] {
+    func checkAttentionSaveFailure() async -> [String: Bool] {
         guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore else { return [:] }
         let originalID = agentTaskID, count = tasks.tasks.count, saved = page.checkState()["reply"] as? String ?? ""
         let oversized = String(repeating: "a", count: 65_537); page.checkSetReply(oversized)
@@ -1643,7 +1653,8 @@ final class FormDocumentView: NSView {
         newAgentTask()
         if let other = tasks.tasks.first(where: { $0.id != originalID }) { selectAgentTask(other.id) }
         checks["failedReplySaveBlocksTaskCreationAndSelection"] = tasks.tasks.count == count && agentTaskID == originalID && selectedTab == "attention"
-        checks["failedReplySaveBlocksCloseAndQuitPreparation"] = !windowShouldClose(window) && !closeOwnedTaskPanels()
+        let panelsCanClose = await closeOwnedTaskPanels()
+        checks["failedReplySaveBlocksCloseAndQuitPreparation"] = !windowShouldClose(window) && !panelsCanClose
         page.checkSetReply(saved)
         checks["correctedReplyCanSaveAndLeave"] = page.prepareToClose()
         show(tab: "chat"); checks["correctedReplyRestoresNormalNavigation"] = selectedTab == "chat"
@@ -2178,13 +2189,15 @@ final class FormDocumentView: NSView {
     }
     internal func taskWorkspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        var value = gitWorkspaceReadback(), documents: [[String: Any]] = []
+        var value = gitWorkspaceReadback(), documents: [[String: Any]] = [], offices: [[String: Any]] = [], canvases: [[String: Any]] = []
         for page in taskWorkspace.controllers {
             if let context = page as? AgentContextWindow, context.isPageVisible { value["context"] = context.workspaceReadback() }
             if let record = page as? AgentRecordWindow { documents.append(await record.workspaceReadback()) }
             if let comparison = page as? AgentFileConflictWindow, comparison.isPageVisible { value["comparison"] = comparison.checkState }
+            if let office = page as? AgentOfficeWindow { offices.append(await office.workspaceReadback()) }
+            if let canvas = page as? AgentCanvasWindow { canvases.append(canvas.workspaceReadback()) }
         }
-        value["documents"] = documents; value["documentOpen"] = taskDocumentOpenState; return value
+        value["documents"] = documents; value["offices"] = offices; value["canvases"] = canvases; value["documentOpen"] = taskDocumentOpenState; return value
     }
     private func refreshKnowledgeNavigation() {
         AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
@@ -2298,6 +2311,9 @@ final class FormDocumentView: NSView {
     }
     internal func showTaskDocument(_ path: String) {
         guard let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
+        if AgentOffice.supports(path) {
+            Task { @MainActor [weak self] in do { _ = try await store.offices.show(path, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
+        }
         do {
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path)
             guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
@@ -2336,6 +2352,22 @@ final class FormDocumentView: NSView {
         record.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
         if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
         return record
+    }
+    internal func presentOfficeWorkspace(_ editor: AgentOfficeWindow) throws {
+        guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }
+        if agentTaskID != editor.taskID { selectAgentTask(editor.taskID) }
+        guard agentTaskID == editor.taskID else { throw PetError("办公文件所属任务未打开") }
+        show(tab: "chat")
+        guard taskWorkspace.show(taskID: editor.taskID, root: .document(editor.file.path), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    internal func presentCanvasWorkspace(_ editor: AgentCanvasWindow, id: String) throws {
+        guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }
+        if agentTaskID != editor.taskID { selectAgentTask(editor.taskID) }
+        guard agentTaskID == editor.taskID else { throw PetError("画布所属任务未打开") }
+        show(tab: "chat")
+        guard taskWorkspace.show(taskID: editor.taskID, root: .canvas(id), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,

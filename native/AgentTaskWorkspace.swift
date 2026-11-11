@@ -13,20 +13,20 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, document(String)
+        case review, records, context, document(String), canvas(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent }
+            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .document(let path): return "document:" + path }
+            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
         }
     }
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
     private let back = NSButton(), expand = NSButton(), hide = NSButton(), add = NSButton()
     private let title = NSTextField(labelWithString: ""), body = NSView(), tabs = NSStackView(), tabScroll = NSScrollView(), breadcrumb = NSStackView()
     private var stacks: [String: [Root: [Entry]]] = [:], orders: [String: [Root]] = [:], selected: [String: Root] = [:]
-    private var opened = Set<String>(), expandedTasks = Set<String>(), tabSignature = "", headerFull: Bool?
-    private var breadcrumbHeight: NSLayoutConstraint!, tabViews: [(Root, AgentThemeView, NSButton)] = []
+    private var opened = Set<String>(), expandedTasks = Set<String>(), tabSignature = "", headerFull: Bool?, closing = false
+    private var breadcrumbHeight: NSLayoutConstraint!, tabViews: [(Root, AgentThemeView, NSButton, NSButton, NSLayoutConstraint, NSLayoutConstraint)] = []
     private(set) var taskID: String?
     var onLayoutChange: (() -> Void)?
     var onOpenRoot: ((Root) -> Void)?, onOpenDocument: (() -> Void)?, onOpenTerminal: (() -> Void)?
@@ -36,7 +36,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -84,6 +84,8 @@ import AppKit
         guard let window, window.attachedSheet == nil, let content = controller.settingsContent(in: window, styled: false) else { return }
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
         (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if taskID == id, selectedRoot == root { displayCurrent() }
     }
@@ -108,14 +110,18 @@ import AppKit
                 group.wantsLayer = true; group.layer?.cornerRadius = 6
                 for view in [button, close] { group.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
                 let labelWidth = min(154, max(48, ceil((root.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width) + 12))
-                NSLayoutConstraint.activate([group.widthAnchor.constraint(equalToConstant: labelWidth + 26), group.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 4), button.widthAnchor.constraint(equalToConstant: labelWidth), button.centerYAnchor.constraint(equalTo: group.centerYAnchor), close.leadingAnchor.constraint(equalTo: button.trailingAnchor), close.widthAnchor.constraint(equalToConstant: 18), close.heightAnchor.constraint(equalToConstant: 18), close.centerYAnchor.constraint(equalTo: group.centerYAnchor)])
-                tabs.addArrangedSubview(group); tabViews.append((root, group, button))
+                let groupWidth = group.widthAnchor.constraint(equalToConstant: labelWidth + 26), buttonWidth = button.widthAnchor.constraint(equalToConstant: labelWidth)
+                NSLayoutConstraint.activate([groupWidth, group.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 4), buttonWidth, button.centerYAnchor.constraint(equalTo: group.centerYAnchor), close.leadingAnchor.constraint(equalTo: button.trailingAnchor), close.widthAnchor.constraint(equalToConstant: 18), close.heightAnchor.constraint(equalToConstant: 18), close.centerYAnchor.constraint(equalTo: group.centerYAnchor)])
+                tabs.addArrangedSubview(group); tabViews.append((root, group, button, close, groupWidth, buttonWidth))
             }
         }
-        for (root, group, button) in tabViews {
-            let dirty = (rootController(root) as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true
-            group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + root.title
-            button.setAccessibilityLabel(root.title + (dirty ? " 未保存" : "") + " 标签页"); if case .document(let path) = root { button.toolTip = path }
+        for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
+            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true
+            let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
+            group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
+            buttonWidth.constant = min(154, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12)); groupWidth.constant = buttonWidth.constant + 26
+            close.setAccessibilityLabel("关闭 " + label + " 标签页")
+            button.setAccessibilityLabel(label + (dirty ? " 未保存" : "") + " 标签页"); if case .document(let path) = root { button.toolTip = path }
         }
         layoutTabs(); if let group = tabViews.first(where: { $0.0 == selectedRoot })?.1 { tabs.scrollToVisible(group.frame) }
     }
@@ -135,10 +141,21 @@ import AppKit
     @objc private func closeTab(_ sender: NSButton) {
         guard let id = taskID, let roots = orders[id], roots.indices.contains(sender.tag), prepareToNavigate() else { return }
         let root = roots[sender.tag]; selected[id] = root; displayCurrent()
-        guard (stacks[id]?[root] ?? []).reversed().allSatisfy({ $0.controller.canLeaveSettings() }) else { return }
-        let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { $0.controller.endSettingsHosting() }; orders[id]?.remove(at: sender.tag)
-        if let next = orders[id]?.last { selected[id] = next } else { selected[id] = nil; opened.remove(id) }
-        displayCurrent(); onLayoutChange?()
+        requestClose(taskID: id, root: root)
+    }
+    private func requestClose(taskID id: String, root: Root) {
+        guard !closing else { return }; closing = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }; defer { closing = false }
+            for entry in (stacks[id]?[root] ?? []).reversed() { guard await entry.controller.prepareForWorkspaceClose() else { return } }
+            removeRoot(taskID: id, root: root)
+        }
+    }
+    private func removeRoot(taskID id: String, root: Root) {
+        let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { $0.controller.endSettingsHosting() }; orders[id]?.removeAll { $0 == root }
+        if selected[id] == root { selected[id] = orders[id]?.last }
+        if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
+        if taskID == id { displayCurrent(); onLayoutChange?() }
     }
     @objc private func openMenu() {
         let menu = NSMenu()
@@ -154,21 +171,31 @@ import AppKit
     @objc private func openTerminal() { onOpenTerminal?() }
     @objc private func goBack() { if let taskID { pop(taskID: taskID, root: selectedRoot) } }
     private func pop(taskID id: String, root: Root) {
+        if (stacks[id]?[root]?.first?.controller as? AgentOfficeWindow)?.workspaceIsClosed == true || (stacks[id]?[root]?.first?.controller as? AgentCanvasWindow)?.workspaceIsClosed == true { removeRoot(taskID: id, root: root); return }
+        if stacks[id]?[root]?.count == 1 {
+            requestClose(taskID: id, root: root); return
+        }
         guard (stacks[id]?[root]?.count ?? 0) > 1, stacks[id]?[root]?.last?.controller.canLeaveSettings() == true else { return }
         let entry = stacks[id]![root]!.removeLast(); entry.controller.endSettingsHosting(); if taskID == id, selectedRoot == root { displayCurrent() }
     }
     func prepareToNavigate() -> Bool {
-        guard window?.attachedSheet == nil else { return false }
+        guard !closing, window?.attachedSheet == nil else { return false }
         for entry in entries {
             if let record = entry.controller as? AgentRecordWindow, !record.prepareWorkspaceNavigation() { return false }
             if let comparison = entry.controller as? AgentFileConflictWindow, !comparison.canNavigateWorkspace { return false }
+            if let office = entry.controller as? AgentOfficeWindow, !office.prepareWorkspaceNavigation() { return false }
+            if let canvas = entry.controller as? AgentCanvasWindow, !canvas.prepareWorkspaceNavigation() { return false }
         }; return true
     }
     @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?() }
     func hideForNavigation() { hideWorkspace() }
     @objc private func toggleExpanded() { guard let taskID else { return }; if expandedTasks.contains(taskID) { expandedTasks.remove(taskID) } else { expandedTasks.insert(taskID) }; onLayoutChange?() }
-    func canFinish() -> Bool { controllers.reversed().allSatisfy { $0.canLeaveSettings() } }
+    func canFinish() async -> Bool {
+        guard !closing else { return false }; closing = true; defer { closing = false }
+        for controller in controllers.reversed() { if !(await controller.prepareForWorkspaceClose()) { return false } }; return true
+    }
     func requireDeletionAllowed(_ ids: Set<String>) throws {
+        guard !closing else { throw PetError("请先完成工作区关闭操作") }
         for id in ids { for entries in (stacks[id] ?? [:]).values { for entry in entries {
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
             if (entry.controller as? AgentFileConflictWindow)?.canNavigateWorkspace == false { throw PetError("请先完成文件比较中的操作") }
@@ -185,10 +212,11 @@ import AppKit
     func checkExpand() { if Self.readbackEnabled { toggleExpanded() } }
     func checkHide() { if Self.readbackEnabled { hideWorkspace() } }
     func checkSelect(_ root: Root) { if Self.readbackEnabled, let button = tabViews.first(where: { $0.0 == root })?.2 { selectTab(button) } }
+    func checkClose(_ root: Root) { if Self.readbackEnabled, let button = tabViews.first(where: { $0.0 == root })?.3 { closeTab(button) } }
     func checkState() -> [String: Any] {
         guard Self.readbackEnabled else { return [:] }
         let attached = currentController?.pageContentView?.window === window && currentController?.presentingWindow === window
         let checks = ["workspaceUsesTaskWindow": attached, "noFloatingGitPages": controllers.allSatisfy { $0.window?.isVisible != true }, "workspaceHasUsableWidth": bounds.width >= 450, "workspaceHasUsableHeight": body.bounds.height >= 300]
-        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "requested": requested, "expanded": expanded, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks]
+        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks]
     }
 }

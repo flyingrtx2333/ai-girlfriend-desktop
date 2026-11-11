@@ -1733,3 +1733,24 @@ Git 差异审阅迁入任务右侧工作区，可放大、还原或收起。各�
 实际文件流程、最终样式与同版重开的 72 次窗口工具调用保留 144 条原始记录及 14 张原始 JPEG；两次辅助功能操作异常均保留并读取实际状态后继续。README 两张新图来自最终程序的原始传输图。全部源码、程序、临时文件、缓存与证据位于外置盘。
 
 证据：`evidence/agent/task-details-h91_br_e/acceptance-index.json`、`ui-file-flow-report.json`、`final-polish-report.json`、`same-version-ui-report.json`、`same-version-restart-report.json`、`originals-current.json`、`cua-file-flow/`、`cua-final-polish/` 与 `cua-same-version-restart/`。最终原生记录：`task-workspace-command-3HGhBY/`、`git-workspace-command-3QUNfT/`、`knowledge-page-command-b4WYgv/`；原始检查失败、预览入口问题和被替代构建均保留。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-task-workspace`，使用公开项目资料，禁止模型请求。
+
+
+## Office 与 Canvas 任务标签页（2026-11-12）
+
+DOCX／XLSX／PPTX 进入当前任务的独立文件标签页，复用真实编辑器、单文件所属任务、只读与执行锁、磁盘版本检查、保存检查点和另存为。关闭标签页或退出前异步等待 Office 收取最后输入；继续编辑返回原任务与编辑器。Word 按真实页面宽度适配工作区，工具栏跟随应用主题；缩放不改变文档页面设置。
+
+每份 Canvas 按任务与文档保留独立编辑器，切换、收起和任务往返保留源码草稿，导航前收取延迟写入。版本、导出、快照和 Skill 复用已有服务，打包表单在原画布中进入与返回。归档保留草稿并关闭所属编辑器与子页面；真正关闭才释放预览、观察器和缓存。未保存确认明确显示画布名称，最多同时打开四份画布。
+
+最终优化构建固定 **290 份原生输入**；签名前 SHA256 `30bcfb20cb9601ac106a2f6fcc7a8bd9cf805219df9f7cd1ba17b427267b02f6`，显式本地签名后 `d02fb431c08bff6680fd0e20b68eeb1a462dcf38abc54a5dedc2b0a374efee59`。300 份原生及办公页面输入与冻结源码逐项一致，140 份办公资源与验收包一致，严格签名验证通过。无需私人证书或钥匙串解锁，未更改钥匙串和系统权限。最终同一程序通过 **188 项产物工作区和 14 项画布核心检查，共 202 项**。最后状态修复前的候选另通过 405 项相关检查，包括原办公、画布、任务工作区和收件箱；不累加为最终程序检查数。
+
+实际窗口完成三种办公文件输入、快捷键保存、Word 另存副本与原件分离、退出未保存时继续编辑、任务和标签草稿隔离，以及画布交互、源码保存、关闭保护与真实 Skill 打包。独立读取保存后的办公文件，17 项文字、样式、表格、公式缓存、页眉页脚、图片与幻灯片版式检查通过，公式独立计算为 43.65；实际打包的两份文件通过 5 项内容和权限核对。浅深色、正常及 800×550 窄窗口均留有原始画面。
+
+实际验收先后发现 Word 页面裁切、浏览器默认工具按钮样式，以及恢复原源码后保存仍显示“未保存”。分别修正实际页面缩放、限定办公工具栏的表单样式和成功保存后的状态刷新。最终程序在原资料上复验关闭提示、继续编辑、恢复原内容与 ⌘S 保存；未保存标记和提示均清除，源码哈希保持，原三份版本、另一画布和任务输入保持，不留下临时草稿。首次 PowerPoint 选区不完整的失败核对及修正后独立通过记录也保留。
+
+完整窗口流程与同版重开来自签名候选 `a42a58e5992245a0d8544dd0fef3be9c093fbe72791927f2e9c67a508fa9195f`，关闭对象名称在 `2c80c0e56e1212a0a4b28f3ccdadb2de17c2345713aa37e293670c36e8365d47` 复验，最后相同内容保存修复在上述最终程序复验。四段共 **108 次 CUA 调用、216 份原始记录、18 张原始 JPEG**；瞬时辅助功能读取错误与被替代候选均保留。README 两张新图直接复制完整流程的原始图片字节。
+
+同一候选退出后重开，30 份持久文件权限保持、29 份字节一致，仅任务索引因导航更新，所有原任务、已保存文件、三份画布版本和主题保留。更新至两个最终修正版时，原 30 份资料分别逐字节与权限一致，未重新生成验收任务。9 份日常资料、23 份旧真实模型原件和日常程序保持；本轮模型请求 0。
+
+本轮源码、构建、独立验收包与证据保留在外置项目目录；编译缓存、npm 缓存及编译临时目录明确指向外置盘。日常包仍为 `bf6a50e`，正式签名与程序未替换。工作树、视频、浏览器、批注整合、标签页持久恢复、其余统一组件和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)，完整目标未完成。
+
+证据：`evidence/agent/artifact-workspace-k1k3bwp5/final-report.json`、`verified-ui-preservation.json`、`verified-upgrade-proof.json`、`restart-preservation-proof.json` 及 `cua-final/`、`cua-reopen/`、`cua-polished/`、`cua-verified/`。最终产物原生记录在 `evidence/agent/artifact-workspace-command-vpTTNm/`，画布核心在 `verified-canvas/`，真实窗口原资料在 `artifact-workspace-command-Gjqo2e/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-artifact-workspace -- --python <外置 Python>`；使用公开文档、隔离资料并禁止模型请求，`--manual-ui` 与 `--reopen <原目录>` 保留实际窗口和重开记录。
