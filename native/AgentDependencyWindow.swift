@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentDependencyWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class AgentDependencyWindow: AgentSettingsPageController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let service: AgentDependencySecurity
     private let store: AgentStore, taskID: String, selectedPaths: [String]
     private let activity = UUID()
@@ -15,6 +15,7 @@ import AppKit
     private let details = NSTextView()
     private var report: AgentDependencyReport?
     private var job: Task<Void, Never>?
+    var hasPendingOperation: Bool { job != nil }
 
     init(service: AgentDependencySecurity, store: AgentStore, taskID: String, defaultSource: AgentDependencyReport.Source, selectedPaths: [String]) {
         self.service = service; self.store = store; self.taskID = taskID; self.selectedPaths = selectedPaths
@@ -36,8 +37,10 @@ import AppKit
         progress.style = .spinning
         progress.controlSize = .small
         progress.isDisplayedWhenStopped = false
-        let controls = NSStackView(views: [source, scope, refreshDatabase, NSView(), progress, scanButton])
-        controls.spacing = 8
+        let filters = NSStackView(views: [source, scope, NSView()]), actions = NSStackView(views: [refreshDatabase, NSView(), progress, scanButton])
+        filters.spacing = 8; actions.spacing = 8
+        let controls = NSStackView(views: [filters, actions]); controls.orientation = .vertical; controls.alignment = .leading; controls.spacing = 8
+        for row in [filters, actions] { row.widthAnchor.constraint(equalTo: controls.widthAnchor).isActive = true }
 
         for (key, name, width) in [("risk", "风险", 54.0), ("package", "依赖", 185.0), ("version", "版本", 105.0), ("advisory", "公告", 175.0), ("path", "文件", 220.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
@@ -63,7 +66,9 @@ import AppKit
         let detailScroll = NSScrollView()
         detailScroll.documentView = details; detailScroll.hasVerticalScroller = true
         let footer = NSStackView(views: [NSView(), advisoryButton])
-        let content = NSView()
+        list.drawsBackground = false; list.scrollerStyle = .overlay; table.backgroundColor = .clear
+        detailScroll.drawsBackground = false; detailScroll.scrollerStyle = .overlay; details.drawsBackground = false; details.textColor = .labelColor
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface)
         window.contentView = content
         for view in [controls, status, list, detailScroll, footer] {
             content.addSubview(view)

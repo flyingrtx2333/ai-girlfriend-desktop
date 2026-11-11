@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentGitWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+@MainActor final class AgentGitWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String, onSelectTask: (String) -> Void
     private let table = NSTableView(), diffView = AgentGitDiffView(), branch = NSTextField(labelWithString: "Git"), state = NSTextField(labelWithString: "")
     private var text: NSTextView { diffView.text }
@@ -19,6 +19,9 @@ import AppKit
     private let displayMode = NSSegmentedControl(labels: ["统一", "并排"], trackingMode: .selectOne, target: nil, action: nil), wrap = NSButton(checkboxWithTitle: "换行", target: nil, action: nil)
     private let stageButton = NSButton(title: "暂存文件", target: nil, action: nil), unstageButton = NSButton(title: "取消暂存", target: nil, action: nil)
     private let restoreButton = NSButton(title: "恢复未暂存", target: nil, action: nil), undoRestoreButton = NSButton(title: "撤销恢复", target: nil, action: nil)
+    private let filePicker = NSPopUpButton(), filesButton = NSButton(), moreButton = NSButton(), fileArea = NSView(), list = NSScrollView()
+    private var wideFiles: [NSLayoutConstraint] = [], compactFiles: [NSLayoutConstraint] = [], listWidth: NSLayoutConstraint!, listHeight: NSLayoutConstraint!
+    private var wideViewerLeading: NSLayoutConstraint!, compactViewerTop: NSLayoutConstraint!, compactLayout: Bool?, filesRequested: Bool?
     private var source: AgentGitSource = .uncommitted, inspection: AgentGitInspection?, restoreID: String?
     private var changes: [AgentGitChange] = [], review: AgentGitReview?, git: AgentGit?, job: Task<Void, Never>?, lastResult = "", displayedBranchRef = ""
     private let activityOwner = UUID()
@@ -34,7 +37,8 @@ import AppKit
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 29; table.delegate = self; table.dataSource = self; table.allowsMultipleSelection = true
         table.setAccessibilityLabel("Git 变更文件")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        table.style = .plain; table.backgroundColor = .clear
+        list.documentView = table; list.hasVerticalScroller = true; list.scrollerStyle = .overlay; list.drawsBackground = false
         let viewer = diffView
         message.placeholderString = "提交说明"; message.setAccessibilityLabel("Git 提交说明")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
@@ -51,38 +55,98 @@ import AppKit
         sourcePopup.target = self; sourcePopup.action = #selector(changeSource); sourcePopup.setAccessibilityLabel("Git 改动来源")
         sourcePopup.item(at: 0)?.toolTip = "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。"
         revision.target = self; revision.action = #selector(refresh); revision.placeholderString = "提交或基准分支"; revision.setAccessibilityLabel("Git 比较修订"); revision.isHidden = true
-        revision.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        revision.widthAnchor.constraint(equalToConstant: 132).isActive = true
         statistics.font = .monospacedSystemFont(ofSize: 11, weight: .regular); statistics.textColor = AgentWorkbenchTheme.secondaryText
         statistics.lineBreakMode = .byTruncatingTail; statistics.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         displayMode.selectedSegment = 0; displayMode.target = self; displayMode.action = #selector(changeDisplay); displayMode.controlSize = .small; displayMode.setAccessibilityLabel("Git 差异视图")
         wrap.state = .on; wrap.target = self; wrap.action = #selector(changeDisplay); wrap.controlSize = .small
         undoRestoreButton.isHidden = true; commitButton.toolTip = "提交所选来源中已审阅的文件版本"
         initializeButton.isHidden = true
-        let toolbar = NSStackView(views: [branch, NSView(), initializeButton, manageWorktrees, worktreeButton, pushButton, refreshButton]); toolbar.spacing = 8
-        let sources = NSStackView(views: [sourcePopup, revision, NSView(), statistics, displayMode, wrap]); sources.spacing = 10
-        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView(), dependencyButton, securityButton]); actions.spacing = 8
+        branch.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for (button, symbol, label, action) in [(refreshButton, "arrow.clockwise", "刷新 Git", #selector(refresh)), (filesButton, "sidebar.left", "显示文件列表", #selector(toggleFiles)), (moreButton, "ellipsis", "Git 更多操作", #selector(showMore))] {
+            button.title = ""; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.isBordered = false
+            button.setAccessibilityLabel(label); button.toolTip = label; button.target = self; button.action = action
+            button.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        }
+        filePicker.target = self; filePicker.action = #selector(selectFile); filePicker.setAccessibilityLabel("Git 所选文件")
+        filePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); filePicker.cell?.lineBreakMode = .byTruncatingMiddle
+        let toolbar = NSStackView(views: [branch, NSView(), initializeButton, pushButton, moreButton, refreshButton]); toolbar.spacing = 8
+        let sources = NSStackView(views: [sourcePopup, revision, NSView(), displayMode, wrap]); sources.spacing = 8
+        let files = NSStackView(views: [filePicker, filesButton]); files.spacing = 8
+        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView()]); actions.spacing = 6
         for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, dependencyButton, securityButton] { button.controlSize = .small; button.font = .systemFont(ofSize: 12) }
-        let composer = NSStackView(views: [message, commitButton, commitPushButton]); composer.spacing = 10
-        for view in [toolbar, sources, list, viewer, actions, composer, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let commitActions = NSStackView(views: [statistics, NSView(), commitButton, commitPushButton]); commitActions.spacing = 8
+        let composer = NSStackView(views: [message, commitActions]); composer.orientation = .vertical; composer.alignment = .leading; composer.spacing = 8
+        for child in [message, commitActions] { child.widthAnchor.constraint(equalTo: composer.widthAnchor).isActive = true }
+        for view in [list, viewer] { fileArea.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        listWidth = list.widthAnchor.constraint(equalToConstant: 190); listHeight = list.heightAnchor.constraint(equalToConstant: 108)
+        wideViewerLeading = viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12)
+        compactViewerTop = viewer.topAnchor.constraint(equalTo: list.bottomAnchor, constant: 10)
+        wideFiles = [listWidth, list.bottomAnchor.constraint(equalTo: fileArea.bottomAnchor), wideViewerLeading, viewer.topAnchor.constraint(equalTo: fileArea.topAnchor)]
+        compactFiles = [listHeight, list.trailingAnchor.constraint(equalTo: fileArea.trailingAnchor), compactViewerTop, viewer.leadingAnchor.constraint(equalTo: fileArea.leadingAnchor)]
+        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: fileArea.leadingAnchor), list.topAnchor.constraint(equalTo: fileArea.topAnchor), viewer.trailingAnchor.constraint(equalTo: fileArea.trailingAnchor), viewer.bottomAnchor.constraint(equalTo: fileArea.bottomAnchor)])
+        for view in [toolbar, sources, files, fileArea, actions, composer, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             sources.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), sources.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), sources.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor),
-            list.topAnchor.constraint(equalTo: sources.bottomAnchor, constant: 12), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 210), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12),
-            viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor),
+            files.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), files.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), files.topAnchor.constraint(equalTo: sources.bottomAnchor, constant: 8),
+            fileArea.topAnchor.constraint(equalTo: files.bottomAnchor, constant: 8), fileArea.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), fileArea.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), fileArea.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -8),
             composer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), composer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), composer.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -10), message.heightAnchor.constraint(equalToConstant: 28),
             actions.leadingAnchor.constraint(equalTo: composer.leadingAnchor), actions.trailingAnchor.constraint(equalTo: composer.trailingAnchor), actions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -10),
             state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
-        refresh()
+        pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); dependencyWindow?.close(); busy = false }
+    var hasPendingChanges: Bool { busy || !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard !busy else { state.stringValue = "请等待 Git 操作完成"; return false }
+        guard !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        let alert = NSAlert(); alert.messageText = "放弃提交说明？"; alert.addButton(withTitle: "放弃说明"); alert.addButton(withTitle: "继续编辑")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }; message.stringValue = ""; return true
+    }
+    func windowDidResize(_ notification: Notification) { pageDidLayout() }
+    override func settingsDidAppear() { super.settingsDidAppear(); setBusy(busy) }
+    override func pageDidLayout() {
+        guard let content = pageContentView else { return }
+        let compact = content.bounds.width < 620, shown = filesRequested ?? !compact
+        if compactLayout != compact {
+            NSLayoutConstraint.deactivate(wideFiles + compactFiles); NSLayoutConstraint.activate(compact ? compactFiles : wideFiles); compactLayout = compact
+        }
+        list.isHidden = !shown; listWidth.constant = shown ? 190 : 0; listHeight.constant = shown ? 108 : 0
+        wideViewerLeading.constant = shown ? 12 : 0; compactViewerTop.constant = shown ? 8 : 0
+        let label = shown ? "隐藏文件列表" : "显示文件列表"; filesButton.setAccessibilityLabel(label); filesButton.toolTip = label
+    }
+    @objc private func toggleFiles() { filesRequested = !(filesRequested ?? !(compactLayout ?? false)); pageDidLayout() }
+    @objc private func selectFile() {
+        guard !busy, let path = filePicker.selectedItem?.representedObject as? String, let row = changes.firstIndex(where: { $0.path == path }) else { return }
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row)
+    }
+    private func updateFilePicker() {
+        filePicker.removeAllItems()
+        let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }
+        if selected.count > 1 { filePicker.addItem(withTitle: "已选 \(selected.count) 个文件") }
+        for change in changes {
+            filePicker.addItem(withTitle: change.status + "  " + change.path.replacingOccurrences(of: "\n", with: "↵")); filePicker.lastItem?.representedObject = change.path; filePicker.lastItem?.toolTip = change.path
+        }
+        if selected.count == 1, let row = selected.first { filePicker.selectItem(at: row) }
+        if changes.isEmpty { filePicker.addItem(withTitle: "暂无变更") }
+        filePicker.isEnabled = !busy && !changes.isEmpty
+    }
+    @objc private func showMore() {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for button in [manageWorktrees, worktreeButton, dependencyButton, securityButton, undoRestoreButton] where !button.isHidden {
+            let item = NSMenuItem(title: button.title, action: button.action, keyEquivalent: ""); item.target = self; item.isEnabled = button.isEnabled; menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.maxY), in: moreButton)
+    }
     private func writable() -> Bool {
         guard let task = store.task(taskID) else { return false }
         return !task.archived && ![.running, .waiting].contains(task.status)
     }
     private func setBusy(_ value: Bool) {
-        busy = value; table.isEnabled = !value; refreshButton.isEnabled = !value
+        busy = value; table.isEnabled = !value; refreshButton.isEnabled = !value; filePicker.isEnabled = !value && !changes.isEmpty
         sourcePopup.isEnabled = !value; revision.isEnabled = !value
         worktreeButton.isEnabled = !value && writable() && initializeButton.isHidden
         manageWorktrees.isEnabled = !value && initializeButton.isHidden
@@ -90,7 +154,7 @@ import AppKit
         commitButton.title = source == .staged ? "提交已暂存" : "提交"
         commitButton.isEnabled = !value && writable() && [.uncommitted, .staged].contains(source) && review?.diff.isEmpty == false
         commitPushButton.isEnabled = commitButton.isEnabled
-        pushButton.isEnabled = !value && initializeButton.isHidden
+        pushButton.isEnabled = !value && initializeButton.isHidden && git != nil
         securityButton.isEnabled = !value && git != nil
         dependencyButton.isEnabled = !value && store.task(taskID)?.workspace != nil
         let item = inspection?.paths.count == 1 ? changes.first(where: { $0.path == inspection?.paths.first }) : nil
@@ -104,10 +168,6 @@ import AppKit
     }
     @objc private func openDependencies() {
         guard !busy else { return }
-        if let dependencyWindow, dependencyWindow.window?.isVisible == true {
-            dependencyWindow.window?.makeKeyAndOrderFront(nil)
-            return
-        }
         do {
             let dependencyGit: AgentGit?
             if let git {
@@ -125,8 +185,7 @@ import AppKit
             let controller = AgentDependencyWindow(service: service, store: store, taskID: taskID,
                 defaultSource: source == .staged ? .staged : .working, selectedPaths: paths)
             dependencyWindow = controller
-            controller.showWindow(nil)
-            controller.window?.makeKeyAndOrderFront(nil)
+            presentSettingsChild(controller)
         } catch { state.stringValue = error.localizedDescription }
     }
     private func connect(creating: Bool = false) throws -> AgentGit {
@@ -155,7 +214,7 @@ import AppKit
                 do { let total = try await git.statistics(source: source, revision: revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), changes: changes); branch.stringValue += " · 总 " + total.title }
                 catch { if Task.isCancelled { throw CancellationError() }; branch.stringValue += " · 统计不可用" }
                 initializeButton.isHidden = true
-                table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
+                table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self; updateFilePicker()
                 state.stringValue = lastResult; showDiff(changes.isEmpty ? (source == .lastTurn ? "本轮尚无文件修改记录" : "此来源没有变更") : ""); setBusy(false)
                 if !changes.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
             } catch {
@@ -172,7 +231,7 @@ import AppKit
         sourcePopup.toolTip = source == .lastTurn ? "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。" : nil
         revision.isHidden = !source.usesRevision; revision.stringValue = source == .committed ? "HEAD" : ""
         lastResult = ""; refresh()
-        if source == .branch { window?.makeFirstResponder(revision) }
+        if source == .branch { presentingWindow?.makeFirstResponder(revision) }
     }
     @objc private func changeDisplay() { diffView.splitMode = displayMode.selectedSegment == 1; diffView.wraps = wrap.state == .on }
     private func showDiff(_ patch: String) {
@@ -193,7 +252,7 @@ import AppKit
         label.font = .monospacedSystemFont(ofSize: 11, weight: .regular); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = change.path; return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
-        inspectSelection()
+        updateFilePicker(); inspectSelection()
     }
     private func inspectSelection(location: (AgentSecurityFinding, AgentSecurityReport)? = nil) {
         guard !busy, let git else { return }
@@ -238,7 +297,7 @@ import AppKit
             menu.addItem(item)
         }
         menu.autoenablesItems = false
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: securityButton.bounds.maxY), in: securityButton)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.maxY), in: moreButton)
     }
     @objc private func checkSecurity() { runSecurity(mode: .patterns) }
     @objc private func checkSemanticSecurity() { runSecurity(mode: .semantic) }
@@ -248,7 +307,7 @@ import AppKit
         catch { state.stringValue = error.localizedDescription }
     }
     private func runSecurity(mode: AgentSecurityMode) {
-        guard !busy, let git, let window, window.attachedSheet == nil, AgentCodeSecurity.sources.contains(source) else { return }
+        guard !busy, let git, let window = presentingWindow, window.attachedSheet == nil, AgentCodeSecurity.sources.contains(source) else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
         guard (1...50).contains(selected.count) else { state.stringValue = "请选择 1 至 50 个文件"; return }
         setBusy(true)
@@ -269,7 +328,7 @@ import AppKit
         }
     }
     private func presentSecurityReport(_ report: AgentSecurityReport, git: AgentGit) {
-        guard let window, window.attachedSheet == nil else { return }
+        guard let window = presentingWindow, window.attachedSheet == nil else { return }
         let controller = AgentCodeSecurityWindow(report: report, onLocate: { [weak self] finding in
                     self?.locateSecurityFinding(finding, report: report)
                 }, onFix: writable() && report.mode != .semantic ? { [weak self] finding in
@@ -283,7 +342,8 @@ import AppKit
                     refresh()
                 } : nil)
                 securityWindow = controller
-                if let sheet = controller.window { window.beginSheet(sheet) { [weak self] _ in self?.securityWindow = nil } }
+                if settingsHostWindow != nil { presentSettingsChild(controller) }
+                else if let sheet = controller.window { window.beginSheet(sheet) { [weak self] _ in self?.securityWindow = nil } }
     }
     private func locateSecurityFinding(_ finding: AgentSecurityFinding, report: AgentSecurityReport) {
         guard !busy, source == report.source, let row = changes.firstIndex(where: { $0.path == finding.path }) else {
@@ -294,6 +354,7 @@ import AppKit
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         table.scrollRowToVisible(row)
         table.delegate = self
+        updateFilePicker()
         inspectSelection(location: (finding, report))
     }
     private func log(_ title: String, result: String, failed: Bool = false) { store.update(taskID) { $0.events.append(AgentEvent(kind: "git", title: title, detail: result, status: failed ? "failed" : "completed")) } }
@@ -336,7 +397,7 @@ import AppKit
     private func performCommit(openPushAfter: Bool) {
         guard !busy, writable(), let git, let review else { return }
         let value = message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { state.stringValue = "请填写提交说明"; window?.makeFirstResponder(message); return }
+        guard !value.isEmpty else { state.stringValue = "请填写提交说明"; presentingWindow?.makeFirstResponder(message); return }
         setBusy(true); state.stringValue = "提交中…"
         job = Task { [weak self] in
             guard let self else { return }
@@ -357,7 +418,7 @@ import AppKit
                 lastResult = receipt.verified ? "远端已核对 · " + receipt.remote + "/" + receipt.branch + " · " + String(receipt.sourceHead.prefix(12)) : "推送结果待核对"
                 if !busy { refresh() }
             }
-            pushWindow = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
+            pushWindow = controller; presentSettingsChild(controller)
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func createWorktree() {
@@ -406,5 +467,50 @@ import AppKit
             if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("git-split-" + name + ".png")) }
         }
         return checks
+    }
+    var boundTaskID: String { taskID }
+    func workspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled, let content = pageContentView else { return [:] }
+        var controls: [NSView] = []
+        func visit(_ view: NSView) {
+            guard !view.isHidden else { return }
+            if view is NSButton || view is NSSegmentedControl || (view as? NSTextField)?.isEditable == true { controls.append(view); return }
+            if view is NSTableView || view is NSTextView || view === diffView { return }
+            view.subviews.forEach(visit)
+        }
+        visit(content)
+        let frames = controls.map { view -> [String: Any] in
+            let frame = content.convert(view.bounds, from: view)
+            return ["label": view.accessibilityLabel() ?? (view as? NSButton)?.title ?? "", "frame": [frame.minX, frame.minY, frame.width, frame.height], "inside": frame.minX >= -1 && frame.maxX <= content.bounds.width + 1 && frame.minY >= -1 && frame.maxY <= content.bounds.height + 1 && frame.width > 0 && frame.height > 0]
+        }
+        let checks = ["gitActionsFitWorkspace": !frames.isEmpty && frames.allSatisfy { $0["inside"] as? Bool == true },
+                      "diffHasReadableSpace": diffView.bounds.width >= 230 && diffView.bounds.height >= 80,
+                      "fileSelectionMatchesActualReview": inspection == nil || Set(inspection!.paths) == Set(table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }),
+                      "gitUsesMainWindow": settingsHostWindow != nil && content.window === presentingWindow]
+        return ["taskID": taskID, "busy": busy, "source": source.rawValue, "revision": revision.stringValue, "paths": inspection?.paths ?? [], "diff": diffView.patch, "draft": message.stringValue, "state": state.stringValue, "fileListVisible": !list.isHidden, "files": changes.map(\.path), "controls": frames, "checks": checks]
+    }
+    func checkWorkspace(source: AgentGitSource? = nil, path: String? = nil, message: String? = nil, action: String? = nil) async {
+        guard AgentTaskWorkspace.readbackEnabled else { return }
+        func waitUntilReady() async {
+            let deadline = Date().addingTimeInterval(20)
+            while busy && Date() < deadline { try? await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        await waitUntilReady()
+        if let source, let index = AgentGitSource.allCases.firstIndex(of: source) { sourcePopup.selectItem(at: index); changeSource(); await waitUntilReady() }
+        if let path, let row = changes.firstIndex(where: { $0.path == path }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); await waitUntilReady() }
+        if let message { self.message.stringValue = message }
+        switch action {
+        case "stage": stageFile()
+        case "unstage": unstageFile()
+        case "commit": commit()
+        case "push": openPush()
+        case "dependencies": openDependencies()
+        case "security": checkSecurity()
+        case "files": toggleFiles()
+        case "split": displayMode.selectedSegment = 1; changeDisplay()
+        case "refresh": refresh()
+        default: break
+        }
+        await waitUntilReady(); pageContentView?.layoutSubtreeIfNeeded()
     }
 }

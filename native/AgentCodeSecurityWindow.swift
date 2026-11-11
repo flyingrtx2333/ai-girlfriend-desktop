@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentCodeSecurityWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class AgentCodeSecurityWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate {
     private let report: AgentSecurityReport
     private let table = NSTableView()
     private let detail = NSTextField(wrappingLabelWithString: "")
@@ -24,6 +24,7 @@ import AppKit
 
         let heading = NSTextField(labelWithString: report.summary)
         heading.font = .systemFont(ofSize: 15, weight: .semibold)
+        heading.lineBreakMode = .byTruncatingTail; heading.toolTip = report.summary
         for (key, name, width) in [("risk", "风险", 60.0), ("issue", "发现", 176.0), ("path", "位置", 365.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
             column.title = name
@@ -38,6 +39,7 @@ import AppKit
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; table.backgroundColor = .clear
         detail.setAccessibilityLabel("处理建议")
         detail.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12)
@@ -50,10 +52,12 @@ import AppKit
         flow.setAccessibilityLabel("数据流位置")
         flow.widthAnchor.constraint(lessThanOrEqualToConstant: 245).isActive = true
         fix.target = self; fix.action = #selector(fixFinding)
-        let buttons = NSStackView(views: [flow, locate, copy, fix, NSView(), done])
-        buttons.spacing = 8
+        flow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); flow.cell?.lineBreakMode = .byTruncatingMiddle
+        let actions = NSStackView(views: [locate, copy, fix, NSView(), done]); actions.spacing = 8
+        let buttons = NSStackView(views: [flow, actions]); buttons.orientation = .vertical; buttons.alignment = .leading; buttons.spacing = 8
+        actions.widthAnchor.constraint(equalTo: buttons.widthAnchor).isActive = true
 
-        let content = NSView()
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface)
         window.contentView = content
         for view in [heading, scroll, detail, state, buttons] {
             content.addSubview(view)
@@ -122,7 +126,8 @@ import AppKit
     }
 
     @objc private func closeSheet() {
-        if let window, let parent = window.sheetParent { parent.endSheet(window) }
+        if settingsHostWindow != nil { close() }
+        else if let window, let parent = window.sheetParent { parent.endSheet(window) }
     }
     @objc private func locateFinding() {
         guard let finding else { return }

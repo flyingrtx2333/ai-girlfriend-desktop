@@ -161,7 +161,6 @@ final class FormDocumentView: NSView {
     private var mcpContentWindow: AgentMCPContentWindow?
     private let taskMCPContext = AgentWorkbenchButton()
     private let taskContext = AgentWorkbenchButton()
-    private var gitWindow: AgentGitWindow?
     private var worktreeWindow: AgentWorktreeWindow?
     private var worktreeCreationWindow: AgentWorktreeCreationWindow?
     private var worktreePolicyPanel: AgentWorktreePolicyView?
@@ -187,6 +186,9 @@ final class FormDocumentView: NSView {
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
     private let terminalButton = AgentWorkbenchButton(), terminalSplit = AgentTerminalSplitView()
+    private(set) var taskWorkspace = AgentTaskWorkspace()
+    private var conversationTrailing: NSLayoutConstraint!, fullConversationTrailing: NSLayoutConstraint!
+    private var headerActionsTrailing: NSLayoutConstraint!, fullHeaderActionsTrailing: NSLayoutConstraint!
     private var terminalPanel: AgentTerminalPanel?
     private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
     private let workbenchSidebar = NSView()
@@ -510,7 +512,9 @@ final class FormDocumentView: NSView {
         headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
         navigationLeading = navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18)
-        NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.centerXAnchor.constraint(equalTo: main.centerXAnchor), settings.widthAnchor.constraint(lessThanOrEqualToConstant: 764), settings.leadingAnchor.constraint(greaterThanOrEqualTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 52), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
+        headerActionsTrailing = actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16)
+        fullHeaderActionsTrailing = actions.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -16)
+        NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), headerActionsTrailing, actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.centerXAnchor.constraint(equalTo: main.centerXAnchor), settings.widthAnchor.constraint(lessThanOrEqualToConstant: 764), settings.leadingAnchor.constraint(greaterThanOrEqualTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 52), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
         let columnWidth = settings.widthAnchor.constraint(equalToConstant: 764)
         // Keep the wide layout preferred while allowing the user to shrink it.
         columnWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1); columnWidth.isActive = true
@@ -519,10 +523,14 @@ final class FormDocumentView: NSView {
     private func buildWorkbenchConversation() {
         let conversation = terminalSplit.conversation
         terminalSplit.translatesAutoresizingMaskIntoConstraints = false
-        chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector)
+        chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector); chat.addSubview(taskWorkspace)
+        taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
+        taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
+        conversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor)
+        fullConversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: chat.trailingAnchor)
         inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
         inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
-        NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
+        NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversationTrailing, terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor), taskWorkspace.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), taskWorkspace.trailingAnchor.constraint(equalTo: workbenchInspector.trailingAnchor), taskWorkspace.topAnchor.constraint(equalTo: workbenchInspector.topAnchor), taskWorkspace.bottomAnchor.constraint(equalTo: workbenchInspector.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
             if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
             else { self?.openAgentRecordItem(section: section, value: value) }
@@ -602,19 +610,30 @@ final class FormDocumentView: NSView {
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
         let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
-        let showInspector = chatting && hasRecords && inspectorRequested && width >= 1080
-        let target: CGFloat = showInspector ? 281 : 0
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
         let settingsWidth: CGFloat = width < 980 ? 180 : 231
         sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
+        taskWorkspace.selectTask(task.id)
+        let showWorkspace = chatting && taskWorkspace.requested, remaining = width - sidebarWidth.constant
+        let fullWorkspace = showWorkspace && (taskWorkspace.expanded || remaining < 920)
+        let showInspector = chatting && !showWorkspace && hasRecords && inspectorRequested && width >= 1080
+        let target: CGFloat = showWorkspace ? (fullWorkspace ? remaining : min(560, max(470, floor(remaining * 0.51)))) : showInspector ? 281 : 0
+        if fullWorkspace {
+            conversationTrailing.isActive = false; fullConversationTrailing.isActive = true
+        } else {
+            fullConversationTrailing.isActive = false; conversationTrailing.isActive = true
+        }
+        if showWorkspace { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
+        else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
+        terminalSplit.isHidden = fullWorkspace; taskWorkspace.isHidden = !showWorkspace; taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
         settingsSidebarWidth?.constant = settingsWidth
         workbenchSidebar.isHidden = configuring || !sidebarRequested
         navigationLeading.constant = sidebarRequested ? 18 : 82
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
         sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
-        let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - target - 760) / 2)
+        let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - (fullWorkspace ? 0 : target) - 760) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
-        workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !showInspector; headerInspectorRule.isHidden = !showInspector
+        workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
         pageTitle.isHidden = !chatting || !hasMessages
         workbenchBadge.isHidden = !chatting || !hasMessages
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
@@ -646,6 +665,7 @@ final class FormDocumentView: NSView {
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
     @objc private func toggleTaskInspector() {
+        if taskWorkspace.requested { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
         guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
         inspectorRequested.toggle(); updateWorkbenchLayout(animated: true)
     }
@@ -1511,6 +1531,7 @@ final class FormDocumentView: NSView {
     func windowWillClose(_ notification: Notification) {
         settingsPageHost.finish()
         knowledgePageHost.finish()
+        taskWorkspace.finish()
         stopTaskTerminals()
         if let panel = mcpInputPanel {
             try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
@@ -1531,14 +1552,17 @@ final class FormDocumentView: NSView {
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave() else { return false }
+        guard taskWorkspace.canFinish() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         knowledgePageHost.finish()
+        taskWorkspace.finish()
         return true
     }
     func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
+        try taskWorkspace.requireDeletionAllowed(ids)
         for page in knowledgePageHost.controllers {
             if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
             if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
@@ -1547,6 +1571,7 @@ final class FormDocumentView: NSView {
     }
     func closeDeletedTaskRecords(_ ids: Set<String>) {
         recordWindow?.closeDeletedTask(ids)
+        taskWorkspace.finish(tasks: ids)
         if knowledgePageHost.controllers.contains(where: { ($0 as? AgentRecordWindow)?.belongsToTasks(ids) == true || ($0 as? AgentKnowledgeCardWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeLibraryWindow)?.boundTaskID.map(ids.contains) == true }) { knowledgePageHost.finish() }
     }
     func checkAttentionNavigation() throws -> [String: Any] {
@@ -2093,11 +2118,16 @@ final class FormDocumentView: NSView {
         catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func toggleTaskTerminal() {
+        if terminalSplit.isHidden && taskWorkspace.requested {
+            taskWorkspace.hideForNavigation()
+            if terminalPanel?.isShown == true { terminalPanel?.focus(); return }
+        }
         if terminalPanel?.isShown == true { terminalPanel?.hidePanel() }
         else { openTaskTerminal() }
     }
     private func openTaskTerminal() {
         guard selectedTab == "chat", let companion, let store = companion.agentStore, let task = currentAgentTask else { return }
+        if terminalSplit.isHidden && taskWorkspace.requested { taskWorkspace.hideForNavigation() }
         let panel = terminalPanel ?? AgentTerminalPanel(store: store, checkHome: companion.checkDirectory)
         terminalPanel = panel
         panel.onHide = { [weak self] in
@@ -2120,11 +2150,22 @@ final class FormDocumentView: NSView {
         terminalButton.setAccessibilityLabel(title)
         terminalButton.toolTip = title
     }
-    @objc func showAgentGit() {
-        guard let store = companion?.agentStore, let id = agentTaskID else { return }
-        gitWindow?.window?.performClose(nil)
-        gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
-        gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
+    @objc internal func showAgentGit() {
+        guard let store = companion?.agentStore, let id = agentTaskID, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+        taskWorkspace.show(taskID: id) { AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") } }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    internal func gitWorkspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        var value = taskWorkspace.checkState(); value["selectedTask"] = agentTaskID ?? ""; value["draft"] = composer.string
+        value["conversationVisible"] = !terminalSplit.isHiddenOrHasHiddenAncestor; value["conversationWidth"] = Double(terminalSplit.bounds.width); value["mainPage"] = selectedTab
+        value["windowSize"] = [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)]
+        for page in taskWorkspace.controllers {
+            if let git = page as? AgentGitWindow { value["git-" + git.boundTaskID] = git.workspaceReadback() }
+            if let push = page as? AgentGitPushWindow, push.isPageVisible { value["push"] = push.workspaceReadback() }
+        }
+        return value
     }
     private func refreshKnowledgeNavigation() {
         AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)

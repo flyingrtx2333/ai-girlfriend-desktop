@@ -25,6 +25,7 @@
     "native:check-context": "node scripts/check-native-agent.mjs --context",
     "native:check-git": "node scripts/check-native-agent.mjs --git",
     "native:check-git-review": "node scripts/check-native-git-inspection.mjs",
+    "native:check-git-workspace": "node scripts/check-native-git-workspace.mjs",
     "native:check-git-review-flow": "node scripts/check-native-git-review.mjs",
     "native:check-git-push": "node scripts/check-native-git-push.mjs",
     "native:check-index": "node scripts/check-native-agent.mjs --index",
