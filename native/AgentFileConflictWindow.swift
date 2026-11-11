@@ -38,7 +38,7 @@ struct AgentFileConflictSnapshot {
     }
 }
 
-@MainActor final class AgentFileConflictWindow: NSWindowController, NSWindowDelegate {
+@MainActor final class AgentFileConflictWindow: AgentSettingsPageController, NSWindowDelegate {
     enum Resolution { case disk, draft }
     private let readSnapshot: () throws -> AgentFileConflictSnapshot
     private let resolve: (AgentFileConflictSnapshot, Resolution) async throws -> Void
@@ -54,7 +54,7 @@ struct AgentFileConflictSnapshot {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "文件比较 · " + file.lastPathComponent; window.minSize = NSSize(width: 720, height: 440); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        let content = NSView(); window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         let path = NSTextField(labelWithString: file.lastPathComponent); path.toolTip = file.path; path.setAccessibilityHelp(file.path); path.lineBreakMode = .byTruncatingMiddle
         mode.target = self; mode.action = #selector(switchComparisonView); mode.selectedSegment = 0; mode.setAccessibilityLabel("文件比较显示方式")
         let top = NSStackView(views: [path, NSView(), mode]); top.spacing = 12
@@ -76,7 +76,10 @@ struct AgentFileConflictSnapshot {
         refresh.target = self; refresh.action = #selector(refreshComparison); keep.target = self; keep.action = #selector(continueEditing); keep.keyEquivalent = "\u{1b}"
         adopt.target = self; adopt.action = #selector(adoptDisk); overwrite.target = self; overwrite.action = #selector(overwriteDisk)
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [refresh, state, NSView(), keep, adopt, overwrite]); actions.spacing = 8
+        for field in [diskText, draftText] { field.drawsBackground = false; field.textColor = .labelColor }
+        let buttons = NSStackView(views: [refresh, NSView(), keep]), decisions = NSStackView(views: [NSView(), adopt, overwrite]); buttons.spacing = 8; decisions.spacing = 8
+        let actions = NSStackView(views: [state, buttons, decisions]); actions.orientation = .vertical; actions.alignment = .leading; actions.spacing = 8
+        for row in [state, buttons, decisions] { row.widthAnchor.constraint(equalTo: actions.widthAnchor).isActive = true }
         for view in [top, versions, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16)]) }
         NSLayoutConstraint.activate([top.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), versions.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12), versions.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refreshComparison()
@@ -124,9 +127,10 @@ struct AgentFileConflictSnapshot {
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !resolving }
+    var canNavigateWorkspace: Bool { !resolving }
     func windowWillClose(_ notification: Notification) { job?.cancel() }
     var checkState: [String: Any] {
-        guard ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
-        return ["visible": window?.isVisible == true, "diskHash": review?.diskHash ?? "", "draftHash": review?.draftHash ?? "", "loading": loading, "resolving": resolving, "overwriteEnabled": overwrite.isEnabled, "adoptEnabled": adopt.isEnabled, "mode": mode.selectedSegment, "patch": diff.patch, "state": state.stringValue]
+        guard AgentTaskWorkspace.readbackEnabled || ["--file-conflict-check", "--text-encoding-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        return ["visible": isPageVisible, "diskHash": review?.diskHash ?? "", "draftHash": review?.draftHash ?? "", "loading": loading, "resolving": resolving, "overwriteEnabled": overwrite.isEnabled, "adoptEnabled": adopt.isEnabled, "mode": mode.selectedSegment, "patch": diff.patch, "state": state.stringValue]
     }
 }

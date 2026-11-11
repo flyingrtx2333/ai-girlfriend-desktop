@@ -35,6 +35,7 @@ import WebKit
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-page-check") { await runKnowledgePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
@@ -66,6 +67,8 @@ import WebKit
                 if CommandLine.arguments.contains("--automation-page-fixtures") { _ = try await prepareAutomationPageUI(output) }
                 if CommandLine.arguments.contains("--git-workspace-fixtures") { _ = try await prepareGitWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--git-workspace-reopen") { try reopenGitWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--task-workspace-fixtures") { _ = try await prepareTaskWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--task-workspace-reopen") { try reopenTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--knowledge-page-fixtures") { _ = try await prepareKnowledgePageUI(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
@@ -123,6 +126,7 @@ import WebKit
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]
                         value["knowledge"] = await inputControl.knowledgePageReadback()
                         value["gitWorkspace"] = inputControl.gitWorkspaceReadback()
+                        value["taskWorkspace"] = await inputControl.taskWorkspaceReadback()
                         value["fileOpenEvents"] = fileOpenEvents
                         value["fileOpenPending"] = pendingFileOpens.count
                         value["fileOpenImporting"] = fileOpenJob != nil

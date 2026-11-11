@@ -32,7 +32,7 @@ import AppKit
         window.title = "Git · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目")
         window.minSize = NSSize(width: 700, height: 470); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
+        let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         branch.font = .systemFont(ofSize: 13, weight: .medium); branch.lineBreakMode = .byTruncatingMiddle
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 29; table.delegate = self; table.dataSource = self; table.allowsMultipleSelection = true
@@ -95,7 +95,7 @@ import AppKit
             actions.leadingAnchor.constraint(equalTo: composer.leadingAnchor), actions.trailingAnchor.constraint(equalTo: composer.trailingAnchor), actions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -10),
             state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
-        pageDidLayout(); refresh()
+        content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); dependencyWindow?.close(); busy = false }

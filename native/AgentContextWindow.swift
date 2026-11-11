@@ -2,7 +2,7 @@ import AppKit
 
 private final class AgentContextDocument: NSView { override var isFlipped: Bool { true } }
 
-@MainActor final class AgentContextWindow: NSWindowController {
+@MainActor final class AgentContextWindow: AgentSettingsPageController {
     private let runtime: AgentRuntime, taskID: String
     private let tabs = NSSegmentedControl(labels: ["上下文", "任务回顾", "请求记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let source = NSPopUpButton(), body = NSStackView(), state = NSTextField(labelWithString: "")
@@ -14,7 +14,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "任务详情"; window.minSize = NSSize(width: 490, height: 440); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window)
-        let content = NSView(); window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         tabs.selectedSegment = min(2, max(0, section)); tabs.target = self; tabs.action = #selector(changeSection)
         source.addItems(withTitles: ["当前估算", "上次请求"]); source.target = self; source.action = #selector(changeSection); source.setAccessibilityLabel("上下文来源")
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 12; body.edgeInsets = NSEdgeInsets(top: 8, left: 4, bottom: 20, right: 4)
@@ -25,13 +25,22 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         action.target = self; action.action = #selector(performAction); stop.target = self; stop.action = #selector(cancelAction)
         let top = NSStackView(views: [tabs, NSView(), source]); top.spacing = 10
-        let footer = NSStackView(views: [state, NSView(), stop, action]); footer.spacing = 10
+        let buttons = NSStackView(views: [NSView(), stop, action]); buttons.spacing = 10
+        let footer = NSStackView(views: [state, buttons]); footer.orientation = .vertical; footer.alignment = .leading; footer.spacing = 8
+        for row in [state, buttons] { row.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         for view in [top, scroll, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([top.topAnchor.constraint(equalTo: content.topAnchor, constant: 20), top.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), top.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20), scroll.leadingAnchor.constraint(equalTo: top.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: top.trailingAnchor), scroll.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 18), scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14), footer.leadingAnchor.constraint(equalTo: top.leadingAnchor), footer.trailingAnchor.constraint(equalTo: top.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18)])
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func changeSection() { rendered = ""; refresh(); window?.contentView?.layoutSubtreeIfNeeded(); scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView) }
+    @objc private func changeSection() { rendered = ""; refresh(); pageContentView?.layoutSubtreeIfNeeded(); scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView) }
+    override func settingsDidAppear() { refresh() }
+    func selectSection(_ section: Int) { tabs.selectedSegment = min(2, max(0, section)); changeSection() }
+    var boundTaskID: String { taskID }
+    func workspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        return ["taskID": taskID, "section": tabs.selectedSegment, "source": source.indexOfSelectedItem, "text": body.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n"), "actionEnabled": action.isEnabled, "action": action.title, "state": state.stringValue, "mainWindow": pageContentView?.window === presentingWindow && settingsHostWindow != nil]
+    }
     @objc private func performAction() { _ = runtime.analyze(taskID, recap: tabs.selectedSegment == 1); refresh() }
     @objc private func cancelAction() { runtime.cancel(taskID); refresh() }
     private func label(_ value: String, size: CGFloat = 13, bold: Bool = false, secondary: Bool = false) {

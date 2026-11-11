@@ -1712,3 +1712,24 @@ Git 差异审阅迁入任务右侧工作区，可放大、还原或收起。各�
 最终冻结 **288 份原生输入**，签名前 SHA256 为 `52d9a6ffe07766e893ca0beecbf6e5de636ff2f31310c8603579596d47e29860`；显式本地签名后为 `8cdf11af07459ca17b8f0b47f095390a31f08d8f5e80e81dd5b0858a6f81d738`。严格签名核对通过，使用无可用私人签名身份的配置，开发验收不依赖解锁钥匙串。日常包仍为 `bf6a50e`，正式签名和原程序保持；需要我、自动化、知识中心及 Git 工作区迁移尚未进入日常包。工作树界面、执行详情、产物工作区、其余长对话框及完整 P1／P2 继续见 [Qoder TODO](QODER-PARITY-TODO.md)。
 
 证据：`evidence/agent/git-workspace-2m6ardtd/polished/final-report.json`、`same-version-restart-report.json`、`cua-main-flow/`、`cua-polished/` 与 `cua-final-restart/`；页面原生记录在 `evidence/agent/git-workspace-command-KZZp12/`，实际窗口资料在 `evidence/agent/git-workspace-command-RNzIUm/`。复验命令：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-git-workspace`，创建独立仓库及本机接收端，不调用模型。全部新源码、构建、应用、缓存和证据留在外置盘。
+
+
+## 任务详情、记录与文件标签页（2026-11-11）
+
+任务记录、上下文／回顾／请求记录及 Markdown／文本文件从独立窗口接入当前任务的右侧工作区。每个任务保存自己的标签页、子页面与文档草稿；正常窗口并列显示对话，800 点窗口使用完整工作面。标签页可添加、切换与关闭，子页面使用返回导航，未保存文件显示标记。长文件比较进入原文件标签页，短确认保留明确操作与影响。Office、Canvas、视频、浏览器及工作树的完整整合继续见 [Qoder TODO](QODER-PARITY-TODO.md)。
+
+复用 `AgentSettingsPageController`、记录阅读器和现有文件工具，保留原路径边界、权限、编码、版本检查和修改检查点。隐藏或切换页面时收取正在编辑的正文并保留草稿；关闭标签页或任务窗口时检查未保存内容，删除任务前检查所有缓存记录，文件比较正在处理时阻止离开。相同文件路径复用标签页，不同目录的同名文件分别打开。记录列表在窄工作面置于正文上方，详情与比较操作栏可完整显示。
+
+本机 Qoder 0.5.2 的现有任务用于核对工作面标签、添加菜单、执行工具行内展开与导航。未提交新任务；参考任务的旧产物路径已迁移，不能据此声称当前编辑器产物已完成一比一比较。参考资料只留在外置盘。
+
+最终冻结 **289 份原生输入**，生产构建签名前 SHA256 为 `b08004eef6d35daa401eaad07b5cef86f11669c623486c042af1b06a351ef556`；独立本地签名后为 `432a9f22c8e2dad89d6b8cd5b45b3b1a60e0b2d3115346d8a06a812c91dc2f6a`。严格签名核对通过，验收使用显式本地签名，不依赖钥匙串解锁。日常应用仍为 `bf6a50e` 的原程序和签名，尚未包含需要我、自动化、知识中心与扩展后的任务工作区迁移。
+
+同一最终程序通过 **337 项**相关检查：任务工作区 132、Git 工作区 87、知识中心 118。使用实际公开文档副本、本机校验命令、文件编码和磁盘版本、检查点以及独立 Git 索引／提交／本机接收端；不调用模型。文件规则、Wiki 等旧模型额度未转用。
+
+真实窗口完成文件选择后进入标签页、任务间与标签间草稿隔离、关闭未保存文件后继续编辑、Command-S 保存、比较后磁盘再次变化时拒绝覆盖、刷新后确认覆盖并保留实际被覆盖版本、采用外部 UTF-8／LF 文件、浅深色和 800 点窗口检查。文件选择回调在系统面板完全脱离后再打开工作区；保留最初入口失败的原始记录。完整文件流程候选为 `7f569e435f8e5d291bf2d62afe3a7d3b9ee1b27dfeb74ab08107ffb890cc70a5`；最终程序另修正空任务的顶部标题，并实测预览内标题编辑在切换详情时收取、返回保存后仅该标题字节变化，以及浅深色和无工作区／无对话任务的正确标题。
+
+同一最终程序正常退出后重开，从入口重新打开已保存文档，实际正文、输入和浅色设置保持。18 份持久文件中 17 份逐字节一致；仅任务索引更新导航与时间。全部权限，以及 4 个任务的消息、输入草稿、事件、请求和变更记录保持，公开项目原件未改。日常 9 份原配置／聊天资料及 23 份原真实模型记录继续保持，本轮模型请求 0。标签页和未保存草稿目前在同次启动内缓存，自动恢复仍列入 TODO。
+
+实际文件流程、最终样式与同版重开的 72 次窗口工具调用保留 144 条原始记录及 14 张原始 JPEG；两次辅助功能操作异常均保留并读取实际状态后继续。README 两张新图来自最终程序的原始传输图。全部源码、程序、临时文件、缓存与证据位于外置盘。
+
+证据：`evidence/agent/task-details-h91_br_e/acceptance-index.json`、`ui-file-flow-report.json`、`final-polish-report.json`、`same-version-ui-report.json`、`same-version-restart-report.json`、`originals-current.json`、`cua-file-flow/`、`cua-final-polish/` 与 `cua-same-version-restart/`。最终原生记录：`task-workspace-command-3HGhBY/`、`git-workspace-command-3QUNfT/`、`knowledge-page-command-b4WYgv/`；原始检查失败、预览入口问题和被替代构建均保留。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-task-workspace`，使用公开项目资料，禁止模型请求。

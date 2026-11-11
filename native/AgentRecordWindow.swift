@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 @MainActor final class AgentRecordWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
+    private let taskHosted: Bool, documentOnly: Bool
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
     private let list = NSScrollView(), wikiTree = AgentWikiTree()
@@ -40,8 +41,15 @@ import UniformTypeIdentifiers
     private var wikiMaintenanceNotice = ""
     private var items: [(title: String, value: String)] = [], selection: String?, openedHash: String?, load: Task<Void, Never>?
     private var openedFiles: [String] = []
-    private var dirty = false, activeSection = 0, saving = false
+    private var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
+    private var activeSection = 0, saving = false
+    var onWorkspaceChange: (() -> Void)?
+    var workspaceHasUnsavedChanges: Bool { dirty }
+    private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
+    private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!
+    private var compactTaskLayout: Bool?, filesRequested = false
     func requireDeletionAllowed(_ ids: Set<String>) throws {
+        if ids.contains(taskID) { try markdown.finishEditing() }
         if ids.contains(taskID), dirty || saving || wikiSharingTask != nil || wikiPlanWindow?.hasUnsavedChanges == true { throw PetError("请先保存或关闭此任务未保存或正在处理的记录窗口") }
     }
     func belongsToTasks(_ ids: Set<String>) -> Bool { ids.contains(taskID) }
@@ -55,18 +63,18 @@ import UniformTypeIdentifiers
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
     private var videoWindow: AgentVideoWindow?
-    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false) {
-        self.store = store; self.taskID = taskID
+    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false) {
+        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; text.delegate = self
-        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = memoryOnly ? 5 : min(6, max(0, section)); activeSection = sections.selectedSegment; sections.isHidden = memoryOnly || wikiOnly
+        let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface); window.contentView = content
+        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = memoryOnly ? 5 : min(6, max(0, section)); activeSection = sections.selectedSegment; sections.isHidden = memoryOnly || wikiOnly || documentOnly
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         list.documentView = table; list.hasVerticalScroller = true
-        let navigation = NSView()
+        let navigation = taskNavigation
         for child in [list, wikiTree] { navigation.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: navigation.topAnchor), child.leadingAnchor.constraint(equalTo: navigation.leadingAnchor), child.trailingAnchor.constraint(equalTo: navigation.trailingAnchor), child.bottomAnchor.constraint(equalTo: navigation.bottomAnchor)]) }
         wikiTree.canSelect = { [weak self] path in guard let self else { return false }; return path == self.selection || self.canLeave() }
         wikiTree.onSelect = { [weak self] path in guard let self, path != self.selection else { return }; self.loadSelection(path) }
@@ -110,6 +118,29 @@ import UniformTypeIdentifiers
         allowInstruction.target = self; allowInstruction.action = #selector(allowInstructionFile)
         revokeInstruction.target = self; revokeInstruction.action = #selector(revokeInstructionFile); revokeInstruction.setAccessibilityLabel("撤销指令引用允许")
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        if taskHosted {
+            table.style = .plain; table.backgroundColor = .clear
+            list.drawsBackground = false; list.scrollerStyle = .overlay; viewer.drawsBackground = false; viewer.scrollerStyle = .overlay; text.drawsBackground = false; text.textColor = .labelColor
+            let primary = NSStackView(views: [state, NSView(), open, compare, save]); primary.spacing = 8
+            for view in [allowInstruction, revokeInstruction, newOffice, openOffice, generate, wikiCards, undo, NSView()] { taskSecondaryActions.addArrangedSubview(view) }; taskSecondaryActions.spacing = 8
+            let actions = NSStackView(views: [taskSecondaryActions, primary]); actions.orientation = .vertical; actions.alignment = .leading; actions.spacing = 8
+            for row in [taskSecondaryActions, primary] { row.widthAnchor.constraint(equalTo: actions.widthAnchor).isActive = true }
+            itemPicker.setAccessibilityLabel("记录中的文件与来源"); itemPicker.target = self; itemPicker.action = #selector(selectTaskItem); itemPicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); itemPicker.cell?.lineBreakMode = .byTruncatingMiddle
+            filesToggle.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil); filesToggle.isBordered = false; filesToggle.target = self; filesToggle.action = #selector(toggleTaskFiles); filesToggle.setAccessibilityLabel("显示记录列表"); filesToggle.widthAnchor.constraint(equalToConstant: 26).isActive = true
+            let picker = NSStackView(views: [itemPicker, filesToggle]); picker.spacing = 8; picker.isHidden = documentOnly
+            for child in [navigation, documentPane] { taskFileArea.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+            navigationWidth = navigation.widthAnchor.constraint(equalToConstant: 165); navigationHeight = navigation.heightAnchor.constraint(equalToConstant: 86)
+            documentLeading = documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12); documentTop = documentPane.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 8)
+            wideNavigation = [navigationWidth, navigation.bottomAnchor.constraint(equalTo: taskFileArea.bottomAnchor), documentLeading, documentPane.topAnchor.constraint(equalTo: taskFileArea.topAnchor)]
+            compactNavigation = [navigationHeight, navigation.trailingAnchor.constraint(equalTo: taskFileArea.trailingAnchor), documentTop, documentPane.leadingAnchor.constraint(equalTo: taskFileArea.leadingAnchor)]
+            NSLayoutConstraint.activate([navigation.leadingAnchor.constraint(equalTo: taskFileArea.leadingAnchor), navigation.topAnchor.constraint(equalTo: taskFileArea.topAnchor), documentPane.trailingAnchor.constraint(equalTo: taskFileArea.trailingAnchor), documentPane.bottomAnchor.constraint(equalTo: taskFileArea.bottomAnchor)])
+            let column = NSStackView(views: [sections, picker, taskFileArea, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+            for child in [sections, picker, taskFileArea, actions] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+            content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+            taskFileArea.setContentHuggingPriority(.defaultLow, for: .vertical)
+            content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh(); return
+        }
         let actions = NSStackView(views: [state, NSView(), allowInstruction, revokeInstruction, newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: memoryOnly || wikiOnly ? content.topAnchor : sections.bottomAnchor, constant: memoryOnly || wikiOnly ? 14 : 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
@@ -117,10 +148,42 @@ import UniformTypeIdentifiers
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func selectItem(section: Int, value: String) {
+        if section == sections.selectedSegment, value == selection { return }
         guard canLeave() else { return }
         sections.selectedSegment = min(6, max(0, section)); refresh()
         if section == 6 { _ = wikiTree.select(value); return }
         if let index = items.firstIndex(where: { $0.value == value }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); table.scrollRowToVisible(index) }
+    }
+    func selectSection(_ section: Int) { guard sections.selectedSegment != section else { return }; sections.selectedSegment = min(6, max(0, section)); refresh() }
+    func openWorkspaceDocument(_ path: String) throws {
+        let files = try AgentFiles(workspace: store.task(taskID)?.workspace), file = try files.resolve(path)
+        guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
+        if documentOnly { window?.title = file.lastPathComponent }
+        if !openedFiles.contains(file.path) { openedFiles.append(file.path) }
+        selectItem(section: 1, value: file.path)
+    }
+    override func pageDidLayout() {
+        guard taskHosted, let content = pageContentView else { return }
+        let compact = content.bounds.width < 700, shown = !documentOnly && !items.isEmpty && filesRequested
+        if compactTaskLayout != compact { NSLayoutConstraint.deactivate(wideNavigation + compactNavigation); NSLayoutConstraint.activate(compact ? compactNavigation : wideNavigation); compactTaskLayout = compact }
+        taskNavigation.isHidden = !shown; navigationWidth.constant = shown ? 165 : 0; navigationHeight.constant = shown ? min(100, max(56, floor(content.bounds.height * 0.16))) : 0
+        documentLeading.constant = shown ? 12 : 0; documentTop.constant = shown ? 8 : 0
+        filesToggle.setAccessibilityLabel(shown ? "隐藏记录列表" : "显示记录列表")
+        taskSecondaryActions.isHidden = !taskSecondaryActions.arrangedSubviews.contains { ($0 is NSControl) && !$0.isHidden }
+    }
+    private func updateTaskItemPicker() {
+        guard taskHosted else { return }; itemPicker.removeAllItems()
+        for item in items { itemPicker.addItem(withTitle: item.title); itemPicker.lastItem?.representedObject = item.value; itemPicker.lastItem?.toolTip = item.value }
+        if let selection, let index = items.firstIndex(where: { $0.value == selection }) { itemPicker.selectItem(at: index) }
+        if items.isEmpty { itemPicker.addItem(withTitle: sections.selectedSegment == 0 ? "计划" : "暂无记录") }
+        itemPicker.isEnabled = !items.isEmpty; filesToggle.isEnabled = !items.isEmpty
+        if documentOnly { newOffice.isHidden = true; openOffice.isHidden = true }; pageDidLayout()
+    }
+    @objc private func selectTaskItem() { if let value = itemPicker.selectedItem?.representedObject as? String { selectItem(section: sections.selectedSegment, value: value); updateTaskItemPicker() } }
+    @objc private func toggleTaskFiles() { filesRequested.toggle(); pageDidLayout() }
+    func prepareWorkspaceNavigation() -> Bool {
+        guard !saving else { state.stringValue = "正在保存…"; return false }
+        do { try markdown.finishEditing(); video.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     @objc private func refresh() {
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
@@ -153,6 +216,7 @@ import UniformTypeIdentifiers
         }
         if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
+        updateTaskItemPicker()
         if sections.selectedSegment == 6 { if let selected = wikiTree.selectedDocument { _ = wikiTree.select(selected, notify: false); loadSelection(selected) } }
         else if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
@@ -442,6 +506,7 @@ import UniformTypeIdentifiers
         loadSelection(items[table.selectedRow].value)
     }
     private func loadSelection(_ value: String) {
+        defer { updateTaskItemPicker() }
         guard let task = store.task(taskID) else { return }
         load?.cancel(); selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
@@ -526,6 +591,7 @@ import UniformTypeIdentifiers
         text.string = document.text; fileFormat = document.format; openedHash = AgentFiles.hash(data); openedFile = file; dirty = false; text.undoManager?.removeAllActions()
         text.isEditable = data.count <= 2_000_000 && document.text.utf8.count <= 2_000_000 && fileIsEditable(task, file: file); save.isHidden = false; save.isEnabled = text.isEditable; compare.isHidden = !text.isEditable; encodingMenu.isHidden = false; readingToolbar.isHidden = false
         AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: fileFormat)
+        if taskHosted { open.title = "在默认应用打开" }
         markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = !["md", "markdown"].contains(file.pathExtension.lowercased())
         if !displayMode.isHidden { markdownFile = file; displayMode.selectedSegment = 0; switchDocumentMode() }
         sourceSelection.update()
@@ -622,7 +688,8 @@ import UniformTypeIdentifiers
         openedHash = AgentFiles.hash(data); dirty = (try? fileData()) != data; state.stringValue = dirty ? "未保存" : "已保存"
     }
     private func conflictSnapshot() throws -> AgentFileConflictSnapshot {
-        guard !saving, isPageVisible, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID), let workspace = task.workspace, let file = openedFile, let path = selection, try AgentFiles(workspace: workspace).resolve(path) == file else { throw PetError("文档或任务已变化，草稿已保留") }
+        let ownComparisonVisible = settingsHostWindow != nil && conflictWindow?.isPageVisible == true && conflictWindow?.presentingWindow === presentingWindow
+        guard !saving, isPageVisible || ownComparisonVisible, [1, 6].contains(sections.selectedSegment), let task = store.task(taskID), let workspace = task.workspace, let file = openedFile, let path = selection, try AgentFiles(workspace: workspace).resolve(path) == file else { throw PetError("文档或任务已变化，草稿已保留") }
         try markdown.finishEditing()
         return try AgentFileConflictSnapshot.read(file: file, workspace: workspace, draft: text.string, allowsOverwrite: fileIsEditable(task, file: file), format: fileFormat)
     }
@@ -646,7 +713,7 @@ import UniformTypeIdentifiers
             }
             self.presentingWindow?.makeKeyAndOrderFront(nil)
         })
-        conflictWindow = next; next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil)
+        conflictWindow = next; presentSettingsChild(next)
     }
     @objc private func restoreFile() {
         guard let task = store.task(taskID), let change = task.changes.first(where: { $0.id == selection }) else { return }
@@ -715,7 +782,7 @@ import UniformTypeIdentifiers
         guard !saving else { state.stringValue = "正在保存…"; return false }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; return false }
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
+        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.informativeText = openedFile?.lastPathComponent ?? state.stringValue; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
@@ -735,7 +802,7 @@ import UniformTypeIdentifiers
         return result
     }
     func markdownEditingReadback() async -> [String: Any] {
-        guard AgentKnowledgePageHost.readbackEnabled || ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--repo-wiki-overview-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || AgentKnowledgePageHost.readbackEnabled || ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--repo-wiki-overview-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         await markdown.waitForDiagrams()
         let data = try? fileData()
         var result: [String: Any] = ["draft": text.string, "encodedDraft": fileContent, "encodedDraftBase64": data?.base64EncodedString() ?? "", "draftHash": data.map(AgentFiles.hash) ?? "", "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "encoding": fileFormat.encoding.rawValue, "byteOrderMark": fileFormat.bom, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState, "comparison": conflictWindow?.checkState ?? [:]]
@@ -745,6 +812,25 @@ import UniformTypeIdentifiers
         if ["--wiki-generation-check", "--wiki-updates-check", "--project-knowledge-check"].contains(where: CommandLine.arguments.contains) { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "includesCards": wikiGeneration?.includesCards ?? false, "problem": generate.toolTip ?? ""] }
         if CommandLine.arguments.contains("--wiki-updates-check") { result["maintenance"] = ["available": wikiMaintenance != nil, "autoUpdate": wikiMaintenance?.options.autoUpdate ?? false, "autoExport": wikiMaintenance?.options.autoExport ?? false, "notice": store.wikiMaintenance.notice(workspace: store.task(taskID)?.workspace ?? "", language: wikiTree.selectedLanguage)] }
         return result
+    }
+    func workspaceReadback() async -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        var value = await markdownEditingReadback()
+        value["taskID"] = taskID; value["section"] = sections.selectedSegment; value["selection"] = selection ?? ""; value["file"] = openedFile?.path ?? ""; value["state"] = state.stringValue
+        value["taskHosted"] = taskHosted; value["documentOnly"] = documentOnly; value["visible"] = isPageVisible; value["items"] = items.map { ["title": $0.title, "value": $0.value] }
+        value["checks"] = ["documentUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow && presentingWindow?.isVisible == true,
+            "recordWindowStaysHidden": window?.isVisible != true, "documentHasUsableWidth": taskFileArea.bounds.width - (taskNavigation.isHidden || compactTaskLayout == true ? 0 : taskNavigation.bounds.width + 12) >= 300,
+            "documentHasUsableHeight": taskFileArea.bounds.height >= 140,
+            "catalogFitsAvailableWidth": sections.isHidden || sections.fittingSize.width <= (pageContentView?.bounds.width ?? 0) - 28,
+            "documentTabHasNoCatalog": !documentOnly || sections.isHidden && itemPicker.isHiddenOrHasHiddenAncestor]
+        return value
+    }
+    func checkTaskDocument(text value: String? = nil, action: String? = nil) async {
+        guard CommandLine.arguments.contains("--task-workspace-check") else { return }
+        if let value, text.isEditable { displayMode.selectedSegment = 1; switchDocumentMode(); text.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: text)) }
+        if action == "save" { saveFile(); await load?.value }
+        else if action == "compare" { presentConflict() }
+        else if action == "files" { toggleTaskFiles() }
     }
     func checkOpenKnowledgePlan() { if CommandLine.arguments.contains("--knowledge-page-check") { openWikiPlan() } }
     func checkEditKnowledgeDocument(_ value: String) async {

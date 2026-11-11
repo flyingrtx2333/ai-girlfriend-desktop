@@ -187,6 +187,7 @@ final class FormDocumentView: NSView {
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
     private let terminalButton = AgentWorkbenchButton(), terminalSplit = AgentTerminalSplitView()
     private(set) var taskWorkspace = AgentTaskWorkspace()
+    private var taskDocumentOpenState: [String: Any] = [:]
     private var conversationTrailing: NSLayoutConstraint!, fullConversationTrailing: NSLayoutConstraint!
     private var headerActionsTrailing: NSLayoutConstraint!, fullHeaderActionsTrailing: NSLayoutConstraint!
     private var terminalPanel: AgentTerminalPanel?
@@ -526,6 +527,11 @@ final class FormDocumentView: NSView {
         chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector); chat.addSubview(taskWorkspace)
         taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
         taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
+        taskWorkspace.onOpenRoot = { [weak self] root in
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .document(let path): self?.showTaskDocument(path) }
+        }
+        taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
+        taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         conversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor)
         fullConversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: chat.trailingAnchor)
         inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
@@ -634,8 +640,8 @@ final class FormDocumentView: NSView {
         let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - (fullWorkspace ? 0 : target) - 760) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
-        pageTitle.isHidden = !chatting || !hasMessages
-        workbenchBadge.isHidden = !chatting || !hasMessages
+        pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
+        workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
@@ -665,9 +671,8 @@ final class FormDocumentView: NSView {
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
     @objc private func toggleTaskInspector() {
-        if taskWorkspace.requested { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
-        guard (window?.contentView?.bounds.width ?? 0) >= 1080 else { presentAgentRecords(section: 4); return }
-        inspectorRequested.toggle(); updateWorkbenchLayout(animated: true)
+        if taskWorkspace.requested, taskWorkspace.selectedRoot == .records { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
+        presentAgentRecords(section: 4)
     }
     @objc private func toggleLeftSidebar() {
         guard selectedTab == "chat" else { return }
@@ -776,10 +781,12 @@ final class FormDocumentView: NSView {
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
-    private func presentTaskContext(section: Int) {
-        guard let runtime = companion?.agentRuntime, let id = agentTaskID else { return }
-        contextWindow?.window?.performClose(nil); contextWindow = AgentContextWindow(runtime: runtime, taskID: id, section: section)
-        contextWindow?.showWindow(nil); contextWindow?.window?.makeKeyAndOrderFront(nil)
+    internal func presentTaskContext(section: Int) {
+        guard let runtime = companion?.agentRuntime, let id = agentTaskID, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+        guard taskWorkspace.show(taskID: id, root: .context, make: { AgentContextWindow(runtime: runtime, taskID: id, section: section) }) else { return }
+        (taskWorkspace.rootController(.context) as? AgentContextWindow)?.selectSection(section)
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     @objc private func showTaskMCPContent() { if let id = agentTaskID { presentMCPContent(taskID: id) } }
     func presentMCPContent(taskID: String, serverID: String? = nil) {
@@ -826,6 +833,7 @@ final class FormDocumentView: NSView {
         show(tab: "attention"); tasks.attention.refresh(); attentionPageController?.refresh()
     }
     private func canLeaveMainPage() -> Bool {
+        guard taskWorkspace.prepareToNavigate() else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         if selectedTab == "automation", automationWindow?.prepareToLeave() == false { return false }
         if selectedTab == "knowledge", !knowledgePageHost.prepareToLeave() { return false }
@@ -2161,11 +2169,22 @@ final class FormDocumentView: NSView {
         var value = taskWorkspace.checkState(); value["selectedTask"] = agentTaskID ?? ""; value["draft"] = composer.string
         value["conversationVisible"] = !terminalSplit.isHiddenOrHasHiddenAncestor; value["conversationWidth"] = Double(terminalSplit.bounds.width); value["mainPage"] = selectedTab
         value["windowSize"] = [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)]
+        value["taskTitle"] = pageTitle.stringValue; value["taskTitleVisible"] = !pageTitle.isHidden
         for page in taskWorkspace.controllers {
             if let git = page as? AgentGitWindow { value["git-" + git.boundTaskID] = git.workspaceReadback() }
             if let push = page as? AgentGitPushWindow, push.isPageVisible { value["push"] = push.workspaceReadback() }
         }
         return value
+    }
+    internal func taskWorkspaceReadback() async -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        var value = gitWorkspaceReadback(), documents: [[String: Any]] = []
+        for page in taskWorkspace.controllers {
+            if let context = page as? AgentContextWindow, context.isPageVisible { value["context"] = context.workspaceReadback() }
+            if let record = page as? AgentRecordWindow { documents.append(await record.workspaceReadback()) }
+            if let comparison = page as? AgentFileConflictWindow, comparison.isPageVisible { value["comparison"] = comparison.checkState }
+        }
+        value["documents"] = documents; value["documentOpen"] = taskDocumentOpenState; return value
     }
     private func refreshKnowledgeNavigation() {
         AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
@@ -2262,22 +2281,54 @@ final class FormDocumentView: NSView {
         if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
+        if section == 1, !value.hasPrefix("canvas://"), let task = currentAgentTask, let files = try? AgentFiles(workspace: task.workspace), let file = try? files.resolve(value), !AgentVideoSnapshot.supports(file) { showTaskDocument(file.path); return }
         presentAgentRecords(section: section)
         if section == 6 { (knowledgePageHost.currentController as? AgentRecordWindow)?.selectItem(section: section, value: value) }
-        else { recordWindow?.selectItem(section: section, value: value) }
+        else { (taskWorkspace.rootController(.records) as? AgentRecordWindow)?.selectItem(section: section, value: value) }
     }
-    func presentAgentRecords(section: Int, taskID: String? = nil) {
+    internal func presentAgentRecords(section: Int, taskID: String? = nil) {
         guard let store = companion?.agentStore, let id = taskID ?? agentTaskID else { return }
         if section == 6 { pushKnowledgeWiki(taskID: id); return }
-        if let existing = recordWindow {
-            existing.window?.performClose(nil)
-            if existing.window?.isVisible == true { return }
-        }
-        recordWindow = preparedRecord(store: store, taskID: id, section: section)
-        recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+        if agentTaskID != id { selectAgentTask(id) }
+        guard agentTaskID == id, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+        guard taskWorkspace.show(taskID: id, root: .records, make: { preparedRecord(store: store, taskID: id, section: section, taskHosted: true) }) else { return }
+        (taskWorkspace.rootController(.records) as? AgentRecordWindow)?.selectSection(section)
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
-    private func preparedRecord(store: AgentStore, taskID id: String, section: Int, wikiOnly: Bool = false) -> AgentRecordWindow {
-        let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly)
+    internal func showTaskDocument(_ path: String) {
+        guard let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
+        do {
+            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path)
+            guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
+            let root = AgentTaskWorkspace.Root.document(file.path)
+            if taskWorkspace.rootController(root) == nil { _ = try files.readData(file, maximum: 2_000_000) }
+            if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+            guard taskWorkspace.show(taskID: id, root: root, make: { preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true) }) else { return }
+            try (taskWorkspace.rootController(root) as? AgentRecordWindow)?.openWorkspaceDocument(file.path)
+            updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func chooseTaskDocument() {
+        guard let window, window.attachedSheet == nil, let task = currentAgentTask else { return }
+        do {
+            let files = try AgentFiles(workspace: task.workspace), panel = NSOpenPanel(), id = task.id
+            panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.directoryURL = files.root
+            panel.beginSheetModal(for: window) { [weak self] response in
+                guard let self else { return }
+                if AgentTaskWorkspace.readbackEnabled { self.taskDocumentOpenState = ["accepted": response == .OK, "file": panel.url?.path ?? "", "sheetAttachedAtCompletion": window.attachedSheet != nil] }
+                guard response == .OK, let file = panel.url else { return }
+                // AppKit finishes detaching the sheet after its completion block.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.agentTaskID == id else { return }
+                    if AgentTaskWorkspace.readbackEnabled { self.taskDocumentOpenState["sheetAttachedBeforeOpening"] = window.attachedSheet != nil }
+                    self.showTaskDocument(file.path)
+                }
+            }
+        } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func preparedRecord(store: AgentStore, taskID id: String, section: Int, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false) -> AgentRecordWindow {
+        let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly, taskHosted: taskHosted, documentOnly: documentOnly)
         record.onAddSelection = { [weak self] selection in
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
@@ -2388,8 +2439,10 @@ final class FormDocumentView: NSView {
         bindAgentDraft(task)
         window?.title = (task.sideTask != nil && task.title == "新的任务" ? "新的侧任务" : task.title) + " · 小鲸" + (taskWindowNumber == 1 ? "" : "（\(taskWindowNumber)）")
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
+        taskWorkspace.controllers.compactMap { $0 as? AgentContextWindow }.filter(\.isPageVisible).forEach { $0.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
+        taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }
         knowledgePageHost.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }
         repoWikiWindow?.refreshLiveState()
         archivedTasksView?.refresh()

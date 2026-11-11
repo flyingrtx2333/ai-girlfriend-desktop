@@ -231,6 +231,14 @@ Git 任务工作区候选已通过 171 项相关原生检查，并核对实际�
 
 <img src="docs/media/git-push-light-narrow.jpg" width="800" alt="实际 800 点浅色窄窗口：任务内推送页重新核对本机接收端与已保存提交一致">
 
+任务记录、上下文／任务回顾／请求记录，以及 Markdown／文本文件已接入任务工作区标签页；文件比较在原文件标签页内进入与返回。切换任务和标签页保留未保存草稿，关闭文件时确认；保存沿用原编码、文件版本检查和修改检查点。Office、Canvas、视频、浏览器的完整整合及日常包更新继续见 [Qoder TODO](docs/QODER-PARITY-TODO.md)。
+
+最终生产候选通过 132 项任务工作区、87 项 Git 和 118 项知识中心检查。实际窗口核对文件选择、任务／标签切换、未保存保护、快捷键保存、过期比较、覆盖检查点、采用磁盘版本、预览内编辑及同版重开；模型请求为 0。以下两张为最终程序的原始窗口截图，日常包待更新。
+
+<img src="docs/media/task-file-workspace-dark.jpg" width="1000" alt="最终生产候选的深色文件标签页：就地编辑并保存公开文档，原任务输入保持">
+
+<img src="docs/media/task-context-workspace-light-narrow.jpg" width="800" alt="最终生产候选的 800 点浅色任务详情：无工作区且没有对话的问答任务，标题与上下文估算保持一致">
+
 <img src="docs/media/knowledge-window.png" width="900" alt="原生项目知识窗口：中文关键词检索、实际 CSV 源文件、索引更新与 Repo Wiki 入口；公开测试数据">
 
 ## 安静一点，也轻一点
