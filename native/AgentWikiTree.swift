@@ -34,6 +34,7 @@ import AppKit
         let toolbar = NSStackView(views: [search, refresh]); toolbar.spacing = 4
         language.addItems(withTitles: ["简体中文", "English", "旧版"]); language.controlSize = .small; language.target = self; language.action = #selector(changeLanguage); language.setAccessibilityLabel("Wiki 语言")
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")
+        plan.title = ""; plan.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil); plan.toolTip = "规划"; plan.widthAnchor.constraint(equalToConstant: 25).isActive = true
         more.controlSize = .small; more.setAccessibilityLabel("Wiki 更多操作"); more.addItem(withTitle: ""); more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: nil); more.menu?.autoenablesItems = false
         let update = NSMenuItem(title: "增量更新…", action: #selector(sharingAction(_:)), keyEquivalent: ""); update.target = self; update.representedObject = "update"; more.menu?.addItem(update)
         let regenerate = NSMenuItem(title: "重新生成 Wiki…", action: #selector(sharingAction(_:)), keyEquivalent: ""); regenerate.target = self; regenerate.representedObject = "regenerate"; more.menu?.addItem(regenerate); more.menu?.addItem(.separator())
@@ -154,7 +155,7 @@ import AppKit
         cell.toolTip = node.path; cell.setAccessibilityLabel(node.title + (node.directory ? "，文件夹" : "，文档")); return cell
     }
     var checkState: [String: Any] {
-        guard CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
+        guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
         return ["language": selectedLanguage, "root": rootPath, "pages": pages.map { ["path": $0.path, "title": $0.title] }, "query": search.stringValue, "selected": selectedPath ?? "", "visible": (0..<outline.numberOfRows).compactMap { row -> [String: Any]? in guard let node = outline.item(atRow: row) as? Node else { return nil }; return ["path": node.path, "title": node.title, "directory": node.directory, "level": outline.level(forItem: node), "expanded": outline.isItemExpanded(node)] }, "emptyVisible": !empty.isHidden, "citationAvailable": citationAvailable, "citationEnabled": more.itemArray.first(where: { $0.representedObject as? String == "citation" })?.state == .on]
     }
 }

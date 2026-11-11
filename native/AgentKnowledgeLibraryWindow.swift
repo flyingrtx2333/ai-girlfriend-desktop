@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentKnowledgeLibraryWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+@MainActor final class AgentKnowledgeLibraryWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, NSTextFieldDelegate {
     private let store: AgentStore, taskID: String?
     private let bases = NSTableView(), files = NSTableView(), baseSearch = NSSearchField(), fileSearch = NSSearchField()
     private let scope = NSPopUpButton(), archived = NSButton(checkboxWithTitle: "显示已移除", target: nil, action: nil)
@@ -13,6 +13,14 @@ import UniformTypeIdentifiers
     private let download = NSButton(title: "下载文件", target: nil, action: nil), open = NSButton(title: "打开原文件", target: nil, action: nil), copy = NSButton(title: "复制文字", target: nil, action: nil)
     private var catalog = AgentKnowledgeCatalog(), revision = "", baseRows: [AgentKnowledgeBase] = [], fileRows: [AgentKnowledgeSource] = []
     private var baseID: String?, sourceID: String?, selectedText = "", job: Task<Void, Never>?, previewJob: Task<Void, Never>?, busy = false
+    private enum Page { case bases, files, document, name }
+    private var page = Page.bases, editingBaseID: String?, editingWorkspace: String?, nameChanged = false
+    var boundTaskID: String? { taskID }
+    var hasPendingChanges: Bool { nameChanged || busy }
+    private let back = NSButton(title: "返回", target: nil, action: nil), baseName = NSTextField(string: ""), baseScope = NSPopUpButton()
+    private let nameForm = NSStackView(), saveName = NSButton(title: "保存", target: nil, action: nil)
+    private let baseList = NSScrollView(), fileList = NSScrollView(), viewer = NSScrollView(), body = NSView()
+    private var navigation: NSStackView!, header: NSStackView!, fileHeader: NSStackView!, previewHeader: NSStackView!, previewFooter: NSStackView!, baseFooter: NSStackView!
     init(store: AgentStore, taskID: String?) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -24,38 +32,41 @@ import UniformTypeIdentifiers
         scope.addItems(withTitles: ["全部范围", "用户", "当前工作区"]); scope.target = self; scope.action = #selector(filterChanged); scope.setAccessibilityLabel("知识库范围")
         scope.autoenablesItems = false; scope.item(at: 2)?.isEnabled = workspace != nil
         archived.target = self; archived.action = #selector(filterChanged)
-        func list(_ table: NSTableView, label: String) -> NSScrollView {
-            table.addTableColumn(NSTableColumn(identifier: .init("name"))); table.headerView = nil; table.rowHeight = 45
+        for (table, scroll, label) in [(bases, baseList, "知识库列表"), (files, fileList, "知识文件列表")] {
+            table.addTableColumn(NSTableColumn(identifier: .init("name"))); table.headerView = nil; table.rowHeight = 48; table.style = .inset; table.backgroundColor = .clear
             table.dataSource = self; table.delegate = self; table.setAccessibilityLabel(label)
-            let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder; return scroll
+            scroll.documentView = table; scroll.hasVerticalScroller = true
         }
-        let baseList = list(bases, label: "知识库列表"), fileList = list(files, label: "知识文件列表")
-        heading.font = .systemFont(ofSize: 17, weight: .semibold); heading.lineBreakMode = .byTruncatingMiddle
-        preview.isEditable = false; preview.isRichText = true; preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.textContainerInset = NSSize(width: 14, height: 14); preview.setAccessibilityLabel("知识文件预览")
-        let viewer = NSScrollView(); viewer.documentView = preview; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
+        files.target = self; files.action = #selector(openSelectedFile)
+        heading.font = .systemFont(ofSize: 17, weight: .semibold); heading.lineBreakMode = .byTruncatingMiddle; heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        back.target = self; back.action = #selector(goBack); back.isBordered = false; back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
+        back.widthAnchor.constraint(lessThanOrEqualToConstant: 180).isActive = true; back.cell?.lineBreakMode = .byTruncatingTail; back.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        navigation = row([back, heading, NSView()])
+        preview.isEditable = false; preview.isRichText = true; preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.textContainerInset = NSSize(width: 14, height: 14); preview.drawsBackground = false; preview.setAccessibilityLabel("知识文件预览")
+        viewer.documentView = preview; viewer.hasVerticalScroller = true
+        for scroll in [baseList, fileList, viewer] { scroll.drawsBackground = false; scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder }
         for label in [state, provenance, total] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle }
-        part.setAccessibilityLabel("知识文件部分"); part.alignment = .right; part.target = self; part.action = #selector(loadPreview)
+        part.setAccessibilityLabel("知识文件部分"); part.alignment = .right; part.target = self; part.action = #selector(loadPreview); part.widthAnchor.constraint(equalToConstant: 46).isActive = true
         format.selectedSegment = 0; format.target = self; format.action = #selector(renderPreview)
         for (button, action) in [(create, #selector(newBase)), (rename, #selector(renameBase)), (removeBase, #selector(archiveBase)), (add, #selector(addFiles)), (replace, #selector(replaceFile)), (removeFile, #selector(archiveFile)), (download, #selector(downloadFile)), (open, #selector(openFile)), (copy, #selector(copyText))] { button.target = self; button.action = action }
-        let header = row([baseSearch, scope, archived, create]), baseFooter = row([rename, removeBase])
-        let fileHeader = row([fileSearch, add, replace, removeFile]), previewHeader = row([format, NSView(), NSTextField(labelWithString: "部分"), part, total, copy])
-        let previewFooter = row([provenance, NSView(), open, download])
-        for view in [header, baseList, baseFooter, heading, fileHeader, fileList, previewHeader, viewer, previewFooter, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            baseSearch.widthAnchor.constraint(greaterThanOrEqualToConstant: 180), part.widthAnchor.constraint(equalToConstant: 46),
-            baseList.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), baseList.widthAnchor.constraint(equalToConstant: 190), baseList.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14), baseList.bottomAnchor.constraint(equalTo: baseFooter.topAnchor, constant: -8),
-            baseFooter.leadingAnchor.constraint(equalTo: baseList.leadingAnchor), baseFooter.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -12),
-            heading.leadingAnchor.constraint(equalTo: baseList.trailingAnchor, constant: 16), heading.topAnchor.constraint(equalTo: baseList.topAnchor), heading.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            fileHeader.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 12), fileHeader.leadingAnchor.constraint(equalTo: heading.leadingAnchor), fileHeader.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            fileList.leadingAnchor.constraint(equalTo: heading.leadingAnchor), fileList.topAnchor.constraint(equalTo: fileHeader.bottomAnchor, constant: 10), fileList.widthAnchor.constraint(equalToConstant: 210), fileList.bottomAnchor.constraint(equalTo: baseFooter.bottomAnchor),
-            previewHeader.leadingAnchor.constraint(equalTo: fileList.trailingAnchor, constant: 12), previewHeader.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), previewHeader.topAnchor.constraint(equalTo: fileList.topAnchor),
-            viewer.leadingAnchor.constraint(equalTo: previewHeader.leadingAnchor), viewer.trailingAnchor.constraint(equalTo: previewHeader.trailingAnchor), viewer.topAnchor.constraint(equalTo: previewHeader.bottomAnchor, constant: 8), viewer.bottomAnchor.constraint(equalTo: previewFooter.topAnchor, constant: -10),
-            previewFooter.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), previewFooter.trailingAnchor.constraint(equalTo: viewer.trailingAnchor), previewFooter.bottomAnchor.constraint(equalTo: fileList.bottomAnchor),
-            state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
-        ])
-        provenance.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        fileSearch.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        header = row([baseSearch, scope, archived, create]); baseFooter = row([NSView(), rename, removeBase])
+        fileHeader = row([fileSearch, add, replace, removeFile]); previewHeader = row([format, NSView(), NSTextField(labelWithString: "部分"), part, total, copy])
+        previewFooter = row([NSView(), open, download])
+        baseName.placeholderString = "知识库名称"; baseName.setAccessibilityLabel("知识库名称"); baseName.delegate = self
+        baseScope.addItems(withTitles: ["用户", "当前工作区"]); baseScope.setAccessibilityLabel("知识库生效范围"); baseScope.autoenablesItems = false; baseScope.item(at: 1)?.isEnabled = workspace != nil
+        baseScope.target = self; baseScope.action = #selector(nameScopeChanged)
+        saveName.target = self; saveName.action = #selector(saveBaseName); saveName.keyEquivalent = "s"; saveName.keyEquivalentModifierMask = .command
+        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelBaseName))
+        nameForm.orientation = .vertical; nameForm.alignment = .leading; nameForm.spacing = 16
+        for view in [NSTextField(labelWithString: "名称"), baseName, NSTextField(labelWithString: "范围"), baseScope, row([NSView(), cancel, saveName])] { nameForm.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: nameForm.widthAnchor).isActive = true }
+        for view in [baseList, fileList, viewer, nameForm] { body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [baseList, fileList, viewer] { NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor), view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)]) }
+        NSLayoutConstraint.activate([nameForm.leadingAnchor.constraint(equalTo: body.leadingAnchor), nameForm.trailingAnchor.constraint(equalTo: body.trailingAnchor), nameForm.topAnchor.constraint(equalTo: body.topAnchor)])
+        let column = NSStackView(views: [navigation, header, fileHeader, previewHeader, body, baseFooter, previewFooter, state]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14
+        content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for child in column.arrangedSubviews { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor), column.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        body.setContentHuggingPriority(.defaultLow, for: .vertical)
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -63,8 +74,66 @@ import UniformTypeIdentifiers
     private var selectedBase: AgentKnowledgeBase? { baseRows.first { $0.id == baseID } }
     private var selectedSource: AgentKnowledgeSource? { fileRows.first { $0.id == sourceID } }
     private func row(_ views: [NSView]) -> NSStackView { let row = NSStackView(views: views); row.spacing = 7; row.orientation = .horizontal; return row }
+    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
+    private func updatePage() {
+        navigation.isHidden = page == .bases; header.isHidden = page != .bases; baseFooter.isHidden = page != .files
+        fileHeader.isHidden = page != .files && page != .document; fileSearch.isHidden = page == .document; previewHeader.isHidden = page != .document; previewFooter.isHidden = page != .document
+        baseList.isHidden = page != .bases; fileList.isHidden = page != .files; viewer.isHidden = page != .document; nameForm.isHidden = page != .name
+        if page == .document { heading.stringValue = selectedSource?.file.name ?? "文件"; back.title = selectedBase?.name ?? "返回文件" }
+        else if page == .name { heading.stringValue = editingBaseID == nil ? "新建知识库" : "重命名知识库"; back.title = "返回知识库" }
+        else { heading.stringValue = selectedBase.map { $0.name + " · " + ($0.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "用户") } ?? "知识库"; back.title = "全部知识库" }
+        presentingWindow?.recalculateKeyViewLoop()
+    }
+    @objc private func goBack() { guard confirmName() else { return }; previewJob?.cancel(); if page == .document { sourceID = nil; page = .files } else { page = .bases }; reload() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { confirmName() }
+    private func confirmName() -> Bool {
+        guard page == .name, nameChanged else { return true }
+        let alert = NSAlert(); alert.messageText = "放弃未保存的知识库名称？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }; nameChanged = false; page = .bases; updatePage(); return true
+    }
+    func controlTextDidChange(_ notification: Notification) { if notification.object as? NSTextField === baseName { nameChanged = true } }
+    @objc private func nameScopeChanged() { nameChanged = true }
     func windowWillClose(_ notification: Notification) { job?.cancel(); previewJob?.cancel() }
     @objc private func filterChanged() { reload() }
+    func checkState() -> [String: Any] {
+        guard AgentKnowledgePageHost.readbackEnabled else { return [:] }
+        return ["page": String(describing: page), "bases": baseRows.map { ["id": $0.id, "name": $0.name, "archived": $0.archived] as [String: Any] }, "files": fileRows.map { ["id": $0.id, "name": $0.file.name, "hash": $0.file.sha256, "archived": $0.archived] as [String: Any] }, "baseID": baseID ?? "", "sourceID": sourceID ?? "", "preview": selectedText, "name": baseName.stringValue, "dirty": nameChanged, "state": state.stringValue, "busy": busy]
+    }
+    func checkSelect(base id: String, source: String? = nil) async -> Bool {
+        guard CommandLine.arguments.contains("--knowledge-page-check") else { return false }; reload()
+        guard let row = baseRows.firstIndex(where: { $0.id == id }) else { return false }
+        bases.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification, object: bases))
+        if let source {
+            guard let row = fileRows.firstIndex(where: { $0.id == source }) else { return false }
+            files.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); await previewJob?.value
+        }
+        return source == nil ? page == .files : page == .document && !selectedText.isEmpty
+    }
+    func checkGoBack() { if CommandLine.arguments.contains("--knowledge-page-check") { goBack() } }
+    func checkOpenAlreadySelectedSource() async -> Bool {
+        guard CommandLine.arguments.contains("--knowledge-page-check"), sourceID != nil else { return false }
+        page = .files; reloadFiles()
+        guard files.selectedRow >= 0, let action = files.action, NSApp.sendAction(action, to: files.target, from: files) else { return false }
+        await previewJob?.value; return page == .document && !selectedText.isEmpty
+    }
+    func checkNameOperations() throws -> [String: Bool] {
+        guard CommandLine.arguments.contains("--knowledge-page-check") else { return [:] }
+        var checks: [String: Bool] = [:]
+        newBase(); baseName.stringValue = "页内创建的资料"; nameChanged = true; baseScope.selectItem(at: 0); saveBaseName()
+        guard let created = selectedBase else { throw PetError("页内创建未保存") }
+        checks["inlineLibraryCreationUsesRealCatalog"] = page == .files && created.name == "页内创建的资料" && !nameChanged
+        renameBase(); baseName.stringValue = "页内重命名的资料"; nameChanged = true; saveBaseName()
+        checks["inlineRenamePersistsWithoutFormModal"] = try store.knowledge.document().0.bases.first(where: { $0.id == created.id })?.name == "页内重命名的资料" && page == .files
+        renameBase(); baseName.stringValue = "应当保留的冲突草稿"; nameChanged = true
+        _ = try store.knowledge.create(name: "另一次实际目录变更", workspace: nil); saveBaseName()
+        checks["staleRenameKeepsDraftAndCurrentCatalog"] = try page == .name && nameChanged && baseName.stringValue == "应当保留的冲突草稿" && store.knowledge.document().0.bases.first(where: { $0.id == created.id })?.name == "页内重命名的资料"
+        cancelBaseName(); reload(); archiveBase()
+        checks["softRemovedLibraryRetainsOriginalEntry"] = try store.knowledge.document().0.bases.first(where: { $0.id == created.id })?.archived == true
+        archived.state = .on; reload(); baseID = created.id; reloadFiles(); archiveBase()
+        checks["restoredLibraryKeepsIdentityAndName"] = try store.knowledge.document().0.bases.first(where: { $0.id == created.id }).map { !$0.archived && $0.name == "页内重命名的资料" } == true
+        archived.state = .off; page = .bases; reload(); return checks
+    }
     private func reload() {
         do {
             (catalog, revision) = try store.knowledge.document()
@@ -75,18 +144,20 @@ import UniformTypeIdentifiers
             if !baseRows.contains(where: { $0.id == baseID }) { baseID = baseRows.first?.id }
             bases.delegate = nil; bases.reloadData(); bases.deselectAll(nil)
             if let i = baseRows.firstIndex(where: { $0.id == baseID }) { bases.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; bases.delegate = self
+            if page == .bases { bases.delegate = nil; bases.deselectAll(nil); bases.delegate = self }
             reloadFiles()
             state.stringValue = "\(baseRows.count) 个知识库"
+            updatePage()
         } catch { state.stringValue = error.localizedDescription; setBusy(false) }
     }
     private func reloadFiles() {
         fileRows = catalog.sources.filter { $0.baseID == baseID && (archived.state == .on || !$0.archived) && (fileSearch.stringValue.isEmpty || $0.file.name.localizedCaseInsensitiveContains(fileSearch.stringValue)) }
-        if !fileRows.contains(where: { $0.id == sourceID }) { sourceID = fileRows.first?.id }
+        if !fileRows.contains(where: { $0.id == sourceID }) { sourceID = nil; if page == .document { page = .files } }
         files.delegate = nil; files.reloadData(); files.deselectAll(nil)
         if let i = fileRows.firstIndex(where: { $0.id == sourceID }) { files.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; files.delegate = self
         heading.stringValue = selectedBase.map { $0.name + " · " + ($0.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "用户") + ($0.archived ? " · 已移除" : "") } ?? "知识库"
         heading.toolTip = selectedBase?.workspace
-        part.stringValue = "1"; setBusy(busy); loadPreview()
+        part.stringValue = "1"; setBusy(busy); if page == .document { loadPreview() }; updatePage()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === bases ? baseRows.count : fileRows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -94,14 +165,18 @@ import UniformTypeIdentifiers
         if tableView === bases { let value = baseRows[row]; title = value.name; detail = (value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "用户") + (value.archived ? " · 已移除" : "") }
         else { let value = fileRows[row]; title = value.file.name; detail = ByteCountFormatter.string(fromByteCount: Int64(value.file.bytes), countStyle: .file) + (value.archived ? " · 已移除" : "") }
         let name = NSTextField(labelWithString: title), metadata = NSTextField(labelWithString: detail)
-        name.font = .systemFont(ofSize: 12, weight: .medium); metadata.font = .systemFont(ofSize: 10); metadata.textColor = AgentWorkbenchTheme.secondaryText
+        name.font = .systemFont(ofSize: 13, weight: .medium); metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText
         for label in [name, metadata] { label.lineBreakMode = .byTruncatingMiddle }
         let cell = NSStackView(views: [name, metadata]); cell.orientation = .vertical; cell.alignment = .leading; cell.spacing = 3; cell.setAccessibilityLabel(title + "，" + detail); return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         if notification.object as? NSTableView === bases {
-            baseID = baseRows.indices.contains(bases.selectedRow) ? baseRows[bases.selectedRow].id : nil; sourceID = nil; reloadFiles()
-        } else { sourceID = fileRows.indices.contains(files.selectedRow) ? fileRows[files.selectedRow].id : nil; part.stringValue = "1"; setBusy(busy); loadPreview() }
+            guard baseRows.indices.contains(bases.selectedRow) else { return }; baseID = baseRows[bases.selectedRow].id; sourceID = nil; page = .files; reloadFiles()
+        } else { openSelectedFile() }
+    }
+    @objc private func openSelectedFile() {
+        guard page == .files, fileRows.indices.contains(files.selectedRow) else { return }
+        sourceID = fileRows[files.selectedRow].id; page = .document; part.stringValue = "1"; setBusy(busy); updatePage(); loadPreview()
     }
     private func setBusy(_ value: Bool) {
         busy = value
@@ -136,30 +211,30 @@ import UniformTypeIdentifiers
             preview.textStorage?.setAttributedString(NativeMarkdown.render(selectedText, font: .systemFont(ofSize: 13), color: .labelColor, paragraph: style))
         } else { preview.textStorage?.setAttributedString(NSAttributedString(string: selectedText, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor])) }
     }
-    private func askName(title: String, current: String, includeScope: Bool = false) -> (String, Bool)? {
-        let alert = NSAlert(); alert.messageText = title; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
-        let name = NSTextField(string: current); name.placeholderString = "知识库名称"; name.setAccessibilityLabel("知识库名称")
-        let picker = NSPopUpButton(); picker.addItems(withTitles: ["用户", "当前工作区"]); picker.autoenablesItems = false; picker.item(at: 1)?.isEnabled = workspace != nil; picker.setAccessibilityLabel("生效范围")
-        let fields = NSStackView(views: includeScope ? [name, picker] : [name]); fields.orientation = .vertical; fields.alignment = .leading; fields.spacing = 10; fields.frame = NSRect(x: 0, y: 0, width: 330, height: includeScope ? 75 : 32)
-        name.translatesAutoresizingMaskIntoConstraints = false; name.widthAnchor.constraint(equalToConstant: 330).isActive = true; alert.accessoryView = fields
-        alert.window.initialFirstResponder = name
-        return alert.runModal() == .alertFirstButtonReturn ? (name.stringValue, picker.indexOfSelectedItem == 1) : nil
+    private func editBaseName(_ base: AgentKnowledgeBase?) {
+        editingBaseID = base?.id; editingWorkspace = workspace; baseName.stringValue = base?.name ?? ""; baseScope.selectItem(at: base?.workspace == nil ? 0 : 1); baseScope.isEnabled = base == nil; nameChanged = false
+        page = .name; updatePage(); presentingWindow?.makeFirstResponder(baseName)
     }
-    @objc private func newBase() {
-        guard let (name, scoped) = askName(title: "新建知识库", current: "", includeScope: true) else { return }
-        do { let base = try store.knowledge.create(name: name, workspace: scoped ? workspace : nil); baseID = base.id; sourceID = nil; archived.state = .off; baseSearch.stringValue = ""; scope.selectItem(at: 0); reload() } catch { state.stringValue = error.localizedDescription }
-    }
-    @objc private func renameBase() {
-        guard let base = selectedBase, let (name, _) = askName(title: "重命名知识库", current: base.name) else { return }
-        do { try store.knowledge.rename(base.id, name: name, expected: revision); reload() } catch { state.stringValue = error.localizedDescription }
+    @objc private func newBase() { editBaseName(nil) }
+    @objc private func renameBase() { if let base = selectedBase { editBaseName(base) } }
+    @objc private func cancelBaseName() { nameChanged = false; page = editingBaseID == nil ? .bases : .files; updatePage() }
+    @objc private func saveBaseName() {
+        do {
+            if let editingBaseID { try store.knowledge.rename(editingBaseID, name: baseName.stringValue, expected: revision); baseID = editingBaseID }
+            else {
+                if baseScope.indexOfSelectedItem == 1 { guard editingWorkspace != nil, workspace == editingWorkspace else { throw PetError("工作区已变化，名称草稿已保留；请返回后重新选择范围") } }
+                let base = try store.knowledge.create(name: baseName.stringValue, workspace: baseScope.indexOfSelectedItem == 1 ? editingWorkspace : nil); baseID = base.id; sourceID = nil; archived.state = .off; baseSearch.stringValue = ""; scope.selectItem(at: 0)
+            }
+            nameChanged = false; page = .files; reload(); state.stringValue = "已保存"
+        } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func archiveBase() {
         guard let base = selectedBase else { return }
-        do { try store.knowledge.archive(base: base.id, archived: !base.archived, expected: revision); reload() } catch { state.stringValue = error.localizedDescription }
+        do { try store.knowledge.archive(base: base.id, archived: !base.archived, expected: revision); page = .bases; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func archiveFile() {
         guard let source = selectedSource else { return }
-        do { try store.knowledge.archive(source: source.id, archived: !source.archived, expected: revision); reload() } catch { state.stringValue = error.localizedDescription }
+        do { try store.knowledge.archive(source: source.id, archived: !source.archived, expected: revision); page = .files; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func addFiles() { importFiles(replacing: nil) }
     @objc private func replaceFile() { importFiles(replacing: sourceID) }

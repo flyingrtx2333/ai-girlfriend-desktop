@@ -1,9 +1,10 @@
 import AppKit
 
-@MainActor final class AgentWikiPlanWindow: NSWindowController, NSWindowDelegate, NSTextViewDelegate {
+@MainActor final class AgentWikiPlanWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
     private let files: AgentFiles, storage: URL, editor = AgentMarkdownTextView(), status = NSTextField(labelWithString: ""), save = NSButton(title: "保存", target: nil, action: nil)
     private var snapshot: AgentWikiPlan.Snapshot, dirty = false
     private let canWrite: () -> Bool
+    var hasUnsavedChanges: Bool { dirty }
     init(workspace: String, storage: URL, canWrite: @escaping () -> Bool) throws {
         files = try AgentFiles(workspace: workspace); self.storage = storage; self.canWrite = canWrite; snapshot = try AgentWikiPlan.load(files: files, validate: false)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 570), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -13,11 +14,12 @@ import AppKit
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 14, height: 12); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
         editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("Wiki 规划 YAML")
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true
+        editor.drawsBackground = false; editor.textColor = .labelColor; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let reload = NSButton(title: "重新载入", target: self, action: #selector(reload)), close = NSButton(title: "关闭", target: self, action: #selector(closePlan))
         save.target = self; save.action = #selector(savePlan); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; save.isEnabled = canWrite()
         status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingMiddle; status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [status, NSView(), reload, close, save]); actions.spacing = 8
-        let content = NSView(); window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         for child in [scroll, actions] { content.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: content.topAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), scroll.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])
         status.stringValue = snapshot.problem ?? snapshot.path ?? AgentWikiPlan.configurationPath
@@ -44,15 +46,20 @@ import AppKit
     private func canLeave() -> Bool {
         guard dirty else { return true }
         let alert = NSAlert(); alert.messageText = "放弃未保存的规划？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        return alert.runModal() == .alertSecondButtonReturn
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }
+        editor.string = snapshot.text; dirty = false; return true
     }
     @objc private func reload() {
         guard canLeave() else { return }
         do { snapshot = try AgentWikiPlan.load(files: files, validate: false); editor.string = snapshot.text; editor.undoManager?.removeAllActions(); dirty = false; status.stringValue = snapshot.problem ?? snapshot.path ?? AgentWikiPlan.configurationPath }
         catch { status.stringValue = error.localizedDescription }
     }
-    @objc private func closePlan() { window?.performClose(nil) }
+    @objc private func closePlan() { if onSettingsClose != nil { close() } else { window?.performClose(nil) } }
     func confirmClosing() -> Bool { canLeave() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }
-    var checkState: [String: Any] { guard CommandLine.arguments.contains("--wiki-plan-check") else { return [:] }; return ["draft": editor.string, "dirty": dirty, "state": status.stringValue, "source": snapshot.path ?? "", "openedHash": snapshot.hash ?? "", "editable": editor.isEditable, "saveEnabled": save.isEnabled] }
+    var checkState: [String: Any] { guard CommandLine.arguments.contains("--wiki-plan-check") || AgentKnowledgePageHost.readbackEnabled else { return [:] }; return ["draft": editor.string, "dirty": dirty, "state": status.stringValue, "source": snapshot.path ?? "", "openedHash": snapshot.hash ?? "", "editable": editor.isEditable, "saveEnabled": save.isEnabled] }
+    func checkEdit(_ value: String, save: Bool = true) {
+        guard CommandLine.arguments.contains("--knowledge-page-check") else { return }
+        editor.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); if save { savePlan() }
+    }
 }

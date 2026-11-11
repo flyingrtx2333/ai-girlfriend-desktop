@@ -268,7 +268,7 @@ import AppKit
 
 // Source citations stay inside a read-only native viewer. Opening a document
 // never grants a new workspace or executes a URL scheme from its contents.
-@MainActor final class AgentMarkdownSourceWindow: NSWindowController, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentMarkdownSourceWindow: AgentSettingsPageController, NSTextViewDelegate, NSWindowDelegate {
     private let files: AgentFiles, reader = AgentMarkdownReader(), text = AgentMarkdownTextView(), label = NSTextField(labelWithString: "")
     private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
     private lazy var sourceSelection = AgentMarkdownSelectionAction(text: text, button: sourceAdd) { [weak self] in guard let self, !self.scroll.isHidden, let file = self.file else { return nil }; return (file, self.files.root.path) }
@@ -285,16 +285,19 @@ import AppKit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "来源"; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let view = NSView(); window.contentView = view
+        let view = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = view
         text.isEditable = false; text.isRichText = false; text.delegate = self; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.textContainerInset = NSSize(width: 16, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("来源原文")
         scroll.documentView = text; scroll.hasVerticalScroller = true
+        text.drawsBackground = false; text.textColor = .labelColor; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         label.lineBreakMode = .byTruncatingMiddle; label.font = .systemFont(ofSize: 12)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         back.target = self; back.action = #selector(goBack); mode.target = self; mode.action = #selector(switchMode); mode.selectedSegment = 0
         reload.target = self; reload.action = #selector(refreshFile)
         AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding)
         reader.onLink = { [weak self] url in self?.follow(url) }
-        let toolbar = NSStackView(views: [back, label, NSView(), sourceAdd, reload, mode]); toolbar.spacing = 8; sourceSelection.update()
+        let location = NSStackView(views: [back, label, NSView(), reload]), actions = NSStackView(views: [mode, NSView(), sourceAdd])
+        let toolbar = NSStackView(views: [location, actions]); toolbar.orientation = .vertical; toolbar.alignment = .leading; toolbar.spacing = 8
+        for row in [location, actions] { row.spacing = 8; row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true }; sourceSelection.update()
         for child in [toolbar, scroll, reader, encodingMenu] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 12), toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: encodingMenu.topAnchor, constant: -8), reader.topAnchor.constraint(equalTo: scroll.topAnchor), reader.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), reader.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), reader.bottomAnchor.constraint(equalTo: scroll.bottomAnchor)])
         try open(target)
@@ -351,7 +354,7 @@ import AppKit
     func windowWillClose(_ notification: Notification) { videoWindow?.close(); videoWindow = nil; reader.clear(); text.string = "" }
     @objc private func refreshFile() { guard let file else { return }; do { try open(file, remember: false) } catch { label.stringValue = error.localizedDescription } }
     var encodingCheckState: [String: Any] {
-        guard CommandLine.arguments.contains("--text-encoding-check") else { return [:] }
+        guard CommandLine.arguments.contains("--text-encoding-check") || AgentKnowledgePageHost.readbackEnabled else { return [:] }
         return ["editable": text.isEditable, "encoding": currentFormat?.encoding.rawValue ?? "", "byteOrderMark": currentFormat?.bom ?? false, "textHash": AgentFiles.hash(Data(text.string.utf8)), "file": file?.path ?? ""]
     }
     @objc private func goBack() {

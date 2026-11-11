@@ -83,7 +83,9 @@ final class FormDocumentView: NSView {
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
-    private let chat = NSView(), settings = NSView(), attentionContent = NSView(), automationContent = NSView()
+    private let chat = NSView(), settings = NSView(), attentionContent = NSView(), automationContent = NSView(), knowledgeContent = NSView()
+    private(set) var knowledgePageHost = AgentKnowledgePageHost()
+    private let libraryButton = AgentWorkbenchButton(title: "知识库", target: nil, action: nil), projectKnowledgeButton = AgentWorkbenchButton(title: "项目知识", target: nil, action: nil)
     private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
@@ -271,7 +273,7 @@ final class FormDocumentView: NSView {
                 let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
             }
-            for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings"), (automationButton, selectedTab == "automation")] {
+            for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings"), (automationButton, selectedTab == "automation"), (libraryButton, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library"), (projectKnowledgeButton, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "wiki")] {
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
             }
         }
@@ -416,7 +418,8 @@ final class FormDocumentView: NSView {
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
-        for panel in [chat, settings, attentionContent, automationContent] { panels.addSubview(panel); pin(panel, to: panels) }
+        for panel in [chat, settings, attentionContent, automationContent, knowledgeContent] { panels.addSubview(panel); pin(panel, to: panels) }
+        knowledgeContent.addSubview(knowledgePageHost); pin(knowledgePageHost, to: knowledgeContent)
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbench() {
@@ -460,8 +463,8 @@ final class FormDocumentView: NSView {
             guard let self, let tasks = self.companion?.agentStore else { return false }
             do { try tasks.organization.reorder(id, before: target, mode: mode, grouping: grouping, tasks: tasks.tasks); self.renderAgentMessages(); return true } catch { self.setStatus(error.localizedDescription, error: true); return false }
         }
-        let knowledge = AgentWorkbenchButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge))
-        let library = AgentWorkbenchButton(title: "知识库", target: self, action: #selector(showKnowledgeLibrary))
+        let knowledge = projectKnowledgeButton, library = libraryButton
+        knowledge.target = self; knowledge.action = #selector(showAgentKnowledge); library.target = self; library.action = #selector(showKnowledgeLibrary)
         let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
         settingsNav.tag = 1; settingsNav.target = self; settingsNav.action = #selector(selectTab(_:))
         automationButton.target = self; automationButton.action = #selector(showAutomations)
@@ -500,6 +503,9 @@ final class FormDocumentView: NSView {
         for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
         main.addSubview(attentionContent); pin(attentionContent, to: main)
         main.addSubview(automationContent); pin(automationContent, to: main)
+        main.addSubview(knowledgeContent); pin(knowledgeContent, to: main)
+        knowledgeContent.addSubview(knowledgePageHost); pin(knowledgePageHost, to: knowledgeContent)
+        knowledgePageHost.onRootChange = { [weak self] _ in self?.refreshKnowledgeNavigation() }
         buildWorkbenchConversation()
         headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
@@ -802,6 +808,7 @@ final class FormDocumentView: NSView {
     private func canLeaveMainPage() -> Bool {
         guard attentionPageController?.prepareToClose() != false else { return false }
         if selectedTab == "automation", automationWindow?.prepareToLeave() == false { return false }
+        if selectedTab == "knowledge", !knowledgePageHost.prepareToLeave() { return false }
         return settingsPageHost.leave()
     }
     @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
@@ -1175,9 +1182,9 @@ final class FormDocumentView: NSView {
         if window?.isVisible != true { refreshPreferences() }
         if tab == "settings", selectedTab != "settings" {
             settingsReturnTab = selectedTab
-            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : selectedTab == "automation" ? "返回自动化" : "返回对话"
+            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : selectedTab == "automation" ? "返回自动化" : selectedTab == "knowledge" ? "返回知识中心" : "返回对话"
         }
-        selectedTab = ["settings", "attention", "automation"].contains(tab) ? tab : "chat"; changeTab()
+        selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab()
         renderMessages()
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -1188,8 +1195,9 @@ final class FormDocumentView: NSView {
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
         if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
-        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"; automationContent.isHidden = selectedTab != "automation"
+        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"; automationContent.isHidden = selectedTab != "automation"; knowledgeContent.isHidden = selectedTab != "knowledge"
         taskSidebar.setMainPage(selectedTab)
+        refreshKnowledgeNavigation()
         AgentWorkbenchTheme.color(automationButton.layer, selectedTab == "automation" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
@@ -1502,6 +1510,7 @@ final class FormDocumentView: NSView {
     }
     func windowWillClose(_ notification: Notification) {
         settingsPageHost.finish()
+        knowledgePageHost.finish()
         stopTaskTerminals()
         if let panel = mcpInputPanel {
             try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
@@ -1521,13 +1530,25 @@ final class FormDocumentView: NSView {
     func closeOwnedTaskPanels() -> Bool {
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
+        guard knowledgePageHost.prepareToLeave() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
+        knowledgePageHost.finish()
         return true
     }
-    func requireTaskDeletionAllowed(_ ids: Set<String>) throws { try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids) }
-    func closeDeletedTaskRecords(_ ids: Set<String>) { recordWindow?.closeDeletedTask(ids) }
+    func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
+        try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
+        for page in knowledgePageHost.controllers {
+            if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
+            if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
+            if let library = page as? AgentKnowledgeLibraryWindow, library.boundTaskID.map(ids.contains) == true, library.hasPendingChanges { throw PetError("请先保存知识库名称或等待文件操作结束") }
+        }
+    }
+    func closeDeletedTaskRecords(_ ids: Set<String>) {
+        recordWindow?.closeDeletedTask(ids)
+        if knowledgePageHost.controllers.contains(where: { ($0 as? AgentRecordWindow)?.belongsToTasks(ids) == true || ($0 as? AgentKnowledgeCardWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeLibraryWindow)?.boundTaskID.map(ids.contains) == true }) { knowledgePageHost.finish() }
+    }
     func checkAttentionNavigation() throws -> [String: Any] {
         guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore, let id = agentTaskID else { throw PetError("需要我页面未初始化") }
         var checks: [String: Bool] = [:], frames: [String: Any] = [:]
@@ -2105,30 +2126,47 @@ final class FormDocumentView: NSView {
         gitWindow = AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
         gitWindow?.showWindow(nil); gitWindow?.window?.makeKeyAndOrderFront(nil)
     }
-    @objc func showAgentKnowledge() {
-        guard let store = companion?.agentStore else { return }
-        if repoWikiWindow == nil {
-            repoWikiWindow = AgentRepoWikiWindow(store: store)
-            repoWikiWindow?.onOpen = { [weak self] project, language, action in
-                guard let self else { throw PetError("任务窗口已关闭") }; try self.openRepoWikiProject(project, language: language, action: action)
-            }
-        } else { repoWikiWindow?.reload() }
-        repoWikiWindow?.showWindow(nil); repoWikiWindow?.window?.makeKeyAndOrderFront(nil)
+    private func refreshKnowledgeNavigation() {
+        AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
+        AgentWorkbenchTheme.color(projectKnowledgeButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "wiki" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
     }
+    internal func knowledgePageReadback() async -> [String: Any] {
+        guard AgentKnowledgePageHost.readbackEnabled else { return [:] }
+        var value = knowledgePageHost.checkState(); value["selectedTask"] = agentTaskID ?? ""; value["mainPage"] = selectedTab
+        for controller in knowledgePageHost.controllers {
+            if let library = controller as? AgentKnowledgeLibraryWindow { value["library"] = library.checkState() }
+            if let catalog = controller as? AgentRepoWikiWindow { value["wikiCatalog"] = catalog.checkState }
+            if let cards = controller as? AgentKnowledgeCardWindow { value["cards"] = cards.checkState() }
+            if let index = controller as? AgentKnowledgeWindow { value["index"] = index.checkState() }
+            if let reader = controller as? AgentRecordWindow { value["wikiReader"] = await reader.markdownEditingReadback() }
+            if let plan = controller as? AgentWikiPlanWindow { value["wikiPlan"] = plan.checkState }
+            if let source = controller as? AgentMarkdownSourceWindow { value["source"] = source.encodingCheckState }
+        }; return value
+    }
+    @discardableResult private func showKnowledgeCenter(root: String) -> Bool {
+        guard let store = companion?.agentStore, saveAgentDraft() else { return false }
+        if selectedTab != "knowledge", !canLeaveMainPage() { return false }
+        let sourceID = agentTaskID
+        guard knowledgePageHost.show(root: root, identity: sourceID ?? "standalone", make: { [weak self, weak store] kind in
+            guard let self, let store else { return nil }
+            if kind == "library" { let manager = AgentKnowledgeLibraryWindow(store: store, taskID: sourceID); self.knowledgeLibraryWindow = manager; return manager }
+            let manager = AgentRepoWikiWindow(store: store)
+            manager.onOpen = { [weak self] project, language, action in guard let self else { throw PetError("任务窗口已关闭") }; try self.openRepoWikiProject(project, language: language, action: action) }
+            self.repoWikiWindow = manager; return manager
+        }) else { return false }
+        sidebarRequested = true; show(tab: "knowledge"); return true
+    }
+    @objc internal func showAgentKnowledge() { _ = showKnowledgeCenter(root: "wiki") }
     private func openRepoWikiProject(_ project: AgentRepoWikiProject, language: String, action: String) throws {
         guard let store = companion?.agentStore, ["wiki", "cards", "search"].contains(action), ["zh", "en"].contains(language) else { throw PetError("项目操作无效") }
         let files = try AgentFiles(workspace: project.workspace)
         _ = try AgentProjectIndex(workspace: files.root.path, storage: store.directory)
-        if action == "wiki", let existing = recordWindow {
-            existing.window?.performClose(nil)
-            guard existing.window?.isVisible != true else { throw PetError("请先保存或撤回已打开文档的修改") }; recordWindow = nil
-        }
         let candidates = store.tasks.filter { task in !task.archived && task.agent == nil && task.team == nil && task.automation == nil && !task.isProjectDocumentation && task.kind != "hook" && task.workspace.map { URL(fileURLWithPath: $0).standardizedFileURL.path == files.root.path } == true }
         let preferred = candidates.first { $0.id == project.taskID } ?? candidates.max { $0.updated < $1.updated }
         let id: String
         if let source = preferred.flatMap({ store.task($0.id) }), try AgentFiles(workspace: source.workspace).root == files.root { id = source.id }
         else {
-            saveAgentDraft(); if let displayedTask { try store.save(displayedTask) }
+            guard saveAgentDraft() else { throw PetError("请先保存当前任务草稿") }; if let displayedTask { try store.save(displayedTask) }
             let previous = store.selectedID
             id = store.create(title: "项目知识 · " + project.name, workspace: files.root.path, workMode: project.mode)
             store.selectedID = previous
@@ -2138,59 +2176,74 @@ final class FormDocumentView: NSView {
         switch action {
         case "wiki":
             if store.task(id)?.wikiLanguage != language { store.update(id) { $0.wikiLanguage = language }; try store.save(id) }
-            presentAgentRecords(section: 6, taskID: id)
+            pushKnowledgeWiki(taskID: id)
         case "cards": showKnowledgeCards(taskID: id, language: language)
         default: showProjectIndex(taskID: id)
         }
     }
     private func showProjectIndex(taskID id: String) {
-        guard let store = companion?.agentStore, store.task(id) != nil else { return }
-        knowledgeWindow?.window?.performClose(nil); knowledgeWindow = AgentKnowledgeWindow(store: store, taskID: id)
-        knowledgeWindow?.onOpenWiki = { [weak self] in self?.presentAgentRecords(section: 6, taskID: id) }
-        knowledgeWindow?.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
-        knowledgeWindow?.showWindow(nil); knowledgeWindow?.window?.makeKeyAndOrderFront(nil)
+        guard let store = companion?.agentStore, store.task(id) != nil, showKnowledgeCenter(root: "wiki") else { return }
+        let manager = AgentKnowledgeWindow(store: store, taskID: id)
+        manager.onOpenWiki = { [weak self] in self?.pushKnowledgeWiki(taskID: id) }
+        manager.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
+        manager.onOpenSource = { [weak self, weak store] url in
+            guard let self, let store else { throw PetError("任务窗口已关闭") }
+            let files = try AgentFiles(workspace: store.task(id)?.workspace), safe = try files.resolve(url.path)
+            guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能打开受保护的来源") }
+            let text = try files.read(safe.path, offset: 1, limit: 10_000)
+            knowledgePageHost.push(AgentKnowledgeSourcePage(title: files.relative(safe), text: text, file: safe))
+        }
+        knowledgeWindow = manager; knowledgePageHost.push(manager)
+    }
+    private func pushKnowledgeWiki(taskID id: String) {
+        guard let store = companion?.agentStore, showKnowledgeCenter(root: "wiki") else { return }
+        let manager = preparedRecord(store: store, taskID: id, section: 6, wikiOnly: true)
+        manager.window?.title = (store.task(id)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目") + " · Repo Wiki"
+        knowledgePageHost.push(manager)
     }
     internal func showKnowledgeCards(taskID: String, language: String? = nil) {
-        guard let store = companion?.agentStore, store.task(taskID)?.workspace != nil else { return }
-        if let existing = knowledgeCardWindow { existing.window?.performClose(nil); if existing.window?.isVisible == true { return } }
-        knowledgeWindow?.window?.performClose(nil)
+        guard let store = companion?.agentStore, store.task(taskID)?.workspace != nil, showKnowledgeCenter(root: "wiki") else { return }
         if let language, let workspace = store.task(taskID)?.workspace {
             do { var options = try store.knowledgeCards.options(workspace: workspace); if options.language != language { options.language = language; try store.knowledgeCards.setOptions(options, workspace: workspace, expected: store.knowledgeCards.settings().1) } }
             catch { setStatus(error.localizedDescription, error: true); return }
         }
-        knowledgeCardWindow = AgentKnowledgeCardWindow(store: store, taskID: taskID)
-        knowledgeCardWindow?.onOpenTask = { [weak self] id in self?.showAgentTask(id) }
-        knowledgeCardWindow?.showWindow(nil); knowledgeCardWindow?.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentKnowledgeCardWindow(store: store, taskID: taskID)
+        manager.onOpenTask = { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
+        knowledgeCardWindow = manager; knowledgePageHost.push(manager)
     }
-    internal func refreshKnowledgeCards(workspace: String) { knowledgeCardWindow?.refresh(workspace: workspace); scheduleRender() }
-    @objc func showKnowledgeLibrary() {
-        guard let store = companion?.agentStore else { return }
-        knowledgeLibraryWindow?.window?.performClose(nil)
-        knowledgeLibraryWindow = AgentKnowledgeLibraryWindow(store: store, taskID: agentTaskID)
-        knowledgeLibraryWindow?.showWindow(nil); knowledgeLibraryWindow?.window?.makeKeyAndOrderFront(nil)
+    internal func refreshKnowledgeCards(workspace: String) {
+        knowledgePageHost.controllers.compactMap { $0 as? AgentKnowledgeCardWindow }.forEach { $0.refresh(workspace: workspace) }; scheduleRender()
     }
+    @objc internal func showKnowledgeLibrary() { _ = showKnowledgeCenter(root: "library") }
     @objc func openAgentMemory() { companion?.ensureAgent(); showSettingsCategory("memory") }
     @objc func openAttentionSettings() { showSettingsCategory("attention") }
     private func openAgentRecordItem(section: Int, value: String) {
         if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
-        presentAgentRecords(section: section); recordWindow?.selectItem(section: section, value: value)
+        presentAgentRecords(section: section)
+        if section == 6 { (knowledgePageHost.currentController as? AgentRecordWindow)?.selectItem(section: section, value: value) }
+        else { recordWindow?.selectItem(section: section, value: value) }
     }
     func presentAgentRecords(section: Int, taskID: String? = nil) {
         guard let store = companion?.agentStore, let id = taskID ?? agentTaskID else { return }
+        if section == 6 { pushKnowledgeWiki(taskID: id); return }
         if let existing = recordWindow {
             existing.window?.performClose(nil)
             if existing.window?.isVisible == true { return }
         }
-        recordWindow = AgentRecordWindow(store: store, taskID: id, section: section)
-        recordWindow?.onAddSelection = { [weak self] selection in
+        recordWindow = preparedRecord(store: store, taskID: id, section: section)
+        recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+    }
+    private func preparedRecord(store: AgentStore, taskID id: String, section: Int, wikiOnly: Bool = false) -> AgentRecordWindow {
+        let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly)
+        record.onAddSelection = { [weak self] selection in
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
-        recordWindow?.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
-        recordWindow?.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
-        if let runtime = companion?.agentRuntime { recordWindow?.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID) } }
-        recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
+        record.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
+        record.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
+        if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
+        return record
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,
@@ -2296,6 +2349,7 @@ final class FormDocumentView: NSView {
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
+        knowledgePageHost.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }
         repoWikiWindow?.refreshLiveState()
         archivedTasksView?.refresh()
         refreshAutomationBadge()
@@ -2662,7 +2716,11 @@ extension ControlWindow {
     }
     func prepareMarkdownCheck(taskID: String, section: Int = 6, value: String? = nil) -> AgentRecordWindow? {
         guard companion?.checkDirectory != nil else { return nil }
-        selectAgentTask(taskID); show(tab: "chat"); presentAgentRecords(section: section)
+        selectAgentTask(taskID); show(tab: "chat")
+        guard let store = companion?.agentStore else { return nil }
+        recordWindow?.window?.performClose(nil)
+        if recordWindow?.window?.isVisible == true { return nil }
+        recordWindow = preparedRecord(store: store, taskID: taskID, section: section); recordWindow?.showWindow(nil); recordWindow?.window?.makeKeyAndOrderFront(nil)
         if let value { recordWindow?.selectItem(section: section, value: value) }; return recordWindow
     }
     func prepareExtensionCheckWindow(taskID: String, manager: Bool) {
@@ -2774,8 +2832,9 @@ extension ControlWindow {
         var value = repoWikiWindow?.checkState ?? [:]
         value["selectedTask"] = agentTaskID as Any? ?? NSNull(); value["draft"] = composer.string
         value["tasks"] = companion?.agentStore?.tasks.map { ["id": $0.id, "workspace": $0.workspace as Any? ?? NSNull(), "kind": $0.kind as Any? ?? NSNull()] as [String: Any] } ?? []
-        value["projectSearchOpen"] = knowledgeWindow?.window?.isVisible == true
-        if let recordWindow, recordWindow.window?.isVisible == true { value["document"] = await recordWindow.markdownEditingReadback() }
+        value["projectSearchOpen"] = knowledgeWindow?.isPageVisible == true
+        if let record = knowledgePageHost.currentController as? AgentRecordWindow { value["document"] = await record.markdownEditingReadback() }
+        else if let recordWindow, recordWindow.window?.isVisible == true { value["document"] = await recordWindow.markdownEditingReadback() }
         return value
     }
     func refreshDataImport() { dataImportView?.refresh() }

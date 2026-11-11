@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentKnowledgeCardWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
+@MainActor final class AgentKnowledgeCardWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
     let store: AgentStore, taskID: String
     let search = NSSearchField(), category = NSPopUpButton(), language = NSPopUpButton()
     let automatic = NSButton(checkboxWithTitle: "自动更新", target: nil, action: nil)
@@ -40,7 +40,10 @@ import AppKit
         let more = NSPopUpButton(frame: .zero, pullsDown: true); more.addItem(withTitle: "更多")
         for (title, action) in [("刷新", #selector(reloadCards)), ("导入项目卡片…", #selector(importCards)), ("导出到项目", #selector(exportCards)), ("恢复版本…", #selector(restoreVersion))] { let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; more.menu?.addItem(item) }
         more.autoenablesItems = false; more.setAccessibilityLabel("知识卡片操作")
-        let header = row([search, category, language, generate, more]), options = row([automatic, exporting, citation, NSView(), taskButton])
+        let query = row([search, category]), actions = row([language, NSView(), generate, more])
+        let header = NSStackView(views: [query, actions]); header.orientation = .vertical; header.alignment = .leading; header.spacing = 10
+        for item in [query, actions] { item.widthAnchor.constraint(equalTo: header.widthAnchor).isActive = true }
+        let options = row([automatic, exporting, citation, NSView(), taskButton])
         let editHeader = row([titleField, format, save]), sourceRow = row([sources, open])
         for view in [header, options, scopeLabel, focus, list, editHeader, viewer, sourceRow, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -48,13 +51,16 @@ import AppKit
             options.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10), options.leadingAnchor.constraint(equalTo: header.leadingAnchor), options.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             scopeLabel.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 10), scopeLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor), scopeLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor),
             focus.topAnchor.constraint(equalTo: scopeLabel.bottomAnchor, constant: 10), focus.leadingAnchor.constraint(equalTo: header.leadingAnchor), focus.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            list.topAnchor.constraint(equalTo: focus.bottomAnchor, constant: 14), list.leadingAnchor.constraint(equalTo: header.leadingAnchor), list.widthAnchor.constraint(equalToConstant: 230), list.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -14),
-            editHeader.topAnchor.constraint(equalTo: list.topAnchor), editHeader.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 14), editHeader.trailingAnchor.constraint(equalTo: header.trailingAnchor), titleField.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            list.topAnchor.constraint(equalTo: focus.bottomAnchor, constant: 14), list.leadingAnchor.constraint(equalTo: header.leadingAnchor), list.widthAnchor.constraint(equalToConstant: 165), list.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -14),
+            editHeader.topAnchor.constraint(equalTo: list.topAnchor), editHeader.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 14), editHeader.trailingAnchor.constraint(equalTo: header.trailingAnchor), titleField.widthAnchor.constraint(greaterThanOrEqualToConstant: 60),
             viewer.topAnchor.constraint(equalTo: editHeader.bottomAnchor, constant: 10), viewer.leadingAnchor.constraint(equalTo: editHeader.leadingAnchor), viewer.trailingAnchor.constraint(equalTo: editHeader.trailingAnchor), viewer.bottomAnchor.constraint(equalTo: sourceRow.topAnchor, constant: -10),
-            sourceRow.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), sourceRow.trailingAnchor.constraint(equalTo: viewer.trailingAnchor), sourceRow.bottomAnchor.constraint(equalTo: list.bottomAnchor), sources.widthAnchor.constraint(greaterThanOrEqualToConstant: 180),
+            sourceRow.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), sourceRow.trailingAnchor.constraint(equalTo: viewer.trailingAnchor), sourceRow.bottomAnchor.constraint(equalTo: list.bottomAnchor), sources.widthAnchor.constraint(greaterThanOrEqualToConstant: 100),
             state.leadingAnchor.constraint(equalTo: header.leadingAnchor), state.trailingAnchor.constraint(equalTo: header.trailingAnchor), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
         titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); sources.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
+        for scroll in [list, viewer] { scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; scroll.borderType = .noBorder }
+        table.style = .inset; table.backgroundColor = .clear; preview.drawsBackground = false; preview.textColor = .labelColor
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -65,7 +71,7 @@ import AppKit
     func discard() -> Bool {
         guard dirty else { return true }
         let alert = NSAlert(); alert.messageText = "放弃未保存的卡片编辑？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃编辑")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; render(); return true
     }
     func reload() {
         guard !dirty, let task, let workspace = task.workspace else { if dirty { state.stringValue = "有未保存编辑；保存时核对当前版本" }; return }
@@ -74,7 +80,7 @@ import AppKit
             language.selectItem(at: options.language == "en" ? 1 : 0); automatic.state = options.autoUpdate ? .on : .off; exporting.state = options.autoExport ? .on : .off; citation.state = options.citation ? .on : .off
             let scope = try cards.scope(task)
             (value, revision) = try cards.book(task, language: options.language)
-            let branch = scope.branch.replacingOccurrences(of: "refs/heads/", with: "")
+            let branch = scope.branch == "folder" ? "文件夹" : scope.branch.replacingOccurrences(of: "refs/heads/", with: "")
             scopeLabel.stringValue = URL(fileURLWithPath: scope.root).lastPathComponent + " · " + branch; scopeLabel.toolTip = scope.root
             if focus.stringValue.isEmpty { focus.stringValue = value?.focus ?? "" }
             filter(preferred: previous)
@@ -92,6 +98,10 @@ import AppKit
         guard let task, let scope = try? cards.scope(task) else { return nil }
         return store.tasks.first { $0.kind == AgentKnowledgeCards.kind && $0.workspace == scope.root && $0.knowledgeJob?.branch == scope.branch && $0.knowledgeJob?.language == selectedLanguage && !$0.archived && ([.ready, .running, .waiting].contains($0.status) || cards.finalizing.contains($0.id)) }
     }
+    func checkState() -> [String: Any] {
+        guard AgentKnowledgePageHost.readbackEnabled else { return [:] }
+        return ["taskID": taskID, "language": selectedLanguage, "cards": rows.map { ["id": $0.id, "title": $0.title, "body": $0.body, "manual": $0.manual] as [String: Any] }, "selectedID": selected?.id ?? "", "draft": preview.string, "dirty": dirty, "busy": busy, "state": state.stringValue]
+    }
     func refresh(workspace: String) { if task?.workspace.map({ URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path }) == workspace { reload() } }
     @objc func filterChanged() { guard discard() else { return }; filter(preferred: selected?.id) }
     func filter(preferred: String?) {
@@ -102,6 +112,7 @@ import AppKit
         table.delegate = self; render()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { discard() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let card = rows[row], title = NSTextField(labelWithString: card.title), detail = NSTextField(labelWithString: card.kind.title + (card.manual ? " · 已编辑" : "") + (task?.workspace.map({ cards.fresh(card, workspace: $0) }) == true ? "" : " · 来源已变化"))

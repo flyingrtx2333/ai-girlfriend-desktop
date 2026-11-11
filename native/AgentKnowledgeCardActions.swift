@@ -61,7 +61,7 @@ import AppKit
         }
     }
     @objc func saveCard() {
-        window?.makeFirstResponder(nil)
+        presentingWindow?.makeFirstResponder(nil)
         guard let task, let selected else { return }
         do {
             _ = try cards.replaceCard(task: task, id: selected.id, body: preview.string, title: titleField.stringValue, expectedCard: selected.hash, citations: nil, expectedBook: revision)
@@ -109,10 +109,9 @@ import AppKit
             guard !AgentFiles.sensitive(source.path), try AgentProjectIndex(workspace: task.workspace, storage: store.directory).contains(source.path) else { throw PetError("源码不在当前项目索引中") }
             let current = try files.fileHash(files.resolve(source.path), maximum: 512_000) == source.sha256
             let text = try files.read(source.path, offset: max(1, source.line - 3), limit: min(200, source.endLine - source.line + 10))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 500), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = (current ? "" : "来源已变化 · ") + source.path + ":\(source.line)"; window.center()
-            let scroll = textPreview(text); (scroll.documentView as? NSTextView)?.font = .monospacedSystemFont(ofSize: 12, weight: .regular); window.contentView = scroll
-            sourceWindow?.close(); sourceWindow = NSWindowController(window: window); sourceWindow?.showWindow(nil); window.makeKeyAndOrderFront(nil)
+            sourceWindow?.close()
+            let page = AgentKnowledgeSourcePage(title: (current ? "" : "来源已变化 · ") + source.path + ":\(source.line)", text: text, file: try files.resolve(source.path))
+            sourceWindow = page; presentSettingsChild(page)
         } catch { state.stringValue = error.localizedDescription }
     }
 }

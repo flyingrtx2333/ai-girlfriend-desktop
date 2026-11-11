@@ -9,14 +9,16 @@ import AppKit
     var onSettingsClose: (() -> Void)?
     var presentingWindow: NSWindow? { settingsHostWindow ?? window }
     var pageContentView: NSView? { embeddedContent ?? window?.contentView }
+    var isPageVisible: Bool { pageContentView?.window?.isVisible == true && pageContentView?.isHiddenOrHasHiddenAncestor != true }
 
-    func settingsContent(in host: NSWindow) -> NSView? {
+    func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         guard let content = embeddedContent ?? window?.contentView else { return nil }
         if embeddedContent == nil { window?.contentView = nil; embeddedContent = content }
         settingsHostWindow = host
-        host.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) }
+        if styled { host.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
         return content
     }
+    func pageDidLayout() {}
     func canLeaveSettings() -> Bool {
         guard presentingWindow?.attachedSheet == nil else { return false }
         guard let window else { return true }

@@ -1,12 +1,13 @@
 import AppKit
 
-@MainActor final class AgentKnowledgeWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+@MainActor final class AgentKnowledgeWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let search = NSSearchField(), table = NSTableView(), preview = NSTextView(), state = NSTextField(labelWithString: "")
     private let find = NSButton(title: "检索", target: nil, action: nil), update = NSButton(title: "更新索引", target: nil, action: nil), rebuild = NSButton(title: "重建", target: nil, action: nil), open = NSButton(title: "打开文件", target: nil, action: nil)
     private var hits: [AgentIndexHit] = [], job: Task<Void, Never>?, busy = false
     var onOpenWiki: (() -> Void)?
     var onOpenCards: (() -> Void)?
+    var onOpenSource: ((URL) throws -> Void)?
     init(store: AgentStore, taskID: String) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -17,21 +18,25 @@ import AppKit
         search.target = self; search.action = #selector(searchProject)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 32; table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("项目检索结果")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; table.style = .inset; table.backgroundColor = .clear
         preview.isEditable = false; preview.isRichText = false; preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.textContainerInset = NSSize(width: 12, height: 12)
         let viewer = NSScrollView(); viewer.documentView = preview; viewer.hasVerticalScroller = true
+        preview.drawsBackground = false; preview.textColor = .labelColor
+        for scroll in [list, viewer] { scroll.drawsBackground = false; scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder }
         for button in [find, update, rebuild, open] { button.target = self }
         find.action = #selector(searchProject); update.action = #selector(updateIndex); rebuild.action = #selector(rebuildIndex); open.action = #selector(openSource)
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let wiki = NSButton(title: "Repo Wiki", target: self, action: #selector(openWiki))
         let cards = NSButton(title: "知识卡片", target: self, action: #selector(openCards)); cards.isEnabled = store.task(taskID)?.workspace != nil
-        let header = NSStackView(views: [search, find, update, rebuild, wiki, cards]); header.spacing = 8
+        let query = NSStackView(views: [search, find]), actions = NSStackView(views: [update, rebuild, NSView(), wiki, cards])
+        let header = NSStackView(views: [query, actions]); header.orientation = .vertical; header.alignment = .leading; header.spacing = 10
+        for row in [query, actions] { row.spacing = 8; row.widthAnchor.constraint(equalTo: header.widthAnchor).isActive = true }
         let footer = NSStackView(views: [state, NSView(), open]); footer.spacing = 8; open.isEnabled = false
         for view in [header, list, viewer, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            list.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 220), list.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14),
+            list.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14), list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), list.widthAnchor.constraint(equalToConstant: 165), list.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14),
             viewer.topAnchor.constraint(equalTo: list.topAnchor), viewer.bottomAnchor.constraint(equalTo: list.bottomAnchor), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
@@ -73,6 +78,7 @@ import AppKit
         }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { hits.count }
+    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let hit = hits[row], label = NSTextField(labelWithString: hit.path + ":\(hit.line)")
         label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = hit.path; return label
@@ -85,7 +91,17 @@ import AppKit
     }
     @objc private func openSource() {
         guard hits.indices.contains(table.selectedRow), let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let url = try? files.resolve(hits[table.selectedRow].path) else { return }
-        NSWorkspace.shared.open(url)
+        do { if let onOpenSource { try onOpenSource(url) } else { NSWorkspace.shared.open(url) } }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    func checkState() -> [String: Any] {
+        guard AgentKnowledgePageHost.readbackEnabled else { return [:] }
+        return ["query": search.stringValue, "hits": hits.map { ["path": $0.path, "line": $0.line] as [String: Any] }, "preview": preview.string, "busy": busy, "state": state.stringValue]
+    }
+    func checkSearchAndOpen(_ query: String) async -> Bool {
+        guard CommandLine.arguments.contains("--knowledge-page-check") else { return false }
+        search.stringValue = query; searchProject(); await job?.value
+        guard !hits.isEmpty, !preview.string.isEmpty else { return false }; openSource(); return true
     }
     func checkLayout(query: String, output: URL) async -> [String: Bool] {
         search.stringValue = query; run(query: query); await job?.value

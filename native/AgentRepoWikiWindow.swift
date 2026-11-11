@@ -6,7 +6,7 @@ import AppKit
     func show(_ row: AgentRepoWikiSummary, grid: Bool) {
         view.subviews.forEach { $0.removeFromSuperview() }
         let box = NSBox(); box.boxType = .custom; box.cornerRadius = 8; box.borderWidth = 1
-        box.borderColor = .separatorColor; box.fillColor = .white; box.contentViewMargins = NSSize(width: 12, height: 12)
+        box.borderColor = AgentWorkbenchTheme.line; box.fillColor = AgentWorkbenchTheme.surface; box.contentViewMargins = NSSize(width: 12, height: 12)
         view.addSubview(box); box.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([box.leadingAnchor.constraint(equalTo: view.leadingAnchor), box.trailingAnchor.constraint(equalTo: view.trailingAnchor), box.topAnchor.constraint(equalTo: view.topAnchor), box.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
         let name = NSTextField(labelWithString: row.project.name), path = NSTextField(labelWithString: row.project.workspace)
@@ -41,8 +41,8 @@ import AppKit
     @objc private func open(_ sender: NSButton) { if let action = sender.identifier?.rawValue { onOpen?(action) } }
 }
 
-@MainActor final class AgentRepoWikiWindow: NSWindowController, NSWindowDelegate, NSCollectionViewDataSource, NSSearchFieldDelegate {
-    private let store: AgentStore, collection = NSCollectionView(), flow = NSCollectionViewFlowLayout()
+@MainActor final class AgentRepoWikiWindow: AgentSettingsPageController, NSWindowDelegate, NSCollectionViewDataSource, NSSearchFieldDelegate {
+    private let store: AgentStore, collection = NSCollectionView(), flow = NSCollectionViewFlowLayout(), scroll = NSScrollView()
     private let search = NSSearchField(), status = NSPopUpButton(), language = NSPopUpButton()
     private let layout = NSSegmentedControl(labels: ["网格", "列表"], trackingMode: .selectOne, target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), empty = NSTextField(labelWithString: "暂无项目")
@@ -57,7 +57,6 @@ import AppKit
         window.title = "Repo Wiki"; window.minSize = NSSize(width: 780, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        let heading = NSTextField(labelWithString: "Repo Wiki"); heading.font = .systemFont(ofSize: 20, weight: .semibold)
         search.placeholderString = "搜索项目"; search.setAccessibilityLabel("搜索 Wiki 项目"); search.delegate = self; search.sendsSearchStringImmediately = true
         status.addItems(withTitles: ["全部状态", "已生成", "未生成"]); status.target = self; status.action = #selector(filterChanged); status.setAccessibilityLabel("Wiki 生成状态")
         language.addItems(withTitles: ["简体中文", "English"]); language.target = self; language.action = #selector(languageChanged); language.setAccessibilityLabel("项目 Wiki 语言")
@@ -66,21 +65,22 @@ import AppKit
         refresh.bezelStyle = .texturedRounded; refresh.setAccessibilityLabel("刷新项目 Wiki"); refresh.toolTip = "刷新"
         let add = NSButton(image: NSImage(systemSymbolName: "folder.badge.plus", accessibilityDescription: nil)!, target: self, action: #selector(addWorkspace))
         add.bezelStyle = .texturedRounded; add.setAccessibilityLabel("添加 Wiki 工作区"); add.toolTip = "添加工作区"
-        let toolbar = NSStackView(views: [search, status, language, layout, refresh, add]); toolbar.spacing = 8
+        let query = NSStackView(views: [search, refresh, add]), filters = NSStackView(views: [status, language, NSView(), layout])
+        let toolbar = NSStackView(views: [query, filters]); toolbar.orientation = .vertical; toolbar.alignment = .leading; toolbar.spacing = 10
+        for row in [query, filters] { row.spacing = 8; row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true }
         search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); search.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         collection.collectionViewLayout = flow; collection.dataSource = self; collection.isSelectable = false; collection.backgroundColors = [.clear]; collection.setAccessibilityLabel("Wiki 项目列表")
         collection.register(AgentRepoWikiItem.self, forItemWithIdentifier: .init("repository"))
         flow.minimumInteritemSpacing = 12; flow.minimumLineSpacing = 12; flow.sectionInset = NSEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
-        let scroll = NSScrollView(); scroll.documentView = collection; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
+        scroll.documentView = collection; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         collection.frame = NSRect(x: 0, y: 0, width: 1064, height: 500); collection.autoresizingMask = [.width]
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         empty.font = .systemFont(ofSize: 15); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.setAccessibilityLabel("Wiki 项目筛选状态")
-        for child in [heading, toolbar, scroll, state, empty] { content.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
+        for child in [toolbar, scroll, state, empty] { content.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
-            toolbar.leadingAnchor.constraint(equalTo: heading.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20), toolbar.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 18),
-            scroll.leadingAnchor.constraint(equalTo: heading.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 18), scroll.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -12),
-            state.leadingAnchor.constraint(equalTo: heading.leadingAnchor), state.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor), toolbar.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 18), scroll.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -12),
+            state.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), state.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
             empty.centerXAnchor.constraint(equalTo: scroll.centerXAnchor), empty.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 100)
         ])
         reload()
@@ -104,15 +104,16 @@ import AppKit
     private var currentGenerationSignature: String {
         store.tasks.filter { $0.kind == "wiki" }.sorted { $0.id < $1.id }.map { "\($0.id)|\($0.status.rawValue)|\($0.archived)|\($0.wikiJob?.branch ?? "")|\($0.wikiJob?.language ?? "zh")|\(AgentWiki.isFinalizing($0.id))" }.joined(separator: "\n") + "\n\(store.organization.revision)"
     }
-    func refreshLiveState() { guard window?.isKeyWindow == true, !loading, currentGenerationSignature != generationSignature else { return }; reload() }
+    func refreshLiveState() { guard presentingWindow?.isKeyWindow == true, isPageVisible, !loading, currentGenerationSignature != generationSignature else { return }; reload() }
+    override func pageDidLayout() { updateLayout() }
     @objc private func filterChanged() { applyFilter() }
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
     @objc private func languageChanged() { reload() }
     @objc private func layoutChanged() { lastWidth = 0; updateLayout(); collection.reloadData() }
     private func updateLayout() {
-        let width = max(1, collection.bounds.width)
+        let width = max(1, scroll.contentView.bounds.width); collection.frame.size.width = width
         guard width != lastWidth else { return }; lastWidth = width
-        let grid = layout.selectedSegment == 0, columns = grid ? max(1, Int((width + 12) / 300)) : 1
+        let requestedGrid = layout.selectedSegment == 0, grid = requestedGrid || width < 700, columns = requestedGrid ? max(1, Int((width + 12) / 300)) : 1
         flow.itemSize = NSSize(width: floor((width - CGFloat(columns - 1) * 12) / CGFloat(columns)), height: grid ? 184 : 94); flow.invalidateLayout()
     }
     private func applyFilter() {
@@ -128,7 +129,7 @@ import AppKit
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { rows.count }
     func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
         let item = collectionView.makeItem(withIdentifier: .init("repository"), for: indexPath) as! AgentRepoWikiItem, row = rows[indexPath.item]
-        item.show(row, grid: layout.selectedSegment == 0)
+        item.show(row, grid: layout.selectedSegment == 0 || collection.bounds.width < 700)
         item.onOpen = { [weak self] action in
             guard let self, let current = self.rows.first(where: { $0.id == row.id }) else { return }
             do { try self.onOpen?(current.project, self.selectedLanguage, action) }
@@ -136,7 +137,7 @@ import AppKit
         }; return item
     }
     @objc private func addWorkspace() {
-        guard let window else { return }; let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "添加工作区"
+        guard let window = presentingWindow else { return }; let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.prompt = "添加工作区"
         panel.beginSheetModal(for: window) { [weak self] reply in
             Task { @MainActor in
                 guard let self, reply == .OK, let url = panel.url else { return }
@@ -146,9 +147,13 @@ import AppKit
         }
     }
     var checkState: [String: Any] {
-        guard CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
+        guard CommandLine.arguments.contains("--repo-wiki-overview-check") || AgentKnowledgePageHost.readbackEnabled else { return [:] }
         return ["language": selectedLanguage, "layout": layout.selectedSegment == 0 ? "grid" : "list", "filter": status.indexOfSelectedItem, "query": search.stringValue, "loading": loading, "total": summaries.count, "message": state.stringValue,
                 "rows": rows.map { row in ["workspace": row.project.workspace, "name": row.project.name, "taskID": row.project.taskID as Any? ?? NSNull(), "branch": row.branch as Any? ?? NSNull(), "status": row.status, "pages": row.pages as Any? ?? NSNull(), "published": row.published as Any? ?? NSNull(), "updated": row.updated?.timeIntervalSince1970 as Any? ?? NSNull(), "problem": row.problem as Any? ?? NSNull()] as [String: Any] },
-                "itemSize": [flow.itemSize.width, flow.itemSize.height], "windowSize": [window?.contentView?.bounds.width ?? 0, window?.contentView?.bounds.height ?? 0]]
+                "itemSize": [flow.itemSize.width, flow.itemSize.height], "windowSize": [presentingWindow?.contentView?.bounds.width ?? 0, presentingWindow?.contentView?.bounds.height ?? 0]]
+    }
+    func checkOpen(workspace: String, action: String) throws {
+        guard CommandLine.arguments.contains("--knowledge-page-check"), let row = rows.first(where: { $0.project.workspace == workspace }) else { throw PetError("知识中心项目未载入") }
+        try onOpen?(row.project, selectedLanguage, action)
     }
 }
