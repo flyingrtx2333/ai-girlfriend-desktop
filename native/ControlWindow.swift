@@ -83,7 +83,7 @@ final class FormDocumentView: NSView {
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
-    private let chat = NSView(), settings = NSView(), attentionContent = NSView()
+    private let chat = NSView(), settings = NSView(), attentionContent = NSView(), automationContent = NSView()
     private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
@@ -177,7 +177,7 @@ final class FormDocumentView: NSView {
     private var knowledgeLibraryWindow: AgentKnowledgeLibraryWindow?
     private var extensionWindow: AgentExtensionWindow?
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
-    private var automationWindow: AgentAutomationWindow?
+    private(set) var automationWindow: AgentAutomationWindow?
     private let automationButton = AgentWorkbenchButton(title: "自动化", target: nil, action: nil)
     private let extensionPanel = AgentExtensionPanel(), extensionPicker = AgentExtensionPicker()
     private var extensionPickerTask: String?
@@ -271,7 +271,7 @@ final class FormDocumentView: NSView {
                 let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
             }
-            for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings")] {
+            for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings"), (automationButton, selectedTab == "automation")] {
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
             }
         }
@@ -416,7 +416,7 @@ final class FormDocumentView: NSView {
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
-        for panel in [chat, settings, attentionContent] { panels.addSubview(panel); pin(panel, to: panels) }
+        for panel in [chat, settings, attentionContent, automationContent] { panels.addSubview(panel); pin(panel, to: panels) }
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbench() {
@@ -499,6 +499,7 @@ final class FormDocumentView: NSView {
         workbenchChrome = [navigation, actions, workbenchBadge, headerRule]
         for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
         main.addSubview(attentionContent); pin(attentionContent, to: main)
+        main.addSubview(automationContent); pin(automationContent, to: main)
         buildWorkbenchConversation()
         headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
@@ -800,6 +801,7 @@ final class FormDocumentView: NSView {
     }
     private func canLeaveMainPage() -> Bool {
         guard attentionPageController?.prepareToClose() != false else { return false }
+        if selectedTab == "automation", automationWindow?.prepareToLeave() == false { return false }
         return settingsPageHost.leave()
     }
     @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
@@ -1173,9 +1175,9 @@ final class FormDocumentView: NSView {
         if window?.isVisible != true { refreshPreferences() }
         if tab == "settings", selectedTab != "settings" {
             settingsReturnTab = selectedTab
-            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : "返回对话"
+            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : selectedTab == "automation" ? "返回自动化" : "返回对话"
         }
-        selectedTab = ["settings", "attention"].contains(tab) ? tab : "chat"; changeTab()
+        selectedTab = ["settings", "attention", "automation"].contains(tab) ? tab : "chat"; changeTab()
         renderMessages()
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -1186,8 +1188,9 @@ final class FormDocumentView: NSView {
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
         if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
-        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"
-        taskSidebar.setAttentionSelected(selectedTab == "attention")
+        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"; automationContent.isHidden = selectedTab != "automation"
+        taskSidebar.setMainPage(selectedTab)
+        AgentWorkbenchTheme.color(automationButton.layer, selectedTab == "automation" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
         contentSurface.showsSettings = configuring; pageTitle.isHidden = configuring
@@ -1517,8 +1520,9 @@ final class FormDocumentView: NSView {
     }
     func closeOwnedTaskPanels() -> Bool {
         guard attentionPageController?.prepareToClose() != false else { return false }
+        guard automationWindow?.prepareToLeave() != false else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
@@ -1549,6 +1553,32 @@ final class FormDocumentView: NSView {
     }
     func checkAttentionNavigationSelection() -> Bool {
         CommandLine.arguments.contains("--attention-page-check") && selectedTab == "attention" && taskSidebar.checkAttentionSelected()
+    }
+    func checkAutomationNavigation(_ id: String) throws -> [String: Any] {
+        guard CommandLine.arguments.contains("--automation-page-check"), let window, let manager = automationWindow, let tasks = companion?.agentStore, let taskID = agentTaskID else { throw PetError("自动化主页面未初始化") }
+        var checks: [String: Bool] = [:], frames: [String: Any] = [:]
+        let size = window.contentView!.bounds.size, draft = tasks.task(taskID)?.draft
+        for (name, target) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+            window.setContentSize(target)
+            for editing in [false, true] {
+                manager.checkShowCatalog()
+                if editing { guard manager.checkSelect(id) else { throw PetError("计划未进入编辑") } }
+                window.contentView?.layoutSubtreeIfNeeded()
+                let geometry = manager.checkPageGeometry(), key = name + (editing ? "-editor" : "-catalog"); frames[key] = geometry
+                for (name, value) in geometry["checks"] as? [String: Bool] ?? [:] { checks[key + "-" + name] = value }
+                checks[key + "-actualWindowSize"] = abs(window.contentView!.bounds.width - target.width) < 0.5 && abs(window.contentView!.bounds.height - target.height) < 0.5
+            }
+        }
+        manager.checkShowCatalog(); window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
+        checks["sameWindowNavigationAndMainContent"] = manager.presentingWindow === window && manager.isVisible && selectedTab == "automation" && !workbenchSidebar.isHidden && workbenchChrome.allSatisfy(\.isHidden) && (automationButton.layer?.backgroundColor?.alpha ?? 0) > 0
+        showSettingsCategory("appearance")
+        checks["settingsRemembersAutomationReturn"] = selectedTab == "settings" && settingsBackButton?.title == "返回自动化"
+        returnToChat()
+        checks["settingsReturnsToSameAutomationPage"] = selectedTab == "automation" && automationWindow === manager && manager.isVisible
+        show(tab: "chat")
+        checks["returnToTaskPreservesUnsentDraft"] = selectedTab == "chat" && agentTaskID == taskID && tasks.task(taskID)?.draft == draft
+        showAutomations()
+        return ["checks": checks, "frames": frames]
     }
     func checkAttentionSaveFailure() -> [String: Bool] {
         guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore else { return [:] }
@@ -1851,14 +1881,16 @@ final class FormDocumentView: NSView {
     }
     func configureAutomationDraft(_ id: String, taskID: String) throws {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
-        let draft = try AgentAutomationDrafts.load(id, taskID: taskID, store: store), manager = preparedAutomationWindow(store)
+        let draft = try AgentAutomationDrafts.load(id, taskID: taskID, store: store)
+        if selectedTab != "automation" { guard canLeaveMainPage() else { throw PetError("请先完成当前页面编辑") } }
+        let manager = preparedAutomationWindow(store)
         try manager.configureDraft(draft)
         if store.automations.values.contains(where: { $0.id == draft.automation.id }) { try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: draft.automation.id, store: store) }
         manager.onSaved = { [weak self, weak store] automationID in
             guard let store, automationID == draft.automation.id else { return }
             try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: automationID, store: store); self?.renderAgentMessages()
         }
-        automationWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        showAutomations()
     }
     func agentTaskAction(_ id: String, action: String) {
         guard let tasks = companion?.agentStore, let task = tasks.task(id), task.status != .running || action.hasPrefix("export:") || ["copy-id", "read", "unread", "new-window", "side-task", "side-parent", "side-keep"].contains(action) else { return }
@@ -2471,7 +2503,7 @@ final class FormDocumentView: NSView {
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
     @objc private func automationDefinitionsChanged() { refreshAutomationBadge(); scheduleRender() }
     private func preparedAutomationWindow(_ store: AgentStore) -> AgentAutomationWindow {
-        if let existing = automationWindow, existing.window?.isVisible == true { return existing }
+        if let existing = automationWindow { return existing }
         let manager = AgentAutomationWindow(store: store)
         manager.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat"); self?.refreshAutomationBadge() }
         manager.onRequestNotifications = { [weak self] in guard let self else { throw PetError("应用已关闭") }; return try await self.companion?.automationNotifications.request() ?? false }
@@ -2480,13 +2512,16 @@ final class FormDocumentView: NSView {
             let id = try AgentAutomationDrafts.createConversation(store: store, sourceID: currentAgentTask?.id)
             selectAgentTask(id); show(tab: "chat"); window?.makeKeyAndOrderFront(nil); window?.makeFirstResponder(composer)
         }
+        automationWindow = manager
+        if let host = window, let view = manager.content(in: host) { automationContent.addSubview(view); pin(view, to: automationContent) }
         return manager
     }
     @objc func showAutomations() {
         guard let store = companion?.agentStore, saveAgentDraft() else { return }
-        if let window = automationWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
+        if selectedTab != "automation", !canLeaveMainPage() { return }
         let manager = preparedAutomationWindow(store)
-        automationWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); refreshAutomationBadge()
+        manager.sourceTaskID = agentTaskID; manager.refresh(); sidebarRequested = true
+        show(tab: "automation"); refreshAutomationBadge()
     }
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
     func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates() }

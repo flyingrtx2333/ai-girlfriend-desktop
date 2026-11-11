@@ -18,6 +18,7 @@
     "native:check-conversation": "node scripts/check-native-conversation.mjs",
     "native:check-settings": "node scripts/check-native-settings.mjs",
     "native:check-attention": "node scripts/check-native-attention.mjs",
+    "native:check-automation-page": "node scripts/check-native-automation-page.mjs",
     "native:check-screen": "node scripts/check-native-screen.mjs",
     "native:check-stop": "node scripts/check-native-stop.mjs",
     "native:check-agent": "node scripts/check-native-agent.mjs",

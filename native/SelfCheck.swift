@@ -33,6 +33,7 @@ import WebKit
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
@@ -60,6 +61,7 @@ import WebKit
                 }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--attention-page-fixtures") { _ = try await prepareAttentionPageUI(output) }
+                if CommandLine.arguments.contains("--automation-page-fixtures") { _ = try await prepareAutomationPageUI(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
                 if CommandLine.arguments.contains("--code-security-fixtures") {
@@ -113,6 +115,7 @@ import WebKit
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
+                        value["automation"] = inputControl.automationWindow?.checkState() ?? [:]
                         value["fileOpenEvents"] = fileOpenEvents
                         value["fileOpenPending"] = pendingFileOpens.count
                         value["fileOpenImporting"] = fileOpenJob != nil

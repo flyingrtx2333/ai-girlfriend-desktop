@@ -63,12 +63,12 @@ private final class AgentTaskTable: NSTableView {
     private var effectiveGrouping: AgentTaskGrouping { filter == 1 ? .workspace : taskView.grouping }
     private static let dragType = NSPasteboard.PasteboardType("com.xjs.bluefatfish.task-view")
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
-    private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0, attentionSelected = false
+    private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0, attentionSelected = false, mainPage = "chat"
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
     private var searchTask: Task<Void, Never>?, searchGeneration = 0, searchQuery = "", searchScope = Set<String>()
     private var searchVersions: [String: String] = [:], searchHits: [String: AgentTaskSearch.Hit] = [:], searchIssues: [String: String] = [:]
     private var searchBusy = false, searchSelection: String?
-    private var listSelection: String? { attentionSelected ? nil : searchVisible ? searchSelection ?? selected : selected }
+    private var listSelection: String? { mainPage != "chat" ? nil : searchVisible ? searchSelection ?? selected : selected }
     override init(frame: NSRect) {
         super.init(frame: frame)
         for (button, title, symbol, action) in [(create, "新的任务", "plus.square", #selector(newTask)), (attention, "需要我", "bell", #selector(showAttention)), (searchButton, "搜索", "magnifyingglass", #selector(showSearch))] {
@@ -159,10 +159,11 @@ private final class AgentTaskTable: NSTableView {
     @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
     private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }
     func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
-    func setAttentionSelected(_ active: Bool) {
+    func setMainPage(_ page: String) {
+        let active = page == "attention"
         attention.state = active ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, active ? AgentWorkbenchTheme.selection : .clear, animated: false)
-        guard attentionSelected != active else { return }; attentionSelected = active
+        guard mainPage != page else { return }; attentionSelected = active; mainPage = page
         let wasUpdating = updating; updating = true
         if let index = rows.firstIndex(where: { if case let .task(task, _) = $0 { return task.id == listSelection }; return false }) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)

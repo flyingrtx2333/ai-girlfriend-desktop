@@ -44,10 +44,11 @@ import AppKit
     }
 }
 
-@MainActor private final class AgentSettingsTableRow: NSTableRowView {
+@MainActor final class AgentSettingsTableRow: NSTableRowView {
+    var selectionColor: NSColor { NSColor.selectedContentBackgroundColor.withAlphaComponent(0.12) }
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
     override func drawSelection(in dirtyRect: NSRect) {
-        NSColor.selectedContentBackgroundColor.withAlphaComponent(0.12).setFill()
+        selectionColor.setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 2), xRadius: 7, yRadius: 7).fill()
     }
 }

@@ -1,0 +1,25 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const evidence = path.join(root, 'evidence/agent');
+await mkdir(evidence, { recursive: true });
+const output = await mkdtemp(path.join(evidence, 'automation-page-command-'));
+await mkdir(path.join(output, 'shared-home'));
+const app = process.env.BLUEFATFISH_APP ?? path.join(root, 'build/蓝色大肥鱼.app');
+const binary = path.join(app, 'Contents/MacOS/BlueFatFish');
+const hash = () => readFile(binary).then(data => createHash('sha256').update(data).digest('hex'));
+const binaryHash = await hash();
+const result = spawnSync(binary, ['--check', output, '--automation-page-check'], { encoding: 'utf8', timeout: 60000 });
+await writeFile(path.join(output, 'stdout.log'), result.stdout ?? '');
+await writeFile(path.join(output, 'stderr.log'), result.stderr ?? '');
+await writeFile(path.join(output, 'process.json'), JSON.stringify({ app, binaryHash, appPID: result.pid, exit: result.status, signal: result.signal }, null, 2) + '\n');
+if (result.error || result.status !== 0) throw result.error ?? Error(result.stderr || result.stdout);
+const report = JSON.parse(await readFile(path.join(output, 'automation-page-report.json'), 'utf8'));
+if (report.appPID !== result.pid || report.binaryHash !== binaryHash || await hash() !== binaryHash) throw Error('Automation page check process or application changed');
+const success = report.success && report.modelTransmissions === 0 && report.blockedModelAttempts === 0 && Object.values(report.checks).every(Boolean);
+console.log(JSON.stringify({ output, binaryHash, appPID: result.pid, success, checks: Object.keys(report.checks).length, failed: Object.keys(report.checks).filter(key => !report.checks[key]), blockedModelAttempts: report.blockedModelAttempts, modelTransmissions: report.modelTransmissions }));
+process.exitCode = success ? 0 : 1;
