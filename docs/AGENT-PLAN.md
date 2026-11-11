@@ -2,6 +2,8 @@
 
 目标：实现完整 Agent 功能，复刻用户参考的 Qoder 工作方式。保留 AppKit、低内存与低能耗约束。此清单用于追踪完整目标，不把阶段交付当作完成。
 
+界面与剩余功能的优先级见 [Qoder 界面与功能 TODO](QODER-PARITY-TODO.md)（2026-11-11 核对）。统一设置页面、减少管理窗口跳转及日常发布核对列为第一优先级；开发目标当前按用户要求暂停。
+
 对标来源（2026-11-06 核对）：[桌面版功能](https://docs.qoder.com/qoder/overview)、[任务管理](https://docs.qoder.com/qoder/task-management)、[执行监控](https://docs.qoder.com/qoder/task-monitor)、[审批与隔离](https://docs.qoder.com/qoder/approval-and-sandbox)、[扩展](https://docs.qoder.com/qoder/connectors)。用户前面的界面参考作为布局依据；用户已确认对标桌面 Agent，完整 IDE 编辑器不纳入范围。
 
 ## 原始基线（实施前）
