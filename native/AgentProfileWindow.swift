@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentProfileWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentProfileWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     let store: AgentStore
     let workspace: String?
     private let workMode: AgentWorkMode
@@ -116,7 +116,7 @@ import UniformTypeIdentifiers
         openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current
         if existing == nil { values.append(draft.profile) }
         loading = true; table.reloadData(); loading = false; open(draft.profile.id)
-        if existing == nil { changed(); window?.makeFirstResponder(name) }
+        if existing == nil { changed(); presentingWindow?.makeFirstResponder(name) }
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
@@ -177,12 +177,12 @@ import UniformTypeIdentifiers
         guard !name.isEmpty, name.utf8.count <= 128, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { state.stringValue = "请输入有效的实际工具名"; return }
         let id = servers[server.indexOfSelectedItem].id; mcpPermissions.removeAll { $0.serverID == id && $0.tool == name }; mcpPermissions.append(AgentMCPToolPermission(serverID: id, tool: name, permission: AgentToolPermission.allCases[rule.indexOfSelectedItem])); refreshMenus(); changed()
     }
-    @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name) }
+    @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name) }
     @objc private func chooseTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let menu = NSMenu()
         for (index, value) in AgentTemplates.profiles.enumerated() { let item = NSMenuItem(title: value.name, action: #selector(useTemplate(_:)), keyEquivalent: ""); item.target = self; item.tag = index; menu.addItem(item) }
-        menu.popUp(positioning: nil, at: NSPoint(x: 14, y: 55), in: window?.contentView)
+        menu.popUp(positioning: nil, at: NSPoint(x: 14, y: 55), in: pageContentView)
     }
     @objc private func useTemplate(_ sender: NSMenuItem) {
         guard !dirty, AgentTemplates.profiles.indices.contains(sender.tag) else { return }
@@ -192,7 +192,7 @@ import UniformTypeIdentifiers
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let base = value.name; var suffix = 2
         while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(suffix)"; suffix += 1 }
-        values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name)
+        values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name)
     }
     @objc private func saveProfile() {
         do {

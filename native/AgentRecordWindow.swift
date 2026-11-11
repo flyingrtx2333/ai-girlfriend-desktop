@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentRecordWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentRecordWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
@@ -54,14 +54,14 @@ import UniformTypeIdentifiers
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
     private var videoWindow: AgentVideoWindow?
-    init(store: AgentStore, taskID: String, section: Int = 0) {
+    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua); window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; text.delegate = self
         let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
-        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = min(6, max(0, section)); activeSection = sections.selectedSegment
+        sections.target = self; sections.action = #selector(refresh); sections.selectedSegment = memoryOnly ? 5 : min(6, max(0, section)); activeSection = sections.selectedSegment; sections.isHidden = memoryOnly
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("record")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 31; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("任务产物与来源")
         list.documentView = table; list.hasVerticalScroller = true
@@ -111,7 +111,7 @@ import UniformTypeIdentifiers
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [state, NSView(), allowInstruction, revokeInstruction, newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: sections.bottomAnchor, constant: 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: memoryOnly ? content.topAnchor : sections.bottomAnchor, constant: memoryOnly ? 14 : 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -259,7 +259,7 @@ import UniformTypeIdentifiers
     }
     private func presentWikiAlert(_ alert: NSAlert) async throws -> NSApplication.ModalResponse {
         try Task.checkCancellation()
-        guard let window, window.isVisible, window.attachedSheet == nil else { throw PetError("请先完成当前窗口操作") }
+        guard let window = presentingWindow, window.isVisible, window.attachedSheet == nil else { throw PetError("请先完成当前窗口操作") }
         wikiSharingAlert = alert; defer { wikiSharingAlert = nil }
         window.makeKeyAndOrderFront(nil)
         return await withCheckedContinuation { continuation in
@@ -567,7 +567,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func allowInstructionFile() {
-        guard let window, let task = store.task(taskID), canLeave() else { return }
+        guard let window = presentingWindow, let task = store.task(taskID), canLeave() else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.prompt = "允许引用"
         panel.message = "允许所选文件作为此任务的项目指令引用。"
         if let pending = store.instructions.report(task).issues.first(where: \.needsPermission) { panel.directoryURL = URL(fileURLWithPath: pending.path).deletingLastPathComponent() }
@@ -676,7 +676,7 @@ import UniformTypeIdentifiers
         load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func chooseOffice() {
-        guard let window, let workspace = store.task(taskID)?.workspace, canLeave() else { return }
+        guard let window = presentingWindow, let workspace = store.task(taskID)?.workspace, canLeave() else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let file = panel.url, let self else { return }
@@ -696,7 +696,7 @@ import UniformTypeIdentifiers
     }
     @objc private func createOffice() {
         let index = newOffice.indexOfSelectedItem - 1; newOffice.selectItem(at: 0)
-        guard AgentOffice.formats.indices.contains(index), let window, let workspace = store.task(taskID)?.workspace else { return }
+        guard AgentOffice.formats.indices.contains(index), let window = presentingWindow, let workspace = store.task(taskID)?.workspace else { return }
         let format = AgentOffice.formats[index], panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: format) ?? .data]; panel.directoryURL = URL(fileURLWithPath: workspace); panel.nameFieldStringValue = "未命名." + format
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let file = panel.url, let self else { return }
@@ -714,7 +714,9 @@ import UniformTypeIdentifiers
         guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
-    func windowWillClose(_ notification: Notification) { wikiSharingTask?.cancel(); if let alert = wikiSharingAlert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .abort) }; wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    private func closeContent() { load?.cancel(); wikiSharingTask?.cancel(); if let alert = wikiSharingAlert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .abort) }; wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    override func settingsWillLeave() { closeContent() }
+    func windowWillClose(_ notification: Notification) { closeContent() }
     func videoPreviewReadback() async -> [String: Any] {
         guard CommandLine.arguments.contains("--video-preview-check") else { return [:] }
         var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""

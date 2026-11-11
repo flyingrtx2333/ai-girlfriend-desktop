@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentPluginSettingsWindow: NSWindowController, NSWindowDelegate {
+@MainActor final class AgentPluginSettingsWindow: AgentSettingsPageController, NSWindowDelegate {
     private let service: AgentPlugins, item: AgentPluginInstallation, workspace: String?
     private let scopes = NSSegmentedControl(labels: ["用户", "项目", "本机"], trackingMode: .selectOne, target: nil, action: nil)
     private let value = NSPopUpButton(), source = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")

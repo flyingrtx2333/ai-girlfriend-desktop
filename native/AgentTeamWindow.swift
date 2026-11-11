@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentTeamWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentTeamWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     let store: AgentStore
     let workspace: String?
     private let workMode: AgentWorkMode
@@ -99,7 +99,7 @@ import AppKit
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
     @objc private func create() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        do { agents = try store.agents.list(workspace: workspace); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); window?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
+        do { agents = try store.agents.list(workspace: workspace); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func createTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
@@ -129,7 +129,7 @@ import AppKit
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func useTeam() { do { guard !dirty, let selectedID else { throw PetError("请先保存团队") }; let id = try store.teams.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
-    @objc private func manageAgents() { let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: workMode); manager.onUse = onUse; agentWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
+    @objc private func manageAgents() { let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: workMode); manager.onUse = onUse; agentWindow = manager; presentSettingsChild(manager) }
     func windowDidBecomeKey(_ notification: Notification) {
         guard dirty else { reload(); return }
         let id = leader.selectedItem?.representedObject as? String

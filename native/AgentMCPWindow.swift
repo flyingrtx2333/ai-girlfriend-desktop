@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentMCPWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
     private let table = NSTableView(), editor = NSTextView(), tools = NSTextView()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
@@ -164,5 +164,12 @@ import UniformTypeIdentifiers
         return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); service.disconnect(owner: sessionOwner); service.onChange = nil }
+    private func closeConnection() { job?.cancel(); service.disconnect(owner: sessionOwner); service.onChange = nil }
+    override func settingsWillLeave() { closeConnection() }
+    func windowWillClose(_ notification: Notification) { closeConnection() }
+    func connectForSettingsCheck() async throws -> Int32? {
+        guard CommandLine.arguments.contains("--settings-pages-check"), let selected else { throw PetError("仅用于设置页检查") }
+        _ = try await service.connect(selected.id, revision: selected.revision, owner: sessionOwner, workspace: workspace)
+        showTools(); return await service.processID(selected.id, owner: sessionOwner)
+    }
 }

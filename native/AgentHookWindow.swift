@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentHookWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class AgentHookWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate {
     private let service: AgentHooks
     private let workspace: String?
     private let table = NSTableView(), command = NSTextView()
@@ -79,7 +79,7 @@ import UniformTypeIdentifiers
     func selectHook(_ id: String) { reload(select: id) }
     @objc private func revealSource() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.source)]) } }
     @objc private func clearCredentials() {
-        guard let selected, let window else { return }
+        guard let selected, let window = presentingWindow else { return }
         let alert = NSAlert(); alert.messageText = "清除已保存的 Hook 凭据？"; alert.informativeText = selected.name + "\n停用此处理器并清除钥匙串中的 " + (selected.type == "http" ? "Headers" : "env") + "。来源文件内直接填写的值可通过「打开来源」移除。"; alert.addButton(withTitle: "清除"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in guard response == .alertFirstButtonReturn, let self else { return }; do { try service.clearCredentials(selected, workspace: workspace); reload(select: selected.id) } catch { state.stringValue = error.localizedDescription } }
     }
@@ -89,7 +89,7 @@ import UniformTypeIdentifiers
             do { try service.setEnabled(item, false, workspace: workspace); reload(select: item.id) } catch { state.stringValue = error.localizedDescription }; return
         }
         enabled.state = service.enabled(item) ? .on : .off
-        guard item.diagnostic == nil, let window else { reload(select: item.id); return }
+        guard item.diagnostic == nil, let window = presentingWindow else { reload(select: item.id); return }
         let alert = NSAlert(); alert.messageText = "启用「\(item.name)」？"
         let consequence: String
         switch item.type {
@@ -115,7 +115,7 @@ import UniformTypeIdentifiers
             let editor = AgentHookConfigWindow(text: document.text, title: "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)) { [weak self] text in
                 guard let self else { return }
                 try service.savePluginDocument(text, reference: reference, original: document.original, expectedHash: document.hash); reload()
-            }; configWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+            }; configWindow = editor; presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
     }
     private func openConfig(imported: String?) {
@@ -128,11 +128,11 @@ import UniformTypeIdentifiers
                 guard let self else { return }
                 let data = try importedData.map { try self.service.credentials.restoreImported(Data(text.utf8), original: $0, file: self.service.file(project: project, workspace: self.workspace)) } ?? Data(text.utf8)
                 try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: document.1); reload()
-            }; configWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+            }; configWindow = editor; presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func importConfig() {
-        guard let window else { return }
+        guard let window = presentingWindow else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.allowedContentTypes = [.json]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, let url = panel.url else { return }
@@ -145,7 +145,7 @@ import UniformTypeIdentifiers
     }
 }
 
-@MainActor private final class AgentHookConfigWindow: NSWindowController, NSWindowDelegate {
+@MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate {
     private let editor = NSTextView(), state = NSTextField(labelWithString: "")
     private let save: (String) throws -> Void
     private let original: String

@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentPluginWindow: NSWindowController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSWindowDelegate {
+@MainActor final class AgentPluginWindow: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSWindowDelegate {
     private let store: AgentStore, workspace: String?
     private let scopes = NSSegmentedControl(labels: ["用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private var scopeWorkspace: String? { scopes.selectedSegment == 1 ? workspace : nil }
@@ -129,7 +129,7 @@ import UniformTypeIdentifiers
         if let window = settingsWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         guard let selected else { return }
         let editor = AgentPluginSettingsWindow(service: service, item: selected, workspace: workspace)
-        editor.onChange = { [weak self] in self?.reload(select: selected.id); self?.onChange?() }; settingsWindow = editor; editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+        editor.onChange = { [weak self] in self?.reload(select: selected.id); self?.onChange?() }; settingsWindow = editor; presentSettingsChild(editor)
     }
     @objc private func disableProject() {
         guard let workspace = scopeWorkspace else { return }
@@ -158,7 +158,7 @@ import UniformTypeIdentifiers
     @objc private func importPackage() { choosePackage(replacing: nil) }
     @objc private func updatePackage() { if let selected { choosePackage(replacing: selected) } }
     private func choosePackage(replacing installed: AgentPluginInstallation?) {
-        guard let window else { return }; let targetWorkspace = installed?.workspace ?? scopeWorkspace; let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip, .folder]; panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = false; panel.prompt = "检查插件"
+        guard let window = presentingWindow else { return }; let targetWorkspace = installed?.workspace ?? scopeWorkspace; let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip, .folder]; panel.canChooseDirectories = true; panel.canChooseFiles = true; panel.allowsMultipleSelection = false; panel.prompt = "检查插件"
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
             state.stringValue = "读取插件…"; job = Task { [weak self] in
@@ -179,7 +179,7 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
-        guard let window else { return }; let alert = NSAlert(); let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
+        guard let window = presentingWindow else { return }; let alert = NSAlert(); let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
         alert.messageText = action + "「\(package.metadata.title)」？"
         let version = activating ? package.metadata.version : installed.map { ($0.metadata.version.isEmpty ? "未标版本" : $0.metadata.version) + " → " + (package.metadata.version.isEmpty ? "未标版本" : package.metadata.version) } ?? package.metadata.version
         let scope = installed?.workspace ?? installWorkspace
@@ -208,11 +208,12 @@ import UniformTypeIdentifiers
         }
     }
     @objc private func removePackage() {
-        guard let item = selected, let window else { return }; let alert = NSAlert(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除"); alert.addButton(withTitle: "取消")
+        guard let item = selected, let window = presentingWindow else { return }; let alert = NSAlert(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             do { try service.trash(item); selected = nil; reload(); onChange?() } catch { state.stringValue = error.localizedDescription }
         }
     }
+    override func settingsWillLeave() { job?.cancel() }
     func windowWillClose(_ notification: Notification) { job?.cancel() }
 }

@@ -85,8 +85,11 @@ final class FormDocumentView: NSView {
     private let chat = NSView(), settings = NSView()
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
+    private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
+    private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("computer", "电脑操作", "computermouse"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("agent", "Agent", "sparkles"), ("attention", "需要我", "bell"), ("worktrees", "工作树", "arrow.triangle.branch"), ("imports", "数据导入", "square.and.arrow.down"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
@@ -162,6 +165,7 @@ final class FormDocumentView: NSView {
     private var taskSwitcher: AgentTaskSwitcher?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
+    private var settingsFooter: NSStackView?
     private let executionLocation = AgentWorkbenchButton()
     private let branchControl = AgentWorkbenchButton()
     private var branchTask: Task<Void, Never>?, branchKey: String?
@@ -517,7 +521,9 @@ final class FormDocumentView: NSView {
         let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
         let target: CGFloat = showInspector ? 281 : 0
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
-        sidebarWidth.constant = configuring ? 231 : sidebarRequested ? workbenchSidebarWidth.constant : 0
+        let settingsWidth: CGFloat = width < 980 ? 180 : 231
+        sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
+        settingsSidebarWidth?.constant = settingsWidth
         workbenchSidebar.isHidden = configuring || !sidebarRequested
         navigationLeading.constant = sidebarRequested ? 18 : 82
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
@@ -691,7 +697,7 @@ final class FormDocumentView: NSView {
         }
         mcpContentWindow?.showWindow(nil); mcpContentWindow?.window?.makeKeyAndOrderFront(nil)
     }
-    @objc private func openTaskModelSettings() { saveAgentDraft(); selectedTab = "settings"; settingsCategory = "model"; settingsSearch.stringValue = ""; changeTab() }
+    @objc private func openTaskModelSettings() { saveAgentDraft(); showSettingsCategory("model") }
     @objc private func toggleWorkbenchVoice() { if companion?.store.preferences.wakeEnabled == true { companion?.stopRecording() } else { companion?.listenNow() } }
     private func updateWorkbenchVoice() {
         guard companion?.usesAgent == true else { return }
@@ -699,28 +705,98 @@ final class FormDocumentView: NSView {
         voiceInput.image = NSImage(systemSymbolName: enabled ? "stop.circle" : "mic", accessibilityDescription: nil)
         voiceInput.contentTintColor = enabled ? .systemRed : .secondaryLabelColor; voiceInput.toolTip = enabled ? "停止录音" : "语音输入"; voiceInput.setAccessibilityLabel(voiceInput.toolTip)
     }
+    func showAttentionPreferences() { showSettingsCategory("attention") }
+    @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
+        guard settingsCategories.contains(where: { $0.0 == key }), settingsPageHost.leave() else { return false }
+        companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
+        show(tab: "settings"); return true
+    }
+    @objc private func openManagedSettingsResult(_ sender: NSButton) {
+        guard settingsCategories.indices.contains(sender.tag), showSettingsCategory(settingsCategories[sender.tag].0), let key = sender.identifier?.rawValue else { return }
+        settingsPageHost.selectPage(key)
+    }
+    private func makeSettingsManager(_ key: String, taskID: String?, workspace: String?, selection: String? = nil) -> AgentSettingsPageController? {
+        guard let store = companion?.agentStore else { return nil }
+        let mode = taskID.flatMap(store.task)?.organizationMode
+        let use: (String) -> Void = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
+        switch key {
+        case "plugins":
+            let manager = AgentPluginWindow(store: store, workspace: workspace)
+            if let taskID {
+                manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
+                manager.onInsertRule = { [weak self] in try self?.insertRule($0, taskID: taskID) }
+            }
+            manager.onConfigureMCP = { [weak self, weak manager] id, scope in
+                if let child = self?.makeSettingsManager("mcp", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
+            }
+            manager.onConfigureAgent = { [weak self, weak manager] id, scope in
+                if let child = self?.makeSettingsManager("agents", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
+            }
+            manager.onConfigureHook = { [weak self, weak manager] id, scope in
+                if let child = self?.makeSettingsManager("hooks", taskID: taskID, workspace: scope, selection: id) { manager?.presentSettingsChild(child) }
+            }
+            return manager
+        case "skills", "commands":
+            let manager = AgentExtensionWindow(store: store, taskID: taskID ?? "")
+            manager.prepareSettings(kind: key == "commands" ? .command : .skill); manager.onStartAgent = use
+            if let taskID {
+                manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
+                manager.onInsertRule = { [weak self] in try self?.insertRule($0, taskID: taskID) }
+                manager.onInsertLocalRule = { [weak self] in try self?.insertLocalRule($0, taskID: taskID) }
+                manager.onBrowseMCP = { [weak self] in self?.presentMCPContent(taskID: taskID, serverID: $0) }
+            }
+            return manager
+        case "mcp":
+            let manager = AgentMCPWindow(service: store.mcp, workspace: workspace)
+            if let taskID { manager.onBrowseContent = { [weak self] in self?.presentMCPContent(taskID: taskID, serverID: $0) } }
+            if let selection { manager.selectServer(selection) }; return manager
+        case "hooks":
+            let manager = AgentHookWindow(service: store.hooks, workspace: workspace)
+            if let selection { manager.selectHook(selection) }; return manager
+        case "agents":
+            let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: mode); manager.onUse = use
+            if let selection { manager.selectProfile(selection) }; return manager
+        case "teams":
+            let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: mode); manager.onUse = use; return manager
+        case "memory":
+            guard let taskID else { return nil }
+            return AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true)
+        case "rules":
+            guard let taskID else { return nil }
+            let manager = AgentRuleWindow(store: store, taskID: taskID)
+            manager.onInsert = { [weak self] in try self?.insertLocalRule($0, taskID: taskID) }; return manager
+        default: return nil
+        }
+    }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200), settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
+        settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200)
+        NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebarWidth, settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
         let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
         back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
         back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
         back.contentTintColor = .secondaryLabelColor
         settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
-        let caption = NSTextField(labelWithString: "偏好设置"); caption.font = .systemFont(ofSize: 11); caption.textColor = .tertiaryLabelColor
+        var previousGroup = ""
         let navigation = stack([], vertical: true, spacing: 5)
         for (index, item) in settingsCategories.enumerated() {
+            let group = ["extensions", "agents", "teams", "hooks", "computer"].contains(item.0) ? "集成" : item.0 == "worktrees" ? "编码" : ["experiments", "archived"].contains(item.0) ? "其他" : "个人"
+            if group != previousGroup {
+                let label = NSTextField(labelWithString: group); label.font = .systemFont(ofSize: 11); label.textColor = .tertiaryLabelColor
+                navigation.addArrangedSubview(label); previousGroup = group
+            }
             let button = NSButton(title: item.1, target: self, action: #selector(selectSettingsCategory(_:)))
             button.tag = index; styleNavigation(button, symbol: item.2); navigation.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true; categoryButtons.append(button)
         }
-        let column = stack([back, settingsSearch, caption, navigation], vertical: true, spacing: 18)
+        let column = stack([back, settingsSearch, navigation], vertical: true, spacing: 18)
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(column); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
     }
-    @objc private func returnToChat() { companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
+    @objc private func returnToChat() { guard settingsPageHost.leave() else { return }; companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
+        guard settingsPageHost.leave() else { return }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
@@ -736,7 +812,20 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["shortcuts", "worktrees", "computer", "imports", "experiments", "archived"].contains($0.category) }
+        let managed = query.isEmpty && managedSettings.contains(settingsCategory)
+        settingsFooter?.isHidden = managed
+        settingsPageHost.isHidden = !managed; settingsScroll.isHidden = managed
+        if managed {
+            generalSettingsSave?.isHidden = true
+            let id = agentTaskID ?? companion?.agentStore?.selectedID
+            let task = id.flatMap { companion?.agentStore?.task($0) }, workspace = task?.workspace
+            _ = settingsPageHost.show(category: settingsCategory, identity: (id ?? "") + "|" + (workspace ?? ""), scope: workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置") { [weak self] kind in
+                self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
+            }
+            return
+        }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
@@ -919,14 +1008,24 @@ final class FormDocumentView: NSView {
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
-        group("agent", "记忆与指令", "Agent 记忆 全局 项目 指令 AGENTS 摘要 上下文 扩展 Skills 命令")
-        let memory = NSButton(title: "管理记忆", target: self, action: #selector(openAgentMemory))
-        let extensions = NSButton(title: "管理扩展", target: self, action: #selector(showAgentExtensions))
-        let worktrees = NSButton(title: "工作树", target: self, action: #selector(showWorktrees))
-        row("", stack([memory, extensions, worktrees, NSView()], spacing: 8))
+        for (category, key, title, keywords) in [
+            ("extensions", "plugins", "插件", "Plugin 安装 更新 扩展"),
+            ("extensions", "skills", "技能", "Skills Skill 扩展"),
+            ("extensions", "commands", "指令", "Command Slash 自定义命令 扩展"),
+            ("extensions", "mcp", "连接器", "MCP 工具 配置 连接"),
+            ("agents", "agents", "智能体", "Agent 角色 模型 工具权限"),
+            ("teams", "teams", "智能体团队", "Team 团队 成员 负责人"),
+            ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
+            ("memory", "memory", "记忆与指令", "AGENTS 全局 项目记忆 用户指令"),
+            ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式")
+        ] {
+            guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
+            group(category, title, keywords)
+            let button = NSButton(title: title, target: self, action: #selector(openManagedSettingsResult(_:))); button.tag = index; button.identifier = NSUserInterfaceItemIdentifier(key); row("", button)
+        }
         if let store = companion?.agentStore {
             group("attention", "需要我", "需要我 待办 问题 审批 结果 已处理 来源 通知")
-            row("", NSButton(title: "管理需要我", target: self, action: #selector(openAttentionSettings)))
+            row("", AgentAttentionSettingsView(attention: store.attention))
             group("computer", "AppShot", "AppShot 窗口快照 前台 截图 可访问文字 全局 快捷键")
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
@@ -954,13 +1053,17 @@ final class FormDocumentView: NSView {
         save.widthAnchor.constraint(equalToConstant: 76).isActive = true; save.heightAnchor.constraint(equalToConstant: 34).isActive = true
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = .secondaryLabelColor
-        let bottom = stack([savedStatus, NSView(), save]), column = stack([settingsScroll, bottom], vertical: true, spacing: 18)
+        for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
+        settingsPageHost.isHidden = true
+        let bottom = stack([savedStatus, NSView(), save]), column = stack([settingsBody, bottom], vertical: true, spacing: 18)
+        settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
-        settingsScroll.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        settingsBody.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
 
     func show(tab: String) {
+        if selectedTab == "settings", tab != "settings", !settingsPageHost.leave() { return }
         if window?.isVisible != true { refreshPreferences() }
         selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
         renderMessages()
@@ -969,7 +1072,7 @@ final class FormDocumentView: NSView {
         if tab != "settings" { window?.makeFirstResponder(composer) }
         companion?.updatePetWorkspaceOcclusion()
     }
-    @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
+    @objc private func selectTab(_ sender: NSButton) { if sender.tag == 0, !settingsPageHost.leave() { return }; companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
     private func changeTab() {
         if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
@@ -1250,6 +1353,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard settingsPageHost.leave() else { return false }
         dismissExtensionCandidates()
         guard saveAgentDraft() else { return false }
         if let id = sideTaskTabID, let task = companion?.agentStore?.task(id), let side = task.sideTask, !side.retained,
@@ -1282,6 +1386,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        settingsPageHost.finish()
         stopTaskTerminals()
         if let panel = mcpInputPanel {
             try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
@@ -1559,10 +1664,10 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, let task = currentAgentTask, let value = sender.representedObject as? String else { return }
         saveAgentDraft()
         if value == "manage-agents" {
-            let manager = AgentProfileWindow(store: store, workspace: task.workspace); manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); return
+            showSettingsCategory("agents"); return
         }
         if value == "manage-teams" {
-            let manager = AgentTeamWindow(store: store, workspace: task.workspace); manager.onUse = { [weak self] in self?.selectAgentTask($0) }; teamWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil); return
+            showSettingsCategory("teams"); return
         }
         do {
             guard task.canChooseExecutor else { throw PetError("执行者只能在发送前选择") }
@@ -1575,17 +1680,20 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开 Agent 草稿") }
         let draft = try AgentProfileDrafts.load(id, taskID: taskID, store: store)
         let manager: AgentProfileWindow
-        if let existing = profileWindow, existing.window?.isVisible == true {
+        if let existing = settingsPageHost.currentController as? AgentProfileWindow, selectedTab == "settings" {
             guard existing.workspace == store.task(taskID)?.workspace else { throw PetError("请先完成已打开项目的 Agent 配置") }; manager = existing
-        } else { manager = AgentProfileWindow(store: store, workspace: store.task(taskID)?.workspace, workMode: store.task(taskID)?.organizationMode) }
+        } else {
+            guard showSettingsCategory("agents"), let embedded = settingsPageHost.currentController as? AgentProfileWindow else { throw PetError("请先完成当前设置编辑") }
+            manager = embedded
+        }
         try manager.configureDraft(draft)
         if try store.agents.decode(store.agents.document().0).contains(where: { $0.id == draft.profile.id }) { try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: draft.profile.id, store: store) }
         manager.onSaved = { [weak self, weak store] profileID in
             guard let store, profileID == draft.profile.id else { return }
             try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: profileID, store: store); self?.renderAgentMessages()
         }
-        manager.onUse = { [weak self] in self?.selectAgentTask($0) }; profileWindow = manager
-        manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        profileWindow = manager
+        window?.makeKeyAndOrderFront(nil)
     }
     func configureAutomationDraft(_ id: String, taskID: String) throws {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
@@ -1875,8 +1983,8 @@ final class FormDocumentView: NSView {
         knowledgeLibraryWindow = AgentKnowledgeLibraryWindow(store: store, taskID: agentTaskID)
         knowledgeLibraryWindow?.showWindow(nil); knowledgeLibraryWindow?.window?.makeKeyAndOrderFront(nil)
     }
-    @objc func openAgentMemory() { companion?.ensureAgent(); presentAgentRecords(section: 5) }
-    @objc func openAttentionSettings() { companion?.showAttention(settings: true) }
+    @objc func openAgentMemory() { companion?.ensureAgent(); showSettingsCategory("memory") }
+    @objc func openAttentionSettings() { showSettingsCategory("attention") }
     private func openAgentRecordItem(section: Int, value: String) {
         if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
@@ -2203,8 +2311,8 @@ final class FormDocumentView: NSView {
     @objc private func showWorktrees() {
         showWorktreePolicySettings()
     }
-    func showWorktreePolicySettings() { settingsCategory = "worktrees"; show(tab: "settings") }
-    @objc func showDesktopSettings() { desktopSettings?.refreshState(); settingsCategory = "computer"; show(tab: "settings") }
+    func showWorktreePolicySettings() { showSettingsCategory("worktrees") }
+    @objc func showDesktopSettings() { desktopSettings?.refreshState(); showSettingsCategory("computer") }
     func refreshWorktreeRetention() { worktreePolicyPanel?.refreshState(); if companion?.usesAgent == true { scheduleRender() } }
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
     @objc private func automationDefinitionsChanged() { refreshAutomationBadge(); scheduleRender() }
@@ -2253,16 +2361,7 @@ final class FormDocumentView: NSView {
             }
         }
     }
-    @objc func showAgentExtensions() {
-        guard let store = companion?.agentStore, let id = agentTaskID else { return }
-        extensionWindow?.window?.performClose(nil)
-        if extensionWindow?.window?.isVisible == true { return }
-        let manager = AgentExtensionWindow(store: store, taskID: id)
-        manager.onStartAgent = { [weak self] taskID in self?.selectAgentTask(taskID) }
-        manager.onBrowseMCP = { [weak self] server in self?.presentMCPContent(taskID: id, serverID: server) }
-        if store.task(id)?.kind != "hook" { manager.onInsert = { [weak self] item in try self?.insertExtension(item, taskID: id) }; manager.onInsertRule = { [weak self] item in try self?.insertRule(item, taskID: id) }; manager.onInsertLocalRule = { [weak self] item in try self?.insertLocalRule(item, taskID: id) } }
-        extensionWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
-    }
+    @objc func showAgentExtensions() { showSettingsCategory("extensions") }
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook" else { throw PetError("原任务已归档或为独立校验任务") }
         let current = try store.extensions.item(item.id, workspace: task.workspace)
@@ -2498,7 +2597,7 @@ extension ControlWindow {
                 "directories": AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: store.tasks, includingArchived: true) }.map { ["path": $0.path, "mode": $0.mode.rawValue, "archived": $0.archiveID != nil] },
                 "deletions": ["ids": store.deletions.taskIDs.sorted(), "workspaces": store.deletions.workspaceIDs.sorted(), "pending": store.deletions.pendingCount, "working": store.deletions.working, "issue": store.deletions.issue as Any? ?? NSNull()]]
     }
-    func showDataImportSettings() { settingsCategory = "imports"; show(tab: "settings") }
+    func showDataImportSettings() { showSettingsCategory("imports") }
     func switchWorkMode(_ mode: AgentWorkMode) {
         guard let tasks = companion?.agentStore, currentAgentTask?.organizationMode != mode else { return }
         saveAgentDraft()

@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentExtensionWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+@MainActor final class AgentExtensionWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let kinds = NSSegmentedControl(labels: ["Skills", "命令"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = NSTableView(), editor = NSTextView()
@@ -73,15 +73,25 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func prepareSettings(kind: AgentExtensionKind) {
+        kinds.selectedSegment = kind == .command ? 1 : 0; selectedKind = kinds.selectedSegment
+        kinds.isHidden = true
+        if let header = kinds.superview as? NSStackView {
+            for view in header.arrangedSubviews {
+                if let button = view as? NSButton, ["插件", "MCP 连接器", "Hooks", "自定义 Agent", "团队"].contains(button.title) { button.isHidden = true }
+            }
+        }
+        reload()
+    }
     @objc private func showRules() {
         guard canLeave() else { return }
         if let window = ruleWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentRuleWindow(store: store, taskID: taskID); manager.onInsert = onInsertLocalRule; ruleWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentRuleWindow(store: store, taskID: taskID); manager.onInsert = onInsertLocalRule; ruleWindow = manager; presentSettingsChild(manager)
     }
     @objc private func showPlugins() {
         guard canLeave() else { return }
         if let window = pluginWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onInsertRule = onInsertRule; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id, scope in self?.openMCP(id, workspace: scope) }; manager.onConfigureAgent = { [weak self] id, scope in self?.openAgent(id, workspace: scope) }; manager.onConfigureHook = { [weak self] id, scope in self?.openHook(id, workspace: scope) }; pluginWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentPluginWindow(store: store, workspace: workspace); manager.onInsert = onInsert; manager.onInsertRule = onInsertRule; manager.onChange = { [weak self] in self?.reload() }; manager.onConfigureMCP = { [weak self] id, scope in self?.openMCP(id, workspace: scope) }; manager.onConfigureAgent = { [weak self] id, scope in self?.openAgent(id, workspace: scope) }; manager.onConfigureHook = { [weak self] id, scope in self?.openHook(id, workspace: scope) }; pluginWindow = manager; presentSettingsChild(manager)
     }
     @objc private func showMCP() {
         openMCP(nil, workspace: workspace)
@@ -91,7 +101,7 @@ import UniformTypeIdentifiers
             if manager.scopeWorkspace == workspace { if let id { manager.selectServer(id) }; window.makeKeyAndOrderFront(nil); return }
             window.performClose(nil); if window.isVisible { window.makeKeyAndOrderFront(nil); return }
         }
-        let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; if let id { manager.selectServer(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentMCPWindow(service: store.mcp, workspace: workspace); manager.onBrowseContent = onBrowseMCP; mcpWindow = manager; if let id { manager.selectServer(id) }; presentSettingsChild(manager)
     }
     @objc private func showHooks() {
         openHook(nil, workspace: workspace)
@@ -101,7 +111,7 @@ import UniformTypeIdentifiers
             if manager.scopeWorkspace == workspace { if let id { manager.selectHook(id) }; window.makeKeyAndOrderFront(nil); return }
             window.performClose(nil); if window.isVisible { window.makeKeyAndOrderFront(nil); return }
         }
-        let manager = AgentHookWindow(service: store.hooks, workspace: workspace); hookWindow = manager; if let id { manager.selectHook(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentHookWindow(service: store.hooks, workspace: workspace); hookWindow = manager; if let id { manager.selectHook(id) }; presentSettingsChild(manager)
     }
     @objc private func showAgents() {
         openAgent(nil, workspace: workspace)
@@ -111,11 +121,11 @@ import UniformTypeIdentifiers
             if manager.scopeWorkspace == workspace { if let id { manager.selectProfile(id) }; window.makeKeyAndOrderFront(nil); return }
             window.performClose(nil); if window.isVisible { window.makeKeyAndOrderFront(nil); return }
         }
-        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; presentSettingsChild(manager)
     }
     @objc private func showTeams() {
         if let window = teamWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; teamWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil)
+        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; teamWindow = manager; presentSettingsChild(manager)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -191,7 +201,7 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func removeItem() {
-        guard let item = selected, canLeave(), let window else { return }
+        guard let item = selected, canLeave(), let window = presentingWindow else { return }
         let alert = NSAlert(); alert.messageText = "移除「\(item.name)」？"; alert.informativeText = "文件会移到废纸篓，已有任务记录保留。"
         alert.addButton(withTitle: "移除"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
@@ -203,7 +213,7 @@ import UniformTypeIdentifiers
         let scope = NSPopUpButton(); scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; return scope
     }
     @objc private func createItem() {
-        guard canLeave(), let window else { return }
+        guard canLeave(), let window = presentingWindow else { return }
         let alert = NSAlert(); alert.messageText = kind == .skill ? "新建 Skill" : "新建命令"; alert.addButton(withTitle: "创建"); alert.addButton(withTitle: "取消")
         let name = NSTextField(), scope = scopeControl(); name.placeholderString = "名称"; name.setAccessibilityLabel("扩展名称"); scope.setAccessibilityLabel("扩展范围")
         let form = NSStackView(views: [name, scope]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10; form.frame = NSRect(x: 0, y: 0, width: 300, height: 64)
@@ -220,7 +230,7 @@ import UniformTypeIdentifiers
         }
     }
     @objc private func importItem() {
-        guard canLeave(), let window else { return }
+        guard canLeave(), let window = presentingWindow else { return }
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = kind == .skill; panel.allowsMultipleSelection = false
         panel.prompt = "导入"; panel.message = kind == .skill ? "选择 SKILL.md、Skill 文件夹、ZIP 或 .skill 文件" : "选择命令 Markdown 文件"
         let scope = scopeControl(); scope.setAccessibilityLabel("导入范围"); panel.accessoryView = scope
@@ -246,6 +256,7 @@ import UniformTypeIdentifiers
         if let child = ruleWindow?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } }
         if canLeave() { job?.cancel(); return true }; return false
     }
+    override func settingsWillLeave() { job?.cancel() }
     func checkLayout(_ output: URL) -> [String: Bool] {
         showWindow(nil); var checks = ["extensionEditorMatchesActualFile": selected.flatMap { try? store.extensions.document($0).0 } == editor.string, "extensionEnableAndSourceControls": enabled.isEnabled && reveal.isEnabled]
         if let item = selected, item.enabled, let row = items.firstIndex(where: { $0.id == item.id }) {

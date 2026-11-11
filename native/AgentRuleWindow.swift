@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentRuleWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate {
+@MainActor final class AgentRuleWindow: AgentSettingsPageController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate {
     private let store: AgentStore, taskID: String
     private let scopes = NSSegmentedControl(labels: ["全部", "用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = NSTableView(), name = NSTextField(), editor = NSTextView(), descriptionField = NSTextField(), patterns = NSTextField()
@@ -121,7 +121,7 @@ import AppKit
     @objc private func refreshList() { if confirmClosing() { reload() } }
     @objc private func createItem() {
         guard confirmClosing() else { return }; clear(); creating = true; createScope.selectItem(at: scopes.selectedSegment == 2 && task?.workspace != nil ? 1 : 0)
-        trigger.selectItem(at: 0); editor.setAccessibilityLabel("规则正文"); location.stringValue = ""; dirty = true; selectRow(nil); updateControls(); window?.makeFirstResponder(name)
+        trigger.selectItem(at: 0); editor.setAccessibilityLabel("规则正文"); location.stringValue = ""; dirty = true; selectRow(nil); updateControls(); presentingWindow?.makeFirstResponder(name)
     }
     @discardableResult private func saveChanges() -> Bool {
         guard let task else { setState("原任务已不存在"); return false }
@@ -144,7 +144,7 @@ import AppKit
     @objc private func useItem() { guard let selected else { return }; do { try onInsert?(selected) } catch { setState(error.localizedDescription) } }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.source]) } }
     @objc private func removeItem() {
-        guard let selected, let task, let window else { return }
+        guard let selected, let task, let window = presentingWindow else { return }
         let alert = NSAlert(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓"); alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }

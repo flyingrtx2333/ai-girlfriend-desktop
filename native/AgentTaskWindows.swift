@@ -31,10 +31,12 @@ import AppKit
     }
     func refreshTaskWindows() { agentStore?.attention.refresh(); for window in taskControls { window.scheduleRender(); window.refreshAutomationBadge(); window.refreshAttention() } }
     func showAttention(settings: Bool = false) {
+        if settings { inputControl.showAttentionPreferences(); return }
         ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { return }
         if attentionWindow == nil {
             let window = AgentAttentionWindow(attention: tasks.attention, runtime: runtime)
             window.onOpenTask = { [weak self] id in guard let self else { return }; let owner = self.taskControl(for: id); owner.showAgentTask(id); owner.show(tab: "chat") }
+            window.onOpenSettings = { [weak self] in self?.inputControl.showAttentionPreferences() }
             attentionWindow = window
         }
         attentionWindow?.showWindow(nil); attentionWindow?.window?.makeKeyAndOrderFront(nil); tasks.attention.refresh(); attentionWindow?.refresh()

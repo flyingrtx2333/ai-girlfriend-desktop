@@ -1,6 +1,7 @@
 import AppKit
 
 @MainActor final class AgentAttentionWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate {
+    var onOpenSettings: (() -> Void)?
     private struct ListState { var query = "", kind: String?, source: String?, sender: String?; var days = 0, limit = 50 }
     private let attention: AgentAttention, runtime: AgentRuntime
     private let tabs = NSSegmentedControl(labels: ["待处理", "已处理"], trackingMode: .selectOne, target: nil, action: nil)
@@ -186,6 +187,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool { settingsPanel == nil && prepareToClose() }
     func windowWillClose(_ notification: Notification) { draftSave?.cancel() }
     @objc func showSettings() {
+        if let onOpenSettings { if persistReply() { onOpenSettings() }; return }
         guard let window, settingsPanel == nil, persistReply() else { return }
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 490, height: 360), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "需要我设置"; settingsPanel = panel; settingsControls = [:]
         func check(_ key: String, _ title: String, _ enabled: Bool) -> NSButton { let button = NSButton(checkboxWithTitle: title, target: nil, action: nil); button.state = enabled ? .on : .off; settingsControls[key] = button; return button }
