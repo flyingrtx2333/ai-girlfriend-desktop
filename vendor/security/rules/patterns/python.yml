@@ -1,0 +1,31 @@
+id: python-shell
+language: Python
+severity: warning
+message: subprocess passes commands through a shell
+rule:
+  all:
+    - pattern:
+        context: 'f(shell=True)'
+        selector: keyword_argument
+    - inside:
+        kind: call
+        stopBy: end
+        has:
+          field: function
+          regex: '^subprocess\.(run|Popen|call|check_call|check_output)$'
+---
+id: python-tls-verification
+language: Python
+severity: error
+message: HTTP certificate verification is disabled
+rule:
+  all:
+    - pattern:
+        context: 'f(verify=False)'
+        selector: keyword_argument
+    - inside:
+        kind: call
+        stopBy: end
+        has:
+          field: function
+          regex: '^requests\.(request|get|post|put|patch|delete|head|options)$'

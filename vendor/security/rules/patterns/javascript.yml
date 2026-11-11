@@ -1,0 +1,20 @@
+id: js-tls-verification
+language: JavaScript
+severity: error
+message: TLS certificate verification is disabled
+rule:
+  kind: pair
+  all:
+    - has:
+        field: key
+        regex: ^(rejectUnauthorized|'rejectUnauthorized'|"rejectUnauthorized")$
+    - has:
+        field: value
+        kind: 'false'
+---
+id: js-eval
+language: JavaScript
+severity: warning
+message: Direct eval executes text as code
+rule:
+  pattern: eval($$$ARGS)

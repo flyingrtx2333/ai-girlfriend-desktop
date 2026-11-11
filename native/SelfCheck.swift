@@ -29,6 +29,7 @@ import WebKit
         if CommandLine.arguments.contains("--task-find-check") { await runAgentTaskFindCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appshot-check") { await runAgentAppShotCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--code-security-check") { await runCodeSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
             // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
             var requests = 0
@@ -47,6 +48,11 @@ import WebKit
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }
                 if CommandLine.arguments.contains("--round-rollback-fixtures") { let fixture = try await prepareRoundRollbackCheck(output); control.showAgentTask(fixture.taskID) }
+                if CommandLine.arguments.contains("--code-security-fixtures") {
+                    guard !attentionLiveUI else { throw PetError("代码安全窗口验收不调用模型") }
+                    let git = try await prepareCodeSecurityCheck(output, tasks: tasks)
+                    control.showAgentTask(git.taskID)
+                }
                 if CommandLine.arguments.contains("--terminal-panel-fixtures") {
                     guard !attentionLiveUI else { throw PetError("终端窗口验收不调用模型") }
                     let project = try AgentFiles(workspace: output.appendingPathComponent("workspace").path)

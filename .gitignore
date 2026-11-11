@@ -41,3 +41,5 @@ node_modules/
 /vendor/sherpa-onnx/runtime.nupkg
 /vendor/sherpa-onnx/lib/
 /vendor/sherpa-onnx/model/*.onnx
+/vendor/security/.cache/
+/vendor/security/bin/

@@ -112,6 +112,33 @@ enum AgentGitDiffRows {
         longest = NSSize(width: rows.map { (display($0.old.text) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0, height: rows.map { (display($0.new.text) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0)
         oldTable.reloadData(); newTable.reloadData(); configureUnified(); needsLayout = true
     }
+    func focusNewLine(_ line: Int) -> Bool {
+        guard let row = rows.firstIndex(where: { $0.new.number == line }) else { return false }
+        if splitMode {
+            layoutSubtreeIfNeeded()
+            newTable.scrollRowToVisible(row)
+            return true
+        }
+        var number: Int?, offset = 0
+        for record in patch.components(separatedBy: "\n") {
+            let length = (record as NSString).length
+            if record.hasPrefix("diff --git ") { number = nil }
+            if record.hasPrefix("@@ "), let range = record.range(of: " \\+[0-9]+", options: .regularExpression) {
+                number = Int(record[range].dropFirst(2))
+            } else if let current = number, record.hasPrefix("+") || record.hasPrefix(" ") {
+                if current == line {
+                    let range = NSRange(location: offset, length: length)
+                    window?.makeFirstResponder(text)
+                    text.setSelectedRange(range)
+                    text.scrollRangeToVisible(range)
+                    return true
+                }
+                number = current + 1
+            }
+            offset += length + 1
+        }
+        return false
+    }
     private func configureUnified() {
         text.isHorizontallyResizable = !wraps; text.autoresizingMask = wraps ? [.width] : []
         text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)

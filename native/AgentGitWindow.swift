@@ -8,6 +8,8 @@ import AppKit
     private let worktreeButton = NSButton(title: "新建工作树", target: nil, action: nil), initializeButton = NSButton(title: "初始化 Git", target: nil, action: nil)
     private let pushButton = NSButton(title: "推送…", target: nil, action: nil), commitPushButton = NSButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
+    private var securityWindow: AgentCodeSecurityWindow?
+    private let securityButton = NSButton(title: "安全检查…", target: nil, action: nil)
     private var worktreeWindow: AgentWorktreeWindow?
     private var creationWindow: AgentWorktreeCreationWindow?
     private let manageWorktrees = NSButton(title: "工作树…", target: nil, action: nil)
@@ -34,11 +36,13 @@ import AppKit
         let viewer = diffView
         message.placeholderString = "提交说明"; message.setAccessibilityLabel("Git 提交说明")
         state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
-        for button in [refreshButton, commitButton, worktreeButton, initializeButton, stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, commitPushButton] { button.target = self }
+        for button in [refreshButton, commitButton, worktreeButton, initializeButton, stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, commitPushButton, securityButton] { button.target = self }
         refreshButton.action = #selector(refresh); commitButton.action = #selector(commit); worktreeButton.action = #selector(createWorktree); initializeButton.action = #selector(initialize)
         manageWorktrees.target = self; manageWorktrees.action = #selector(openWorktrees)
         stageButton.action = #selector(stageFile); unstageButton.action = #selector(unstageFile); restoreButton.action = #selector(restoreFile); undoRestoreButton.action = #selector(undoRestore)
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
+        securityButton.action = #selector(checkSecurity)
+        securityButton.toolTip = "本机检查所选文件中的疑似凭据和危险代码模式"
         sourcePopup.addItems(withTitles: AgentGitSource.allCases.map(\.title)); sourcePopup.selectItem(at: AgentGitSource.allCases.firstIndex(of: source)!)
         sourcePopup.target = self; sourcePopup.action = #selector(changeSource); sourcePopup.setAccessibilityLabel("Git 改动来源")
         sourcePopup.item(at: 0)?.toolTip = "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。"
@@ -52,8 +56,8 @@ import AppKit
         initializeButton.isHidden = true
         let toolbar = NSStackView(views: [branch, NSView(), initializeButton, manageWorktrees, worktreeButton, pushButton, refreshButton]); toolbar.spacing = 8
         let sources = NSStackView(views: [sourcePopup, revision, NSView(), statistics, displayMode, wrap]); sources.spacing = 10
-        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView()]); actions.spacing = 8
-        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton] { button.controlSize = .small; button.font = .systemFont(ofSize: 12) }
+        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView(), securityButton]); actions.spacing = 8
+        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, securityButton] { button.controlSize = .small; button.font = .systemFont(ofSize: 12) }
         let composer = NSStackView(views: [message, commitButton, commitPushButton]); composer.spacing = 10
         for view in [toolbar, sources, list, viewer, actions, composer, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -83,6 +87,7 @@ import AppKit
         commitButton.isEnabled = !value && writable() && [.uncommitted, .staged].contains(source) && review?.diff.isEmpty == false
         commitPushButton.isEnabled = commitButton.isEnabled
         pushButton.isEnabled = !value && initializeButton.isHidden
+        securityButton.isEnabled = !value && AgentCodeSecurity.sources.contains(source) && !table.selectedRowIndexes.isEmpty
         let item = inspection?.paths.count == 1 ? changes.first(where: { $0.path == inspection?.paths.first }) : nil
         let columns = Array(item?.status ?? ""), current = !value && writable() && item != nil && !source.usesRevision && !columns.contains("U") && !["AA", "DD"].contains(item?.status ?? "")
         let hasUnstaged = item?.status == "??" || (source == .unstaged || source == .lastTurn) || (source == .uncommitted && columns.count == 2 && columns[1] != " ")
@@ -156,13 +161,18 @@ import AppKit
         label.font = .monospacedSystemFont(ofSize: 11, weight: .regular); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = change.path; return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
+        inspectSelection()
+    }
+    private func inspectSelection(location: (AgentSecurityFinding, AgentSecurityReport)? = nil) {
         guard !busy, let git else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
         review = nil; inspection = nil; showDiff(""); statistics.stringValue = ""; guard !selected.isEmpty else { setBusy(false); return }; setBusy(true); state.stringValue = "读取差异…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
+                if let (finding, report) = location { try await git.validateSecurityLocation(finding, report: report) }
                 let result = try await git.inspect(source: source, revision: revision.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), requested: selected)
+                if let (finding, report) = location { try await git.validateSecurityLocation(finding, report: report) }
                 try Task.checkCancellation()
                 if [.uncommitted, .staged].contains(source) {
                     let saved = store.task(taskID)?.gitReview
@@ -173,10 +183,59 @@ import AppKit
                 showDiff(result.diff.isEmpty ? "没有差异" : result.diff)
                 statistics.stringValue = "所选 +\(result.additions)  −\(result.deletions)" + (result.binaryFiles > 0 ? " · \(result.binaryFiles) 二进制" : "")
                 state.stringValue = lastResult.isEmpty ? "\(result.paths.count) 个文件" : lastResult
+                if let (finding, _) = location {
+                    let position = "\(finding.path):\(finding.line)"
+                    state.stringValue = diffView.focusNewLine(finding.line) ? position : position + " · 此行在差异范围外"
+                }
             }
             catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
             if !Task.isCancelled { setBusy(false) }
         }
+    }
+    @objc private func checkSecurity() {
+        guard !busy, let git, let window, window.attachedSheet == nil, AgentCodeSecurity.sources.contains(source) else { return }
+        let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
+        guard (1...50).contains(selected.count) else { state.stringValue = "请选择 1 至 50 个文件"; return }
+        setBusy(true)
+        state.stringValue = "正在检查 \(selected.count) 个文件…"
+        job = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let report = try await git.checkCodeSecurity(source: source, requested: selected)
+                try Task.checkCancellation()
+                setBusy(false)
+                state.stringValue = report.summary
+                let controller = AgentCodeSecurityWindow(report: report, onLocate: { [weak self] finding in
+                    self?.locateSecurityFinding(finding, report: report)
+                }, onFix: writable() ? { [weak self] finding in
+                    guard let self else { throw PetError("Git 窗口已关闭") }
+                    let checkpoint = try git.applySecurityFix(finding, report: report)
+                    restoreID = checkpoint
+                    undoRestoreButton.title = "撤销修复"
+                    undoRestoreButton.isHidden = false
+                    lastResult = "已启用证书校验"
+                    log(lastResult, result: "\(finding.path):\(finding.line)")
+                    refresh()
+                } : nil)
+                securityWindow = controller
+                if let sheet = controller.window { window.beginSheet(sheet) { [weak self] _ in self?.securityWindow = nil } }
+            } catch {
+                guard !Task.isCancelled else { return }
+                state.stringValue = error.localizedDescription
+                setBusy(false)
+            }
+        }
+    }
+    private func locateSecurityFinding(_ finding: AgentSecurityFinding, report: AgentSecurityReport) {
+        guard !busy, source == report.source, let row = changes.firstIndex(where: { $0.path == finding.path }) else {
+            state.stringValue = "Git 来源已变化，请重新检查"
+            return
+        }
+        table.delegate = nil
+        table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        table.scrollRowToVisible(row)
+        table.delegate = self
+        inspectSelection(location: (finding, report))
     }
     private func log(_ title: String, result: String, failed: Bool = false) { store.update(taskID) { $0.events.append(AgentEvent(kind: "git", title: title, detail: result, status: failed ? "failed" : "completed")) } }
     @objc private func stageFile() { performFileAction(.stage) }
@@ -198,7 +257,7 @@ import AppKit
             guard let self else { return }
             do {
                 let result = try await git.apply(action, inspection: inspection)
-                if action == .restore { restoreID = result.checkpointID; undoRestoreButton.isHidden = result.checkpointID == nil }
+                if action == .restore { restoreID = result.checkpointID; undoRestoreButton.title = "撤销恢复"; undoRestoreButton.isHidden = result.checkpointID == nil }
                 lastResult = title + " · " + inspection.paths.joined(separator: ", "); log(title, result: inspection.paths.joined(separator: "\n"))
                 setBusy(false); refresh()
             } catch { state.stringValue = error.localizedDescription; setBusy(false) }
@@ -206,7 +265,7 @@ import AppKit
     }
     @objc private func undoRestore() {
         guard !busy, writable(), let id = restoreID, let change = store.task(taskID)?.changes.first(where: { $0.id == id }) else { return }
-        do { try AgentChanges.restore(change, taskID: taskID, store: store); restoreID = nil; undoRestoreButton.isHidden = true; lastResult = "已撤销恢复"; refresh() }
+        do { try AgentChanges.restore(change, taskID: taskID, store: store); restoreID = nil; undoRestoreButton.isHidden = true; lastResult = change.origin == "安全检查" ? "已撤销修复" : "已撤销恢复"; refresh() }
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func commit() {

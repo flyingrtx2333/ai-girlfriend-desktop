@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { signingIdentity, signNative } from './native-signing.mjs';
 import { prepareSherpa, sherpaRoot } from './prepare-sherpa.mjs';
+import { prepareSecurity } from './prepare-security.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'build', '蓝色大肥鱼.app');
@@ -15,6 +16,7 @@ function run(command, args) {
 }
 signingIdentity(); // Fail before replacing the build if no stable identity exists.
 await prepareSherpa();
+const scanners = await prepareSecurity();
 function buildPackage(directory, product) {
   const args = ['swift', 'build', '--package-path', directory, '--build-system', 'native', '-c', 'release'];
   run('xcrun', [...args, '--product', product]);
@@ -32,6 +34,13 @@ run('npm', ['run', 'build:wiki']);
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(contents, 'MacOS'), { recursive: true });
 await mkdir(path.join(resources, 'web'), { recursive: true });
+for (const scanner of scanners) {
+  const destination = path.join(contents, 'MacOS', path.basename(scanner));
+  await cp(scanner, destination);
+  signNative(destination);
+}
+const security = path.join(root, 'vendor', 'security');
+await cp(path.join(security, 'rules'), path.join(resources, 'security'), { recursive: true });
 const frameworks = path.join(contents, 'Frameworks'); await mkdir(frameworks, { recursive: true });
 for (const [products, name] of [[mcpProducts, 'libBlueFatFishMCP.dylib'], [terminalProducts, 'libBlueFatFishTerminal.dylib']]) {
   const library = path.join(frameworks, name);
@@ -84,6 +93,7 @@ for (const item of ['index.html', 'assets', 'canvas', 'office', 'diagrams', 'wik
 }
 await cp(path.join(sherpaRoot, 'model'), path.join(resources, 'wake-model'), { recursive: true });
 await mkdir(path.join(resources, 'licenses'), { recursive: true });
+for (const name of ['Gitleaks-LICENSE.txt', 'ast-grep-LICENSE.txt']) await cp(path.join(security, name), path.join(resources, 'licenses', name));
 for (const name of ['LICENSE-sherpa.txt', 'LICENSE-onnxruntime.txt', 'THIRD-PARTY-NOTICES-onnxruntime.txt']) await cp(path.join(sherpaRoot, name), path.join(resources, 'licenses', name));
 for (const [repo, license] of [['swift-sdk', 'LICENSE'], ['swift-system', 'LICENSE.txt'], ['swift-log', 'LICENSE.txt'], ['eventsource', 'LICENSE.md']]) {
   await cp(path.join(root, 'native-mcp/.build/checkouts', repo, license), path.join(resources, 'licenses', `MCP-${repo}-LICENSE.txt`));
