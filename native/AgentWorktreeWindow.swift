@@ -14,7 +14,7 @@ import AppKit
         git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 400); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua); window.center(); super.init(window: window); window.delegate = self
+        window.center(); super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let title = NSTextField(labelWithString: git.files.root.lastPathComponent); title.font = .systemFont(ofSize: 15, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle; title.toolTip = git.files.root.path
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("worktree")); table.addTableColumn(column)
@@ -26,7 +26,7 @@ import AppKit
         scope.selectedSegment = 0; scope.target = self; scope.action = #selector(changeScope)
         for button in [refreshButton, openButton, revealButton, recycleButton, restoreButton] { button.target = self }
         refreshButton.action = #selector(refresh); openButton.action = #selector(openTask); revealButton.action = #selector(reveal); recycleButton.action = #selector(recycle); restoreButton.action = #selector(restore)
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingMiddle
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let header = NSStackView(views: [title, NSView(), scope, refreshButton]); header.spacing = 10
         let actions = NSStackView(views: [openButton, revealButton, NSView(), recycleButton, restoreButton]); actions.spacing = 8
         for view in [header, list, viewer, actions, state] { view.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(view) }
@@ -54,7 +54,7 @@ import AppKit
             path = item.path
         }
         let cell = NSTableCellView(), first = NSTextField(labelWithString: name), second = NSTextField(labelWithString: path.replacingOccurrences(of: "\n", with: "↵").replacingOccurrences(of: "\r", with: "↵"))
-        first.font = .systemFont(ofSize: 12, weight: .medium); second.font = .systemFont(ofSize: 10); second.textColor = .secondaryLabelColor
+        first.font = .systemFont(ofSize: 12, weight: .medium); second.font = .systemFont(ofSize: 10); second.textColor = AgentWorkbenchTheme.secondaryText
         for label in [first, second] { label.lineBreakMode = .byTruncatingMiddle; label.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(label); label.toolTip = path }
         cell.textField = first
         NSLayoutConstraint.activate([first.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8), first.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8), first.topAnchor.constraint(equalTo: cell.topAnchor, constant: 9), second.leadingAnchor.constraint(equalTo: first.leadingAnchor), second.trailingAnchor.constraint(equalTo: first.trailingAnchor), second.topAnchor.constraint(equalTo: first.bottomAnchor, constant: 4)])

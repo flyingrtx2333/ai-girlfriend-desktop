@@ -33,6 +33,7 @@ import WebKit
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
             // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
             var requests = 0
@@ -50,7 +51,9 @@ import WebKit
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
-                    let id = try await prepareSettingsPagesCheck(output, tasks: tasks); control.showAgentTask(id)
+                    let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
+                    if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
+                    control.showAgentTask(id)
                 }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--task-search-fixtures") { try prepareTaskSearchCheck(output) }

@@ -93,7 +93,7 @@ import ImageIO
                     diagrams.append(Diagram(source: code, range: range, attachment: attachment)); append(value)
                 } else {
                     if fence.info.lowercased() == "mermaid" { append(inline("图表超过本页 16 张或单张 32KB 的预览上限")) }
-                    append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: NSColor(white: 0.95, alpha: 1), .paragraphStyle: style]))
+                    append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: AgentWorkbenchTheme.subtle, .paragraphStyle: style]))
                 }
             } else if let match = trimmed.range(of: "^#{1,6}\\s+", options: .regularExpression) {
                 heading(String(trimmed[match.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression), level: trimmed.prefix(while: { $0 == "#" }).count)
@@ -111,7 +111,7 @@ import ImageIO
                         block.setValue(100 / CGFloat(alignment.count), type: .percentageValueType, for: .width)
                         block.setWidth(7, type: .absoluteValueType, for: .padding)
                         block.setWidth(0.5, type: .absoluteValueType, for: .border); block.setBorderColor(.separatorColor)
-                        block.backgroundColor = row == 0 ? NSColor(white: 0.95, alpha: 1) : .white
+                        block.backgroundColor = row == 0 ? AgentWorkbenchTheme.subtle : .textBackgroundColor
                         let style = paragraph.mutableCopy() as! NSMutableParagraphStyle; style.textBlocks = [block]; style.alignment = alignment[column]; style.paragraphSpacing = 3
                         let value = (column < values.count ? values[column].text : "").replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
                         output.append(inline(value, font: row == 0 ? .systemFont(ofSize: 13, weight: .semibold) : .systemFont(ofSize: 13), style: style))

@@ -13,7 +13,7 @@ import AppKit
         let reload = NSButton(title: "重新载入", target: self, action: #selector(reloadSettings)), label = NSTextField(labelWithString: "全局快捷键")
         let line = NSStackView(views: [label, shortcut, NSView(), capture, reload]); line.spacing = 10; line.alignment = .centerY
         addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.setAccessibilityLabel("AppShot 状态"); addArrangedSubview(state); state.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.setAccessibilityLabel("AppShot 状态"); addArrangedSubview(state); state.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         observer = NotificationCenter.default.addObserver(forName: AgentAppShot.changed, object: service, queue: .main) { [weak self] _ in Task { @MainActor in self?.refresh() } }
         activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak service] _ in Task { @MainActor in service?.refreshPermissions() } }
         refresh()

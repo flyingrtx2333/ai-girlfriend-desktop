@@ -37,7 +37,7 @@ import AppKit
         table.setAccessibilityLabel("快速切换任务"); table.target = self; table.doubleAction = #selector(openSelected)
         table.onOpen = { [weak self] in self?.openSelected() }; table.onCancel = { [weak self] in self?.cancel() }
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        empty.textColor = .secondaryLabelColor; empty.font = .systemFont(ofSize: 13)
+        empty.textColor = AgentWorkbenchTheme.secondaryText; empty.font = .systemFont(ofSize: 13)
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         openButton.target = self; openButton.action = #selector(openSelected); openButton.keyEquivalent = "\r"
         let actions = NSStackView(views: [empty, NSView(), cancel, openButton]), content = NSStackView(views: [search, scroll, actions])
@@ -86,7 +86,7 @@ import AppKit
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
         if cell.textField == nil {
             let title = NSTextField(labelWithString: ""), detail = NSTextField(labelWithString: "")
-            title.font = .systemFont(ofSize: 14, weight: .medium); detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
+            title.font = .systemFont(ofSize: 14, weight: .medium); detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText
             for view in [title, detail] { view.lineBreakMode = .byTruncatingTail; view.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(view) }
             cell.identifier = id; cell.textField = title; detail.identifier = .init("detail")
             NSLayoutConstraint.activate([title.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 10), title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -10), title.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8), detail.leadingAnchor.constraint(equalTo: title.leadingAnchor), detail.trailingAnchor.constraint(equalTo: title.trailingAnchor), detail.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4)])

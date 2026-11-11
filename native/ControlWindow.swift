@@ -88,7 +88,7 @@ final class FormDocumentView: NSView {
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
@@ -189,7 +189,7 @@ final class FormDocumentView: NSView {
     private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchLower = NSStackView()
-    private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = NSView(), headerInspectorRule = NSView()
+    private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private var inspectorWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var workbenchSidebarWidth: NSLayoutConstraint!, navigationLeading: NSLayoutConstraint!, sidebarRequested = true
     private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
@@ -204,12 +204,12 @@ final class FormDocumentView: NSView {
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
         window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
-        window.appearance = NSAppearance(named: .aqua)
-        window.backgroundColor = NSColor(red: 0.97, green: 0.96, blue: 0.95, alpha: 1)
+        window.backgroundColor = AgentWorkbenchTheme.sidebar
         window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         if companion.usesAgent { companion.ensureAgent() }
         build()
+        contentSurface.onAppearanceChange = { [weak self] in self?.refreshAppearancePreferences() }
         composer.onShortcut = { [weak self] event in
             guard let self, self.canPerformShortcut(.planMode), self.companion?.shortcuts.binding(.planMode).matches(event) == true else { return false }
             self.performShortcut(.planMode); return true
@@ -241,7 +241,7 @@ final class FormDocumentView: NSView {
         }
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
-        refreshPreferences(); refreshShortcutControls()
+        refreshPreferences(); refreshShortcutControls(); refreshAppearancePreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         renderMessages()
         if windowNumber == 1 {
@@ -257,6 +257,54 @@ final class FormDocumentView: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func refreshAppearancePreferences() {
+        guard let window else { return }
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            settingsPageIcon.layer?.backgroundColor = AgentWorkbenchTheme.subtle.cgColor
+            sendButton.layer?.backgroundColor = (companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary).cgColor
+            sendButton.contentTintColor = companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText
+            generalSettingsSave?.layer?.backgroundColor = AgentWorkbenchTheme.primary.cgColor
+            generalSettingsSave?.contentTintColor = AgentWorkbenchTheme.primaryText
+            for (index, button) in categoryButtons.enumerated() {
+                let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
+                button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
+            }
+            for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings")] {
+                button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
+            }
+        }
+        composer.font = .systemFont(ofSize: AgentAppearance.messageSize)
+        messageRows.values.forEach { $0.refreshAppearance() }
+        settingsPageHost.refreshAppearance()
+        contentSurface.needsDisplay = true
+    }
+    func checkAppearanceComposerSize() -> CGFloat? {
+        guard CommandLine.arguments.contains("--appearance-check") else { return nil }; return composer.font?.pointSize
+    }
+    func checkAppearanceSelectionColor() -> [CGFloat]? {
+        guard CommandLine.arguments.contains("--appearance-check") else { return nil }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        return taskSidebar.appearanceSelectionColor()
+    }
+    func checkAppearanceLayout() -> [String: Bool] {
+        guard CommandLine.arguments.contains("--appearance-check"), let window else { return [:] }
+        let original = window.contentView?.bounds.size ?? .zero
+        selectedTab = "settings"; settingsCategory = "appearance"; changeTab()
+        var result: [String: Bool] = [:]
+        for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 806, height: 550))] {
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
+            guard let scroll = settingsSidebar.subviews.compactMap({ $0 as? NSScrollView }).first else { result[name + "SettingsCategoryScrollerExists"] = false; continue }
+            let before = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, (scroll.documentView?.bounds.height ?? 0) - scroll.contentSize.height)))
+            scroll.reflectScrolledClipView(scroll.contentView); window.contentView?.layoutSubtreeIfNeeded()
+            let after = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+            result[name + "SettingsSearchStaysPinnedAndVisible"] = before == after && settingsSidebar.bounds.contains(after) && after.width >= 140 && after.height >= 26 && !after.intersects(scroll.frame)
+        }
+        result["ExistingComposerUsesCurrentTextSize"] = composer.font?.pointSize == AgentAppearance.messageSize
+        window.setContentSize(original); selectedTab = "chat"; changeTab()
+        return result
+    }
 
     @objc private func accessibilityDisplayChanged() {
         guard NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let root = window?.contentView else { return }
@@ -280,11 +328,11 @@ final class FormDocumentView: NSView {
         field.translatesAutoresizingMaskIntoConstraints = false
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
     }
-    private func styleNavigation(_ button: NSButton, symbol: String) {
-        button.isBordered = false; button.font = .systemFont(ofSize: 14, weight: .medium); button.alignment = .left
+    private func styleNavigation(_ button: NSButton, symbol: String, compact: Bool = false) {
+        button.isBordered = false; button.font = .systemFont(ofSize: compact ? 13 : 14, weight: .medium); button.alignment = .left
         button.imagePosition = .imageLeading; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.image?.size = NSSize(width: 17, height: 17); button.contentTintColor = NSColor(white: 0.18, alpha: 1)
-        button.wantsLayer = true; button.layer?.cornerRadius = 9; button.heightAnchor.constraint(equalToConstant: 38).isActive = true
+        button.image?.size = NSSize(width: compact ? 14 : 17, height: compact ? 14 : 17); button.contentTintColor = .labelColor
+        button.wantsLayer = true; button.layer?.cornerRadius = compact ? 6 : 9; button.heightAnchor.constraint(equalToConstant: compact ? 30 : 38).isActive = true
     }
     private func build() {
         guard let window else { return }
@@ -307,7 +355,7 @@ final class FormDocumentView: NSView {
         stopRecordingButton.image = NSImage(systemSymbolName: "stop.circle", accessibilityDescription: nil); stopRecordingButton.imagePosition = .imageLeading
         stopRecordingButton.isBordered = false; stopRecordingButton.font = .systemFont(ofSize: 13); stopRecordingButton.alignment = .left
         for button in [stopRecordingButton, voiceStopButton] { button.target = companion; button.action = #selector(AppDelegate.stopRecording); button.contentTintColor = .systemRed }
-        sidebarWake.font = .systemFont(ofSize: 11); sidebarWake.textColor = .secondaryLabelColor
+        sidebarWake.font = .systemFont(ofSize: 11); sidebarWake.textColor = AgentWorkbenchTheme.secondaryText
         clearButton.isBordered = false; clearButton.font = .systemFont(ofSize: 12); clearButton.alignment = .left
         clearButton.target = self; clearButton.action = #selector(clear)
         let knowledge = NSButton(title: "项目知识", target: self, action: #selector(showAgentKnowledge)); knowledge.isBordered = false; knowledge.font = .systemFont(ofSize: 12); knowledge.alignment = .left
@@ -325,13 +373,13 @@ final class FormDocumentView: NSView {
             taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
         }
         let main = contentSurface; main.translatesAutoresizingMaskIntoConstraints = false; main.wantsLayer = true
-        main.layer?.backgroundColor = NSColor.white.cgColor; main.layer?.cornerRadius = 17; main.layer?.masksToBounds = true; content.addSubview(main)
-        pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = .secondaryLabelColor
+        main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 17; main.layer?.masksToBounds = true; content.addSubview(main)
+        pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = AgentWorkbenchTheme.secondaryText
         pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle)
         settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; settingsPageIcon.wantsLayer = true
         settingsPageIcon.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor; settingsPageIcon.layer?.cornerRadius = 10
-        settingsPageIcon.contentTintColor = NSColor(white: 0.25, alpha: 1); main.addSubview(settingsPageIcon)
+        settingsPageIcon.contentTintColor = AgentWorkbenchTheme.secondaryText; main.addSubview(settingsPageIcon)
         titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28)
         let panels = NSView(); main.addSubview(panels); panels.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -400,10 +448,10 @@ final class FormDocumentView: NSView {
         let footer = stack([AgentWorkbenchTheme.rule(), automationButton, library, knowledge, extensions, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
         for button in [automationButton as NSView, library, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         chatSidebarViews = [workbenchSidebar]
-        let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor; main.layer?.cornerRadius = 0
+        let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 0
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
         sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 231)
-        let leftRule = NSView(); leftRule.wantsLayer = true; leftRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
+        let leftRule = AgentThemeView(fill: AgentWorkbenchTheme.line); content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: workbenchSidebar.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: workbenchSidebar.trailingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: workbenchSidebar.bottomAnchor, constant: -24)])
         for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
@@ -426,7 +474,7 @@ final class FormDocumentView: NSView {
         settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(settingsPageIcon)
         for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
         buildWorkbenchConversation()
-        headerInspectorRule.wantsLayer = true; headerInspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
+        headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
         navigationLeading = navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18)
         NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 76), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24), settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36)])
@@ -437,7 +485,7 @@ final class FormDocumentView: NSView {
         terminalSplit.translatesAutoresizingMaskIntoConstraints = false
         chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector)
         inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
-        inspectorRule.wantsLayer = true; inspectorRule.layer?.backgroundColor = AgentWorkbenchTheme.line.cgColor; inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
+        inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
         NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
             if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
@@ -477,7 +525,7 @@ final class FormDocumentView: NSView {
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         entryToolbarHeight = entryToolbar.heightAnchor.constraint(equalToConstant: 34)
         NSLayoutConstraint.activate([entryToolbarHeight, entryLeading.leadingAnchor.constraint(equalTo: entryToolbar.leadingAnchor), entryLeading.topAnchor.constraint(equalTo: entryToolbar.topAnchor), entryTrailing.trailingAnchor.constraint(equalTo: entryToolbar.trailingAnchor), entryTrailing.bottomAnchor.constraint(equalTo: entryToolbar.bottomAnchor)])
-        let entry = NSView(); entry.wantsLayer = true; entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1; entry.layer?.borderColor = AgentWorkbenchTheme.line.cgColor; entry.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor
+        let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1
         for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), input.heightAnchor.constraint(equalToConstant: 44), entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
@@ -490,7 +538,7 @@ final class FormDocumentView: NSView {
         emptyAfter.setContentHuggingPriority(.defaultLow, for: .vertical)
         modelCaption.font = .systemFont(ofSize: 10); modelCaption.textColor = .tertiaryLabelColor; modelCaption.alignment = .right; modelCaption.lineBreakMode = .byTruncatingTail
         resumeButton.target = self; resumeButton.action = #selector(resumeAgentTask); resumeButton.bezelStyle = .inline; resumeButton.font = .systemFont(ofSize: 12)
-        taskContext.title = ""; taskContext.isBordered = false; taskContext.font = .systemFont(ofSize: 11); taskContext.contentTintColor = .secondaryLabelColor; taskContext.image = NSImage(systemSymbolName: "chart.pie", accessibilityDescription: nil); taskContext.image?.size = NSSize(width: 15, height: 15); taskContext.imagePosition = .imageOnly; taskContext.target = self; taskContext.action = #selector(showTaskContext)
+        taskContext.title = ""; taskContext.isBordered = false; taskContext.font = .systemFont(ofSize: 11); taskContext.contentTintColor = AgentWorkbenchTheme.secondaryText; taskContext.image = NSImage(systemSymbolName: "chart.pie", accessibilityDescription: nil); taskContext.image?.size = NSSize(width: 15, height: 15); taskContext.imagePosition = .imageOnly; taskContext.target = self; taskContext.action = #selector(showTaskContext)
         taskContext.heightAnchor.constraint(equalToConstant: 28).isActive = true; taskContext.widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true; taskContext.setContentHuggingPriority(.required, for: .horizontal)
         let lower = workbenchLower; lower.orientation = .horizontal; lower.spacing = 8; lower.addArrangedSubview(resumeButton); lower.addArrangedSubview(NSView()); lower.addArrangedSubview(modelCaption)
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
@@ -703,7 +751,7 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true else { return }
         let enabled = companion?.store.preferences.wakeEnabled == true
         voiceInput.image = NSImage(systemSymbolName: enabled ? "stop.circle" : "mic", accessibilityDescription: nil)
-        voiceInput.contentTintColor = enabled ? .systemRed : .secondaryLabelColor; voiceInput.toolTip = enabled ? "停止录音" : "语音输入"; voiceInput.setAccessibilityLabel(voiceInput.toolTip)
+        voiceInput.contentTintColor = enabled ? .systemRed : AgentWorkbenchTheme.secondaryText; voiceInput.toolTip = enabled ? "停止录音" : "语音输入"; voiceInput.setAccessibilityLabel(voiceInput.toolTip)
     }
     func showAttentionPreferences() { showSettingsCategory("attention") }
     @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
@@ -775,24 +823,27 @@ final class FormDocumentView: NSView {
         let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
         back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
         back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
-        back.contentTintColor = .secondaryLabelColor
+        back.contentTintColor = AgentWorkbenchTheme.secondaryText
         settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
         var previousGroup = ""
-        let navigation = stack([], vertical: true, spacing: 5)
+        let navigation = stack([], vertical: true, spacing: 0)
         for (index, item) in settingsCategories.enumerated() {
             let group = ["extensions", "agents", "teams", "hooks", "computer"].contains(item.0) ? "集成" : item.0 == "worktrees" ? "编码" : ["experiments", "archived"].contains(item.0) ? "其他" : "个人"
             if group != previousGroup {
-                let label = NSTextField(labelWithString: group); label.font = .systemFont(ofSize: 11); label.textColor = .tertiaryLabelColor
-                navigation.addArrangedSubview(label); previousGroup = group
+                if let previous = navigation.arrangedSubviews.last { navigation.setCustomSpacing(12, after: previous) }
+                let label = NSTextField(labelWithString: group); label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText
+                navigation.addArrangedSubview(label); navigation.setCustomSpacing(4, after: label); previousGroup = group
             }
             let button = NSButton(title: item.1, target: self, action: #selector(selectSettingsCategory(_:)))
-            button.tag = index; styleNavigation(button, symbol: item.2); navigation.addArrangedSubview(button)
+            button.tag = index; styleNavigation(button, symbol: item.2, compact: true); navigation.addArrangedSubview(button)
             button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true; categoryButtons.append(button)
         }
-        let column = stack([back, settingsSearch, navigation], vertical: true, spacing: 18)
+        let fixed = stack([back, settingsSearch], vertical: true, spacing: 18)
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
-        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(column); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), column.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), column.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12), settingsSearch.widthAnchor.constraint(equalTo: column.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), navigation.widthAnchor.constraint(equalTo: column.widthAnchor)])
+        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(navigation)
+        settingsSidebar.addSubview(fixed); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.setAccessibilityLabel("设置分类")
+        NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 18), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
     }
     @objc private func returnToChat() { guard settingsPageHost.leave() else { return }; companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
@@ -809,7 +860,7 @@ final class FormDocumentView: NSView {
         settingsPageIcon.image?.size = NSSize(width: 21, height: 21)
         for (index, button) in categoryButtons.enumerated() {
             let active = query.isEmpty && settingsCategories[index].0 == settingsCategory
-            button.state = active ? .on : .off; button.layer?.backgroundColor = active ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
+            button.state = active ? .on : .off; AgentWorkbenchTheme.color(button.layer, active ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         }
         let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
         let managed = query.isEmpty && managedSettings.contains(settingsCategory)
@@ -824,7 +875,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["appearance", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -864,20 +915,18 @@ final class FormDocumentView: NSView {
         sendButton.setAccessibilityLabel("发送")
         sendButton.target = self; sendButton.action = #selector(send)
         sendButton.widthAnchor.constraint(equalToConstant: 34).isActive = true; sendButton.heightAnchor.constraint(equalToConstant: 34).isActive = true
-        modelCaption.font = .systemFont(ofSize: 11); modelCaption.textColor = .secondaryLabelColor
+        modelCaption.font = .systemFont(ofSize: 11); modelCaption.textColor = AgentWorkbenchTheme.secondaryText
         attachmentButton.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: "添加附件"); attachmentButton.isBordered = false
         attachmentButton.target = self; attachmentButton.action = #selector(addAttachments); attachmentButton.toolTip = "添加附件"
         attachmentButton.widthAnchor.constraint(equalToConstant: 24).isActive = true; attachmentButton.isHidden = companion?.usesAgent != true
         let fill = NSView(); let entryBar = stack([attachmentButton, modelCaption, fill, sendButton], spacing: 8)
-        let entry = NSView(); entry.translatesAutoresizingMaskIntoConstraints = false; entry.wantsLayer = true
-        entry.layer?.backgroundColor = NSColor(white: 0.995, alpha: 1).cgColor; entry.layer?.cornerRadius = 16
-        entry.layer?.borderWidth = 1; entry.layer?.borderColor = NSColor(white: 0.90, alpha: 1).cgColor
+        let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.translatesAutoresizingMaskIntoConstraints = false; entry.layer?.cornerRadius = 16; entry.layer?.borderWidth = 1
         entry.addSubview(draftAttachments); entry.addSubview(input); entry.addSubview(entryBar); input.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8),
             input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor, constant: 0), input.heightAnchor.constraint(equalToConstant: 60),
             entryBar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 16), entryBar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryBar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 4), entryBar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
-        status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor
+        status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText
         status.lineBreakMode = .byTruncatingTail
         status.isHidden = true
         var contents: [NSView] = [history, status, entry]
@@ -911,10 +960,9 @@ final class FormDocumentView: NSView {
         document.widthAnchor.constraint(equalTo: settingsScroll.contentView.widthAnchor).isActive = true
         var body: NSStackView!
         func group(_ category: String, _ title: String, _ keywords: String) {
-            let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = .secondaryLabelColor
-            let card = NSView(); card.translatesAutoresizingMaskIntoConstraints = false; card.wantsLayer = true
-            card.layer?.backgroundColor = NSColor.white.cgColor; card.layer?.cornerRadius = 12
-            card.layer?.borderColor = NSColor(white: 0.9, alpha: 1).cgColor; card.layer?.borderWidth = 1
+            let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
+            let card = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line); card.translatesAutoresizingMaskIntoConstraints = false
+            card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
             body = stack([], vertical: true, spacing: 0); body.alignment = .centerX
             card.addSubview(body); pin(body, to: card)
             let section = stack([heading, card], vertical: true, spacing: 9)
@@ -926,7 +974,7 @@ final class FormDocumentView: NSView {
                 let rule = NSBox(); rule.boxType = .separator; body.addArrangedSubview(rule)
                 rule.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
-            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 13); label.textColor = NSColor(white: 0.32, alpha: 1)
+            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 13); label.textColor = AgentWorkbenchTheme.secondaryText
             label.widthAnchor.constraint(equalToConstant: 88).isActive = true
             let items: [NSView] = text.isEmpty ? [control] : control is NSSwitch ? [label, NSView(), control] : [label, control]
             let line = stack(items, spacing: 12), wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
@@ -957,7 +1005,7 @@ final class FormDocumentView: NSView {
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
         model.completes = false; model.numberOfVisibleItems = 8
         checkModelButton.bezelStyle = .rounded; checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
-        modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = .secondaryLabelColor
+        modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = AgentWorkbenchTheme.secondaryText
         row("接口", endpoint); row("模型", stack([model, checkModelButton], spacing: 8))
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
         row("状态", modelStatus)
@@ -970,7 +1018,7 @@ final class FormDocumentView: NSView {
         replyTokens.addItems(withObjectValues: ["512", "1024", "2048", "4096", "8192", "16384", "32768"])
         for value in [contextTokens, replyTokens] { field(value); value.delegate = self; value.widthAnchor.constraint(equalToConstant: 118).isActive = true }
         contextTokens.toolTip = "Token 预算；按 UTF-8 字节保守估算，超出时裁剪较早的完整对话轮次。"
-        for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor }
+        for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText }
         row("视觉理解", vision); row("思考程度", reasoning)
         row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 6))
         row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 6))
@@ -981,15 +1029,15 @@ final class FormDocumentView: NSView {
         group("voice", "唤醒与聆听", "语音 唤醒 关键词 麦克风 聆听 停顿 等待 状态")
         row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
         pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
-        wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = .secondaryLabelColor; row("状态", wakeStatus)
+        wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = AgentWorkbenchTheme.secondaryText; row("状态", wakeStatus)
         row("", voiceStopButton)
         group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
         screenEnabled.setAccessibilityLabel("闲置时观察屏幕"); row("自动观察", screenEnabled)
         screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"]); row("观察间隔", screenInterval)
-        screenTarget.font = .systemFont(ofSize: 12); screenTarget.textColor = .secondaryLabelColor
+        screenTarget.font = .systemFont(ofSize: 12); screenTarget.textColor = AgentWorkbenchTheme.secondaryText
         screenTarget.lineBreakMode = .byTruncatingMiddle; screenTarget.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         row("图像发送至", screenTarget)
-        screenStatus.font = .systemFont(ofSize: 12); screenStatus.textColor = .secondaryLabelColor
+        screenStatus.font = .systemFont(ofSize: 12); screenStatus.textColor = AgentWorkbenchTheme.secondaryText
         screenStatus.lineBreakMode = .byTruncatingTail
         row("状态", screenStatus)
         for (button, action) in [(screenPermission, #selector(grantScreenPermission)), (screenNow, #selector(lookAtScreen)), (screenQuiet, #selector(quietScreen))] {
@@ -997,14 +1045,18 @@ final class FormDocumentView: NSView {
         }
         row("", stack([screenNow, screenPermission, screenQuiet], spacing: 8))
         let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
-        screenScope.font = .systemFont(ofSize: 12); screenScope.textColor = .secondaryLabelColor; row("", screenScope)
+        screenScope.font = .systemFont(ofSize: 12); screenScope.textColor = AgentWorkbenchTheme.secondaryText; row("", screenScope)
         group("desktop", "显示与动画", "桌面 宠物 角色 置顶 动画 性能 节能 大小 缩放 复位 位置")
         row("窗口置顶", onTop); performance.addItems(withTitles: ["自动节能", "流畅", "暂停"]); row("动画", performance)
-        sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = .secondaryLabelColor
+        sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = AgentWorkbenchTheme.secondaryText
         sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
         scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
         let resetPosition = NSButton(title: "复位位置", target: companion, action: #selector(AppDelegate.resetPosition))
         row("", stack([resetPosition, NSView()], spacing: 8))
+        if let companion {
+            group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 Theme Appearance Font")
+            row("", AgentAppearanceSettingsView(service: companion.appearance))
+        }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
         persona.heightAnchor.constraint(equalToConstant: 120).isActive = true; row("", persona)
@@ -1045,14 +1097,14 @@ final class FormDocumentView: NSView {
             archive.onDelete = { [weak self] ids, workspaces in try await self?.deleteAgentTasks(ids, workspaceIDs: workspaces) }
             row("", archive); archive.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
-        noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = .secondaryLabelColor
+        noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
         generalSettingsSave = save
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
         save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
         save.widthAnchor.constraint(equalToConstant: 76).isActive = true; save.heightAnchor.constraint(equalToConstant: 34).isActive = true
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
-        savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = .secondaryLabelColor
+        savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
         settingsPageHost.isHidden = true
         let bottom = stack([savedStatus, NSView(), save]), column = stack([settingsBody, bottom], vertical: true, spacing: 18)
@@ -1081,11 +1133,11 @@ final class FormDocumentView: NSView {
         contentSurface.showsSettings = configuring; settingsPageIcon.isHidden = !configuring
         titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? (sidebarRequested ? 126 : 190) : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
-        pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : .secondaryLabelColor
+        pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : AgentWorkbenchTheme.secondaryText
         workbenchChrome.forEach { $0.isHidden = configuring }
         if configuring { updateSettingsSections() } else { pageTitle.stringValue = currentAgentTask?.title ?? "对话" }
-        chatNav.layer?.backgroundColor = selectedTab == "chat" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
-        settingsNav.layer?.backgroundColor = selectedTab == "settings" ? NSColor(white: 0, alpha: 0.07).cgColor : NSColor.clear.cgColor
+        AgentWorkbenchTheme.color(chatNav.layer, selectedTab == "chat" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
+        AgentWorkbenchTheme.color(settingsNav.layer, selectedTab == "settings" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         updateWorkbenchLayout()
     }
     @objc private func listen() { companion?.listenNow() }
@@ -1139,7 +1191,7 @@ final class FormDocumentView: NSView {
         do {
             guard let key = try companion?.store.keychain.read(account), !key.isEmpty else { return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(key, forType: .string)
-            savedStatus.stringValue = "已复制"; savedStatus.textColor = .secondaryLabelColor
+            savedStatus.stringValue = "已复制"; savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         } catch { savedStatus.stringValue = error.localizedDescription; savedStatus.textColor = .systemRed }
     }
     @objc private func copyAPI() { copyToken("chat") }
@@ -1173,7 +1225,7 @@ final class FormDocumentView: NSView {
     }
     private func invalidateModelCheck() {
         modelCheckGeneration += 1; modelCheck?.cancel(); modelCheck = nil; checkModelButton.title = "检测"
-        modelStatus.stringValue = "未检测"; modelStatus.textColor = .secondaryLabelColor; modelStatus.toolTip = nil
+        modelStatus.stringValue = "未检测"; modelStatus.textColor = AgentWorkbenchTheme.secondaryText; modelStatus.toolTip = nil
         updateModelOptions()
     }
     func controlTextDidChange(_ obj: Notification) {
@@ -1206,7 +1258,7 @@ final class FormDocumentView: NSView {
             let host = try CompanionService.endpoint(p.endpoint).host ?? ""
             if key.isEmpty && !CompanionService.isLocal(host) { throw PetError("请先填写 Token。") }
             modelCheckGeneration += 1; let generation = modelCheckGeneration
-            checkModelButton.title = "取消"; modelStatus.stringValue = "检测中"; modelStatus.textColor = .secondaryLabelColor
+            checkModelButton.title = "取消"; modelStatus.stringValue = "检测中"; modelStatus.textColor = AgentWorkbenchTheme.secondaryText
             modelCheck = Task { [weak self] in
                 guard let self else { return }
                 do {
@@ -1265,7 +1317,7 @@ final class FormDocumentView: NSView {
             if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }
             if removeVoiceKey || !voiceKey.stringValue.isEmpty { try companion.store.keychain.write(voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "voice") }
             companion.store.preferences = p; try companion.store.savePreferences(); companion.applyPreferences()
-            refreshPreferences(); savedStatus.stringValue = "已保存"; savedStatus.textColor = .secondaryLabelColor
+            refreshPreferences(); savedStatus.stringValue = "已保存"; savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         } catch { savedStatus.stringValue = error.localizedDescription; savedStatus.textColor = .systemRed }
     }
     @objc private func send() {
@@ -1301,10 +1353,10 @@ final class FormDocumentView: NSView {
         busy = value; updateSendButton(); clearButton.isEnabled = !value
     }
     func setStatus(_ text: String, error: Bool = false) {
-        status.stringValue = text; status.textColor = error ? .systemRed : .secondaryLabelColor
+        status.stringValue = text; status.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         status.isHidden = text.isEmpty
         if settings.isHidden == false {
-            savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : .secondaryLabelColor
+            savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         }
     }
     func scheduleRender() {

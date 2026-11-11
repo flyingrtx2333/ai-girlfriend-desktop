@@ -22,7 +22,6 @@ import AppKit
         window.title = "依赖漏洞 · " + service.files.root.lastPathComponent
         window.minSize = NSSize(width: 650, height: 430)
         window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -141,7 +140,7 @@ import AppKit
             switch key {
             case "risk":
                 field.stringValue = item.severity
-                field.textColor = (item.score ?? 0) >= 7 ? .systemRed : .secondaryLabelColor
+                field.textColor = (item.score ?? 0) >= 7 ? .systemRed : AgentWorkbenchTheme.secondaryText
             case "package": field.stringValue = item.package
             case "version": field.stringValue = item.version
             case "advisory": field.stringValue = item.aliases.first(where: { $0.hasPrefix("CVE-") }) ?? item.advisory
@@ -152,7 +151,7 @@ import AppKit
             if key == "risk" { field.stringValue = "跳过" }
             if key == "package" { field.stringValue = item.reason }
             if key == "path" { field.stringValue = item.path }
-            field.textColor = .secondaryLabelColor
+            field.textColor = AgentWorkbenchTheme.secondaryText
         }
         field.toolTip = field.stringValue
         field.stringValue = field.stringValue.replacingOccurrences(of: "\n", with: "↵")

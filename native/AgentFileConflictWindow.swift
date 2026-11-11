@@ -53,7 +53,7 @@ struct AgentFileConflictSnapshot {
         self.readSnapshot = read; self.resolve = resolve; self.protectedData = protectedData
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "文件比较 · " + file.lastPathComponent; window.minSize = NSSize(width: 720, height: 440); window.center(); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua); super.init(window: window); window.delegate = self
+        super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let path = NSTextField(labelWithString: file.lastPathComponent); path.toolTip = file.path; path.setAccessibilityHelp(file.path); path.lineBreakMode = .byTruncatingMiddle
         mode.target = self; mode.action = #selector(switchComparisonView); mode.selectedSegment = 0; mode.setAccessibilityLabel("文件比较显示方式")
@@ -64,7 +64,7 @@ struct AgentFileConflictSnapshot {
             field.isEditable = false; field.isSelectable = true; field.isRichText = false; field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             field.textContainerInset = NSSize(width: 12, height: 12); field.isVerticallyResizable = true; field.autoresizingMask = [.width]; field.textContainer?.widthTracksTextView = true
             field.setAccessibilityLabel(title + "全文")
-            format.font = .systemFont(ofSize: 11); format.textColor = .secondaryLabelColor
+            format.font = .systemFont(ofSize: 11); format.textColor = AgentWorkbenchTheme.secondaryText
             let header = NSStackView(views: [NSTextField(labelWithString: title), NSView(), format]), scroll = NSScrollView(); scroll.documentView = field; scroll.hasVerticalScroller = true
             let column = NSStackView(views: [header, scroll]); column.orientation = .vertical; column.spacing = 6
             for view in [header, scroll] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -75,7 +75,7 @@ struct AgentFileConflictSnapshot {
         for view in [diff, full] { versions.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: versions.leadingAnchor), view.trailingAnchor.constraint(equalTo: versions.trailingAnchor), view.topAnchor.constraint(equalTo: versions.topAnchor), view.bottomAnchor.constraint(equalTo: versions.bottomAnchor)]) }
         refresh.target = self; refresh.action = #selector(refreshComparison); keep.target = self; keep.action = #selector(continueEditing); keep.keyEquivalent = "\u{1b}"
         adopt.target = self; adopt.action = #selector(adoptDisk); overwrite.target = self; overwrite.action = #selector(overwriteDisk)
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [refresh, state, NSView(), keep, adopt, overwrite]); actions.spacing = 8
         for view in [top, versions, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), view.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16)]) }
         NSLayoutConstraint.activate([top.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), versions.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12), versions.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])

@@ -71,7 +71,9 @@ import AppKit
             }
             for child in view.subviews { apply(child) }
         }
-        root.wantsLayer = true; root.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        root.wantsLayer = true
+        if let root = root as? AgentThemeView { root.fill = AgentWorkbenchTheme.surface }
+        else { root.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor }
         apply(root)
     }
 }
@@ -95,7 +97,7 @@ import AppKit
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
         back.target = self; back.action = #selector(goBack)
         tabs.trackingMode = .selectOne; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
-        context.font = .systemFont(ofSize: 12); context.textColor = .secondaryLabelColor; context.lineBreakMode = .byTruncatingMiddle
+        context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let header = NSStackView(views: [back, tabs, NSView(), context]); header.spacing = 12
         viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay
@@ -110,6 +112,11 @@ import AppKit
         updateHeader()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshAppearance() }
+    func refreshAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance { entries.forEach { AgentSettingsStyle.prepare($0.view) } }
+    }
 
     @discardableResult func show(category: String, identity: String, scope: String, make: @escaping (String) -> AgentSettingsPageController?) -> Bool {
         if self.category == category, self.identity == identity, !entries.isEmpty { return true }
@@ -184,12 +191,12 @@ import AppKit
         }
         addArrangedSubview(check("enabled", "启用需要我", current.enabled))
         for (title, values) in [("来源", AgentAttentionSource.allCases.map { ("source:" + $0.rawValue, $0.title, current.sources.contains($0.rawValue)) }), ("内容", AgentAttentionKind.allCases.map { ("kind:" + $0.rawValue, $0.title, current.kinds.contains($0.rawValue)) })] {
-            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = .secondaryLabelColor
+            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText
             addArrangedSubview(label)
             let row = NSStackView(views: values.map { check($0.0, $0.1, $0.2) }); row.spacing = 16; addArrangedSubview(row)
         }
         addArrangedSubview(check("notifications", "自动化桌面通知", current.automationNotifications))
-        status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor; addArrangedSubview(status)
+        status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(status)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func change() {

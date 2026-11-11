@@ -23,7 +23,7 @@ import AppKit
         let actions = NSStackView(views: [apply, reload, check, NSView()]); actions.spacing = 10
         let project = NSStackView(views: [projects, manage, backups]); project.spacing = 10
         projects.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
         history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 12); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true
         let scroll = NSScrollView(); scroll.documentView = history; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder

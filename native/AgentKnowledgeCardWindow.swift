@@ -20,16 +20,16 @@ import AppKit
     init(store: AgentStore, taskID: String) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 680), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "知识卡片"; window.minSize = NSSize(width: 850, height: 550); window.appearance = NSAppearance(named: .aqua); window.isReleasedWhenClosed = false; window.center()
+        window.title = "知识卡片"; window.minSize = NSSize(width: 850, height: 550); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         search.placeholderString = "搜索卡片"; search.sendsSearchStringImmediately = true; search.target = self; search.action = #selector(filterChanged)
         category.addItems(withTitles: ["全部类型"] + AgentKnowledgeCardKind.allCases.map(\.title)); category.setAccessibilityLabel("卡片类型"); category.target = self; category.action = #selector(filterChanged)
         language.addItems(withTitles: ["简体中文", "English"]); language.setAccessibilityLabel("卡片语言"); language.target = self; language.action = #selector(languageChanged)
         for button in [automatic, exporting, citation] { button.target = self; button.action = #selector(optionsChanged(_:)) }
         for (button, action) in [(generate, #selector(generateCards)), (taskButton, #selector(viewTask)), (save, #selector(saveCard)), (open, #selector(openSource))] { button.target = self; button.action = action }
         focus.placeholderString = "重点模块或问题（可选）"; focus.setAccessibilityLabel("卡片分析重点")
-        for field in [scopeLabel, state] { field.font = .systemFont(ofSize: 11); field.textColor = .secondaryLabelColor; field.lineBreakMode = .byTruncatingMiddle; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for field in [scopeLabel, state] { field.font = .systemFont(ofSize: 11); field.textColor = AgentWorkbenchTheme.secondaryText; field.lineBreakMode = .byTruncatingMiddle; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         table.addTableColumn(NSTableColumn(identifier: .init("card"))); table.headerView = nil; table.rowHeight = 54; table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("知识卡片列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.borderType = .bezelBorder
         titleField.font = .systemFont(ofSize: 16, weight: .semibold); titleField.isBordered = false; titleField.drawsBackground = false; titleField.isEditable = false; titleField.setAccessibilityLabel("卡片标题")
@@ -105,7 +105,7 @@ import AppKit
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { discard() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let card = rows[row], title = NSTextField(labelWithString: card.title), detail = NSTextField(labelWithString: card.kind.title + (card.manual ? " · 已编辑" : "") + (task?.workspace.map({ cards.fresh(card, workspace: $0) }) == true ? "" : " · 来源已变化"))
-        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail; detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
+        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail; detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText
         let column = NSStackView(views: [title, detail]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 4; return column
     }
     func tableViewSelectionDidChange(_ notification: Notification) { selected = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil; render() }

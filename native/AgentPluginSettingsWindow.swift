@@ -11,14 +11,14 @@ import AppKit
     init(service: AgentPlugins, item: AgentPluginInstallation, workspace: String?) {
         self.service = service; self.item = item; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 230), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "插件启用设置" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "插件启用设置" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         scopes.selectedSegment = item.workspace == nil ? 0 : 1; scopes.setEnabled(service.sharedHome != nil, forSegment: 0)
         for index in [1, 2] { scopes.setEnabled(workspace != nil, forSegment: index) }; scopes.target = self; scopes.action = #selector(changeScope); scopes.setAccessibilityLabel("插件设置范围")
         value.addItems(withTitles: ["继承上层", "启用", "停用"]); value.target = self; value.action = #selector(changeValue); value.setAccessibilityLabel("插件启用声明")
         let name = NSTextField(labelWithString: item.metadata.title + " · " + item.metadata.name + "@local"); name.font = .systemFont(ofSize: 14, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for label in [source, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
-        save.target = self; save.action = #selector(saveSetting)
+        for label in [source, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        save.target = self; save.action = #selector(saveSetting); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshSetting))
         let footer = NSStackView(views: [state, NSView(), refresh, save]); footer.spacing = 10
         let stack = NSStackView(views: [name, scopes, value, source, NSView(), footer]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14; stack.translatesAutoresizingMaskIntoConstraints = false

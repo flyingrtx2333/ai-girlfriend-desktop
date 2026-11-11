@@ -25,7 +25,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         self.store = store; self.taskID = taskID; self.insert = onInsert; workspace = store.task(taskID)?.workspace
         sessionOwner = taskID + "/context-" + UUID().uuidString
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1020, height: 690), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "MCP 资料 · " + (store.task(taskID)?.title ?? "任务"); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "MCP 资料 · " + (store.task(taskID)?.title ?? "任务"); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         servers.target = self; servers.action = #selector(changeServer); servers.setAccessibilityLabel("MCP 资料连接器")
@@ -33,7 +33,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         kinds.selectedSegment = 0; kinds.target = self; kinds.action = #selector(changeKind)
         search.placeholderString = "搜索名称或 URI"; search.delegate = self; search.setAccessibilityLabel("搜索 MCP 资料")
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (refresh, #selector(refreshList)), (more, #selector(loadMore)), (read, #selector(readContent)), (add, #selector(addContent)), (track, #selector(toggleTracking))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        for label in [state, destination] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [state, destination] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let header = NSStackView(views: [servers, destination, NSView(), disconnect, connect]); header.spacing = 10
         let filters = NSStackView(views: [kinds, search, refresh]); filters.spacing = 10
         table.addTableColumn(NSTableColumn(identifier: .init("mcp-content"))); table.headerView = nil; table.rowHeight = 46; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 资源与提示词目录")
@@ -136,7 +136,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         let item = rows[row], name = NSTextField(labelWithString: item["title"] as? String ?? item["name"] as? String ?? "")
         name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle
         let detail = NSTextField(labelWithString: item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "")
-        detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingMiddle
+        detail.font = .systemFont(ofSize: 10); detail.textColor = AgentWorkbenchTheme.secondaryText; detail.lineBreakMode = .byTruncatingMiddle
         let cell = NSStackView(views: [name, detail]); cell.orientation = .vertical; cell.alignment = .leading; cell.spacing = 4; cell.toolTip = item["description"] as? String; return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {

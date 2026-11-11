@@ -48,11 +48,11 @@ struct AgentCanvasPreview: Codable {
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 }
 
-@MainActor final class AgentCanvasPreviewRow: NSView {
+@MainActor final class AgentCanvasPreviewRow: AgentThemeView {
     var onOpen: (() -> Void)?
     init(record: AgentCanvasRecord, image: NSImage?, actionTitle: String = "打开画布") {
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
-        wantsLayer = true; layer?.cornerRadius = 10; layer?.borderWidth = 1; layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        layer?.cornerRadius = 10; layer?.borderWidth = 1; stroke = NSColor.separatorColor.withAlphaComponent(0.45)
         let title = NSTextField(labelWithString: record.title), open = NSButton(title: actionTitle, target: self, action: #selector(openCanvas))
         title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         open.bezelStyle = .texturedRounded; open.controlSize = .regular; open.font = .systemFont(ofSize: 12); open.setAccessibilityLabel(actionTitle + " · " + record.title)

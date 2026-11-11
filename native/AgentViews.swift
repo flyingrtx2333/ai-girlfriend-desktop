@@ -13,14 +13,18 @@ private final class AgentTaskTable: NSTableView {
 }
 
 @MainActor private final class AgentTaskCell: NSTableCellView {
-    private let selection = NSView()
+    private let selection = AgentThemeView()
     override init(frame: NSRect) {
         super.init(frame: frame); selection.wantsLayer = true; selection.layer?.cornerRadius = 6
         addSubview(selection); selection.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([selection.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), selection.trailingAnchor.constraint(equalTo: trailingAnchor), selection.topAnchor.constraint(equalTo: topAnchor, constant: 3), selection.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func select(_ selected: Bool, animated: Bool = true) { AgentWorkbenchTheme.color(selection.layer, selected ? AgentWorkbenchTheme.selection : .clear, animated: animated) }
+    func select(_ selected: Bool, animated: Bool = true) { selection.fill = selected ? AgentWorkbenchTheme.selection : .clear; AgentWorkbenchTheme.color(selection.layer, selection.fill, animated: animated) }
+    func appearanceSelectionColor() -> [CGFloat]? {
+        guard CommandLine.arguments.contains("--appearance-check"), let cg = selection.layer?.backgroundColor, let color = NSColor(cgColor: cg)?.usingColorSpace(.sRGB) else { return nil }
+        return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
+    }
 }
 
 @MainActor final class AgentTaskSidebar: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
@@ -75,7 +79,7 @@ private final class AgentTaskTable: NSTableView {
         }
         search.placeholderString = "搜索任务"; search.setAccessibilityLabel("搜索任务"); search.delegate = self; search.target = self; search.action = #selector(applyFilter); search.controlSize = .small; search.isHidden = true
         workModePicker.addItems(withTitles: AgentWorkMode.allCases.map(\.title)); workModePicker.isBordered = false; workModePicker.font = .systemFont(ofSize: 13, weight: .medium); workModePicker.target = self; workModePicker.action = #selector(changeWorkMode); workModePicker.setAccessibilityLabel("工作模式"); workModePicker.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = .secondaryLabelColor
+        heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
         viewMenu.addItem(withTitle: ""); viewMenu.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "任务视图"); viewMenu.isBordered = false; viewMenu.setAccessibilityLabel("任务视图")
         viewMenu.menu?.autoenablesItems = false
         add.target = self; add.action = #selector(newWorkspace); AgentWorkbenchTheme.toolbar(add, title: "添加工作区", symbol: "folder.badge.plus")
@@ -100,7 +104,7 @@ private final class AgentTaskTable: NSTableView {
         table.target = self; table.action = #selector(openUnreadSelection)
         table.registerForDraggedTypes([Self.dragType]); table.setDraggingSourceOperationMask(.move, forLocal: true)
         let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
-        empty.font = .systemFont(ofSize: 12); empty.textColor = .secondaryLabelColor; empty.isHidden = true; empty.setAccessibilityLabel("任务筛选状态")
+        empty.font = .systemFont(ofSize: 12); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.isHidden = true; empty.setAccessibilityLabel("任务筛选状态")
         bulkCount.font = .systemFont(ofSize: 12); bulkCount.setAccessibilityLabel("所选任务数量")
         bulkCancel.bezelStyle = .inline; bulkCancel.font = .systemFont(ofSize: 11); bulkCancel.target = self; bulkCancel.action = #selector(cancelBulkSelection)
         bulkAction.bezelStyle = .rounded; bulkAction.target = self; bulkAction.action = #selector(archiveBulkSelection)
@@ -117,6 +121,12 @@ private final class AgentTaskTable: NSTableView {
     }
     deinit { searchTask?.cancel(); for observer in dayObservers { NotificationCenter.default.removeObserver(observer) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func appearanceSelectionColor() -> [CGFloat]? {
+        guard CommandLine.arguments.contains("--appearance-check"), let selected,
+              let index = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }),
+              let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? AgentTaskCell else { return nil }
+        return cell.appearanceSelectionColor()
+    }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.keyCode == 53, bulkSelecting { cancelBulkSelection(); return true }
         return super.performKeyEquivalent(with: event)
@@ -363,13 +373,13 @@ private final class AgentTaskTable: NSTableView {
             if path == nil {
                 let view = NSView(), label = NSTextField(labelWithString: title)
                 let icon = NSImageView(image: NSImage(systemSymbolName: title == "置顶" ? "pin" : "clock", accessibilityDescription: nil)!)
-                label.font = .systemFont(ofSize: 14, weight: .medium); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingTail; icon.contentTintColor = .secondaryLabelColor
+                label.font = .systemFont(ofSize: 14, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingTail; icon.contentTintColor = AgentWorkbenchTheme.secondaryText
                 for child in [icon, label] as [NSView] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
                 NSLayoutConstraint.activate([icon.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14), icon.centerYAnchor.constraint(equalTo: view.centerYAnchor), label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 46), label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: view.centerYAnchor)])
                 return view
             }
             let view = NSView(), button = AgentWorkbenchButton(title: "", target: self, action: #selector(toggleGroup(_:))), label = NSTextField(labelWithString: title), icon = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!)
-            let closed = collapsed.contains(groupKey(path!)); button.image = NSImage(systemSymbolName: closed ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.tag = row; button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.setAccessibilityLabel((closed ? "展开 " : "收起 ") + title)
+            let closed = collapsed.contains(groupKey(path!)); button.image = NSImage(systemSymbolName: closed ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.tag = row; button.isBordered = false; button.contentTintColor = AgentWorkbenchTheme.secondaryText; button.setAccessibilityLabel((closed ? "展开 " : "收起 ") + title)
             button.isHidden = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             label.font = .systemFont(ofSize: 15); label.lineBreakMode = .byTruncatingTail; view.toolTip = effectiveGrouping == .custom ? "自定义分组" : path
             for child in [button, icon, label] as [NSView] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
@@ -380,10 +390,10 @@ private final class AgentTaskTable: NSTableView {
             let unread = organization?.isTaskUnread(task.id) == true
             let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
             let icon = NSImageView(image: NSImage(systemSymbolName: task.status == .completed ? "circle.fill" : task.status == .running ? "circle.dotted" : task.status == .waiting ? "exclamationmark.circle.fill" : task.status == .failed ? "exclamationmark.circle" : task.status == .stopped ? "stop.circle" : "circle", accessibilityDescription: nil)!)
-            icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : .secondaryLabelColor
+            icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : AgentWorkbenchTheme.secondaryText
             let snippet = searchSnippet(task)
             let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 3
-            if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = .secondaryLabelColor; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
+            if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = AgentWorkbenchTheme.secondaryText; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
             for child in text.arrangedSubviews { child.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
             let line = NSStackView(views: [icon, text]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12), icon.heightAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12)])
@@ -499,7 +509,7 @@ private final class AgentTaskTable: NSTableView {
         let state = event?.status ?? "running"
         let symbol = state == "completed" ? (workbench ? "checkmark.circle.fill" : "checkmark.circle") : state == "failed" ? "exclamationmark.circle" : state == "waiting" ? "hand.raised" : state == "stopped" ? "stop.circle" : "circle.dotted"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: state)
-        button.contentTintColor = state == "failed" ? .systemRed : state == "waiting" ? .systemOrange : state == "completed" && workbench ? AgentWorkbenchTheme.accent : .secondaryLabelColor
+        button.contentTintColor = state == "failed" ? .systemRed : state == "waiting" ? .systemOrange : state == "completed" && workbench ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText
         if workbench { statusGlyph.image = button.image; statusGlyph.contentTintColor = button.contentTintColor; button.image = nil; button.contentTintColor = .labelColor }
         let detail = AgentRuntime.description(call).replacingOccurrences(of: "\n", with: " ")
         let visibleDetail: String

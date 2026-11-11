@@ -17,7 +17,6 @@ import UniformTypeIdentifiers
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "MCP 连接器" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 740, height: 520); window.center(); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let add = NSButton(title: "新建", target: self, action: #selector(create)), importButton = NSButton(title: "导入 JSON", target: self, action: #selector(importJSON))
@@ -40,7 +39,7 @@ import UniformTypeIdentifiers
         let header = NSStackView(views: [enabled, state, NSView(), disconnect, connect]); header.spacing = 10
         browse.target = self; browse.action = #selector(browseContent); browse.isHidden = true
         let footer = NSStackView(views: [access, NSView(), browse, remove, save]); footer.spacing = 10
-        for label in [state, access] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [state, access] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         for view in [list, actions, tabs, header, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), list.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), list.widthAnchor.constraint(equalToConstant: 210), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -10),
@@ -60,7 +59,7 @@ import UniformTypeIdentifiers
         let server = items[row], suffix = server.pluginEnabled == false ? " · 插件已停用" : server.configured == false ? " · 待配置" : server.enabled ? "" : " · 已停用"
         let name = NSTextField(labelWithString: server.name + suffix)
         name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · 插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = .secondaryLabelColor; type.lineBreakMode = .byTruncatingTail
+        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · 插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [name, type]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) {

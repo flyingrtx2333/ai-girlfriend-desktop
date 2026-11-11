@@ -8,7 +8,7 @@ import AppKit
         let name = NSTextField(labelWithString: String(draft.profile.name.prefix(60)))
         name.font = .systemFont(ofSize: 14, weight: .semibold); name.lineBreakMode = .byTruncatingTail
         let status = NSTextField(labelWithString: issue ?? (saved ? (available ? "Agent · 已保存" : "Agent · 已移除") : "Agent 草稿 · 未保存"))
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingTail
+        status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail
         let purpose = NSTextField(wrappingLabelWithString: String(draft.profile.description.prefix(500))); purpose.font = .systemFont(ofSize: 12)
         let text = NSTextView(); text.isEditable = false; text.isRichText = false; text.isSelectable = true; text.font = .systemFont(ofSize: 12)
         text.string = String(draft.profile.instructions.prefix(24_000)); text.textContainerInset = NSSize(width: 8, height: 8); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("Agent 草稿指令")

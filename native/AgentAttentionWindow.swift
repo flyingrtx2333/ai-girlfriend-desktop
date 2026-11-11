@@ -20,7 +20,7 @@ import AppKit
     init(attention: AgentAttention, runtime: AgentRuntime) {
         self.attention = attention; self.runtime = runtime
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 680), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "需要我"; window.minSize = NSSize(width: 830, height: 550); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "需要我"; window.minSize = NSSize(width: 830, height: 550); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let settings = NSButton(title: "设置", target: self, action: #selector(showSettings)), reload = NSButton(title: "刷新", target: self, action: #selector(reload))
         let title = NSTextField(labelWithString: "需要我"); title.font = .systemFont(ofSize: 20, weight: .semibold)
@@ -40,7 +40,7 @@ import AppKit
         table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openTask); table.setAccessibilityLabel("需要我事项列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.widthAnchor.constraint(equalToConstant: 325).isActive = true
         detailTitle.font = .systemFont(ofSize: 16, weight: .semibold); detailTitle.maximumNumberOfLines = 3
-        metadata.font = .systemFont(ofSize: 11); metadata.textColor = .secondaryLabelColor; metadata.lineBreakMode = .byTruncatingTail
+        metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText; metadata.lineBreakMode = .byTruncatingTail
         for text in [body, reply] {
             text.isRichText = false; text.font = .systemFont(ofSize: 13); text.textContainerInset = NSSize(width: 10, height: 10)
             text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true
@@ -105,7 +105,7 @@ import AppKit
         else { table.deselectAll(nil) }
         suppressSelection = false; showSelection()
         more.isHidden = loaded.count >= matching.count; more.isEnabled = !attention.loading
-        status.textColor = operationIssue != nil || attention.issue != nil ? .systemRed : .secondaryLabelColor
+        status.textColor = operationIssue != nil || attention.issue != nil ? .systemRed : AgentWorkbenchTheme.secondaryText
         status.stringValue = operationIssue ?? attention.issue ?? (!attention.settings.enabled ? "需要我已关闭" : attention.loading ? "正在载入…" : matching.isEmpty ? "暂无事项" : "\(rows.count) 项 · 已加载 \(loaded.count)／\(matching.count)")
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -113,7 +113,7 @@ import AppKit
         guard rows.indices.contains(row) else { return nil }; let item = rows[row]
         let title = NSTextField(labelWithString: item.title), summary = NSTextField(labelWithString: item.summary.replacingOccurrences(of: "\n", with: " "))
         title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
-        summary.font = .systemFont(ofSize: 11); summary.textColor = .secondaryLabelColor; summary.lineBreakMode = .byTruncatingTail
+        summary.font = .systemFont(ofSize: 11); summary.textColor = AgentWorkbenchTheme.secondaryText; summary.lineBreakMode = .byTruncatingTail
         let info = NSTextField(labelWithString: item.kind.title + " · " + item.source.title + " · " + item.sender); info.font = .systemFont(ofSize: 10); info.textColor = .tertiaryLabelColor; info.lineBreakMode = .byTruncatingTail
         let view = NSStackView(views: [title, summary, info]); view.orientation = .vertical; view.alignment = .leading; view.spacing = 5
         view.setAccessibilityLabel(item.title + "，" + item.kind.title + "，" + (item.handled ? "已处理" : "待处理") + "，" + String(item.summary.prefix(80))); return view
@@ -165,7 +165,7 @@ import AppKit
         guard let item = selected, item.kind == .question, item.mcpInputID == nil, reply.string != replySavedText else { return true }
         do {
             try attention.saveReply(item, text: reply.string); replySavedText = reply.string
-            if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = .secondaryLabelColor }
+            if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = AgentWorkbenchTheme.secondaryText }
             return true
         }
         catch { operationIssue = "答复草稿未保存：" + error.localizedDescription; status.stringValue = operationIssue!; status.textColor = .systemRed; return false }

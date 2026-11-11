@@ -12,13 +12,13 @@ import AppKit
         guard let task = store.task(taskID), let message = task.messages.first(where: { $0.id == messageID }) else { throw PetError("原始要求已变化") }
         self.store = store; self.runtime = runtime; self.taskID = taskID; self.messageID = messageID; original = message.content
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 350), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "编辑并重发 · " + task.title; window.minSize = NSSize(width: 480, height: 300); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "编辑并重发 · " + task.title; window.minSize = NSSize(width: 480, height: 300); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         editor.isRichText = false; editor.font = .systemFont(ofSize: 14); editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false; editor.autoresizingMask = .width; editor.textContainer?.widthTracksTextView = true
         editor.textContainerInset = NSSize(width: 8, height: 8); editor.string = original; editor.delegate = self; editor.allowsUndo = true; editor.setAccessibilityLabel("修改后的要求")
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-        notice.stringValue = review.notice; notice.font = .systemFont(ofSize: 12); notice.textColor = .secondaryLabelColor
+        notice.stringValue = review.notice; notice.font = .systemFont(ofSize: 12); notice.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12); state.textColor = .systemRed
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         let refresh = NSButton(title: "重新检查", target: self, action: #selector(refresh))

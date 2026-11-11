@@ -27,9 +27,9 @@ import AppKit
         self.store = store; self.taskID = taskID; self.onSelectTask = onSelectTask
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Git · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目")
-        window.minSize = NSSize(width: 700, height: 470); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.minSize = NSSize(width: 700, height: 470); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         branch.font = .systemFont(ofSize: 13, weight: .medium); branch.lineBreakMode = .byTruncatingMiddle
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("file")); table.addTableColumn(column)
         table.headerView = nil; table.rowHeight = 29; table.delegate = self; table.dataSource = self; table.allowsMultipleSelection = true
@@ -37,7 +37,7 @@ import AppKit
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
         let viewer = diffView
         message.placeholderString = "提交说明"; message.setAccessibilityLabel("Git 提交说明")
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         for button in [refreshButton, commitButton, worktreeButton, initializeButton, stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, commitPushButton, securityButton] { button.target = self }
         refreshButton.action = #selector(refresh); commitButton.action = #selector(commit); worktreeButton.action = #selector(createWorktree); initializeButton.action = #selector(initialize)
         manageWorktrees.target = self; manageWorktrees.action = #selector(openWorktrees)
@@ -52,7 +52,7 @@ import AppKit
         sourcePopup.item(at: 0)?.toolTip = "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。"
         revision.target = self; revision.action = #selector(refresh); revision.placeholderString = "提交或基准分支"; revision.setAccessibilityLabel("Git 比较修订"); revision.isHidden = true
         revision.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        statistics.font = .monospacedSystemFont(ofSize: 11, weight: .regular); statistics.textColor = .secondaryLabelColor
+        statistics.font = .monospacedSystemFont(ofSize: 11, weight: .regular); statistics.textColor = AgentWorkbenchTheme.secondaryText
         statistics.lineBreakMode = .byTruncatingTail; statistics.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         displayMode.selectedSegment = 0; displayMode.target = self; displayMode.action = #selector(changeDisplay); displayMode.controlSize = .small; displayMode.setAccessibilityLabel("Git 差异视图")
         wrap.state = .on; wrap.target = self; wrap.action = #selector(changeDisplay); wrap.controlSize = .small

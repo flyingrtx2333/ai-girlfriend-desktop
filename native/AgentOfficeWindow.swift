@@ -19,12 +19,12 @@ import Darwin
     init(office: AgentOffice, store: AgentStore, taskID: String, files: AgentFiles, file: URL) {
         self.office = office; self.store = store; self.taskID = taskID; self.files = files; self.file = file
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = file.lastPathComponent; window.minSize = NSSize(width: 760, height: 520); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = file.lastPathComponent; window.minSize = NSSize(width: 760, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; window.contentView = content
         for (button, action) in [(save, #selector(saveFile)), (reload, #selector(reloadFile)), (saveCopy, #selector(saveAs))] { button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.controlSize = .small }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         reload.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "重新载入"); reload.title = ""; reload.toolTip = "重新载入"; reload.setAccessibilityLabel("重新载入办公文件")
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingMiddle
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let name = NSTextField(labelWithString: file.lastPathComponent); name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let bar = NSStackView(views: [name, NSView(), state, reload, saveCopy, save]); bar.spacing = 9
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .nonPersistent(); configuration.preferences.javaScriptCanOpenWindowsAutomatically = false

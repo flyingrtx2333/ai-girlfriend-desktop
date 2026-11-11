@@ -12,7 +12,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
     init(runtime: AgentRuntime, taskID: String, section: Int = 0) {
         self.runtime = runtime; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "任务详情"; window.minSize = NSSize(width: 490, height: 440); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "任务详情"; window.minSize = NSSize(width: 490, height: 440); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window)
         let content = NSView(); window.contentView = content
         tabs.selectedSegment = min(2, max(0, section)); tabs.target = self; tabs.action = #selector(changeSection)
@@ -22,7 +22,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         scroll.documentView = document; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         document.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), body.leadingAnchor.constraint(equalTo: document.leadingAnchor), body.trailingAnchor.constraint(equalTo: document.trailingAnchor), body.topAnchor.constraint(equalTo: document.topAnchor), body.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         action.target = self; action.action = #selector(performAction); stop.target = self; stop.action = #selector(cancelAction)
         let top = NSStackView(views: [tabs, NSView(), source]); top.spacing = 10
         let footer = NSStackView(views: [state, NSView(), stop, action]); footer.spacing = 10
@@ -35,7 +35,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
     @objc private func performAction() { _ = runtime.analyze(taskID, recap: tabs.selectedSegment == 1); refresh() }
     @objc private func cancelAction() { runtime.cancel(taskID); refresh() }
     private func label(_ value: String, size: CGFloat = 13, bold: Bool = false, secondary: Bool = false) {
-        let label = NSTextField(wrappingLabelWithString: value); label.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); label.textColor = secondary ? .secondaryLabelColor : .labelColor; label.isSelectable = true
+        let label = NSTextField(wrappingLabelWithString: value); label.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); label.textColor = secondary ? AgentWorkbenchTheme.secondaryText : .labelColor; label.isSelectable = true
         body.addArrangedSubview(label); label.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -8).isActive = true
     }
     private func rule() { let view = NSBox(); view.boxType = .separator; body.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -8).isActive = true }

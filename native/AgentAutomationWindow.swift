@@ -26,7 +26,7 @@ import AppKit
     init(store: AgentStore) {
         self.store = store; service = store.automations
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 720), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "自动化"; window.minSize = NSSize(width: 780, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "自动化"; window.minSize = NSSize(width: 780, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         archived.addItems(withTitles: ["自动化", "已归档"]); archived.target = self; archived.action = #selector(changeArchiveFilter)
@@ -57,7 +57,7 @@ import AppKit
         let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "状态"), enabled], [NSTextField(labelWithString: "下次"), next]])
         scheduleGrid = grid
         grid.column(at: 0).width = 60; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill; grid.columnSpacing = 12; grid.rowSpacing = 10
-        next.font = .systemFont(ofSize: 11); next.textColor = .secondaryLabelColor; next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        next.font = .systemFont(ofSize: 11); next.textColor = AgentWorkbenchTheme.secondaryText; next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         prompt.isRichText = false; prompt.allowsUndo = true; prompt.delegate = self; prompt.font = .systemFont(ofSize: 13); prompt.textContainerInset = NSSize(width: 12, height: 12); prompt.isVerticallyResizable = true; prompt.autoresizingMask = [.width]; prompt.textContainer?.widthTracksTextView = true; prompt.isAutomaticQuoteSubstitutionEnabled = false; prompt.isAutomaticTextReplacementEnabled = false; prompt.setAccessibilityLabel("自动化任务指令")
         let editor = NSScrollView(); editor.documentView = prompt; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder; editor.heightAnchor.constraint(equalToConstant: 180).isActive = true
         let label = NSTextField(labelWithString: "任务指令"); label.font = .systemFont(ofSize: 12, weight: .medium)
@@ -77,7 +77,7 @@ import AppKit
         records.orientation = .vertical; records.alignment = .leading; records.spacing = 12; for view in [filters, historyScroll, detail, pages] { records.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: records.widthAnchor).isActive = true }; records.isHidden = true
         historyScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true; historyScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         save.target = self; save.action = #selector(saveDefinition); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; pause.target = self; pause.action = #selector(togglePause); run.target = self; run.action = #selector(runNow)
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let footer = NSStackView(views: [state, NSView(), run, pause, save]); footer.spacing = 8
         for view in [archived, sidebar, listActions, header, formScroll, records, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -153,9 +153,9 @@ import AppKit
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let title: String, subtitle: String
         if tableView === list { let value = definitions[row]; title = value.name.isEmpty ? "新的自动化" : value.name; subtitle = newValue?.id == value.id ? "未保存" : value.current?.status.title ?? (value.archived ? "已归档" : value.enabled ? value.nextRun.map { AgentAutomations.dateText($0, zone: value.schedule.timeZone) } ?? "已到期" : "已暂停") }
-        else { switch rows[row] { case .heading(let heading): let label = NSTextField(labelWithString: heading); label.font = .systemFont(ofSize: 11, weight: .medium); label.textColor = .secondaryLabelColor; return label
+        else { switch rows[row] { case .heading(let heading): let label = NSTextField(labelWithString: heading); label.font = .systemFont(ofSize: 11, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; return label
         case .run(let run): title = run.name + " · " + run.status.title + (run.unread ? " · 未读" : ""); subtitle = AgentAutomations.dateText(run.scheduled, zone: TimeZone.current.identifier) + (run.trigger == "manual" ? " · 手动" : " · 计划") } }
-        let label = NSTextField(labelWithString: title), sub = NSTextField(labelWithString: subtitle); label.font = .systemFont(ofSize: 12, weight: .medium); sub.font = .systemFont(ofSize: 10); sub.textColor = .secondaryLabelColor
+        let label = NSTextField(labelWithString: title), sub = NSTextField(labelWithString: subtitle); label.font = .systemFont(ofSize: 12, weight: .medium); sub.font = .systemFont(ofSize: 10); sub.textColor = AgentWorkbenchTheme.secondaryText
         for field in [label, sub] { field.lineBreakMode = .byTruncatingTail; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let stack = NSStackView(views: [label, sub]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; return stack
     }

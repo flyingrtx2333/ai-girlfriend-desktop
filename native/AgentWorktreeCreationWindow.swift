@@ -12,14 +12,14 @@ import AppKit
     init(store: AgentStore, taskID: String, directory: URL, onCreated: @escaping (String) -> Void) throws {
         self.store = store; self.taskID = taskID; self.onCreated = onCreated; git = try AgentGit(store: store, taskID: taskID, directory: directory)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 550), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "新建工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 430); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "新建工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 430); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
-        let root = NSTextField(labelWithString: git.files.root.path); root.font = .systemFont(ofSize: 11); root.textColor = .secondaryLabelColor; root.lineBreakMode = .byTruncatingMiddle; root.toolTip = git.files.root.path
+        let root = NSTextField(labelWithString: git.files.root.path); root.font = .systemFont(ofSize: 11); root.textColor = AgentWorkbenchTheme.secondaryText; root.lineBreakMode = .byTruncatingMiddle; root.toolTip = git.files.root.path
         start.setAccessibilityLabel("起点分支"); branch.setAccessibilityLabel("新分支"); branch.delegate = self
         start.target = self; start.action = #selector(changed); include.target = self; include.action = #selector(changed)
         preview.target = self; preview.action = #selector(previewCreation); create.target = self; create.action = #selector(confirm)
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; diff.text.setAccessibilityLabel("待带入修改")
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; diff.text.setAccessibilityLabel("待带入修改")
         let options = NSGridView(views: [[NSTextField(labelWithString: "起点分支"), start], [NSTextField(labelWithString: "新分支"), branch]])
         options.rowSpacing = 10; options.columnSpacing = 12; options.column(at: 0).xPlacement = .trailing; options.column(at: 1).xPlacement = .fill
         options.column(at: 0).width = 72

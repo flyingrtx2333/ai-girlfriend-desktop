@@ -12,7 +12,7 @@ import AppKit
     init(store: AgentStore, taskID: String, messageID: String, actionTitle: String? = nil, notice: String? = nil) {
         self.store = store; self.taskID = taskID; self.messageID = messageID; self.actionTitle = actionTitle
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.minSize = NSSize(width: 540, height: 520); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.minSize = NSSize(width: 540, height: 520); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let path = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path")); path.title = "文件"; path.width = 480
@@ -21,7 +21,7 @@ import AppKit
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.borderType = .bezelBorder
         text.isEditable = false; text.isSelectable = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.isRichText = false; text.textContainerInset = NSSize(width: 8, height: 8); text.setAccessibilityLabel("文件撤回差异")
         let diff = NSScrollView(); diff.documentView = text; diff.hasVerticalScroller = true; diff.borderType = .bezelBorder
-        let notice = NSTextField(wrappingLabelWithString: notice ?? "对话记录会保留。命令、服务及外部操作不能自动撤回。"); notice.font = .systemFont(ofSize: 12); notice.textColor = .secondaryLabelColor
+        let notice = NSTextField(wrappingLabelWithString: notice ?? "对话记录会保留。命令、服务及外部操作不能自动撤回。"); notice.font = .systemFont(ofSize: 12); notice.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12); state.textColor = .systemRed
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
         refreshButton.target = self; refreshButton.action = #selector(refresh)

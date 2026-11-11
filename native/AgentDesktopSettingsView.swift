@@ -17,7 +17,7 @@ import ApplicationServices
         ax.setAccessibilityLabel("授权辅助功能"); screen.setAccessibilityLabel("授权屏幕录制")
         let refresh = NSButton(title: "刷新权限", target: self, action: #selector(refreshState)), disconnect = NSButton(title: "断开全部窗口", target: self, action: #selector(disconnectAll))
         row("启用电脑操作", [NSView(), enabled]); row("辅助功能", [accessibility, NSView(), ax]); row("屏幕录制", [recording, NSView(), screen]); row("窗口连接", [connections, NSView(), disconnect])
-        addArrangedSubview(refresh); status.font = .systemFont(ofSize: 12); status.textColor = .secondaryLabelColor; addArrangedSubview(status); status.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        addArrangedSubview(refresh); status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(status); status.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.refreshState() } }
         refreshState()
     }

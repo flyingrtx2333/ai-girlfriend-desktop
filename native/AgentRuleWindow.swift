@@ -17,7 +17,7 @@ import AppKit
     init(store: AgentStore, taskID: String) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "规则"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "规则"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         scopes.selectedSegment = 0; scopes.target = self; scopes.action = #selector(changeScope); scopes.setAccessibilityLabel("规则范围")
@@ -45,7 +45,7 @@ import AppKit
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("规则正文")
         let viewer = NSScrollView(); viewer.documentView = editor; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
-        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         for (button, action) in [(save, #selector(saveItem)), (use, #selector(useItem)), (remove, #selector(removeItem)), (reveal, #selector(revealItem))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let sourceRow = NSStackView(views: [location, NSView(), use]); sourceRow.spacing = 8
@@ -66,7 +66,7 @@ import AppKit
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row], title = NSTextField(labelWithString: item.name + (item.enabled ? "" : " · 已停用"))
         title.font = .systemFont(ofSize: 12, weight: .semibold); title.lineBreakMode = .byTruncatingTail
-        let detail = NSTextField(labelWithString: item.scope + " · " + (item.definition?.trigger.title ?? "格式错误")); detail.font = .systemFont(ofSize: 11); detail.textColor = item.error == nil ? .secondaryLabelColor : .systemRed; detail.lineBreakMode = .byTruncatingTail
+        let detail = NSTextField(labelWithString: item.scope + " · " + (item.definition?.trigger.title ?? "格式错误")); detail.font = .systemFont(ofSize: 11); detail.textColor = item.error == nil ? AgentWorkbenchTheme.secondaryText : .systemRed; detail.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, detail]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = item.source.path; return stack
     }
     private func selectRow(_ id: String?) {

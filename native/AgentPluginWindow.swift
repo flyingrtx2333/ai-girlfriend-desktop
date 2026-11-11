@@ -29,7 +29,7 @@ import UniformTypeIdentifiers
     init(store: AgentStore, workspace: String?) {
         self.store = store; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 940, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "插件"; window.minSize = NSSize(width: 740, height: 480); window.appearance = NSAppearance(named: .aqua); window.isReleasedWhenClosed = false; window.center()
+        window.title = "插件"; window.minSize = NSSize(width: 740, height: 480); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; let content = NSView(); window.contentView = content
         scopes.selectedSegment = 0; scopes.target = self; scopes.action = #selector(changeScope); scopes.setEnabled(workspace != nil, forSegment: 1); scopes.setAccessibilityLabel("插件范围"); scopes.setToolTip(workspace, forSegment: 1)
         search.placeholderString = "搜索插件"; search.delegate = self
@@ -44,7 +44,7 @@ import UniformTypeIdentifiers
             let scroll = NSScrollView(); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder; scrolls.append(scroll)
         }
         title.font = .systemFont(ofSize: 18, weight: .semibold); title.lineBreakMode = .byTruncatingTail
-        for label in [metadata, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [metadata, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         readme.isEditable = false; readme.isRichText = false; readme.isSelectable = true; readme.font = .systemFont(ofSize: 12); readme.textContainerInset = NSSize(width: 12, height: 12); readme.isVerticallyResizable = true; readme.autoresizingMask = [.width]; readme.textContainer?.widthTracksTextView = true; readme.setAccessibilityLabel("插件说明")
         let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
         let actions = NSStackView(views: [enabled, NSView(), use]); actions.spacing = 8

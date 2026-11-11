@@ -47,6 +47,7 @@ final class PetWebView: WKWebView {
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, NSWindowDelegate, AVAudioPlayerDelegate, NSMenuDelegate {
     let store: PreferencesStore
+    lazy var appearance = AgentAppearance(directory: store.directory)
     lazy var shortcuts: AgentShortcuts = {
         let value = AgentShortcuts(directory: store.directory)
         value.onChange = { [weak self] in self?.refreshApplicationShortcuts() }
@@ -77,7 +78,7 @@ final class PetWebView: WKWebView {
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
-    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -125,6 +126,8 @@ final class PetWebView: WKWebView {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        appearance.apply()
+        appearance.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshAppearancePreferences() } }
         setupMenu(); setupPet(); setupMouse()
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
@@ -674,7 +677,7 @@ final class PetWebView: WKWebView {
         bubbleTimer?.invalidate()
         let text = String(text.prefix(160)) + (text.count > 160 ? "…" : "")
         let label = bubbleLabel ?? NSTextField(wrappingLabelWithString: text); label.stringValue = text; label.font = .systemFont(ofSize: 13)
-        label.textColor = NSColor(red: 0.17, green: 0.23, blue: 0.29, alpha: 1)
+        label.textColor = .labelColor
         let attributes: [NSAttributedString.Key: Any] = [.font: label.font!]
         let listening = store.preferences.wakeEnabled && wakeStatus == "聆听中", controlSpace: CGFloat = listening ? 64 : 0
         let available = (pet.screen ?? NSScreen.main)?.visibleFrame.width ?? 268
@@ -688,8 +691,8 @@ final class PetWebView: WKWebView {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true; panel.ignoresMouseEvents = !listening
         panel.hidesOnDeactivate = false; panel.level = NSWindow.Level(rawValue: pet.level.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let content = panel.contentView ?? NSView(frame: NSRect(origin: .zero, size: panel.frame.size))
-        content.wantsLayer = true; content.layer?.backgroundColor = NSColor.white.cgColor; content.layer?.cornerRadius = 12
+        let content = panel.contentView as? AgentThemeView ?? AgentThemeView(fill: AgentWorkbenchTheme.surface)
+        content.frame = NSRect(origin: .zero, size: panel.frame.size); content.layer?.cornerRadius = 12
         label.frame = NSRect(x: 16, y: 12, width: width - 32 - controlSpace, height: size.height - 24); label.autoresizingMask = [.width, .height]
         if label.superview == nil { content.addSubview(label) }
         let stop = bubbleStopButton ?? NSButton(title: "停止", target: self, action: #selector(stopRecording))

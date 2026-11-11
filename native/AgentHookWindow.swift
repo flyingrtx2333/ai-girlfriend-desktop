@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
     init(service: AgentHooks, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Hooks" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 700, height: 420); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "Hooks" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 700, height: 420); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window)
         let content = NSView(); window.contentView = content
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("Hooks 配置范围")
@@ -28,7 +28,7 @@ import UniformTypeIdentifiers
         command.isEditable = false; command.isRichText = false; command.font = .monospacedSystemFont(ofSize: 12, weight: .regular); command.textContainerInset = NSSize(width: 12, height: 12)
         command.isVerticallyResizable = true; command.autoresizingMask = [.width]; command.textContainer?.widthTracksTextView = true; command.setAccessibilityLabel("Hook 处理器")
         let viewer = NSScrollView(); viewer.documentView = command; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
-        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let detail = NSStackView(views: [enabled, NSView(), clear, reveal]); detail.spacing = 10
         for view in [header, list, detail, location, viewer, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -47,7 +47,7 @@ import UniformTypeIdentifiers
         let item = items[row], title = NSTextField(labelWithString: item.name)
         title.font = .systemFont(ofSize: 12, weight: .semibold); title.lineBreakMode = .byTruncatingTail
         let label = !service.enabled(item) ? "已停用" : service.trusted(item) ? "已启用" : "待审核"
-        let subtitle = NSTextField(labelWithString: item.event.rawValue + " · " + item.scope + " · " + label); subtitle.font = .systemFont(ofSize: 10); subtitle.textColor = .secondaryLabelColor; subtitle.lineBreakMode = .byTruncatingTail
+        let subtitle = NSTextField(labelWithString: item.event.rawValue + " · " + item.scope + " · " + label); subtitle.font = .systemFont(ofSize: 10); subtitle.textColor = AgentWorkbenchTheme.secondaryText; subtitle.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, subtitle]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = item.matcher; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) { showSelection() }
@@ -153,13 +153,13 @@ import UniformTypeIdentifiers
     init(text: String, title: String, save: @escaping (String) throws -> Void) {
         self.save = save; original = text
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = title; window.minSize = NSSize(width: 560, height: 350); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = title; window.minSize = NSSize(width: 560, height: 350); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         editor.string = text; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("Hooks JSON 配置")
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
         let button = NSButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         let footer = NSStackView(views: [state, NSView(), button]); footer.spacing = 8
         let content = NSView(); window.contentView = content
         for view in [scroll, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }

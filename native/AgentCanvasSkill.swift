@@ -73,7 +73,7 @@ struct AgentCanvasSkillSpecification {
     init(canvas: AgentCanvas, taskID: String, record: AgentCanvasRecord) {
         self.canvas = canvas; self.taskID = taskID; id = record.id; sourceHash = record.hash
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 260), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "打包画布 Skill"; window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "打包画布 Skill"; window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); let content = NSView(); window.contentView = content
         name.stringValue = "canvas-" + record.id.prefix(8).lowercased(); trigger.stringValue = "需要生成与「" + record.title + "」相同结构的画布时使用"
         sources.stringValue = "当前任务中用户提供的实际数据和要求"; formatting.stringValue = "沿用模板布局、色彩和交互；数值和文案依据当前实际输入生成"
@@ -83,7 +83,7 @@ struct AgentCanvasSkillSpecification {
             field.font = .systemFont(ofSize: 12); field.setAccessibilityLabel("画布 Skill " + title)
             let row = NSStackView(views: [label, field]); row.spacing = 12; form.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true
         }
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelPackage)), export = NSButton(title: "打包…", target: self, action: #selector(exportPackage)); export.keyEquivalent = "\r"
         let actions = NSStackView(views: [state, NSView(), cancel, export]); actions.spacing = 8
         for view in [form, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }

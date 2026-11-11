@@ -110,7 +110,7 @@ import AppKit
             let current = try files.fileHash(files.resolve(source.path), maximum: 512_000) == source.sha256
             let text = try files.read(source.path, offset: max(1, source.line - 3), limit: min(200, source.endLine - source.line + 10))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 500), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = (current ? "" : "来源已变化 · ") + source.path + ":\(source.line)"; window.appearance = NSAppearance(named: .aqua); window.center()
+            window.title = (current ? "" : "来源已变化 · ") + source.path + ":\(source.line)"; window.center()
             let scroll = textPreview(text); (scroll.documentView as? NSTextView)?.font = .monospacedSystemFont(ofSize: 12, weight: .regular); window.contentView = scroll
             sourceWindow?.close(); sourceWindow = NSWindowController(window: window); sourceWindow?.showWindow(nil); window.makeKeyAndOrderFront(nil)
         } catch { state.stringValue = error.localizedDescription }

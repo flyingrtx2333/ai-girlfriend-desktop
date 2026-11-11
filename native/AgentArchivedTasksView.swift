@@ -25,7 +25,7 @@ import AppKit
         let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item")); table.addTableColumn(name)
         table.headerView = nil; table.rowHeight = 53; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("归档列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3; state.setAccessibilityLabel("归档状态")
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3; state.setAccessibilityLabel("归档状态")
         restore.target = self; restore.action = #selector(restoreSelection); restore.bezelStyle = .rounded
         remove.target = self; remove.action = #selector(deleteSelection); clear.target = self; clear.action = #selector(deleteVisible)
         for button in [remove, clear] { button.bezelStyle = .rounded; button.hasDestructiveAction = true }
@@ -60,7 +60,7 @@ import AppKit
         } else { rows = store.tasks.filter { $0.archived && (projectPath == nil || $0.workspace == projectPath) }.map(Item.task) }
         rows = rows.filter { query.isEmpty || ($0.title + "\n" + ($0.path ?? "")).localizedCaseInsensitiveContains(query) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         table.reloadData(); table.deselectAll(nil); if let selection, let row = rows.firstIndex(where: { $0.id == selection }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-        state.textColor = operationIssue == nil ? .secondaryLabelColor : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"); updateAction()
+        state.textColor = operationIssue == nil ? AgentWorkbenchTheme.secondaryText : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"); updateAction()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) { updateAction() }
@@ -85,7 +85,7 @@ import AppKit
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }; let item = rows[row]
         let title = NSTextField(labelWithString: item.title), detail = NSTextField(labelWithString: item.mode.title + " · " + (item.path ?? "无工作区"))
-        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail; detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingMiddle
+        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail; detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText; detail.lineBreakMode = .byTruncatingMiddle
         if case .workspace(_, let count) = item { title.stringValue += "  ·  \(count) 项任务" }
         let column = NSStackView(views: [title, detail]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 5; column.toolTip = item.path; column.setAccessibilityLabel(title.stringValue + "，" + detail.stringValue); return column
     }

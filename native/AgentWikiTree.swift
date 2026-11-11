@@ -30,7 +30,7 @@ import AppKit
         outline.columnAutoresizingStyle = .noColumnAutoresizing
         outline.target = self; outline.doubleAction = #selector(toggleFolder)
         scroll.documentView = outline; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
-        empty.textColor = .secondaryLabelColor; empty.font = .systemFont(ofSize: 12); empty.setAccessibilityLabel("Wiki 目录状态")
+        empty.textColor = AgentWorkbenchTheme.secondaryText; empty.font = .systemFont(ofSize: 12); empty.setAccessibilityLabel("Wiki 目录状态")
         let toolbar = NSStackView(views: [search, refresh]); toolbar.spacing = 4
         language.addItems(withTitles: ["简体中文", "English", "旧版"]); language.controlSize = .small; language.target = self; language.action = #selector(changeLanguage); language.setAccessibilityLabel("Wiki 语言")
         plan.controlSize = .small; plan.bezelStyle = .texturedRounded; plan.target = self; plan.action = #selector(editPlan); plan.setAccessibilityLabel("Wiki 生成规划")

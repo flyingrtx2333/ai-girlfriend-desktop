@@ -29,7 +29,6 @@ import UniformTypeIdentifiers
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "扩展"; window.minSize = NSSize(width: 720, height: 480); window.center(); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         kinds.selectedSegment = 0; kinds.target = self; kinds.action = #selector(changeKind)
@@ -50,7 +49,7 @@ import UniformTypeIdentifiers
         editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("扩展说明")
         let viewer = NSScrollView(); viewer.documentView = editor; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
         enabled.target = self; enabled.action = #selector(toggleEnabled)
-        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle }
+        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle }
         location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(add, #selector(createItem)), (importButton, #selector(importItem)), (save, #selector(saveItem)), (remove, #selector(removeItem)), (use, #selector(useItem)), (reveal, #selector(revealItem))] {
@@ -131,7 +130,7 @@ import UniformTypeIdentifiers
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row], name = NSTextField(labelWithString: item.name + (item.enabled ? "" : " · 已停用"))
         name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        let source = NSTextField(labelWithString: item.scope + (item.manualOnly ? " · 手动" : "")); source.font = .systemFont(ofSize: 11); source.textColor = .secondaryLabelColor
+        let source = NSTextField(labelWithString: item.scope + (item.manualOnly ? " · 手动" : "")); source.font = .systemFont(ofSize: 11); source.textColor = AgentWorkbenchTheme.secondaryText
         let stack = NSStackView(views: [name, source]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = item.description; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -307,7 +306,7 @@ import UniformTypeIdentifiers
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = automation && row == 0 ? nil : items[row - (automation ? 1 : 0)]
         let title = NSTextField(labelWithString: item.map { "/" + $0.invocation + " · " + $0.scope } ?? "/automation · 自动化"); title.font = .systemFont(ofSize: 12, weight: .medium)
-        let description = NSTextField(labelWithString: item?.description ?? "按目标与时间起草计划"); description.font = .systemFont(ofSize: 11); description.textColor = .secondaryLabelColor
+        let description = NSTextField(labelWithString: item?.description ?? "按目标与时间起草计划"); description.font = .systemFont(ofSize: 11); description.textColor = AgentWorkbenchTheme.secondaryText
         for field in [title, description] { field.lineBreakMode = .byTruncatingTail }
         let stack = NSStackView(views: [title, description]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3; return stack
     }

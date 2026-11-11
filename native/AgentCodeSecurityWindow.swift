@@ -39,9 +39,9 @@ import AppKit
         scroll.documentView = table
         scroll.hasVerticalScroller = true
         detail.setAccessibilityLabel("处理建议")
-        detail.textColor = .secondaryLabelColor
+        detail.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12)
-        state.textColor = .secondaryLabelColor
+        state.textColor = AgentWorkbenchTheme.secondaryText
         state.lineBreakMode = .byTruncatingTail
         let done = NSButton(title: "关闭", target: self, action: #selector(closeSheet))
         done.keyEquivalent = "\r"
@@ -95,7 +95,7 @@ import AppKit
         } else {
             let skipped = report.skipped[row - report.findings.count]
             field.stringValue = key == "risk" ? "跳过" : key == "issue" ? skipped.reason : skipped.path
-            field.textColor = .secondaryLabelColor
+            field.textColor = AgentWorkbenchTheme.secondaryText
         }
         field.toolTip = field.stringValue
         field.stringValue = field.stringValue.replacingOccurrences(of: "\n", with: "↵")

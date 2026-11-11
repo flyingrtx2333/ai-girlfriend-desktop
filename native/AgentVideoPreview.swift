@@ -49,7 +49,7 @@ struct AgentVideoSnapshot: Sendable {
     private var source: URL?, files: AgentFiles?, validate: (() throws -> Void)?, generation = UUID()
     override init(frame: NSRect) {
         super.init(frame: frame)
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingMiddle
+        status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingMiddle
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         reload.target = self; reload.action = #selector(refresh); reload.controlSize = .small; reload.setAccessibilityLabel("刷新视频")
         external.target = self; external.action = #selector(openExternal); external.controlSize = .small; external.setAccessibilityLabel("用系统应用打开视频")
@@ -120,7 +120,7 @@ struct AgentVideoSnapshot: Sendable {
     let preview = AgentVideoPreview()
     init(file: URL, files: AgentFiles, validate: (() throws -> Void)? = nil) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = file.lastPathComponent; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = file.lastPathComponent; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content; content.addSubview(preview); preview.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([preview.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])

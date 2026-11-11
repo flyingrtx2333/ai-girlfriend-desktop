@@ -7,7 +7,7 @@ import AppKit
         let value = draft.automation, wasSaved = saved != nil || draft.savedAt != nil
         let name = NSTextField(labelWithString: String(value.name.prefix(80))); name.font = .systemFont(ofSize: 14, weight: .semibold); name.lineBreakMode = .byTruncatingTail
         let state = NSTextField(labelWithString: issue ?? (wasSaved ? (saved == nil ? "自动化 · 已移除" : saved!.archived ? "自动化 · 已归档" : saved!.enabled ? "自动化 · 已启用" : "自动化 · 已暂停") : "自动化草稿 · 未保存"))
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         let button = NSButton(title: wasSaved ? "查看配置" : "继续配置", target: self, action: #selector(configure)); button.isEnabled = issue == nil && (!wasSaved || saved != nil); button.setAccessibilityLabel(button.title + " · " + value.name)
         let schedule = value.schedule, clock: String
         switch schedule.frequency {

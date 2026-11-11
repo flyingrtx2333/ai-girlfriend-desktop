@@ -8,7 +8,6 @@ import AppKit
         files = try AgentFiles(workspace: workspace); self.storage = storage; self.canWrite = canWrite; snapshot = try AgentWikiPlan.load(files: files, validate: false)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 570), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Wiki 生成规划"; window.minSize = NSSize(width: 500, height: 360); window.center(); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
         super.init(window: window); window.delegate = self
         editor.string = snapshot.text; editor.isRichText = false; editor.isEditable = canWrite(); editor.isSelectable = true; editor.allowsUndo = true; editor.previewUndoManager = UndoManager(); editor.delegate = self
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 14, height: 12); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
@@ -16,7 +15,7 @@ import AppKit
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true
         let reload = NSButton(title: "重新载入", target: self, action: #selector(reload)), close = NSButton(title: "关闭", target: self, action: #selector(closePlan))
         save.target = self; save.action = #selector(savePlan); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; save.isEnabled = canWrite()
-        status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor; status.lineBreakMode = .byTruncatingMiddle; status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingMiddle; status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [status, NSView(), reload, close, save]); actions.spacing = 8
         let content = NSView(); window.contentView = content
         for child in [scroll, actions] { content.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }

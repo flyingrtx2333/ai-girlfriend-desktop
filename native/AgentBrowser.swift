@@ -75,7 +75,7 @@ import WebKit
     init(title: String) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 720), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "浏览器 · " + title; window.minSize = NSSize(width: 620, height: 440); window.isReleasedWhenClosed = false; window.center()
-        window.appearance = NSAppearance(named: .aqua); window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; tabs.delegate = self; tabs.tabViewType = .topTabsBezelBorder; tabs.allowsTruncatedLabels = true
         tabs.font = .systemFont(ofSize: 11); tabs.setAccessibilityLabel("浏览器标签页")
         address.placeholderString = "输入网址"; address.setAccessibilityLabel("浏览器网址"); address.target = self; address.action = #selector(navigate)
@@ -83,9 +83,9 @@ import WebKit
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label); button.toolTip = label; button.setAccessibilityLabel(label)
             button.target = self; button.action = action; button.bezelStyle = .texturedRounded; button.widthAnchor.constraint(equalToConstant: 30).isActive = true
         }
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         let toolbar = NSStackView(views: [back, forward, reload, halt, add, remove, address, copyLink, copyImage, annotate]); toolbar.spacing = 6
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.97, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         for view in [toolbar, tabs, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), toolbar.heightAnchor.constraint(equalToConstant: 28),

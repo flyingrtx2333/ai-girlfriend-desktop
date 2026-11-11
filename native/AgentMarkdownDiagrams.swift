@@ -96,7 +96,7 @@ import PDFKit
         let size = NSSize(width: 340, height: 44)
         return NSImage(size: size, flipped: false) { rect in
             NSColor(white: 0.96, alpha: 1).setFill(); rect.fill()
-            (message as NSString).draw(in: rect.insetBy(dx: 10, dy: 12), withAttributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]); return true
+            (message as NSString).draw(in: rect.insetBy(dx: 10, dy: 12), withAttributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: AgentWorkbenchTheme.secondaryText]); return true
         }
     }
 }

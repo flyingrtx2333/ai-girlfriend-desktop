@@ -283,7 +283,7 @@ import AppKit
     init(workspace: String, target: URL) throws {
         files = try AgentFiles(workspace: workspace)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "来源"; window.appearance = NSAppearance(named: .aqua); window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
+        window.title = "来源"; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let view = NSView(); window.contentView = view
         text.isEditable = false; text.isRichText = false; text.delegate = self; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.textContainerInset = NSSize(width: 16, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("来源原文")

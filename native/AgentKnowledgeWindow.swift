@@ -10,9 +10,9 @@ import AppKit
     init(store: AgentStore, taskID: String) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "项目知识 · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目"); window.minSize = NSSize(width: 700, height: 470); window.appearance = NSAppearance(named: .aqua); window.isReleasedWhenClosed = false; window.center()
+        window.title = "项目知识 · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目"); window.minSize = NSSize(width: 700, height: 470); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         search.placeholderString = "搜索代码、文档或符号"; search.sendsWholeSearchString = true; search.sendsSearchStringImmediately = false
         search.target = self; search.action = #selector(searchProject)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("hit")); table.addTableColumn(column)
@@ -23,7 +23,7 @@ import AppKit
         let viewer = NSScrollView(); viewer.documentView = preview; viewer.hasVerticalScroller = true
         for button in [find, update, rebuild, open] { button.target = self }
         find.action = #selector(searchProject); update.action = #selector(updateIndex); rebuild.action = #selector(rebuildIndex); open.action = #selector(openSource)
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingMiddle
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
         let wiki = NSButton(title: "Repo Wiki", target: self, action: #selector(openWiki))
         let cards = NSButton(title: "知识卡片", target: self, action: #selector(openCards)); cards.isEnabled = store.task(taskID)?.workspace != nil
         let header = NSStackView(views: [search, find, update, rebuild, wiki, cards]); header.spacing = 8

@@ -15,7 +15,7 @@ import AppKit
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
         self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "Agent 团队" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.title = "Agent 团队" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("teams")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42; table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("Agent 团队列表")
@@ -34,7 +34,7 @@ import AppKit
         instructions.isAutomaticQuoteSubstitutionEnabled = false; instructions.isAutomaticTextReplacementEnabled = false; instructions.setAccessibilityLabel("团队协作指令")
         let editor = NSScrollView(); editor.documentView = instructions; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder
         let label = NSTextField(labelWithString: "协作指令"); label.font = .systemFont(ofSize: 12, weight: .medium)
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         save.target = self; save.action = #selector(saveTeam); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; use.target = self; use.action = #selector(useTeam)
         let footer = NSStackView(views: [state, NSView(), use, save]); footer.spacing = 10
         for view in [list, actions, grid, options, label, editor, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }

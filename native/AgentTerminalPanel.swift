@@ -50,7 +50,7 @@ import BlueFatFishTerminal
     let id = UUID()
     private let title = NSTextField(labelWithString: "")
     private let state = NSTextField(labelWithString: "")
-    private let header = NSView()
+    private let header = AgentThemeView(fill: AgentWorkbenchTheme.surface)
     private let close = AgentWorkbenchButton()
     var onClose: (() -> Void)?
     var name: String { "终端 \(number)" }
@@ -62,11 +62,9 @@ import BlueFatFishTerminal
         title.font = .systemFont(ofSize: 11, weight: .medium)
         title.toolTip = directory.path
         state.font = .systemFont(ofSize: 11)
-        state.textColor = .secondaryLabelColor
+        state.textColor = AgentWorkbenchTheme.secondaryText
         state.lineBreakMode = .byTruncatingTail
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        header.wantsLayer = true
-        header.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor
         AgentWorkbenchTheme.toolbar(close, title: "关闭\(name)", symbol: "xmark")
         close.target = self
         close.action = #selector(closePane)
@@ -94,13 +92,13 @@ import BlueFatFishTerminal
     @objc private func closePane() { onClose?() }
 
     func select(_ selected: Bool) {
-        title.textColor = selected ? AgentWorkbenchTheme.accent : .secondaryLabelColor
+        title.textColor = selected ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText
     }
 
     func exited(_ code: Int32) { state.stringValue = "已退出（\(code)）" }
 }
 
-@MainActor final class AgentTerminalPanel: NSView {
+@MainActor final class AgentTerminalPanel: AgentThemeView {
     @MainActor private final class Tab {
         let title: String
         var root: NSView
@@ -156,8 +154,7 @@ import BlueFatFishTerminal
         self.checkHome = checkHome
         super.init(frame: .zero)
         setAccessibilityLabel("任务终端")
-        wantsLayer = true
-        layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor
+        fill = AgentWorkbenchTheme.surface
         tabs.setAccessibilityLabel("终端会话")
         tabs.target = self
         tabs.action = #selector(selectTab)
@@ -165,7 +162,7 @@ import BlueFatFishTerminal
         tabs.font = .systemFont(ofSize: 12, weight: .medium)
         tabs.setContentCompressionResistancePriority(.required, for: .horizontal)
         path.font = .systemFont(ofSize: 11)
-        path.textColor = .secondaryLabelColor
+        path.textColor = AgentWorkbenchTheme.secondaryText
         path.lineBreakMode = .byTruncatingMiddle
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         issue.font = .systemFont(ofSize: 11)

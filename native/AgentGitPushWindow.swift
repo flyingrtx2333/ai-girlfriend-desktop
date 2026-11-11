@@ -14,11 +14,11 @@ import AppKit
     init(store: AgentStore, taskID: String, directory: URL) throws {
         self.store = store; self.taskID = taskID; git = try AgentGit(store: store, taskID: taskID, directory: directory)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "推送 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 460); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "推送 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 460); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         source.font = .systemFont(ofSize: 13, weight: .medium); source.lineBreakMode = .byTruncatingMiddle
-        count.font = .systemFont(ofSize: 12); count.textColor = .secondaryLabelColor; count.lineBreakMode = .byTruncatingTail
+        count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText; count.lineBreakMode = .byTruncatingTail
         branch.placeholderString = "目标分支"; branch.setAccessibilityLabel("推送目标分支"); branch.target = self; branch.action = #selector(invalidate)
         branch.delegate = self
         remote.setAccessibilityLabel("推送远端"); address.setAccessibilityLabel("推送地址"); inspectCommit.setAccessibilityLabel("待推送提交")
@@ -41,7 +41,7 @@ import AppKit
         text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.textContainerInset = NSSize(width: 12, height: 12)
         text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("待推送实际差异")
         let scroll = NSScrollView(); scroll.documentView = text; scroll.hasVerticalScroller = true
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let bottom = NSStackView(views: [state, NSView(), verify, stop, push]); bottom.spacing = 10
         for view in [top, scroll, bottom] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([top.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), top.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18), top.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),

@@ -32,7 +32,7 @@ import Darwin
     init(canvas: AgentCanvas, taskID: String) {
         self.canvas = canvas; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 740), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "画布"; window.minSize = NSSize(width: 640, height: 460); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "画布"; window.minSize = NSSize(width: 640, height: 460); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self; window.contentView = content
         picker.setAccessibilityLabel("任务画布"); picker.target = self; picker.action = #selector(changeCanvas); picker.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
         picker.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true; picker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -46,7 +46,7 @@ import Darwin
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; save.isHidden = true
         editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 13, weight: .regular); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.textContainerInset = NSSize(width: 18, height: 16); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.delegate = self; editor.setAccessibilityLabel("画布 TSX 源码")
         editorScroll.documentView = editor; editorScroll.hasVerticalScroller = true; editorScroll.isHidden = true
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         let toolbar = NSStackView(views: [picker, mode, NSView(), reload, versions, annotate, exports, save]); toolbar.spacing = 8
         for view in [toolbar, preview, editorScroll, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), toolbar.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), toolbar.heightAnchor.constraint(equalToConstant: 30), preview.leadingAnchor.constraint(equalTo: content.leadingAnchor), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor), preview.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -4), editorScroll.leadingAnchor.constraint(equalTo: preview.leadingAnchor), editorScroll.trailingAnchor.constraint(equalTo: preview.trailingAnchor), editorScroll.topAnchor.constraint(equalTo: preview.topAnchor), editorScroll.bottomAnchor.constraint(equalTo: preview.bottomAnchor), state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8), state.heightAnchor.constraint(equalToConstant: 16)])

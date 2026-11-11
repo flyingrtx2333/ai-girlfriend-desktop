@@ -12,7 +12,7 @@ import AppKit
         let title = NSTextField(labelWithString: "大小")
         title.font = .menuFont(ofSize: 13); title.frame = NSRect(x: 16, y: 33, width: 100, height: 18)
         percentage.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
-        percentage.textColor = .secondaryLabelColor; percentage.alignment = .right
+        percentage.textColor = AgentWorkbenchTheme.secondaryText; percentage.alignment = .right
         percentage.frame = NSRect(x: 120, y: 33, width: 52, height: 18)
         slider.frame = NSRect(x: 14, y: 5, width: 160, height: 24)
         slider.isContinuous = true; slider.target = self; slider.action = #selector(changed)

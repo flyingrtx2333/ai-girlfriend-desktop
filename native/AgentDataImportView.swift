@@ -26,7 +26,7 @@ import AppKit
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
         detail.isEditable = false; detail.isRichText = false; detail.font = .systemFont(ofSize: 12); detail.textContainerInset = NSSize(width: 8, height: 8); detail.isVerticallyResizable = true; detail.autoresizingMask = [.width]; detail.textContainer?.widthTracksTextView = true; detail.setAccessibilityLabel("导入预览")
         let preview = NSScrollView(); preview.documentView = detail; preview.hasVerticalScroller = true
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(begin, #selector(start)), (pause, #selector(pauseImport)), (resume, #selector(resumeImport)), (cancel, #selector(cancelImport)), (open, #selector(openTask)), (original, #selector(showOriginal))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         let header = NSStackView(views: [source, folder, detect]); header.spacing = 8
@@ -57,7 +57,7 @@ import AppKit
         resume.isHidden = !service.unfinished || service.active; cancel.isHidden = !service.unfinished && !service.active
         if let issue = service.issue { state.stringValue = issue; state.textColor = .systemRed }
         else {
-            state.textColor = .secondaryLabelColor
+            state.textColor = AgentWorkbenchTheme.secondaryText
             if service.scanning { state.stringValue = "正在检测…" }
             else if viewingPreview { state.stringValue = "可导入\(rows.filter { $0.issue == nil }.count)项 · 跳过\(rows.filter { $0.issue != nil }.count)项" }
             else if let batch, batch.source == selectedSource, batch.root == root.path {
@@ -74,7 +74,7 @@ import AppKit
             let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleRecord(_:))); box.tag = row; box.state = selected.contains(value.id) ? .on : .off; box.isEnabled = selectAll.isEnabled && value.issue == nil; box.setAccessibilityLabel("导入：" + value.title); return box
         }
         let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: value.issue ?? states[value.id] ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录"))
-        title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = value.issue == nil ? .secondaryLabelColor : .tertiaryLabelColor; status.lineBreakMode = .byTruncatingTail
+        title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = value.issue == nil ? AgentWorkbenchTheme.secondaryText : .tertiaryLabelColor; status.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, status]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = value.file; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }

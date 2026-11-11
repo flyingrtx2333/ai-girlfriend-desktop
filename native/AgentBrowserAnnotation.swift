@@ -68,7 +68,7 @@ import AppKit
         canvas = AgentBrowserAnnotationView(shot: shot); self.onSubmit = onSubmit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 760), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "标注 · " + String(shot.source.title.prefix(80)); window.minSize = NSSize(width: 640, height: 480)
-        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
         mode.selectedSegment = 0; mode.target = self; mode.action = #selector(annotationToolChanged); mode.setAccessibilityLabel("标注工具")
@@ -78,7 +78,7 @@ import AppKit
         undo.keyEquivalent = "z"; undo.keyEquivalentModifierMask = .command
         cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
         note.placeholderString = "补充要求"; note.setAccessibilityLabel("标注补充要求")
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         if shot.source.method == "webkit-software" { state.stringValue = "软件快照可能缺少视频和 3D 内容" }
         let header = NSStackView(views: [mode, undo, clear, NSView(), copy]); header.spacing = 8
         let footer = NSStackView(views: [state, NSView(), cancel, add]); footer.spacing = 8

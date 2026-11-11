@@ -78,7 +78,7 @@ enum AgentTaskFind {
         super.init(frame: frame); orientation = .horizontal; alignment = .centerY; spacing = 6; isHidden = true
         search.placeholderString = "在当前任务中查找"; search.setAccessibilityLabel("当前任务查找"); search.delegate = self; search.target = self; search.action = #selector(queryChanged)
         search.setContentHuggingPriority(.defaultLow, for: .horizontal); search.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
-        counter.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); counter.textColor = .secondaryLabelColor; counter.alignment = .right; counter.setAccessibilityLabel("查找结果")
+        counter.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular); counter.textColor = AgentWorkbenchTheme.secondaryText; counter.alignment = .right; counter.setAccessibilityLabel("查找结果")
         counter.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
         for (button, title, symbol, action) in [(previous, "上一个匹配", "chevron.up", #selector(previousMatch)), (next, "下一个匹配", "chevron.down", #selector(nextMatch)), (closeButton, "关闭查找", "xmark", #selector(closeFind))] {
             button.title = ""; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.isBordered = false; button.target = self; button.action = action

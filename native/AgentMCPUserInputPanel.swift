@@ -14,7 +14,7 @@ import AppKit
         panel.title = "连接器问询"; panel.isReleasedWhenClosed = false
         super.init(window: panel)
         let name = NSTextField(labelWithString: request.serverName); name.font = .systemFont(ofSize: 16, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        let origin = NSTextField(labelWithString: request.destination); origin.font = .systemFont(ofSize: 11); origin.textColor = .secondaryLabelColor; origin.lineBreakMode = .byTruncatingMiddle; origin.toolTip = request.destination
+        let origin = NSTextField(labelWithString: request.destination); origin.font = .systemFont(ofSize: 11); origin.textColor = AgentWorkbenchTheme.secondaryText; origin.lineBreakMode = .byTruncatingMiddle; origin.toolTip = request.destination
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         let document = FormDocumentView(); scroll.documentView = document; document.translatesAutoresizingMaskIntoConstraints = false
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12; body.translatesAutoresizingMaskIntoConstraints = false
@@ -51,7 +51,7 @@ import AppKit
         let label = field.title + (field.required ? "（必填）" : "")
         let row = NSStackView(views: [caption]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 4
         if !field.detail.isEmpty {
-            let detail = NSTextField(wrappingLabelWithString: field.detail); detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
+            let detail = NSTextField(wrappingLabelWithString: field.detail); detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText
             row.addArrangedSubview(detail); detail.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
         }
         caption.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true

@@ -11,17 +11,17 @@ import AppKit
         NSLayoutConstraint.activate([box.leadingAnchor.constraint(equalTo: view.leadingAnchor), box.trailingAnchor.constraint(equalTo: view.trailingAnchor), box.topAnchor.constraint(equalTo: view.topAnchor), box.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
         let name = NSTextField(labelWithString: row.project.name), path = NSTextField(labelWithString: row.project.workspace)
         name.font = .systemFont(ofSize: 15, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        path.font = .systemFont(ofSize: 11); path.textColor = .secondaryLabelColor; path.lineBreakMode = .byTruncatingMiddle; path.toolTip = row.project.workspace
+        path.font = .systemFont(ofSize: 11); path.textColor = AgentWorkbenchTheme.secondaryText; path.lineBreakMode = .byTruncatingMiddle; path.toolTip = row.project.workspace
         let identity = NSStackView(views: [name, path]); identity.orientation = .vertical; identity.alignment = .leading; identity.spacing = 5
         identity.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for label in [name, path] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); label.widthAnchor.constraint(equalTo: identity.widthAnchor).isActive = true }
         let status = NSTextField(labelWithString: row.status + (row.branchTitle.isEmpty ? "" : " · " + row.branchTitle))
         status.font = .systemFont(ofSize: 12, weight: .medium); status.lineBreakMode = .byTruncatingMiddle
-        status.textColor = row.problem != nil ? .systemRed : ["生成中", "等待确认", "待开始"].contains(row.status) ? .systemOrange : .secondaryLabelColor
+        status.textColor = row.problem != nil ? .systemRed : ["生成中", "等待确认", "待开始"].contains(row.status) ? .systemOrange : AgentWorkbenchTheme.secondaryText
         status.toolTip = row.problem ?? row.branch
         let metadata = NSTextField(labelWithString: row.pages.map { "\($0) 页" } ?? "")
         if let updated = row.updated { metadata.stringValue += " · " + DateFormatter.localizedString(from: updated, dateStyle: .short, timeStyle: .short) }
-        metadata.font = .systemFont(ofSize: 11); metadata.textColor = .secondaryLabelColor; metadata.lineBreakMode = .byTruncatingTail
+        metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText; metadata.lineBreakMode = .byTruncatingTail
         let metrics = NSStackView(views: [status, metadata]); metrics.orientation = .vertical; metrics.alignment = .leading; metrics.spacing = 5
         for label in [status, metadata] { label.widthAnchor.constraint(equalTo: metrics.widthAnchor).isActive = true }
         let actions = NSStackView(); actions.spacing = 6
@@ -54,9 +54,9 @@ import AppKit
     init(store: AgentStore) {
         self.store = store
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Repo Wiki"; window.minSize = NSSize(width: 780, height: 520); window.appearance = NSAppearance(named: .aqua); window.isReleasedWhenClosed = false; window.center()
+        window.title = "Repo Wiki"; window.minSize = NSSize(width: 780, height: 520); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.97, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         let heading = NSTextField(labelWithString: "Repo Wiki"); heading.font = .systemFont(ofSize: 20, weight: .semibold)
         search.placeholderString = "搜索项目"; search.setAccessibilityLabel("搜索 Wiki 项目"); search.delegate = self; search.sendsSearchStringImmediately = true
         status.addItems(withTitles: ["全部状态", "已生成", "未生成"]); status.target = self; status.action = #selector(filterChanged); status.setAccessibilityLabel("Wiki 生成状态")
@@ -73,8 +73,8 @@ import AppKit
         flow.minimumInteritemSpacing = 12; flow.minimumLineSpacing = 12; flow.sectionInset = NSEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
         let scroll = NSScrollView(); scroll.documentView = collection; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         collection.frame = NSRect(x: 0, y: 0, width: 1064, height: 500); collection.autoresizingMask = [.width]
-        state.font = .systemFont(ofSize: 12); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
-        empty.font = .systemFont(ofSize: 15); empty.textColor = .secondaryLabelColor; empty.setAccessibilityLabel("Wiki 项目筛选状态")
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
+        empty.font = .systemFont(ofSize: 15); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.setAccessibilityLabel("Wiki 项目筛选状态")
         for child in [heading, toolbar, scroll, state, empty] { content.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
@@ -90,7 +90,7 @@ import AppKit
     func windowDidBecomeKey(_ notification: Notification) { if !loading { reload() } }
     func windowDidResize(_ notification: Notification) { window?.contentView?.layoutSubtreeIfNeeded(); updateLayout() }
     @objc func reload() {
-        load?.cancel(); worker?.cancel(); loading = true; summaries = []; rows = []; collection.reloadData(); empty.isHidden = true; state.stringValue = "正在读取项目…"; state.textColor = .secondaryLabelColor
+        load?.cancel(); worker?.cancel(); loading = true; summaries = []; rows = []; collection.reloadData(); empty.isHidden = true; state.stringValue = "正在读取项目…"; state.textColor = AgentWorkbenchTheme.secondaryText
         let projects = AgentRepoWikiOverview.projects(store), storage = store.directory, selected = selectedLanguage
         generationSignature = currentGenerationSignature
         let background = Task.detached(priority: .utility) { try AgentRepoWikiOverview.read(projects, storage: storage, language: selected) }; worker = background
@@ -122,7 +122,7 @@ import AppKit
         }
         collection.reloadData(); updateLayout()
         empty.isHidden = loading || !rows.isEmpty; empty.stringValue = summaries.isEmpty ? "暂无工作区" : "没有匹配的项目"
-        if !loading { state.stringValue = "\(rows.count) 个项目"; state.textColor = .secondaryLabelColor }
+        if !loading { state.stringValue = "\(rows.count) 个项目"; state.textColor = AgentWorkbenchTheme.secondaryText }
     }
     func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { rows.count }

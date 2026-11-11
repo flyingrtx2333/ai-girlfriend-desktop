@@ -1,26 +1,20 @@
 import AppKit
 
 final class SidebarBackground: NSView {
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         AgentWorkbenchTheme.sidebar.setFill(); bounds.fill()
     }
 }
 
 final class ContentSurface: NSView {
+    var onAppearanceChange: (() -> Void)?
     var showsSettings = false { didSet { needsDisplay = true } }
     var usesWorkbenchSurface = false { didSet { needsDisplay = true } }
     override func draw(_ dirtyRect: NSRect) {
-        (showsSettings ? NSColor(white: 0.988, alpha: 1) : usesWorkbenchSurface ? AgentWorkbenchTheme.surface : .white).setFill(); bounds.fill()
-        guard showsSettings else { return }
-        for offset in stride(from: CGFloat(8), through: min(180, bounds.height), by: 8) {
-            NSColor(white: 0.42, alpha: 0.075 * (1 - offset / 190)).setFill()
-            let dots = NSBezierPath()
-            for x in stride(from: CGFloat(8), through: bounds.width, by: 8) {
-                dots.appendOval(in: NSRect(x: x, y: bounds.maxY - offset, width: 1, height: 1))
-            }
-            dots.fill()
-        }
+        (showsSettings ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface).setFill(); bounds.fill()
     }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true; onAppearanceChange?() }
 }
 
 final class ChatMessageRow: NSView {
@@ -33,6 +27,7 @@ final class ChatMessageRow: NSView {
     private(set) var searchUsesSource = false
     private let isUser: Bool
     private let workbench: Bool
+    private var renderedSize: CGFloat = 0
     private let attachments = AgentAttachmentStrip()
     private let body = NSStackView(), replyActions = NSStackView()
     private let copyReply = NSButton(), helpful = NSButton(), unhelpful = NSButton(), branchReply = NSButton()
@@ -44,36 +39,35 @@ final class ChatMessageRow: NSView {
         isUser = message.role == "user"; self.workbench = workbench
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel(isUser ? "你的消息" : "小鲸回复"); setAccessibilityIdentifier("message-" + message.id)
-        let user = message.role == "user", container = NSView()
+        let user = message.role == "user", container = AgentThemeView(fill: message.role == "user" && !workbench ? AgentWorkbenchTheme.subtle : .clear)
         container.translatesAutoresizingMaskIntoConstraints = false; container.wantsLayer = true
-        container.layer?.backgroundColor = user && !workbench ? NSColor(white: 0.95, alpha: 1).cgColor : NSColor.clear.cgColor
         container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(body)
         body.orientation = .vertical; body.alignment = .leading; body.spacing = 0; body.translatesAutoresizingMaskIntoConstraints = false
         for view in [label, attachments, replyActions, roundActions] as [NSView] { body.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
         replyActions.spacing = 8; replyActions.alignment = .centerY; replyActions.isHidden = true
         for (button, title, symbol, action) in [(copyReply, "复制回复", "doc.on.doc", #selector(copyResponse)), (helpful, "有帮助", "hand.thumbsup", #selector(markHelpful)), (unhelpful, "无帮助", "hand.thumbsdown", #selector(markUnhelpful)), (branchReply, "从这条回复创建分支", "arrow.triangle.branch", #selector(branchResponse))] {
-            button.title = ""; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.isBordered = false; button.contentTintColor = .secondaryLabelColor
+            button.title = ""; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.isBordered = false; button.contentTintColor = AgentWorkbenchTheme.secondaryText
             button.target = self; button.action = action; button.toolTip = title; button.setAccessibilityLabel(title)
             button.widthAnchor.constraint(equalToConstant: 22).isActive = true; button.heightAnchor.constraint(equalToConstant: 22).isActive = true; replyActions.addArrangedSubview(button)
         }; replyActions.addArrangedSubview(NSView())
         roundActions.spacing = 6; roundActions.alignment = .centerY; roundActions.isHidden = true
-        rollbackFiles.isBordered = false; rollbackFiles.font = .systemFont(ofSize: 12); rollbackFiles.contentTintColor = .secondaryLabelColor
+        rollbackFiles.isBordered = false; rollbackFiles.font = .systemFont(ofSize: 12); rollbackFiles.contentTintColor = AgentWorkbenchTheme.secondaryText
         rollbackFiles.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil); rollbackFiles.imagePosition = .imageLeading
         rollbackFiles.target = self; rollbackFiles.action = #selector(rollbackRound); rollbackFiles.heightAnchor.constraint(equalToConstant: 22).isActive = true
         editInput.title = "编辑并重发"; editInput.image = NSImage(systemSymbolName: "pencil", accessibilityDescription: nil); editInput.imagePosition = .imageLeading
-        editInput.isBordered = false; editInput.font = .systemFont(ofSize: 12); editInput.contentTintColor = .secondaryLabelColor; editInput.target = self; editInput.action = #selector(editMessage); editInput.setAccessibilityLabel("编辑并重发")
+        editInput.isBordered = false; editInput.font = .systemFont(ofSize: 12); editInput.contentTintColor = AgentWorkbenchTheme.secondaryText; editInput.target = self; editInput.action = #selector(editMessage); editInput.setAccessibilityLabel("编辑并重发")
         editInput.heightAnchor.constraint(equalToConstant: 22).isActive = true
         roundActions.addArrangedSubview(editInput); roundActions.addArrangedSubview(rollbackFiles); roundActions.addArrangedSubview(NSView())
         attachments.maximumRows = 6
         label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
-        label.font = .systemFont(ofSize: workbench ? 14 : 15); label.textColor = NSColor(white: 0.12, alpha: 1)
+        label.font = .systemFont(ofSize: AgentAppearance.messageSize + (workbench ? 0 : 1)); label.textColor = .labelColor
         if workbench { label.lineBreakMode = .byCharWrapping; label.cell?.wraps = true; label.cell?.usesSingleLineMode = false }
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let inset: CGFloat = workbench ? 0 : user ? 15 : 0
         var layout = [container.topAnchor.constraint(equalTo: topAnchor), container.bottomAnchor.constraint(equalTo: bottomAnchor), body.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset), body.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset), body.topAnchor.constraint(equalTo: container.topAnchor, constant: workbench ? 8 : user ? 11 : 4), body.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: workbench ? -8 : user ? -11 : -4)]
         if workbench {
             let mark = NSImageView(image: NSImage(systemSymbolName: user ? "person" : "fish", accessibilityDescription: user ? "你" : "小鲸")!)
-            mark.contentTintColor = user ? .secondaryLabelColor : AgentWorkbenchTheme.accent; addSubview(mark); mark.translatesAutoresizingMaskIntoConstraints = false
+            mark.contentTintColor = user ? AgentWorkbenchTheme.secondaryText : AgentWorkbenchTheme.accent; addSubview(mark); mark.translatesAutoresizingMaskIntoConstraints = false
             layout += [mark.leadingAnchor.constraint(equalTo: leadingAnchor), mark.widthAnchor.constraint(equalToConstant: 18), mark.heightAnchor.constraint(equalToConstant: 18), mark.topAnchor.constraint(equalTo: topAnchor, constant: 8), container.leadingAnchor.constraint(equalTo: mark.trailingAnchor, constant: 20), container.trailingAnchor.constraint(equalTo: trailingAnchor)]
         } else {
             layout += [user ? container.trailingAnchor.constraint(equalTo: trailingAnchor) : container.leadingAnchor.constraint(equalTo: leadingAnchor), user ? container.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.86) : container.widthAnchor.constraint(equalTo: widthAnchor)]
@@ -89,7 +83,7 @@ final class ChatMessageRow: NSView {
         replyActions.isHidden = binding == nil; helpful.isEnabled = canFeedback; unhelpful.isEnabled = canFeedback; branchReply.isEnabled = canBranch
         for (button, value, title, symbol) in [(helpful, "helpful", "有帮助", "hand.thumbsup"), (unhelpful, "unhelpful", "无帮助", "hand.thumbsdown")] {
             let selected = feedback == value; button.image = NSImage(systemSymbolName: symbol + (selected ? ".fill" : ""), accessibilityDescription: nil)
-            button.contentTintColor = selected ? AgentWorkbenchTheme.accent : .secondaryLabelColor; button.setAccessibilityLabel((selected ? "取消" : "") + title); button.setAccessibilityValue(selected ? "已标记" : "未标记")
+            button.contentTintColor = selected ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText; button.setAccessibilityLabel((selected ? "取消" : "") + title); button.setAccessibilityValue(selected ? "已标记" : "未标记")
         }
         branchReply.toolTip = canBranch ? "从这条回复创建分支；沿用当前项目文件与原任务执行限制" : "任务执行中或受管任务不能在此创建分支"
         updateBodySpacing()
@@ -118,11 +112,13 @@ final class ChatMessageRow: NSView {
     @objc private func markUnhelpful() { onReplyFeedback?("unhelpful") }
     @objc private func branchResponse() { onBranchReply?() }
     func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil, searchDisplayRange: NSRange? = nil, searchDisplayText: String? = nil) {
-        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || label.stringValue.isEmpty else { return }
+        let size = AgentAppearance.messageSize + (workbench ? 0 : 1)
+        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || renderedSize != size || label.stringValue.isEmpty else { return }
+        renderedSize = size
         text = value; renderedMarkdown = markdown; highlightQuery = searchQuery; highlightDisplayRange = searchDisplayRange; highlightDisplayText = searchDisplayText
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
         if workbench { paragraph.lineBreakMode = .byCharWrapping }
-        let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: workbench ? 14 : 15), color = NSColor(white: 0.12, alpha: 1)
+        let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: size), color = NSColor.labelColor
         let plain = NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
         var output = isUser || !markdown ? plain : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
         searchRange = nil; searchUsesSource = false
@@ -141,6 +137,7 @@ final class ChatMessageRow: NSView {
         label.attributedStringValue = output; label.setAccessibilityHelp(searchRange == nil ? nil : "搜索命中")
         label.invalidateIntrinsicContentSize()
     }
+    func refreshAppearance() { update(text, markdown: renderedMarkdown, searchQuery: highlightQuery, searchDisplayRange: highlightDisplayRange, searchDisplayText: highlightDisplayText); label.needsDisplay = true }
     func clearSearchHighlight() { if highlightQuery != nil { update(text, markdown: renderedMarkdown) } }
     func searchMatchRect() -> NSRect? {
         guard let range = searchRange, range.length > 0, let cell = label.cell else { return nil }

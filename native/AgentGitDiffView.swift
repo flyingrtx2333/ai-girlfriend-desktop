@@ -60,7 +60,7 @@ enum AgentGitDiffRows {
     }
 }
 
-@MainActor final class AgentGitDiffView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class AgentGitDiffView: AgentThemeView, NSTableViewDataSource, NSTableViewDelegate {
     let text = NSTextView()
     private let unified = NSScrollView(), oldScroll = NSScrollView(), newScroll = NSScrollView(), split = NSView()
     private let oldTable = NSTableView(), newTable = NSTableView(), measuringCell = NSTextFieldCell(textCell: ""), font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -70,17 +70,17 @@ enum AgentGitDiffRows {
     var patch: String { text.string }
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true; layer?.backgroundColor = NSColor(white: 0.9, alpha: 1).cgColor
+        fill = AgentWorkbenchTheme.line
         measuringCell.font = font; measuringCell.wraps = true; measuringCell.isScrollable = false; measuringCell.usesSingleLineMode = false; measuringCell.lineBreakMode = .byCharWrapping
         text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = font; text.textContainerInset = NSSize(width: 12, height: 12)
-        text.isVerticallyResizable = true; text.backgroundColor = .white; text.setAccessibilityLabel("Git 实际差异")
+        text.isVerticallyResizable = true; text.backgroundColor = .textBackgroundColor; text.setAccessibilityLabel("Git 实际差异")
         unified.documentView = text; unified.hasVerticalScroller = true
         for (table, scroll, title) in [(oldTable, oldScroll, "旧版本"), (newTable, newScroll, "新版本")] {
             let number = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("number")); number.title = ""; number.width = 44; number.resizingMask = []
             let line = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("line")); line.title = title; line.resizingMask = []
             table.addTableColumn(number); table.addTableColumn(line); table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 100, height: 23)); table.delegate = self; table.dataSource = self
             table.columnAutoresizingStyle = .noColumnAutoresizing; table.allowsColumnReordering = false; table.intercellSpacing = .zero; table.selectionHighlightStyle = .none
-            table.style = .plain; table.backgroundColor = .white
+            table.style = .plain; table.backgroundColor = .textBackgroundColor
             table.setAccessibilityLabel("Git " + title + "差异"); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
             scroll.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
@@ -95,6 +95,7 @@ enum AgentGitDiffRows {
         split.isHidden = true; configureUnified()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); oldTable.reloadData(); newTable.reloadData() }
     deinit { NotificationCenter.default.removeObserver(self) }
     private func display(_ line: String) -> String { line.replacingOccurrences(of: "\r", with: "␍") }
     func show(_ patch: String, oldTitle: String, newTitle: String, accessibilityContext: String = "Git") {
@@ -102,7 +103,7 @@ enum AgentGitDiffRows {
         var offset = 0, inHunk = false
         for line in patch.components(separatedBy: "\n") {
             if line.hasPrefix("diff --git ") { inHunk = false }; if line.hasPrefix("@@") { inHunk = true }
-            let color: NSColor = inHunk && line.hasPrefix("+") ? .systemGreen : inHunk && line.hasPrefix("-") ? .systemRed : line.hasPrefix("@@") || line.hasPrefix("diff --git ") ? .secondaryLabelColor : .labelColor
+            let color: NSColor = inHunk && line.hasPrefix("+") ? .systemGreen : inHunk && line.hasPrefix("-") ? .systemRed : line.hasPrefix("@@") || line.hasPrefix("diff --git ") ? AgentWorkbenchTheme.secondaryText : .labelColor
             content.addAttribute(.foregroundColor, value: color, range: NSRange(location: offset, length: (line as NSString).length)); offset += (line as NSString).length + 1
         }
         text.textStorage?.setAttributedString(content); rows = AgentGitDiffRows.parse(patch); heights.removeAll(); widths = .zero
@@ -196,9 +197,12 @@ enum AgentGitDiffRows {
         cell.textField?.stringValue = number ? item.number.map(String.init) ?? "" : display(item.text)
         cell.textField?.preferredMaxLayoutWidth = !number && wraps ? max(1, tableColumn.width - 12) : 0
         cell.textField?.toolTip = item.noNewline ? "无行尾换行" : nil
-        cell.textField?.textColor = number || item.kind == .metadata ? .secondaryLabelColor : .labelColor
+        cell.textField?.textColor = number || item.kind == .metadata ? AgentWorkbenchTheme.secondaryText : .labelColor
         cell.textField?.alignment = number ? .right : .left
-        cell.wantsLayer = true; cell.layer?.backgroundColor = (item.kind == .removed ? NSColor(calibratedRed: 0.99, green: 0.92, blue: 0.92, alpha: 1) : item.kind == .added ? NSColor(calibratedRed: 0.92, green: 0.97, blue: 0.93, alpha: 1) : item.kind == .empty ? NSColor(white: 0.96, alpha: 1) : NSColor.white).cgColor
+        cell.wantsLayer = true
+        tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            cell.layer?.backgroundColor = (item.kind == .removed ? AgentWorkbenchTheme.removed : item.kind == .added ? AgentWorkbenchTheme.added : item.kind == .empty ? AgentWorkbenchTheme.subtle : .textBackgroundColor).cgColor
+        }
         return cell
     }
     @objc private func scrolled(_ notification: Notification) {

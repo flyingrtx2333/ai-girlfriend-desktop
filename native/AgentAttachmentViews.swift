@@ -54,15 +54,15 @@ private final class AgentPreviewItem: NSObject, QLPreviewItem {
         self.store = store; self.taskID = taskID; file = try AgentAttachments.record(store: store, taskID: taskID, id: id)
         _ = try AgentAttachments.source(store: store, taskID: taskID, id: id)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = file.name; window.minSize = NSSize(width: 640, height: 450); window.appearance = NSAppearance(named: .aqua); window.isReleasedWhenClosed = false; window.center()
+        window.title = file.name; window.minSize = NSSize(width: 640, height: 450); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         mode.selectedSegment = AgentDocument.textTypes.contains(file.fileExtension) ? 1 : 0; mode.target = self; mode.action = #selector(loadPart); mode.isHidden = AgentDocument.textTypes.contains(file.fileExtension)
         number.integerValue = min(max(1, part), max(1, file.totalParts)); number.alignment = .center; number.widthAnchor.constraint(equalToConstant: 54).isActive = true; number.target = self; number.action = #selector(numberChanged)
         stepper.minValue = 1; stepper.maxValue = Double(max(1, file.totalParts)); stepper.integerValue = number.integerValue; stepper.target = self; stepper.action = #selector(stepChanged)
         number.isEnabled = file.totalParts > 1; stepper.isEnabled = number.isEnabled
         title.font = .systemFont(ofSize: 12); title.lineBreakMode = .byTruncatingMiddle
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         text.isEditable = false; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 14, height: 14)
         textScroll.documentView = text; textScroll.hasVerticalScroller = true; body.addSubview(textScroll); textScroll.translatesAutoresizingMaskIntoConstraints = false
         let header = NSStackView(views: [mode, NSView(), title, number, NSTextField(labelWithString: "/ \(file.totalParts)"), stepper]); header.spacing = 8

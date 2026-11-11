@@ -16,9 +16,9 @@ import UniformTypeIdentifiers
     init(store: AgentStore, taskID: String?) {
         self.store = store; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "知识库"; window.minSize = NSSize(width: 900, height: 560); window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua); window.center()
+        window.title = "知识库"; window.minSize = NSSize(width: 900, height: 560); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); content.wantsLayer = true; content.layer?.backgroundColor = NSColor(white: 0.98, alpha: 1).cgColor; window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         baseSearch.placeholderString = "搜索知识库"; fileSearch.placeholderString = "搜索文件"
         for field in [baseSearch, fileSearch] { field.target = self; field.action = #selector(filterChanged); field.sendsSearchStringImmediately = true }
         scope.addItems(withTitles: ["全部范围", "用户", "当前工作区"]); scope.target = self; scope.action = #selector(filterChanged); scope.setAccessibilityLabel("知识库范围")
@@ -33,7 +33,7 @@ import UniformTypeIdentifiers
         heading.font = .systemFont(ofSize: 17, weight: .semibold); heading.lineBreakMode = .byTruncatingMiddle
         preview.isEditable = false; preview.isRichText = true; preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.textContainerInset = NSSize(width: 14, height: 14); preview.setAccessibilityLabel("知识文件预览")
         let viewer = NSScrollView(); viewer.documentView = preview; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
-        for label in [state, provenance, total] { label.font = .systemFont(ofSize: 11); label.textColor = .secondaryLabelColor; label.lineBreakMode = .byTruncatingMiddle }
+        for label in [state, provenance, total] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle }
         part.setAccessibilityLabel("知识文件部分"); part.alignment = .right; part.target = self; part.action = #selector(loadPreview)
         format.selectedSegment = 0; format.target = self; format.action = #selector(renderPreview)
         for (button, action) in [(create, #selector(newBase)), (rename, #selector(renameBase)), (removeBase, #selector(archiveBase)), (add, #selector(addFiles)), (replace, #selector(replaceFile)), (removeFile, #selector(archiveFile)), (download, #selector(downloadFile)), (open, #selector(openFile)), (copy, #selector(copyText))] { button.target = self; button.action = action }
@@ -94,7 +94,7 @@ import UniformTypeIdentifiers
         if tableView === bases { let value = baseRows[row]; title = value.name; detail = (value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "用户") + (value.archived ? " · 已移除" : "") }
         else { let value = fileRows[row]; title = value.file.name; detail = ByteCountFormatter.string(fromByteCount: Int64(value.file.bytes), countStyle: .file) + (value.archived ? " · 已移除" : "") }
         let name = NSTextField(labelWithString: title), metadata = NSTextField(labelWithString: detail)
-        name.font = .systemFont(ofSize: 12, weight: .medium); metadata.font = .systemFont(ofSize: 10); metadata.textColor = .secondaryLabelColor
+        name.font = .systemFont(ofSize: 12, weight: .medium); metadata.font = .systemFont(ofSize: 10); metadata.textColor = AgentWorkbenchTheme.secondaryText
         for label in [name, metadata] { label.lineBreakMode = .byTruncatingMiddle }
         let cell = NSStackView(views: [name, metadata]); cell.orientation = .vertical; cell.alignment = .leading; cell.spacing = 3; cell.setAccessibilityLabel(title + "，" + detail); return cell
     }

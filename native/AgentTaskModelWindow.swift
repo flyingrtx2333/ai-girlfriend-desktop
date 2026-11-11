@@ -11,7 +11,6 @@ import AppKit
         self.runtime = runtime; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 510), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "任务模型"; window.minSize = NSSize(width: 440, height: 360); window.center(); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .aqua)
         super.init(window: window)
         let content = NSView(); window.contentView = content
         search.placeholderString = "搜索或输入模型 ID"; search.delegate = self; search.setAccessibilityLabel("搜索或输入模型 ID")
@@ -20,7 +19,7 @@ import AppKit
         table.addTableColumn(NSTableColumn(identifier: .init("model"))); table.headerView = nil; table.rowHeight = 36
         table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(useModel); table.setAccessibilityLabel("任务可选模型")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.borderType = .bezelBorder
-        state.font = .systemFont(ofSize: 11); state.textColor = .secondaryLabelColor; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let top = NSStackView(views: [search, refreshButton]); top.spacing = 10
         let footer = NSStackView(views: [state, NSView(), choose]); footer.spacing = 10
         for view in [top, list, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
