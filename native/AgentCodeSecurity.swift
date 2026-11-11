@@ -146,20 +146,7 @@ enum AgentCodeSecurity {
         }
         // Read all stage-zero object IDs in one index read. cat-file reads the
         // immutable blob even if the editor or a different Git client changes it.
-        var staged: [String: String] = [:]
-        if source == .staged {
-            let entries = try await output(["ls-files", "--stage", "-z", "--"] + selected)
-            for entry in entries.split(separator: "\0") {
-                let parts = entry.split(separator: "\t", maxSplits: 1)
-                guard parts.count == 2 else { throw PetError("无法读取暂存区条目") }
-                let fields = parts[0].split(separator: " ")
-                guard fields.count == 3 else { throw PetError("无法读取暂存区对象") }
-                if ["100644", "100755"].contains(fields[0]), fields[2] == "0",
-                   fields[1].range(of: "^([0-9a-f]{40}|[0-9a-f]{64})$", options: .regularExpression) != nil {
-                    staged[String(parts[1])] = String(fields[1])
-                }
-            }
-        }
+        let staged = source == .staged ? try await securityIndexEntries(selected) : [:]
 
         let copies = try AgentFiles(workspace: snapshot.path)
         var aliases: [String: String] = [:], hashes: [String: String] = [:], skipped: [AgentSecurityReport.Skipped] = []
@@ -202,17 +189,44 @@ enum AgentCodeSecurity {
         return AgentSecurityReport(source: source, findings: findings, scannedFiles: aliases.count, skipped: skipped, hashes: hashes)
     }
 
-    private func securityBlob(_ oid: String) async throws -> Data {
+    func securityIndexEntries(_ pathspecs: [String], literalPaths: Bool = true) async throws -> [String: String] {
+        let result = try await run(["ls-files", "--stage", "-z", "--"] + pathspecs, maximumOutput: 1_000_000, literalPaths: literalPaths)
+        guard !result.failed, result.truncated != true else { throw PetError("无法完整读取暂存区文件列表") }
+        var entries: [String: String] = [:]
+        for entry in (result.stdout ?? "").split(separator: "\0") {
+            let parts = entry.split(separator: "\t", maxSplits: 1)
+            guard parts.count == 2 else { throw PetError("无法读取暂存区条目") }
+            let fields = parts[0].split(separator: " ")
+            guard fields.count == 3 else { throw PetError("无法读取暂存区对象") }
+            if ["100644", "100755"].contains(fields[0]), fields[2] == "0",
+               fields[1].range(of: "^([0-9a-f]{40}|[0-9a-f]{64})$", options: .regularExpression) != nil {
+                entries[String(parts[1])] = String(fields[1])
+            }
+        }
+        return entries
+    }
+
+    func securityBlob(_ oid: String, maximum: Int = AgentCodeSecurity.fileLimit) async throws -> Data {
         let environment = ["GIT_NO_REPLACE_OBJECTS": "1"]
         let size = try await run(["cat-file", "-s", oid], environment: environment)
         guard !size.failed, let bytes = Int((size.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw PetError("无法读取暂存对象")
         }
-        guard bytes <= AgentCodeSecurity.fileLimit else { throw PetError("超过单文件 1 MB 上限") }
-        let blob = try await run(["cat-file", "blob", oid], maximumOutput: AgentCodeSecurity.fileLimit + 1024, environment: environment)
-        guard !blob.failed, blob.truncated != true, let data = blob.stdoutData, data.count == bytes else {
-            throw PetError("无法完整读取暂存对象")
+        guard bytes <= maximum else { throw PetError("超过单文件 \(maximum / 1_000_000) MB 上限") }
+        let data: Data
+        if bytes < 1_900_000 {
+            let blob = try await run(["cat-file", "blob", oid], maximumOutput: bytes + 1024, environment: environment)
+            guard !blob.failed, blob.truncated != true, let content = blob.stdoutData else { throw PetError("无法完整读取暂存对象") }
+            data = content
+        } else {
+            let output = scratch.appendingPathComponent("blob-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: output) }
+            let result = try await run(["cat-file", "blob", oid], environment: environment, stdoutFile: output)
+            guard !result.failed else { throw PetError("无法完整读取暂存对象") }
+            let files = try AgentFiles(workspace: scratch.path)
+            data = try files.readData(files.literalURL(output.path), maximum: maximum)
         }
+        guard data.count == bytes else { throw PetError("暂存对象长度与 Git 记录不一致") }
         return data
     }
 

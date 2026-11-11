@@ -10,6 +10,8 @@ import AppKit
     private var pushWindow: AgentGitPushWindow?
     private var securityWindow: AgentCodeSecurityWindow?
     private let securityButton = NSButton(title: "安全检查…", target: nil, action: nil)
+    private var dependencyWindow: AgentDependencyWindow?
+    private let dependencyButton = NSButton(title: "依赖漏洞…", target: nil, action: nil)
     private var worktreeWindow: AgentWorktreeWindow?
     private var creationWindow: AgentWorktreeCreationWindow?
     private let manageWorktrees = NSButton(title: "工作树…", target: nil, action: nil)
@@ -43,6 +45,8 @@ import AppKit
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
         securityButton.action = #selector(checkSecurity)
         securityButton.toolTip = "本机检查所选文件中的疑似凭据和危险代码模式"
+        dependencyButton.target = self
+        dependencyButton.action = #selector(openDependencies)
         sourcePopup.addItems(withTitles: AgentGitSource.allCases.map(\.title)); sourcePopup.selectItem(at: AgentGitSource.allCases.firstIndex(of: source)!)
         sourcePopup.target = self; sourcePopup.action = #selector(changeSource); sourcePopup.setAccessibilityLabel("Git 改动来源")
         sourcePopup.item(at: 0)?.toolTip = "本轮文件工具、命令和 MCP 执行期间记录的项目文件变化。"
@@ -56,8 +60,8 @@ import AppKit
         initializeButton.isHidden = true
         let toolbar = NSStackView(views: [branch, NSView(), initializeButton, manageWorktrees, worktreeButton, pushButton, refreshButton]); toolbar.spacing = 8
         let sources = NSStackView(views: [sourcePopup, revision, NSView(), statistics, displayMode, wrap]); sources.spacing = 10
-        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView(), securityButton]); actions.spacing = 8
-        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, securityButton] { button.controlSize = .small; button.font = .systemFont(ofSize: 12) }
+        let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView(), dependencyButton, securityButton]); actions.spacing = 8
+        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, dependencyButton, securityButton] { button.controlSize = .small; button.font = .systemFont(ofSize: 12) }
         let composer = NSStackView(views: [message, commitButton, commitPushButton]); composer.spacing = 10
         for view in [toolbar, sources, list, viewer, actions, composer, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -72,7 +76,7 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); busy = false }
+    func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); dependencyWindow?.close(); busy = false }
     private func writable() -> Bool {
         guard let task = store.task(taskID) else { return false }
         return !task.archived && ![.running, .waiting].contains(task.status)
@@ -88,6 +92,7 @@ import AppKit
         commitPushButton.isEnabled = commitButton.isEnabled
         pushButton.isEnabled = !value && initializeButton.isHidden
         securityButton.isEnabled = !value && AgentCodeSecurity.sources.contains(source) && !table.selectedRowIndexes.isEmpty
+        dependencyButton.isEnabled = !value && store.task(taskID)?.workspace != nil
         let item = inspection?.paths.count == 1 ? changes.first(where: { $0.path == inspection?.paths.first }) : nil
         let columns = Array(item?.status ?? ""), current = !value && writable() && item != nil && !source.usesRevision && !columns.contains("U") && !["AA", "DD"].contains(item?.status ?? "")
         let hasUnstaged = item?.status == "??" || (source == .unstaged || source == .lastTurn) || (source == .uncommitted && columns.count == 2 && columns[1] != " ")
@@ -96,6 +101,33 @@ import AppKit
         unstageButton.isEnabled = current && [.uncommitted, .staged].contains(source) && hasStaged
         restoreButton.isEnabled = current && [.uncommitted, .unstaged].contains(source) && hasUnstaged
         undoRestoreButton.isEnabled = !value && writable() && restoreID != nil
+    }
+    @objc private func openDependencies() {
+        guard !busy else { return }
+        if let dependencyWindow, dependencyWindow.window?.isVisible == true {
+            dependencyWindow.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        do {
+            let dependencyGit: AgentGit?
+            if let git {
+                dependencyGit = try AgentGit(store: store, taskID: taskID, directory: git.directory)
+            } else {
+                let files = try AgentFiles(workspace: store.task(taskID)?.workspace)
+                guard !FileManager.default.fileExists(atPath: files.root.appendingPathComponent(".git").path) else {
+                    throw PetError("请先连接当前 Git 仓库")
+                }
+                dependencyGit = nil
+            }
+            let service = try AgentDependencySecurity(store: store, taskID: taskID, git: dependencyGit)
+            let paths = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
+                .filter { AgentDependencySecurity.ecosystem($0) != nil }
+            let controller = AgentDependencyWindow(service: service, store: store, taskID: taskID,
+                defaultSource: source == .staged ? .staged : .working, selectedPaths: paths)
+            dependencyWindow = controller
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+        } catch { state.stringValue = error.localizedDescription }
     }
     private func connect(creating: Bool = false) throws -> AgentGit {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }

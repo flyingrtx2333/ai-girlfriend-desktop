@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -24,6 +24,12 @@ const releases = [
     binary: '094391a222233faed3be5170b4abf7098162cc3322ce7dd6b83a1e113a6ce550',
     format: 'zip',
   },
+  {
+    name: 'osv-scanner',
+    url: 'https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_darwin_arm64',
+    binary: 'b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3',
+    format: 'binary',
+  },
 ];
 
 export async function prepareSecurity() {
@@ -40,16 +46,18 @@ export async function prepareSecurity() {
     const temporary = await mkdtemp(path.join(cache, item.name + '-'));
     try {
       const archive = path.join(cache, new URL(item.url).pathname.split('/').at(-1));
-      if (!await matches(archive, item.archive)) {
+      if (!await matches(archive, item.archive ?? item.binary)) {
         const download = path.join(temporary, 'archive');
         await run('/usr/bin/curl', ['-fLsS', '--connect-timeout', '15', '--max-time', '180', '--retry', '1', item.url, '-o', download]);
-        if (!await matches(download, item.archive)) throw new Error(`${item.name} archive checksum mismatch`);
+        if (!await matches(download, item.archive ?? item.binary)) throw new Error(`${item.name} release checksum mismatch`);
         await rename(download, archive);
       }
       if (item.format === 'tar') {
         await run('/usr/bin/tar', ['-xf', archive, '-C', temporary, item.name]);
-      } else {
+      } else if (item.format === 'zip') {
         await run('/usr/bin/unzip', ['-jo', archive, item.name, '-d', temporary]);
+      } else {
+        await cp(archive, path.join(temporary, item.name));
       }
       const extracted = path.join(temporary, item.name);
       if (!await matches(extracted, item.binary)) throw new Error(`${item.name} executable checksum mismatch`);
