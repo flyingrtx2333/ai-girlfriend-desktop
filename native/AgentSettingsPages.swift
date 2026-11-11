@@ -29,6 +29,11 @@ import AppKit
         if let window { window.delegate?.windowDidBecomeKey?(Notification(name: NSWindow.didBecomeKeyNotification, object: window)) }
     }
     func settingsWillLeave() {}
+    func detachSettingsHosting() {
+        guard let content = embeddedContent else { return }
+        content.removeFromSuperview(); embeddedContent = nil; settingsHostWindow = nil
+        onSettingsPush = nil; onSettingsClose = nil; window?.contentView = content
+    }
     func endSettingsHosting() {
         settingsWillLeave()
         onSettingsPush = nil; onSettingsClose = nil

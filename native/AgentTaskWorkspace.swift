@@ -18,12 +18,12 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, document(String), canvas(String)
+        case review, records, context, browser, document(String), canvas(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
+            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
+            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
         }
     }
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
@@ -41,7 +41,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -91,6 +91,7 @@ import AppKit
         (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if taskID == id, selectedRoot == root { displayCurrent() }
     }
@@ -121,7 +122,7 @@ import AppKit
             }
         }
         for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
-            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true
+            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true
             let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(154, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12)); groupWidth.constant = buttonWidth.constant + 26
@@ -156,15 +157,19 @@ import AppKit
             removeRoot(taskID: id, root: root)
         }
     }
-    private func removeRoot(taskID id: String, root: Root) {
-        let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { $0.controller.endSettingsHosting() }; orders[id]?.removeAll { $0 == root }
+    private func removeRoot(taskID id: String, root: Root, detaching: Bool = false) {
+        let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { if detaching { $0.controller.detachSettingsHosting() } else { $0.controller.endSettingsHosting() } }; orders[id]?.removeAll { $0 == root }
         if selected[id] == root { selected[id] = orders[id]?.last }
         if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
         if taskID == id { displayCurrent(); onLayoutChange?() }
     }
+    func detachBrowser(_ browser: AgentBrowserWindow) -> Bool {
+        guard let id = taskID, rootController(.browser) === browser, stacks[id]?[.browser]?.count == 1, prepareToNavigate() else { return false }
+        removeRoot(taskID: id, root: .browser, detaching: true); return true
+    }
     @objc private func openMenu() {
         let menu = NSMenu()
-        for root in [Root.review, .records, .context] {
+        for root in [Root.review, .records, .context, .browser] {
             let item = NSMenuItem(title: "打开" + root.title, action: #selector(openRoot(_:)), keyEquivalent: ""); item.target = self; item.representedObject = root; item.state = taskID.flatMap { stacks[$0]?[root] } == nil ? .off : .on; menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -176,7 +181,7 @@ import AppKit
     @objc private func openTerminal() { onOpenTerminal?() }
     @objc private func goBack() { if let taskID { pop(taskID: taskID, root: selectedRoot) } }
     private func pop(taskID id: String, root: Root) {
-        if (stacks[id]?[root]?.first?.controller as? AgentOfficeWindow)?.workspaceIsClosed == true || (stacks[id]?[root]?.first?.controller as? AgentCanvasWindow)?.workspaceIsClosed == true { removeRoot(taskID: id, root: root); return }
+        if (stacks[id]?[root]?.first?.controller as? AgentOfficeWindow)?.workspaceIsClosed == true || (stacks[id]?[root]?.first?.controller as? AgentCanvasWindow)?.workspaceIsClosed == true || (stacks[id]?[root]?.first?.controller as? AgentBrowserWindow)?.workspaceIsClosed == true { removeRoot(taskID: id, root: root); return }
         if stacks[id]?[root]?.count == 1 {
             requestClose(taskID: id, root: root); return
         }
@@ -190,6 +195,8 @@ import AppKit
             if let comparison = entry.controller as? AgentFileConflictWindow, !comparison.canNavigateWorkspace { return false }
             if let office = entry.controller as? AgentOfficeWindow, !office.prepareWorkspaceNavigation() { return false }
             if let canvas = entry.controller as? AgentCanvasWindow, !canvas.prepareWorkspaceNavigation() { return false }
+            if let browser = entry.controller as? AgentBrowserWindow, !browser.prepareWorkspaceNavigation() { return false }
+            if let annotation = entry.controller as? AgentBrowserAnnotationWindow, !annotation.prepareWorkspaceNavigation() { return false }
             if let creation = entry.controller as? AgentWorktreeCreationWindow, !creation.prepareWorkspaceNavigation() { return false }
             if let manager = entry.controller as? AgentWorktreeWindow, !manager.prepareWorkspaceNavigation() { return false }
         }; return true

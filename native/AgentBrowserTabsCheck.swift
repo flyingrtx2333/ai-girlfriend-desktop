@@ -16,12 +16,16 @@ import WebKit
         let core = names(AgentTools.definitions(mode: .agent, groups: [])), browserTools = names(AgentTools.definitions(mode: .agent, groups: ["browser"]))
         var checks = ["coreToolMenuIsSmallAndDiscoverable": core.contains("load_tools") && !core.contains("browser_open") && !core.contains("run_command"),
                       "browserToolsLoadWithoutUnrelatedCapabilities": Set(AgentBrowser.tools).isSubset(of: browserTools) && !browserTools.contains("write_file") && !browserTools.contains("run_command"),
-                      "toolLoadingPreservesReadOnlyMode": !names(AgentTools.definitions(mode: .ask, groups: ["files", "terminal"])).contains("write_file") && !names(AgentTools.definitions(mode: .ask, groups: ["files", "terminal"])).contains("run_command")]
+                      "toolLoadingPreservesReadOnlyMode": !names(AgentTools.definitions(mode: .ask, groups: ["files", "terminal"])).contains("write_file") && !names(AgentTools.definitions(mode: .ask, groups: ["files", "terminal"])).contains("edit_file") && names(AgentTools.definitions(mode: .ask, groups: ["files", "terminal"])).contains("run_command")]
         _ = try await tools.execute(call("load_tools", ["groups": ["browser"]]))
         checks["loadedToolsPersistWithTask"] = AgentStore(directory: store.directory, legacy: []).task(id)?.toolGroups == ["browser"]
-        let first = try object(await tools.execute(call("browser_open", ["url": "http://127.0.0.1:4178/"])))
+        _ = try await tools.execute(call("browser_open", ["url": "http://127.0.0.1:4178/"]))
+        try await waitForBrowserProjectPreview(tasks.browser.session(id))
+        let first = try object(await tools.execute(call("browser_read", [:])))
         let firstID = first["tab_id"] as! String, oldAction = try toggle(first)
-        let second = try object(await tools.execute(call("browser_open", ["url": "http://127.0.0.1:4178/?tab=second", "new_tab": true])))
+        _ = try await tools.execute(call("browser_open", ["url": "http://127.0.0.1:4178/?tab=second", "new_tab": true]))
+        try await waitForBrowserProjectPreview(tasks.browser.session(id))
+        let second = try object(await tools.execute(call("browser_read", [:])))
         let secondID = second["tab_id"] as! String, browser = try tasks.browser.session(id)
         guard let firstPage = browser.pages.first(where: { $0.id == firstID }), let secondPage = browser.pages.first(where: { $0.id == secondID }) else { throw PetError("缺少真实标签页") }
         checks["multipleActualWebViewsAndStableIDs"] = firstID != secondID && browser.pages.count == 2 && firstPage.web !== secondPage.web

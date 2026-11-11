@@ -36,6 +36,7 @@ import WebKit
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
@@ -76,6 +77,8 @@ import WebKit
                 if CommandLine.arguments.contains("--worktree-workspace-reopen") { try reopenWorktreeWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-fixtures") { _ = try await prepareTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-reopen") { try reopenTaskWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--browser-workspace-fixtures") { _ = try await prepareBrowserWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--browser-workspace-reopen") { try await reopenBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-fixtures") { _ = try prepareVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-reopen") { try reopenVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--knowledge-page-fixtures") { _ = try await prepareKnowledgePageUI(output) }

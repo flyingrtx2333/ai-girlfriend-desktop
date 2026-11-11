@@ -529,7 +529,7 @@ final class FormDocumentView: NSView {
         taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
         taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
@@ -2198,13 +2198,15 @@ final class FormDocumentView: NSView {
     }
     internal func taskWorkspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        var value = gitWorkspaceReadback(), documents: [[String: Any]] = [], offices: [[String: Any]] = [], canvases: [[String: Any]] = []
+        var value = gitWorkspaceReadback(), documents: [[String: Any]] = [], offices: [[String: Any]] = [], canvases: [[String: Any]] = [], browsers: [[String: Any]] = []
         for page in taskWorkspace.controllers {
             if let context = page as? AgentContextWindow, context.isPageVisible { value["context"] = context.workspaceReadback() }
             if let record = page as? AgentRecordWindow { documents.append(await record.workspaceReadback()) }
             if let comparison = page as? AgentFileConflictWindow, comparison.isPageVisible { value["comparison"] = comparison.checkState }
             if let office = page as? AgentOfficeWindow { offices.append(await office.workspaceReadback()) }
             if let canvas = page as? AgentCanvasWindow { canvases.append(canvas.workspaceReadback()) }
+            if let browser = page as? AgentBrowserWindow { browsers.append(browser.workspaceReadback()); if browser.isPageVisible { value["browser"] = browser.workspaceReadback() } }
+            if let annotation = page as? AgentBrowserAnnotationWindow, annotation.isPageVisible { value["browserAnnotation"] = annotation.workspaceReadback() }
             if let creation = page as? AgentWorktreeCreationWindow, creation.isPageVisible { value["worktreeCreation"] = creation.workspaceReadback() }
             if let manager = page as? AgentWorktreeWindow, manager.isPageVisible { value["worktrees"] = manager.workspaceReadback() }
         }
@@ -2213,7 +2215,7 @@ final class FormDocumentView: NSView {
             value["settingsController"] = settingsPageHost.currentController.map { String(describing: type(of: $0)) } ?? ""
             if let manager = settingsPageHost.currentController as? AgentWorktreeWindow { value["settingsWorktreeManager"] = manager.workspaceReadback() }
         }
-        value["documents"] = documents; value["offices"] = offices; value["canvases"] = canvases; value["documentOpen"] = taskDocumentOpenState; return value
+        value["documents"] = documents; value["offices"] = offices; value["canvases"] = canvases; value["browsers"] = browsers; value["documentOpen"] = taskDocumentOpenState; return value
     }
     internal func checkWorktreeSettingsPage(open: Bool = true) -> AgentSettingsPageController? {
         guard AgentTaskWorkspace.readbackEnabled else { return nil }
@@ -2389,6 +2391,17 @@ final class FormDocumentView: NSView {
         show(tab: "chat")
         guard taskWorkspace.show(taskID: editor.taskID, root: .document(editor.file.path), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    internal func presentBrowserWorkspace(_ browser: AgentBrowserWindow) throws {
+        guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }
+        if agentTaskID != browser.taskID { selectAgentTask(browser.taskID) }
+        guard agentTaskID == browser.taskID else { throw PetError("浏览器所属任务未打开") }
+        show(tab: "chat")
+        guard taskWorkspace.show(taskID: browser.taskID, root: .browser, make: { browser }) else { throw PetError("请先完成当前工作区操作") }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    internal func detachBrowserWorkspace(_ browser: AgentBrowserWindow) throws {
+        guard taskWorkspace.detachBrowser(browser) else { throw PetError("请先返回浏览器并完成当前操作") }
     }
     internal func presentCanvasWorkspace(_ editor: AgentCanvasWindow, id: String) throws {
         guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }

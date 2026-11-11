@@ -214,6 +214,7 @@ import Foundation
         do { try sideTasks.requireOpen(value) } catch { writeError = error.localizedDescription; return }
         let wasArchived = value.archived, previous = value
         body(&value); value.updated = Date()
+        if !wasArchived, value.archived, browser.sessions[id]?.workspaceHasUnsavedChanges == true { writeError = "请先添加或处理未保存的网页标注，再归档任务"; return }
         guard refreshDeletedRecords(), let index = tasks.firstIndex(where: { $0.id == id }) else { return }
         if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
@@ -370,7 +371,7 @@ import Foundation
         var changed: [AgentTaskRecord] = [], directories: [AgentDirectoryEntry] = []
         for id in ids {
             guard var task = task(id), task.archived != archived else { throw PetError("所选任务已变化，请刷新后重试") }
-            try requireArchivable(task)
+            try requireArchivable(task, protectingBrowserDraft: archived)
             task.archived = archived; task.workspaceArchiveID = nil; if archived { task.sideTask = nil }; changed.append(task)
             if !archived, let path = task.workspace, let entry = organization.directories(task.organizationMode, tasks: tasks, includingArchived: true).first(where: { $0.path == path && $0.archiveID != nil }), !directories.contains(where: { $0.path == path && $0.mode == task.organizationMode }) {
                 var active = entry; active.archiveID = nil; active.archivedAt = nil; directories.append(active)
@@ -385,13 +386,14 @@ import Foundation
         for metadata in tasks where metadata.workspace == path && metadata.organizationMode == mode {
             guard var task = task(metadata.id) else { throw PetError("任务无法读取，未归档工作区") }
             if archived && !task.archived || !archived && task.workspaceArchiveID == previousToken {
-                try requireArchivable(task); task.archived = archived; task.workspaceArchiveID = archived ? token : nil; if archived { task.sideTask = nil }; changed.append(task)
+                try requireArchivable(task, protectingBrowserDraft: archived); task.archived = archived; task.workspaceArchiveID = archived ? token : nil; if archived { task.sideTask = nil }; changed.append(task)
             }
         }
         entry.archiveID = archived ? token : nil; entry.archivedAt = archived ? Date() : nil
         try commitArchive(changed, directories: [entry])
     }
-    private func requireArchivable(_ task: AgentTaskRecord) throws {
+    private func requireArchivable(_ task: AgentTaskRecord, protectingBrowserDraft: Bool = true) throws {
+        guard !protectingBrowserDraft || browser.sessions[task.id]?.workspaceHasUnsavedChanges != true else { throw PetError("请先添加或处理“" + task.title + "”未保存的网页标注") }
         guard task.pendingFileRollback == nil else { throw PetError("请先恢复“" + task.title + "”未完成的文件撤回") }
         guard task.status != .running, task.pendingFileCapture == nil, !hooks.isRunning(task.id), archiveIsBusy?(task.id) != true else { throw PetError("请先停止“" + task.title + "”的执行，再归档或恢复") }
     }
@@ -410,7 +412,7 @@ import Foundation
         writes.append(indexWrite); if let organizationChange { writes.append(organizationChange.write) }
         let backup = directory.deletingLastPathComponent().appendingPathComponent("archive-transactions/" + UUID().uuidString)
         try AgentKnowledgeFileBatch.commit(writes, backup: backup, label: "归档操作") {
-            for value in values { try self.requireArchivable(value) }
+            for value in values { try self.requireArchivable(value, protectingBrowserDraft: value.archived) }
         }
         let newlyArchived = values.filter { value in value.archived && tasks.first(where: { $0.id == value.id })?.archived == false }.map(\.id)
         tasks = next

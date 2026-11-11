@@ -42,12 +42,14 @@ import WebKit
             tasks.browser.close(other)
             progress("actual-project-preview")
             _ = try await tools.execute(call("browser_open", ["url": "http://127.0.0.1:4178/"]))
+            try await waitForBrowserProjectPreview(tasks.browser.session(id))
             let before = try object(await tools.execute(call("browser_read", ["query": "棋盘背景"])))
             let toggle = try call("browser_action", ["action": "click", "tab_id": before["tab_id"]!, "revision": before["revision"]!, "ref": element(before, named: "棋盘背景")])
             let target = try tasks.browser.session(id)
             let pressedBefore = try await target.web.evaluateJavaScript("document.getElementById('background').getAttribute('aria-pressed')") as? String
             _ = try await tools.execute(toggle)
             let pressedAfter = try await target.web.evaluateJavaScript("document.getElementById('background').getAttribute('aria-pressed')") as? String
+            report["actualPreviewButtonStates"] = ["before": pressedBefore ?? "missing", "after": pressedAfter ?? "missing"]
             checks["realDevelopmentPreviewActionChangesActualControl"] = pressedBefore == "false" && pressedAfter == "true"
             let current = try object(await tools.execute(call("browser_read", ["query": "棋盘背景"])))
             let changing = try call("browser_action", ["action": "click", "tab_id": current["tab_id"]!, "revision": current["revision"]!, "ref": element(current, named: "棋盘背景")])
@@ -90,6 +92,14 @@ import WebKit
         if CommandLine.arguments.contains("--browser-extended") { report["scope"] = "Actual native WKWebView tabs and running project preview, including state retention, active-tab binding, closed references, same-task website data and task isolation. Live section uses the configured real model to fill/select/submit Calculator.net's public loan form with artificial non-personal numbers, compare independent amortization math, and switch retained tabs. Real website, real server results; no fake model/site responses, accounts, microphone or TTS." }
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("browser-report.json"), options: .atomic)
     }
+    func waitForBrowserProjectPreview(_ browser: AgentBrowserWindow) async throws {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            if try await browser.web.evaluateJavaScript("document.getElementById('appearance')?.disabled === false") as? Bool == true { return }
+            try Task.checkCancellation(); await wait(0.1)
+        }
+        throw PetError("项目实际预览尚未载入完成")
+    }
     private func checkBrowserModel(_ output: URL) async throws -> [String: Any] {
         guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("Agent 未初始化") }
         let production = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish")
@@ -131,10 +141,14 @@ import WebKit
 @MainActor extension AgentBrowserWindow {
     func checkLayout(_ output: URL) async -> [String: Bool] {
         var checks: [String: Bool] = [:]
-        for (name, size) in [("normal", NSSize(width: 1000, height: 720)), ("narrow", NSSize(width: 620, height: 440))] {
-            window?.setContentSize(size); window?.contentView?.layoutSubtreeIfNeeded()
-            checks["nativeBrowserLayout-" + name] = web.bounds.width > 560 && web.bounds.height > 300 && !web.hasAmbiguousLayout
-            if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("browser-" + name + ".png")) }
+        let hosted = settingsHostWindow != nil
+        let sizes = hosted ? [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] : [("normal", NSSize(width: 1000, height: 720)), ("narrow", NSSize(width: 620, height: 440))]
+        for (name, size) in sizes {
+            presentingWindow?.setContentSize(size); presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout()
+            checks["nativeBrowserLayout-" + name] = web.bounds.width > (hosted ? 430 : 560) && web.bounds.height > (hosted ? 240 : 300) && !web.hasAmbiguousLayout
+            let geometry: [String: Any] = ["taskHosted": hosted, "windowContentSize": NSStringFromSize(presentingWindow?.contentView?.bounds.size ?? .zero), "webSize": NSStringFromSize(web.bounds.size)]
+            try? JSONSerialization.data(withJSONObject: geometry, options: [.sortedKeys]).write(to: output.appendingPathComponent("browser-layout-" + name + ".json"))
+            if let view = presentingWindow?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("browser-" + name + ".png")) }
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 web.takeSnapshot(with: nil) { image, _ in
                     if let tiff = image?.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) { try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("browser-page-" + name + ".png")) }

@@ -309,6 +309,7 @@ if (nativeDesktop) {
 }
 function resize() {
   const { width, height } = stage.getBoundingClientRect();
+  if (width <= 0 || height <= 0) return;
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);
