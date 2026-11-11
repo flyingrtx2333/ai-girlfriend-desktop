@@ -425,11 +425,11 @@ import AppKit
         guard !busy, writable(), let git else { return }
         do {
             let controller = try AgentWorktreeCreationWindow(store: store, taskID: taskID, directory: git.directory, onCreated: onSelectTask)
-            creationWindow = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
+            creationWindow = controller; presentSettingsChild(controller)
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func openWorktrees() {
-        do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; manager.showWindow(nil); manager.window?.makeKeyAndOrderFront(nil) }
+        do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; presentSettingsChild(manager) }
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func initialize() {
@@ -509,6 +509,8 @@ import AppKit
         case "files": toggleFiles()
         case "split": displayMode.selectedSegment = 1; changeDisplay()
         case "refresh": refresh()
+        case "worktrees": openWorktrees()
+        case "create-worktree": createWorktree()
         default: break
         }
         await waitUntilReady(); pageContentView?.layoutSubtreeIfNeeded()

@@ -67,6 +67,7 @@
     "native:check-mcp-content": "node scripts/check-native-mcp-content.mjs",
     "native:check-worktrees": "node scripts/check-native-worktrees.mjs",
     "native:check-worktree-creation": "node scripts/check-native-worktree-creation.mjs",
+    "native:check-worktree-workspace": "node scripts/check-native-worktree-workspace.mjs",
     "native:check-worktree-retention": "node scripts/check-native-worktree-retention.mjs",
     "native:check-file-changes": "node scripts/check-native-file-changes.mjs",
     "native:check-desktop": "node scripts/check-native-desktop.mjs",

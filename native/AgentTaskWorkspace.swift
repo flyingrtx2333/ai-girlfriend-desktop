@@ -3,9 +3,14 @@ import AppKit
 @MainActor final class AgentWorkspacePageView: AgentThemeView {
     var onResize: (() -> Void)?
     private var previousSize: NSSize?
-    override func layout() {
-        super.layout()
-        guard previousSize != bounds.size else { return }; previousSize = bounds.size; onResize?()
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if previousSize != bounds.size { needsUpdateConstraints = true }
+    }
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); needsUpdateConstraints = true }
+    override func updateConstraints() {
+        if previousSize != bounds.size { previousSize = bounds.size; onResize?() }
+        super.updateConstraints()
     }
 }
 
@@ -36,7 +41,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -62,7 +67,7 @@ import AppKit
         breadcrumb.isHidden = true; isHidden = true; updateHeader(full: false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func layout() { super.layout(); layoutTabs(); currentController?.pageDidLayout() }
+    override func layout() { super.layout(); layoutTabs() }
     private func layoutTabs() {
         let width = tabViews.reduce(CGFloat(0)) { $0 + $1.1.fittingSize.width } + CGFloat(max(0, tabViews.count - 1)) * tabs.spacing
         let size = NSSize(width: max(tabScroll.contentSize.width, width), height: tabScroll.contentSize.height)
@@ -185,6 +190,8 @@ import AppKit
             if let comparison = entry.controller as? AgentFileConflictWindow, !comparison.canNavigateWorkspace { return false }
             if let office = entry.controller as? AgentOfficeWindow, !office.prepareWorkspaceNavigation() { return false }
             if let canvas = entry.controller as? AgentCanvasWindow, !canvas.prepareWorkspaceNavigation() { return false }
+            if let creation = entry.controller as? AgentWorktreeCreationWindow, !creation.prepareWorkspaceNavigation() { return false }
+            if let manager = entry.controller as? AgentWorktreeWindow, !manager.prepareWorkspaceNavigation() { return false }
         }; return true
     }
     @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?() }
@@ -200,6 +207,7 @@ import AppKit
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
             if (entry.controller as? AgentFileConflictWindow)?.canNavigateWorkspace == false { throw PetError("请先完成文件比较中的操作") }
             if (entry.controller as? AgentGitWindow)?.hasPendingChanges == true || (entry.controller as? AgentGitPushWindow)?.hasPendingOperation == true || (entry.controller as? AgentDependencyWindow)?.hasPendingOperation == true || (entry.controller as? AgentGitRemotePage)?.hasPendingChanges == true { throw PetError("请先完成 Git 操作或处理提交草稿") }
+            if (entry.controller as? AgentWorktreeCreationWindow)?.hasPendingChanges == true || (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作或处理创建配置") }
         } } }
     }
     func finish(tasks ids: Set<String>? = nil) {

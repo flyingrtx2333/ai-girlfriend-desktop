@@ -36,6 +36,7 @@ import WebKit
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-page-check") { await runKnowledgePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
@@ -70,6 +71,8 @@ import WebKit
                 if CommandLine.arguments.contains("--git-workspace-reopen") { try reopenGitWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--artifact-workspace-fixtures") { _ = try await prepareArtifactWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--artifact-workspace-reopen") { try await reopenArtifactWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--worktree-workspace-fixtures") { _ = try await prepareWorktreeWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--worktree-workspace-reopen") { try reopenWorktreeWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-fixtures") { _ = try await prepareTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-reopen") { try reopenTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--knowledge-page-fixtures") { _ = try await prepareKnowledgePageUI(output) }

@@ -1754,3 +1754,21 @@ DOCX／XLSX／PPTX 进入当前任务的独立文件标签页，复用真实编�
 本轮源码、构建、独立验收包与证据保留在外置项目目录；编译缓存、npm 缓存及编译临时目录明确指向外置盘。日常包仍为 `bf6a50e`，正式签名与程序未替换。工作树、视频、浏览器、批注整合、标签页持久恢复、其余统一组件和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)，完整目标未完成。
 
 证据：`evidence/agent/artifact-workspace-k1k3bwp5/final-report.json`、`verified-ui-preservation.json`、`verified-upgrade-proof.json`、`restart-preservation-proof.json` 及 `cua-final/`、`cua-reopen/`、`cua-polished/`、`cua-verified/`。最终产物原生记录在 `evidence/agent/artifact-workspace-command-vpTTNm/`，画布核心在 `verified-canvas/`，真实窗口原资料在 `artifact-workspace-command-Gjqo2e/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-artifact-workspace -- --python <外置 Python>`；使用公开文档、隔离资料并禁止模型请求，`--manual-ui` 与 `--reopen <原目录>` 保留实际窗口和重开记录。
+
+## 工作树任务页面与页内审阅（2026-11-12）
+
+任务输入区和 Git 操作菜单中的工作树创建、起点选择、实际修改预览、管理列表、关联任务与回收记录接入当前任务工作区。创建在原页完成预览后明确执行；回收／恢复在原页列出固定对象、路径、版本、实际文件范围及关联任务影响，再提供最终操作和取消。审阅期间锁定对象选择，执行继续复用原快照核对、备份、权限、归档及恢复服务。正在执行时保护导航与关闭，未完成创建配置可继续编辑；切换任务保留各自页面、选择和原输入。
+
+工作树列表在窄工作面置于详情上方，放大后并列显示。实际窗口发现首次打开和放大后的布局模式已变、约束几何仍为上一帧；修复共享工作面，把约束更新放在 AppKit 的约束更新阶段，避免在 `layout()` 中更改约束。按 [NSView.layout](https://developer.apple.com/documentation/appkit/nsview/layout%28%29) 与 [updateConstraints](https://developer.apple.com/documentation/appkit/nsview/updateconstraints%28%29) 的生命周期核对；因此另验同一共享布局的 Git 与记录／文本页面。未改工作树存储格式、Git 核心或模型权限。
+
+最终同一优化程序通过 **450 项**相关检查：工作树页面 183、原创建核心 19、原回收恢复核心 29、Git 工作区 87、记录／文本工作区 132。使用独立真实仓库与索引、实际忽略文件和二进制、工作版本与暂存版本不同的文件，以及本机 Git 接收端；独立读取实际创建起点、修改带入、备份恢复内容和子工作树索引原始字节。冷启动首次布局、浅深色、窄窗口、放大、取消审阅、旧预览拒绝覆盖、外部工作树保护与任务草稿均纳入检查。本轮模型请求和被拦截的模型发送尝试均为 0。
+
+实际窗口在前一签名候选 `e969230d0b6b15c6ea8da1dd7c92431528ee63d8a7a0216fe948c0a08acaf3cb` 完成起点选择、修改预览和页内创建，新任务保留输入，先前创建的工作树保持。最终程序实际核对首次分栏、放大还原、打开关联任务再返回、浅深色、800×550 窄窗口及指定临时工作树的页内回收审阅；**最终回收／恢复按钮尚待本轮明确确认，未记为实际窗口完成**。最终窗口段保留 21 次调用、42 份原始记录、7 张原始 JPEG，README 两张图片直接复制原始字节。本机 Qoder 0.5.2 仅用于核对现有任务及执行位置菜单，未调用模型，参考资料仅留本地。
+
+生产构建冻结 **291 份原生输入及 2 份配套脚本／配置**；签名前 SHA256 `f9611e68b87c0bfefcc749c40ff59c8228785affa2b9c45f84fd8789f519d303`，显式本地签名后 `ed6abe7a8edeac7b2066142aa9174d65aea09b21c54d2b71fc4db4c5ac127275`。逐项核对工作区与暂存源码、140 份未变化的办公资源及严格签名。验收在没有私人签名身份的配置下成功，不依赖解锁钥匙串，未更改钥匙串或系统权限。失败构建、旧候选及原始报告完整保留；早期草稿检查误读只保留侧栏元数据的列表，现改为读取完整任务记录，实际任务内容未因该误报修改。
+
+更新最终程序前，原验收资料的 28 份持久文件逐字节及权限保持；最终窗口操作后，原文件与权限、全部原任务正文和设置保持，任务与索引因 Git 审阅刷新更新时间，浅色外观设置另行保存，未声称全部文件仍逐字节相同。9 份日常原配置／聊天资料、23 份旧真实模型原件及日常程序保持。日常包仍为 `bf6a50e`，未替换。源码、构建、应用、临时文件、缓存和证据均位于外置项目目录。
+
+证据：`evidence/agent/worktree-workspace-idg1a22x/acceptance-index.json`、`final-06/source-staged-proof.json`、`core-results-final-06.json`、`before-final06-unchanged-proof.json`、`final06-upgrade-proof.json`、`originals-current.json` 与 `cua-final/`；最终原生报告在 `worktree-workspace-command-LcpvbB/`、`git-workspace-command-oYE57q/`、`task-workspace-command-bIb8ff/`，实际窗口原资料在 `worktree-workspace-command-m76N28/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-worktree-workspace`；`--manual-ui` 和 `--reopen <原目录>` 保留实际窗口和原资料，不调用模型。
+
+剩余：设置中「管理工作树…」的全局入口仍是独立窗口，需接入设置右侧页面；最终窗口的回收／恢复点击、视频与浏览器工作区、统一组件、标签页持久恢复和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)。P0／P1／P2 的完整目标尚未完成。

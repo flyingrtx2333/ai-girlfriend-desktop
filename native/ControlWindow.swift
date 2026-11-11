@@ -2110,17 +2110,20 @@ final class FormDocumentView: NSView {
         let worktree = NSMenuItem(title: "工作树…", action: #selector(createTaskWorktree), keyEquivalent: ""); worktree.target = self; worktree.state = task.worktreeOrigin == nil ? .off : .on; worktree.isEnabled = task.workspace != nil && task.worktreeOrigin == nil; menu.addItem(worktree)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: executionLocation.bounds.height + 4), in: executionLocation)
     }
-    @objc func createTaskWorktree() {
+    @objc internal func createTaskWorktree() {
         guard let tasks = companion?.agentStore, let task = currentAgentTask, task.canChooseEnvironment, task.workspace != nil else { return }
-        saveAgentDraft()
+        guard saveAgentDraft() else { return }
         do {
             let directory = try AgentGit.metadata(workspace: task.workspace)
             if !directory.path.hasPrefix((task.workspace ?? "") + "/"), task.gitDirectory != directory.path {
                 let alert = NSAlert(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(task.id) { $0.gitDirectory = directory.path }
             }
+            showAgentGit()
+            guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(), let parent = taskWorkspace.currentController else { return }
+            if parent is AgentWorktreeCreationWindow { return }
             let controller = try AgentWorktreeCreationWindow(store: tasks, taskID: task.id, directory: directory) { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
-            worktreeCreationWindow = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
+            worktreeCreationWindow = controller; parent.presentSettingsChild(controller)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func selectLocalEnvironment() {
@@ -2196,6 +2199,8 @@ final class FormDocumentView: NSView {
             if let comparison = page as? AgentFileConflictWindow, comparison.isPageVisible { value["comparison"] = comparison.checkState }
             if let office = page as? AgentOfficeWindow { offices.append(await office.workspaceReadback()) }
             if let canvas = page as? AgentCanvasWindow { canvases.append(canvas.workspaceReadback()) }
+            if let creation = page as? AgentWorktreeCreationWindow, creation.isPageVisible { value["worktreeCreation"] = creation.workspaceReadback() }
+            if let manager = page as? AgentWorktreeWindow, manager.isPageVisible { value["worktrees"] = manager.workspaceReadback() }
         }
         value["documents"] = documents; value["offices"] = offices; value["canvases"] = canvases; value["documentOpen"] = taskDocumentOpenState; return value
     }
