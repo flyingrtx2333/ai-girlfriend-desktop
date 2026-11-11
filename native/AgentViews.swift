@@ -63,12 +63,12 @@ private final class AgentTaskTable: NSTableView {
     private var effectiveGrouping: AgentTaskGrouping { filter == 1 ? .workspace : taskView.grouping }
     private static let dragType = NSPasteboard.PasteboardType("com.xjs.bluefatfish.task-view")
     private var tasks: [AgentTaskRecord] = [], rows: [Row] = []
-    private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0
+    private var selected: String?, signature = "", updating = false, searchVisible = false, filter = 0, attentionSelected = false
     private var collapsed = Set<String>(), expandedTasks = Set<String>()
     private var searchTask: Task<Void, Never>?, searchGeneration = 0, searchQuery = "", searchScope = Set<String>()
     private var searchVersions: [String: String] = [:], searchHits: [String: AgentTaskSearch.Hit] = [:], searchIssues: [String: String] = [:]
     private var searchBusy = false, searchSelection: String?
-    private var listSelection: String? { searchVisible ? searchSelection ?? selected : selected }
+    private var listSelection: String? { attentionSelected ? nil : searchVisible ? searchSelection ?? selected : selected }
     override init(frame: NSRect) {
         super.init(frame: frame)
         for (button, title, symbol, action) in [(create, "新的任务", "plus.square", #selector(newTask)), (attention, "需要我", "bell", #selector(showAttention)), (searchButton, "搜索", "magnifyingglass", #selector(showSearch))] {
@@ -159,6 +159,20 @@ private final class AgentTaskTable: NSTableView {
     @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
     private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }
     func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
+    func setAttentionSelected(_ active: Bool) {
+        attention.state = active ? .on : .off
+        AgentWorkbenchTheme.color(attention.layer, active ? AgentWorkbenchTheme.selection : .clear, animated: false)
+        guard attentionSelected != active else { return }; attentionSelected = active
+        let wasUpdating = updating; updating = true
+        if let index = rows.firstIndex(where: { if case let .task(task, _) = $0 { return task.id == listSelection }; return false }) {
+            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+        } else { table.deselectAll(nil) }
+        updating = wasUpdating
+    }
+    func checkAttentionSelected() -> Bool {
+        guard CommandLine.arguments.contains("--attention-page-check") else { return false }
+        return attentionSelected && attention.state == .on && (attention.layer?.backgroundColor?.alpha ?? 0) > 0
+    }
     @objc private func showAttention() { cancelBulkSelection(); if let onAttention { onAttention() } else { filter = filter == 1 ? 0 : 1; applyFilter() } }
     @objc private func changeFilter(_ sender: NSMenuItem) { if sender.tag == 1, let onAttention { onAttention(); return }; cancelBulkSelection(); filter = sender.tag; applyFilter() }
     @objc private func changeWorkMode() {
@@ -319,8 +333,9 @@ private final class AgentTaskTable: NSTableView {
         empty.isHidden = hasRows && !searchBusy && searchIssues.isEmpty
         empty.stringValue = searchBusy ? "正在搜索…" : !searchIssues.isEmpty ? "\(searchIssues.count) 份会话未能搜索" : narrowed ? "没有匹配的任务" : "暂无任务"
         empty.toolTip = searchIssues.values.sorted().joined(separator: "\n")
-        attention.state = filter == 1 ? .on : .off
-        AgentWorkbenchTheme.color(attention.layer, filter == 1 ? AgentWorkbenchTheme.selection : .clear)
+        let attentionActive = attentionSelected || filter == 1
+        attention.state = attentionActive ? .on : .off
+        AgentWorkbenchTheme.color(attention.layer, attentionActive ? AgentWorkbenchTheme.selection : .clear)
         for item in viewMenu.itemArray where item.action == #selector(changeFilter(_:)) { item.state = item.tag == filter ? .on : .off }
         let available = Set(rows.compactMap { row -> String? in if case .task(let task, _) = row { return task.id }; return nil }); bulkIDs.formIntersection(available)
         if bulkIDs.isEmpty { bulkSelecting = false }; updateBulkBar()

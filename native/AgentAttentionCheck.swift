@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor extension AppDelegate {
     func prepareAttentionCheck(_ output: URL) async throws {
-        guard CommandLine.arguments.contains("--manual-ui"), let tasks = agentStore, let runtime = agentRuntime else { throw PetError("需要我窗口检查未初始化") }
+        guard (CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--attention-page-check")), let tasks = agentStore, let runtime = agentRuntime else { throw PetError("需要我窗口检查未初始化") }
         let primary = tasks.selectedID, project = output.appendingPathComponent("project").resolvingSymlinksInPath()
         let bytes = try Data(contentsOf: project.appendingPathComponent("README.md")), hash = AgentFiles.hash(bytes)
         var ids: [String: String] = [:], calls: [String: String] = [:]

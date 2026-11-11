@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 
 export function signingIdentity() {
   const output = execFileSync('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
@@ -16,4 +17,16 @@ export function signNative(target, identifier) {
   if (identifier) args.push('--identifier', identifier);
   execFileSync('/usr/bin/codesign', [...args, target], { stdio: 'inherit' });
   execFileSync('/usr/bin/codesign', ['--verify', '--strict', target], { stdio: 'inherit' });
+}
+
+export function signNativeCheck(target) {
+  const info = path.join(target, 'Contents/Info.plist');
+  const value = key => execFileSync('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', info], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  let isolated = false;
+  try { isolated = value('BlueFatFishAcceptanceOnly') === 'true' && value('CFBundleIdentifier').startsWith('com.xjs.bluefatfish.'); } catch { /* Missing metadata is not an acceptance package. */ }
+  if (!isolated) {
+    throw new Error('本地签名只用于独立验收包，不能替换日常应用的签名。');
+  }
+  execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', target], { stdio: 'inherit' });
+  execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', target], { stdio: 'inherit' });
 }

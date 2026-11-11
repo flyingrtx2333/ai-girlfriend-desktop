@@ -78,11 +78,13 @@ final class FormDocumentView: NSView {
 @MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
+    private var settingsReturnTab = "chat", settingsBackButton: NSButton?
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
     private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
-    private let chat = NSView(), settings = NSView()
+    private let chat = NSView(), settings = NSView(), attentionContent = NSView()
+    private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
@@ -276,6 +278,7 @@ final class FormDocumentView: NSView {
         composer.font = .systemFont(ofSize: AgentAppearance.messageSize)
         messageRows.values.forEach { $0.refreshAppearance() }
         settingsPageHost.refreshAppearance()
+        attentionPageController?.refreshAppearance()
         contentSurface.needsDisplay = true
     }
     func checkAppearanceComposerSize() -> CGFloat? {
@@ -395,7 +398,7 @@ final class FormDocumentView: NSView {
             taskSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(taskSidebar); chatSidebarViews.append(taskSidebar)
             NSLayoutConstraint.activate([taskSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 184), taskSidebar.topAnchor.constraint(equalTo: navigation.bottomAnchor, constant: 18), taskSidebar.bottomAnchor.constraint(equalTo: sideFooter.topAnchor, constant: -20)])
             taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
-            taskSidebar.onAttention = { [weak self] in self?.companion?.showAttention() }
+            taskSidebar.onAttention = { [weak self] in self?.showAttentionPage() }
             taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
             taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
         }
@@ -413,7 +416,7 @@ final class FormDocumentView: NSView {
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
-        for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
+        for panel in [chat, settings, attentionContent] { panels.addSubview(panel); pin(panel, to: panels) }
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbench() {
@@ -430,7 +433,7 @@ final class FormDocumentView: NSView {
         let brand = stack([icon, title], spacing: 9); workbenchSidebar.addSubview(brand)
         taskSidebar.translatesAutoresizingMaskIntoConstraints = false; workbenchSidebar.addSubview(taskSidebar)
         taskSidebar.onSelect = { [weak self] id in self?.selectAgentTask(id) }
-        taskSidebar.onAttention = { [weak self] in self?.companion?.showAttention() }
+        taskSidebar.onAttention = { [weak self] in self?.showAttentionPage() }
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
         taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProjectDirectory() }
         taskSidebar.onNewInWorkspace = { [weak self] path, mode in
@@ -495,6 +498,7 @@ final class FormDocumentView: NSView {
         let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
         workbenchChrome = [navigation, actions, workbenchBadge, headerRule]
         for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
+        main.addSubview(attentionContent); pin(attentionContent, to: main)
         buildWorkbenchConversation()
         headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
@@ -583,15 +587,15 @@ final class FormDocumentView: NSView {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
         taskSwitcher?.refresh()
         let keepSearchHitVisible = isMessageSearchVisible
-        let configuring = selectedTab == "settings", width = window?.contentView?.bounds.width ?? 1200
-        terminalPanel?.selectTask(configuring ? nil : task)
+        let configuring = selectedTab == "settings", chatting = selectedTab == "chat", width = window?.contentView?.bounds.width ?? 1200
+        terminalPanel?.selectTask(chatting ? task : nil)
         terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
         updateTerminalDock()
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
         let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
         let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
-        let showInspector = !configuring && hasRecords && inspectorRequested && width >= 1080
+        let showInspector = chatting && hasRecords && inspectorRequested && width >= 1080
         let target: CGFloat = showInspector ? 281 : 0
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
         let settingsWidth: CGFloat = width < 980 ? 180 : 231
@@ -604,8 +608,8 @@ final class FormDocumentView: NSView {
         let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - target - 760) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !showInspector; headerInspectorRule.isHidden = !showInspector
-        pageTitle.isHidden = configuring || !hasMessages
-        workbenchBadge.isHidden = configuring || !hasMessages
+        pageTitle.isHidden = !chatting || !hasMessages
+        workbenchBadge.isHidden = !chatting || !hasMessages
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
@@ -779,8 +783,27 @@ final class FormDocumentView: NSView {
         voiceInput.contentTintColor = enabled ? .systemRed : AgentWorkbenchTheme.secondaryText; voiceInput.toolTip = enabled ? "停止录音" : "语音输入"; voiceInput.setAccessibilityLabel(voiceInput.toolTip)
     }
     func showAttentionPreferences() { showSettingsCategory("attention") }
+    func showAttentionPage() {
+        guard saveAgentDraft(), canLeaveMainPage() else { return }
+        companion?.ensureAgent()
+        guard let tasks = companion?.agentStore, let runtime = companion?.agentRuntime, let host = window else { return }
+        if attentionPageController == nil {
+            let page = AgentAttentionWindow(attention: tasks.attention, runtime: runtime)
+            page.onOpenTask = { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
+            page.onOpenSettings = { [weak self] in self?.showAttentionPreferences() }
+            guard let view = page.content(in: host) else { return }
+            attentionContent.addSubview(view); pin(view, to: attentionContent)
+            attentionPageController = page
+        }
+        sidebarRequested = true
+        show(tab: "attention"); tasks.attention.refresh(); attentionPageController?.refresh()
+    }
+    private func canLeaveMainPage() -> Bool {
+        guard attentionPageController?.prepareToClose() != false else { return false }
+        return settingsPageHost.leave()
+    }
     @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
-        guard settingsCategories.contains(where: { $0.0 == key }), settingsPageHost.leave() else { return false }
+        guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); return true
     }
@@ -846,6 +869,7 @@ final class FormDocumentView: NSView {
         settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200)
         NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebarWidth, settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
         let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
+        settingsBackButton = back
         back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
         back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
         back.contentTintColor = AgentWorkbenchTheme.secondaryText
@@ -870,7 +894,7 @@ final class FormDocumentView: NSView {
         scroll.setAccessibilityLabel("设置分类")
         NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 18), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
     }
-    @objc private func returnToChat() { guard settingsPageHost.leave() else { return }; companion?.screenCompanion.interaction(); selectedTab = "chat"; changeTab(); window?.makeFirstResponder(composer) }
+    @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
         guard settingsPageHost.leave() else { return }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
@@ -1145,26 +1169,32 @@ final class FormDocumentView: NSView {
     }
 
     func show(tab: String) {
-        if selectedTab == "settings", tab != "settings", !settingsPageHost.leave() { return }
+        if selectedTab != tab, !canLeaveMainPage() { return }
         if window?.isVisible != true { refreshPreferences() }
-        selectedTab = tab == "settings" ? "settings" : "chat"; changeTab()
+        if tab == "settings", selectedTab != "settings" {
+            settingsReturnTab = selectedTab
+            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : "返回对话"
+        }
+        selectedTab = ["settings", "attention"].contains(tab) ? tab : "chat"; changeTab()
         renderMessages()
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        if tab != "settings" { window?.makeFirstResponder(composer) }
+        if selectedTab == "chat" { window?.makeFirstResponder(composer) }
+        if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
         companion?.updatePetWorkspaceOcclusion()
     }
-    @objc private func selectTab(_ sender: NSButton) { if sender.tag == 0, !settingsPageHost.leave() { return }; companion?.screenCompanion.interaction(); selectedTab = sender.tag == 0 ? "chat" : "settings"; changeTab() }
+    @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
         if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
-        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
+        chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"
+        taskSidebar.setAttentionSelected(selectedTab == "attention")
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
         contentSurface.showsSettings = configuring; pageTitle.isHidden = configuring
         titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? (sidebarRequested ? 126 : 190) : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : AgentWorkbenchTheme.secondaryText
-        workbenchChrome.forEach { $0.isHidden = configuring }
+        workbenchChrome.forEach { $0.isHidden = selectedTab != "chat" }
         if configuring { updateSettingsSections() } else { pageTitle.stringValue = currentAgentTask?.title ?? "对话" }
         AgentWorkbenchTheme.color(chatNav.layer, selectedTab == "chat" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         AgentWorkbenchTheme.color(settingsNav.layer, selectedTab == "settings" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
@@ -1435,7 +1465,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard settingsPageHost.leave() else { return false }
+        guard canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
         guard saveAgentDraft() else { return false }
         if let id = sideTaskTabID, let task = companion?.agentStore?.task(id), let side = task.sideTask, !side.retained,
@@ -1486,13 +1516,55 @@ final class FormDocumentView: NSView {
         updateTerminalDock()
     }
     func closeOwnedTaskPanels() -> Bool {
+        guard attentionPageController?.prepareToClose() != false else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, gitWindow, worktreeWindow, worktreeCreationWindow, knowledgeWindow, repoWikiWindow, knowledgeCardWindow, knowledgeLibraryWindow, extensionWindow, profileWindow, teamWindow, automationWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
-    func requireTaskDeletionAllowed(_ ids: Set<String>) throws { try recordWindow?.requireDeletionAllowed(ids) }
+    func requireTaskDeletionAllowed(_ ids: Set<String>) throws { try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids) }
     func closeDeletedTaskRecords(_ ids: Set<String>) { recordWindow?.closeDeletedTask(ids) }
+    func checkAttentionNavigation() throws -> [String: Any] {
+        guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore, let id = agentTaskID else { throw PetError("需要我页面未初始化") }
+        var checks: [String: Bool] = [:], frames: [String: Any] = [:]
+        let original = window.contentView!.bounds.size, draft = tasks.task(id)?.draft
+        for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
+            let geometry = page.checkPageGeometry(); frames[name] = geometry
+            for (key, value) in geometry["checks"] as? [String: Bool] ?? [:] { checks[name + "-" + key] = value }
+            checks[name + "-actualWindowSize"] = abs(window.contentView!.bounds.width - size.width) < 0.5 && abs(window.contentView!.bounds.height - size.height) < 0.5
+        }
+        window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
+        let state = page.checkState()
+        checks["sameWindowSidebarAndPage"] = page.presentingWindow === window && page.isVisible && !workbenchSidebar.isHidden && workbenchChrome.allSatisfy(\.isHidden) && taskSidebar.checkAttentionSelected()
+        show(tab: "chat")
+        checks["returnToTaskPreservesDraft"] = selectedTab == "chat" && agentTaskID == id && tasks.task(id)?.draft == draft && !chat.isHidden && attentionContent.isHidden
+        showAttentionPage()
+        checks["pageReturnPreservesSelectionFilterAndReply"] = page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["query"] as? String == state["query"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
+        page.showSettings()
+        checks["pageSettingsUsesSameWindowWithoutSheet"] = selectedTab == "settings" && settingsCategory == "attention" && window.attachedSheet == nil && settingsBackButton?.title == "返回需要我"
+        returnToChat()
+        checks["settingsReturnRestoresInbox"] = selectedTab == "attention" && page.isVisible && page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
+        return ["checks": checks, "frames": frames]
+    }
+    func checkAttentionNavigationSelection() -> Bool {
+        CommandLine.arguments.contains("--attention-page-check") && selectedTab == "attention" && taskSidebar.checkAttentionSelected()
+    }
+    func checkAttentionSaveFailure() -> [String: Bool] {
+        guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore else { return [:] }
+        let originalID = agentTaskID, count = tasks.tasks.count, saved = page.checkState()["reply"] as? String ?? ""
+        let oversized = String(repeating: "a", count: 65_537); page.checkSetReply(oversized)
+        show(tab: "chat")
+        var checks = ["failedReplySaveBlocksNavigationWithoutTruncation": selectedTab == "attention" && page.isVisible && page.checkState()["reply"] as? String == oversized]
+        newAgentTask()
+        if let other = tasks.tasks.first(where: { $0.id != originalID }) { selectAgentTask(other.id) }
+        checks["failedReplySaveBlocksTaskCreationAndSelection"] = tasks.tasks.count == count && agentTaskID == originalID && selectedTab == "attention"
+        checks["failedReplySaveBlocksCloseAndQuitPreparation"] = !windowShouldClose(window) && !closeOwnedTaskPanels()
+        page.checkSetReply(saved)
+        checks["correctedReplyCanSaveAndLeave"] = page.prepareToClose()
+        show(tab: "chat"); checks["correctedReplyRestoresNormalNavigation"] = selectedTab == "chat"
+        return checks
+    }
     func checkSettings(_ output: URL) async -> [String: Any] {
         guard companion?.checkDirectory != nil else { return ["success": false] }
         var checks: [String: Bool] = [:], sizes: [String: [Double]] = [:]
@@ -1656,7 +1728,7 @@ final class FormDocumentView: NSView {
     }
     func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
-        guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft() else { return }
+        guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft(), canLeaveMainPage() else { return }
         if let sideTaskTabID, sideTaskTabID != id {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
@@ -1681,7 +1753,7 @@ final class FormDocumentView: NSView {
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
     @objc func newAgentTask() {
-        guard let tasks = companion?.agentStore, saveAgentDraft() else { return }
+        guard let tasks = companion?.agentStore, saveAgentDraft(), canLeaveMainPage() else { return }
         let previous = currentAgentTask
         let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
@@ -2607,7 +2679,7 @@ extension ControlWindow {
     }
     func persistAgentDraft() { attachmentImport?.cancel(); saveAgentDraft() }
     func saveWindowDraft() -> Bool { saveAgentDraft() }
-    func refreshAttention() { if let attention = companion?.agentStore?.attention { taskSidebar.setAttentionCount(attention.pendingCount, enabled: attention.settings.enabled) } }
+    func refreshAttention() { if let attention = companion?.agentStore?.attention { taskSidebar.setAttentionCount(attention.pendingCount, enabled: attention.settings.enabled); attentionPageController?.refresh() } }
     func undoManager(for view: NSTextView) -> UndoManager? { view === composer ? windowDraft?.undo : nil }
     func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
         guard let store = companion?.agentStore else { return ["attachmentUI": false] }
