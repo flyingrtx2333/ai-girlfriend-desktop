@@ -92,13 +92,18 @@ import Darwin
             func text(_ view: NSView) -> String {
                 (view as? NSTextView)?.string ?? (view as? NSTextField)?.stringValue ?? view.subviews.map(text).joined(separator: "\n")
             }
+            func settingsViewport(_ view: NSView) -> NSScrollView? {
+                if let scroll = view as? NSScrollView, scroll.accessibilityLabel() == "设置内容" { return scroll }
+                for child in view.subviews { if let scroll = settingsViewport(child) { return scroll } }; return nil
+            }
             var actualTexts = true, narrowPagesStartAtTop = true, childPID: pid_t?
             for (key, manager, expected) in managers {
                 guard pane.show(category: key, identity: key, scope: "设置项目", make: { _ in manager }) else { throw PetError("设置页未载入：" + key) }
                 pane.layoutSubtreeIfNeeded()
-                let viewport = pane.subviews.compactMap { $0 as? NSScrollView }.first
+                let viewport = settingsViewport(pane)
                 narrowPagesStartAtTop = narrowPagesStartAtTop && viewport?.documentView?.isFlipped == true && abs(viewport?.contentView.bounds.minY ?? -1) < 0.5
                 checks["embedded-" + key] = manager.presentingWindow === host && manager.pageContentView?.window === host && manager.window?.isVisible == false
+                if let hooks = manager as? AgentHookWindow, let first = try tasks.hooks.catalog(workspace: workspace).first { hooks.selectHook(first.id) }
                 for _ in 0..<30 {
                     if manager.pageContentView.map({ text($0).contains(expected) }) == true { break }
                     await wait(0.05)

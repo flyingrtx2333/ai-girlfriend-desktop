@@ -32,6 +32,7 @@ import WebKit
         if CommandLine.arguments.contains("--code-security-check") { await runCodeSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
@@ -52,6 +53,7 @@ import WebKit
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
+                    if CommandLine.arguments.contains("--settings-layout-fixtures") { try prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     control.showAgentTask(id)
                 }

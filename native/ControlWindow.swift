@@ -84,7 +84,7 @@ final class FormDocumentView: NSView {
     private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
     private let chat = NSView(), settings = NSView()
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
-    private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsPageIcon = NSImageView()
+    private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
@@ -261,7 +261,6 @@ final class FormDocumentView: NSView {
     func refreshAppearancePreferences() {
         guard let window else { return }
         window.effectiveAppearance.performAsCurrentDrawingAppearance {
-            settingsPageIcon.layer?.backgroundColor = AgentWorkbenchTheme.subtle.cgColor
             sendButton.layer?.backgroundColor = (companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary).cgColor
             sendButton.contentTintColor = companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText
             generalSettingsSave?.layer?.backgroundColor = AgentWorkbenchTheme.primary.cgColor
@@ -309,6 +308,34 @@ final class FormDocumentView: NSView {
     @objc private func accessibilityDisplayChanged() {
         guard NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let root = window?.contentView else { return }
         AgentWorkbenchTheme.cancelMotion(in: root); updateWorkbenchLayout()
+    }
+
+    func checkSettingsPageLayout() -> [String: Any] {
+        guard CommandLine.arguments.contains("--settings-layout-check"), let window else { return [:] }
+        let original = window.contentView?.bounds.size ?? .zero, draft = composer.string
+        var checks: [String: Bool] = [:], frames: [String: [String: Double]] = [:]
+        for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+            window.setContentSize(size)
+            for category in ["model", "appearance", "extensions", "agents", "teams", "hooks", "memory"] {
+                guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
+                selectedTab = "settings"; settingsCategory = category; settingsSearch.stringValue = ""; changeTab()
+                window.contentView?.layoutSubtreeIfNeeded()
+                let column = settings.convert(settings.bounds, to: contentSurface), body = settingsBody.convert(settingsBody.bounds, to: contentSurface)
+                let alignment = settingsHeading.alignmentRect(forFrame: settingsHeading.frame)
+                let heading = settingsHeading.superview!.convert(alignment, to: contentSurface)
+                let key = name + "-" + category, centerError = abs(column.midX - contentSurface.bounds.midX)
+                let actualWidth = window.contentView?.bounds.width ?? 0
+                frames[key] = ["width": column.width, "windowWidth": actualWidth, "centerError": centerError, "headingX": heading.minX - column.minX, "headingTop": contentSurface.bounds.height - heading.maxY, "bodyGap": heading.minY - body.maxY, "leadingGutter": column.minX, "trailingGutter": contentSurface.bounds.width - column.maxX]
+                // AppKit snaps view frames to the pixel grid and gives labels
+                // alignment insets. Check layout anchors and the actual window.
+                let fitsWindow = abs(actualWidth - size.width) < 0.5 && column.width >= 500 && column.width <= 764.5 && column.minX >= 27.5 && column.maxX <= contentSurface.bounds.width - 27.5
+                let aligned = centerError <= 0.5 && abs(heading.minX - column.minX - 16) < 0.5 && (50...64).contains(contentSurface.bounds.height - heading.maxY) && heading.minY > body.maxY
+                checks[key + "CenteredColumnAndContentHeading"] = fitsWindow && aligned && settingsHeading.stringValue == settingsCategories[index].1 && pageTitle.isHidden && workbenchChrome.allSatisfy(\.isHidden)
+            }
+        }
+        returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
+        checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
+        return ["checks": checks, "frames": frames]
     }
 
     private func stack(_ views: [NSView], vertical: Bool = false, spacing: CGFloat = 12) -> NSStackView {
@@ -377,9 +404,6 @@ final class FormDocumentView: NSView {
         pageTitle.font = .systemFont(ofSize: 14, weight: .semibold); pageTitle.textColor = AgentWorkbenchTheme.secondaryText
         pageTitle.lineBreakMode = .byTruncatingTail; pageTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         pageTitle.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(pageTitle)
-        settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; settingsPageIcon.wantsLayer = true
-        settingsPageIcon.layer?.backgroundColor = NSColor(white: 0.94, alpha: 1).cgColor; settingsPageIcon.layer?.cornerRadius = 10
-        settingsPageIcon.contentTintColor = AgentWorkbenchTheme.secondaryText; main.addSubview(settingsPageIcon)
         titleLeading = pageTitle.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28)
         let panels = NSView(); main.addSubview(panels); panels.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -388,7 +412,6 @@ final class FormDocumentView: NSView {
             sideFooter.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 27), sideFooter.trailingAnchor.constraint(equalTo: content.leadingAnchor, constant: 182), sideFooter.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -26),
             main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 200), main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             pageTitle.topAnchor.constraint(equalTo: main.topAnchor, constant: 22), titleLeading, pageTitle.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28),
-            settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36),
             panels.topAnchor.constraint(equalTo: pageTitle.bottomAnchor, constant: 18), panels.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), panels.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), panels.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
         for panel in [chat, settings] { panels.addSubview(panel); pin(panel, to: panels) }
         buildChat(); buildSettingsSidebar(in: content); buildSettings(); changeTab()
@@ -470,14 +493,16 @@ final class FormDocumentView: NSView {
         resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务记录", symbol: "sidebar.right")
         let actions = stack([projectButton, browserButton, terminalButton, desktopButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
         let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
-        workbenchChrome = [navigation, actions, workbenchBadge]
-        settingsPageIcon.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(settingsPageIcon)
+        workbenchChrome = [navigation, actions, workbenchBadge, headerRule]
         for panel in [chat, settings] { panel.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(panel) }
         buildWorkbenchConversation()
         headerInspectorRule.translatesAutoresizingMaskIntoConstraints = false; main.addSubview(headerInspectorRule)
         NSLayoutConstraint.activate([headerInspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), headerInspectorRule.widthAnchor.constraint(equalToConstant: 1), headerInspectorRule.topAnchor.constraint(equalTo: main.topAnchor), headerInspectorRule.bottomAnchor.constraint(equalTo: headerRule.topAnchor)])
         navigationLeading = navigation.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 18)
-        NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 76), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24), settingsPageIcon.leadingAnchor.constraint(equalTo: main.leadingAnchor, constant: 28), settingsPageIcon.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), settingsPageIcon.widthAnchor.constraint(equalToConstant: 36), settingsPageIcon.heightAnchor.constraint(equalToConstant: 36)])
+        NSLayoutConstraint.activate([navigationLeading, navigation.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), titleLeading, pageTitle.centerYAnchor.constraint(equalTo: main.topAnchor, constant: 30), workbenchBadge.leadingAnchor.constraint(equalTo: pageTitle.trailingAnchor, constant: 10), workbenchBadge.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), workbenchBadge.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -14), actions.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor, constant: -16), actions.centerYAnchor.constraint(equalTo: pageTitle.centerYAnchor), headerRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), headerRule.trailingAnchor.constraint(equalTo: main.trailingAnchor), headerRule.topAnchor.constraint(equalTo: main.topAnchor, constant: 59), chat.leadingAnchor.constraint(equalTo: main.leadingAnchor), chat.trailingAnchor.constraint(equalTo: main.trailingAnchor), chat.topAnchor.constraint(equalTo: headerRule.bottomAnchor), chat.bottomAnchor.constraint(equalTo: main.bottomAnchor), settings.centerXAnchor.constraint(equalTo: main.centerXAnchor), settings.widthAnchor.constraint(lessThanOrEqualToConstant: 764), settings.leadingAnchor.constraint(greaterThanOrEqualTo: main.leadingAnchor, constant: 28), settings.trailingAnchor.constraint(lessThanOrEqualTo: main.trailingAnchor, constant: -28), settings.topAnchor.constraint(equalTo: main.topAnchor, constant: 52), settings.bottomAnchor.constraint(equalTo: main.bottomAnchor, constant: -24)])
+        let columnWidth = settings.widthAnchor.constraint(equalToConstant: 764)
+        // Keep the wide layout preferred while allowing the user to shrink it.
+        columnWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1); columnWidth.isActive = true
         buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbenchConversation() {
@@ -579,7 +604,7 @@ final class FormDocumentView: NSView {
         let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - target - 760) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !showInspector; headerInspectorRule.isHidden = !showInspector
-        pageTitle.isHidden = !configuring && !hasMessages
+        pageTitle.isHidden = configuring || !hasMessages
         workbenchBadge.isHidden = configuring || !hasMessages
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
@@ -855,9 +880,8 @@ final class FormDocumentView: NSView {
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
-        pageTitle.stringValue = query.isEmpty ? selected.1 : "搜索结果"
-        settingsPageIcon.image = NSImage(systemSymbolName: query.isEmpty ? selected.2 : "magnifyingglass", accessibilityDescription: nil)
-        settingsPageIcon.image?.size = NSSize(width: 21, height: 21)
+        settingsHeading.stringValue = query.isEmpty ? selected.1 : "搜索结果"
+        pageTitle.stringValue = settingsHeading.stringValue
         for (index, button) in categoryButtons.enumerated() {
             let active = query.isEmpty && settingsCategories[index].0 == settingsCategory
             button.state = active ? .on : .off; AgentWorkbenchTheme.color(button.layer, active ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
@@ -879,6 +903,7 @@ final class FormDocumentView: NSView {
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
+            (group.view as? NSStackView)?.arrangedSubviews.first?.isHidden = query.isEmpty && group.title == selected.1
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
         }
         if matches.isEmpty { settingsForm.addArrangedSubview(noSettings) }
@@ -1107,9 +1132,14 @@ final class FormDocumentView: NSView {
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
         settingsPageHost.isHidden = true
-        let bottom = stack([savedStatus, NSView(), save]), column = stack([settingsBody, bottom], vertical: true, spacing: 18)
+        let title = NSView(); title.translatesAutoresizingMaskIntoConstraints = false
+        settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
+        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.translatesAutoresizingMaskIntoConstraints = false; title.addSubview(settingsHeading)
+        NSLayoutConstraint.activate([title.heightAnchor.constraint(equalToConstant: 28), settingsHeading.leadingAnchor.constraint(equalTo: title.leadingAnchor, constant: 16), settingsHeading.trailingAnchor.constraint(lessThanOrEqualTo: title.trailingAnchor, constant: -16), settingsHeading.centerYAnchor.constraint(equalTo: title.centerYAnchor)])
+        let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 24)
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
+        title.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         settingsBody.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
@@ -1130,7 +1160,7 @@ final class FormDocumentView: NSView {
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"
         let configuring = selectedTab == "settings"
         settingsSidebar.isHidden = !configuring; chatSidebarViews.forEach { $0.isHidden = configuring }
-        contentSurface.showsSettings = configuring; settingsPageIcon.isHidden = !configuring
+        contentSurface.showsSettings = configuring; pageTitle.isHidden = configuring
         titleLeading.constant = configuring ? 80 : companion?.usesAgent == true ? (sidebarRequested ? 126 : 190) : 28
         pageTitle.font = .systemFont(ofSize: configuring ? 22 : companion?.usesAgent == true ? 18 : 14, weight: .semibold)
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : AgentWorkbenchTheme.secondaryText

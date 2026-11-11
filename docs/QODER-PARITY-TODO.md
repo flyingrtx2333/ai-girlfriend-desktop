@@ -9,7 +9,7 @@
 - Agent 执行、任务管理、文件与终端、Git 等本机核心已有实际验收证据，完整功能仍有明显缺口。
 - 主工作台完成过对用户选定 A 设计稿的布局与屏幕对照；设置、扩展、知识等管理界面尚未完成全应用的统一设计和 Qoder 实机对照。
 - 设置已有分组导航、固定搜索和 18 个分类。扩展、MCP、Hooks、智能体、团队、记忆与规则均迁入右侧内容页，插件启用配置和 Hooks 编辑器在页内进入与返回；需要我配置可直接编辑。原配置、权限与冲突保护继续复用。
-- 外观基础已实现跟随系统、浅色、深色及对话字号；移除 38 处窗口强制浅色，统一主要表面、文字和选中颜色。生产候选的双窗口、文档与 Git 主题切换及重开已验；系统默认表格、按钮、表单间距、页宽和短确认样式仍需逐页打磨。
+- 外观基础已实现跟随系统、浅色、深色及对话字号；移除 38 处窗口强制浅色，统一主要表面、文字和选中颜色。设置正文已居中并限制最大宽度，标题迁入内容列；Hooks 使用实际事件分组和页内详情。生产候选的正常／窄窗口、浅深色、保存和重开已验；系统表格、按钮、其余表单和短确认样式仍需逐页打磨。
 - 近期大量验收记录明确标为开发候选、日常应用未替换。本机主目录包与最近依赖扫描验收包的二进制不同；各功能的主分支、验收包和日常安装状态需要单独对齐。
 
 “已验核心”表示下面所列的实际本机流程已有证据；每行的剩余项仍属于完整目标。安装状态以对应发布记录为准。
@@ -29,7 +29,7 @@
 - [x] 设置侧栏返回与搜索固定在顶部，分类独立滚动；插件启用配置的 ⌘S 已在用户／项目／本机三种范围实际保存并重开核对。
 - [ ] 其余页面的范围切换、键盘顺序和未保存编辑细节随页面逐项验收。
 - [ ] **补齐常规与个性化设置**：侧栏入口位置与排序、模式偏好、任务监控、通知和菜单栏偏好，按真实已实现能力提供控件。
-- [ ] 按 Qoder 实机参考统一设置正文宽度、标题位置和 Hooks 事件分组卡片；主题与对话字号基础已完成。
+- [x] 按 Qoder 实机参考将设置正文限制在居中内容列，标题迁入正文；Hooks 按真实事件显示数量、展开处理器与详情，支持键盘操作及页内保存。800 点实际窗口、浅深色、编辑范围和重开已验，日常包待更新。
 - [ ] **逐页实机验收并更新日常应用**：设置、扩展及各管理页分别检查正常／窄窗口、浅／深色、键盘与重开恢复，发布后再次核对真实入口。
 
 ### 页面承载方案
@@ -123,6 +123,7 @@
 
 - 设置分类与表单：[ControlWindow.swift](../native/ControlWindow.swift)，`settingsCategories`、`buildSettingsSidebar`、`buildSettings`。
 - 设置页承载、页内返回与样式：[AgentSettingsPages.swift](../native/AgentSettingsPages.swift)；相关原生检查：[AgentSettingsCheck.swift](../native/AgentSettingsCheck.swift)。
+- 设置正文布局与 Hooks 分组检查：[AgentSettingsLayoutCheck.swift](../native/AgentSettingsLayoutCheck.swift)；`npm run native:check-settings` 已改用当前页面检查，每次保留独立记录。
 - 外观配置、动态表面与相关检查：[AgentAppearance.swift](../native/AgentAppearance.swift)、[AgentAppearanceCheck.swift](../native/AgentAppearanceCheck.swift)。
 - 扩展列表与实际编辑逻辑：[AgentExtensionWindow.swift](../native/AgentExtensionWindow.swift)。
 - 主内容入口：[ControlWindow.swift](../native/ControlWindow.swift)，`showAutomations`、`showAttention` 的调用、`showAgentKnowledge`、`showKnowledgeLibrary`、`showAgentGit`。

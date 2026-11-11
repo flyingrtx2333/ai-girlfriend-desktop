@@ -1,14 +1,25 @@
 import { spawnSync } from 'node:child_process';
-import { readFile, mkdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const output = root + 'evidence/edition29/native/';
-await mkdir(output, { recursive: true });
-await rm(output + 'settings-report.json', { force: true });
-const result = spawnSync(root + 'build/蓝色大肥鱼.app/Contents/MacOS/BlueFatFish',
-  ['--check', output, '--settings-check'], { encoding: 'utf8', timeout: 20000 });
+const evidence = path.join(root, 'evidence/agent');
+await mkdir(evidence, { recursive: true });
+const output = await mkdtemp(path.join(evidence, 'settings-layout-command-'));
+await mkdir(path.join(output, 'shared-home'));
+const app = process.env.BLUEFATFISH_APP ?? path.join(root, 'build/蓝色大肥鱼.app');
+const binary = path.join(app, 'Contents/MacOS/BlueFatFish');
+const hash = () => readFile(binary).then(data => createHash('sha256').update(data).digest('hex'));
+const binaryHash = await hash();
+const result = spawnSync(binary, ['--check', output, '--settings-layout-check'], { encoding: 'utf8', timeout: 60000 });
+await writeFile(path.join(output, 'stdout.log'), result.stdout ?? '');
+await writeFile(path.join(output, 'stderr.log'), result.stderr ?? '');
+await writeFile(path.join(output, 'process.json'), JSON.stringify({ app, binaryHash, appPID: result.pid, exit: result.status, signal: result.signal }, null, 2) + '\n');
 if (result.error || result.status !== 0) throw result.error ?? Error(result.stderr || result.stdout);
-const report = JSON.parse(await readFile(output + 'settings-report.json', 'utf8'));
-console.log(JSON.stringify(report, null, 2));
-process.exitCode = report.success ? 0 : 1;
+const report = JSON.parse(await readFile(path.join(output, 'settings-layout-report.json'), 'utf8'));
+if (report.appPID !== result.pid || await hash() !== binaryHash) throw Error('Settings check process or application changed');
+const success = report.success && report.modelRequests === 0 && Object.values(report.checks).every(Boolean);
+console.log(JSON.stringify({ output, binaryHash, appPID: result.pid, success, checks: Object.keys(report.checks).length, failed: Object.keys(report.checks).filter(key => !report.checks[key]), modelRequests: report.modelRequests }));
+process.exitCode = success ? 0 : 1;

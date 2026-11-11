@@ -59,7 +59,7 @@ import AppKit
             if let scroll = view as? NSScrollView {
                 scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder
                 scroll.wantsLayer = true; scroll.layer?.cornerRadius = 9
-                scroll.layer?.borderWidth = 1; scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+                scroll.layer?.borderWidth = scroll.identifier?.rawValue == "hook-event-groups" ? 0 : 1; scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
                 scroll.backgroundColor = .textBackgroundColor
             }
             if let button = view as? NSButton, !(button is NSPopUpButton) { button.font = .systemFont(ofSize: 13) }
@@ -84,7 +84,7 @@ import AppKit
 
 @MainActor final class AgentSettingsPageHost: NSView {
     private struct Entry { let controller: AgentSettingsPageController; let view: NSView; let title: String }
-    private let back = NSButton(title: "返回", target: nil, action: nil)
+    private let back = NSButton(title: "返回", target: nil, action: nil), header = NSStackView()
     private let tabs = NSSegmentedControl(), context = NSTextField(labelWithString: "")
     private let viewport = NSScrollView(), document = AgentSettingsDocument(), empty = NSTextField(labelWithString: "请先选择任务")
     private var entries: [Entry] = [], keys: [String] = [], selectedTab = 0
@@ -99,13 +99,14 @@ import AppKit
         tabs.trackingMode = .selectOne; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let header = NSStackView(views: [back, tabs, NSView(), context]); header.spacing = 12
-        viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay
+        for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12
+        viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay; viewport.setAccessibilityLabel("设置内容")
         document.translatesAutoresizingMaskIntoConstraints = false; viewport.documentView = document
-        for view in [header, viewport, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let column = NSStackView(views: [header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14
+        for view in [column, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: topAnchor), header.leadingAnchor.constraint(equalTo: leadingAnchor), header.trailingAnchor.constraint(equalTo: trailingAnchor), header.heightAnchor.constraint(equalToConstant: 30),
-            viewport.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14), viewport.leadingAnchor.constraint(equalTo: leadingAnchor), viewport.trailingAnchor.constraint(equalTo: trailingAnchor), viewport.bottomAnchor.constraint(equalTo: bottomAnchor),
+            column.topAnchor.constraint(equalTo: topAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor),
+            header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 30), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
             document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor),
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
@@ -152,6 +153,7 @@ import AppKit
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
+        header.isHidden = category == "hooks" && entries.count == 1
     }
     @objc private func goBack() {
         guard entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
