@@ -43,8 +43,8 @@ import AppKit
         manageWorktrees.target = self; manageWorktrees.action = #selector(openWorktrees)
         stageButton.action = #selector(stageFile); unstageButton.action = #selector(unstageFile); restoreButton.action = #selector(restoreFile); undoRestoreButton.action = #selector(undoRestore)
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
-        securityButton.action = #selector(checkSecurity)
-        securityButton.toolTip = "本机检查所选文件中的疑似凭据和危险代码模式"
+        securityButton.action = #selector(openSecurityOptions)
+        securityButton.toolTip = "静态检查、轻量语义检查与上次报告"
         dependencyButton.target = self
         dependencyButton.action = #selector(openDependencies)
         sourcePopup.addItems(withTitles: AgentGitSource.allCases.map(\.title)); sourcePopup.selectItem(at: AgentGitSource.allCases.firstIndex(of: source)!)
@@ -91,7 +91,7 @@ import AppKit
         commitButton.isEnabled = !value && writable() && [.uncommitted, .staged].contains(source) && review?.diff.isEmpty == false
         commitPushButton.isEnabled = commitButton.isEnabled
         pushButton.isEnabled = !value && initializeButton.isHidden
-        securityButton.isEnabled = !value && AgentCodeSecurity.sources.contains(source) && !table.selectedRowIndexes.isEmpty
+        securityButton.isEnabled = !value && git != nil
         dependencyButton.isEnabled = !value && store.task(taskID)?.workspace != nil
         let item = inspection?.paths.count == 1 ? changes.first(where: { $0.path == inspection?.paths.first }) : nil
         let columns = Array(item?.status ?? ""), current = !value && writable() && item != nil && !source.usesRevision && !columns.contains("U") && !["AA", "DD"].contains(item?.status ?? "")
@@ -224,22 +224,55 @@ import AppKit
             if !Task.isCancelled { setBusy(false) }
         }
     }
-    @objc private func checkSecurity() {
+    @objc private func openSecurityOptions() {
+        guard !busy else { return }
+        let available = AgentCodeSecurity.sources.contains(source) && !table.selectedRowIndexes.isEmpty
+        let menu = NSMenu()
+        for (title, action, enabled) in [
+            ("静态检查所选文件", #selector(checkSecurity), available),
+            ("轻量语义检查所选文件", #selector(checkSemanticSecurity), available),
+            ("上次语义报告", #selector(showPreviousSemanticReport), (try? git?.previousSemanticReport()) != nil)
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        menu.autoenablesItems = false
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: securityButton.bounds.maxY), in: securityButton)
+    }
+    @objc private func checkSecurity() { runSecurity(mode: .patterns) }
+    @objc private func checkSemanticSecurity() { runSecurity(mode: .semantic) }
+    @objc private func showPreviousSemanticReport() {
+        guard !busy, let git else { return }
+        do { presentSecurityReport(try git.previousSemanticReport(), git: git) }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    private func runSecurity(mode: AgentSecurityMode) {
         guard !busy, let git, let window, window.attachedSheet == nil, AgentCodeSecurity.sources.contains(source) else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
         guard (1...50).contains(selected.count) else { state.stringValue = "请选择 1 至 50 个文件"; return }
         setBusy(true)
-        state.stringValue = "正在检查 \(selected.count) 个文件…"
+        state.stringValue = mode.title + " · \(selected.count) 个文件…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let report = try await git.checkCodeSecurity(source: source, requested: selected)
+                let report = try await git.checkCodeSecurity(source: source, requested: selected, mode: mode)
                 try Task.checkCancellation()
                 setBusy(false)
                 state.stringValue = report.summary
-                let controller = AgentCodeSecurityWindow(report: report, onLocate: { [weak self] finding in
+                presentSecurityReport(report, git: git)
+            } catch {
+                guard !Task.isCancelled else { return }
+                state.stringValue = error.localizedDescription
+                setBusy(false)
+            }
+        }
+    }
+    private func presentSecurityReport(_ report: AgentSecurityReport, git: AgentGit) {
+        guard let window, window.attachedSheet == nil else { return }
+        let controller = AgentCodeSecurityWindow(report: report, onLocate: { [weak self] finding in
                     self?.locateSecurityFinding(finding, report: report)
-                }, onFix: writable() ? { [weak self] finding in
+                }, onFix: writable() && report.mode != .semantic ? { [weak self] finding in
                     guard let self else { throw PetError("Git 窗口已关闭") }
                     let checkpoint = try git.applySecurityFix(finding, report: report)
                     restoreID = checkpoint
@@ -251,12 +284,6 @@ import AppKit
                 } : nil)
                 securityWindow = controller
                 if let sheet = controller.window { window.beginSheet(sheet) { [weak self] _ in self?.securityWindow = nil } }
-            } catch {
-                guard !Task.isCancelled else { return }
-                state.stringValue = error.localizedDescription
-                setBusy(false)
-            }
-        }
     }
     private func locateSecurityFinding(_ finding: AgentSecurityFinding, report: AgentSecurityReport) {
         guard !busy, source == report.source, let row = changes.firstIndex(where: { $0.path == finding.path }) else {

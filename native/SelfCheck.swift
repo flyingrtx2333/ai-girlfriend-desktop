@@ -31,6 +31,7 @@ import WebKit
         if CommandLine.arguments.contains("--appshot-check") { await runAgentAppShotCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--code-security-check") { await runCodeSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
             // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
             var requests = 0
@@ -57,6 +58,11 @@ import WebKit
                 if CommandLine.arguments.contains("--dependency-security-fixtures") {
                     guard !attentionLiveUI else { throw PetError("依赖漏洞窗口验收不调用模型") }
                     let git = try await prepareDependencyCheck(output, tasks: tasks, expanded: false)
+                    control.showAgentTask(git.taskID)
+                }
+                if CommandLine.arguments.contains("--semantic-security-fixtures") {
+                    guard !attentionLiveUI else { throw PetError("语义检查窗口验收不调用模型") }
+                    let git = try await prepareSemanticSecurityCheck(output, tasks: tasks)
                     control.showAgentTask(git.taskID)
                 }
                 if CommandLine.arguments.contains("--terminal-panel-fixtures") {

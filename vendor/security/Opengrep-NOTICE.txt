@@ -1,0 +1,10 @@
+Opengrep 1.33.1
+https://github.com/opengrep/opengrep/releases/tag/v1.33.1
+
+This application invokes the unmodified Opengrep analysis core executable
+as a separate process. Opengrep is licensed under the GNU Lesser General
+Public License, version 2.1. See Opengrep-LICENSE.txt.
+
+Corresponding source and build instructions
+https://github.com/opengrep/opengrep/tree/v1.33.1
+https://github.com/opengrep/opengrep/archive/refs/tags/v1.33.1.tar.gz

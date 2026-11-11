@@ -1,6 +1,17 @@
 import Foundation
 
-struct AgentSecurityFinding: Encodable {
+enum AgentSecurityMode: String, Codable {
+    case patterns, semantic
+    var title: String { self == .semantic ? "轻量语义检查" : "静态检查" }
+}
+
+struct AgentSecurityLocation: Codable, Equatable {
+    let path: String
+    let line: Int
+    let label: String
+}
+
+struct AgentSecurityFinding: Codable {
     let path: String
     let line: Int
     let rule: String
@@ -8,25 +19,33 @@ struct AgentSecurityFinding: Encodable {
     let advice: String
     let highRisk: Bool
     fileprivate var falseOffset: Int? = nil
+    var trace: [AgentSecurityLocation]? = nil
 
     // Reports contain locations and rule metadata only.
-    private enum CodingKeys: String, CodingKey { case path, line, rule, title, advice, highRisk }
+    private enum CodingKeys: String, CodingKey { case path, line, rule, title, advice, highRisk, trace }
+
+    func at(_ location: AgentSecurityLocation) -> AgentSecurityFinding {
+        AgentSecurityFinding(path: location.path, line: location.line, rule: rule, title: title, advice: advice, highRisk: highRisk)
+    }
 }
 
-struct AgentSecurityReport: Encodable {
-    struct Skipped: Encodable { let path: String; let reason: String }
+struct AgentSecurityReport: Codable {
+    struct Skipped: Codable { let path: String; let reason: String }
     let source: AgentGitSource
     let findings: [AgentSecurityFinding]
     let scannedFiles: Int
     let skipped: [Skipped]
     fileprivate let hashes: [String: String]
+    var mode: AgentSecurityMode? = nil
+    var workspace: String? = nil
+    var created: Date? = nil
 
-    private enum CodingKeys: String, CodingKey { case source, findings, scannedFiles, skipped }
+    private enum CodingKeys: String, CodingKey { case source, findings, scannedFiles, skipped, hashes, mode, workspace, created }
 
     var sourceTitle: String { source == .staged ? "暂存区" : "工作区" }
     var summary: String {
         let result = scannedFiles == 0 ? "没有可检查的文本文件" : findings.isEmpty ? "未发现匹配项" : "\(findings.count) 项发现"
-        return "\(sourceTitle) · \(scannedFiles) 个文件 · " + result + (skipped.isEmpty ? "" : " · 跳过 \(skipped.count) 个")
+        return (mode == .semantic ? "轻量语义 · " : "") + "\(sourceTitle) · \(scannedFiles) 个文件 · " + result + (skipped.isEmpty ? "" : " · 跳过 \(skipped.count) 个")
     }
     func canFix(_ finding: AgentSecurityFinding) -> Bool { source != .staged && finding.falseOffset != nil }
 }
@@ -128,7 +147,7 @@ enum AgentCodeSecurity {
 }
 
 @MainActor extension AgentGit {
-    func checkCodeSecurity(source: AgentGitSource, requested: [String]) async throws -> AgentSecurityReport {
+    func checkCodeSecurity(source: AgentGitSource, requested: [String], mode: AgentSecurityMode = .patterns) async throws -> AgentSecurityReport {
         try validateWorkspace()
         guard AgentCodeSecurity.sources.contains(source) else { throw PetError("请选择工作区或暂存区") }
         let selected = try paths(requested, allowRecordedTypes: true)
@@ -153,6 +172,10 @@ enum AgentCodeSecurity {
         var total = 0
         for (index, path) in selected.enumerated() {
             try Task.checkCancellation()
+            if mode == .semantic && !AgentSemanticSecurity.supports(path) {
+                skipped.append(.init(path: path, reason: "语义检查支持 Python 和 JavaScript／TypeScript"))
+                continue
+            }
             let url = files.root.appendingPathComponent(path)
             let data: Data
             do {
@@ -184,9 +207,34 @@ enum AgentCodeSecurity {
             try copies.writeData(data, to: copies.root.appendingPathComponent(alias), permissions: 0o600)
             aliases[alias] = path; hashes[path] = AgentFiles.hash(data); total += data.count
         }
-        let findings = try await AgentCodeSecurity.findings(snapshot: snapshot, scratch: scratch, paths: aliases)
+        let findings: [AgentSecurityFinding]
+        var scanned = aliases.count
+        if mode == .semantic {
+            let result = try await AgentSemanticSecurity.scan(snapshot: snapshot, scratch: scratch, paths: aliases)
+            findings = result.findings
+            skipped += result.skipped
+            scanned = result.scanned
+        } else {
+            findings = try await AgentCodeSecurity.findings(snapshot: snapshot, scratch: scratch, paths: aliases)
+        }
         try validateWorkspace()
-        return AgentSecurityReport(source: source, findings: findings, scannedFiles: aliases.count, skipped: skipped, hashes: hashes)
+        let report = AgentSecurityReport(source: source, findings: findings, scannedFiles: scanned, skipped: skipped, hashes: hashes,
+            mode: mode, workspace: files.root.path, created: Date())
+        if mode == .semantic {
+            let saved = try AgentFiles(workspace: scratchReportDirectory().path)
+            try saved.writeData(JSONEncoder().encode(report), to: saved.root.appendingPathComponent("semantic-report.json"), permissions: 0o600)
+        }
+        return report
+    }
+
+    private func scratchReportDirectory() throws -> URL { try store.backupDirectory(taskID).deletingLastPathComponent() }
+    func previousSemanticReport() throws -> AgentSecurityReport {
+        try validateWorkspace()
+        let saved = try AgentFiles(workspace: scratchReportDirectory().path)
+        let bytes = try saved.readData(saved.literalURL("semantic-report.json"), maximum: 2_000_000)
+        let report = try JSONDecoder().decode(AgentSecurityReport.self, from: bytes)
+        guard report.workspace == files.root.path, report.mode == .semantic else { throw PetError("报告属于其他项目") }
+        return report
     }
 
     func securityIndexEntries(_ pathspecs: [String], literalPaths: Bool = true) async throws -> [String: String] {

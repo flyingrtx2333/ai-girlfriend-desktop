@@ -30,6 +30,13 @@ const releases = [
     binary: 'b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3',
     format: 'binary',
   },
+  {
+    name: 'opengrep-core',
+    url: 'https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep-core_osx_aarch64.tar.gz',
+    archive: 'cce019aba35ba0c79f74b22fc9e2f8562ca651d76d5a04d7dcc440f967e45930',
+    binary: 'db74ac70c0fa96f853594359fef8255dff82b9331cb07d67015c5438764d9684',
+    format: 'tar',
+  },
 ];
 
 export async function prepareSecurity() {

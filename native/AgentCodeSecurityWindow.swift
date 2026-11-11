@@ -7,6 +7,7 @@ import AppKit
     private let state = NSTextField(labelWithString: "")
     private let locate = NSButton(title: "定位差异", target: nil, action: nil)
     private let copy = NSButton(title: "复制位置", target: nil, action: nil)
+    private let flow = NSPopUpButton()
     private let fix = NSButton(title: "启用证书校验…", target: nil, action: nil)
     private let onLocate: (AgentSecurityFinding) -> Void
     private let onFix: ((AgentSecurityFinding) throws -> Void)?
@@ -17,7 +18,7 @@ import AppKit
         self.onLocate = onLocate
         self.onFix = onFix
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 380), styleMask: [.titled], backing: .buffered, defer: false)
-        window.title = "代码安全检查"
+        window.title = report.mode == .semantic ? "轻量语义检查" : "代码安全检查"
         window.isReleasedWhenClosed = false
         super.init(window: window)
 
@@ -46,8 +47,10 @@ import AppKit
         done.keyEquivalent = "\r"
         locate.target = self; locate.action = #selector(locateFinding)
         copy.target = self; copy.action = #selector(copyLocation)
+        flow.setAccessibilityLabel("数据流位置")
+        flow.widthAnchor.constraint(lessThanOrEqualToConstant: 245).isActive = true
         fix.target = self; fix.action = #selector(fixFinding)
-        let buttons = NSStackView(views: [locate, copy, fix, NSView(), done])
+        let buttons = NSStackView(views: [flow, locate, copy, fix, NSView(), done])
         buttons.spacing = 8
 
         let content = NSView()
@@ -105,8 +108,17 @@ import AppKit
         locate.isEnabled = finding != nil
         copy.isEnabled = finding != nil
         fix.isHidden = !(finding.map { report.canFix($0) } ?? false) || onFix == nil
+        flow.removeAllItems()
+        let trace = finding?.trace ?? []
+        flow.isHidden = trace.isEmpty
+        flow.addItems(withTitles: trace.map { "\($0.label) · \($0.path):\($0.line)" })
+        if !trace.isEmpty { flow.selectItem(at: trace.count - 1) }
         if let finding { detail.stringValue = finding.advice + "\n" + finding.rule }
         else { detail.stringValue = "" }
+    }
+    private var selectedLocation: AgentSecurityLocation? {
+        guard let trace = finding?.trace, trace.indices.contains(flow.indexOfSelectedItem) else { return nil }
+        return trace[flow.indexOfSelectedItem]
     }
 
     @objc private func closeSheet() {
@@ -115,12 +127,13 @@ import AppKit
     @objc private func locateFinding() {
         guard let finding else { return }
         closeSheet()
-        onLocate(finding)
+        onLocate(selectedLocation.map(finding.at) ?? finding)
     }
     @objc private func copyLocation() {
         guard let finding else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("\(finding.path):\(finding.line)", forType: .string)
+        let location = selectedLocation
+        NSPasteboard.general.setString("\(location?.path ?? finding.path):\(location?.line ?? finding.line)", forType: .string)
         state.stringValue = "已复制文件位置"
     }
     @objc private func fixFinding() {
