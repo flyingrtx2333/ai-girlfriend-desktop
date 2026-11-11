@@ -1788,3 +1788,20 @@ DOCX／XLSX／PPTX 进入当前任务的独立文件标签页，复用真实编�
 最终冻结 **291 份原生输入及 2 份配套配置／脚本**，140 份办公资源与原验收资源一致。签名前 SHA256 `04c6eedb1534a5a7d90267e79ef2e0a252edaa33ce0dbb6f45a9c093385ae863`，显式本地签名后 `b930a7ec25a09884bebb32ff2a17cfa6d6be6bec2e85060ce3cac3b5efb68f13`；签名详情为 `Signature=adhoc`，严格核对通过，无需私人证书或钥匙串解锁。源码、构建、程序、缓存、临时文件与证据留在外置项目目录；日常包仍为 `bf6a50e` 的原程序及签名，尚未替换。
 
 证据：`evidence/agent/worktree-settings-lce_zq3i/acceptance-index.json`、`settings-final-01/source-staged-proof.json`、`settings-final-01/signature-details.txt`、`profile-preservation-proof.json`、`ui-before-apply-proof.json`、`ui-final-proof.json`、`ui-reopen-proof.json`、`originals-current.json`、`cua-final/` 与 `cua-reopen/`。最终页面报告在 `evidence/agent/worktree-workspace-command-687Kdy/`，原设置和保留检查在本轮目录的 `settings-final-01-settings/`、`settings-final-01-retention/`，实际窗口原资料为 `worktree-workspace-command-v9Yh1O/`。复验沿用 `BLUEFATFISH_APP=<独立验收包路径> npm run native:check-worktree-workspace`，不调用模型；完整剩余项继续按 [Qoder TODO](QODER-PARITY-TODO.md) 推进。
+
+
+## 视频任务文件标签页（2026-11-12）
+
+任务中的 MP4／WebM 产物、文件来源与 Markdown 工作区视频链接进入所属任务的独立文件标签页，复用原只读播放器、工作区边界、快照和系统控件。各任务及视频保留独立播放器与快照；同次运行中切换任务、标签页或收起工作区会暂停并保留进度。明确选择“新窗口”才打开独立播放器，离开所属页面时同样暂停。关闭文件释放本页及独立窗口的预览。视频选择不再经过 2MB 文本读取限制，原 500MiB 视频上限、敏感路径与外链限制、禁止网络及原生接口的边界保持。
+
+最终同一优化程序通过 **208 项**相关检查：视频工作区 59、原播放器核心与预检 17、记录／文本工作区 132。原播放器的 17 项是核心预检，未将它原有的整套 GUI 验收标记为通过；实际窗口流程另见本节。公开 MP4／WebM 的原始字节、时长与 960×540 画面由独立解码器核对；超过 2MB 的 MP4 在原视频后附加有效 free box，实际文件为 2,328,383 字节，保留真实视频流。另验损坏文件、只读文件、Ask 只读与 Agent 编辑草稿、跨任务快照隔离、刷新后的原件哈希和关闭释放。全部源文件和两份任务输入独立核对，本轮模型请求 0。
+
+最终实际窗口完成 MP4／WebM 播放、中途暂停、系统全屏与返回、记录文件菜单、Markdown 链接、系统文件面板选择大视频、任务往返及进度保持、明确新窗口、800×550 浅色窄窗口和关闭标签。读取实际播放器的解码帧、进度、暂停及全屏状态，并核对快照的真实外置路径、400 权限与源哈希。系统文件面板完成时仍附着在宿主，下一轮主队列才脱离；因此复用已有延后打开逻辑，脱离后再进入文件标签页。最终窗口及同版本重开共 **33 次 CUA 调用、66 份原始记录、8 张原始 JPEG**；README 两张直接复制本最终程序的原始图片字节。
+
+实际窗口发现记录文件菜单选择说明文档时，会先刷新并触发第一个视频，再加载选中的文档，导致页面跳错。改为刷新目录时直接选择请求的条目，并新增同分区与跨分区两项回归；最终程序在同一原资料中复验菜单和 WebM 链接。另发现本机 Foundation 临时目录未使用传入的外置 TMPDIR，现将验收视频快照明确放入独立验收目录的 tmp，日常运行行为保持。旧候选的当前临时预览经实际关闭释放，原始路径核对和失败记录保留。早期草稿检查误在 Ask 模式尝试编辑，只读限制正确；检查改为在 Agent 任务执行未保存导航，同时保留 Ask 拒写检查。被替代候选、编译中断／失败、辅助功能瞬时错误及修正前窗口记录全部保留，不计入最终程序的通过数。
+
+最终冻结 **292 份原生输入及 2 份配套配置／脚本**，140 份办公资源保持。签名前 SHA256 `5ea123b3ad995198cebb02565ceea72219fe1a0ce1552dba4f3cba8637a774f7`，显式本地签名后 `5c7b5df3ed1e825fbdb548c397210714870e7438e09af840060cd8e19a46e6ab`；源码逐项与暂存区一致，严格签名验证通过，详情为 `Signature=adhoc`。独立验收入口不查找私人证书、不调用私人签名身份，无需钥匙串解锁；日常签名入口保持。源码、构建、应用、快照、缓存、临时文件和证据留在外置项目目录。
+
+升级到最终程序前，原 13 份持久文件逐字节及权限保持；完成窗口操作后，使用同一最终程序正常退出并重开，13 份文件再次逐字节及权限一致，任务草稿、文件、历史与已保存浅色外观均保留。重开入口显式打开原 MP4；没有声称自动恢复文件标签或播放进度。9 份日常配置／聊天资料、23 份旧真实模型原件及日常程序保持；日常包仍为 `bf6a50e`，未替换。知识中心独立阅读页的视频仍沿用原独立播放器；浏览器、标签页持久恢复、统一组件及日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)，P0／P1／P2 的完整目标尚未完成。
+
+证据：`evidence/agent/video-workspace-viigww95/acceptance-index.json`、`final-05/source-staged-proof.json`、`final-05/signature-details.txt`、`ui-final-proof.json`、`final05-upgrade-proof.json`、`restart-preservation-proof.json`、`originals-current.json`、`cua-final/` 与 `cua-reopen/`。最终原生报告位于 `video-workspace-command-bQXBq2/`、`task-workspace-command-gdnBc5/` 及本轮目录的 `final-05-video-core/`，实际窗口原资料为 `video-workspace-command-m5rmiA/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-video-workspace -- --media-directory <已独立核对的公开视频目录>`；禁止模型请求，`--manual-ui` 与 `--reopen <原目录>` 保留实际窗口和原资料。

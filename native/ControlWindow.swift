@@ -2310,11 +2310,11 @@ final class FormDocumentView: NSView {
     @objc internal func showKnowledgeLibrary() { _ = showKnowledgeCenter(root: "library") }
     @objc func openAgentMemory() { companion?.ensureAgent(); showSettingsCategory("memory") }
     @objc func openAttentionSettings() { showSettingsCategory("attention") }
-    private func openAgentRecordItem(section: Int, value: String) {
+    internal func openAgentRecordItem(section: Int, value: String) {
         if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
             Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
-        if section == 1, !value.hasPrefix("canvas://"), let task = currentAgentTask, let files = try? AgentFiles(workspace: task.workspace), let file = try? files.resolve(value), !AgentVideoSnapshot.supports(file) { showTaskDocument(file.path); return }
+        if section == 1, !value.hasPrefix("canvas://"), let task = currentAgentTask, let files = try? AgentFiles(workspace: task.workspace), let file = try? files.resolve(value) { showTaskDocument(file.path); return }
         presentAgentRecords(section: section)
         if section == 6 { (knowledgePageHost.currentController as? AgentRecordWindow)?.selectItem(section: section, value: value) }
         else { (taskWorkspace.rootController(.records) as? AgentRecordWindow)?.selectItem(section: section, value: value) }
@@ -2338,7 +2338,10 @@ final class FormDocumentView: NSView {
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path)
             guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
             let root = AgentTaskWorkspace.Root.document(file.path)
-            if taskWorkspace.rootController(root) == nil { _ = try files.readData(file, maximum: 2_000_000) }
+            if taskWorkspace.rootController(root) == nil {
+                if AgentVideoSnapshot.supports(file) { guard try files.entryMetadata(file).kind == "file" else { throw PetError("视频不存在或不是普通文件") } }
+                else { _ = try files.readData(file, maximum: 2_000_000) }
+            }
             if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
             guard taskWorkspace.show(taskID: id, root: root, make: { preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true) }) else { return }
             try (taskWorkspace.rootController(root) as? AgentRecordWindow)?.openWorkspaceDocument(file.path)
@@ -2367,6 +2370,12 @@ final class FormDocumentView: NSView {
         let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly, taskHosted: taskHosted, documentOnly: documentOnly)
         record.onAddSelection = { [weak self] selection in
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
+        }
+        if taskHosted {
+            record.onOpenVideo = { [weak self] file in
+                guard let self, self.agentTaskID == id else { throw PetError("请在原任务打开视频") }; self.showTaskDocument(file.path)
+            }
+            record.onChooseWorkspaceFile = { [weak self] in guard let self, self.agentTaskID == id else { return }; self.chooseTaskDocument() }
         }
         record.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
         record.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }

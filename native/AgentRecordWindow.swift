@@ -16,6 +16,10 @@ import UniformTypeIdentifiers
         markdown.onAddSelection = onAddSelection; sourceSelection.onAdd = onAddSelection
         markdown.canAddSelection = { [weak self] in self?.canAddSelection == true }; sourceSelection.canAdd = markdown.canAddSelection
     } }
+    var onOpenVideo: ((URL) throws -> Void)? { didSet {
+        if onOpenVideo != nil, taskHosted, !documentOnly, let file = openedFile, AgentVideoSnapshot.supports(file) { open.title = "打开标签页" }
+    } }
+    var onChooseWorkspaceFile: (() -> Void)?
     private var canAddSelection: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && task.kind != "hook" && !task.isProjectDocumentation && task.agent?.ownerID == nil && task.automation == nil }
     private let markdown = AgentMarkdownReader(), viewer = NSScrollView(), video = AgentVideoPreview()
     private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
@@ -150,9 +154,9 @@ import UniformTypeIdentifiers
     func selectItem(section: Int, value: String) {
         if section == sections.selectedSegment, value == selection { return }
         guard canLeave() else { return }
-        sections.selectedSegment = min(6, max(0, section)); refresh()
+        sections.selectedSegment = min(6, max(0, section)); refreshCatalog(selecting: value)
         if section == 6 { _ = wikiTree.select(value); return }
-        if let index = items.firstIndex(where: { $0.value == value }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); table.scrollRowToVisible(index) }
+        if let index = items.firstIndex(where: { $0.value == value }) { table.scrollRowToVisible(index) }
     }
     func selectSection(_ section: Int) { guard sections.selectedSegment != section else { return }; sections.selectedSegment = min(6, max(0, section)); refresh() }
     func openWorkspaceDocument(_ path: String) throws {
@@ -183,9 +187,12 @@ import UniformTypeIdentifiers
     @objc private func toggleTaskFiles() { filesRequested.toggle(); pageDidLayout() }
     func prepareWorkspaceNavigation() -> Bool {
         guard !saving else { state.stringValue = "正在保存…"; return false }
-        do { try markdown.finishEditing(); video.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
+        do { try markdown.finishEditing(); video.pause(); videoWindow?.preview.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     @objc private func refresh() {
+        refreshCatalog(selecting: nil)
+    }
+    private func refreshCatalog(selecting preferred: String?) {
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
@@ -218,7 +225,7 @@ import UniformTypeIdentifiers
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         updateTaskItemPicker()
         if sections.selectedSegment == 6 { if let selected = wikiTree.selectedDocument { _ = wikiTree.select(selected, notify: false); loadSelection(selected) } }
-        else if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        else if !items.isEmpty { table.selectRowIndexes(IndexSet(integer: items.firstIndex(where: { $0.value == preferred }) ?? 0), byExtendingSelection: false) }
     }
     private func refreshWikiCatalog() {
         guard sections.selectedSegment == 6, store.task(taskID) != nil else { return }
@@ -577,6 +584,10 @@ import UniformTypeIdentifiers
     }
     private func showVideo(_ file: URL, files: AgentFiles, separate: Bool = false) throws {
         guard try files.resolve(file.path) == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能预览此视频路径") }
+        if taskHosted, !documentOnly, !separate, let onOpenVideo {
+            openedFile = file; text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "打开标签页"
+            try onOpenVideo(file); return
+        }
         if separate {
             video.pause(); videoWindow?.close(); videoWindow = AgentVideoWindow(file: file, files: files, validate: videoScope(files))
             videoWindow?.showWindow(nil); videoWindow?.window?.makeKeyAndOrderFront(nil)
@@ -624,6 +635,7 @@ import UniformTypeIdentifiers
             if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url); return }
             guard let workspace = store.task(taskID)?.workspace, let file = markdownFile else { return }
             let files = try AgentFiles(workspace: workspace), target = try AgentMarkdownDocument.target(url, document: file, files: files)
+            if taskHosted, AgentVideoSnapshot.supports(target), let onOpenVideo { try onOpenVideo(target); return }
             if let row = items.firstIndex(where: { (try? files.resolve($0.value).path) == target.path }) {
                 guard canLeave() else { return }
                 if sections.selectedSegment == 6 { _ = wikiTree.select(items[row].value) }
@@ -722,6 +734,9 @@ import UniformTypeIdentifiers
     }
     @objc private func openItem() {
         guard let value = selection else { return }
+        if taskHosted, !documentOnly, let onOpenVideo, let file = openedFile, AgentVideoSnapshot.supports(file) {
+            do { try onOpenVideo(file) } catch { state.stringValue = error.localizedDescription }; return
+        }
         if !video.isHidden, let file = openedFile, let task = store.task(taskID) {
             do { try showVideo(file, files: AgentFiles(workspace: task.workspace), separate: true) } catch { state.stringValue = error.localizedDescription }; return
         }
@@ -748,6 +763,7 @@ import UniformTypeIdentifiers
         load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func chooseOffice() {
+        if taskHosted, let onChooseWorkspaceFile { onChooseWorkspaceFile(); return }
         guard let window = presentingWindow, let workspace = store.task(taskID)?.workspace, canLeave() else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
         panel.beginSheetModal(for: window) { [weak self] response in
@@ -796,10 +812,18 @@ import UniformTypeIdentifiers
     override func settingsWillLeave() { closeContent() }
     func windowWillClose(_ notification: Notification) { closeContent() }
     func videoPreviewReadback() async -> [String: Any] {
-        guard CommandLine.arguments.contains("--video-preview-check") else { return [:] }
-        var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""
+        guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }
+        var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""; result["openTitle"] = open.title
         if let videoWindow { result["separateWindowVisible"] = videoWindow.window?.isVisible == true; result["separatePlayer"] = await videoWindow.preview.checkState() }
         return result
+    }
+    func checkVideoWorkspace(action: String = "", time: Double? = nil, link: URL? = nil) async -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        if let link { openDocumentLink(link) }
+        if action == "new-window" || action == "open" { openItem() }
+        if action == "refresh" { await video.checkWorkspace(action: "refresh") }
+        if let time { await video.checkWorkspace(time: time) }
+        return await videoPreviewReadback()
     }
     func markdownEditingReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled || AgentKnowledgePageHost.readbackEnabled || ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--repo-wiki-overview-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
@@ -818,6 +842,7 @@ import UniformTypeIdentifiers
         var value = await markdownEditingReadback()
         value["taskID"] = taskID; value["section"] = sections.selectedSegment; value["selection"] = selection ?? ""; value["file"] = openedFile?.path ?? ""; value["state"] = state.stringValue
         value["taskHosted"] = taskHosted; value["documentOnly"] = documentOnly; value["visible"] = isPageVisible; value["items"] = items.map { ["title": $0.title, "value": $0.value] }
+        if !video.isHidden { value["video"] = await videoPreviewReadback() }
         value["checks"] = ["documentUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow && presentingWindow?.isVisible == true,
             "recordWindowStaysHidden": window?.isVisible != true, "documentHasUsableWidth": taskFileArea.bounds.width - (taskNavigation.isHidden || compactTaskLayout == true ? 0 : taskNavigation.bounds.width + 12) >= 300,
             "documentHasUsableHeight": taskFileArea.bounds.height >= 140,
@@ -826,7 +851,7 @@ import UniformTypeIdentifiers
         return value
     }
     func checkTaskDocument(text value: String? = nil, action: String? = nil) async {
-        guard CommandLine.arguments.contains("--task-workspace-check") else { return }
+        guard ["--task-workspace-check", "--video-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
         if let value, text.isEditable { displayMode.selectedSegment = 1; switchDocumentMode(); text.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: text)) }
         if action == "save" { saveFile(); await load?.value }
         else if action == "compare" { presentConflict() }

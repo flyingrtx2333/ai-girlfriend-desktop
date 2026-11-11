@@ -15,7 +15,7 @@
 - 自动化计划、运行记录及编辑已迁入工作台；实际新建、归档恢复、会话草稿配置与保存、原任务输入保留及重开已验。修正版通过 58 项页面、43 项收件箱回归、26 项原自动化核心及 30 项草稿检查，本轮模型请求 0；日常发布仍待完成。
 - 知识库、Repo Wiki 目录、Wiki 规划、卡片、检索和来源已迁入主内容页。页内创建、实际文件导入、文档与卡片保存、规划冲突、未保存保护、窄窗口及浅深色已验；同一版本重开后 54 份持久文件保持。118 项页面、30 项相关设置及 26 项知识库核心检查通过，本轮模型请求 0；日常发布仍待完成。
 
-- Git 审阅与推送等操作已进入任务工作区，长远端表单改为页内；原 Git 快照、权限、提交钩子与推送核对继续复用。正常分栏及可用宽度不足时的整块工作面、原任务输入与安全报告定位均有实际窗口证据，任务记录、上下文／回顾／请求记录和 Markdown／文本已接入各任务独立的标签页；文件比较使用原标签页的子页面。切换任务和标签页保留未保存草稿，关闭文件保留明确确认。Office 与 Canvas 已完成实际窗口保存、打包与同版本重开；任务内工作树创建／管理、页内回收审阅及设置中的全局管理入口已进入候选。视频与浏览器的完整整合仍待推进。
+- Git 审阅与推送等操作已进入任务工作区，长远端表单改为页内；原 Git 快照、权限、提交钩子与推送核对继续复用。正常分栏及可用宽度不足时的整块工作面、原任务输入与安全报告定位均有实际窗口证据，任务记录、上下文／回顾／请求记录和 Markdown／文本已接入各任务独立的标签页；文件比较使用原标签页的子页面。切换任务和标签页保留未保存草稿，关闭文件保留明确确认。Office 与 Canvas 已完成实际窗口保存、打包与同版本重开；任务内工作树创建／管理、页内回收审阅及设置中的全局管理入口已进入候选。任务视频的独立文件标签页也已验收；浏览器和知识中心独立阅读页面的视频整合仍待推进。
 
 “已验核心”表示下面所列的实际本机流程已有证据；每行的剩余项仍属于完整目标。安装状态以对应发布记录为准。
 
@@ -36,6 +36,7 @@
 - [x] **Office 与 Canvas 产物标签页候选**：三种办公文件各用独立文件标签页，画布按任务与文档保留编辑器，Skill 打包在原画布内进入与返回。实际 Word／表格／幻灯片输入、快捷键保存和副本分离、跨任务草稿、画布交互、未保存时继续编辑、真实打包、浅深色及窄窗口已验。重开后 30 份持久文件的权限保持、29 份字节一致，仅任务索引变化；原任务和版本均保留。日常发布与标签页持久恢复待完成。
 - [x] **任务内工作树页面候选**：创建、起点与修改预览、列表、关联任务及回收记录进入原任务工作区，回收／恢复改为页内审阅后确认。任务内阶段最终程序通过 183 项页面、19 项创建核心、29 项回收恢复核心、87 项 Git 和 132 项记录／文本检查，共 450 项；实际窗口的首次布局、放大还原、任务往返、浅深色、800 点窗口和回收审阅已验。实际创建有前一候选窗口证据；指定临时记录的最终窗口回收／恢复点击待确认，日常发布待完成。
 - [x] **设置中的全局工作树管理候选**：「管理工作树…」进入设置右侧内容页，返回保留项目与未应用策略；离开保护、实际保存反馈、无工作区入口及关联任务跳转已验。最终同一优化程序通过 232 项工作树页面、47 项保留回收核心和 30 项设置检查，共 309 项；实际浅深色、800 点窗口及同版重开通过。12 份持久文件权限保持、10 份字节一致，全部任务正文和设置保留；日常发布待完成。
+- [x] **视频任务文件标签页候选**：MP4／WebM 产物、文件来源与 Markdown 链接进入所属任务的独立文件标签页，切换暂停并保留同次运行的进度，保留明确的新窗口操作。最终同一优化程序通过 59 项视频工作区、17 项原播放器核心及 132 项记录／文本检查，共 208 项；实际播放、暂停、系统全屏、文档菜单与链接、超过 2MB 的视频文件选择、任务往返、窄窗口和关闭释放已验。重开后 13 份原资料字节与权限一致；日常发布、标签页持久恢复及知识中心独立阅读页的视频整合待完成。
 - [ ] **整理对话框**：短确认保留明确的对象、影响与主次按钮；长配置使用页面或页内详情。知识版本选择、导入预览和恢复确认的长内容仍待迁入页内步骤。系统文件选择和系统授权沿用原生流程。
 - [ ] **完善导航细节**：设置项搜索直达、用户／项目范围切换、返回、未保存编辑保护、正确的保存反馈、切换页面保留任务草稿。
 - [x] 已验设置搜索直达连接器、Agent 未保存时继续编辑、团队子页面往返保留草稿、保存反馈及返回原任务保留未发送输入；退出重开后 24 份持久文件一致。
@@ -65,11 +66,12 @@
 | 任务记录、上下文、回顾与请求记录 | 当前任务 → 右侧工作区标签页 | 已迁入独立候选，日常待更新 | 更多执行记录定位与恢复流程 |
 | Markdown 与文本文件 | 当前任务 → 独立文件标签页；比较在原标签页内进入与返回 | 已迁入独立候选，日常待更新 | 复杂排版、更多编辑流程与标签页持久恢复 |
 | Office 与 Canvas | 当前任务 → 产物标签页；Skill 打包在画布页内进入与返回 | 已迁入独立候选并验收，日常待更新 | 更多办公流程、批注整合与标签页持久恢复 |
-| 视频与浏览器 | 当前任务 → 产物工作区 | 仍待完整整合 | 默认就地查看和编辑，保留明确的新窗口操作 |
+| 任务视频产物、来源与 Markdown 视频链接 | 当前任务 → 独立文件标签页 | 已迁入独立候选并验收，日常待更新 | 标签页持久恢复、知识中心独立阅读页的视频整合；视频保持只读 |
+| 浏览器及网页标注 | 当前任务 → 浏览器工作区及页内标注 | 仍待整合 | 默认就地查看与操作，保留明确的新窗口入口和原任务草稿 |
 | 删除、恢复、覆盖及执行授权 | 轻量确认框 | 保留确认，待统一样式 | 明确对象、影响、主次操作及键盘焦点 |
 | 系统文件选择和系统权限 | 系统原生面板 | 保留系统流程 | 核对返回、取消和错误反馈 |
 
-页面入口已在 `ControlWindow.swift` 及对应的 `AgentAttentionWindow`、`AgentAutomationWindow`、`AgentKnowledgeLibraryWindow`、`AgentGitWindow`、`AgentOfficeWindow`、`AgentCanvasWindow`、`AgentWorktreeWindow` 与 `AgentWorktreePolicyView` 中复核。设置、主内容页、任务工作区及日常发布分别记录完成状态；短确认的保留也不代表其样式已经验收。
+页面入口已在 `ControlWindow.swift` 及对应的 `AgentAttentionWindow`、`AgentAutomationWindow`、`AgentKnowledgeLibraryWindow`、`AgentGitWindow`、`AgentOfficeWindow`、`AgentCanvasWindow`、`AgentRecordWindow`、`AgentWorktreeWindow` 与 `AgentWorktreePolicyView` 中复核。设置、主内容页、任务工作区及日常发布分别记录完成状态；短确认的保留也不代表其样式已经验收。
 
 建议的设置分组：
 
@@ -93,7 +95,7 @@
 | Git 与工作树 | 多来源／并排差异、逐文件暂存与恢复、检查点、撤回、提交推送核心、工作树起点和修改带入、保留回收；任务内创建／管理、页内审阅和设置全局入口候选 | 指定临时记录的最终窗口回收／恢复点击、外部清理与其余创建／恢复场景继续完善 |
 | 模型与上下文 | BYOK、任务级模型选择、实际用量、上下文明细、压缩与任务回顾核心 | 托管模型／账号用量、云端监控；压缩后完成任务的边界继续验收 |
 | 搜索与浏览器 | 联网搜索、网页提取；本机多标签、表单交互、标注、截图视觉及相关审批 | 复杂检索质量、远程浏览器及更多完整业务流程 |
-| 附件与 Markdown | 文件拖入／粘贴／打开草稿、图片及 PDF 视觉、原编码保存、Markdown／Mermaid、正文／代码／表格编辑与冲突处理 | 统一产物工作区，其余格式与复杂编辑交付 |
+| 附件与 Markdown | 文件拖入／粘贴／打开草稿、图片及 PDF 视觉、原编码保存、Markdown／Mermaid、正文／代码／表格编辑与冲突处理；任务视频标签页及真实播放 | 其余格式与复杂编辑交付、知识中心独立阅读页的视频整合及标签页持久恢复 |
 | Office 与 Canvas | DOCX／XLSX／PPTX 本地读改存及阶段真实任务；Canvas 生成、修改、导出、快照和 Skill 复用；任务内产物标签页、页内打包及实际保存已验 | 更多办公与批注流程、组织发布、标签页持久恢复及其余统一体验 |
 | 记忆、规则与指令 | 记忆与项目指令核心；四类规则触发；用户／本机／嵌套指令和递归引用的原生与窗口流程 | 文件规则真实复验已读取两份来源，**最终答复仍未完成**；嵌套指令的真实模型遵循仍待验 |
 | 知识库、Wiki 与知识卡片 | 用户／项目资料库、索引、四页 Wiki 与递归目录、卡片生成／更新／英文／编辑等阶段流程；主内容页的目录、规划、卡片、检索与来源往返及保存已验 | 完整 Wiki 维护、复杂阅读排版、团队同步、长预览与恢复流程 |
@@ -117,7 +119,7 @@
 - [ ] 固定本机 Qoder 页面参考，给主窗口、设置、列表、详情、编辑和确认框建立统一样式规范。
 - [x] 落地设置分组导航及页面承载，迁入扩展／MCP／Hooks／智能体／团队／记忆与规则，并将需要我配置改为页内编辑。其余常规设置与统一主题继续下项。
 - [ ] 将需要我、自动化和知识中心改为连续的主内容页面，整理 Git 与产物右侧工作区。
-- [x] 需要我、自动化和知识中心主页面，以及 Git／记录／详情／文本／Office／Canvas 任务工作区已完成独立候选验收；任务内工作树页面已验至指定临时记录的最终窗口回收审阅，设置全局工作树入口也已迁入并验收。视频、浏览器等整合继续推进，日常包尚未包含这些迁移。
+- [x] 需要我、自动化和知识中心主页面，以及 Git／记录／详情／文本／Office／Canvas／视频任务工作区已完成独立候选验收；任务内工作树页面已验至指定临时记录的最终窗口回收审阅，设置全局工作树入口也已迁入并验收。浏览器、知识中心独立阅读页的视频与其余整合继续推进，日常包尚未包含这些迁移。
 - [ ] 完成同一套浅／深色、正常／窄窗口、键盘与未保存编辑保护验收。
 - [ ] 对齐主分支、签名验收包和日常安装包；逐项记录真正可用的入口和版本。
 - [x] 本轮已对齐 `bf6a50e` 的 282 份原生构建输入、已验生产程序与日常应用；正常日常启动及设置入口已验。其余页面的日常入口随改造继续核对。
@@ -156,6 +158,7 @@
 - 知识中心与来源页承载：[AgentKnowledgePages.swift](../native/AgentKnowledgePages.swift)、[AgentKnowledgePageCheck.swift](../native/AgentKnowledgePageCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-knowledge-page` 使用实际公开文件、手工导入和版本存储，禁止模型传输并保留独立记录。
 - 主内容入口：[ControlWindow.swift](../native/ControlWindow.swift)，`showAttentionPage`、`showAutomations`、`showAgentKnowledge`、`showKnowledgeLibrary`、`showAgentGit`。
 - 任务标签页与文件检查：[AgentTaskWorkspace.swift](../native/AgentTaskWorkspace.swift)、[AgentContextWindow.swift](../native/AgentContextWindow.swift)、[AgentRecordWindow.swift](../native/AgentRecordWindow.swift)、[AgentTaskWorkspaceCheck.swift](../native/AgentTaskWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-task-workspace` 使用公开文件和本机命令，禁止模型请求。
+- 视频任务标签页：[AgentVideoPreview.swift](../native/AgentVideoPreview.swift)、[AgentVideoWorkspaceCheck.swift](../native/AgentVideoWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-video-workspace -- --media-directory <已独立核对的公开视频目录>` 使用实际 MP4／WebM 与独立资料，禁止模型请求；`--manual-ui` 和 `--reopen <原目录>` 保留真实窗口与原资料。
 - Office 与画布产物：[AgentOfficeWindow.swift](../native/AgentOfficeWindow.swift)、[AgentCanvasWindow.swift](../native/AgentCanvasWindow.swift)、[AgentCanvasSkill.swift](../native/AgentCanvasSkill.swift)、[AgentArtifactWorkspaceCheck.swift](../native/AgentArtifactWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-artifact-workspace -- --python <外置 Python>` 使用公开文档和独立资料，不调用模型；`--manual-ui` 与 `--reopen <原目录>` 保留真实窗口和重开记录。
 - 工作树页面与全局策略入口：[AgentWorktreeCreationWindow.swift](../native/AgentWorktreeCreationWindow.swift)、[AgentWorktreeWindow.swift](../native/AgentWorktreeWindow.swift)、[AgentWorktreePolicyView.swift](../native/AgentWorktreePolicyView.swift)、[AgentWorktreeWorkspaceCheck.swift](../native/AgentWorktreeWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-worktree-workspace` 使用独立真实仓库并禁止模型请求；`--manual-ui` 与 `--reopen <原目录>` 保留实际窗口和原资料。
 - 主工作台组件：[AgentWorkbenchViews.swift](../native/AgentWorkbenchViews.swift)。

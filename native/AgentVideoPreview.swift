@@ -9,7 +9,13 @@ struct AgentVideoSnapshot: Sendable {
         guard supports(file), try files.resolve(file.path) == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能预览此视频路径") }
         let metadata = try files.entryMetadata(file)
         guard metadata.kind == "file" else { throw PetError("视频不存在或不是普通文件") }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bluefatfish-video-" + UUID().uuidString)
+        var temporary = FileManager.default.temporaryDirectory
+        if let index = CommandLine.arguments.firstIndex(of: "--check") {
+            guard CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少独立验收目录") }
+            temporary = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true).appendingPathComponent("tmp", isDirectory: true)
+            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let folder = temporary.appendingPathComponent("bluefatfish-video-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
             let local = try AgentFiles(workspace: folder.path), media = folder.appendingPathComponent("media." + file.pathExtension.lowercased())
@@ -107,12 +113,17 @@ struct AgentVideoSnapshot: Sendable {
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) { completionHandler(nil) }
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     func checkState() async -> [String: Any] {
-        guard CommandLine.arguments.contains("--video-preview-check") else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }
         await opening?.value
         var result: [String: Any] = ["file": source?.path ?? "", "sourceHash": snapshot?.hash ?? "", "snapshotFolder": snapshot?.folder.path ?? "", "webPresent": web != nil, "status": status.stringValue, "hidden": isHidden, "reloadEnabled": reload.isEnabled]
         result["previewFrame"] = NSStringFromRect(frame); result["surfaceBounds"] = NSStringFromRect(player.bounds); result["webFrame"] = web.map { NSStringFromRect($0.frame) } ?? ""
         if let web, let value = try? await web.evaluateJavaScript("(()=>{const v=document.getElementById('video');return v?{readyState:v.readyState,duration:Number.isFinite(v.duration)?v.duration:0,time:v.currentTime,paused:v.paused,ended:v.ended,width:v.videoWidth,height:v.videoHeight,clientWidth:v.clientWidth,clientHeight:v.clientHeight,viewportWidth:innerWidth,viewportHeight:innerHeight,error:v.error?.code??0,status:document.getElementById('state').textContent,controls:v.controls,frames:v.getVideoPlaybackQuality().totalVideoFrames,fullscreen:document.fullscreenElement===v,webkitFullscreen:v.webkitDisplayingFullscreen===true}:{};})()") as? [String: Any] { result["player"] = value }
         return result
+    }
+    func checkWorkspace(action: String = "", time: Double? = nil) async {
+        guard AgentTaskWorkspace.readbackEnabled else { return }; await opening?.value
+        if action == "refresh" { refresh(); await opening?.value }
+        if let time, time.isFinite, time >= 0 { _ = try? await web?.callAsyncJavaScript("document.getElementById('video').currentTime = time", arguments: ["time": time], in: nil, contentWorld: .page) }
     }
 }
 
@@ -122,7 +133,7 @@ struct AgentVideoSnapshot: Sendable {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = file.lastPathComponent; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let content = NSView(); window.contentView = content; content.addSubview(preview); preview.translatesAutoresizingMaskIntoConstraints = false
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content; content.addSubview(preview); preview.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([preview.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])
         preview.show(file: file, files: files, validate: validate)
     }
