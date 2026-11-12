@@ -69,6 +69,7 @@ import WebKit
                     if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     control.showAgentTask(id)
                 }
+                if CommandLine.arguments.contains("--plugin-review-fixtures") { _ = try AgentPluginReviewCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--attention-page-fixtures") { _ = try await prepareAttentionPageUI(output) }
                 if CommandLine.arguments.contains("--automation-page-fixtures") { _ = try await prepareAutomationPageUI(output) }

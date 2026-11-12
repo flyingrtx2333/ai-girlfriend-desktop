@@ -112,12 +112,15 @@ import AppKit
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12
         viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay; viewport.setAccessibilityLabel("设置内容")
         document.translatesAutoresizingMaskIntoConstraints = false; viewport.documentView = document
-        let column = NSStackView(views: [header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14
+        // Short pages fill the viewport; longer pages keep their own minimum
+        // height and scroll without imposing that height on the window.
+        let preferredHeight = document.heightAnchor.constraint(equalTo: viewport.contentView.heightAnchor); preferredHeight.priority = .defaultLow
+        let column = NSStackView(views: [header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14; column.distribution = .fill
         for view in [column, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor),
             header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 30), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
-            document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor),
+            document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor), preferredHeight,
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         updateHeader()

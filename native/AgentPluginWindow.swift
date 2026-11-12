@@ -62,6 +62,7 @@ import UniformTypeIdentifiers
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() { super.settingsDidAppear(); reload(select: selected?.id); presentingWindow?.makeFirstResponder(list) }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? items.count : entries.count + connectors.count + agents.count + hooks.count + rules.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let label = NSTextField(labelWithString: ""); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingTail
@@ -178,34 +179,23 @@ import UniformTypeIdentifiers
         do { review(try service.package(revision, of: selected), replacing: selected, restoring: true) }
         catch { state.stringValue = error.localizedDescription }
     }
-    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
-        guard let window = presentingWindow else { return }; let alert = NSAlert(); let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
-        alert.messageText = action + "「\(package.metadata.title)」？"
-        let version = activating ? package.metadata.version : installed.map { ($0.metadata.version.isEmpty ? "未标版本" : $0.metadata.version) + " → " + (package.metadata.version.isEmpty ? "未标版本" : package.metadata.version) } ?? package.metadata.version
-        let scope = installed?.workspace ?? installWorkspace
-        alert.informativeText = [scope.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户", version, package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · ") + (installed == nil || activating ? "" : "\n完成后停用；旧任务记录和本机配置保留，组件需重新选择及配置。")
-        alert.addButton(withTitle: activating ? "审阅并启用" : installed == nil ? "安装" : action + "并停用"); alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
-        var rows = package.receipt.components.map { ($0.kind == .skill ? "Skill · " : "命令 · ") + package.metadata.name + ":" + $0.name }
-        rows += package.mcpServers.map { "MCP · " + package.metadata.name + ":" + $0.key + "\n" + $0.destination + ($0.fields.isEmpty ? "" : "\n" + $0.fields.joined(separator: ", ")) }
-        rows += package.agents.map { "Agent · " + package.metadata.name + ":" + $0.key + "\n" + $0.summary + "\n\n" + $0.profile.instructions }
-        for config in package.hooks { for hook in config.preview { rows.append("Hook · " + package.metadata.name + ":" + hook.name + "\n" + hook.event.rawValue + "\n" + hook.display) } }
-        for rule in package.rules { rows.append("规则 · " + package.metadata.name + ":" + rule.key + "\n" + rule.trigger.title + (rule.patterns.isEmpty ? "" : " · " + rule.patterns.joined(separator: ", ")) + "\n\n" + rule.body) }
-        if let installed, !activating {
-            let old = installed.receipt.hashes, new = package.receipt.hashes
-            let changes = Set(old.keys).union(new.keys).sorted().filter { old[$0] != new[$0] }
-            rows.insert(changes.prefix(100).map { (old[$0] == nil ? "新增 · " : new[$0] == nil ? "移除 · " : "变更 · ") + $0 }.joined(separator: "\n") + (changes.count > 100 ? "\n另有\(changes.count - 100)项，完整内容保留在包内。" : ""), at: 0)
-        }
-        let text = NSTextView(); text.isEditable = false; text.font = .systemFont(ofSize: 12); text.string = rows.joined(separator: "\n\n"); text.autoresizingMask = [.width]; text.isVerticallyResizable = true; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel(installed == nil ? "待安装的插件组件" : "待更新的插件组件")
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420, height: min(240, CGFloat(text.string.components(separatedBy: "\n").count * 24 + 18)))); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }; guard response == .alertFirstButtonReturn else { reload(select: installed?.id); return }
-            do {
-                let item: AgentPluginInstallation
-                if let installed, activating { try service.setEnabled(installed, true); item = try service.installation(installed.id) }
-                else if let installed { item = try service.update(package, replacing: installed) } else { item = try service.install(package, workspace: installWorkspace) }
-                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?()
-            } catch { state.stringValue = error.localizedDescription }
-        }
+    func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
+        do {
+            let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
+            let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring, activating: activating, workspace: installed?.workspace ?? installWorkspace)
+            page.onApply = { [weak self] in
+                guard let self else { throw PetError("插件页面已关闭，请重新打开") }
+                if let installed, activating { try service.setEnabled(installed, true); return try service.installation(installed.id) }
+                if let installed { return try service.update(package, replacing: installed) }
+                return try service.install(package, workspace: installWorkspace)
+            }
+            page.onApplied = { [weak self] item in
+                guard let self else { return }
+                let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
+                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?(); presentingWindow?.makeFirstResponder(list)
+            }
+            presentSettingsChild(page)
+        } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func removePackage() {
         guard let item = selected, let window = presentingWindow else { return }; let alert = NSAlert(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除"); alert.addButton(withTitle: "取消")

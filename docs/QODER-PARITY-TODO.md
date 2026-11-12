@@ -28,6 +28,7 @@
 - [x] **统一设置壳**：左侧分组导航与搜索，右侧承载管理页面；列表、详情与编辑可连续完成，保存后留在原页。生产候选的原生、实际窗口及重开已验，已进入当前日常包。
 - [x] **迁入完整配置页面**：插件、Skills、指令、MCP、Hooks、智能体、团队、记忆与规则、需要我配置；实际页内保存、返回和配置保持已有证据。
 - [x] **设置创建与规则子页候选**：新建 Skill／指令和智能体 MCP 工具规则改为设置内的子页面；重名和无效输入留在原表单，未保存填写可继续编辑或取消。扩展创建后返回原文件编辑器，规则先进入智能体草稿再统一保存；模板直接载入可编辑草稿。最终同一优化程序通过 40 项管理页／表单与 45 项布局检查，共 85 项。实际全局 Skill、项目指令、正文保存、取消保护、模板编辑、规则应用、浅深色及 780×540 窗口已验；最终文件和重开窗口均核对唯一的 `echo → 禁止` 规则。两次同版本重开已验，最终重开及退出后 24 份资料字节与权限一致，原任务草稿保持，模型请求 0。首轮操作与逐步复验均保留在 `evidence/agent/settings-forms-d9k4m7p2`；日常程序及 10 份正式资料未变，日常发布待完成。
+- [x] **插件审阅子页候选**：安装、更新、历史恢复和项目启用由长确认框改为设置右侧子页面，逐项查看六类组件的完整定义、全部文件变化及前后正文，不再截断到 100 项。最终同一优化程序通过 67 项管理页／表单与 45 项布局检查，共 112 项；同时修正设置承载页高度不确定导致的列表布局歧义，长页保留滚动。实际目录选择、113 项变化的末项、取消后全部字节与权限不变、更新后停用、恢复原始文件、两个历史版本及项目本机审阅启用已验；浅深色、1200×774／780×540、列表键盘与原任务草稿通过。同一程序重开及正常退出后 480 份持久文件字节与权限一致，模型请求 0。失败诊断及最终证据保留在 `evidence/agent/plugin-review-r4n8v2c6`；日常应用原签名及 10 份正式资料未变，日常发布待完成。
 - [ ] **统一组件与主题**：字体、间距、分组卡片、图标、按钮、开关、输入框、表格、编辑器、状态、空态、加载和错误；补齐浅／深色、焦点、悬停及禁用状态。
 - [x] **外观基础**：跟随系统／浅色／深色、12／14／16／18 对话字号、动态配色和已有窗口即时重绘；双窗口、任务草稿与未保存编辑保留、Markdown／Git 浅深色及重开恢复已验。页面样式和终端画布的主题衔接继续逐项处理。
 - [ ] **整理主导航与任务工作区**：自动化、需要我、知识库、Repo Wiki 使用主内容页面；Git、执行详情、产物预览使用任务工作区或右侧面板。
@@ -70,6 +71,7 @@
 | MCP 资源、URI 模板与提示词 | 当前任务 → MCP 资料标签页 | 主流程、浅深色、窄窗口、关闭／收起焦点及同版重开已验 | 标签／未加入参数跨启动恢复及日常发布 |
 | 模型、快捷键、语音、桌宠、电脑操作、导入、归档 | 设置 → 对应右侧页面 | 已承载 | 统一表单、状态和保存行为 |
 | Skills、命令、插件、MCP | 设置 → 扩展管理；新建 Skill／指令进入子页面 | 已迁入，页内创建候选及保存／重开已验 | 列表、类型标签、输入与编辑器样式继续统一；创建子页的日常发布 |
+| 插件安装、更新、历史恢复与项目启用审阅 | 设置 → 扩展管理 → 审阅子页 | 全部变化、完整定义、前后正文、原有版本及本机审阅保护和实际窗口／重开已验 | 其余组件样式、更多生命周期场景及日常发布 |
 | Hooks 与处理器配置 | 设置 → Hooks | 已迁入并完成事件分组 | 其余组件和短确认样式 |
 | 自定义 Agent、团队 | 设置 → 智能体／智能体团队；MCP 工具规则进入子页面 | 已迁入，规则子页与模板直接编辑候选已验 | 表格、其余表单、成员编辑及状态样式；规则与模板改造的日常发布 |
 | 记忆、用户／项目规则、有效指令 | 设置 → 记忆与规则 | 已迁入 | 范围与来源展示、编辑器及键盘细节 |
@@ -89,7 +91,7 @@
 | 任务视频产物、来源与 Markdown 视频链接 | 当前任务 → 独立文件标签页 | 已迁入独立候选并验收，日常待更新 | 标签页持久恢复；视频保持只读 |
 | 知识中心正文、来源页中的视频链接与文件选择 | 知识中心 → 视频子页，逐级返回原文 | 正文与来源链接、首次焦点、实际播放和同版重开已验 | 文件选择实际入口及日常发布；视频保持只读 |
 | 浏览器及网页标注 | 当前任务 → 浏览器标签页；标注在原标签内进入与返回 | 已迁入独立候选并验收，日常待更新 | 更多网站业务、标签与未添加标注持久恢复；临时网站数据在关闭后清除 |
-| 删除、恢复、覆盖及执行授权 | 轻量确认框 | 保留确认，待统一样式 | 明确对象、影响、主次操作及键盘焦点 |
+| 删除、简短覆盖确认及执行授权 | 轻量确认框 | 保留确认，待统一样式 | 明确对象、影响、主次操作及键盘焦点 |
 | 系统文件选择和系统权限 | 系统原生面板 | 保留系统流程 | 核对返回、取消和错误反馈 |
 
 页面入口已在 `ControlWindow.swift` 及对应的 `AgentAttentionWindow`、`AgentAutomationWindow`、`AgentKnowledgeLibraryWindow`、`AgentGitWindow`、`AgentOfficeWindow`、`AgentCanvasWindow`、`AgentRecordWindow`、`AgentWorktreeWindow`、`AgentWorktreePolicyView`、`AgentBrowserWindow` 与 `AgentBrowserAnnotationWindow` 中复核。设置、主内容页、任务工作区及日常发布分别记录完成状态；短确认的保留也不代表其样式已经验收。
@@ -121,7 +123,7 @@
 | 记忆、规则与指令 | 记忆与项目指令核心；四类规则触发；用户／本机／嵌套指令和递归引用的原生与窗口流程 | 文件规则真实复验已读取两份来源，**最终答复仍未完成**；嵌套指令的真实模型遵循仍待验 |
 | 知识库、Wiki 与知识卡片 | 用户／项目资料库、索引、四页 Wiki 与递归目录、卡片生成／更新／英文／编辑等阶段流程；主内容页、完整导入／版本恢复、维护差异／规划、过期拦截及页内键盘流程已实现并有证据 | 首次无按键记录的跳转、完整 Wiki 生成维护效果、复杂阅读排版、团队同步与日常发布 |
 | Skills、命令、MCP、Hooks | 本地 Skills／命令、stdio／HTTP MCP、资源／提示词／图片、连接器问询；多类同步／后台 Hooks | MCP OAuth、更多连接器、完整会话与权限事件、部分模型处理器效果和演进建议 |
-| 插件 | 本地包／目录、项目范围、启用声明、ZIP 更新与历史恢复；插件 Agent 的读取／拒写及引用已有模型证据 | 市场发现／安装／更新、创建发布、其余组件和生命周期；部分项目插件的模型效果待验 |
+| 插件 | 本地包／目录、项目范围、启用声明、ZIP 更新与历史恢复；设置页内安装／更新／恢复／启用审阅、完整定义及全部变化候选已验；插件 Agent 的读取／拒写及引用已有模型证据 | 市场发现／安装／更新、创建发布、其余组件和生命周期；部分项目插件的模型效果及日常发布待验 |
 | 智能体与团队 | 自定义角色、模板、逐工具权限、本机团队核心、插件成员来源隔离；会话提案和表单保存／重开 | 模型实际生成角色、完整团队协作效果、云端与跨设备 |
 | 自动化与通知 | 本机定时、运行历史、应用内通知；会话计划提案、审阅保存、启用暂停及重开；主内容页的实际草稿配置与保存 | 模型实际生成计划并由定时器执行的完整流程；计划模板、系统通知授权验收、更多触发器和云端 |
 | AppShot 与电脑操作 | 图片／文字草稿、任务隔离、自身窗口与重开；指定窗口工具及独立授权入口 | 物理全局按键、外部窗口和真实系统应用、录制回放及更完整电脑操作 |
@@ -175,6 +177,7 @@
 - 设置创建及 MCP 规则子页：[AgentSettingsFormPages.swift](../native/AgentSettingsFormPages.swift)；[AgentSettingsFormCheck.swift](../native/AgentSettingsFormCheck.swift) 与 `npm run native:check-settings-pages` 核对实际保存、范围、错误保留、取消和模板草稿。
 - 外观配置、动态表面与相关检查：[AgentAppearance.swift](../native/AgentAppearance.swift)、[AgentAppearanceCheck.swift](../native/AgentAppearanceCheck.swift)。
 - 扩展列表与实际编辑逻辑：[AgentExtensionWindow.swift](../native/AgentExtensionWindow.swift)。
+- 插件安装、更新、历史恢复和项目启用审阅：[AgentPluginReviewPage.swift](../native/AgentPluginReviewPage.swift)、[AgentPluginWindow.swift](../native/AgentPluginWindow.swift)；[AgentPluginReviewCheck.swift](../native/AgentPluginReviewCheck.swift) 经 `npm run native:check-settings-pages` 核对实际文件、完整审阅、取消、过期拦截及范围，不请求模型。
 - 需要我主内容页：[AgentAttentionWindow.swift](../native/AgentAttentionWindow.swift)、[AgentAttentionPageCheck.swift](../native/AgentAttentionPageCheck.swift)；`npm run native:check-attention` 保留独立原生记录。
 - 自动化主内容页及页内编辑：[AgentAutomationWindow.swift](../native/AgentAutomationWindow.swift)、[AgentAutomationPageCheck.swift](../native/AgentAutomationPageCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-automation-page` 禁止模型传输并保留独立记录。
 - 知识中心与来源页承载：[AgentKnowledgePages.swift](../native/AgentKnowledgePages.swift)、[AgentKnowledgePageCheck.swift](../native/AgentKnowledgePageCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-knowledge-page` 使用实际公开文件、手工导入和版本存储，禁止模型传输并保留独立记录。
