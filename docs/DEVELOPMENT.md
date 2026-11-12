@@ -28,16 +28,15 @@ npm ci
 npm run dev
 ```
 
-原生构建与打开：
+原生开发构建：
 
 ```sh
 npm run native:build
-npm run native:open
 ```
 
-需 Apple 芯片、macOS 14+ 和 Swift 6.1 及以上的 Xcode 工具链。正式构建要求本机有效的 Apple 签名证书；多证书时通过 `BLUEFATFISH_SIGN_IDENTITY` 选择。构建先写入独立的 `build/native-staging-*`，完整签名验证通过后，核对原 bundle identifier、同一张公开叶证书和原签名要求；拒绝安装独立验收包或替换使用中的应用。旧版移动到候选目录的 `previous-*` 保留，安装失败会尝试移回，无法恢复时明确报告备份位置。构建、编译或签名失败均不清空日常目录；已签名候选可在正常退出后用 `npm run native:install -- /绝对路径/候选.app` 安装。安装核对只读取公开签名，不访问私钥。证书、私钥和签名配置不提交。
+需 Apple 芯片、macOS 14+ 和 Swift 6.1 及以上的 Xcode 工具链。默认的 `npm run native:build` 与原有 `npm run native:build-check` 都生成独立标识、`BlueFatFishAcceptanceOnly=true` 的本地签名包，无需解锁钥匙串，不查询或调用 Apple 签名身份，不替换日常应用，不注册日常文件类型。启动必须带 `--check /绝对路径/独立目录`；原生入口会在初始化用户资料前拒绝缺少该参数的启动。验收包仅证明构建与指定检查，不能当作日常应用已更新。
 
-开发使用 `npm run native:build-check` 生成独立标识、`BlueFatFishAcceptanceOnly=true` 的本地签名包，不查询或调用 Apple 签名身份，不替换日常应用，不注册日常文件类型。启动必须带 `--check /绝对路径/独立目录`；原生入口会在初始化用户资料前拒绝缺少该参数的启动。验收包仅证明构建与指定检查，不能当作日常应用已更新。正式包仍沿用原签名身份，不以本地签名绕过。
+日常更新显式运行 `npm run native:release`（底层参数 `--release`），要求本机有效的 Apple 签名证书；多证书时通过 `BLUEFATFISH_SIGN_IDENTITY` 选择。构建先写入独立的 `build/native-staging-*`，完整签名验证通过后，核对原 bundle identifier、同一张公开叶证书和原签名要求；拒绝安装独立验收包或替换使用中的应用。旧版移动到候选目录的 `previous-*` 保留，安装失败会尝试移回，无法恢复时明确报告备份位置。构建、编译或签名失败均不清空日常目录；已签名候选可在正常退出后用 `npm run native:install -- /绝对路径/候选.app` 安装。安装核对只读取公开签名，不访问私钥。正式包仍沿用原签名身份，不以本地签名绕过；`npm run native:open` 打开已安装的日常包。证书、私钥和签名配置不提交。
 
 上述两种构建的临时目录、Swift／Clang 模块及 SwiftPM／npm 缓存均放在仓库的 `build/native-cache`；系统临时目录仅保留一个指向该目录的英文路径链接。`npm run native:check-delivery` 使用现有正式包的外置盘隔离副本，核对真实签名、安装与备份、占用拒绝和文件操作失败后的恢复；不启动或修改原应用，不访问配置、凭据或模型。可用 `-- --app /绝对路径/正式签名.app` 指定只读来源。
 

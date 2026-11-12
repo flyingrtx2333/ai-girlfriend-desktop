@@ -32,12 +32,11 @@
 ```sh
 npm ci
 npm run native:build
-npm run native:open
 ```
 
-正式构建先放在独立的 `build/native-staging-*` 目录，完整签名检查通过、证书与原应用一致且应用文件未被使用时，才替换 `build/蓝色大肥鱼.app`；旧版保留在候选目录中的 `previous-*`。构建或签名失败会保留现有应用。应用尚未退出时，可正常退出后用 `npm run native:install -- /绝对路径/正式候选.app` 安装已签名候选。有多个有效证书时，通过 `BLUEFATFISH_SIGN_IDENTITY` 指定证书名称或 SHA-1；日常包不会退回临时签名。
+默认的 `npm run native:build` 用于开发验收，无需证书私钥或解锁钥匙串；`npm run native:build-check` 保留同样行为。它生成独立标识与 `BlueFatFishAcceptanceOnly=true` 的本地签名应用，输出在本次 `build/native-staging-*` 目录，不安装到日常入口。启动时必须指定独立目录：`open -n /绝对路径/蓝色大肥鱼验收.app --args --check /绝对路径/独立验收目录 --manual-ui`；直接打开会退出，不读取日常资料。已有独立验收包仍可用 `npm run native:sign-check -- /绝对路径/独立验收.app` 签名；它仅接受 `BlueFatFishAcceptanceOnly=true` 与独立 `com.xjs.bluefatfish.*` 标识，拒绝日常包。
 
-开发验收使用 `npm run native:build-check`，直接构建无需证书私钥的独立本地签名应用，输出在本次 `build/native-staging-*` 目录，不安装到日常入口。启动时必须指定独立目录：`open -n /绝对路径/蓝色大肥鱼验收.app --args --check /绝对路径/独立验收目录 --manual-ui`；直接打开会退出，不读取日常资料。已有独立验收包仍可用 `npm run native:sign-check -- /绝对路径/独立验收.app` 签名；它仅接受 `BlueFatFishAcceptanceOnly=true` 与独立 `com.xjs.bluefatfish.*` 标识，拒绝日常包。
+更新日常应用时显式运行 `npm run native:release`。正式构建先放在独立的 `build/native-staging-*` 目录，完整签名检查通过、证书与原应用一致且应用文件未被使用时，才替换 `build/蓝色大肥鱼.app`；旧版保留在候选目录中的 `previous-*`。构建或签名失败会保留现有应用。应用尚未退出时，可正常退出后用 `npm run native:install -- /绝对路径/正式候选.app` 安装已签名候选。有多个有效证书时，通过 `BLUEFATFISH_SIGN_IDENTITY` 指定证书名称或 SHA-1；日常包不会退回临时签名。`npm run native:open` 打开已安装的日常包，不打开开发验收包。
 
 首次构建会下载固定版本的 sherpa-onnx 原生库和唤醒模型，并校验 SHA-256；MCP 使用固定版本的官方 Swift SDK，传递依赖由 `native-mcp/Package.resolved` 固定。应用运行不再下载这些库。当前角色素材、动画和示例音频已在仓库中，无需调用 Tripo 或重新生成。
 

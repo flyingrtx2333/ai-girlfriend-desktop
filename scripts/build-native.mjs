@@ -9,8 +9,11 @@ import { prepareSherpa, sherpaRoot } from './prepare-sherpa.mjs';
 import { prepareSecurity } from './prepare-security.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const checkOnly = process.argv.length === 3 && process.argv[2] === '--check';
-if (process.argv.length !== 2 && !checkOnly) throw new Error('用 --check 构建独立验收包，或不加参数构建正式候选。');
+const options = process.argv.slice(2);
+if (options.length > 1 || (options.length === 1 && !['--check', '--release'].includes(options[0]))) {
+  throw new Error('默认构建独立验收包；--check 保留同样行为，--release 才构建并安装正式候选。');
+}
+const checkOnly = options[0] !== '--release';
 if (!checkOnly) signingIdentity();
 await mkdir(path.join(root, 'build'), { recursive: true });
 const staging = await mkdtemp(path.join(root, 'build', 'native-staging-'));
