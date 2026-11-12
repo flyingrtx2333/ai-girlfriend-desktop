@@ -85,11 +85,14 @@ import AppKit
         checks["noWorkspaceUsesIndependentActualSession"] = tasks.task(other)?.workspace == nil && second !== page && state(second)["connected"] as? Bool == true && state(second)["sessionOwner"] as? String != sessionOwner
         control.presentMCPContent(taskID: taskID)
         checks["taskReturnKeepsArgumentsConnectionAndInput"] = host.currentController === page && state(page)["fields"] as? [String: String] == arguments && state(page)["connected"] as? Bool == true && tasks.task(other)?.draft == "保留另一任务输入。"
+        control.window?.setContentSize(NSSize(width: 800, height: 550)); control.window?.contentView?.layoutSubtreeIfNeeded(); page.pageDidLayout(); await wait(0.05)
         page.checkAction("read")
         checks["pendingPromptReadLocksParameters"] = page.hasPendingOperation && state(page)["parametersEditable"] as? Bool == false
         try await settled(page)
         checks["completedPromptReadRestoresParameters"] = state(page)["parametersEditable"] as? Bool == true
         checks["actualParameterizedPromptInPreview"] = (state(page)["previewText"] as? String)?.contains("Resource 2: This is a plaintext resource created at ") == true
+        checks["narrowPromptReadRevealsResultWithoutManualScroll"] = state(page)["narrow"] as? Bool == true && (state(page)["previewVisibleHeight"] as? Double ?? 0) >= 100
+        report["narrowPromptResult"] = state(page)
         let promptText = state(page)["promptText"] as? String ?? ""
         page.checkAction("add"); try await settled(page)
         checks["promptAddedToOriginalDraftAndMarksSaved"] = !promptText.isEmpty && tasks.task(taskID)?.draft?.hasPrefix("保留 MCP 任务输入。") == true && tasks.task(taskID)?.draft?.hasSuffix(promptText) == true && !page.workspaceHasUnsavedChanges

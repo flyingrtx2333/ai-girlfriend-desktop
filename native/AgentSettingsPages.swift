@@ -68,7 +68,7 @@ import AppKit
             if let scroll = view as? NSScrollView {
                 scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder
                 scroll.wantsLayer = true; scroll.layer?.cornerRadius = 9
-                scroll.layer?.borderWidth = scroll.identifier?.rawValue == "hook-event-groups" ? 0 : 1; scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+                scroll.layer?.borderWidth = ["hook-event-groups", "form-input"].contains(scroll.identifier?.rawValue ?? "") ? 0 : 1; scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
                 scroll.backgroundColor = .textBackgroundColor
             }
             if let button = view as? NSButton, !(button is NSPopUpButton) { button.font = .systemFont(ofSize: 13) }

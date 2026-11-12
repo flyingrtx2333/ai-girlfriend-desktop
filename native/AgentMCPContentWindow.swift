@@ -150,17 +150,29 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         state.stringValue = result["supported"] as? Bool == false ? "连接器未提供此类内容" : rows.isEmpty ? "没有匹配内容" : ""
         if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
-    private func launch(_ action: @escaping () async throws -> Void) {
+    private func launch(revealPreview: Bool = false, _ action: @escaping () async throws -> Void) {
         guard job == nil else { return }; state.stringValue = "读取中…"
         job = Task { [weak self] in
             guard let self else { return }
+            var succeeded = false
             defer {
                 self.job = nil; self.refreshState()
+                if succeeded && revealPreview { self.revealReadResult() }
                 if self.pendingSearch { self.pendingSearch = false; self.loadList() }
             }
-            do { try await action() }
+            do { try await action(); succeeded = true }
             catch { if !self.closed { self.state.stringValue = Task.isCancelled ? "已取消" : error.localizedDescription; self.state.toolTip = self.state.stringValue } }
         }; refreshState()
+    }
+    private func revealReadResult() {
+        guard isPageVisible, preview != nil, let document = detailViewport.documentView else { return }
+        pageContentView?.layoutSubtreeIfNeeded()
+        let target: NSView = image.isHidden ? (viewer.enclosingScrollView ?? viewer) : image
+        let rect = target.convert(target.bounds, to: document), clip = detailViewport.contentView
+        guard !clip.documentVisibleRect.contains(rect) else { return }
+        let maxY = max(0, document.bounds.height - clip.bounds.height)
+        clip.scroll(to: NSPoint(x: 0, y: min(max(0, rect.minY), maxY)))
+        detailViewport.reflectScrolledClipView(clip)
     }
     func controlTextDidChange(_ obj: Notification) {
         if obj.object as? NSSearchField === search {
@@ -190,8 +202,13 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             guard let name = field["name"] as? String else { continue }
             let label = NSTextField(labelWithString: (field["title"] as? String ?? name) + (field["required"] as? Bool == true ? " *" : "")); label.font = .systemFont(ofSize: 12, weight: .medium); label.lineBreakMode = .byTruncatingTail; label.toolTip = field["description"] as? String; label.widthAnchor.constraint(equalToConstant: 100).isActive = true
             let text = NSTextView(); text.isRichText = false; text.font = .systemFont(ofSize: 12); text.textContainerInset = NSSize(width: 6, height: 6); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.delegate = self; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false; text.setAccessibilityLabel("提示词参数 " + name)
-            let scroll = NSScrollView(); scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder; scroll.heightAnchor.constraint(equalToConstant: 54).isActive = true
-            let row = NSStackView(views: [label, scroll]); row.spacing = 8; arguments.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: arguments.widthAnchor).isActive = true; fields[name] = text
+            let input = AgentThemeView(fill: AgentWorkbenchTheme.subtle, stroke: AgentWorkbenchTheme.line)
+            input.wantsLayer = true; input.layer?.cornerRadius = 6; input.layer?.borderWidth = 1; input.layer?.masksToBounds = true
+            text.drawsBackground = false
+            let scroll = NSScrollView(); scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.borderType = .noBorder; scroll.drawsBackground = false; scroll.identifier = .init("form-input")
+            input.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([input.heightAnchor.constraint(equalToConstant: 54), scroll.leadingAnchor.constraint(equalTo: input.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: input.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: input.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: input.bottomAnchor, constant: -1)])
+            let row = NSStackView(views: [label, input]); row.spacing = 8; arguments.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: arguments.widthAnchor).isActive = true; fields[name] = text
         }
         if let key = selectedFormKey, let draft = formDrafts[key] {
             for (name, value) in draft.fields { fields[name]?.string = value }
@@ -202,7 +219,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     @objc private func readContent() {
         guard job == nil, let id = serverID, let selected, let connection = store.mcp.token(id, owner: sessionOwner) else { return }
         let requestedKind = kind, requestedURI = uri.stringValue, currentCatalog = catalog, values = fields.mapValues(\.string)
-        launch {
+        launch(revealPreview: true) {
             _ = try self.taskScope(id, operation: requestedKind == "prompts" ? "connect_mcp" : "read_mcp_resource")
             let result: AgentMCPContentPreview
             if requestedKind == "prompts" { result = try await self.store.mcp.prompt(id, owner: self.sessionOwner, connection: connection, catalog: currentCatalog, name: selected["name"] as? String ?? "", arguments: values.filter { !$0.value.isEmpty }) }
@@ -293,8 +310,10 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
         let focused = presentingWindow?.firstResponder
         let focusInPage = (focused as? NSView)?.isDescendant(of: content) == true || (focused != nil && (search.currentEditor() === focused || uri.currentEditor() === focused))
+        let previewRect = viewer.enclosingScrollView.map { $0.convert($0.bounds, to: detailViewport.documentView) } ?? .zero
+        let previewVisibleHeight = Double(max(0, previewRect.intersection(detailViewport.contentView.documentVisibleRect).height))
         let checks = ["pageActuallyVisible": isPageVisible, "serverPickerReadable": inside(servers) && servers.bounds.width >= 139, "catalogFitsPage": inside(listColumn), "detailViewportFitsPage": inside(detailViewport), "searchFitsPage": inside(search), "readButtonFitsPage": inside(read), "addButtonFitsPage": inside(add), "detailHasUsableHeight": detailViewport.bounds.height >= 80, "catalogHasUsableHeight": table.enclosingScrollView!.bounds.height >= 70]
-        return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
+        return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "previewVisibleHeight": previewVisibleHeight, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
     }
     func checkAction(_ action: String, kind index: Int? = nil, query: String? = nil, row: Int? = nil, values: [String: String]? = nil, resourceURI: String? = nil) {
         guard CommandLine.arguments.contains("--mcp-content-check"), !CommandLine.arguments.contains("--live-agent") else { return }
