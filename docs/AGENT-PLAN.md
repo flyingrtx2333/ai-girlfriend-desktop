@@ -1842,3 +1842,20 @@ Wiki、整套项目知识和知识卡片的六个导入／恢复入口改用同�
 日常包仍为 `bf6a50e`，尚未包含本轮迁移。统一组件、生成／增量更新等其余长流程、复杂阅读、持久页面恢复与日常发布继续按 [Qoder TODO](QODER-PARITY-TODO.md) 推进，P0／P1／P2 完整目标尚未完成。
 
 证据：`evidence/agent/knowledge-review-yzqzyhao/acceptance-index.json`、`final02-native-summary.json`、`final-02/source-staged-proof.json`、`final-02/source-HEAD-proof.json`、`final-02/signature-details.txt`、`final02-cancel-proof.json`、`final02-window-and-restart-proof.json`、`final02-upgrade-detailed-proof.json`、`originals-current.json`、`readme-original-image-proof.json`、`cua-final02/` 与 `cua-reopen02/`。原生版本报告在 `evidence/agent/knowledge-review-command-vA4JMR/`，原窗口资料在 `knowledge-review-command-7gj6H0/`；早期差异见 `baseline-findings.json`、`debug01-link-relocation-proof.json` 和 `final01-findings.json`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-knowledge-review`，禁止模型请求；`--manual-ui` 准备公开资料，`--reopen <原目录>` 仅重开原资料。
+
+
+## Wiki 维护审阅页（2026-11-12，导航缺口保留）
+
+增量更新和重新生成复用知识导入／恢复的页内审阅组件。更新显示两个实际提交编号、完整彩色 Git 差异和全部变更路径；重新生成显示实际配置文件全文或默认规划，以及当前文档标题。明确分支、语言、Wiki／卡片范围、费用及原任务保留，取消返回原阅读页。沿用原有更新、重新生成、版本、权限和冲突核对；读取或实际应用期间保护离开、关闭、退出与关联任务删除。首次生成已有目录／规划入口，没有另加重复确认。代码已以 `8553d4e` 提交并推送 `main`。
+
+同一最终优化程序通过 **130 项**相关原生检查：维护流程 63、原版本流程 67。使用两份真实历史／当前公开源码快照，创建实际 Git 提交，独立核对完整补丁及源码对象哈希。涵盖彩色全文与文件列表、重新预览、取消、提交和配置变化拦截、未发布英文的 Wiki 与卡片范围、正常／800 点窄窗口及浅深色。原服务实际创建两项新任务后立即取消，核对冻结差异／规划、未发布及原文保留。模型传输 0、拦截前尝试 0；没有伪造模型生成、完成记录或发布效果。基线版本流程 67 项与调试候选结果单独保留，未累加进最终通过数。
+
+最终主流程和同版本重开保留 **40 次 CUA 调用、80 份原始记录、6 张原始 JPEG**。实际窗口在旧差异保持打开时提交新增公开源码，点击更新后拒绝过期范围且没有新任务；重新预览显示 3 个文件，47,239 字节完整补丁与独立 Git 输出一致。在默认规划审阅期间写入实际两页规划，再次执行被拦截并清除旧正文；重新预览、当前文档切换、Esc、设置往返、浅色窄窗口及两个原任务的草稿已验。README 两张新图直接复制此最终程序的原始 JPEG 字节。
+
+首次最终窗口验收曾从差异审阅页意外返回任务。原始 AX、截图与同进程读回显示 `mainPage=chat`、`visible=false`，虽然审阅内容仍保留；不能因几何检查通过就认定页面可见。保留首次失败与后续探查记录，原版重新进入、重新预览、相同资料重开以及带导航调用来源记录的诊断重放均未再出现，**尚无可信原因，未宣称修复**。诊断仅修改外置源码副本，未混入交付源码，也未替换最终优化程序。维护页面候选在 TODO 中保持未勾选；后续继续定位并加强实际可见性检查。
+
+最终冻结 **296 份原生输入及 2 份配套配置／脚本**；签名前 SHA256 `0c32e00e866649ec90c411dbe36a72c55d3a544d13695410ff35a316af09e993`，显式本地签名后 `7f5657b919f54acc9aad216b084f5f8950c9abdc6377b98bea2115d49c5ed315`。逐项核对已提交源码及严格签名，140 份办公资源保持。签名为 `adhoc`，不查找私人证书，不需要解锁钥匙串，不更改系统授权；代码、程序、缓存、临时文件与证据均在外置项目目录。
+
+原窗口资料连续沿用，未重新创建。相比初始 49 份文件，全部权限保持、46 份字节一致；变化为任务索引选中／排列及新增源码后的两份搜索索引，全部原任务记录、文档、卡片和版本字节一致。窗口操作后正常退出，53 份持久文件逐字节及权限一致；同一最终程序再次重开、阅读实际规划并切回原通用任务后，53 份仍逐字节及权限一致。9 份日常配置／聊天资料、23 份旧真实模型原件及日常程序保持，旧临时签名启动配置不存在。日常包仍为 `bf6a50e`，未替换；P0／P1／P2 的完整目标仍未完成。
+
+证据：`evidence/agent/wiki-lifecycle-f2s9czr7/acceptance-index.json`、`final-01/source-HEAD-proof.json`、`final-01/signature-details.txt`、`manual-stale-commit-proof.json`、`manual-stale-plan-proof.json`、`manual-light-narrow-plan-proof.json`、`restart-preservation-proof.json`、`original-fixture-preservation-proof.json`、`originals-current.json`、`readme-original-image-proof.json`、`cua-final01-maintenance/` 与 `cua-final01-reopen/`。首次跳转在 `cua-final01-jump/` 和原资料的 `native-manual-ui-59733-final01-initial-diff.json`，探查在 `cua-navigation-probes/`、`cua-diagnostic01/`、`navigation-trace.jsonl` 与 `diagnostic-navigation-result.json`。最终原生报告为 `wiki-lifecycle-command-4SQdPm/`、`knowledge-review-command-jkZE5C/`，原窗口资料为 `wiki-lifecycle-command-7eD1AJ/`；复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-wiki-lifecycle`，禁止模型请求，`--manual-ui` 准备公开资料，`--reopen <原目录>` 仅重开原资料。
