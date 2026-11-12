@@ -58,8 +58,12 @@ import AppKit
         let rule = AgentThemeView(fill: AgentWorkbenchTheme.line)
         for view in [header, rule, breadcrumb, body] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         breadcrumbHeight = breadcrumb.heightAnchor.constraint(equalToConstant: 0)
+        let headerTrailing = header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+        // This hidden workspace shares the record pane's frame. Its cached
+        // header buttons must not impose a minimum width before the pane folds.
+        headerTrailing.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), header.topAnchor.constraint(equalTo: topAnchor), header.heightAnchor.constraint(equalToConstant: 43),
+            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), headerTrailing, header.topAnchor.constraint(equalTo: topAnchor), header.heightAnchor.constraint(equalToConstant: 43),
             rule.leadingAnchor.constraint(equalTo: leadingAnchor), rule.trailingAnchor.constraint(equalTo: trailingAnchor), rule.topAnchor.constraint(equalTo: header.bottomAnchor), rule.heightAnchor.constraint(equalToConstant: 1),
             breadcrumb.leadingAnchor.constraint(equalTo: header.leadingAnchor), breadcrumb.trailingAnchor.constraint(equalTo: header.trailingAnchor), breadcrumb.topAnchor.constraint(equalTo: rule.bottomAnchor), breadcrumbHeight,
             body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor), body.topAnchor.constraint(equalTo: breadcrumb.bottomAnchor), body.bottomAnchor.constraint(equalTo: bottomAnchor)
