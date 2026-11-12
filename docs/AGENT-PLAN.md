@@ -1859,3 +1859,24 @@ Wiki、整套项目知识和知识卡片的六个导入／恢复入口改用同�
 原窗口资料连续沿用，未重新创建。相比初始 49 份文件，全部权限保持、46 份字节一致；变化为任务索引选中／排列及新增源码后的两份搜索索引，全部原任务记录、文档、卡片和版本字节一致。窗口操作后正常退出，53 份持久文件逐字节及权限一致；同一最终程序再次重开、阅读实际规划并切回原通用任务后，53 份仍逐字节及权限一致。9 份日常配置／聊天资料、23 份旧真实模型原件及日常程序保持，旧临时签名启动配置不存在。日常包仍为 `bf6a50e`，未替换；P0／P1／P2 的完整目标仍未完成。
 
 证据：`evidence/agent/wiki-lifecycle-f2s9czr7/acceptance-index.json`、`final-01/source-HEAD-proof.json`、`final-01/signature-details.txt`、`manual-stale-commit-proof.json`、`manual-stale-plan-proof.json`、`manual-light-narrow-plan-proof.json`、`restart-preservation-proof.json`、`original-fixture-preservation-proof.json`、`originals-current.json`、`readme-original-image-proof.json`、`cua-final01-maintenance/` 与 `cua-final01-reopen/`。首次跳转在 `cua-final01-jump/` 和原资料的 `native-manual-ui-59733-final01-initial-diff.json`，探查在 `cua-navigation-probes/`、`cua-diagnostic01/`、`navigation-trace.jsonl` 与 `diagnostic-navigation-result.json`。最终原生报告为 `wiki-lifecycle-command-4SQdPm/`、`knowledge-review-command-jkZE5C/`，原窗口资料为 `wiki-lifecycle-command-7eD1AJ/`；复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-wiki-lifecycle`，禁止模型请求，`--manual-ui` 准备公开资料，`--reopen <原目录>` 仅重开原资料。
+
+
+## 知识页键盘焦点与可见性（2026-11-12）
+
+修复已以 `2896c44` 提交并推送主分支。知识中心在内容真正显示后交接焦点，保留当前页内已有的有效编辑焦点；审阅页切换正文、版本列表或加载状态时，先处理即将隐藏或禁用的焦点。加载选中版本时临时由窗口持有焦点，只有用户尚未移到其他控件才在完成后恢复列表。继续复用原控制器、存储、版本及权限，没有新增数据格式或依赖。
+
+原优化程序的实际窗口可重复复现：打开差异后焦点仍在任务侧栏，连续两次下键进入原任务。正文重新预览、从正文返回版本列表也分别复现同样问题。旧几何检查此时全部为真，但 `mainPage=chat`、`visible=false`；新增实际页面可见性检查及隐藏后仍保留原预览的反例，避免将隐藏页面判为通过。首次没有按键记录的跳转仍无法证明同因，原始失败与诊断记录保留，TODO 继续跟踪，未将它宣称为已修复。
+
+最终同一优化程序通过 **295 项**相关检查：维护 79、版本 80、知识中心页面 136。包含目录／阅读／审阅入口、实际差异正文重读、返回版本与载入所选版本的焦点、隐藏页面拒绝通过、正常／800 点窄窗口和浅深色，以及既有导入、恢复、原文和过期保护。另用隐藏的系统原生窗口对象核对临时焦点所有权，未计入 295 项。所有验收模型传输为 0，没有借用旧模型额度；没有将本轮结果作为模型生成质量或公开评测成绩。
+
+最终实际窗口与同版本重开共 **49 次 CUA 调用、98 份原始记录、5 张原始 JPEG**。核对初次进入与正文重新预览后的上下键、主动切回原任务、重新进入保留预览、设置返回、Esc、实际历史版本选择、正文返回版本列表及再次载入、正常／800×550 窗口、生成规划及两个原任务草稿。重开后上下键仍作用于审阅列表；47,239 字节完整差异与独立 Git 输出及重开前哈希相同。原资料连续沿用，没有重新生成验收版本；本轮未点击恢复发布或调用真实模型。
+
+首个修正版的 75 项维护检查中，返回保留页焦点失败；据此把显示后的焦点交接移到知识中心宿主。调试候选 77 项通过后，实际正文重读发现隐藏旧视图丢失焦点；另一调试候选 79 项通过后，实际返回版本又复现同一问题，遂在共用内容切换处处理。后续优化程序维护 79 项通过、版本 79／80，剩余选中版本加载由禁用列表造成，再补临时窗口焦点。过期的第二次优化构建在确认实际问题后主动停止；原始失败、调试结果和被替代程序均保留，未累加为最终通过数。
+
+最终冻结 **296 份原生输入及 2 份配套配置／脚本**；签名前 SHA256 `85299558bafddb46e8a404cc587c0e6ffa13d82763dfaf79c68440de95b72d6e`，显式本地签名后 `8a044db10139671f261f07e9e0eb7b33c1b4e3e32ba848c011b085e807399371`。暂存输入与程序逐项一致，严格签名通过，140 份办公资源保持。签名为 `adhoc`，不查找私人证书、不要求解锁钥匙串，不改正式应用签名。源文件、构建、缓存、临时文件、原生 API 探针和证据均在外置项目目录。
+
+升级与窗口操作后，原 53 份持久资料权限保持、51 份字节一致，仅任务索引选中项和搜索索引更新时间变化；正常退出时 53 份全部逐字节及权限一致。最终同一程序重开后 53 份权限保持、52 份字节一致，唯一变化是搜索索引 `updated`，其余索引内容、全部任务正文／草稿、Wiki、卡片、版本和配置一致。资料文件集合也保持，没有通过重建或覆盖旧资料获得通过。
+
+日常目录在本轮非 CUA 操作时段新增一项有实际模型用量的已完成普通任务，同时观察到组织导航和任务索引变化。旧九文件基线不再全部字节一致，其中七份（含四项原任务、聊天和设置）仍保持内容与权限。新增任务不属于本轮 39 个验收任务编号，也没有验收目录引用，未将其用作验收成功记录或计入本轮额度。保留旧基线及不一致报告，不回滚新数据；随后以只读方式记录包含新任务的 10 份当前文件，最终重开验收期间全部逐字节及权限保持。23 份旧真实模型原件、日常程序及签名保持，旧临时签名启动配置不存在。日常包仍为 `bf6a50e`，未替换；P0／P1／P2 完整目标仍未完成。
+
+证据：`evidence/agent/wiki-navigation-n5b4c2e8/acceptance-index.json`、`final04-native-summary.json`、`final-04/source-staged-proof.json`、`final-04/source-HEAD-proof.json`、`final-04/signature-details.txt`、`final04-repreview-proof.json`、`final04-hidden-page-proof.json`、`final04-version-reload-proof.json`、`final04-narrow-plan-proof.json`、`final04-reopen-ui-proof.json`、`final04-normal-exit-proof.json`、`final04-restart-semantic-proof.json`、`daily-drift-observed.json`、`daily-drift-classification.json`、`daily-current-reopen-proof.json`、`originals-current.json`、`earlier-attempts.json`、`appkit-focus-probe-result.json`、`cua-final04/` 与 `cua-reopen04/`。最终原生报告位于 `wiki-lifecycle-command-s5Jjzx/`、`knowledge-review-command-jFlk1h/`、`knowledge-page-command-mhYYcZ/`，原窗口资料仍为 `wiki-lifecycle-command-7eD1AJ/`。首次缺陷及中间差异见 `cua-baseline-focus/`、`cua-debug01-repreview/`、`cua-debug02-versions/`、`final01-findings.json`、`final03-findings.json`；此前无按键记录的原失败仍在 `wiki-lifecycle-f2s9czr7/cua-final01-jump/`。复验沿用 `native:check-wiki-lifecycle`、`native:check-knowledge-review`、`native:check-knowledge-page`，指定独立验收包，禁止模型请求。
