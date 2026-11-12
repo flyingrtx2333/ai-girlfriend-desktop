@@ -71,6 +71,10 @@ import WebKit
                 }
                 if CommandLine.arguments.contains("--plugin-review-fixtures") { _ = try AgentPluginReviewCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-import-fixtures") { _ = try AgentMCPImportCheck.prepareSources(output) }
+                if CommandLine.arguments.contains("--management-review-fixtures") {
+                    guard let workspace = tasks.selected?.workspace else { throw PetError("缺少设置审阅项目") }
+                    try AgentManagementReviewCheck.prepareFixtures(output, tasks: tasks, workspace: workspace)
+                }
                 if CommandLine.arguments.contains("--attention-fixtures") { try await prepareAttentionCheck(output) }
                 if CommandLine.arguments.contains("--attention-page-fixtures") { _ = try await prepareAttentionPageUI(output) }
                 if CommandLine.arguments.contains("--automation-page-fixtures") { _ = try await prepareAutomationPageUI(output) }

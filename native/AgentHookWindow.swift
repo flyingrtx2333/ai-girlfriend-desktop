@@ -42,6 +42,7 @@ private extension AgentHookEvent {
     private var items: [AgentHookDefinition] = [], selected: AgentHookDefinition?
     private var expanded: Set<AgentHookEvent> = []
     private var configWindow: AgentHookConfigWindow?
+    private var reviewPage: AgentSettingsReviewPage?
     init(service: AgentHooks, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -220,6 +221,10 @@ private extension AgentHookEvent {
         checks["browsingDoesNotEnableAnyHook"] = catalog.allSatisfy { !service.enabled($0) }
         return checks
     }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); reload()
+        if let selected { presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + selected.id)) }
+    }
     @objc private func revealSource() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.source)]) } }
     @objc private func clearCredentials() {
         guard let selected, let window = presentingWindow else { return }
@@ -229,11 +234,10 @@ private extension AgentHookEvent {
     @objc private func toggleEnabled() {
         guard let item = selected else { return }
         if enabled.state == .off {
-            do { try service.setEnabled(item, false, workspace: workspace); reload(select: item.id) } catch { state.stringValue = error.localizedDescription }; return
+            do { try service.setEnabled(item, false, workspace: workspace); reload(select: item.id); presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + item.id)) } catch { state.stringValue = error.localizedDescription }; return
         }
         enabled.state = service.enabled(item) ? .on : .off
-        guard item.diagnostic == nil, let window = presentingWindow else { reload(select: item.id); return }
-        let alert = NSAlert(); alert.messageText = "启用「\(item.name)」？"
+        guard item.diagnostic == nil, presentingWindow != nil else { reload(select: item.id); return }
         let consequence: String
         switch item.type {
         case "http": consequence = "将自动向此地址发送当前事件数据。Header 可按 allowedEnvVars 引用应用环境；未指定白名单时允许所有变量。重定向不会跟随。"
@@ -241,12 +245,20 @@ private extension AgentHookEvent {
         case "agent": consequence = "将创建独立模型校验任务，只读项目，按工具白名单执行，产生模型用量。" + (item.network ? "允许终端联网。" : "终端不联网。")
         default: consequence = "此命令将自动运行，可修改任务项目、读取应用进程环境。" + (item.network ? "允许访问网络。" : "不允许访问网络。")
         }
-        alert.informativeText = item.event.rawValue + " · " + item.scope + "\n" + item.display + "\n\n" + consequence + (item.runsInBackground ? "\n在后台运行，结果不改变审批或工具参数。" : "") + (item.asyncRewake == true ? "退出码为 2 时可继续任务并产生模型用量。" : "")
-        alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            if response == .alertFirstButtonReturn { do { try service.setEnabled(item, true, workspace: workspace) } catch { state.stringValue = error.localizedDescription } }; reload(select: item.id)
+        let notice = consequence + (item.runsInBackground ? "\n在后台运行，结果不改变审批或工具参数。" : "") + (item.asyncRewake == true ? "退出码为 2 时可继续任务并产生模型用量。" : "")
+        let timeout = item.timeout.isFinite && (1...600).contains(item.timeout) ? "\(Int(item.timeout)) 秒" : "无效"
+        var definition = item.display + "\n\n匹配：" + (item.matcher.isEmpty ? "全部" : item.matcher) + "\n超时：" + timeout + "\n来源：" + item.source
+        if item.type == "agent", let turns = item.maxTurns { definition += "\n最多 \(turns) 轮" }
+        for (title, value) in [("状态", item.statusMessage), ("唤醒提示", item.rewakeMessage), ("唤醒摘要", item.rewakeSummary)] { if let value, !value.isEmpty { definition += "\n\n" + title + "\n" + value } }
+        let page = AgentSettingsReviewPage(title: "启用「" + item.name + "」", metadata: item.event.rawValue + " · " + item.scope, notice: notice, sections: [("处理器", definition)], applyTitle: "启用")
+        page.onApply = { [weak self] in
+            guard let self else { throw PetError("Hooks 页面已关闭，请重新打开") }; try service.setEnabled(item, true, workspace: workspace)
         }
+        page.onApplied = { [weak self] in
+            guard let self else { return }; reload(select: item.id); state.stringValue = "已启用"
+            presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + item.id))
+        }
+        reviewPage = page; presentSettingsChild(page)
     }
     @objc private func editConfig() { openConfig(imported: nil) }
     private var canEditSelected: Bool {

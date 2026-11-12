@@ -12,6 +12,7 @@ import AppKit
     private var values: [AgentTeam] = [], agents: [AgentProfile] = [], pendingAgents: [AgentProfile] = []
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
+    private var reviewPage: AgentSettingsReviewPage?
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
         self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -49,6 +50,9 @@ import AppKit
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); presentingWindow?.makeFirstResponder(dirty ? name : table)
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let value = values[row], text = NSTextField(labelWithString: value.name + (value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "") + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = [value.description, value.workspace ?? ""].filter { !$0.isEmpty }.joined(separator: "\n"); return text
@@ -103,17 +107,33 @@ import AppKit
     }
     @objc private func createTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        let alert = NSAlert(); alert.messageText = "代码审阅团队"; alert.informativeText = "负责人协调代码审阅员与测试分析员，核对风险、证据和缺失测试，汇总实际结论。只读项目。\n\n保存时创建三个 Agent；启用团队时同时启用成员。"; alert.addButton(withTitle: "使用模板"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            agents = try store.agents.list(workspace: workspace); var lead = AgentTemplates.profiles[3], reviewer = AgentTemplates.profiles[0], tester = AgentTemplates.profiles[0]
+            let originalAgents = try store.agents.document(), originalTeams = try store.teams.document()
+            guard originalTeams.1 == openedHash else { throw PetError("团队配置已改变，请重新打开后审阅") }
+            let available = try store.agents.list(workspace: workspace)
+            var lead = AgentTemplates.profiles[3], reviewer = AgentTemplates.profiles[0], tester = AgentTemplates.profiles[0]
             tester.name = "测试分析员"; tester.description = "核对测试覆盖与可触发的回归风险"; tester.instructions = "只读相关源码与测试，核对边界条件和回归场景。仅报告有依据的缺口，给出触发输入、预期结果与建议验证。不得修改文件或运行会改动项目的测试。"
-            pendingAgents = []
-            for role in [lead, reviewer, tester] { var value = role; let base = value.name; var index = 2; while (agents + pendingAgents).contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }; pendingAgents.append(value) }
-            lead = pendingAgents[0]; reviewer = pendingAgents[1]; tester = pendingAgents[2]
+            var prepared: [AgentProfile] = []
+            for role in [lead, reviewer, tester] { var value = role; let base = value.name; var index = 2; while (available + prepared).contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }; prepared.append(value) }
+            lead = prepared[0]; reviewer = prepared[1]; tester = prepared[2]
             var value = AgentTeam(name: "代码审阅团队", description: "分工核对代码风险与测试覆盖", instructions: "负责人按实际需要分派代码审阅与测试覆盖分析，等待两名成员的实际结果。核对证据、分歧和未知项，汇总可执行结论。只读分析，不修改项目。", leaderID: lead.id, memberIDs: [reviewer.id, tester.id])
             let base = value.name; var index = 2; while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(index)"; index += 1 }
-            values.append(value); table.reloadData(); open(value.id); changed(); state.stringValue = "待保存 · 将创建 3 个 Agent"
+            let team = value, profiles = prepared
+            var sections = [("团队协作", team.description + "\n\n" + team.instructions)]
+            sections += profiles.enumerated().map { index, profile in
+                let access = profile.permission.title + (profile.readOnly ? " · 只读项目" : " · 可修改项目") + (profile.network ? " · 允许联网" : " · 不联网")
+                let model = profile.model.isEmpty ? "跟随任务" : profile.model
+                let body = profile.description + "\n\n" + access + "\n模型：" + model + "\n工具：" + profile.tools.joined(separator: ", ") + "\n\n" + profile.instructions
+                return ((index == 0 ? "负责人 · " : "成员 · ") + profile.name, body)
+            }
+            let page = AgentSettingsReviewPage(title: "代码审阅团队", metadata: "1 名负责人 · 2 名成员", notice: "保存时创建三个 Agent；启用团队时同时启用成员。", sections: sections, applyTitle: "载入草稿")
+            page.onApply = { [weak self] in
+                guard let self else { throw PetError("团队页面已关闭，请重新打开") }
+                guard !dirty, try store.agents.document().1 == originalAgents.1, try store.teams.document().1 == originalTeams.1 else { throw PetError("角色或团队配置已改变，请返回重新审阅") }
+                agents = available; pendingAgents = profiles; values.append(team); table.reloadData(); open(team.id); changed(); state.stringValue = "待保存 · 将创建 3 个 Agent"
+            }
+            page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(name) }
+            reviewPage = page; presentSettingsChild(page)
         } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func saveTeam() {

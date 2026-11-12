@@ -46,6 +46,7 @@ import AppKit
             let draft = try JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as! [String: Any]
             checks["mcpNewDraftWithoutModal-" + type] = try pane.currentController === manager && host.attachedSheet == nil && draft["type"] as? String == type && editor.isEditable && Data(contentsOf: configuration) == before && host.firstResponder === editor
             checks["mcpNewDraftRevealsEditorFromTools-" + type] = details.selectedTabViewItem?.identifier as? String == "配置" && editor.window === host && !editor.isHiddenOrHasHiddenAncestor
+            checks["mcpNewDraftShowsCurrentTransportHint-" + type] = text(manager.pageContentView).contains(type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
             var value = draft; value["name"] = "页内新建-" + type
             if type == "stdio" { value["command"] = "/usr/bin/true" }
             editor.string = try encode(value); manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try press("保存", page: manager)

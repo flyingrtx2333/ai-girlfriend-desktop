@@ -128,6 +128,7 @@ import Darwin
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
+            checks.merge(try await AgentManagementReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = 0; report["appPID"] = getpid()

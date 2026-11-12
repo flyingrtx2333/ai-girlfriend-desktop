@@ -105,7 +105,9 @@ import UniformTypeIdentifiers
         disconnect.isEnabled = selected != nil && (connected || job != nil)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
         add.isEnabled = job == nil; importButton.isEnabled = job == nil
-        access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
+        let draftType = (dirty || creating) && editor.string.utf8.count <= 64_000 ? ((try? JSONSerialization.jsonObject(with: Data(editor.string.utf8))) as? [String: Any])?["type"] as? String : nil
+        let type = dirty || creating ? draftType : selected?.type
+        access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (type == "http" ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }
