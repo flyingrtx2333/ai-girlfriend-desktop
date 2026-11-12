@@ -11,7 +11,7 @@ import AppKit
     var currentController: AgentSettingsPageController? { stacks[root]?.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.map(\.controller) } }
     var selectedRoot: String { root }
-    static var readbackEnabled: Bool { ["--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
     var onRootChange: ((String) -> Void)?
 
     override init(frame: NSRect) {

@@ -134,6 +134,7 @@ import AppKit
             checks["bothTaskInputDraftsRemainExact"] = tasks.task(f.taskID)?.draft == "保留视频任务输入。" && tasks.task(f.otherID)?.draft == "保留另一视频任务输入。"
             checks["noModelsOrAssistantMessages"] = requests == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.messages.isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["sourceHashes"] = sourceHashes; report["workspace"] = f.workspace.path; host.finish()
+            if CommandLine.arguments.contains("--knowledge-video-check") { checks.merge(try await runKnowledgeVideoPageCheck(output, fixture: f)) { _, new in new } }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["modelRequests"] = requests
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("video-workspace-report.json"))

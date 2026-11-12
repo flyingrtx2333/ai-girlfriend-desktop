@@ -83,6 +83,8 @@ import WebKit
                 if CommandLine.arguments.contains("--browser-workspace-reopen") { try await reopenBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-fixtures") { _ = try prepareVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-reopen") { try reopenVideoWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--knowledge-video-fixtures") { _ = try await prepareKnowledgeVideoUI(output) }
+                if CommandLine.arguments.contains("--knowledge-video-reopen") { try await reopenKnowledgeVideoUI(output) }
                 if CommandLine.arguments.contains("--wiki-lifecycle-fixtures") { try await prepareWikiLifecycleUI(output) }
                 if CommandLine.arguments.contains("--wiki-lifecycle-reopen") { try reopenWikiLifecycleUI(output) }
                 if CommandLine.arguments.contains("--knowledge-review-fixtures") { try await prepareKnowledgeReviewUI(output) }

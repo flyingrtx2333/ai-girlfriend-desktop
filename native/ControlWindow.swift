@@ -2248,6 +2248,7 @@ final class FormDocumentView: NSView {
             if let plan = controller as? AgentWikiPlanWindow { value["wikiPlan"] = plan.checkState }
             if let review = controller as? AgentKnowledgeReviewWindow { value["knowledgeReview"] = review.checkState }
             if let source = controller as? AgentMarkdownSourceWindow { value["source"] = source.encodingCheckState }
+            if let video = controller as? AgentVideoWindow { value["video"] = await video.preview.checkState() }
         }; return value
     }
     @discardableResult private func showKnowledgeCenter(root: String) -> Bool {

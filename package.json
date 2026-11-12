@@ -101,6 +101,7 @@
     "native:check-video": "node scripts/check-native-video.mjs",
     "native:check-browser-workspace": "node scripts/check-native-browser-workspace.mjs",
     "native:check-video-workspace": "node scripts/check-native-video-workspace.mjs",
+    "native:check-knowledge-video": "node scripts/check-native-video-workspace.mjs --knowledge",
     "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs",
     "native:check-task-archive": "node scripts/check-native-task-archive.mjs",
     "native:check-task-records": "node scripts/check-native-task-records.mjs",

@@ -113,7 +113,7 @@ struct AgentVideoSnapshot: Sendable {
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) { completionHandler(nil) }
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     func checkState() async -> [String: Any] {
-        guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }
         await opening?.value
         var result: [String: Any] = ["file": source?.path ?? "", "sourceHash": snapshot?.hash ?? "", "snapshotFolder": snapshot?.folder.path ?? "", "webPresent": web != nil, "status": status.stringValue, "hidden": isHidden, "reloadEnabled": reload.isEnabled]
         result["previewFrame"] = NSStringFromRect(frame); result["surfaceBounds"] = NSStringFromRect(player.bounds); result["webFrame"] = web.map { NSStringFromRect($0.frame) } ?? ""
@@ -127,7 +127,7 @@ struct AgentVideoSnapshot: Sendable {
     }
 }
 
-@MainActor final class AgentVideoWindow: NSWindowController, NSWindowDelegate {
+@MainActor final class AgentVideoWindow: AgentSettingsPageController, NSWindowDelegate {
     let preview = AgentVideoPreview()
     init(file: URL, files: AgentFiles, validate: (() throws -> Void)? = nil) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -138,5 +138,9 @@ struct AgentVideoSnapshot: Sendable {
         preview.show(file: file, files: files, validate: validate)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func canLeaveSettings() -> Bool {
+        guard super.canLeaveSettings() else { return false }; preview.pause(); return true
+    }
+    override func settingsWillLeave() { preview.clear() }
     func windowWillClose(_ notification: Notification) { preview.clear() }
 }

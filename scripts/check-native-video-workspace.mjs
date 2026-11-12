@@ -15,7 +15,7 @@ const command = (file, args) => { const p = spawnSync(file, args, { encoding: 'u
 command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
 const metadata = JSON.parse(command('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents/Info.plist')]));
 if (metadata.BlueFatFishAcceptanceOnly !== true) throw Error('Use an acceptance-only application; daily data must remain isolated');
-const reopen = option('--reopen'), manual = !!reopen || process.argv.includes('--manual-ui');
+const reopen = option('--reopen'), manual = !!reopen || process.argv.includes('--manual-ui'), knowledge = process.argv.includes('--knowledge');
 await mkdir(path.join(root, 'evidence/agent'), { recursive: true });
 const output = reopen ? path.resolve(reopen) : await mkdtemp(path.join(root, 'evidence/agent/video-workspace-command-'));
 for (const name of ['tmp', 'shared-home']) await mkdir(path.join(output, name), { recursive: true });
@@ -45,7 +45,7 @@ if (!reopen) {
   await writeFile(path.join(output, 'media-origin.json'), JSON.stringify(origin, null, 2) + '\n');
 }
 const phase = reopen ? `restart-${Date.now()}` : 'initial', binaryHash = hash(await readFile(binary));
-const args = ['--check', output, ...(manual ? ['--manual-ui', reopen ? '--video-workspace-reopen' : '--video-workspace-fixtures'] : ['--video-workspace-check'])];
+const args = ['--check', output, ...(manual ? ['--manual-ui', knowledge ? (reopen ? '--knowledge-video-reopen' : '--knowledge-video-fixtures') : (reopen ? '--video-workspace-reopen' : '--video-workspace-fixtures')] : ['--video-workspace-check', ...(knowledge ? ['--knowledge-video-check'] : [])])];
 const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TMPDIR: path.join(output, 'tmp') + '/' } });
 const log = createWriteStream(path.join(output, `launch-${phase}.log`)); child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
 await writeFile(path.join(output, `launch-${phase}.json`), JSON.stringify({ app, appPID: child.pid, binaryHash, args }, null, 2) + '\n');

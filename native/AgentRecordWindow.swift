@@ -584,15 +584,18 @@ import UniformTypeIdentifiers
     private func videoScope(_ files: AgentFiles) -> () throws -> Void {
         { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("视频所属任务或工作区已变化") } }
     }
-    private func showVideo(_ file: URL, files: AgentFiles, separate: Bool = false) throws {
+    private enum VideoPresentation { case inline, page, window }
+    private func showVideo(_ file: URL, files: AgentFiles, presentation: VideoPresentation = .inline) throws {
         guard try files.resolve(file.path) == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能预览此视频路径") }
-        if taskHosted, !documentOnly, !separate, let onOpenVideo {
+        if taskHosted, !documentOnly, presentation == .inline, let onOpenVideo {
             openedFile = file; text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "打开标签页"
             try onOpenVideo(file); return
         }
-        if separate {
-            video.pause(); videoWindow?.close(); videoWindow = AgentVideoWindow(file: file, files: files, validate: videoScope(files))
-            videoWindow?.showWindow(nil); videoWindow?.window?.makeKeyAndOrderFront(nil)
+        if presentation != .inline {
+            video.pause(); videoWindow?.close()
+            let next = AgentVideoWindow(file: file, files: files, validate: videoScope(files)); videoWindow = next
+            if presentation == .page { presentSettingsChild(next) }
+            else { next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil) }
         } else {
             text.string = ""; viewer.isHidden = true; markdown.isHidden = true; video.isHidden = false; readingToolbar.isHidden = true; sourceAdd.isHidden = true
             openedFile = file; open.isHidden = false; open.title = "新窗口"; state.stringValue = files.relative(file)
@@ -638,12 +641,13 @@ import UniformTypeIdentifiers
             guard let workspace = store.task(taskID)?.workspace, let file = markdownFile else { return }
             let files = try AgentFiles(workspace: workspace), target = try AgentMarkdownDocument.target(url, document: file, files: files)
             if taskHosted, AgentVideoSnapshot.supports(target), let onOpenVideo { try onOpenVideo(target); return }
+            if settingsHostWindow != nil, !taskHosted, AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, presentation: .page); return }
             if let row = items.firstIndex(where: { (try? files.resolve($0.value).path) == target.path }) {
                 guard canLeave() else { return }
                 if sections.selectedSegment == 6 { _ = wikiTree.select(items[row].value) }
                 else { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
                 _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
-            } else if AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, separate: true) }
+            } else if AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, presentation: .window) }
             else {
                 let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target)
                 next.onAddSelection = onAddSelection; next.canAddSelection = { [weak self] in self?.canAddSelection == true }
@@ -740,7 +744,7 @@ import UniformTypeIdentifiers
             do { try onOpenVideo(file) } catch { state.stringValue = error.localizedDescription }; return
         }
         if !video.isHidden, let file = openedFile, let task = store.task(taskID) {
-            do { try showVideo(file, files: AgentFiles(workspace: task.workspace), separate: true) } catch { state.stringValue = error.localizedDescription }; return
+            do { try showVideo(file, files: AgentFiles(workspace: task.workspace), presentation: .window) } catch { state.stringValue = error.localizedDescription }; return
         }
         if sections.selectedSegment == 1, AgentOffice.supports(value) { showOffice(value); return }
         if let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
@@ -775,7 +779,7 @@ import UniformTypeIdentifiers
                 guard let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("任务工作区已变化，请重新打开文件") }
                 let safe = try files.resolve(file.path)
                 guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能打开敏感文件") }
-                if AgentVideoSnapshot.supports(safe) { try self.showVideo(safe, files: files, separate: true) }
+                if AgentVideoSnapshot.supports(safe) { try self.showVideo(safe, files: files, presentation: self.settingsHostWindow != nil && !self.taskHosted ? .page : .window) }
                 else if AgentOffice.supports(safe.path) { self.showOffice(safe.path) }
                 else {
                     if !self.openedFiles.contains(safe.path) { self.openedFiles.append(safe.path) }

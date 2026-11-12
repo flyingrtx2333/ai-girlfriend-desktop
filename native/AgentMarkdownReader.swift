@@ -344,7 +344,7 @@ import AppKit
             if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) }
             else if AgentVideoSnapshot.supports(url) {
                 let target = try AgentMarkdownDocument.target(url, document: file ?? files.root.appendingPathComponent("index.md"), files: files)
-                videoWindow?.close(); videoWindow = AgentVideoWindow(file: target, files: files); videoWindow?.showWindow(nil); videoWindow?.window?.makeKeyAndOrderFront(nil)
+                videoWindow?.close(); let next = AgentVideoWindow(file: target, files: files); videoWindow = next; presentSettingsChild(next)
             } else { try open(url) }
         }
         catch { label.stringValue = error.localizedDescription }
@@ -357,6 +357,7 @@ import AppKit
         guard CommandLine.arguments.contains("--text-encoding-check") || AgentKnowledgePageHost.readbackEnabled || AgentTaskWorkspace.readbackEnabled else { return [:] }
         return ["editable": text.isEditable, "encoding": currentFormat?.encoding.rawValue ?? "", "byteOrderMark": currentFormat?.bom ?? false, "textHash": AgentFiles.hash(Data(text.string.utf8)), "file": file?.path ?? ""]
     }
+    func checkVideoLink(_ url: URL) { if CommandLine.arguments.contains("--knowledge-video-check") { follow(url) } }
     @objc private func goBack() {
         guard let previous = history.popLast() else { return }
         do { try open(previous, remember: false) }
