@@ -103,8 +103,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !busy else { state.stringValue = "请等待 Git 操作完成"; return false }
         guard !message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃提交说明？"; alert.addButton(withTitle: "放弃说明"); alert.addButton(withTitle: "继续编辑")
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }; message.stringValue = ""; return true
+        guard AgentUnsavedChanges.discard("放弃提交说明？", discardTitle: "放弃说明") else { return false }; message.stringValue = ""; return true
     }
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
     override func settingsDidAppear() { super.settingsDidAppear(); setBusy(busy) }

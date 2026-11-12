@@ -87,9 +87,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !hasPendingOperation else { return false }
         guard workspaceHasUnsavedChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃修改后的要求？"; alert.informativeText = "原任务与未发送的任务草稿会保留。"
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃修改")
-        return alert.runModal() == .alertSecondButtonReturn
+        return AgentUnsavedChanges.discard("放弃修改后的要求？", detail: "原任务与未发送的任务草稿会保留。", discardTitle: "放弃修改")
     }
     func windowWillClose(_ notification: Notification) { if reviewWindow?.settingsHostWindow == nil { reviewWindow?.window?.performClose(nil) }; settingsWillLeave() }
     func workspaceReadback() -> [String: Any] {

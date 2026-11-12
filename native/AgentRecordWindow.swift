@@ -805,8 +805,7 @@ import UniformTypeIdentifiers
         guard !saving else { state.stringValue = "正在保存…"; return false }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; return false }
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.informativeText = openedFile?.lastPathComponent ?? state.stringValue; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
+        guard AgentUnsavedChanges.discard("放弃未保存的更改？", detail: openedFile?.lastPathComponent ?? state.stringValue) else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
     override func canLeaveSettings() -> Bool {

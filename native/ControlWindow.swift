@@ -3079,6 +3079,7 @@ extension ControlWindow {
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
             value["nameEditor"] = nameEditor?.checkState() ?? ["visible": false]
+            value["unsavedConfirmation"] = AgentUnsavedChanges.checkState()
             value["taskFind"] = taskFind.checkState()
             value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]
             if companion?.checkDirectory != nil {

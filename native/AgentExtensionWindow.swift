@@ -72,6 +72,12 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        guard isPageVisible, let content = pageContentView, let host = presentingWindow else { return }
+        if let focused = host.firstResponder as? NSView, focused.isDescendant(of: content) { return }
+        host.makeFirstResponder(table)
+    }
     func prepareSettings(kind: AgentExtensionKind) {
         kinds.selectedSegment = kind == .command ? 1 : 0; selectedKind = kinds.selectedSegment
         kinds.isHidden = true
@@ -240,8 +246,7 @@ import UniformTypeIdentifiers
     }
     private func canLeave() -> Bool {
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
+        guard AgentUnsavedChanges.discard("放弃未保存的更改？") else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if let child = ruleWindow?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } }

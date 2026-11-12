@@ -73,8 +73,7 @@ import AppKit
     override func settingsWillLeave() { closeContent() }
     func discard() -> Bool {
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的卡片编辑？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃编辑")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; render(); return true
+        guard AgentUnsavedChanges.discard("放弃未保存的卡片编辑？", discardTitle: "放弃编辑") else { return false }; dirty = false; render(); return true
     }
     func reload() {
         guard !dirty, let task, let workspace = task.workspace else { if dirty { state.stringValue = "有未保存编辑；保存时核对当前版本" }; return }

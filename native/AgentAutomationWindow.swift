@@ -264,8 +264,7 @@ import AppKit
     }
     func prepareToLeave() -> Bool {
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的自动化更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }
+        guard AgentUnsavedChanges.discard("放弃未保存的自动化更改？") else { return false }
         newValue = nil; dirty = false; editing = false; reload(); return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { prepareToLeave() }

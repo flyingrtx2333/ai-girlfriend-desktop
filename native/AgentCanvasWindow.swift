@@ -255,8 +255,7 @@ import Darwin
         }
     }
     private func canLeave() -> Bool {
-        guard dirty else { return true }; let alert = NSAlert(); alert.messageText = "放弃未保存的源码？"; alert.informativeText = window?.title ?? "画布"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; draftTask?.cancel(); if let id = selectedID { canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID) }; return true
+        guard dirty else { return true }; guard AgentUnsavedChanges.discard("放弃未保存的源码？", detail: window?.title ?? "画布") else { return false }; dirty = false; draftTask?.cancel(); if let id = selectedID { canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID) }; return true
     }
     func prepareWorkspaceNavigation() -> Bool {
         guard !closed else { return false }

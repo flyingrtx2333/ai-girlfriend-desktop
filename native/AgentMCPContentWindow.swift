@@ -293,9 +293,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         guard presentingWindow?.attachedSheet == nil else { return false }
         guard !hasPendingOperation else { state.stringValue = "请先完成操作，或点击取消。"; return false }
         guard workspaceHasUnsavedChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "关闭 MCP 资料？"; alert.informativeText = "未加入草稿的参数将清除。任务草稿与已添加附件保留。"
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "关闭资料页")
-        return alert.runModal() == .alertSecondButtonReturn
+        return AgentUnsavedChanges.discard("关闭 MCP 资料？", detail: "未加入草稿的参数将清除。任务草稿与已添加附件保留。", discardTitle: "关闭资料页")
     }
     override func settingsWillLeave() { finishContent() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }

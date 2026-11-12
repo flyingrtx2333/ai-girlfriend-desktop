@@ -210,7 +210,7 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if dirty { let alert = NSAlert(); alert.messageText = "放弃未保存的 Agent 更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改"); guard alert.runModal() == .alertSecondButtonReturn else { return false } }
+        if dirty { guard AgentUnsavedChanges.discard("放弃未保存的 Agent 更改？") else { return false } }
         return true
     }
     func checkScopeLayout(_ output: URL) async -> [String: Bool] {

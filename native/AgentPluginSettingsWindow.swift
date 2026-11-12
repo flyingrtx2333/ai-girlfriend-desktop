@@ -51,6 +51,6 @@ import AppKit
         } catch { state.stringValue = error.localizedDescription }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard dirty else { return true }; let alert = NSAlert(); alert.messageText = "放弃未保存的插件设置？"; alert.addButton(withTitle: "放弃更改"); alert.addButton(withTitle: "继续编辑"); return alert.runModal() == .alertFirstButtonReturn
+        guard dirty else { return true }; return AgentUnsavedChanges.discard("放弃未保存的插件设置？")
     }
 }

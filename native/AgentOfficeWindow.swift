@@ -254,8 +254,7 @@ import Darwin
     func cancelToolOperation() { toolEpoch = UUID() }
     private func canDiscard() -> Bool {
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.informativeText = file.lastPathComponent; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        return alert.runModal() == .alertSecondButtonReturn
+        return AgentUnsavedChanges.discard("放弃未保存的更改？", detail: file.lastPathComponent)
     }
     func prepareWorkspaceNavigation() -> Bool {
         guard !working || opening != nil && !dirty, uiTask == nil else { state.stringValue = "正在处理，请稍候"; return false }; return true

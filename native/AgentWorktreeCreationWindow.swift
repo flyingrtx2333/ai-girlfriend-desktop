@@ -56,9 +56,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !busy else { return false }
         guard hasPendingChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃工作树创建配置？"; alert.informativeText = branch.stringValue
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃配置")
-        return alert.runModal() == .alertSecondButtonReturn
+        return AgentUnsavedChanges.discard("放弃工作树创建配置？", detail: branch.stringValue, discardTitle: "放弃配置")
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
     @objc private func changed() { review = nil; create.isEnabled = false; state.stringValue = ""; diff.show("", oldTitle: "起点", newTitle: "当前修改") }

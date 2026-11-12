@@ -88,8 +88,7 @@ import UniformTypeIdentifiers
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmName() }
     private func confirmName() -> Bool {
         guard page == .name, nameChanged else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的知识库名称？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; nameChanged = false; page = .bases; updatePage(); return true
+        guard AgentUnsavedChanges.discard("放弃未保存的知识库名称？") else { return false }; nameChanged = false; page = .bases; updatePage(); return true
     }
     func controlTextDidChange(_ notification: Notification) { if notification.object as? NSTextField === baseName { nameChanged = true } }
     @objc private func nameScopeChanged() { nameChanged = true }

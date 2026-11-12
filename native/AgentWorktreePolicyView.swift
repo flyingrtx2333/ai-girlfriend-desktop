@@ -60,9 +60,7 @@ import AppKit
     var hasPendingChanges: Bool { hasEdits && draftPolicy != store.worktreeRetention.policy }
     func prepareToLeave() -> Bool {
         guard hasPendingChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未应用的工作树设置？"
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃修改")
-        return alert.runModal() == .alertSecondButtonReturn
+        return AgentUnsavedChanges.discard("放弃未应用的工作树设置？", discardTitle: "放弃修改")
     }
     private func loadControls() {
         let service = store.worktreeRetention, value = service.policy; revision = service.revision; hasEdits = false

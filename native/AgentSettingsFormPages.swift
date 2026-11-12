@@ -42,8 +42,7 @@ import AppKit
     @objc private func cancelForm() { guard let window, windowShouldClose(window) else { return }; close() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的填写内容？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改")
-        guard alert.runModal() == .alertSecondButtonReturn else { return false }; dirty = false; return true
+        guard AgentUnsavedChanges.discard("放弃未保存的填写内容？") else { return false }; dirty = false; return true
     }
 }
 

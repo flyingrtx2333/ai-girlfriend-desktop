@@ -153,8 +153,7 @@ import AppKit
     }
     func confirmClosing() -> Bool {
         guard window?.attachedSheet == nil else { return false }; guard dirty else { return true }
-        let alert = NSAlert(); alert.messageText = "保存规则更改？"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "放弃更改"); alert.addButton(withTitle: "继续编辑")
-        switch alert.runModal() { case .alertFirstButtonReturn: return saveChanges(); case .alertSecondButtonReturn: dirty = false; if creating { clear() } else { reload(select: selected?.id) }; return true; default: return false }
+        switch AgentUnsavedChanges.saveOrDiscard("保存规则更改？") { case .alertFirstButtonReturn: return saveChanges(); case .alertSecondButtonReturn: dirty = false; if creating { clear() } else { reload(select: selected?.id) }; return true; default: return false }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmClosing() }
 }

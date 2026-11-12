@@ -91,9 +91,7 @@ struct AgentOfficeEditError: LocalizedError {
         for window in windows.values { do { try await window.verifyClean() } catch { if window.dirty { continue }; let alert = NSAlert(); alert.messageText = "办公文件尚未就绪，请关闭其窗口后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false } }
         let unsaved = windows.values.filter(\.dirty)
         guard !unsaved.isEmpty else { return true }
-        let alert = NSAlert(); alert.messageText = "仍有未保存的办公文档"; alert.informativeText = unsaved.map { $0.file.lastPathComponent }.sorted().joined(separator: "\n")
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改并退出")
-        if alert.runModal() == .alertSecondButtonReturn { return true }
+        if AgentUnsavedChanges.discard("仍有未保存的办公文档", detail: unsaved.map { $0.file.lastPathComponent }.sorted().joined(separator: "\n"), discardTitle: "放弃更改并退出") { return true }
         if let first = unsaved.first { if let onPresent { try? onPresent(first) } else { first.showWindow(nil); first.window?.makeKeyAndOrderFront(nil) } }; return false
     }
     func closeAll() { for window in Array(windows.values) { window.finishClose() }; windows.removeAll() }

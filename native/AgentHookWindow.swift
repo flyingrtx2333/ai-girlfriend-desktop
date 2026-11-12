@@ -332,6 +332,6 @@ private extension AgentHookEvent {
     @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue } }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !saved, editor.string != original else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未保存的更改？"; alert.addButton(withTitle: "放弃"); alert.addButton(withTitle: "继续编辑"); return alert.runModal() == .alertFirstButtonReturn
+        return AgentUnsavedChanges.discard("放弃未保存的更改？", discardTitle: "放弃")
     }
 }

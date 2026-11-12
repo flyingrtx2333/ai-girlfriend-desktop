@@ -102,9 +102,7 @@ import AppKit
         if closed || submitted || discardAccepted { return true }
         guard prepareWorkspaceNavigation(), presentingWindow?.attachedSheet == nil else { return false }
         guard hasPendingChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃未添加的网页标注？"; alert.informativeText = canvas.shot.source.title
-        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃标注")
-        discardAccepted = alert.runModal() == .alertSecondButtonReturn; return discardAccepted
+        discardAccepted = AgentUnsavedChanges.discard("放弃未添加的网页标注？", detail: canvas.shot.source.title, discardTitle: "放弃标注"); return discardAccepted
     }
     override func settingsWillLeave() { finishClose() }
     override func close() { if canLeaveSettings() { super.close() } }

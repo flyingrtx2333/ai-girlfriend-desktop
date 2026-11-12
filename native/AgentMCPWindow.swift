@@ -160,7 +160,7 @@ import UniformTypeIdentifiers
         presentSettingsChild(page)
     }
     private func canLeave() -> Bool {
-        guard !dirty else { let alert = NSAlert(); alert.messageText = "放弃未保存的配置？"; alert.addButton(withTitle: "放弃"); alert.addButton(withTitle: "继续编辑"); return alert.runModal() == .alertFirstButtonReturn }
+        guard !dirty else { return AgentUnsavedChanges.discard("放弃未保存的配置？", discardTitle: "放弃") }
         return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }

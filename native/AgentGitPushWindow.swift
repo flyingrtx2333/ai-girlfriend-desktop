@@ -243,8 +243,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard job == nil else { state.stringValue = "请等待远端保存完成"; return false }
         guard hasPendingChanges else { return true }
-        let alert = NSAlert(); alert.messageText = "放弃远端编辑？"; alert.addButton(withTitle: "放弃编辑"); alert.addButton(withTitle: "继续编辑")
-        return alert.runModal() == .alertFirstButtonReturn
+        return AgentUnsavedChanges.discard("放弃远端编辑？", discardTitle: "放弃编辑")
     }
     func windowWillClose(_ notification: Notification) { job?.cancel(); store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false) }
     @objc private func addRemote() {

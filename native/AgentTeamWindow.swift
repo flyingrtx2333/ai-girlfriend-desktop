@@ -156,6 +156,6 @@ import AppKit
         do { agents = try store.agents.list(workspace: workspace); refreshRoles(leaderID: id) } catch { state.stringValue = error.localizedDescription }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if dirty { let alert = NSAlert(); alert.messageText = "放弃未保存的团队更改？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃更改"); return alert.runModal() == .alertSecondButtonReturn }; return true
+        if dirty { return AgentUnsavedChanges.discard("放弃未保存的团队更改？") }; return true
     }
 }
