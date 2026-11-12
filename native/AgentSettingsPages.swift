@@ -106,6 +106,30 @@ import AppKit
     }
 }
 
+@MainActor enum AgentSettingsScroll {
+    static func target(from hit: NSView, within boundary: NSScrollView, dx: CGFloat, dy: CGFloat, modifiers: NSEvent.ModifierFlags) -> NSScrollView? {
+        guard abs(dy) > abs(dx), modifiers.intersection([.shift, .control, .option, .command]).isEmpty,
+              hit === boundary || hit.isDescendant(of: boundary) else { return nil }
+        var view: NSView? = hit, passedInner = false
+        while let current = view {
+            // These controls own their wheel operations, including value changes.
+            if current is NSSlider || current is NSStepper || current is NSPopUpButton || current is NSComboBox || current is NSDatePicker || current is NSScroller { return nil }
+            if let scroll = current as? NSScrollView {
+                if let document = scroll.documentView {
+                    let visible = scroll.documentVisibleRect, bounds = document.bounds
+                    let towardMaximum = (dy < 0) == document.isFlipped
+                    let remaining = towardMaximum ? bounds.maxY - visible.maxY : visible.minY - bounds.minY
+                    if remaining > 0.5 { return passedInner ? scroll : nil }
+                }
+                passedInner = true
+            }
+            if current === boundary { break }
+            view = current.superview
+        }
+        return nil
+    }
+}
+
 @MainActor private final class AgentSettingsDocument: NSView {
     override var isFlipped: Bool { true }
 }
@@ -118,6 +142,8 @@ import AppKit
     private var entries: [Entry] = [], keys: [String] = [], selectedTab = 0
     private var category = "", identity = ""
     private var makePage: ((String) -> AgentSettingsPageController?)?
+    private var scrollMonitor: Any?
+    private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { entries.map(\.controller) }
 
@@ -146,6 +172,38 @@ import AppKit
         updateHeader()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { stopScrollMonitor() }
+        else if !entries.isEmpty { startScrollMonitor() }
+    }
+    private func startScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, !self.entries.isEmpty, !self.isHiddenOrHasHiddenAncestor,
+                  let window = self.window, event.window === window else { return event }
+            if event.phase.contains(.began) || event.momentumPhase.contains(.began) { self.forwardedScrolls.removeAllObjects() }
+            let hit = self.viewport.superview.flatMap { self.viewport.hitTest($0.convert(event.locationInWindow, from: nil)) }
+            // AppKit also needs the original zero-delta gesture and momentum
+            // endings in each scroll view that received forwarded movement.
+            if event.scrollingDeltaX == 0 && event.scrollingDeltaY == 0 {
+                let native = (hit as? NSScrollView) ?? hit?.enclosingScrollView
+                self.forwardedScrolls.allObjects.filter { $0 !== native }.forEach { $0.scrollWheel(with: event) }
+                if !event.phase.intersection([.ended, .cancelled]).isEmpty || event.momentumPhase.contains(.ended) { self.forwardedScrolls.removeAllObjects() }
+                return event
+            }
+            guard let hit,
+                  let target = AgentSettingsScroll.target(from: hit, within: self.viewport, dx: event.scrollingDeltaX, dy: event.scrollingDeltaY, modifiers: event.modifierFlags) else { return event }
+            if !event.phase.isEmpty || !event.momentumPhase.isEmpty { self.forwardedScrolls.add(target) }
+            target.scrollWheel(with: event)
+            return nil
+        }
+    }
+    private func stopScrollMonitor() {
+        if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor); self.scrollMonitor = nil }
+        forwardedScrolls.removeAllObjects()
+    }
 
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshAppearance() }
     func refreshAppearance() {
@@ -176,10 +234,12 @@ import AppKit
     }
     private func displayCurrent() {
         guard let entry = entries.last else { updateHeader(); return }
+        forwardedScrolls.removeAllObjects()
         let content = entry.view; document.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: document.leadingAnchor), content.trailingAnchor.constraint(equalTo: document.trailingAnchor), content.topAnchor.constraint(equalTo: document.topAnchor), content.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
         layoutSubtreeIfNeeded()
         viewport.contentView.scroll(to: .zero); viewport.reflectScrolledClipView(viewport.contentView)
+        startScrollMonitor()
         entry.controller.settingsDidAppear(); updateHeader()
     }
     private func updateHeader() {
@@ -202,6 +262,7 @@ import AppKit
         tabs.selectedSegment = index; changeTab()
     }
     private func clearEntries() {
+        stopScrollMonitor()
         for entry in entries.reversed() { entry.controller.endSettingsHosting() }
         entries = []; updateHeader()
     }

@@ -192,6 +192,8 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 
 工作台与原生控件共用 `native/Assets.xcassets` 的浅、深色强调色。默认验收构建和正式构建均编译该资源，并通过应用的 [`NSAccentColorName`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaccentcolorname) 声明；不修改系统颜色偏好。无颜色资源的独立执行环境保留原有工作台配色。
 
+设置管理页的内层列表或正文没有更多内容、或已到达当前方向的边界时，共用承载层将原始滚轮事件交给仍可滚动的外层。内层还有空间时继续由原生控件处理；横向、修改键、滑块与下拉控件保留原操作。离开设置管理页或脱离窗口时移除监听，不合成滚动位移。`native:check-settings` 在原有布局检查中加入真实滚动视图的边界、方向和控件保留检查。
+
 `npm run native:check-settings` 使用独立配置检查分类、跨分类搜索、草稿保留和 980×700／780×540 排版，并输出原生截图。[验证记录](verification/settings.json)与公开截图不含用户配置或凭据。该检查不启用麦克风，不调用在线模型或 TTS，也不重复运行上一版语音与口型测试。
 
 ## v0.8.0 的屏幕陪伴

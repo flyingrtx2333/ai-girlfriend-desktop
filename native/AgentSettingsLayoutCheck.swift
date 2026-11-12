@@ -1,5 +1,51 @@
 import AppKit
 
+@MainActor private final class AgentSettingsScrollCheckDocument: NSView {
+    let documentFlipped: Bool
+    init(_ height: CGFloat, flipped: Bool = true) { documentFlipped = flipped; super.init(frame: NSRect(x: 0, y: 0, width: 200, height: height)) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var isFlipped: Bool { documentFlipped }
+}
+
+@MainActor private func checkSettingsScrollChaining() -> [String: Bool] {
+    let outer = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 200)), document = AgentSettingsScrollCheckDocument(600)
+    document.setFrameSize(NSSize(width: 500, height: 600)); outer.documentView = document
+    let inner = NSScrollView(frame: NSRect(x: 10, y: 10, width: 200, height: 100)), rows = AgentSettingsScrollCheckDocument(100)
+    document.addSubview(inner); inner.documentView = rows
+    func move(_ scroll: NSScrollView, bottom: Bool) {
+        let bounds = scroll.documentView!.bounds
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom ? bounds.maxY - scroll.documentVisibleRect.height : bounds.minY))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    func target(_ dy: CGFloat, dx: CGFloat = 0, modifiers: NSEvent.ModifierFlags = [], hit: NSView? = nil) -> NSScrollView? {
+        AgentSettingsScroll.target(from: hit ?? rows, within: outer, dx: dx, dy: dy, modifiers: modifiers)
+    }
+    var checks: [String: Bool] = [:]
+    checks["shortNestedListHandsDownwardWheelToSettings"] = target(-40) === outer
+    move(outer, bottom: true)
+    checks["shortNestedListHandsUpwardWheelToSettings"] = target(40) === outer
+    rows.setFrameSize(NSSize(width: 200, height: 600)); move(inner, bottom: false)
+    checks["longNestedListKeepsAvailableDownwardWheel"] = target(-40) == nil
+    checks["longNestedListAtTopHandsUpwardWheelToSettings"] = target(40) === outer
+    move(outer, bottom: false); move(inner, bottom: true)
+    checks["longNestedListAtBottomHandsDownwardWheelToSettings"] = target(-40) === outer
+    checks["longNestedListKeepsAvailableReverseWheel"] = target(40) == nil
+    move(outer, bottom: true)
+    checks["allScrollViewsAtBoundaryKeepNativeEvent"] = target(-40) == nil
+    move(outer, bottom: false)
+    checks["modifiedWheelKeepsNativeControlBehavior"] = [NSEvent.ModifierFlags.shift, .control, .option, .command].allSatisfy { target(-40, modifiers: $0) == nil }
+    checks["horizontalAndZeroWheelKeepNativeBehavior"] = target(-40, dx: 50) == nil && target(0) == nil
+    let slider = NSSlider(); rows.addSubview(slider)
+    checks["valueControlKeepsItsWheelEvent"] = target(-40, hit: slider) == nil
+    checks["wheelOutsideSettingsIsNotRouted"] = target(-40, hit: NSView()) == nil
+    let unflipped = AgentSettingsScrollCheckDocument(600, flipped: false); inner.documentView = unflipped
+    move(inner, bottom: false)
+    let first = target(-40, hit: unflipped) === outer && target(40, hit: unflipped) == nil
+    move(outer, bottom: true); move(inner, bottom: true)
+    checks["unflippedDocumentUsesItsNativeCoordinateDirection"] = first && target(40, hit: unflipped) === outer && target(-40, hit: unflipped) == nil
+    return checks
+}
+
 @MainActor extension AppDelegate {
     func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) throws {
         guard let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置布局验收项目") }
@@ -52,6 +98,7 @@ import AppKit
             }
             let before = try fingerprints(), layout = await control.checkSettingsPageLayout()
             checks.merge(layout["checks"] as? [String: Bool] ?? [:]) { _, next in next }; report["frames"] = layout["frames"]
+            checks.merge(checkSettingsScrollChaining()) { _, next in next }
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 764, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
             let page = AgentSettingsPageHost(); host.contentView = page
@@ -63,7 +110,7 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            report["success"] = checks.count == 45 && checks.values.allSatisfy { $0 }
+            report["success"] = checks.count == 57 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))
