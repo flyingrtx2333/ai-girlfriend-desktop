@@ -50,10 +50,29 @@ import AppKit
                         for (item, pass) in workspace["checks"] as? [String: Bool] ?? [:] { checks[key + "-" + item] = pass }
                         for (item, pass) in value["checks"] as? [String: Bool] ?? [:] { checks[key + "-" + item] = pass }
                         checks[key + "-actualVisibleOwnerAndKeyboardFocus"] = page.isPageVisible && page.presentingWindow === control.window && (value["focusInPage"] as? Bool == true || value["editorFocused"] as? Bool == true)
+                        checks[key + "-actualWindowSizeRemainsRequested"] = control.window?.contentView?.bounds.size == size
                     }
                 }
             }
+            func inspectHiddenSizing(_ name: String, page: AgentSettingsPageController, state: () -> [String: Any]) async throws {
+                let size = NSSize(width: 800, height: 550), root = host.selectedRoot, before = state()
+                guard control.showSettingsCategory("appearance") else { throw PetError("不能进入外观设置") }
+                checks[name + "-hiddenCachedBodyDetachesFromWindow"] = host.currentController === page && page.pageContentView?.window == nil && page.presentingWindow === control.window
+                for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                    control.window?.appearance = NSAppearance(named: appearance); control.window?.contentView?.layoutSubtreeIfNeeded(); await wait(0.1)
+                    report[name + "-settings-" + theme] = await control.taskWorkspaceReadback()
+                    checks[name + "-settings-" + theme + "-doesNotGrowWindow"] = control.window?.contentView?.bounds.size == size
+                }
+                control.show(tab: "chat"); await wait(0.05)
+                let returned = state(), valueKey = before["text"] == nil ? "patch" : "text"
+                checks[name + "-settingsReturnRestoresSamePageInputAndFocus"] = host.currentController === page && page.isPageVisible && returned[valueKey] as? String == before[valueKey] as? String && (returned["focusInPage"] as? Bool == true || returned["editorFocused"] as? Bool == true) && control.window?.contentView?.bounds.size == size
+                host.checkHide(); await wait(0.1)
+                checks[name + "-hidePreservesPageWithoutConstrainingWindow"] = !host.requested && host.currentController === page && page.pageContentView?.window == nil && control.window?.contentView?.bounds.size == size
+                host.show(taskID: fixture.taskID, root: root) { page }; await wait(0.05)
+                checks[name + "-reopenRestoresCachedViewAndExactInput"] = host.currentController === page && page.pageContentView?.window === control.window && state()[valueKey] as? String == before[valueKey] as? String && control.window?.contentView?.bounds.size == size
+            }
             await inspect("rollback", page: rollback, state: rollback.workspaceReadback)
+            try await inspectHiddenSizing("rollback", page: rollback, state: rollback.workspaceReadback)
             rollback.checkAction("", row: 1); await ready(rollback)
             checks["fileSelectionLoadsItsActualComparison"] = (rollback.workspaceReadback()["patch"] as? String)?.contains("beta-two") == true
             rollback.checkAction("cancel"); await wait(0.05)
@@ -65,6 +84,7 @@ import AppKit
             editor.checkAction(text: edited)
             checks["unsentEditedRequirementIsMarkedInItsTab"] = editor.workspaceHasUnsavedChanges && (host.checkState()["tabLabels"] as? [String] ?? []).contains("• 编辑并重发")
             await inspect("edit", page: editor, state: editor.workspaceReadback)
+            try await inspectHiddenSizing("edit", page: editor, state: editor.workspaceReadback)
             control.presentTaskContext(section: 0); control.presentEditResend(taskID: fixture.taskID, messageID: fixture.messageID)
             checks["anotherTabAndRepeatedEntryKeepSameUnsavedEditor"] = host.currentController === editor && editor.workspaceReadback()["text"] as? String == edited
             host.checkHide(); control.presentEditResend(taskID: fixture.taskID, messageID: fixture.messageID)

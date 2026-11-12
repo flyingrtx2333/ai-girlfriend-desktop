@@ -100,12 +100,19 @@ import AppKit
     private func displayCurrent() {
         if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: body) { window?.makeFirstResponder(nil) }
         body.subviews.forEach { $0.removeFromSuperview() }
-        if let entry = entries.last {
+        if !isHidden, let entry = entries.last {
             body.addSubview(entry.content); entry.content.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([entry.content.leadingAnchor.constraint(equalTo: body.leadingAnchor), entry.content.trailingAnchor.constraint(equalTo: body.trailingAnchor), entry.content.topAnchor.constraint(equalTo: body.topAnchor), entry.content.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
             entry.controller.settingsDidAppear()
         }
         updateTabs(); updateHeader(full: headerFull ?? expanded); needsLayout = true; window?.recalculateKeyViewLoop()
+    }
+    func setVisible(_ visible: Bool) {
+        guard isHidden != !visible else { return }
+        isHidden = !visible
+        // Cached pages retain their editors, but a zero-width hidden workspace
+        // must not let wrapping labels increase the main window's minimum size.
+        displayCurrent()
     }
     private func updateTabs() {
         let roots = taskID.flatMap { orders[$0] } ?? [], signature = (taskID ?? "") + roots.map(\.key).joined(separator: "\n")
@@ -243,6 +250,6 @@ import AppKit
         guard Self.readbackEnabled else { return [:] }
         let attached = currentController?.pageContentView?.window === window && currentController?.presentingWindow === window
         let checks = ["workspaceUsesTaskWindow": attached, "noFloatingGitPages": controllers.allSatisfy { $0.window?.isVisible != true }, "workspaceHasUsableWidth": bounds.width >= 450, "workspaceHasUsableHeight": body.bounds.height >= 300]
-        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks, "mcp": (currentController as? AgentMCPContentWindow)?.workspaceReadback() ?? [:]]
+        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "bodyAttached": currentController?.pageContentView?.superview === body, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks, "mcp": (currentController as? AgentMCPContentWindow)?.workspaceReadback() ?? [:]]
     }
 }

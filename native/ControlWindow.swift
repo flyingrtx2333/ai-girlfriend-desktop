@@ -636,7 +636,9 @@ final class FormDocumentView: NSView {
         }
         if showWorkspace { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
         else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
-        terminalSplit.isHidden = fullWorkspace; taskWorkspace.isHidden = !showWorkspace; taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
+        terminalSplit.isHidden = fullWorkspace
+        if !showWorkspace { taskWorkspace.setVisible(false) }
+        taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
         settingsSidebarWidth?.constant = settingsWidth
         workbenchSidebar.isHidden = configuring || !sidebarRequested
         navigationLeading.constant = sidebarRequested ? 18 : 82
@@ -672,6 +674,7 @@ final class FormDocumentView: NSView {
         entryToolbarHeight.constant = available < preferred ? 64 : 34
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target }
+        if showWorkspace { taskWorkspace.setVisible(true) }
         messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
@@ -847,7 +850,7 @@ final class FormDocumentView: NSView {
         if selectedTab == "knowledge", !knowledgePageHost.prepareToLeave() { return false }
         return settingsPageHost.leave()
     }
-    @discardableResult private func showSettingsCategory(_ key: String) -> Bool {
+    @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); return true
