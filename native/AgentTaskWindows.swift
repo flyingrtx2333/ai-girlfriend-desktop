@@ -77,8 +77,8 @@ import AppKit
         additionalTaskWindows.removeAll { $0 === window }
         if focusedTaskControl === window { focusedTaskControl = nil }
     }
-    func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
-        for window in taskControls { try window.requireTaskDeletionAllowed(ids) }
+    func requireTaskDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
+        for window in taskControls { try window.requireTaskDeletionAllowed(ids, ignoring: controller) }
     }
     func closeDeletedTaskWindows(_ ids: Set<String>) {
         for window in taskControls { window.closeDeletedTaskRecords(ids); window.scheduleRender() }

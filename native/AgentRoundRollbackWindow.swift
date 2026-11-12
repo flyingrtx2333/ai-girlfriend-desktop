@@ -1,8 +1,8 @@
 import AppKit
 
-@MainActor final class AgentRoundRollbackWindow: NSWindowController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+@MainActor final class AgentRoundRollbackWindow: AgentSettingsPageController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private let store: AgentStore, taskID: String, messageID: String
-    private let table = NSTableView(), text = NSTextView(), state = NSTextField(wrappingLabelWithString: "")
+    private let table = NSTableView(), diff = AgentGitDiffView(), state = NSTextField(wrappingLabelWithString: "")
     private let applyButton = NSButton(), refreshButton = NSButton(title: "重新检查", target: nil, action: nil)
     private var review: AgentRoundRollback.Review?, loading: Task<Void, Never>?, generation = 0, applying = false
     private let actionTitle: String?
@@ -14,13 +14,13 @@ import AppKit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.minSize = NSSize(width: 540, height: 520); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        let content = NSView(); window.contentView = content
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         let path = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("path")); path.title = "文件"; path.width = 480
         let action = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action")); action.title = "操作"; action.width = 150
-        table.addTableColumn(path); table.addTableColumn(action); table.rowHeight = 28; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("将恢复的文件")
+        path.minWidth = 100; action.width = 112; action.minWidth = 112; action.maxWidth = 112; action.resizingMask = []
+        table.addTableColumn(path); table.addTableColumn(action); table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle; table.rowHeight = 28; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("将恢复的文件")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.borderType = .bezelBorder
-        text.isEditable = false; text.isSelectable = true; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.isRichText = false; text.textContainerInset = NSSize(width: 8, height: 8); text.setAccessibilityLabel("文件撤回差异")
-        let diff = NSScrollView(); diff.documentView = text; diff.hasVerticalScroller = true; diff.borderType = .bezelBorder
+        diff.text.setAccessibilityLabel("文件撤回差异")
         let notice = NSTextField(wrappingLabelWithString: notice ?? "对话记录会保留。命令、服务及外部操作不能自动撤回。"); notice.font = .systemFont(ofSize: 12); notice.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12); state.textColor = .systemRed
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
@@ -36,14 +36,23 @@ import AppKit
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    var boundTaskID: String { taskID }
+    var hasPendingOperation: Bool { applying }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        if let content = pageContentView { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
+        if isPageVisible { presentingWindow?.makeFirstResponder(table) }
+    }
+    override func settingsWillLeave() { loading?.cancel(); generation += 1 }
+    private func showDiff(_ value: String) { diff.show(value, oldTitle: "当前", newTitle: "恢复后", accessibilityContext: "文件撤回") }
     @objc private func refresh() {
-        guard !applying else { return }; generation += 1; loading?.cancel(); text.string = ""; state.stringValue = ""
+        guard !applying else { return }; generation += 1; loading?.cancel(); showDiff(""); state.stringValue = ""
         do {
             let value = try AgentRoundRollback.review(taskID: taskID, from: messageID, store: store); review = value
             let title = actionTitle ?? (value.recovery ? "恢复撤回前文件" : "撤回文件")
             window?.title = title + " · " + (store.task(taskID)?.title ?? "任务"); applyButton.title = title; applyButton.setAccessibilityLabel(title)
             applyButton.isEnabled = value.canApply; state.stringValue = value.issues.prefix(2).joined(separator: "\n"); state.toolTip = value.issues.joined(separator: "\n")
-            table.deselectAll(nil); table.reloadData(); text.string = value.issues.joined(separator: "\n")
+            table.deselectAll(nil); table.reloadData(); showDiff(value.issues.joined(separator: "\n"))
             if !value.paths.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         } catch { review = nil; applyButton.title = actionTitle ?? "撤回文件"; applyButton.isEnabled = false; state.stringValue = error.localizedDescription; table.reloadData() }
     }
@@ -57,9 +66,9 @@ import AppKit
     }
     func tableViewSelectionDidChange(_ notification: Notification) { loadSelection() }
     private func loadSelection() {
-        generation += 1; let token = generation; loading?.cancel(); text.string = ""
+        generation += 1; let token = generation; loading?.cancel(); showDiff("")
         guard let review, review.paths.indices.contains(table.selectedRow) else { return }
-        guard let entry = review.entries.first(where: { $0.path == review.paths[table.selectedRow] }) else { text.string = review.issues.joined(separator: "\n"); return }
+        guard let entry = review.entries.first(where: { $0.path == review.paths[table.selectedRow] }) else { showDiff(review.issues.joined(separator: "\n")); return }
         let desired = entry.desired.state, current = entry.current.state
         let change = AgentChange(path: entry.path, existed: desired.kind != "missing", backup: entry.desired.backup, beforeHash: desired.hash, afterHash: current.hash, permissions: desired.permissions, beforeKind: desired.kind, afterKind: current.kind, afterPermissions: current.permissions)
         loading = Task { @MainActor [weak self] in
@@ -68,20 +77,30 @@ import AppKit
                 let comparison = try AgentChanges.comparison(change, taskID: taskID, store: store, strict: true)
                 defer { try? FileManager.default.removeItem(at: comparison.directory) }
                 let diff = try await AgentChanges.fileDiff(left: comparison.right, right: comparison.left, directory: comparison.directory, protectedData: store.directory.deletingLastPathComponent())
-                guard !Task.isCancelled, token == generation else { return }; text.string = diff.isEmpty ? "文件内容相同；检查权限或类型变更。" : AgentChanges.labels(diff, path: URL(fileURLWithPath: entry.path).lastPathComponent)
+                guard !Task.isCancelled, token == generation else { return }; showDiff(diff.isEmpty ? "文件内容相同；检查权限或类型变更。" : AgentChanges.labels(diff, path: URL(fileURLWithPath: entry.path).lastPathComponent))
             }
-            catch { guard !Task.isCancelled, token == generation else { return }; text.string = error.localizedDescription }
+            catch { guard !Task.isCancelled, token == generation else { return }; showDiff(error.localizedDescription) }
         }
     }
     @objc private func apply() {
         guard let review, review.canApply, !applying else { return }; loading?.cancel(); generation += 1
         do {
-            try beforeApply?(); applying = true; applyButton.isEnabled = false; refreshButton.isEnabled = false; state.stringValue = "正在恢复文件…"; window?.displayIfNeeded()
+            try beforeApply?(); applying = true; applyButton.isEnabled = false; refreshButton.isEnabled = false; state.stringValue = "正在恢复文件…"; presentingWindow?.displayIfNeeded()
             if let performReview { try performReview(review) } else { try AgentRoundRollback.apply(review, store: store) }
-            applying = false; onComplete?(); close()
+            applying = false; close(); onComplete?()
         } catch { applying = false; refreshButton.isEnabled = true; applyButton.isEnabled = false; state.stringValue = error.localizedDescription }
     }
     @objc private func cancel() { if !applying { close() } }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !applying }
-    func windowWillClose(_ notification: Notification) { loading?.cancel(); generation += 1 }
+    func windowWillClose(_ notification: Notification) { settingsWillLeave() }
+    func workspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled, let content = pageContentView else { return [:] }
+        func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
+        return ["taskID": taskID, "messageID": messageID, "visible": isPageVisible, "busy": applying, "paths": review?.paths ?? [], "fingerprint": review?.fingerprint ?? "", "patch": diff.patch, "status": state.stringValue, "applyEnabled": applyButton.isEnabled, "focusInPage": (presentingWindow?.firstResponder as? NSView)?.isDescendant(of: content) == true, "checks": ["rollbackListFitsPage": inside(table.enclosingScrollView!), "rollbackDiffFitsPage": inside(diff), "rollbackButtonsFitPage": inside(applyButton) && inside(refreshButton), "rollbackDiffHasUsableHeight": diff.bounds.height >= 100]]
+    }
+    func checkAction(_ action: String, row: Int? = nil) {
+        guard CommandLine.arguments.contains("--conversation-workspace-check") else { return }
+        if let row, (0..<table.numberOfRows).contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        if action == "refresh" { refresh() }; if action == "apply" { apply() }; if action == "cancel" { cancel() }
+    }
 }

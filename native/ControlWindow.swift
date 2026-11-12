@@ -155,8 +155,6 @@ final class FormDocumentView: NSView {
     private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
-    private var roundRollbackWindow: AgentRoundRollbackWindow?
-    private var editResendWindow: AgentEditResendWindow?
     private var taskModelWindow: AgentTaskModelWindow?
     private var contextWindow: AgentContextWindow?
     private let taskMCPContext = AgentWorkbenchButton()
@@ -535,7 +533,7 @@ final class FormDocumentView: NSView {
             window?.contentView?.layoutSubtreeIfNeeded(); window?.makeFirstResponder(composer)
         }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
@@ -1227,12 +1225,16 @@ final class FormDocumentView: NSView {
         }
         selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab()
         renderMessages()
-        if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
+        if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        if selectedTab == "chat" { window?.makeFirstResponder(composer) }
+        if selectedTab == "chat" { focusTaskInput() }
         if selectedTab == "knowledge" { knowledgePageHost.focusCurrentPage() }
         if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
         companion?.updatePetWorkspaceOcclusion()
+    }
+    private func focusTaskInput() {
+        if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow { page.settingsDidAppear() }
+        else { window?.makeFirstResponder(composer) }
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
@@ -1585,15 +1587,15 @@ final class FormDocumentView: NSView {
         guard knowledgePageHost.prepareToLeave() else { return false }
         guard await taskWorkspace.canFinish() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         knowledgePageHost.finish()
         taskWorkspace.finish()
         return true
     }
-    func requireTaskDeletionAllowed(_ ids: Set<String>) throws {
+    func requireTaskDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
-        try taskWorkspace.requireDeletionAllowed(ids)
+        try taskWorkspace.requireDeletionAllowed(ids, ignoring: controller)
         if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
         for page in knowledgePageHost.controllers {
             if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
@@ -1859,7 +1861,7 @@ final class FormDocumentView: NSView {
         if let task = tasks.task(id) { bindAgentDraft(task) }
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]
-        selectedTab = "chat"; changeTab(); renderAgentMessages(); window?.makeFirstResponder(composer)
+        selectedTab = "chat"; changeTab(); renderAgentMessages(); focusTaskInput()
         if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
     }
@@ -2220,6 +2222,8 @@ final class FormDocumentView: NSView {
             if let annotation = page as? AgentBrowserAnnotationWindow, annotation.isPageVisible { value["browserAnnotation"] = annotation.workspaceReadback() }
             if let creation = page as? AgentWorktreeCreationWindow, creation.isPageVisible { value["worktreeCreation"] = creation.workspaceReadback() }
             if let manager = page as? AgentWorktreeWindow, manager.isPageVisible { value["worktrees"] = manager.workspaceReadback() }
+            if let rollback = page as? AgentRoundRollbackWindow, rollback.isPageVisible { value["rollback"] = rollback.workspaceReadback() }
+            if let editor = page as? AgentEditResendWindow { value["edit-resend-" + editor.boundTaskID] = editor.workspaceReadback(); if editor.isPageVisible { value["editResend"] = editor.workspaceReadback() } }
         }
         if selectedTab == "settings", settingsCategory == "worktrees" {
             value["settingsWorktrees"] = worktreePolicyPanel?.workspaceReadback() ?? [:]
@@ -2474,26 +2478,22 @@ final class FormDocumentView: NSView {
         panel.onClose = { [weak self, weak panel] in if self?.mcpInputPanel === panel { self?.mcpInputPanel = nil } }
         panel.present(in: window)
     }
-    private func presentRoundRollback(taskID: String, messageID: String) {
-        guard let store = companion?.agentStore else { return }
-        if agentTaskID == taskID, !saveAgentDraft() { return }
-        roundRollbackWindow?.window?.performClose(nil)
-        if roundRollbackWindow?.window?.isVisible == true { roundRollbackWindow?.window?.makeKeyAndOrderFront(nil); return }
-        let panel = AgentRoundRollbackWindow(store: store, taskID: taskID, messageID: messageID)
-        panel.beforeApply = { [weak self] in guard let companion = self?.companion else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID]) }
-        panel.onComplete = { [weak self] in self?.renderAgentMessages() }; roundRollbackWindow = panel
-        panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
+    internal func presentRoundRollback(taskID: String, messageID: String) {
+        guard agentTaskID == taskID, let store = companion?.agentStore, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+        let root = AgentTaskWorkspace.Root.rollback(messageID), panel = taskWorkspace.rootController(.rollback(messageID)) as? AgentRoundRollbackWindow ?? AgentRoundRollbackWindow(store: store, taskID: taskID, messageID: messageID)
+        panel.beforeApply = { [weak self, weak panel] in guard let companion = self?.companion, let panel else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID], ignoring: panel) }
+        panel.onComplete = { [weak self] in self?.renderAgentMessages() }
+        taskWorkspace.show(taskID: taskID, root: root) { panel }; updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded(); focusTaskInput()
     }
-    private func presentEditResend(taskID: String, messageID: String) {
-        guard let store = companion?.agentStore, let runtime = companion?.agentRuntime else { return }
-        if agentTaskID == taskID, !saveAgentDraft() { return }
-        editResendWindow?.window?.performClose(nil)
-        if editResendWindow?.window?.isVisible == true { editResendWindow?.window?.makeKeyAndOrderFront(nil); return }
+    internal func presentEditResend(taskID: String, messageID: String) {
+        guard agentTaskID == taskID, let store = companion?.agentStore, let runtime = companion?.agentRuntime, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
         do {
-            let panel = try AgentEditResendWindow(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
-            panel.beforeApply = { [weak self] in guard let companion = self?.companion else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID]) }
-            panel.onSent = { [weak self] id in self?.selectAgentTask(id) }; editResendWindow = panel
-            panel.showWindow(nil); panel.window?.makeKeyAndOrderFront(nil)
+            let root = AgentTaskWorkspace.Root.editResend(messageID), panel = try taskWorkspace.rootController(.editResend(messageID)) as? AgentEditResendWindow ?? AgentEditResendWindow(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
+            panel.beforeApply = { [weak self, weak panel] in guard let companion = self?.companion, let panel else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID], ignoring: panel) }
+            panel.onSent = { [weak self] id in self?.selectAgentTask(id) }
+            taskWorkspace.show(taskID: taskID, root: root) { panel }; updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded(); focusTaskInput()
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {

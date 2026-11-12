@@ -18,12 +18,12 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, browser, mcpContent, document(String), canvas(String)
+        case review, records, context, browser, mcpContent, document(String), canvas(String), rollback(String), editResend(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
+            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布"; case .rollback: return "撤回文件"; case .editResend: return "编辑并重发" }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
+            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id; case .rollback(let id): return "rollback:" + id; case .editResend(let id): return "edit-resend:" + id }
         }
     }
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
@@ -41,7 +41,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -93,6 +93,7 @@ import AppKit
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if taskID == id, selectedRoot == root { displayCurrent() }
     }
@@ -123,7 +124,7 @@ import AppKit
             }
         }
         for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
-            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true
+            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
             let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(154, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12)); groupWidth.constant = buttonWidth.constant + 26
@@ -201,6 +202,8 @@ import AppKit
             if let review = entry.controller as? AgentKnowledgeReviewWindow, !review.canLeaveSettings() { return false }
             if let creation = entry.controller as? AgentWorktreeCreationWindow, !creation.prepareWorkspaceNavigation() { return false }
             if let manager = entry.controller as? AgentWorktreeWindow, !manager.prepareWorkspaceNavigation() { return false }
+            if let rollback = entry.controller as? AgentRoundRollbackWindow, rollback.hasPendingOperation { return false }
+            if let editor = entry.controller as? AgentEditResendWindow, !editor.prepareWorkspaceNavigation() { return false }
         }; return true
     }
     @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?() }
@@ -210,7 +213,7 @@ import AppKit
         guard !closing else { return false }; closing = true; defer { closing = false }
         for controller in controllers.reversed() { if !(await controller.prepareForWorkspaceClose()) { return false } }; return true
     }
-    func requireDeletionAllowed(_ ids: Set<String>) throws {
+    func requireDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         guard !closing else { throw PetError("请先完成工作区关闭操作") }
         for id in ids { for entries in (stacks[id] ?? [:]).values { for entry in entries {
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
@@ -219,6 +222,10 @@ import AppKit
             if (entry.controller as? AgentGitWindow)?.hasPendingChanges == true || (entry.controller as? AgentGitPushWindow)?.hasPendingOperation == true || (entry.controller as? AgentDependencyWindow)?.hasPendingOperation == true || (entry.controller as? AgentGitRemotePage)?.hasPendingChanges == true { throw PetError("请先完成 Git 操作或处理提交草稿") }
             if (entry.controller as? AgentWorktreeCreationWindow)?.hasPendingChanges == true || (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作或处理创建配置") }
             if (entry.controller as? AgentMCPContentWindow)?.hasPendingOperation == true { throw PetError("请先完成或取消 MCP 资料操作") }
+            if entry.controller !== controller {
+                if let editor = entry.controller as? AgentEditResendWindow, editor.workspaceHasUnsavedChanges || editor.hasPendingOperation { throw PetError("请先完成编辑并重发，或关闭修改后的要求") }
+                if let rollback = entry.controller as? AgentRoundRollbackWindow, rollback.hasPendingOperation { throw PetError("请先完成文件恢复操作") }
+            }
         } } }
     }
     func finish(tasks ids: Set<String>? = nil) {

@@ -40,6 +40,7 @@ import WebKit
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--conversation-workspace-check") { await runConversationWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--wiki-lifecycle-check") { await runWikiLifecycleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-review-check") { await runKnowledgeReviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-page-check") { await runKnowledgePageCheck(output); NSApp.terminate(nil); return }
@@ -79,6 +80,8 @@ import WebKit
                 if CommandLine.arguments.contains("--worktree-workspace-reopen") { try reopenWorktreeWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-fixtures") { _ = try await prepareTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-reopen") { try reopenTaskWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--conversation-workspace-fixtures") { _ = try await prepareConversationWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--conversation-workspace-reopen") { try reopenConversationWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--browser-workspace-fixtures") { _ = try await prepareBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--browser-workspace-reopen") { try await reopenBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-fixtures") { _ = try prepareVideoWorkspaceUI(output) }
