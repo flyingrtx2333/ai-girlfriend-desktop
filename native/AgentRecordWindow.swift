@@ -466,44 +466,40 @@ import UniformTypeIdentifiers
     }
     private func updateWiki() {
         guard let runtime = wikiRuntime, wikiPlanWindow?.confirmClosing() != false else { return }
-        let language = wikiTree.selectedLanguage; state.stringValue = "正在核对 Wiki 提交差异…"
-        wikiSharingTask = Task { @MainActor [weak self] in
-            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
-            do {
-                try await connectWikiIndex()
-                let preview = try await AgentWiki.previewUpdate(store: store, runtime: runtime, sourceID: taskID, language: language)
-                let alert = NSAlert(); alert.messageText = "增量更新 Wiki？"
-                alert.informativeText = "分支：" + preview.snapshot.metadata.branch + " · " + (language == "zh" ? "简体中文" : "English") + "\n提交 " + String(preview.baseCommit.prefix(8)) + " → " + String(preview.commit.prefix(8)) + " · \(preview.changedPaths.count) 个文件\n使用当前任务模型核对受影响内容，原任务和文档保留。"
-                let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 540, height: 280)), text = NSTextView(frame: scroll.bounds)
-                text.isEditable = false; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 11, weight: .regular); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.string = preview.diff; text.setAccessibilityLabel("Wiki 提交差异预览"); scroll.documentView = text; scroll.hasVerticalScroller = true; alert.accessoryView = scroll
-                alert.addButton(withTitle: "更新"); alert.addButton(withTitle: "取消")
-                guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
-                try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
-                let id = try await AgentWiki.startUpdate(preview, store: store, runtime: runtime, sourceID: taskID)
-                state.stringValue = "已开始增量更新"; onWikiTask?(id)
-            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
-        }
-        updateWikiSharingState()
+        let language = wikiTree.selectedLanguage
+        let review = AgentKnowledgeReviewWindow(title: "增量更新 Wiki", action: "更新", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _ in
+            guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+            try await self.connectWikiIndex()
+            let preview = try await AgentWiki.previewUpdate(store: self.store, runtime: runtime, sourceID: self.taskID, language: language)
+            let commits = String(preview.baseCommit.prefix(8)) + " → " + String(preview.commit.prefix(8))
+            let items = [AgentKnowledgeReviewItem(title: "提交差异", detail: commits, text: preview.diff, isDiff: true), AgentKnowledgeReviewItem(title: "变更文件", detail: "\(preview.changedPaths.count) 个文件", text: preview.changedPaths.joined(separator: "\n"))]
+            return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(preview.snapshot.metadata.branch, language: language), impact: "\(preview.changedPaths.count) 个文件；使用当前任务模型，可能产生费用。原任务和文档保留。", items: items) { [weak self] in
+                guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                return try await AgentWiki.startUpdate(preview, store: self.store, runtime: runtime, sourceID: self.taskID)
+            }
+        }, onApplied: { [weak self] id in self?.state.stringValue = "已开始增量更新"; self?.onWikiTask?(id) })
+        presentKnowledgeReview(review)
     }
     private func regenerateWiki() {
         guard let runtime = wikiRuntime, wikiPlanWindow?.confirmClosing() != false else { return }
         let language = wikiTree.selectedLanguage
-        wikiSharingTask = Task { @MainActor [weak self] in
-            guard let self else { return }; defer { wikiSharingTask = nil; updateWikiSharingState() }
-            do {
-                let preview = try AgentWiki.previewRegeneration(store: store, runtime: runtime, sourceID: taskID, language: language)
-                let includesCards = try AgentWiki.view(store: store, taskID: taskID, language: language).pages.isEmpty
-                let alert = NSAlert(); alert.messageText = includesCards ? "重新生成 Wiki 与卡片？" : "重新生成 Wiki？"
-                alert.informativeText = "分支：" + preview.branch + " · " + (language == "zh" ? "简体中文" : "English") + "\n" + (preview.documentCount.map { "按当前规划生成 \($0) 页。" } ?? "按当前项目重新规划页面。") + "当前生成将暂停；原任务和文档保留，新版本通过校验后发布。"
-                alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
-                guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }
-                try Task.checkCancellation(); guard !dirty else { throw PetError("请先保存当前文档，草稿已保留") }
-                try await connectWikiIndex()
-                let id = try await store.projectKnowledge.regenerate(preview, sourceID: taskID, runtime: runtime)
-                state.stringValue = "已重新开始生成"; onWikiTask?(id)
-            } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
-        }
-        updateWikiSharingState()
+        let review = AgentKnowledgeReviewWindow(title: "重新生成 Wiki", action: "重新生成", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _ in
+            guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+            let preview = try AgentWiki.previewRegeneration(store: self.store, runtime: runtime, sourceID: self.taskID, language: language)
+            let configuration = try AgentWikiPlan.load(files: AgentFiles(workspace: preview.workspace))
+            guard configuration.hash == preview.configurationHash else { throw PetError("生成规划已变化，请重新预览") }
+            let pages = try AgentWiki.view(store: self.store, taskID: self.taskID, language: language).pages
+            var items = [AgentKnowledgeReviewItem(title: "生成规划", detail: configuration.path ?? "默认规划", text: configuration.text)]
+            if !pages.isEmpty { items.append(AgentKnowledgeReviewItem(title: "当前文档", detail: "\(pages.count) 页", text: pages.map(\.title).joined(separator: "\n"))) }
+            let target = pages.isEmpty ? "Wiki 与卡片" : "Wiki"
+            let count = preview.documentCount.map { "\($0) 页" } ?? "自动规划"
+            return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(preview.branch, language: language), impact: target + " · " + count + "；使用当前任务模型，可能产生费用。当前生成将暂停，原任务和文档保留。", items: items) { [weak self] in
+                guard let self, !self.dirty else { throw PetError("请先保存当前文档，草稿已保留") }
+                try await self.connectWikiIndex()
+                return try await self.store.projectKnowledge.regenerate(preview, sourceID: self.taskID, runtime: runtime)
+            }
+        }, onApplied: { [weak self] id in self?.state.stringValue = "已重新开始生成"; self?.onWikiTask?(id) })
+        presentKnowledgeReview(review)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -865,8 +861,10 @@ import UniformTypeIdentifiers
         else if action == "files" { toggleTaskFiles() }
     }
     func checkOpenKnowledgePlan() { if CommandLine.arguments.contains("--knowledge-page-check") { openWikiPlan() } }
-    func checkKnowledgeReview(_ action: String) async -> AgentKnowledgeReviewWindow? {
-        guard AgentKnowledgePageHost.readbackEnabled else { return nil }; shareWiki(action); await wikiSharingTask?.value; return wikiReviewWindow
+    func checkKnowledgeReview(_ action: String, language: String? = nil) async -> AgentKnowledgeReviewWindow? {
+        guard AgentKnowledgePageHost.readbackEnabled else { return nil }
+        if let language { guard ["zh", "en"].contains(language) else { return nil }; wikiTree.setLanguage(language); guard wikiTree.onLanguage?(language) == true else { return nil } }
+        shareWiki(action); await wikiSharingTask?.value; return wikiReviewWindow
     }
     func checkPresentKnowledgeReview(_ review: AgentKnowledgeReviewWindow) { if AgentKnowledgePageHost.readbackEnabled { presentKnowledgeReview(review) } }
     func checkEditKnowledgeDocument(_ value: String) async {

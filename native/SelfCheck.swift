@@ -40,6 +40,7 @@ import WebKit
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--wiki-lifecycle-check") { await runWikiLifecycleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-review-check") { await runKnowledgeReviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-page-check") { await runKnowledgePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
@@ -82,6 +83,8 @@ import WebKit
                 if CommandLine.arguments.contains("--browser-workspace-reopen") { try await reopenBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-fixtures") { _ = try prepareVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-reopen") { try reopenVideoWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--wiki-lifecycle-fixtures") { try await prepareWikiLifecycleUI(output) }
+                if CommandLine.arguments.contains("--wiki-lifecycle-reopen") { try reopenWikiLifecycleUI(output) }
                 if CommandLine.arguments.contains("--knowledge-review-fixtures") { try await prepareKnowledgeReviewUI(output) }
                 if CommandLine.arguments.contains("--knowledge-review-reopen") { try reopenKnowledgeReviewUI(output) }
                 if CommandLine.arguments.contains("--knowledge-page-fixtures") { _ = try await prepareKnowledgePageUI(output) }

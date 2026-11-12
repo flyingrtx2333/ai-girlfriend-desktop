@@ -2,6 +2,7 @@ import AppKit
 
 struct AgentKnowledgeReviewItem {
     let title: String, detail: String, text: String
+    var isDiff = false
 }
 struct AgentKnowledgeReviewVersion {
     let id: String, title: String, detail: String
@@ -32,12 +33,14 @@ struct AgentKnowledgeReviewVersion {
     private let versions: [AgentKnowledgeReviewVersion], load: (Int?) async throws -> AgentKnowledgeReviewSnapshot
     private let onApplied: (String) -> Void
     private let table = NSTableView(), list = NSScrollView(), viewer = NSScrollView(), text = NSTextView(), body = NSView()
+    private let diff = AgentGitDiffView(frame: .zero)
     private let scope = NSTextField(labelWithString: ""), impact = NSTextField(wrappingLabelWithString: ""), state = NSTextField(labelWithString: "")
     private let back = NSButton(title: "返回版本", target: nil, action: nil), cancel = NSButton(title: "取消", target: nil, action: nil)
     private let preview = NSButton(title: "预览", target: nil, action: nil), apply = NSButton(title: "", target: nil, action: nil)
     private var fullList: [NSLayoutConstraint] = [], documentList: [NSLayoutConstraint] = []
     private var snapshot: AgentKnowledgeReviewSnapshot?, selectedVersion: Int?, choosingVersion: Bool
     private var job: Task<Void, Never>?, closed = false, started = false
+    private var showingDiff = false
     var hasPendingOperation: Bool { !closed && job != nil }
     var onClose: (() -> Void)?
 
@@ -57,9 +60,10 @@ struct AgentKnowledgeReviewVersion {
         text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 12, height: 12); text.setAccessibilityLabel("知识版本正文")
         viewer.documentView = text; viewer.hasVerticalScroller = true
         for scroll in [list, viewer] { scroll.borderType = .noBorder; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; body.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false }
+        body.addSubview(diff); diff.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: body.leadingAnchor), list.topAnchor.constraint(equalTo: body.topAnchor), list.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
         fullList = [list.trailingAnchor.constraint(equalTo: body.trailingAnchor)]
-        documentList = [list.widthAnchor.constraint(equalToConstant: 166), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: body.trailingAnchor), viewer.topAnchor.constraint(equalTo: body.topAnchor), viewer.bottomAnchor.constraint(equalTo: body.bottomAnchor)]
+        documentList = [list.widthAnchor.constraint(equalToConstant: 166), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: body.trailingAnchor), viewer.topAnchor.constraint(equalTo: body.topAnchor), viewer.bottomAnchor.constraint(equalTo: body.bottomAnchor), diff.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), diff.trailingAnchor.constraint(equalTo: viewer.trailingAnchor), diff.topAnchor.constraint(equalTo: viewer.topAnchor), diff.bottomAnchor.constraint(equalTo: viewer.bottomAnchor)]
         for (button, action) in [(back, #selector(showVersions)), (cancel, #selector(cancelReview)), (preview, #selector(readPreview)), (apply, #selector(applyPreview))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         apply.title = action; cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
         let actions = NSStackView(views: [back, cancel, NSView(), preview, apply]); actions.spacing = 8
@@ -75,7 +79,7 @@ struct AgentKnowledgeReviewVersion {
     private func startIfNeeded() { guard !started else { return }; started = true; if !choosingVersion { readPreview() } }
     private func updatePage() {
         NSLayoutConstraint.deactivate(fullList + documentList); NSLayoutConstraint.activate(choosingVersion ? fullList : documentList)
-        viewer.isHidden = choosingVersion; impact.isHidden = choosingVersion; back.isHidden = choosingVersion || versions.isEmpty
+        viewer.isHidden = choosingVersion || showingDiff; diff.isHidden = choosingVersion || !showingDiff; impact.isHidden = choosingVersion; back.isHidden = choosingVersion || versions.isEmpty
         preview.title = choosingVersion ? "预览" : "重新预览"; apply.isHidden = choosingVersion
         let enabled = !hasPendingOperation && !closed
         for button in [back, cancel, preview] { button.isEnabled = enabled }
@@ -98,24 +102,30 @@ struct AgentKnowledgeReviewVersion {
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         if choosingVersion { selectedVersion = versions.indices.contains(table.selectedRow) ? table.selectedRow : nil; updatePage() }
-        else if let items = snapshot?.items, items.indices.contains(table.selectedRow) { text.string = items[table.selectedRow].text; text.scrollToBeginningOfDocument(nil) }
+        else if let items = snapshot?.items, items.indices.contains(table.selectedRow) { showItem(items[table.selectedRow]) }
+    }
+    private func showItem(_ item: AgentKnowledgeReviewItem?) {
+        showingDiff = item?.isDiff == true
+        text.string = showingDiff ? "" : item?.text ?? ""; text.scrollToBeginningOfDocument(nil)
+        if showingDiff || !diff.patch.isEmpty { diff.show(showingDiff ? item?.text ?? "" : "", oldTitle: "基线", newTitle: "当前提交", accessibilityContext: "Wiki"); diff.text.scrollToBeginningOfDocument(nil) }
+        updatePage()
     }
     @objc private func readPreview() {
         guard job == nil, !closed, !choosingVersion || selectedVersion != nil else { return }
-        let version = selectedVersion; snapshot = nil; state.stringValue = "正在读取预览…"; state.textColor = AgentWorkbenchTheme.secondaryText
+        let version = selectedVersion; snapshot = nil; showItem(nil); state.stringValue = "正在读取预览…"; state.textColor = AgentWorkbenchTheme.secondaryText
         job = Task { @MainActor [weak self] in
             guard let self else { return }; defer { job = nil; if !closed { updatePage() } }
             do {
                 let value = try await load(version); try Task.checkCancellation(); guard !closed else { return }
                 snapshot = value; choosingVersion = false; scope.stringValue = value.scope; impact.stringValue = value.impact
                 scope.toolTip = value.scope; impact.toolTip = value.impact
-                text.string = value.items.first?.text ?? ""; table.reloadData(); if !value.items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+                showItem(value.items.first); table.reloadData(); if !value.items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
                 state.stringValue = "\(value.items.count) 项"; updatePage()
             } catch { if !closed, !Task.isCancelled { state.stringValue = error.localizedDescription; state.textColor = .systemRed; table.reloadData() } }
         }; updatePage()
     }
     @objc private func showVersions() {
-        guard job == nil, !versions.isEmpty else { return }; snapshot = nil; choosingVersion = true; state.stringValue = ""; text.string = ""; table.reloadData()
+        guard job == nil, !versions.isEmpty else { return }; snapshot = nil; choosingVersion = true; state.stringValue = ""; showItem(nil); table.reloadData()
         if let selectedVersion { table.selectRowIndexes(IndexSet(integer: selectedVersion), byExtendingSelection: false) }; updatePage()
     }
     @objc private func openVersion() { if choosingVersion { readPreview() } }
@@ -126,7 +136,7 @@ struct AgentKnowledgeReviewVersion {
             guard let self else { return }; defer { job = nil; if !closed { updatePage() } }
             do {
                 let result = try await value.apply(); complete(result)
-            } catch { if !closed, !Task.isCancelled { snapshot = nil; text.string = ""; table.reloadData(); state.stringValue = error.localizedDescription; state.textColor = .systemRed } }
+            } catch { if !closed, !Task.isCancelled { snapshot = nil; showItem(nil); table.reloadData(); state.stringValue = error.localizedDescription; state.textColor = .systemRed } }
         }; updatePage()
     }
     private func complete(_ result: String) { closed = true; super.close(); onClose?(); onClose = nil; onApplied(result) }
@@ -139,7 +149,7 @@ struct AgentKnowledgeReviewVersion {
     private func finishClose() { guard !closed else { return }; closed = true; job?.cancel(); onClose?(); onClose = nil }
     var checkState: [String: Any] {
         guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--knowledge-review-check") else { return [:] }
-        return ["phase": choosingVersion ? "versions" : "preview", "busy": hasPendingOperation, "closed": closed, "versionID": selectedVersion.map { versions[$0].id } ?? "", "versionCount": versions.count, "items": snapshot?.items.map { ["title": $0.title, "detail": $0.detail, "textHash": AgentFiles.hash(Data($0.text.utf8))] } ?? [], "selectedItem": table.selectedRow, "text": text.string, "scope": scope.stringValue, "impact": impact.stringValue, "state": state.stringValue, "applyEnabled": apply.isEnabled]
+        return ["phase": choosingVersion ? "versions" : "preview", "busy": hasPendingOperation, "closed": closed, "versionID": selectedVersion.map { versions[$0].id } ?? "", "versionCount": versions.count, "items": snapshot?.items.map { ["title": $0.title, "detail": $0.detail, "textHash": AgentFiles.hash(Data($0.text.utf8)), "isDiff": $0.isDiff] } ?? [], "selectedItem": table.selectedRow, "text": showingDiff ? diff.patch : text.string, "showingDiff": showingDiff && !diff.isHidden, "scope": scope.stringValue, "impact": impact.stringValue, "state": state.stringValue, "applyEnabled": apply.isEnabled]
     }
     func checkSelectVersion(_ index: Int) async {
         guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--knowledge-review-check"), choosingVersion, versions.indices.contains(index) else { return }
