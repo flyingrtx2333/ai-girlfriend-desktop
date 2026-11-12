@@ -195,7 +195,7 @@ final class FormDocumentView: NSView {
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchLower = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
-    private var inspectorWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
+    private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var workbenchSidebarWidth: NSLayoutConstraint!, navigationLeading: NSLayoutConstraint!, sidebarRequested = true
     private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
     private var workbenchChrome: [NSView] = [], inspectorRequested = true
@@ -316,31 +316,36 @@ final class FormDocumentView: NSView {
         AgentWorkbenchTheme.cancelMotion(in: root); updateWorkbenchLayout()
     }
 
-    func checkSettingsPageLayout() -> [String: Any] {
+    func checkSettingsPageLayout() async -> [String: Any] {
         guard CommandLine.arguments.contains("--settings-layout-check"), let window else { return [:] }
         let original = window.contentView?.bounds.size ?? .zero, draft = composer.string
         var checks: [String: Bool] = [:], frames: [String: [String: Double]] = [:]
+        window.makeKeyAndOrderFront(nil)
         for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
-            window.setContentSize(size)
             for category in ["model", "appearance", "extensions", "agents", "teams", "hooks", "memory"] {
                 guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
+                returnToChat(); window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
+                try? await Task.sleep(nanoseconds: 100_000_000)
                 selectedTab = "settings"; settingsCategory = category; settingsSearch.stringValue = ""; changeTab()
                 window.contentView?.layoutSubtreeIfNeeded()
+                try? await Task.sleep(nanoseconds: 100_000_000)
                 let column = settings.convert(settings.bounds, to: contentSurface), body = settingsBody.convert(settingsBody.bounds, to: contentSurface)
                 let alignment = settingsHeading.alignmentRect(forFrame: settingsHeading.frame)
                 let heading = settingsHeading.superview!.convert(alignment, to: contentSurface)
                 let key = name + "-" + category, centerError = abs(column.midX - contentSurface.bounds.midX)
                 let actualWidth = window.contentView?.bounds.width ?? 0
-                frames[key] = ["width": column.width, "windowWidth": actualWidth, "centerError": centerError, "headingX": heading.minX - column.minX, "headingTop": contentSurface.bounds.height - heading.maxY, "bodyGap": heading.minY - body.maxY, "leadingGutter": column.minX, "trailingGutter": contentSurface.bounds.width - column.maxX]
+                frames[key] = ["width": column.width, "windowWidth": actualWidth, "windowHeight": Double(window.contentView?.bounds.height ?? 0), "inspectorWidth": workbenchInspector.bounds.width, "centerError": centerError, "headingX": heading.minX - column.minX, "headingTop": contentSurface.bounds.height - heading.maxY, "bodyGap": heading.minY - body.maxY, "leadingGutter": column.minX, "trailingGutter": contentSurface.bounds.width - column.maxX]
                 // AppKit snaps view frames to the pixel grid and gives labels
                 // alignment insets. Check layout anchors and the actual window.
                 let fitsWindow = abs(actualWidth - size.width) < 0.5 && column.width >= 500 && column.width <= 764.5 && column.minX >= 27.5 && column.maxX <= contentSurface.bounds.width - 27.5
                 let aligned = centerError <= 0.5 && abs(heading.minX - column.minX - 16) < 0.5 && (50...64).contains(contentSurface.bounds.height - heading.maxY) && heading.minY > body.maxY
                 checks[key + "CenteredColumnAndContentHeading"] = fitsWindow && aligned && settingsHeading.stringValue == settingsCategories[index].1 && pageTitle.isHidden && workbenchChrome.allSatisfy(\.isHidden)
+                checks[key + "VisibleWindowRetainsRequestedSize"] = window.isVisible && window.contentView?.bounds.size == size
             }
         }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
+        checks["settingsDoNotReserveHiddenInspectorWidth"] = frames.values.allSatisfy { $0["inspectorWidth"] == 0 }
         return ["checks": checks, "frames": frames]
     }
 
@@ -539,9 +544,13 @@ final class FormDocumentView: NSView {
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         conversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor)
         fullConversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: chat.trailingAnchor)
-        inspectorWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
+        inspectorWidth = workbenchInspector.widthAnchor.constraint(lessThanOrEqualToConstant: 281)
+        inspectorPreferredWidth = workbenchInspector.widthAnchor.constraint(equalToConstant: 281)
+        // Let live resizing reach the folding breakpoint before the old pane
+        // width can clamp the window. The required maximum still makes a hidden pane zero width.
+        inspectorPreferredWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
         inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
-        NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversationTrailing, terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor), taskWorkspace.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), taskWorkspace.trailingAnchor.constraint(equalTo: workbenchInspector.trailingAnchor), taskWorkspace.topAnchor.constraint(equalTo: workbenchInspector.topAnchor), taskWorkspace.bottomAnchor.constraint(equalTo: workbenchInspector.bottomAnchor)])
+        NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversationTrailing, terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, inspectorPreferredWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor), taskWorkspace.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), taskWorkspace.trailingAnchor.constraint(equalTo: workbenchInspector.trailingAnchor), taskWorkspace.topAnchor.constraint(equalTo: workbenchInspector.topAnchor), taskWorkspace.bottomAnchor.constraint(equalTo: workbenchInspector.bottomAnchor)])
         workbenchInspector.onOpen = { [weak self] section, value in
             if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
             else { self?.openAgentRecordItem(section: section, value: value) }
@@ -673,7 +682,7 @@ final class FormDocumentView: NSView {
         let available = width - sidebarWidth.constant - target - columnInset * 2 - 22
         entryToolbarHeight.constant = available < preferred ? 64 : 34
         updateWorkbenchVoice()
-        lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target }
+        lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target; self.inspectorPreferredWidth.constant = target }
         if showWorkspace { taskWorkspace.setVisible(true) }
         messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
@@ -2205,6 +2214,7 @@ final class FormDocumentView: NSView {
         value["conversationVisible"] = !terminalSplit.isHiddenOrHasHiddenAncestor; value["conversationWidth"] = Double(terminalSplit.bounds.width); value["mainPage"] = selectedTab
         value["composerFocused"] = window?.firstResponder === composer
         value["windowSize"] = [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)]
+        value["inspectorWidth"] = Double(workbenchInspector.bounds.width)
         value["taskTitle"] = pageTitle.stringValue; value["taskTitleVisible"] = !pageTitle.isHidden
         for page in taskWorkspace.controllers {
             if let git = page as? AgentGitWindow { value["git-" + git.boundTaskID] = git.workspaceReadback() }

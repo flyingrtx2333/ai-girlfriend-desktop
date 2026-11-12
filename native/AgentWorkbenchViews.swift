@@ -136,6 +136,7 @@ class AgentWorkbenchButton: NSButton {
     private var signature = ""
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false; fill = AgentWorkbenchTheme.surface
+        layer?.masksToBounds = true
         let heading = NSTextField(labelWithString: "记录"); heading.font = .systemFont(ofSize: 16, weight: .semibold)
         let more = AgentWorkbenchButton(title: "", target: self, action: #selector(showLog)); AgentWorkbenchTheme.toolbar(more, title: "完整记录", symbol: "ellipsis")
         AgentWorkbenchTheme.toolbar(addTab, title: "添加标签页", symbol: "plus")
@@ -147,7 +148,10 @@ class AgentWorkbenchButton: NSButton {
         scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false
         empty.font = .systemFont(ofSize: 12); empty.textColor = .tertiaryLabelColor
         for view in [header, line, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20), header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20), header.topAnchor.constraint(equalTo: topAnchor, constant: 10), header.heightAnchor.constraint(equalToConstant: 28), line.leadingAnchor.constraint(equalTo: header.leadingAnchor), line.trailingAnchor.constraint(equalTo: header.trailingAnchor), line.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8), scroll.topAnchor.constraint(equalTo: line.bottomAnchor, constant: 16), scroll.leadingAnchor.constraint(equalTo: header.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: header.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor), column.trailingAnchor.constraint(equalTo: document.trailingAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
+        let trailing = header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20)
+        // The pane folds during live resize; its controls must not clamp the window first.
+        trailing.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
+        NSLayoutConstraint.activate([header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20), trailing, header.topAnchor.constraint(equalTo: topAnchor, constant: 10), header.heightAnchor.constraint(equalToConstant: 28), line.leadingAnchor.constraint(equalTo: header.leadingAnchor), line.trailingAnchor.constraint(equalTo: header.trailingAnchor), line.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8), scroll.topAnchor.constraint(equalTo: line.bottomAnchor, constant: 16), scroll.leadingAnchor.constraint(equalTo: header.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: header.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -20), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), column.leadingAnchor.constraint(equalTo: document.leadingAnchor), column.trailingAnchor.constraint(equalTo: document.trailingAnchor), column.topAnchor.constraint(equalTo: document.topAnchor), column.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
         setAccessibilityLabel("任务记录侧栏")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
