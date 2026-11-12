@@ -8,6 +8,7 @@ import AppKit
     private let refresh = NSButton(title: "刷新", target: nil, action: nil)
     private let stop = NSButton(title: "停止", target: nil, action: nil), verify = NSButton(title: "核对上次结果", target: nil, action: nil), state = NSTextField(labelWithString: ""), text = NSTextView()
     private var remotes: [AgentGitRemote] = [], remoteHash = "", review: AgentGitPushReview?, job: Task<Void, Never>?, sending = false
+    private var remotePage: AgentGitRemotePage?, pushContent: NSView?
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     var onReceipt: ((AgentGitPushReceipt) -> Void)?
@@ -53,7 +54,10 @@ import AppKit
         load()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    var hasPendingOperation: Bool { busy }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); if !busy { presentingWindow?.makeFirstResponder(add) }
+    }
+    var hasPendingOperation: Bool { busy || remotePage?.hasPendingChanges == true }
     private var writable: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && ![.running, .waiting].contains(task.status) }
     private func controls() {
         for control in [remote, address, branch, upstream, prepare, add, refresh] as [NSControl] { control.isEnabled = !busy && writable }
@@ -63,14 +67,15 @@ import AppKit
         stop.isHidden = !busy
     }
     func windowDidBecomeKey(_ notification: Notification) { controls() }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); git.cancel(); busy = false }
+    func windowWillClose(_ notification: Notification) { restorePushPage(); job?.cancel(); git.cancel(); busy = false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let remotePage, !remotePage.canLeaveSettings() { return false }
         guard sending else { return true }
         let alert = NSAlert(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭"); alert.addButton(withTitle: "继续等待")
         return alert.runModal() == .alertFirstButtonReturn
     }
     @objc private func reload() { if !busy { load() } }
-    private func load() {
+    private func load(focusRemote: Bool = false) {
         invalidate(); busy = true; controls(); state.stringValue = "读取 Git…"
         job = Task { [weak self] in
             guard let self else { return }
@@ -86,6 +91,7 @@ import AppKit
                 if review == nil { state.stringValue = remotes.isEmpty ? "请添加 Git 远端" : "" }
             } catch { state.stringValue = error.localizedDescription }
             busy = false; controls()
+            if focusRemote, remotePage == nil, isPageVisible { presentingWindow?.makeFirstResponder(remote) }
         }
     }
     private func updateAddresses() {
@@ -163,22 +169,29 @@ import AppKit
     }
     @objc private func addRemote() {
         guard !busy, writable else { return }
+        let page = AgentGitRemotePage(git: git, store: store, taskID: taskID) { [weak self] in self?.load(focusRemote: true) }
         if settingsHostWindow != nil {
-            presentSettingsChild(AgentGitRemotePage(git: git, store: store, taskID: taskID) { [weak self] in self?.load() }); return
+            presentSettingsChild(page); return
         }
-        let alert = NSAlert(); alert.messageText = "添加 Git 远端"; alert.addButton(withTitle: "添加"); alert.addButton(withTitle: "取消")
-        let name = NSTextField(string: "origin"), url = NSTextField(); name.placeholderString = "名称"; url.placeholderString = "SSH、HTTPS 或本机仓库地址"
-        name.setAccessibilityLabel("新远端名称"); url.setAccessibilityLabel("新远端地址")
-        let form = NSStackView(views: [name, url]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10; form.frame = NSRect(x: 0, y: 0, width: 420, height: 62)
-        for field in [name, url] { field.widthAnchor.constraint(equalToConstant: 420).isActive = true }
-        alert.accessoryView = form; alert.window.initialFirstResponder = name
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        busy = true; controls()
-        job = Task { [weak self] in
-            guard let self else { return }
-            do { try await git.addRemote(name: name.stringValue, url: url.stringValue); busy = false; load() }
-            catch { state.stringValue = error.localizedDescription; busy = false; controls() }
-        }
+        guard let window, remotePage == nil, let original = window.contentView, let body = page.settingsContent(in: window) else { return }
+        let back = NSButton(title: "返回推送", target: self, action: #selector(closeRemotePage))
+        back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading; back.setAccessibilityLabel("返回推送"); back.keyEquivalent = "\u{1b}"
+        let heading = NSTextField(labelWithString: "添加 Git 远端"); heading.font = .systemFont(ofSize: 18, weight: .semibold)
+        let column = NSStackView(views: [back, heading, body]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12; column.distribution = .fill
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18), back.heightAnchor.constraint(equalToConstant: 28), body.widthAnchor.constraint(equalTo: column.widthAnchor)])
+        pushContent = original; remotePage = page
+        page.onSettingsClose = { [weak self] in self?.closeRemotePage() }
+        window.contentView = content; content.layoutSubtreeIfNeeded(); page.settingsDidAppear()
+    }
+    @objc private func closeRemotePage() {
+        guard remotePage?.canLeaveSettings() == true else { return }; restorePushPage()
+        if add.isEnabled { presentingWindow?.makeFirstResponder(add) }
+    }
+    private func restorePushPage() {
+        guard let page = remotePage else { return }
+        page.endSettingsHosting(); remotePage = nil
+        if let pushContent { window?.contentView = pushContent }; pushContent = nil
     }
     func checkLayout(_ output: URL) async -> [String: Bool] {
         let deadline = Date().addingTimeInterval(20)
@@ -193,7 +206,7 @@ import AppKit
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "diff": text.string, "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow]
+        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "diff": text.string, "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow, "standaloneRemotePage": remotePage != nil, "windowSize": [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)]]
     }
     func checkPrepare() async {
         guard AgentTaskWorkspace.readbackEnabled else { return }
@@ -217,10 +230,10 @@ import AppKit
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         name.setAccessibilityLabel("新远端名称"); address.setAccessibilityLabel("新远端地址"); address.placeholderString = "SSH、HTTPS 或本机仓库地址"
-        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
-        save.target = self; save.action = #selector(addRemote)
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.setAccessibilityLabel("远端保存状态")
+        save.target = self; save.action = #selector(addRemote); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let actions = NSStackView(views: [NSView(), save]), column = NSStackView(views: [NSTextField(labelWithString: "名称"), name, NSTextField(labelWithString: "地址"), address, state, actions, NSView()])
-        column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
+        column.orientation = .vertical; column.alignment = .leading; column.spacing = 12; column.distribution = .fill
         content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [name, address, state, actions] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 20), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)])
@@ -237,11 +250,11 @@ import AppKit
     @objc private func addRemote() {
         guard job == nil, let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { return }
         let remote = name.stringValue, url = address.stringValue
-        save.isEnabled = false; state.stringValue = "保存远端…"; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: true)
+        save.isEnabled = false; state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "保存远端…"; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: true)
         job = Task { [weak self] in
             guard let self else { return }
             do { try await git.addRemote(name: remote, url: url); job = nil; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false); name.stringValue = "origin"; address.stringValue = ""; onAdded(); close() }
-            catch { job = nil; save.isEnabled = true; state.stringValue = error.localizedDescription; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false) }
+            catch { job = nil; save.isEnabled = true; state.textColor = .systemRed; state.stringValue = error.localizedDescription; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false) }
         }
     }
 }

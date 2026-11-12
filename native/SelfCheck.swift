@@ -35,6 +35,7 @@ import WebKit
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--git-remote-page-check") { await runGitRemotePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
@@ -52,6 +53,7 @@ import WebKit
             var requests = 0
             do {
                 ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务未初始化") }
+                var gitRemoteWindow: AgentGitPushWindow?
                 if attentionLiveUI {
                     let budget = try prepareAttentionLiveUI(output); requests = budget.used
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
@@ -80,6 +82,10 @@ import WebKit
                 if CommandLine.arguments.contains("--automation-page-fixtures") { _ = try await prepareAutomationPageUI(output) }
                 if CommandLine.arguments.contains("--git-workspace-fixtures") { _ = try await prepareGitWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--git-workspace-reopen") { try reopenGitWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--git-remote-page-fixtures") || CommandLine.arguments.contains("--git-remote-page-reopen") {
+                    guard !attentionLiveUI else { throw PetError("Git 远端页面验收不调用模型") }
+                    gitRemoteWindow = try await prepareGitRemotePageUI(output, seed: CommandLine.arguments.contains("--git-remote-page-fixtures"))
+                }
                 if CommandLine.arguments.contains("--artifact-workspace-fixtures") { _ = try await prepareArtifactWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--artifact-workspace-reopen") { try await reopenArtifactWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--worktree-workspace-fixtures") { _ = try await prepareWorktreeWorkspaceUI(output) }
@@ -143,6 +149,7 @@ import WebKit
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
+                gitRemoteWindow?.showWindow(nil); gitRemoteWindow?.window?.makeKeyAndOrderFront(nil)
                 try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
@@ -155,6 +162,7 @@ import WebKit
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]
                         value["knowledge"] = await inputControl.knowledgePageReadback()
                         value["gitWorkspace"] = inputControl.gitWorkspaceReadback()
+                        value["gitRemote"] = gitRemoteWindow?.workspaceReadback() ?? [:]
                         value["taskWorkspace"] = await inputControl.taskWorkspaceReadback()
                         value["fileOpenEvents"] = fileOpenEvents
                         value["fileOpenPending"] = pendingFileOpens.count
