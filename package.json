@@ -79,6 +79,7 @@
     "native:check-terminal": "node scripts/check-native-terminal.mjs",
     "native:check-knowledge": "node scripts/check-native-knowledge.mjs",
     "native:check-knowledge-page": "node scripts/check-native-knowledge-page.mjs",
+    "native:check-knowledge-review": "node scripts/check-native-knowledge-review.mjs",
     "native:check-canvas": "node scripts/check-native-canvas.mjs",
     "native:check-canvas-skill": "node scripts/check-native-canvas-skill.mjs",
     "native:check-plugins": "node scripts/check-native-plugins.mjs",

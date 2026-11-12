@@ -1823,3 +1823,22 @@ DOCX／XLSX／PPTX 进入当前任务的独立文件标签页，复用真实编�
 实际窗口沿用同一组原任务，未重新生成资料。升级最终程序时，原 23 份持久文件的权限全部保持、22 份逐字节一致；仅任务索引排列重写，三项完整任务记录、原图片、设置与外观保持。完成窗口操作后，同一最终程序正常退出、重开，37 份持久文件逐字节及权限一致，四份实际标注图、全部要求和原输入保留；实际图片的文件哈希、尺寸及 2／1／2／1 处标注分别核对。重开入口显式打开原网址，未声称恢复旧网页标签、登录或未添加标注。9 份日常配置／聊天资料、23 份旧真实模型原件及日常程序保持；日常包仍为 `bf6a50e`，未替换。统一组件、知识长流程、页面持久恢复和日常发布继续见 [Qoder TODO](QODER-PARITY-TODO.md)，P0／P1／P2 的完整目标尚未完成。
 
 证据：`evidence/agent/browser-workspace-uqor7pi0/acceptance-index.json`、`final-05/source-staged-proof.json`、`final-05/web-resource-proof.json`、`final-05/signature-details.txt`、`final05-native-summary.json`、`final05-upgrade-detailed-proof.json`、`final05-ui-proof.json`、`restart-preservation-proof.json`、`originals-current.json`、`cua-final05/` 与 `cua-reopen05/`。最终原生报告在 `evidence/agent/browser-workspace-command-H9Hh1i/` 和本轮目录的 `final-05-browser-core/`，真实窗口原资料在 `browser-workspace-command-kuvmzs/`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-browser-workspace`；使用实际项目预览和公开 README，禁止模型请求，`--manual-ui` 与 `--reopen <原目录>` 保留真实窗口及原资料。
+
+
+## 知识导入与版本恢复页（2026-11-12）
+
+Wiki、整套项目知识和知识卡片的六个导入／恢复入口改用同一页内组件。恢复先选择实际历史版本，再进入文档／卡片列表与完整原文预览，可返回版本列表或取消；明确分支、语言、替换范围、资源数量及原版本保留。正文不再截取前 500 字或只列前 30 项。复用原有导入、恢复、版本备份、权限与冲突核对，没有新增存储格式或依赖。读取与实际应用期间保护导航、窗口关闭、退出和关联任务删除；范围、权限或源文件变化后要求重新预览。成对恢复可明确回到某一类尚未发布的状态，保留文档根目录与卡片历史。
+
+最终同一优化程序通过 **185 项**相关检查：版本流程 67、知识中心页面 118。版本检查通过真实公开 README 的导出、导入、人工编辑和原服务恢复，核对完整正文、相对链接目标、取消不写、过期预览拒绝覆盖、实际操作期间的离开／删除保护、首个版本正文、成对恢复以及恢复为未发布。正常／800 点窄窗口、浅深色与同一宿主中的控件位置同时核对。本轮模型请求 0，未生成模型 Wiki 或卡片，未转用任何旧额度。
+
+实际窗口使用同一组原资料，完成完整长文末尾、文档／卡片切换、返回版本、双击首个版本、联合导入与恢复、卡片单独导入与恢复、成功反馈、Esc 取消、设置往返、浅深色和窄窗口。修正版主流程 33 次 CUA 调用，同版本重开 16 次，共保留 **98 份原始记录、12 张原始 JPEG**；含过程中的状态重取记录。README 两张新图直接复制最终程序的原始 JPEG 字节。重开后从原无工作区任务进入项目知识，实际旧版本仍可完整预览，两个原任务的未发送输入均保留。窗口重开读取原资料，不重新创建或覆盖验收版本。
+
+首轮窗口发现取消联合预览后父页面残留“正在读取项目知识”；在进入已准备好的预览时清除准备状态，补齐 Wiki 与整套知识的取消检查，最终窗口复验取消后提示清除且 **139 份文件的字节与权限均未变化**。原页面基线 117／118 的差异来自异步关闭尚未结束即断言，改为等待实际关闭后仍核对原条件。调试候选 61／66 的五处差异来自发布目录改变后的合法相对链接重写；独立解析目标目录并核对其余全文后通过，再修正验收预期，未修改发布器以迎合断言。早期报告、失败画面和被替代程序全部保留，不累加为最终通过数。
+
+最终冻结 **295 份原生输入及 2 份配套配置／脚本**；签名前 SHA256 `c115113872e7fce150037c9f7212115a51f9d9f371b9786bd5d181f9d6cfbc84`，显式本地签名后 `3ddd6b33e79727ae94f5c750fe723ce89e3c4f11a4189acffdb6c81e586f4f43`。140 份办公资源保持，沿用上一浏览器候选的网页资源。严格签名通过，详情为 `Signature=adhoc`；独立验收不查找私人证书，不需要解锁钥匙串，不改变日常应用签名及系统安全设置。源文件、程序、临时文件、缓存与证据均保留在外置项目目录。
+
+升级修正版时，原 139 份持久文件权限保持、138 份字节一致，只有索引中的任务排列变化，所有任务索引字段保持。最终程序正常退出后 172 份文件逐字节及权限一致；同版本重开并切换到原通用任务阅读后，172 份权限保持、170 份字节一致，仅任务索引 `selectedID` 与组织导航 `selected` 变化。全部任务正文、草稿、发布文档、卡片、版本历史和设置保持，实际发布后及重开后的 Wiki 全文和链接目标分别独立核对。日常 9 份配置／聊天资料、23 份旧真实模型原件、原日常程序及其签名保持，旧临时签名启动配置不存在。
+
+日常包仍为 `bf6a50e`，尚未包含本轮迁移。统一组件、生成／增量更新等其余长流程、复杂阅读、持久页面恢复与日常发布继续按 [Qoder TODO](QODER-PARITY-TODO.md) 推进，P0／P1／P2 完整目标尚未完成。
+
+证据：`evidence/agent/knowledge-review-yzqzyhao/acceptance-index.json`、`final02-native-summary.json`、`final-02/source-staged-proof.json`、`final-02/source-HEAD-proof.json`、`final-02/signature-details.txt`、`final02-cancel-proof.json`、`final02-window-and-restart-proof.json`、`final02-upgrade-detailed-proof.json`、`originals-current.json`、`readme-original-image-proof.json`、`cua-final02/` 与 `cua-reopen02/`。原生版本报告在 `evidence/agent/knowledge-review-command-vA4JMR/`，原窗口资料在 `knowledge-review-command-7gj6H0/`；早期差异见 `baseline-findings.json`、`debug01-link-relocation-proof.json` 和 `final01-findings.json`。复验：`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-knowledge-review`，禁止模型请求；`--manual-ui` 准备公开资料，`--reopen <原目录>` 仅重开原资料。

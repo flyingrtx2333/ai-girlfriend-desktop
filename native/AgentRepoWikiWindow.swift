@@ -153,7 +153,7 @@ import AppKit
                 "itemSize": [flow.itemSize.width, flow.itemSize.height], "windowSize": [presentingWindow?.contentView?.bounds.width ?? 0, presentingWindow?.contentView?.bounds.height ?? 0]]
     }
     func checkOpen(workspace: String, action: String) throws {
-        guard CommandLine.arguments.contains("--knowledge-page-check"), let row = rows.first(where: { $0.project.workspace == workspace }) else { throw PetError("知识中心项目未载入") }
+        guard AgentKnowledgePageHost.readbackEnabled, let row = rows.first(where: { $0.project.workspace == workspace }) else { throw PetError("知识中心项目未载入") }
         try onOpen?(row.project, selectedLanguage, action)
     }
 }

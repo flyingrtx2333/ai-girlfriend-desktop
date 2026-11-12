@@ -116,6 +116,7 @@ import AppKit
             other.showKnowledgeLibrary()
             checks["taskWindowsOwnIndependentKnowledgeControllers"] = other.knowledgePageHost.currentController !== library && other.knowledgePageHost.currentController?.presentingWindow === other.window && library.presentingWindow === control.window
             other.window?.performClose(nil)
+            for _ in 0..<100 { if other.window?.isVisible != true { break }; await wait(0.02) }
             checks["closingOtherWindowKeepsMainKnowledgePage"] = library.isPageVisible && other.window?.isVisible != true
             checks["allOriginalConversationDraftsRetained"] = tasks.task(fixture.taskID)?.draft == "项目任务未发送的草稿。" && tasks.task(fixture.standaloneID)?.draft == "无工作区任务未发送的草稿。"
             checks["manualDocumentsDoNotInventModelGeneration"] = tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { $0.kind != "wiki" && $0.kind != AgentKnowledgeCards.kind && !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty }

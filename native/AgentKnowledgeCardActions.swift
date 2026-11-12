@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor extension AgentKnowledgeCardWindow {
     func run(_ operation: @escaping () async throws -> Void) {
-        guard !busy else { return }; busy = true; generate.isEnabled = false
+        guard !busy, reviewWindow?.hasPendingOperation != true else { return }; busy = true; generate.isEnabled = false
         job = Task { [weak self] in
             guard let self else { return }
             defer { busy = false; reload() }
@@ -73,34 +73,55 @@ import AppKit
         do { let names = try cards.exportBook(task, language: selectedLanguage); state.stringValue = "已导出 \(names.count - 1) 张 · " + (try cards.sharingPath(language: selectedLanguage)) }
         catch { state.stringValue = error.localizedDescription }
     }
+    private func presentCardReview(_ review: AgentKnowledgeReviewWindow) {
+        guard reviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return }
+        reviewWindow?.close(); reviewWindow = review
+        review.onClose = { [weak self, weak review] in if self?.reviewWindow === review { self?.reviewWindow = nil } }
+        presentSettingsChild(review)
+    }
+    private func reviewedCardTask(_ original: AgentTaskRecord, readOnly: Bool) throws -> AgentTaskRecord {
+        guard let current = task, !current.archived, !dirty, current.workspace == original.workspace, current.mode == original.mode, current.permission == original.permission,
+              try store.agents.limits(current, store: store).readOnly == readOnly else { throw PetError("任务范围、权限或卡片草稿已变化，请重新预览") }
+        return current
+    }
     @objc func importCards() {
         guard discard() else { return }
         run { [self] in
-            try await connect(); guard let task else { return }
-            let value = try cards.previewImport(task, language: selectedLanguage)
-            let alert = NSAlert(); alert.messageText = "导入 \(value.book.cards.count) 张项目卡片？"; alert.informativeText = "当前版本可恢复。来源变化的卡片不会自动引用。"
-            alert.accessoryView = textPreview(value.book.cards.map { "# " + $0.title + "\n" + $0.body }.joined(separator: "\n\n"))
-            alert.addButton(withTitle: "导入"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }; try cards.importBook(value, task: task)
+            try await connect(); guard task != nil else { return }
+            let language = selectedLanguage
+            let review = AgentKnowledgeReviewWindow(title: "导入知识卡片", action: "导入", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _ in
+                guard let self, let original = self.task, !self.dirty else { throw PetError("任务或卡片草稿已变化，请重新预览") }
+                let readOnly = try self.store.agents.limits(original, store: self.store).readOnly
+                let value = try self.cards.previewImport(original, language: language)
+                return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(value.book.branch, language: language), impact: "\(value.book.cards.count) 张卡片；替换当前语言，原版本保留。来源变化的卡片不会自动引用。", items: AgentKnowledgeReviewSnapshot.cardItems(value.book)) { [weak self] in
+                    guard let self else { throw PetError("知识卡片页面已关闭") }
+                    let current = try self.reviewedCardTask(original, readOnly: readOnly)
+                    try self.cards.importBook(value, task: current)
+                    return "已导入 \(value.book.cards.count) 张卡片"
+                }
+            }, onApplied: { [weak self] message in self?.reload(); self?.state.stringValue = message })
+            presentCardReview(review)
         }
     }
     @objc func restoreVersion() {
         guard let task, discard() else { return }
         do {
-            let versions = try cards.history(task, language: selectedLanguage).filter { $0.id != value?.id }
+            let language = selectedLanguage, versions = try cards.history(task, language: language).filter { $0.id != value?.id }
             guard !versions.isEmpty else { throw PetError("暂无其他版本") }
-            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28)), formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .medium
-            picker.addItems(withTitles: versions.map { formatter.string(from: $0.created) + " · \($0.cards.count) 张" })
-            let alert = NSAlert(); alert.messageText = "选择要恢复的版本"; alert.accessoryView = picker; alert.addButton(withTitle: "预览"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let version = versions[picker.indexOfSelectedItem], confirm = NSAlert(); confirm.messageText = "恢复此版本？"; confirm.accessoryView = textPreview(version.cards.map { "# " + $0.title + "\n" + $0.body }.joined(separator: "\n\n")); confirm.addButton(withTitle: "恢复"); confirm.addButton(withTitle: "取消")
-            guard confirm.runModal() == .alertFirstButtonReturn else { return }; try cards.restore(version, task: task, expected: revision); reload()
+            let choices = versions.map { AgentKnowledgeReviewVersion(id: $0.id, title: AgentKnowledgeReviewSnapshot.versionTitle($0.created, count: "\($0.cards.count) 张"), detail: String($0.id.prefix(8))) }
+            let review = AgentKnowledgeReviewWindow(title: "恢复知识卡片", action: "恢复", scope: language == "zh" ? "简体中文" : "English", versions: choices, load: { [weak self] index in
+                guard let self, let original = self.task, !self.dirty, let index, versions.indices.contains(index) else { throw PetError("请选择实际存在的卡片版本") }
+                let version = versions[index], expected = try self.cards.book(original, language: language).1
+                let readOnly = try self.store.agents.limits(original, store: self.store).readOnly
+                return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(version.branch, language: language), impact: "\(version.cards.count) 张卡片；替换当前语言，原版本保留。恢复后使用前请核对源码。", items: AgentKnowledgeReviewSnapshot.cardItems(version)) { [weak self] in
+                    guard let self else { throw PetError("知识卡片页面已关闭") }
+                    let current = try self.reviewedCardTask(original, readOnly: readOnly)
+                    try self.cards.restore(version, task: current, expected: expected)
+                    return "已恢复 \(version.cards.count) 张卡片"
+                }
+            }, onApplied: { [weak self] message in self?.reload(); self?.state.stringValue = message })
+            presentCardReview(review)
         } catch { state.stringValue = error.localizedDescription }
-    }
-    func textPreview(_ text: String) -> NSScrollView {
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 460, height: 260)), view = NSTextView(frame: scroll.bounds)
-        view.isEditable = false; view.isRichText = false; view.font = .systemFont(ofSize: 12); view.string = text; view.autoresizingMask = [.width]; view.isVerticallyResizable = true; view.textContainer?.widthTracksTextView = true
-        scroll.documentView = view; scroll.hasVerticalScroller = true; return scroll
     }
     @objc func openSource() {
         guard let task, let selected, selected.sources.indices.contains(sources.indexOfSelectedItem) else { return }

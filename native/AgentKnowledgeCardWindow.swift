@@ -13,6 +13,7 @@ import AppKit
     let save = NSButton(title: "保存", target: nil, action: nil), open = NSButton(title: "查看源码", target: nil, action: nil)
     var value: AgentKnowledgeCardBook?, revision = "", rows: [AgentKnowledgeCard] = [], selected: AgentKnowledgeCard?
     var dirty = false, loading = false, busy = false, job: Task<Void, Never>?, sourceWindow: NSWindowController?
+    var reviewWindow: AgentKnowledgeReviewWindow?
     var onOpenTask: ((String) -> Void)?
     var cards: AgentKnowledgeCards { store.knowledgeCards }
     var task: AgentTaskRecord? { store.task(taskID) }
@@ -65,9 +66,11 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func row(_ views: [NSView]) -> NSStackView { let value = NSStackView(views: views); value.spacing = 8; return value }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { discard() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { reviewWindow?.canLeaveSettings() != false && discard() }
     func windowDidBecomeKey(_ notification: Notification) { reload() }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); sourceWindow?.close() }
+    private func closeContent() { job?.cancel(); sourceWindow?.close(); reviewWindow?.close(); reviewWindow = nil }
+    func windowWillClose(_ notification: Notification) { closeContent() }
+    override func settingsWillLeave() { closeContent() }
     func discard() -> Bool {
         guard dirty else { return true }
         let alert = NSAlert(); alert.messageText = "放弃未保存的卡片编辑？"; alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "放弃编辑")

@@ -197,6 +197,7 @@ import AppKit
             if let canvas = entry.controller as? AgentCanvasWindow, !canvas.prepareWorkspaceNavigation() { return false }
             if let browser = entry.controller as? AgentBrowserWindow, !browser.prepareWorkspaceNavigation() { return false }
             if let annotation = entry.controller as? AgentBrowserAnnotationWindow, !annotation.prepareWorkspaceNavigation() { return false }
+            if let review = entry.controller as? AgentKnowledgeReviewWindow, !review.canLeaveSettings() { return false }
             if let creation = entry.controller as? AgentWorktreeCreationWindow, !creation.prepareWorkspaceNavigation() { return false }
             if let manager = entry.controller as? AgentWorktreeWindow, !manager.prepareWorkspaceNavigation() { return false }
         }; return true
@@ -212,6 +213,7 @@ import AppKit
         guard !closing else { throw PetError("请先完成工作区关闭操作") }
         for id in ids { for entries in (stacks[id] ?? [:]).values { for entry in entries {
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
+            if (entry.controller as? AgentKnowledgeReviewWindow)?.hasPendingOperation == true { throw PetError("请先完成知识导入或恢复操作") }
             if (entry.controller as? AgentFileConflictWindow)?.canNavigateWorkspace == false { throw PetError("请先完成文件比较中的操作") }
             if (entry.controller as? AgentGitWindow)?.hasPendingChanges == true || (entry.controller as? AgentGitPushWindow)?.hasPendingOperation == true || (entry.controller as? AgentDependencyWindow)?.hasPendingOperation == true || (entry.controller as? AgentGitRemotePage)?.hasPendingChanges == true { throw PetError("请先完成 Git 操作或处理提交草稿") }
             if (entry.controller as? AgentWorktreeCreationWindow)?.hasPendingChanges == true || (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作或处理创建配置") }

@@ -11,7 +11,7 @@ import AppKit
     var currentController: AgentSettingsPageController? { stacks[root]?.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.map(\.controller) } }
     var selectedRoot: String { root }
-    static var readbackEnabled: Bool { ["--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
     var onRootChange: ((String) -> Void)?
 
     override init(frame: NSRect) {
@@ -78,7 +78,7 @@ import AppKit
         stacks = [:]; identity = ""; makeRoot = nil
         for view in body.subviews where view !== empty { view.removeFromSuperview() }; updateHeader()
     }
-    func checkBack() { if CommandLine.arguments.contains("--knowledge-page-check") { goBack() } }
+    func checkBack() { if Self.readbackEnabled { goBack() } }
     func checkState() -> [String: Any] {
         guard Self.readbackEnabled else { return [:] }
         var controls: [NSView] = []

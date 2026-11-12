@@ -1587,7 +1587,7 @@ final class FormDocumentView: NSView {
         if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
         for page in knowledgePageHost.controllers {
             if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
-            if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
+            if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy || cards.reviewWindow?.hasPendingOperation == true { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
             if let library = page as? AgentKnowledgeLibraryWindow, library.boundTaskID.map(ids.contains) == true, library.hasPendingChanges { throw PetError("请先保存知识库名称或等待文件操作结束") }
         }
     }
@@ -2235,6 +2235,7 @@ final class FormDocumentView: NSView {
             if let index = controller as? AgentKnowledgeWindow { value["index"] = index.checkState() }
             if let reader = controller as? AgentRecordWindow { value["wikiReader"] = await reader.markdownEditingReadback() }
             if let plan = controller as? AgentWikiPlanWindow { value["wikiPlan"] = plan.checkState }
+            if let review = controller as? AgentKnowledgeReviewWindow { value["knowledgeReview"] = review.checkState }
             if let source = controller as? AgentMarkdownSourceWindow { value["source"] = source.encodingCheckState }
         }; return value
     }
