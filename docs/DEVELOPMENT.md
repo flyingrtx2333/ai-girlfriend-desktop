@@ -219,7 +219,11 @@ git commit -m "feat: add screen companion reactions"
 
 本机自动化验证：`npm run native:check-automations -- --live-agent --hold-ui`。原生部分覆盖时区和夏令时、真实单次定时触发与暂停、文件锁、项目失效失败、权限、系统实际防休眠断言及分页记录。真实模型由计划启动所选 Agent，再在同一任务中执行第二轮报告，独立核对计数和来源字段；待审批时尝试重复运行与分支，不允许覆盖原运行记录。使用独立配置和公开素材，不使用替代模型回复，不申请或更改系统通知权限。仅本机检查时省略 `--live-agent`。
 
-MCP 资源与提示词验证：`npm run native:check-mcp-content -- --live-agent --hold-ui`。需要先从官方 npm 注册表将 `@modelcontextprotocol/server-everything@2.2.1` 安装到 `~/Library/Caches/bluefatfish-mcp-everything-real`。检查实际服务器的静态文档、URI 模板、带参数提示词、目录与订阅通知和图片内容；Node 独立核对安装包的文档字节与报告。真实模型使用保存的配置、原有上下文与输出预算，读取用户选用的提示词附件，经审批读取 MCP 文档、写入并回读五字段报告，再描述实际工具图片。默认不传 `--live-agent` 只做相关原生与真实 MCP 进程检查，不返回替代模型回复。配置与公开输入哈希需保持一致。
+MCP 资源与提示词验证：`npm run native:check-mcp-content -- --candidate-app /绝对路径/签名候选.app`。从官方 npm 注册表把 `@modelcontextprotocol/server-everything@2.2.1` 安装到外置盘，用 `--server-root /绝对路径/node_modules/@modelcontextprotocol/server-everything` 指定入口；已有的轻量缓存链接可以继续读取。检查实际服务器的静态文档、URI 模板、带参数提示词、目录与订阅通知和图片内容，独立核对安装包文档的字节及哈希。脚本直接启动指定程序，记录真实进程、程序哈希和正常退出，不默认使用日常应用；验收目录、日志及项目 npm 缓存均位于仓库下。
+
+任务内资料页面使用 `npm run native:check-mcp-workspace -- --candidate-app /绝对路径/签名候选.app`；不调用模型。资源、URI 模板和提示词在各任务自己的工作区标签页打开，页内连接与预览沿用原权限和快照校验。提示词参数按连接器版本与资料保留，同次运行切换目录、标签和任务时恢复；关闭前保护未加入草稿的参数，正在读取时锁定输入。只有明确加入操作才修改原任务的草稿与附件，关闭资料页只释放该页连接。标签页和未添加参数的跨启动恢复仍待完成。
+
+真实模型模式另行使用 `native:check-mcp-content` 的 `--live-agent --hold-ui`，沿用该轮明确授权、保存配置、原有上下文与输出预算；读取选用的提示词附件，经审批读取 MCP 文档、写入并回读五字段报告，再描述实际工具图片。默认模式及工作区检查不返回替代模型回复；配置与公开输入哈希须保持一致。
 
 文档流程已有相同生产代码的实际完成证据时，可加 `--image-only` 仅复验图片模型流程，仍执行相关实际 MCP 原生检查。此模式不产生文档通过声明，需保留并单独核对先前真实文档结果及源码差异。
 

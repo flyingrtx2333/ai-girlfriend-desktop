@@ -159,7 +159,6 @@ final class FormDocumentView: NSView {
     private var editResendWindow: AgentEditResendWindow?
     private var taskModelWindow: AgentTaskModelWindow?
     private var contextWindow: AgentContextWindow?
-    private var mcpContentWindow: AgentMCPContentWindow?
     private let taskMCPContext = AgentWorkbenchButton()
     private let taskContext = AgentWorkbenchButton()
     private var worktreeWindow: AgentWorktreeWindow?
@@ -529,7 +528,7 @@ final class FormDocumentView: NSView {
         taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
         taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
@@ -792,9 +791,10 @@ final class FormDocumentView: NSView {
     @objc private func showTaskMCPContent() { if let id = agentTaskID { presentMCPContent(taskID: id) } }
     func presentMCPContent(taskID: String, serverID: String? = nil) {
         guard let store = companion?.agentStore, store.task(taskID) != nil else { return }
-        if agentTaskID == taskID { saveAgentDraft() }
-        mcpContentWindow?.window?.performClose(nil)
-        mcpContentWindow = AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
+        if agentTaskID != taskID { selectAgentTask(taskID) }
+        guard agentTaskID == taskID, saveAgentDraft() else { return }
+        if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
+        guard taskWorkspace.show(taskID: taskID, root: .mcpContent, make: { AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
             guard let self, companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
             guard let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
             let visible = agentTaskID == taskID && self.displayedTask == taskID
@@ -806,8 +806,10 @@ final class FormDocumentView: NSView {
             do { try store.save(taskID) }
             catch { store.update(taskID, persist: false) { $0.draft = previous.draft; $0.draftAttachmentIDs = previous.draftAttachmentIDs }; throw error }
             if visible { self.composer.string = combined; self.composer.didChangeText() }; self.renderMessages()
-        }
-        mcpContentWindow?.showWindow(nil); mcpContentWindow?.window?.makeKeyAndOrderFront(nil)
+        } }) else { return }
+        if let serverID { (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.selectRequestedServer(serverID) }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+        (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.settingsDidAppear()
     }
     @objc private func openTaskModelSettings() { saveAgentDraft(); showSettingsCategory("model") }
     @objc private func toggleWorkbenchVoice() { if companion?.store.preferences.wakeEnabled == true { companion?.stopRecording() } else { companion?.listenNow() } }
@@ -1576,7 +1578,7 @@ final class FormDocumentView: NSView {
         guard knowledgePageHost.prepareToLeave() else { return false }
         guard await taskWorkspace.canFinish() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, mcpContentWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, roundRollbackWindow, editResendWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         knowledgePageHost.finish()
         taskWorkspace.finish()

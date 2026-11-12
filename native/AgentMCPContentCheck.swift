@@ -8,6 +8,8 @@ import AppKit
         func rejected(_ name: String, _ action: () throws -> Void) { do { try action(); checks[name] = false } catch { checks[name] = true } }
         defer { agentRuntime?.stopAll(); agentStore?.mcp.disconnect(); phase("finished") }
         do {
+            let binary = Bundle.main.executableURL!
+            report["appPID"] = getpid(); report["binaryHash"] = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统未初始化") }
             let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("fixtures.json"))) as? [String: Any] ?? [:]
             guard let node = fixture["node"] as? String, let entry = fixture["serverEntry"] as? String, let document = fixture["documentFile"] as? String else { throw PetError("缺少官方服务器路径") }
@@ -169,6 +171,9 @@ import AppKit
                 checks["realImageAnswerMatchesViewedReference"] = answer.contains("黑") && (answer.contains("线") || answer.contains("链") || answer.contains("斜") || answer.contains("交"))
                 report["imageTaskID"] = imageTask; report["imageAnswer"] = answer; report["approvals"] = approved.count
                 tasks.selectedID = documentTaskID ?? imageTask
+            }
+            if CommandLine.arguments.contains("--mcp-workspace-check") {
+                for (name, pass) in try await runMCPWorkspaceCheck(output, taskID: owner, serverID: server.id) { checks["workspace-" + name] = pass }
             }
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }
             report["scope"] = "Actual official server-everything 2.2.1 processes, real static document bytes, argument-bearing prompts with embedded resources, real change/subscription notifications, private copies and role/ancestor restrictions, plus optional saved-model file workflow and actual PNG vision. No simulated model, MCP or website responses. Audio/opaque blobs are retained as files without claiming transcription or interpretation."

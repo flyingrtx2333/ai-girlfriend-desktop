@@ -18,12 +18,12 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, browser, document(String), canvas(String)
+        case review, records, context, browser, mcpContent, document(String), canvas(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
+            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布" }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
+            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id }
         }
     }
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
@@ -41,7 +41,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -92,6 +92,7 @@ import AppKit
         (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if taskID == id, selectedRoot == root { displayCurrent() }
     }
@@ -122,7 +123,7 @@ import AppKit
             }
         }
         for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
-            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true
+            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true
             let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(154, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12)); groupWidth.constant = buttonWidth.constant + 26
@@ -169,7 +170,7 @@ import AppKit
     }
     @objc private func openMenu() {
         let menu = NSMenu()
-        for root in [Root.review, .records, .context, .browser] {
+        for root in [Root.review, .records, .context, .browser, .mcpContent] {
             let item = NSMenuItem(title: "打开" + root.title, action: #selector(openRoot(_:)), keyEquivalent: ""); item.target = self; item.representedObject = root; item.state = taskID.flatMap { stacks[$0]?[root] } == nil ? .off : .on; menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -217,6 +218,7 @@ import AppKit
             if (entry.controller as? AgentFileConflictWindow)?.canNavigateWorkspace == false { throw PetError("请先完成文件比较中的操作") }
             if (entry.controller as? AgentGitWindow)?.hasPendingChanges == true || (entry.controller as? AgentGitPushWindow)?.hasPendingOperation == true || (entry.controller as? AgentDependencyWindow)?.hasPendingOperation == true || (entry.controller as? AgentGitRemotePage)?.hasPendingChanges == true { throw PetError("请先完成 Git 操作或处理提交草稿") }
             if (entry.controller as? AgentWorktreeCreationWindow)?.hasPendingChanges == true || (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作或处理创建配置") }
+            if (entry.controller as? AgentMCPContentWindow)?.hasPendingOperation == true { throw PetError("请先完成或取消 MCP 资料操作") }
         } } }
     }
     func finish(tasks ids: Set<String>? = nil) {
@@ -234,6 +236,6 @@ import AppKit
         guard Self.readbackEnabled else { return [:] }
         let attached = currentController?.pageContentView?.window === window && currentController?.presentingWindow === window
         let checks = ["workspaceUsesTaskWindow": attached, "noFloatingGitPages": controllers.allSatisfy { $0.window?.isVisible != true }, "workspaceHasUsableWidth": bounds.width >= 450, "workspaceHasUsableHeight": body.bounds.height >= 300]
-        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks]
+        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks, "mcp": (currentController as? AgentMCPContentWindow)?.workspaceReadback() ?? [:]]
     }
 }

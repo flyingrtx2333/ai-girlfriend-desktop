@@ -2,8 +2,16 @@ import AppKit
 import ImageIO
 
 private final class AgentMCPContentDocument: NSView { override var isFlipped: Bool { true } }
+@MainActor private final class AgentMCPContentPage: AgentThemeView {
+    var onLayout: (() -> Void)?
+    override func layout() { super.layout(); onLayout?() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(self) }
+    }
+}
 
-@MainActor final class AgentMCPContentWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentMCPContentWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String, sessionOwner: String, workspace: String?
     private let insert: (String, [String]) throws -> Void
     private let servers = NSPopUpButton(), kinds = NSSegmentedControl(labels: ["资源", "URI 模板", "提示词"], trackingMode: .selectOne, target: nil, action: nil)
@@ -19,6 +27,15 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private var selected: [String: Any]?, preview: AgentMCPContentPreview?, inserted = false
     private var job: Task<Void, Never>?, observer: UUID?, closed = false
     private var loadingList = false, pendingSearch = false
+    private let main = NSStackView(), listColumn = NSStackView(), detailViewport = NSScrollView()
+    private var wideLayout: [NSLayoutConstraint] = [], narrowLayout: [NSLayoutConstraint] = [], narrow: Bool?
+    private struct FormDraft { let fields: [String: String]; let uri: String? }
+    private var formDrafts: [String: FormDraft] = [:], selectedFormKey: String?
+    var onWorkspaceChange: (() -> Void)?
+    var hasPendingOperation: Bool { job != nil }
+    var workspaceHasUnsavedChanges: Bool {
+        !closed && (!formDrafts.isEmpty || (!inserted && fields.values.contains { !$0.string.isEmpty }))
+    }
     private var serverID: String? { servers.selectedItem?.representedObject as? String }
     private var kind: String { ["resources", "templates", "prompts"][max(0, kinds.selectedSegment)] }
     init(store: AgentStore, taskID: String, serverID: String? = nil, onInsert: @escaping (String, [String]) throws -> Void) {
@@ -27,19 +44,21 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1020, height: 690), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "MCP 资料 · " + (store.task(taskID)?.title ?? "任务"); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        let content = NSView(); window.contentView = content
+        let content = AgentMCPContentPage(fill: AgentWorkbenchTheme.surface); window.contentView = content
         servers.target = self; servers.action = #selector(changeServer); servers.setAccessibilityLabel("MCP 资料连接器")
-        servers.widthAnchor.constraint(lessThanOrEqualToConstant: 310).isActive = true
+        servers.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        servers.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
+        servers.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal); servers.cell?.lineBreakMode = .byTruncatingMiddle
         kinds.selectedSegment = 0; kinds.target = self; kinds.action = #selector(changeKind)
         search.placeholderString = "搜索名称或 URI"; search.delegate = self; search.setAccessibilityLabel("搜索 MCP 资料")
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (refresh, #selector(refreshList)), (more, #selector(loadMore)), (read, #selector(readContent)), (add, #selector(addContent)), (track, #selector(toggleTracking))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        for label in [state, destination] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for label in [state, destination] { label.font = .systemFont(ofSize: 12); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let header = NSStackView(views: [servers, destination, NSView(), disconnect, connect]); header.spacing = 10
         let filters = NSStackView(views: [kinds, search, refresh]); filters.spacing = 10
         table.addTableColumn(NSTableColumn(identifier: .init("mcp-content"))); table.headerView = nil; table.rowHeight = 46; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 资源与提示词目录")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        let listColumn = NSStackView(views: [list, more]); listColumn.orientation = .vertical; listColumn.alignment = .leading; listColumn.spacing = 8
-        list.widthAnchor.constraint(equalTo: listColumn.widthAnchor).isActive = true; listColumn.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        for view in [list, more] { listColumn.addArrangedSubview(view) }; listColumn.orientation = .vertical; listColumn.alignment = .leading; listColumn.spacing = 8
+        list.widthAnchor.constraint(equalTo: listColumn.widthAnchor).isActive = true
         title.font = .systemFont(ofSize: 16, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         uri.font = .systemFont(ofSize: 12); uri.isEditable = false; uri.isSelectable = true; uri.isBordered = true; uri.delegate = self; uri.setAccessibilityLabel("MCP 资源 URI")
         uri.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -53,13 +72,20 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         image.imageScaling = .scaleProportionallyUpOrDown; imageHeight = image.heightAnchor.constraint(equalToConstant: 0); imageHeight.priority = .defaultLow; imageHeight.isActive = true; image.heightAnchor.constraint(greaterThanOrEqualToConstant: 0).isActive = true; image.setContentCompressionResistancePriority(.init(200), for: .vertical); image.setAccessibilityLabel("MCP 实际图片预览"); image.isHidden = true
         let detail = NSStackView(views: [title, uri, argumentScroll, image, previewScroll]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
         for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
-        let main = NSStackView(views: [listColumn, detail]); main.spacing = 16; main.alignment = .top; main.distribution = .fill
-        detail.setHuggingPriority(.init(1), for: .horizontal)
+        let detailDocument = AgentMCPContentDocument(); detailDocument.translatesAutoresizingMaskIntoConstraints = false
+        detail.translatesAutoresizingMaskIntoConstraints = false; detailDocument.addSubview(detail)
+        detailViewport.documentView = detailDocument; detailViewport.hasVerticalScroller = true; detailViewport.drawsBackground = false; detailViewport.setAccessibilityLabel("MCP 资料内容")
+        NSLayoutConstraint.activate([detailDocument.widthAnchor.constraint(equalTo: detailViewport.contentView.widthAnchor), detailDocument.heightAnchor.constraint(greaterThanOrEqualTo: detailViewport.contentView.heightAnchor), detail.leadingAnchor.constraint(equalTo: detailDocument.leadingAnchor), detail.trailingAnchor.constraint(equalTo: detailDocument.trailingAnchor), detail.topAnchor.constraint(equalTo: detailDocument.topAnchor), detail.bottomAnchor.constraint(equalTo: detailDocument.bottomAnchor), previewScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140)])
+        for view in [listColumn, detailViewport] { main.addArrangedSubview(view) }; main.spacing = 14; main.alignment = .top; main.distribution = .fill
+        detailViewport.setContentHuggingPriority(.init(1), for: .horizontal); detailViewport.setContentCompressionResistancePriority(.init(1), for: .vertical)
+        wideLayout = [listColumn.widthAnchor.constraint(equalToConstant: 220), listColumn.heightAnchor.constraint(equalTo: main.heightAnchor), detailViewport.heightAnchor.constraint(equalTo: main.heightAnchor)]
+        narrowLayout = [listColumn.widthAnchor.constraint(equalTo: main.widthAnchor), listColumn.heightAnchor.constraint(equalToConstant: 120), detailViewport.widthAnchor.constraint(equalTo: main.widthAnchor)]
         let footer = NSStackView(views: [state, NSView(), track, read, add]); footer.spacing = 10
         for view in [header, filters, main, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([header.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18), filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), filters.leadingAnchor.constraint(equalTo: header.leadingAnchor), filters.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.leadingAnchor.constraint(equalTo: header.leadingAnchor), main.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 14), main.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14), listColumn.heightAnchor.constraint(equalTo: main.heightAnchor), detail.heightAnchor.constraint(equalTo: main.heightAnchor), footer.leadingAnchor.constraint(equalTo: header.leadingAnchor), footer.trailingAnchor.constraint(equalTo: header.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16), previewScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
+        NSLayoutConstraint.activate([header.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), filters.leadingAnchor.constraint(equalTo: header.leadingAnchor), filters.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.leadingAnchor.constraint(equalTo: header.leadingAnchor), main.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 14), main.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14), footer.leadingAnchor.constraint(equalTo: header.leadingAnchor), footer.trailingAnchor.constraint(equalTo: header.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16)])
+        content.onLayout = { [weak self] in self?.pageDidLayout() }; AgentSettingsStyle.prepare(content)
         populateServers(); if let serverID, let item = servers.itemArray.first(where: { $0.representedObject as? String == serverID }) { servers.select(item) }
-        observer = store.mcp.observeContent { [weak self] in self?.refreshState() }; clearSelection(); refreshState()
+        observer = store.mcp.observeContent { [weak self] in self?.refreshState() }; clearSelection(); state.stringValue = "未连接"; refreshState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func populateServers() {
@@ -67,6 +93,12 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         servers.removeAllItems()
         for server in store.mcp.availableServers(workspace: workspace) where server.enabled && (allowed?.contains(server.id) ?? true) { servers.addItem(withTitle: server.name); servers.lastItem?.representedObject = server.id }
         if let previous, let item = servers.itemArray.first(where: { $0.representedObject as? String == previous }) { servers.select(item) }
+    }
+    func selectRequestedServer(_ id: String) {
+        guard id != serverID else { return }
+        guard !hasPendingOperation else { state.stringValue = "请先完成当前操作，再切换连接器。"; return }
+        guard let item = servers.itemArray.first(where: { $0.representedObject as? String == id }) else { state.stringValue = "此任务没有该连接器的访问权限。"; return }
+        servers.select(item); changeServer()
     }
     private func taskScope(_ serverID: String, operation: String = "connect_mcp") throws -> AgentTaskRecord {
         guard let task = store.task(taskID), !task.archived, task.kind != "wiki", task.kind != "hook", task.workspace == workspace else { throw PetError("任务或项目已改变，请重新打开 MCP 资料") }
@@ -76,8 +108,16 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         try store.agents.check(call, task: task, store: store); return task
     }
     private func clearSelection() {
+        retainForm(); selectedFormKey = nil
         selected = nil; preview = nil; inserted = false; viewer.string = ""; title.stringValue = ""; uri.stringValue = ""; uri.isHidden = true; image.image = nil; image.isHidden = true; imageHeight.constant = 0
         fields = [:]; for view in arguments.arrangedSubviews { arguments.removeArrangedSubview(view); view.removeFromSuperview() }; argumentHeight.constant = 0; argumentScroll.isHidden = true
+    }
+    private func retainForm() {
+        guard let key = selectedFormKey else { return }
+        let values = fields.mapValues(\.string).filter { !$0.value.isEmpty }
+        let editedURI = (selected?["uriTemplate"] as? String).flatMap { $0 == uri.stringValue ? nil : uri.stringValue }
+        if !inserted && (!values.isEmpty || editedURI != nil) { formDrafts[key] = FormDraft(fields: values, uri: editedURI) }
+        else { formDrafts[key] = nil }
     }
     private func resetList() { rows = []; nextOffset = nil; catalog = ""; table.reloadData(); clearSelection() }
     @objc private func changeServer() { resetList(); refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
@@ -90,7 +130,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             try await self.fetchList(refresh: false, append: false)
         }
     }
-    @objc private func stop() { job?.cancel(); if let id = serverID { store.mcp.disconnect(owner: sessionOwner, serverID: id) }; resetList(); refreshState() }
+    @objc private func stop() { job?.cancel(); if let id = serverID { store.mcp.disconnect(owner: sessionOwner, serverID: id) }; resetList(); state.stringValue = "已断开"; refreshState() }
     @objc private func refreshList() { loadList(refresh: true) }
     @objc private func loadMore() { loadList(append: true) }
     private func loadList(refresh: Bool = false, append: Bool = false) {
@@ -127,21 +167,22 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             clearSelection()
             if job != nil { pendingSearch = true } else { loadList() }
         }
-        else { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; refreshState() }
+        else { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
     }
-    func textDidChange(_ notification: Notification) { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; refreshState() }
+    func textDidChange(_ notification: Notification) { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }
         let item = rows[row], name = NSTextField(labelWithString: item["title"] as? String ?? item["name"] as? String ?? "")
-        name.font = .systemFont(ofSize: 12, weight: .medium); name.lineBreakMode = .byTruncatingMiddle
+        name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingMiddle
         let detail = NSTextField(labelWithString: item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "")
-        detail.font = .systemFont(ofSize: 10); detail.textColor = AgentWorkbenchTheme.secondaryText; detail.lineBreakMode = .byTruncatingMiddle
+        detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText; detail.lineBreakMode = .byTruncatingMiddle
         let cell = NSStackView(views: [name, detail]); cell.orientation = .vertical; cell.alignment = .leading; cell.spacing = 4; cell.toolTip = item["description"] as? String; return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard rows.indices.contains(table.selectedRow) else { clearSelection(); refreshState(); return }
         let item = rows[table.selectedRow]; clearSelection(); selected = item; title.stringValue = item["title"] as? String ?? item["name"] as? String ?? ""
+        if let id = serverID, let server = try? store.mcp.server(id, workspace: workspace) { selectedFormKey = id + "\n" + server.revision + "\n" + kind + "\n" + (item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "") }
         uri.stringValue = item["uri"] as? String ?? item["uriTemplate"] as? String ?? ""; uri.isHidden = kind == "prompts"; uri.isEditable = kind == "templates"; uri.toolTip = uri.stringValue
         viewer.string = item["description"] as? String ?? ""
         let parameters = item["arguments"] as? [[String: Any]] ?? []
@@ -151,6 +192,10 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             let text = NSTextView(); text.isRichText = false; text.font = .systemFont(ofSize: 12); text.textContainerInset = NSSize(width: 6, height: 6); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.delegate = self; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false; text.setAccessibilityLabel("提示词参数 " + name)
             let scroll = NSScrollView(); scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder; scroll.heightAnchor.constraint(equalToConstant: 54).isActive = true
             let row = NSStackView(views: [label, scroll]); row.spacing = 8; arguments.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: arguments.widthAnchor).isActive = true; fields[name] = text
+        }
+        if let key = selectedFormKey, let draft = formDrafts[key] {
+            for (name, value) in draft.fields { fields[name]?.string = value }
+            if let value = draft.uri { uri.stringValue = value }
         }
         argumentHeight.constant = min(164, CGFloat(parameters.count) * 64); argumentScroll.isHidden = parameters.isEmpty; refreshState()
     }
@@ -179,7 +224,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
                 try Task.checkCancellation(); guard !self.closed, self.store.mcp.previewCurrent(preview) else { throw PetError("内容或连接已变化，请重新预览") }
                 _ = try self.taskScope(preview.server.id, operation: preview.kind == "prompts" ? "connect_mcp" : "read_mcp_resource")
                 try self.insert(preview.kind == "prompts" ? preview.promptText : "", files.map(\.id))
-                self.inserted = true; self.state.stringValue = "已加入草稿"
+                self.inserted = true; if let key = self.selectedFormKey { self.formDrafts[key] = nil }; self.state.stringValue = "已加入草稿"
             } catch { for file in files { try? AgentAttachments.removeDraft(store: self.store, taskID: self.taskID, id: file.id) }; throw error }
         }
     }
@@ -198,12 +243,66 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         read.title = kind == "prompts" ? "预览" : "读取"; read.isEnabled = connected && selected != nil && !busy && scopeError == nil && catalogCurrent
         add.title = kind == "prompts" ? "加入草稿" : "加入附件"; add.isEnabled = !busy && !inserted && scopeError == nil && preview.map(store.mcp.previewCurrent) == true
         track.isHidden = preview?.kind != "resources"; track.isEnabled = !busy && scopeError == nil && preview.map(store.mcp.supportsSubscription) == true; track.state = preview.map(store.mcp.subscribed) == true ? .on : .off
+        servers.toolTip = servers.titleOfSelectedItem
         if let server = id.flatMap({ try? store.mcp.server($0, workspace: workspace) }) { destination.stringValue = server.destination; destination.toolTip = server.destination }
         else { destination.stringValue = "" }
         if let scopeError { state.stringValue = scopeError }
         else if connected, !catalog.isEmpty, !catalogCurrent { state.stringValue = "目录已更新，请刷新" }
         else if let preview, !store.mcp.previewCurrent(preview) { state.stringValue = connected ? "内容已更新，请重新读取" : "连接已断开" }
         state.toolTip = state.stringValue
+        onWorkspaceChange?()
+        if !busy, isPageVisible, let host = presentingWindow, host.firstResponder === host { focusContent() }
     }
-    func windowWillClose(_ notification: Notification) { closed = true; job?.cancel(); if let observer { store.mcp.removeContentObserver(observer) }; store.mcp.disconnect(owner: sessionOwner) }
+    override func pageDidLayout() {
+        guard let content = pageContentView, content.bounds.width > 0 else { return }
+        let next = content.bounds.width < 740
+        guard narrow != next else { return }; narrow = next
+        NSLayoutConstraint.deactivate(wideLayout + narrowLayout)
+        main.orientation = next ? .vertical : .horizontal; main.alignment = next ? .leading : .top
+        NSLayoutConstraint.activate(next ? narrowLayout : wideLayout)
+    }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); pageDidLayout()
+        if let content = pageContentView { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
+        if let content = pageContentView, let focused = presentingWindow?.firstResponder as? NSView, focused.isDescendant(of: content) { return }
+        focusContent()
+    }
+    private func focusContent() {
+        guard isPageVisible else { return }
+        let target: NSView = table.isEnabled ? table : viewer
+        presentingWindow?.makeFirstResponder(target)
+    }
+    override func canLeaveSettings() -> Bool {
+        guard presentingWindow?.attachedSheet == nil else { return false }
+        guard !hasPendingOperation else { state.stringValue = "请先完成操作，或点击取消。"; return false }
+        guard workspaceHasUnsavedChanges else { return true }
+        let alert = NSAlert(); alert.messageText = "关闭 MCP 资料？"; alert.informativeText = "未加入草稿的参数将清除。任务草稿与已添加附件保留。"
+        alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "关闭资料页")
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+    override func settingsWillLeave() { finishContent() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
+    func windowWillClose(_ notification: Notification) { finishContent() }
+    private func finishContent() {
+        guard !closed else { return }; closed = true; job?.cancel(); onWorkspaceChange = nil
+        if let observer { store.mcp.removeContentObserver(observer); self.observer = nil }; store.mcp.disconnect(owner: sessionOwner)
+    }
+    func workspaceReadback() -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--mcp-content-check"), let content = pageContentView else { return [:] }
+        func rect(_ view: NSView) -> [String: Double] { let r = view.convert(view.bounds, to: content); return ["x": r.minX, "y": r.minY, "width": r.width, "height": r.height] }
+        func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
+        let focused = presentingWindow?.firstResponder
+        let focusInPage = (focused as? NSView)?.isDescendant(of: content) == true || (focused != nil && (search.currentEditor() === focused || uri.currentEditor() === focused))
+        let checks = ["pageActuallyVisible": isPageVisible, "serverPickerReadable": inside(servers) && servers.bounds.width >= 139, "catalogFitsPage": inside(listColumn), "detailViewportFitsPage": inside(detailViewport), "searchFitsPage": inside(search), "readButtonFitsPage": inside(read), "addButtonFitsPage": inside(add), "detailHasUsableHeight": detailViewport.bounds.height >= 80, "catalogHasUsableHeight": table.enclosingScrollView!.bounds.height >= 70]
+        return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
+    }
+    func checkAction(_ action: String, kind index: Int? = nil, query: String? = nil, row: Int? = nil, values: [String: String]? = nil, resourceURI: String? = nil) {
+        guard CommandLine.arguments.contains("--mcp-content-check"), !CommandLine.arguments.contains("--live-agent") else { return }
+        if let index { kinds.selectedSegment = index; changeKind() }
+        if let query { search.stringValue = query; loadList() }
+        if let row, rows.indices.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+        if let values { for (name, value) in values { fields[name]?.string = value }; textDidChange(Notification(name: NSText.didChangeNotification)) }
+        if let resourceURI { uri.stringValue = resourceURI; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: uri)) }
+        switch action { case "connect": start(); case "disconnect": stop(); case "read": readContent(); case "add": addContent(); case "focus-preview": presentingWindow?.makeFirstResponder(viewer); default: break }
+    }
 }
