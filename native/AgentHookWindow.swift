@@ -228,7 +228,7 @@ private extension AgentHookEvent {
     @objc private func revealSource() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.source)]) } }
     @objc private func clearCredentials() {
         guard let selected, let window = presentingWindow else { return }
-        let alert = NSAlert(); alert.messageText = "清除已保存的 Hook 凭据？"; alert.informativeText = selected.name + "\n停用此处理器并清除钥匙串中的 " + (selected.type == "http" ? "Headers" : "env") + "。来源文件内直接填写的值可通过「打开来源」移除。"; alert.addButton(withTitle: "清除"); alert.addButton(withTitle: "取消")
+        let alert = AgentConfirmation(); alert.messageText = "清除已保存的 Hook 凭据？"; alert.informativeText = selected.name + "\n停用此处理器并清除钥匙串中的 " + (selected.type == "http" ? "Headers" : "env") + "。来源文件内直接填写的值可通过「打开来源」移除。"; alert.addButton(withTitle: "清除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in guard response == .alertFirstButtonReturn, let self else { return }; do { try service.clearCredentials(selected, workspace: workspace); reload(select: selected.id) } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func toggleEnabled() {

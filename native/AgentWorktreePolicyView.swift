@@ -94,7 +94,7 @@ import AppKit
         let value = draftPolicy
         var consent = false
         if value.enabled, value != store.worktreeRetention.policy {
-            let alert = NSAlert(); alert.messageText = "启用这项自动回收设置？"; alert.informativeText = value.summary
+            let alert = AgentConfirmation(); alert.messageText = "启用这项自动回收设置？"; alert.informativeText = value.summary
             alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }; consent = true
         }

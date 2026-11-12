@@ -1550,9 +1550,9 @@ final class FormDocumentView: NSView {
            companion?.taskControls.contains(where: { $0 !== self && $0.agentTaskID == id && $0.window != nil }) != true {
             guard !closingSideTask, await closeOwnedTaskPanels() else { return false }
             let unsafe = task.pendingFileRollback != nil || task.sideTask?.needsReview == true || task.gitTurn?.warning != nil || task.changeRounds?.contains { $0.warning != nil } == true
-            let alert = NSAlert(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
+            let alert = AgentConfirmation(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
             alert.informativeText = unsafe ? "文件记录尚未完成，请保留任务以便检查和恢复。" : "这份侧任务及其子任务的对话、草稿、附件不会保留。项目文件保持当前状态。"
-            if !unsafe { alert.addButton(withTitle: "关闭并移除") }; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保留为任务")
+            if !unsafe { alert.addButton(withTitle: "关闭并移除").hasDestructiveAction = true }; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保留为任务")
             let answer = alert.runModal()
             if answer == (unsafe ? .alertSecondButtonReturn : .alertThirdButtonReturn) {
                 do { try companion?.agentStore?.sideTasks.keepAsTask(id); sideTaskTabID = nil; return true } catch { setStatus(error.localizedDescription, error: true); return false }
@@ -1915,7 +1915,7 @@ final class FormDocumentView: NSView {
             let existing = tasks.organization.customGroups(mode, tasks: tasks.tasks).first { $0.id == id }
             guard id == nil || existing != nil else { throw PetError("分组已变化，请刷新后重试") }
             if action == "remove", let id {
-                let alert = NSAlert(); alert.addButton(withTitle: "删除分组"); alert.addButton(withTitle: "取消")
+                let alert = AgentConfirmation(); alert.addButton(withTitle: "删除分组").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
                 alert.messageText = "删除“\(existing!.name)”分组？"; alert.informativeText = "任务会保留在未分组会话中。"
                 guard alert.runModal() == .alertFirstButtonReturn else { return }; try tasks.organization.removeCustomGroup(id, mode: mode)
             } else {
@@ -2032,7 +2032,7 @@ final class FormDocumentView: NSView {
             if agentTaskID == id { selectAgentTask(id) }
         case "import-source":
             guard let origin = task.importOrigin else { return }
-            let alert = NSAlert(); alert.messageText = origin.source.title + "导入记录"
+            let alert = AgentConfirmation(); alert.messageText = origin.source.title + "导入记录"
             alert.informativeText = "原工作目录：" + (origin.originalWorkspace ?? "无") + "\n来源：" + origin.sourceFile + (origin.warnings.isEmpty ? "" : "\n" + origin.warnings.joined(separator: "\n"))
             alert.addButton(withTitle: "来源副本"); alert.addButton(withTitle: "关闭")
             if alert.runModal() == .alertFirstButtonReturn {
@@ -2063,10 +2063,10 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore else { throw PetError("任务未初始化") }
         saveAgentDraft(); let mode = currentAgentTask?.organizationMode ?? .coding, plan = try store.prepareDeletion(ids, workspaceIDs: workspaceIDs)
         try companion?.requireTaskDeletionAllowed(plan.ids)
-        let alert = NSAlert(); alert.alertStyle = .warning
+        let alert = AgentConfirmation()
         alert.messageText = workspaceIDs.isEmpty ? "永久删除\(plan.records.count)项任务？" : "永久删除\(workspaceIDs.count)个工作区及\(plan.records.count)项任务？"
         let names = plan.workspaceTitles + plan.titles
-        alert.informativeText = names.prefix(20).joined(separator: "\n") + (names.count > 20 ? "\n及其余\(names.count - 20)项" : "") + "\n\n对话、草稿、任务附件和检查点将不可恢复。项目文件和 Git 工作树保留。"
+        alert.informativeText = names.joined(separator: "\n") + "\n\n对话、草稿、任务附件和检查点将不可恢复。项目文件和 Git 工作树保留。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "永久删除"); alert.buttons[1].hasDestructiveAction = true
         guard alert.runModal() == .alertSecondButtonReturn else { return nil }
         try companion?.requireTaskDeletionAllowed(plan.ids)
@@ -2157,7 +2157,7 @@ final class FormDocumentView: NSView {
         do {
             let directory = try AgentGit.metadata(workspace: task.workspace)
             if !directory.path.hasPrefix((task.workspace ?? "") + "/"), task.gitDirectory != directory.path {
-                let alert = NSAlert(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
+                let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
                 guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(task.id) { $0.gitDirectory = directory.path }
             }
             showAgentGit()
@@ -3068,6 +3068,10 @@ extension ControlWindow {
         case "directory": if let id { directoryAction(id, mode: mode, action: "rename") }
         default: break
         }
+    }
+    func checkOperationDeletion(_ ids: [String]) async throws -> String? {
+        guard CommandLine.arguments.contains("--operation-confirmation-check"), companion?.checkDirectory != nil else { throw PetError("仅供独立操作确认验收") }
+        return try await deleteAgentTasks(ids, workspaceIDs: [])
     }
     func organizationSnapshot() -> [String: Any] {
         var value = taskSidebar.organizationSnapshot()

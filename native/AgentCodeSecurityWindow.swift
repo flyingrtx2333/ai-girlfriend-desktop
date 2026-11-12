@@ -143,7 +143,7 @@ import AppKit
     }
     @objc private func fixFinding() {
         guard let finding, let onFix else { return }
-        let alert = NSAlert()
+        let alert = AgentConfirmation()
         alert.messageText = "启用 TLS 证书校验？"
         alert.informativeText = "\(finding.path):\(finding.line)\nrejectUnauthorized: false → true\n仅写入工作区，可撤销。"
         alert.addButton(withTitle: "修复")

@@ -62,7 +62,7 @@ import AppKit
                 let call = AgentToolCall(id: UUID().uuidString, name: name, arguments: String(decoding: try JSONSerialization.data(withJSONObject: args), as: UTF8.self))
                 let tools = AgentTools(store: store, taskID: taskID), directory = try tools.gitDirectory(for: call)
                 if let reason = try tools.approvalReason(for: call, gitDirectory: directory) {
-                    let alert = NSAlert(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
+                    let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
                     guard alert.runModal() == .alertFirstButtonReturn else { throw PetError("已取消") }
                     if let directory { store.update(taskID) { $0.gitDirectory = directory } }
                 }

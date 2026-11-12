@@ -88,7 +88,7 @@ struct AgentMarkdownSelection {
             guard let onAdd, canAdd?() != false else { throw PetError("此任务不能接收选文") }
             let selected = try selection(); popover?.close(); popover = nil; try onAdd(selected)
         } catch {
-            let alert = NSAlert(); alert.messageText = error.localizedDescription
+            let alert = AgentConfirmation(); alert.messageText = error.localizedDescription
             if let window = text.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
         }
     }

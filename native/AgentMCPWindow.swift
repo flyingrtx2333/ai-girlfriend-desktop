@@ -140,7 +140,7 @@ import UniformTypeIdentifiers
     @objc private func stop() { job?.cancel(); if let selected { service.disconnect(owner: sessionOwner, serverID: selected.id) }; tools.string = ""; refreshState() }
     @objc private func removeConfig() {
         guard let selected else { return }
-        let alert = NSAlert(); alert.messageText = "移除“\(selected.name)”？"; alert.addButton(withTitle: "移除"); alert.addButton(withTitle: "取消")
+        let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”？"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do { try service.remove(selected.id, revision: selected.revision); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
     }

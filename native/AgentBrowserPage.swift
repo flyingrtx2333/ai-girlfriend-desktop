@@ -161,11 +161,11 @@ import WebKit
     }
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         guard let window = web.window else { completionHandler(); return }
-        let alert = NSAlert(); alert.messageText = frame.request.url?.host ?? "网页提示"; alert.informativeText = String(message.prefix(2000)); alert.beginSheetModal(for: window) { _ in completionHandler() }
+        let alert = AgentConfirmation(); alert.messageText = frame.request.url?.host ?? "网页提示"; alert.informativeText = String(message.prefix(2000)); alert.beginSheetModal(for: window) { _ in completionHandler() }
     }
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         guard let window = web.window else { completionHandler(false); return }
-        let alert = NSAlert(); alert.messageText = frame.request.url?.host ?? "网页确认"; alert.informativeText = String(message.prefix(2000)); alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "取消"); alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
+        let alert = AgentConfirmation(); alert.messageText = frame.request.url?.host ?? "网页确认"; alert.informativeText = String(message.prefix(2000)); alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "取消"); alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
     }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) { completionHandler(nil) }
 }

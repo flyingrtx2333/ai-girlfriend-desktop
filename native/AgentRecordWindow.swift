@@ -39,7 +39,7 @@ import UniformTypeIdentifiers
     private var wikiKnowledgeSignature = ""
     private var wikiPlanWindow: AgentWikiPlanWindow?
     private var wikiSharingTask: Task<Void, Never>?
-    private var wikiSharingAlert: NSAlert?
+    private var wikiSharingAlert: AgentConfirmation?
     private var wikiReviewWindow: AgentKnowledgeReviewWindow?
     private var wikiCitation: (enabled: Bool, signature: String, workspace: String)?
     private var wikiMaintenance: (options: AgentWikiMaintenanceOptions, signature: String, workspace: String)?
@@ -326,12 +326,12 @@ import UniformTypeIdentifiers
     private func connectWikiIndex() async throws {
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}"), directory = try tools.gitDirectory(for: call)
         if let reason = try tools.approvalReason(for: call, gitDirectory: directory) {
-            let alert = NSAlert(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
+            let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
             guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { throw PetError("已取消") }; if let directory { store.update(taskID) { $0.gitDirectory = directory } }
         }
         _ = try await tools.execute(call, gitDirectory: directory); try Task.checkCancellation()
     }
-    private func presentWikiAlert(_ alert: NSAlert) async throws -> NSApplication.ModalResponse {
+    private func presentWikiAlert(_ alert: AgentConfirmation) async throws -> NSApplication.ModalResponse {
         try Task.checkCancellation()
         guard let window = presentingWindow, window.isVisible, window.attachedSheet == nil else { throw PetError("请先完成当前窗口操作") }
         wikiSharingAlert = alert; defer { wikiSharingAlert = nil }
@@ -451,7 +451,7 @@ import UniformTypeIdentifiers
                 guard let task = store.task(taskID), try AgentFiles(workspace: task.workspace).root.path == snapshot.workspace else { throw PetError("项目已变化，请刷新后重试") }
                 if enabling {
                     if action == "auto-update" { try await connectWikiIndex() }
-                    let alert = NSAlert(); alert.messageText = action == "auto-update" ? "开启自动更新？" : "开启自动导出？"
+                    let alert = AgentConfirmation(); alert.messageText = action == "auto-update" ? "开启自动更新？" : "开启自动导出？"
                     alert.informativeText = (language == "zh" ? "简体中文" : "English") + "\n" + (action == "auto-update" ? "应用运行期间，Git 提交变化后自动使用此任务的模型增量更新 Wiki，可能产生模型费用。人工修改的文档先保留，需手动审阅更新。" : "生成、更新或导入发布后，自动导出当前语言的 Wiki 与知识卡片。检测到外部文件修改时停止覆盖。")
                     alert.addButton(withTitle: "开启"); alert.addButton(withTitle: "取消")
                     guard try await presentWikiAlert(alert) == .alertFirstButtonReturn else { state.stringValue = "已取消"; return }

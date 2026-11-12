@@ -71,7 +71,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if let remotePage, !remotePage.canLeaveSettings() { return false }
         guard sending else { return true }
-        let alert = NSAlert(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭"); alert.addButton(withTitle: "继续等待")
+        let alert = AgentConfirmation(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭").hasDestructiveAction = true; alert.addButton(withTitle: "继续等待")
         return alert.runModal() == .alertFirstButtonReturn
     }
     @objc private func reload() { if !busy { load() } }
@@ -126,7 +126,7 @@ import AppKit
     }
     @objc private func sendPush() {
         guard !busy, writable, let value = review, value.commitCount > 0 else { return }
-        let alert = NSAlert(); alert.messageText = "推送 \(value.commitCount) 项提交？"; alert.informativeText = value.summary; alert.addButton(withTitle: "推送"); alert.addButton(withTitle: "取消")
+        let alert = AgentConfirmation(); alert.messageText = "推送 \(value.commitCount) 项提交？"; alert.informativeText = value.summary; alert.addButton(withTitle: "推送"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         busy = true; sending = true; controls(); state.stringValue = "推送中…"
         job = Task { [weak self] in

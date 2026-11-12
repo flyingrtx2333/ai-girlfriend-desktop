@@ -145,7 +145,7 @@ import AppKit
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.source]) } }
     @objc private func removeItem() {
         guard let selected, let task, let window = presentingWindow else { return }
-        let alert = NSAlert(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓"); alert.addButton(withTitle: "取消")
+        let alert = AgentConfirmation(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             do { try store.rules.trash(selected, task: task); self.selected = nil; reload(); setState("已移到废纸篓") } catch { setState(error.localizedDescription) }

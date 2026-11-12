@@ -87,8 +87,8 @@ struct AgentOfficeEditError: LocalizedError {
         }
     }
     func canQuit() async -> Bool {
-        if windows.values.contains(where: \.working) { let alert = NSAlert(); alert.messageText = "办公文件正在处理，请稍后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false }
-        for window in windows.values { do { try await window.verifyClean() } catch { if window.dirty { continue }; let alert = NSAlert(); alert.messageText = "办公文件尚未就绪，请关闭其窗口后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false } }
+        if windows.values.contains(where: \.working) { let alert = AgentConfirmation(); alert.messageText = "办公文件正在处理，请稍后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false }
+        for window in windows.values { do { try await window.verifyClean() } catch { if window.dirty { continue }; let alert = AgentConfirmation(); alert.messageText = "办公文件尚未就绪，请关闭其窗口后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false } }
         let unsaved = windows.values.filter(\.dirty)
         guard !unsaved.isEmpty else { return true }
         if AgentUnsavedChanges.discard("仍有未保存的办公文档", detail: unsaved.map { $0.file.lastPathComponent }.sorted().joined(separator: "\n"), discardTitle: "放弃更改并退出") { return true }

@@ -15,7 +15,7 @@ import AppKit
         let tools = AgentTools(store: store, taskID: taskID), call = AgentToolCall(id: UUID().uuidString, name: "index_project", arguments: "{}")
         let directory = try tools.gitDirectory(for: call)
         if let reason = try tools.approvalReason(for: call, gitDirectory: directory) {
-            let alert = NSAlert(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
+            let alert = AgentConfirmation(); alert.messageText = "连接项目知识"; alert.informativeText = reason; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { throw PetError("已取消") }
             if let directory { store.update(taskID) { $0.gitDirectory = directory } }
         }
@@ -24,7 +24,7 @@ import AppKit
     @objc func generateCards() {
         guard discard() else { return }
         if value?.cards.contains(where: \.manual) == true {
-            let alert = NSAlert(); alert.messageText = "重新核对已编辑的卡片？"; alert.informativeText = "将依据当前源码重新生成，旧版本可恢复。"; alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
+            let alert = AgentConfirmation(); alert.messageText = "重新核对已编辑的卡片？"; alert.informativeText = "将依据当前源码重新生成，旧版本可恢复。"; alert.addButton(withTitle: "重新生成"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         run { [self] in try await connect(); _ = try await cards.generate(sourceID: taskID, language: selectedLanguage, focus: focus.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -41,7 +41,7 @@ import AppKit
     }
     @objc func optionsChanged(_ sender: NSButton) {
         if sender.state == .on && (sender === automatic || sender === exporting) {
-            let alert = NSAlert(); alert.messageText = sender === automatic ? "启用自动更新？" : "启用自动导出？"
+            let alert = AgentConfirmation(); alert.messageText = sender === automatic ? "启用自动更新？" : "启用自动导出？"
             alert.informativeText = sender === automatic ? "源码变化后使用此任务的模型生成卡片，会产生模型用量。存在手动编辑时会提示审阅。" : "卡片保存后写入当前项目的 " + ((try? cards.sharingPath(language: selectedLanguage)) ?? "知识目录") + "，可随项目提交。外部改动需先导入。"
             alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { sender.state = .off; return }

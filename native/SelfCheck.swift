@@ -38,6 +38,7 @@ import WebKit
         if CommandLine.arguments.contains("--git-remote-page-check") { await runGitRemotePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--name-editor-check") { await runNameEditorCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--unsaved-changes-check") { await runUnsavedChangesCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--operation-confirmation-check") { await runOperationConfirmationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
@@ -68,6 +69,7 @@ import WebKit
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--name-editor-fixtures") || CommandLine.arguments.contains("--name-editor-reopen") { try prepareNameEditorUI(output, seed: CommandLine.arguments.contains("--name-editor-fixtures")) }
                 if CommandLine.arguments.contains("--unsaved-changes-fixtures") || CommandLine.arguments.contains("--unsaved-changes-reopen") { try await prepareUnsavedChangesUI(output, seed: CommandLine.arguments.contains("--unsaved-changes-fixtures")) }
+                if CommandLine.arguments.contains("--operation-confirmation-fixtures") || CommandLine.arguments.contains("--operation-confirmation-reopen") { try await prepareOperationConfirmationUI(output, seed: CommandLine.arguments.contains("--operation-confirmation-fixtures")) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)

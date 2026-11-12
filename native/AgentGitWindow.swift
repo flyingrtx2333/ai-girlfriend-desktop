@@ -191,7 +191,7 @@ import AppKit
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         let files = try AgentFiles(workspace: task.workspace), directory = try AgentGit.metadata(workspace: task.workspace, creating: creating)
         if directory != files.root, !directory.path.hasPrefix(files.root.path + "/"), task.gitDirectory != directory.path {
-            let alert = NSAlert(); alert.messageText = "连接 Git 仓库"; alert.informativeText = directory.path
+            let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库"; alert.informativeText = directory.path
             alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
             guard alert.runModal() == .alertFirstButtonReturn else { throw PetError("未连接 Git 元数据") }
             store.update(taskID) { $0.gitDirectory = directory.path }
@@ -362,9 +362,9 @@ import AppKit
     @objc private func restoreFile() {
         guard !busy, writable(), let inspection, inspection.paths.count == 1 else { return }
         let path = inspection.paths[0], untracked = changes.contains { $0.path == path && $0.status == "??" }
-        let alert = NSAlert(); alert.messageText = untracked ? "移入废纸篓？" : "恢复未暂存内容？"
+        let alert = AgentConfirmation(); alert.messageText = untracked ? "移入废纸篓？" : "恢复未暂存内容？"
         alert.informativeText = path + (untracked ? "\n可在访达的废纸篓中放回。" : "\n恢复为暂存区版本，保留已暂存内容。可通过“撤销恢复”或任务记录恢复本次改动。")
-        alert.addButton(withTitle: untracked ? "移入废纸篓" : "恢复"); alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: untracked ? "移入废纸篓" : "恢复").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }; performFileAction(.restore)
     }
     private func performFileAction(_ action: AgentGitFileAction) {

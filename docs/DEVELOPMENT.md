@@ -52,7 +52,9 @@ Git 添加远端在任务工作区与独立推送窗口复用同一表单。独�
 
 任务、工作区、文件夹与分组的名称编辑共用短表单，支持 Return／⌘S 保存、Esc 取消和就地错误反馈。任务保存复用原子记录事务，检查打开时的版本；失败保留填写和原记录，新建分组与视图切换一起保存。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-name-editor` 只核对相关表单、冲突、写入失败、无工作区问答和持久内容，不调用模型。首次实际窗口用 `--manual-ui --name-editor-fixtures`，同一资料重开用 `--manual-ui --name-editor-reopen`。
 
-未保存编辑的确认共用 `AgentUnsavedChanges`。两项选择默认继续编辑，Esc 和关闭按钮也保留填写；规则页仍提供保存、放弃及继续编辑，保存失败继续留在原表单。确认框恢复原窗口焦点，长文件列表可滚动查看。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-unsaved-changes` 核对实际创建表单、MCP 草稿和规则文件的结果，不调用模型。首次窗口用 `--manual-ui --unsaved-changes-fixtures`，重开同一资料用 `--manual-ui --unsaved-changes-reopen`。
+应用内短确认与信息提示共用 `AgentConfirmation`，同步确认仍使用应用模态窗口，异步确认仍附着于原窗口；原按钮返回编号、默认选择及操作前后的权限、版本和来源校验保留。移除、清除、覆盖等按钮标记为破坏性操作，取消与关闭返回取消结果，结束后恢复原窗口焦点。详情和完整删除名单可滚动，长对象名保留在正文。网页提示继续显示来源主机并保留原消息长度限制；系统文件选择与系统授权仍使用原生面板。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-operation-confirmation` 核对实际 MCP、规则、电脑操作、文件比较和 25 项任务的取消结果，以及异步回调次数；不实际删除任务、不启用电脑权限、不调用模型。首次窗口用 `--manual-ui --operation-confirmation-fixtures`，同一资料重开用 `--manual-ui --operation-confirmation-reopen`。
+
+未保存编辑继续通过同文件内的 `AgentUnsavedChanges` 接口使用公共确认。两项选择默认继续编辑，Esc 和关闭按钮也保留填写；规则页仍提供保存、放弃及继续编辑，保存失败继续留在原表单。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-unsaved-changes` 核对实际创建表单、MCP 草稿和规则文件的结果，不调用模型。首次窗口用 `--manual-ui --unsaved-changes-fixtures`，重开同一资料用 `--manual-ui --unsaved-changes-reopen`。
 
 回复分支的权限检查可用已签名候选运行 `open -n <候选应用> --args --check <独立临时目录> --reply-policy-check`。它通过实际原生读写、终端和自动化任务检查委派／自动化分支的工具、联网、审批及只读范围，并重新加载实际记录；模型请求在发送前阻止。`reply-policy-result.json` 保留每项检查和实际工具结果。复制、反馈、历史画布与 Skill 文件另用保留的真实对话在窗口验收，不生成模拟模型回复。
 
