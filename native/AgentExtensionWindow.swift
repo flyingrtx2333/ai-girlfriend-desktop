@@ -212,21 +212,13 @@ import UniformTypeIdentifiers
         let scope = NSPopUpButton(); scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; return scope
     }
     @objc private func createItem() {
-        guard canLeave(), let window = presentingWindow else { return }
-        let alert = NSAlert(); alert.messageText = kind == .skill ? "新建 Skill" : "新建命令"; alert.addButton(withTitle: "创建"); alert.addButton(withTitle: "取消")
-        let name = NSTextField(), scope = scopeControl(); name.placeholderString = "名称"; name.setAccessibilityLabel("扩展名称"); scope.setAccessibilityLabel("扩展范围")
-        let form = NSStackView(views: [name, scope]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10; form.frame = NSRect(x: 0, y: 0, width: 300, height: 64)
-        name.widthAnchor.constraint(equalToConstant: 300).isActive = true; alert.accessoryView = form; alert.window.initialFirstResponder = name
-        let chosen = kind
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            do {
-                let value = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let text = chosen == .skill ? "---\nname: \(value)\ndescription: \n---\n\n# 工作流\n\n1. 读取任务要求和实际输入。\n2. 执行所需步骤。\n3. 核对实际结果。\n" : "---\ndescription: \n---\n\n$ARGUMENTS\n"
-                let item = try store.extensions.create(chosen, name: value, text: text, project: scope.indexOfSelectedItem == 1, workspace: workspace)
-                search.stringValue = ""; reload(select: item.id); window.makeFirstResponder(editor)
-            } catch { state.stringValue = error.localizedDescription }
+        guard canLeave() else { return }
+        let page = AgentExtensionCreationPage(service: store.extensions, kind: kind, workspace: workspace)
+        page.onCreated = { [weak self] item in
+            guard let self else { return }
+            search.stringValue = ""; reload(select: item.id); state.stringValue = "已创建"; presentingWindow?.makeFirstResponder(editor)
         }
+        presentSettingsChild(page)
     }
     @objc private func importItem() {
         guard canLeave(), let window = presentingWindow else { return }

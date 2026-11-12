@@ -124,7 +124,9 @@ import Darwin
             checks["hostingDoesNotCreateVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visible
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
-            report["success"] = checks.count == 15 && checks.values.allSatisfy { $0 }
+            guard checks.count == 15 else { throw PetError("设置页面基础检查缺失") }
+            checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
+            report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = 0; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("settings-pages-report.json"))

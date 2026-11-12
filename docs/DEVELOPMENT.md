@@ -40,6 +40,8 @@ npm run native:build
 
 上述两种构建的临时目录、Swift／Clang 模块及 SwiftPM／npm 缓存均放在仓库的 `build/native-cache`；系统临时目录仅保留一个指向该目录的英文路径链接。`npm run native:check-delivery` 使用现有正式包的外置盘隔离副本，核对真实签名、安装与备份、占用拒绝和文件操作失败后的恢复；不启动或修改原应用，不访问配置、凭据或模型。可用 `-- --app /绝对路径/正式签名.app` 指定只读来源。
 
+新建 Skill／指令和智能体的 MCP 工具规则使用设置子页面；错误留在原表单，返回前保护未保存填写。扩展创建成功后返回原文件编辑器；MCP 规则先应用到原智能体草稿，再由智能体页面统一保存。模板直接载入可编辑草稿，保存前不写入配置。`BLUEFATFISH_APP=<独立候选路径> npm run native:check-settings-pages` 检查实际管理页承载、扩展保存范围、重名保护、取消、规则保存与模板；`native:check-settings` 继续检查设置布局，两者均禁止模型请求。
+
 回复分支的权限检查可用已签名候选运行 `open -n <候选应用> --args --check <独立临时目录> --reply-policy-check`。它通过实际原生读写、终端和自动化任务检查委派／自动化分支的工具、联网、审批及只读范围，并重新加载实际记录；模型请求在发送前阻止。`reply-policy-result.json` 保留每项检查和实际工具结果。复制、反馈、历史画布与 Skill 文件另用保留的真实对话在窗口验收，不生成模拟模型回复。
 
 按回合撤回使用候选的 `--check <独立临时目录> --round-rollback-check`：正式工具实际修改两轮文件，核对保存、检查点损坏、后来编辑、真实只读失败与恢复，不产生模型输出。`--manual-ui --round-rollback-fixtures` 只创建一份真实文件／人工要求的窗口验收任务；重开同一目录不重复传 fixtures。`--round-rollback-crash-check` 另建实际128MB文件，写出 `round-crash-ready.json` 后等待目录内的 `start-round-crash`；控制器须确认该进程存活，在撤回实际开始后终止该进程。随后 `--round-rollback-recovery-check` 只核对真实遗留标记及项目隔离，不自动恢复文件，再以 `--manual-ui` 从实际窗口审阅并恢复。完整保留失败与中断记录，不将这些文件操作检查作为 AI 效果验收。

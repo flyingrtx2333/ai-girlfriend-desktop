@@ -27,6 +27,7 @@
 - [x] 设置搜索、分类切换、右侧部分配置表单已有实现。
 - [x] **统一设置壳**：左侧分组导航与搜索，右侧承载管理页面；列表、详情与编辑可连续完成，保存后留在原页。生产候选的原生、实际窗口及重开已验，已进入当前日常包。
 - [x] **迁入完整配置页面**：插件、Skills、指令、MCP、Hooks、智能体、团队、记忆与规则、需要我配置；实际页内保存、返回和配置保持已有证据。
+- [x] **设置创建与规则子页候选**：新建 Skill／指令和智能体 MCP 工具规则改为设置内的子页面；重名和无效输入留在原表单，未保存填写可继续编辑或取消。扩展创建后返回原文件编辑器，规则先进入智能体草稿再统一保存；模板直接载入可编辑草稿。最终同一优化程序通过 40 项管理页／表单与 45 项布局检查，共 85 项。实际全局 Skill、项目指令、正文保存、取消保护、模板编辑、规则应用、浅深色及 780×540 窗口已验；最终文件和重开窗口均核对唯一的 `echo → 禁止` 规则。两次同版本重开已验，最终重开及退出后 24 份资料字节与权限一致，原任务草稿保持，模型请求 0。首轮操作与逐步复验均保留在 `evidence/agent/settings-forms-d9k4m7p2`；日常程序及 10 份正式资料未变，日常发布待完成。
 - [ ] **统一组件与主题**：字体、间距、分组卡片、图标、按钮、开关、输入框、表格、编辑器、状态、空态、加载和错误；补齐浅／深色、焦点、悬停及禁用状态。
 - [x] **外观基础**：跟随系统／浅色／深色、12／14／16／18 对话字号、动态配色和已有窗口即时重绘；双窗口、任务草稿与未保存编辑保留、Markdown／Git 浅深色及重开恢复已验。页面样式和终端画布的主题衔接继续逐项处理。
 - [ ] **整理主导航与任务工作区**：自动化、需要我、知识库、Repo Wiki 使用主内容页面；Git、执行详情、产物预览使用任务工作区或右侧面板。
@@ -68,9 +69,9 @@
 | --- | --- | --- | --- |
 | MCP 资源、URI 模板与提示词 | 当前任务 → MCP 资料标签页 | 主流程、浅深色、窄窗口、关闭／收起焦点及同版重开已验 | 标签／未加入参数跨启动恢复及日常发布 |
 | 模型、快捷键、语音、桌宠、电脑操作、导入、归档 | 设置 → 对应右侧页面 | 已承载 | 统一表单、状态和保存行为 |
-| Skills、命令、插件、MCP | 设置 → 扩展管理 | 已迁入 | 列表、类型标签、输入与编辑器样式继续统一 |
+| Skills、命令、插件、MCP | 设置 → 扩展管理；新建 Skill／指令进入子页面 | 已迁入，页内创建候选及保存／重开已验 | 列表、类型标签、输入与编辑器样式继续统一；创建子页的日常发布 |
 | Hooks 与处理器配置 | 设置 → Hooks | 已迁入并完成事件分组 | 其余组件和短确认样式 |
-| 自定义 Agent、团队 | 设置 → 智能体／智能体团队 | 已迁入 | 表格、表单、成员编辑及状态样式 |
+| 自定义 Agent、团队 | 设置 → 智能体／智能体团队；MCP 工具规则进入子页面 | 已迁入，规则子页与模板直接编辑候选已验 | 表格、其余表单、成员编辑及状态样式；规则与模板改造的日常发布 |
 | 记忆、用户／项目规则、有效指令 | 设置 → 记忆与规则 | 已迁入 | 范围与来源展示、编辑器及键盘细节 |
 | 需要我配置及其附属表单 | 设置 → 需要我 | 已页内编辑 | 表单与状态样式 |
 | 需要我收件箱及历史 | 主导航 → 需要我主内容页 | 已迁入独立验收候选，日常待更新 | 其余控件状态与日常发布入口 |
@@ -171,6 +172,7 @@
 - 设置分类与表单：[ControlWindow.swift](../native/ControlWindow.swift)，`settingsCategories`、`buildSettingsSidebar`、`buildSettings`。
 - 设置页承载、页内返回与样式：[AgentSettingsPages.swift](../native/AgentSettingsPages.swift)；相关原生检查：[AgentSettingsCheck.swift](../native/AgentSettingsCheck.swift)。
 - 设置正文布局与 Hooks 分组检查：[AgentSettingsLayoutCheck.swift](../native/AgentSettingsLayoutCheck.swift)；`npm run native:check-settings` 已改用当前页面检查，每次保留独立记录。
+- 设置创建及 MCP 规则子页：[AgentSettingsFormPages.swift](../native/AgentSettingsFormPages.swift)；[AgentSettingsFormCheck.swift](../native/AgentSettingsFormCheck.swift) 与 `npm run native:check-settings-pages` 核对实际保存、范围、错误保留、取消和模板草稿。
 - 外观配置、动态表面与相关检查：[AgentAppearance.swift](../native/AgentAppearance.swift)、[AgentAppearanceCheck.swift](../native/AgentAppearanceCheck.swift)。
 - 扩展列表与实际编辑逻辑：[AgentExtensionWindow.swift](../native/AgentExtensionWindow.swift)。
 - 需要我主内容页：[AgentAttentionWindow.swift](../native/AgentAttentionWindow.swift)、[AgentAttentionPageCheck.swift](../native/AgentAttentionPageCheck.swift)；`npm run native:check-attention` 保留独立原生记录。

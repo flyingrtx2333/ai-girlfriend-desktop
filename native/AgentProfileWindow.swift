@@ -169,13 +169,13 @@ import UniformTypeIdentifiers
     }
     @objc private func addMCPRule() {
         let servers = store.mcp.availableServers(workspace: workspace).filter { selectedMCP.contains($0.id) }; guard !servers.isEmpty else { return }
-        let alert = NSAlert(); alert.messageText = "MCP 工具权限"; alert.addButton(withTitle: "添加"); alert.addButton(withTitle: "取消")
-        let server = NSPopUpButton(), tool = NSTextField(), rule = NSPopUpButton()
-        server.addItems(withTitles: servers.map(\.name)); tool.placeholderString = "实际工具名"; tool.setAccessibilityLabel("MCP 工具名"); rule.addItems(withTitles: AgentToolPermission.allCases.map(\.title)); rule.selectItem(at: AgentToolPermission.allCases.firstIndex(of: .ask)!)
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "连接器"), server], [NSTextField(labelWithString: "工具"), tool], [NSTextField(labelWithString: "权限"), rule]]); grid.rowSpacing = 10; grid.columnSpacing = 12; grid.frame.size = NSSize(width: 390, height: 100); alert.accessoryView = grid
-        guard alert.runModal() == .alertFirstButtonReturn else { return }; let name = tool.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name.utf8.count <= 128, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { state.stringValue = "请输入有效的实际工具名"; return }
-        let id = servers[server.indexOfSelectedItem].id; mcpPermissions.removeAll { $0.serverID == id && $0.tool == name }; mcpPermissions.append(AgentMCPToolPermission(serverID: id, tool: name, permission: AgentToolPermission.allCases[rule.indexOfSelectedItem])); refreshMenus(); changed()
+        let page = AgentMCPToolRulePage(servers: servers), profileID = selectedID
+        page.onApply = { [weak self] rule in
+            guard let self, selectedID == profileID, selectedMCP.contains(rule.serverID), store.mcp.availableServers(workspace: workspace).contains(where: { $0.id == rule.serverID }) else { throw PetError("连接器已变化，请返回重新选择") }
+            mcpPermissions.removeAll { $0.serverID == rule.serverID && $0.tool == rule.tool }; mcpPermissions.append(rule); refreshMenus(); changed()
+        }
+        page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(mcp) }
+        presentSettingsChild(page)
     }
     @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name) }
     @objc private func chooseTemplate() {
@@ -187,9 +187,6 @@ import UniformTypeIdentifiers
     @objc private func useTemplate(_ sender: NSMenuItem) {
         guard !dirty, AgentTemplates.profiles.indices.contains(sender.tag) else { return }
         var value = AgentTemplates.profiles[sender.tag]
-        let alert = NSAlert(); alert.messageText = value.name; alert.informativeText = value.instructions + "\n\n" + (value.readOnly ? "只读项目" : "可修改项目") + " · " + value.permission.title + (value.network ? " · 允许联网" : "")
-        alert.addButton(withTitle: "使用模板"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
         let base = value.name; var suffix = 2
         while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(suffix)"; suffix += 1 }
         values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name)
