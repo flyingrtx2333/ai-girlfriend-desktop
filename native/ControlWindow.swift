@@ -164,6 +164,7 @@ final class FormDocumentView: NSView {
     private weak var worktreePolicyPanel: AgentWorktreePolicyView?
     private var dataImportView: AgentDataImportView?
     private var taskSwitcher: AgentTaskSwitcher?
+    private var nameEditor: AgentNameEditor?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
     private var settingsFooter: NSStackView?
@@ -1533,6 +1534,7 @@ final class FormDocumentView: NSView {
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if windowCloseApproved { return true }
+        if let editor = nameEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
         guard closeWindowTask == nil else { return false }
         guard canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
@@ -1584,6 +1586,7 @@ final class FormDocumentView: NSView {
         }
         taskFind.reset()
         taskSwitcher?.cancel()
+        nameEditor?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
         composer.delegate = nil; windowDraft = nil
@@ -1883,6 +1886,11 @@ final class FormDocumentView: NSView {
         let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
         selectAgentTask(id)
     }
+    private func editName(title: String, label: String, value: String, save: @escaping (String) throws -> Void) {
+        guard let window, nameEditor == nil, window.attachedSheet == nil else { return }
+        nameEditor = AgentNameEditor(title: title, label: label, value: value, save: save, onClose: { [weak self] in self?.nameEditor = nil; self?.renderAgentMessages() })
+        nameEditor?.begin(in: window)
+    }
     private func directoryAction(_ path: String, mode: AgentWorkMode, action: String) {
         guard let tasks = companion?.agentStore else { return }
         do {
@@ -1892,10 +1900,11 @@ final class FormDocumentView: NSView {
             }
             if action == "pin" { try tasks.organization.togglePinned(path, mode: mode, tasks: tasks.tasks) }
             else if action == "rename" {
-                let alert = NSAlert(); alert.messageText = mode.directoryTitle + "显示名称"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
-                let input = NSTextField(string: tasks.organization.name(path, mode: mode) ?? ""); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); alert.accessoryView = input; alert.window.initialFirstResponder = input
-                guard alert.runModal() == .alertFirstButtonReturn else { return }
-                try tasks.organization.rename(path, mode: mode, name: input.stringValue, tasks: tasks.tasks)
+                let revision = tasks.organization.revision
+                editName(title: "重命名" + mode.directoryTitle, label: mode.directoryTitle + "名称", value: tasks.organization.name(path, mode: mode) ?? "") { name in
+                    guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
+                    try tasks.organization.rename(path, mode: mode, name: name, tasks: tasks.tasks)
+                }; return
             }
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
@@ -1905,15 +1914,16 @@ final class FormDocumentView: NSView {
         do {
             let existing = tasks.organization.customGroups(mode, tasks: tasks.tasks).first { $0.id == id }
             guard id == nil || existing != nil else { throw PetError("分组已变化，请刷新后重试") }
-            let alert = NSAlert(); alert.addButton(withTitle: action == "remove" ? "删除分组" : "保存"); alert.addButton(withTitle: "取消")
             if action == "remove", let id {
+                let alert = NSAlert(); alert.addButton(withTitle: "删除分组"); alert.addButton(withTitle: "取消")
                 alert.messageText = "删除“\(existing!.name)”分组？"; alert.informativeText = "任务会保留在未分组会话中。"
                 guard alert.runModal() == .alertFirstButtonReturn else { return }; try tasks.organization.removeCustomGroup(id, mode: mode)
             } else {
-                alert.messageText = id == nil ? "新建分组" : "分组名称"
-                let input = NSTextField(string: existing?.name ?? ""); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); input.setAccessibilityLabel("分组名称"); alert.accessoryView = input; alert.window.initialFirstResponder = input
-                guard alert.runModal() == .alertFirstButtonReturn else { return }; _ = try tasks.organization.saveCustomGroup(id, name: input.stringValue, mode: mode)
-                if id == nil { var view = tasks.organization.taskView(mode); view.grouping = .custom; try tasks.organization.setTaskView(view, mode: mode) }
+                let revision = tasks.organization.revision
+                editName(title: id == nil ? "新建分组" : "重命名分组", label: "分组名称", value: existing?.name ?? "") { name in
+                    guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
+                    _ = try tasks.organization.saveCustomGroup(id, name: name, mode: mode, showInTaskView: id == nil)
+                }; return
             }
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
@@ -2006,13 +2016,14 @@ final class FormDocumentView: NSView {
                 catch { self?.setStatus(error.localizedDescription, error: true) }
             }; return
         case "rename":
-            let alert = NSAlert(); alert.messageText = "重命名任务"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
-            let input = NSTextField(string: task.title); input.frame = NSRect(x: 0, y: 0, width: 280, height: 24); alert.accessoryView = input
-            alert.window.initialFirstResponder = input
-            if alert.runModal() == .alertFirstButtonReturn {
-                let title = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !title.isEmpty { tasks.update(id) { $0.title = String(title.prefix(120)) } }
-            }
+            guard saveAgentDraft() else { return }
+            do {
+                let hash = try tasks.recordVersion(id)
+                editName(title: "重命名任务", label: "任务名称", value: tasks.task(id)?.title ?? task.title) { [weak self] name in
+                    guard self?.companion?.agentRuntime?.isExecuting(id) != true else { throw PetError("任务正在运行，请结束后重试") }
+                    try tasks.renameTask(id, title: name, expectedHash: hash)
+                }
+            } catch { setStatus(error.localizedDescription, error: true) }; return
         case "pin": tasks.update(id) { $0.pinned.toggle() }
         case "recover-round-files": if let pending = task.pendingFileRollback { presentRoundRollback(taskID: id, messageID: pending.messageID) }
         case "work-mode":
@@ -3049,6 +3060,15 @@ extension ControlWindow {
             selectAgentTask(id)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
+    func checkNameEditor(_ kind: String, id: String?, mode: AgentWorkMode = .coding) {
+        guard CommandLine.arguments.contains("--name-editor-check") else { return }
+        switch kind {
+        case "task": if let id { agentTaskAction(id, action: "rename") }
+        case "group": customTaskGroup(id, mode: mode, action: id == nil ? "new" : "rename")
+        case "directory": if let id { directoryAction(id, mode: mode, action: "rename") }
+        default: break
+        }
+    }
     func organizationSnapshot() -> [String: Any] {
         var value = taskSidebar.organizationSnapshot()
         value["selected"] = agentTaskID ?? ""; value["draft"] = composer.string
@@ -3058,6 +3078,7 @@ extension ControlWindow {
         if CommandLine.arguments.contains("--manual-ui") {
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
+            value["nameEditor"] = nameEditor?.checkState() ?? ["visible": false]
             value["taskFind"] = taskFind.checkState()
             value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]
             if companion?.checkDirectory != nil {

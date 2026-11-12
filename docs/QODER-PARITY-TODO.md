@@ -6,6 +6,8 @@
 
 2026-11-13 补核本机 Qoder 0.5.2 的常规设置、团队空态、创建入口、模板列表和展开详情：设置右侧逐级进入，分组卡片、细分隔线、右对齐控件和面包屑仍是后续样式参考。仅查看后返回原知识中心，未创建团队或修改配置。窗口参考保留在 `evidence/agent/hook-team-settings-u3m8k2v7/cua-qoder-reference`；本项目的统一组件与整体视觉对齐仍未完成。
 
+2026-11-13 补核 Qoder 0.5.2 的工作区编辑与任务重命名：均使用统一样式的短表单。管理配置继续使用设置右侧页面，名称编辑保留轻量表单；参考查看后已取消并返回原知识中心，未修改 Qoder 资料。原始窗口记录位于 `evidence/agent/sidebar-rename-v5m2r9k6/cua-qoder-reference`。
+
 ## 当前结论
 
 - Agent 执行、任务管理、文件与终端、Git 等本机核心已有实际验收证据，完整功能仍有明显缺口。
@@ -34,6 +36,8 @@
 - [x] **MCP 新建与导入子页候选**：新建菜单直接载入本机程序／HTTP 草稿，单份或多连接器 JSON 在设置内完整审阅后载入原编辑器。取消保留原标签与焦点；新建、载入主动显示配置，保存失败保留草稿。最终同一优化程序通过 107 项管理页／表单与 45 项布局检查，共 152 项；实际目录选择、取消、载入、无效字段拒绝后修正保存、单份配置、无工作区新建、本机连接／实际工具目录／断开、浅深色、1200×774／780×540、方向键、Esc 与 ⌘S 已验。真实窗口复现并修复了从工具页新建后草稿不可见的问题，首轮目录检查错误和全部失败证据保留在 `evidence/agent/settings-flows-p6k9w2r8`。同版本重开后 22 份持久文件字节与权限一致，验收目录中的九个连接器、两份来源及原任务输入保留，模型请求 0；日常程序及 10 份正式资料未变，日常发布待完成。
 - [x] **Hooks 启用与团队模板审阅候选**：启用处理器和查看团队模板改为设置右侧子页面。Hooks 完整展示处理器、来源、匹配、超时与执行影响，轮次仅显示在 Agent 处理器中；取消不写授权，启用继续校验原来源签名。团队逐项展示协作及三个角色的完整指令、权限和工具；载入只形成可编辑草稿，保存才创建成员，预览过期时拒绝覆盖。实际窗口复现并修复团队取消和 Hook 启用／停用后焦点丢失，方向键与空格操作已复验。最终同一优化程序通过 164 项管理页／表单与 45 项布局检查，共 209 项，含公开命令实际执行、停用及过期拦截；浅深色、1200×774／780×540、取消、模板载入／编辑／保存、无工作区及 MCP 草稿类型提示均有窗口证据。同版本重开及正常退出后 23 份持久文件字节与权限一致，原角色、团队、任务输入均保留，模型请求 0。首轮失败、焦点诊断及临时主题恢复前的比对差异均保留在 `evidence/agent/hook-team-settings-u3m8k2v7`。日常应用原签名及 10 份正式资料未变，日常发布待完成。
 - [x] **独立 Git 远端表单候选**：独立推送窗口在原窗口内进入、取消与返回，复用任务工作区的远端表单、地址校验和保存逻辑。错误留在当前表单并保留填写，保存期间阻止关闭；返回和保存后恢复相应焦点，支持 Esc 与 ⌘S。最终同一优化程序通过 27 项页面和 37 项原推送核心检查，共 64 项；实际无效名称、继续编辑、两个入口的取消／保存、浅深色、860×650／640×460 内容区及同版重开已验。重开后 52 份持久文件权限保持、50 份字节一致，仅刷新任务更新时间和 Git 审阅快照的会话标识／哈希，全部正文、草稿、远端配置和其余字段保持。验收目录参数、启动模式及返回焦点的诊断与原失败均保留在 `evidence/agent/git-remote-inline-c7v2p9n4`；新检查明确核对独立目录和实际可见窗口，模型请求 0。日常应用和 10 份正式资料未变，日常发布待完成。
+- [x] **任务与分组名称表单候选**：任务、工作区、通用文件夹及分组共用有主次按钮和就地错误的短表单，支持 Return／⌘S 保存、Esc 取消；失败保留填写，过期记录拒绝覆盖，新建分组与视图切换一起保存。最终同一优化程序通过 26 项相关检查；实际空名称、分组重名后修正、四类名称保存、无工作区问答、1200×774／800×560、浅深色、焦点与同版重开已验。取消后原 8 份资料字节与权限一致；重开后 19 份权限保持、18 份字节一致，仅任务索引按更新时间调整行顺序，重排还原的字节指纹与原文件一致；正文、草稿、事件、分组成员和项目文件保持。首轮验收入口编译失败与索引差异诊断均保留在 `evidence/agent/sidebar-rename-v5m2r9k6`，模型请求 0。日常应用和 10 份正式资料未变，日常发布待完成。
+- [ ] **工作区编辑对齐**：显示名称已可编辑；Qoder 中的图标、颜色、多个源文件夹和主文件夹管理仍未实现，需连同目录权限及任务关联一起补齐。
 - [ ] **统一组件与主题**：字体、间距、分组卡片、图标、按钮、开关、输入框、表格、编辑器、状态、空态、加载和错误；补齐浅／深色、焦点、悬停及禁用状态。
 - [x] **外观基础**：跟随系统／浅色／深色、12／14／16／18 对话字号、动态配色和已有窗口即时重绘；双窗口、任务草稿与未保存编辑保留、Markdown／Git 浅深色及重开恢复已验。页面样式和终端画布的主题衔接继续逐项处理。
 - [ ] **整理主导航与任务工作区**：自动化、需要我、知识库、Repo Wiki 使用主内容页面；Git、执行详情、产物预览使用任务工作区或右侧面板。
@@ -53,7 +57,7 @@
 - [ ] **Wiki 维护页面候选**：增量更新显示完整彩色提交差异及全部变更路径；重新生成显示实际配置与当前文档，沿用原任务、权限和发布保护。最终焦点修正版通过 79 项维护、80 项版本与 136 项知识中心检查，共 295 项；实际初次进入、正文重读、版本选择与返回、任务／设置往返及 800 点窗口已验。同版重开后 53 份权限保持、52 份字节一致，仅搜索索引更新时间变化，全部原任务与知识保留，模型请求 0。首次没有按键记录的意外返回继续跟踪，日常发布待完成。
 - [x] **知识中心键盘焦点**：目录、阅读与审阅入口在当前内容页接续操作；正文重新预览、返回版本和加载所选版本后，上下键继续作用于页内列表。主动切回原任务、重进保留预览、设置返回、取消、窄窗口和同版本重开均已实际复验。隐藏页面另行检查实际可见性，避免仅凭布局尺寸判为通过。
 - [ ] **Wiki 维护首次无按键记录的跳转**：原始失败与后续诊断记录保留。本轮已复现并修复方向键造成的跳转，但不能据此认定首次未记录按键的跳转原因相同；继续跟踪，不以未再出现代替修复证明。
-- [ ] **整理对话框**：短确认保留明确的对象、影响与主次按钮；长配置使用页面或页内详情。知识导入与版本恢复、插件安装／更新／恢复／启用审阅、MCP 导入、Hooks 启用和团队模板预览已迁入页内；增量更新及重新生成审阅已实现页内，导航问题与其余长流程继续处理。已确认的余项包括项目／分组／任务重命名和短确认的统一样式与键盘反馈；独立 Git 窗口的添加远端表单也已迁入原窗口，两个入口的保存、返回与重开均已验。首次生成沿用项目目录和规划入口；系统文件选择和系统授权沿用原生流程。
+- [ ] **整理对话框**：短确认保留明确的对象、影响与主次按钮；长配置使用页面或页内详情。知识导入与版本恢复、插件安装／更新／恢复／启用审阅、MCP 导入、Hooks 启用和团队模板预览已迁入页内；增量更新及重新生成审阅已实现页内，导航问题与其余长流程继续处理。项目／分组／任务名称表单已完成独立候选；余项包括未保存、移除、连接和执行等短确认的统一样式与键盘反馈，以及导入来源等信息弹窗；独立 Git 窗口的添加远端表单也已迁入原窗口，两个入口的保存、返回与重开均已验。首次生成沿用项目目录和规划入口；系统文件选择和系统授权沿用原生流程。
 - [ ] **完善导航细节**：设置项搜索直达、用户／项目范围切换、返回、未保存编辑保护、正确的保存反馈、切换页面保留任务草稿。
 - [x] 已验设置搜索直达连接器、Agent 未保存时继续编辑、团队子页面往返保留草稿、保存反馈及返回原任务保留未发送输入；退出重开后 24 份持久文件一致。
 - [x] 设置侧栏返回与搜索固定在顶部，分类独立滚动；插件启用配置的 ⌘S 已在用户／项目／本机三种范围实际保存并重开核对。
@@ -191,6 +195,7 @@
 - 知识中心与来源页承载：[AgentKnowledgePages.swift](../native/AgentKnowledgePages.swift)、[AgentKnowledgePageCheck.swift](../native/AgentKnowledgePageCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-knowledge-page` 使用实际公开文件、手工导入和版本存储，禁止模型传输并保留独立记录。
 - 主内容入口：[ControlWindow.swift](../native/ControlWindow.swift)，`showAttentionPage`、`showAutomations`、`showAgentKnowledge`、`showKnowledgeLibrary`、`showAgentGit`。
 - 任务标签页与文件检查：[AgentTaskWorkspace.swift](../native/AgentTaskWorkspace.swift)、[AgentContextWindow.swift](../native/AgentContextWindow.swift)、[AgentRecordWindow.swift](../native/AgentRecordWindow.swift)、[AgentTaskWorkspaceCheck.swift](../native/AgentTaskWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-task-workspace` 使用公开文件和本机命令，禁止模型请求。
+- 任务、工作区、文件夹与分组的共享名称表单：[AgentNameEditor.swift](../native/AgentNameEditor.swift)；[AgentNameEditorCheck.swift](../native/AgentNameEditorCheck.swift) 和 `BLUEFATFISH_APP=<验收应用> npm run native:check-name-editor` 核对冲突、写入失败、原子保存、无工作区问答、正文及分组关系，不调用模型。
 - Git 添加远端的共享表单与独立窗口承载：[AgentGitPushWindow.swift](../native/AgentGitPushWindow.swift)；[AgentGitRemotePageCheck.swift](../native/AgentGitRemotePageCheck.swift) 和 `BLUEFATFISH_APP=<验收应用> npm run native:check-git-remote-page` 核对实际配置、元数据目录边界、两个入口、关闭保护、焦点及项目资料，不调用模型。
 - 对话编辑与文件撤回页面：[AgentEditResendWindow.swift](../native/AgentEditResendWindow.swift)、[AgentRoundRollbackWindow.swift](../native/AgentRoundRollbackWindow.swift)、[AgentConversationWorkspaceCheck.swift](../native/AgentConversationWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-conversation-workspace` 使用真实文件检查点及归档／续做存储，不启动模型。实际窗口与同版重开另留记录；窗口自动增高仍在跟踪。
 - 视频任务标签页：[AgentVideoPreview.swift](../native/AgentVideoPreview.swift)、[AgentVideoWorkspaceCheck.swift](../native/AgentVideoWorkspaceCheck.swift)；`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-video-workspace -- --media-directory <已独立核对的公开视频目录>` 使用实际 MP4／WebM 与独立资料，禁止模型请求；`--manual-ui` 和 `--reopen <原目录>` 保留真实窗口与原资料。

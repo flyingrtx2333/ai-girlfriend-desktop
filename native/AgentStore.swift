@@ -253,6 +253,17 @@ import Foundation
         let files = try AgentFiles(workspace: directory.path), hash = try files.fileHash(files.literalURL(id + ".json"), maximum: 20_000_000)
         guard hash == taskHashes[id] else { throw PetError("任务记录已变化，请重新打开后重试") }; return hash
     }
+    func renameTask(_ id: String, title: String, expectedHash: String) throws {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.count <= 120, !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("请输入不超过120字的任务名称") }
+        guard var record = task(id), record.status != .running else { throw PetError("任务已开始运行或已不可用，请重新打开后重试") }
+        try sideTasks.requireOpen(record)
+        guard try recordVersion(id) == expectedHash else { throw PetError("任务记录已变化，请重新打开后重试") }
+        guard title != record.title else { return }
+        record.activityAt = record.activityAt ?? Self.metadata(record).activityAt
+        record.title = title; record.updated = Date()
+        _ = try commitTaskRecord(record, expectedHash: expectedHash, transaction: directory.deletingLastPathComponent().appendingPathComponent("rename-transactions/" + UUID().uuidString), label: "重命名任务")
+    }
     func hasFileRollback(in workspace: String, except taskID: String? = nil) -> Bool {
         tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspace.map { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } == true }
     }

@@ -50,6 +50,8 @@ Hooks 启用与团队模板使用设置内的审阅子页。Hooks 展示完整�
 
 Git 添加远端在任务工作区与独立推送窗口复用同一表单。独立窗口在原窗口内进入与返回，取消保留原推送内容，保存期间阻止关闭；字段校验失败保留填写内容，成功后重新读取实际远端并恢复键盘焦点。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-git-remote-page` 核对实际 Git 配置、错误、关闭保护、项目文件及任务草稿，不调用模型。`--manual-ui --git-remote-page-fixtures` 只在首次准备公开窗口资料；重开同一目录用 `--manual-ui --git-remote-page-reopen`，保留原配置和失败记录。
 
+任务、工作区、文件夹与分组的名称编辑共用短表单，支持 Return／⌘S 保存、Esc 取消和就地错误反馈。任务保存复用原子记录事务，检查打开时的版本；失败保留填写和原记录，新建分组与视图切换一起保存。`BLUEFATFISH_APP=<本轮验收应用> npm run native:check-name-editor` 只核对相关表单、冲突、写入失败、无工作区问答和持久内容，不调用模型。首次实际窗口用 `--manual-ui --name-editor-fixtures`，同一资料重开用 `--manual-ui --name-editor-reopen`。
+
 回复分支的权限检查可用已签名候选运行 `open -n <候选应用> --args --check <独立临时目录> --reply-policy-check`。它通过实际原生读写、终端和自动化任务检查委派／自动化分支的工具、联网、审批及只读范围，并重新加载实际记录；模型请求在发送前阻止。`reply-policy-result.json` 保留每项检查和实际工具结果。复制、反馈、历史画布与 Skill 文件另用保留的真实对话在窗口验收，不生成模拟模型回复。
 
 按回合撤回使用候选的 `--check <独立临时目录> --round-rollback-check`：正式工具实际修改两轮文件，核对保存、检查点损坏、后来编辑、真实只读失败与恢复，不产生模型输出。`--manual-ui --round-rollback-fixtures` 只创建一份真实文件／人工要求的窗口验收任务；重开同一目录不重复传 fixtures。`--round-rollback-crash-check` 另建实际128MB文件，写出 `round-crash-ready.json` 后等待目录内的 `start-round-crash`；控制器须确认该进程存活，在撤回实际开始后终止该进程。随后 `--round-rollback-recovery-check` 只核对真实遗留标记及项目隔离，不自动恢复文件，再以 `--manual-ui` 从实际窗口审阅并恢复。完整保留失败与中断记录，不将这些文件操作检查作为 AI 效果验收。

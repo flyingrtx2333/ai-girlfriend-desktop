@@ -238,7 +238,7 @@ struct AgentDirectoryEntry: Codable {
             let result = a.name.localizedStandardCompare(b.name); return result == .orderedSame ? a.id < b.id : result == .orderedAscending
         }
     }
-    @discardableResult func saveCustomGroup(_ id: String? = nil, name: String, mode: AgentWorkMode) throws -> String {
+    @discardableResult func saveCustomGroup(_ id: String? = nil, name: String, mode: AgentWorkMode, showInTaskView: Bool = false) throws -> String {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 80, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("请输入不超过80字的分组名称") }
         var next = document, groups = next.taskGroups ?? []
@@ -246,7 +246,9 @@ struct AgentDirectoryEntry: Codable {
         let savedID: String
         if let id { guard let index = groups.firstIndex(where: { $0.id == id && $0.mode == mode }) else { throw PetError("分组已变化，请刷新后重试") }; groups[index].name = name; savedID = id }
         else { guard groups.count < 100 else { throw PetError("自定义分组已达100个") }; let group = AgentCustomTaskGroup(name: name, mode: mode); groups.append(group); savedID = group.id }
-        next.taskGroups = groups; try save(next); return savedID
+        next.taskGroups = groups
+        if showInTaskView { var view = taskView(mode), views = next.taskViews ?? [:]; view.grouping = .custom; views[mode.rawValue] = view; next.taskViews = views }
+        try save(next); return savedID
     }
     func removeCustomGroup(_ id: String, mode: AgentWorkMode) throws {
         var next = document; guard next.taskGroups?.contains(where: { $0.id == id && $0.mode == mode }) == true else { throw PetError("分组已不存在") }

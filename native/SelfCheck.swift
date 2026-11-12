@@ -36,6 +36,7 @@ import WebKit
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-remote-page-check") { await runGitRemotePageCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--name-editor-check") { await runNameEditorCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
@@ -64,6 +65,7 @@ import WebKit
                     guard tasks.automations.isStarted else { throw PetError(tasks.automations.error ?? "自动化调度未启动") }
                 }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
+                if CommandLine.arguments.contains("--name-editor-fixtures") || CommandLine.arguments.contains("--name-editor-reopen") { try prepareNameEditorUI(output, seed: CommandLine.arguments.contains("--name-editor-fixtures")) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
