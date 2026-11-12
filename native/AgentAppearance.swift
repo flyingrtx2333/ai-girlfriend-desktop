@@ -70,17 +70,17 @@ enum AgentTheme: String, Codable, CaseIterable {
     private let status = NSTextField(labelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
     init(service: AgentAppearance) {
         self.service = service; super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 16
+        orientation = .vertical; alignment = .leading; spacing = 10
         theme.addItems(withTitles: AgentTheme.allCases.map(\.title)); theme.setAccessibilityLabel("界面主题")
         size.addItems(withTitles: AgentAppearance.textSizes.map { "\($0)" }); size.setAccessibilityLabel("对话字号")
         for (title, control) in [("主题", theme), ("对话字号", size)] {
-            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13); label.widthAnchor.constraint(equalToConstant: 88).isActive = true
             control.target = self; control.action = #selector(change); control.widthAnchor.constraint(equalToConstant: 160).isActive = true
-            let row = NSStackView(views: [label, control]); row.spacing = 12; addArrangedSubview(row)
+            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            let row = AgentSettingsStyle.formRow(title, control, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText
         reload.target = self; reload.action = #selector(reloadSettings)
-        let footer = NSStackView(views: [status, reload]); footer.spacing = 12; addArrangedSubview(footer)
+        let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentAppearance.changed, object: service)
         refresh()
     }
@@ -91,6 +91,7 @@ enum AgentTheme: String, Codable, CaseIterable {
         theme.isEnabled = service.error == nil; size.isEnabled = service.error == nil
         if let error = service.error { status.stringValue = error }
         reload.isHidden = status.stringValue.isEmpty || status.stringValue == "已保存"
+        status.superview?.isHidden = status.stringValue.isEmpty
     }
     @objc private func change() {
         var value = service.settings

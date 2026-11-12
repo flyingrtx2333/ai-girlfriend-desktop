@@ -363,9 +363,9 @@ final class FormDocumentView: NSView {
             view.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -inset)])
     }
     private func field(_ field: NSTextField) {
-        field.font = .systemFont(ofSize: 13); field.lineBreakMode = .byTruncatingTail
+        AgentSettingsStyle.field(field); field.lineBreakMode = .byTruncatingTail
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
     }
     private func styleNavigation(_ button: NSButton, symbol: String, compact: Bool = false) {
         button.isBordered = false; button.font = .systemFont(ofSize: compact ? 13 : 14, weight: .medium); button.alignment = .left
@@ -1081,19 +1081,16 @@ final class FormDocumentView: NSView {
             card.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             settingGroups.append((category, title, keywords, section))
         }
-        func row(_ text: String, _ control: NSView) {
+        func row(_ text: String, _ control: NSView, trailing: Bool = false) {
             if !body.arrangedSubviews.isEmpty {
                 let rule = NSBox(); rule.boxType = .separator; body.addArrangedSubview(rule)
                 rule.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
-            let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 13); label.textColor = AgentWorkbenchTheme.secondaryText
-            label.widthAnchor.constraint(equalToConstant: 88).isActive = true
-            let items: [NSView] = text.isEmpty ? [control] : control is NSSwitch ? [label, NSView(), control] : [label, control]
-            let line = stack(items, spacing: 12), wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
+            let line = AgentSettingsStyle.formRow(text, control, trailing: trailing || control is NSSwitch || control is NSPopUpButton), wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
             wrap.addSubview(line); body.addArrangedSubview(wrap)
             NSLayoutConstraint.activate([wrap.widthAnchor.constraint(equalTo: body.widthAnchor),
                 line.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 16), line.trailingAnchor.constraint(equalTo: wrap.trailingAnchor, constant: -16),
-                line.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10), line.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10), line.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)])
+                line.topAnchor.constraint(equalTo: wrap.topAnchor, constant: 10), line.bottomAnchor.constraint(equalTo: wrap.bottomAnchor, constant: -10)])
         }
         func secret(_ input: NSSecureTextField, preview: NSButton, replace: NSButton, copy: Selector, edit: Selector, action: Selector) -> NSView {
             preview.target = self; preview.action = copy; preview.bezelStyle = .inline
@@ -1116,7 +1113,7 @@ final class FormDocumentView: NSView {
         group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
         model.completes = false; model.numberOfVisibleItems = 8
-        checkModelButton.bezelStyle = .rounded; checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
+        checkModelButton.bezelStyle = .rounded; checkModelButton.controlSize = .large; checkModelButton.font = .systemFont(ofSize: 13); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
         modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = AgentWorkbenchTheme.secondaryText
         row("接口", endpoint); row("模型", stack([model, checkModelButton], spacing: 8))
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
@@ -1132,8 +1129,8 @@ final class FormDocumentView: NSView {
         contextTokens.toolTip = "Token 预算；按 UTF-8 字节保守估算，超出时裁剪较早的完整对话轮次。"
         for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText }
         row("视觉理解", vision); row("思考程度", reasoning)
-        row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 6))
-        row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 6))
+        row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 6), trailing: true)
+        row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 6), trailing: true)
         group("voice", "MiniMax", "语音 声音 回复 接口 Token 密钥 模型 音色 MiniMax API")
         row("语音回复", voiceEnabled); row("接口", voiceEndpoint)
         row("Token", secret(voiceKey, preview: voicePreview, replace: voiceReplace, copy: #selector(copyVoice), edit: #selector(replaceVoice), action: #selector(removeVoice)))
@@ -1153,7 +1150,7 @@ final class FormDocumentView: NSView {
         screenStatus.lineBreakMode = .byTruncatingTail
         row("状态", screenStatus)
         for (button, action) in [(screenPermission, #selector(grantScreenPermission)), (screenNow, #selector(lookAtScreen)), (screenQuiet, #selector(quietScreen))] {
-            button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 12); button.target = self; button.action = action
+            button.bezelStyle = .rounded; button.controlSize = .large; button.font = .systemFont(ofSize: 13); button.target = self; button.action = action
         }
         row("", stack([screenNow, screenPermission, screenQuiet], spacing: 8))
         let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
@@ -1164,6 +1161,7 @@ final class FormDocumentView: NSView {
         sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
         scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
         let resetPosition = NSButton(title: "复位位置", target: companion, action: #selector(AppDelegate.resetPosition))
+        resetPosition.controlSize = .large; resetPosition.font = .systemFont(ofSize: 13)
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 Theme Appearance Font")

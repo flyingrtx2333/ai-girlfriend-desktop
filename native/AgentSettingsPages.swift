@@ -53,7 +53,7 @@ import AppKit
 }
 
 @MainActor final class AgentSettingsTableRow: NSTableRowView {
-    var selectionColor: NSColor { NSColor.selectedContentBackgroundColor.withAlphaComponent(0.12) }
+    var selectionColor: NSColor { AgentWorkbenchTheme.selection }
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
     override func drawSelection(in dirtyRect: NSRect) {
         selectionColor.setFill()
@@ -62,9 +62,27 @@ import AppKit
 }
 
 @MainActor enum AgentSettingsStyle {
+    static func field(_ field: NSTextField) {
+        field.font = .systemFont(ofSize: 13); field.controlSize = .large
+        if field.isBezeled { field.bezelStyle = .roundedBezel; field.backgroundColor = .textBackgroundColor }
+    }
+    static func formRow(_ title: String, _ control: NSView, trailing: Bool) -> NSStackView {
+        if let popup = control as? NSPopUpButton {
+            popup.font = .systemFont(ofSize: 13); popup.controlSize = .large; popup.bezelColor = .textBackgroundColor
+            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        }
+        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13); label.textColor = .labelColor
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        if !trailing { label.widthAnchor.constraint(equalToConstant: 88).isActive = true }
+        let views: [NSView] = title.isEmpty ? [control] : trailing ? [label, NSView(), control] : [label, control]
+        let row = NSStackView(views: views); row.alignment = .centerY; row.spacing = 12; row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
+        return row
+    }
     static func prepare(_ root: NSView) {
         func apply(_ view: NSView) {
-            if let table = view as? NSTableView { table.style = .inset; table.backgroundColor = .clear }
+            if let table = view as? NSTableView { table.style = .inset; table.backgroundColor = .clear; table.rowHeight = max(32, table.rowHeight); table.intercellSpacing.height = 4 }
+            if let label = view as? NSTextField, view.superview is NSTableCellView { label.font = .systemFont(ofSize: 13) }
             if let scroll = view as? NSScrollView {
                 scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder
                 scroll.wantsLayer = true; scroll.layer?.cornerRadius = 9
@@ -72,7 +90,8 @@ import AppKit
                 scroll.backgroundColor = .textBackgroundColor
             }
             if let button = view as? NSButton, !(button is NSPopUpButton) { button.font = .systemFont(ofSize: 13) }
-            if let tabs = view as? NSSegmentedControl { tabs.font = .systemFont(ofSize: 12) }
+            if let popup = view as? NSPopUpButton { popup.font = .systemFont(ofSize: 13); popup.bezelColor = .textBackgroundColor }
+            if let tabs = view as? NSSegmentedControl { tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent }
             // Keep the detail usable alongside the settings navigation on a
             // narrow desktop window, without changing the stored configuration.
             for constraint in view.constraints where constraint.firstAttribute == .width && constraint.relation == .equal && constraint.secondItem == nil && (185...260).contains(constraint.constant) {
@@ -106,7 +125,8 @@ import AppKit
         super.init(frame: frame)
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
         back.target = self; back.action = #selector(goBack)
-        tabs.trackingMode = .selectOne; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
+        tabs.trackingMode = .selectOne; tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
+        tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12

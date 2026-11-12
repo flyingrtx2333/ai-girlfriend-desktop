@@ -58,6 +58,7 @@ run('npm', ['run', 'build:diagrams']);
 run('npm', ['run', 'build:wiki']);
 await mkdir(path.join(contents, 'MacOS'), { recursive: true });
 await mkdir(path.join(resources, 'web'), { recursive: true });
+run('xcrun', ['actool', 'native/Assets.xcassets', '--compile', resources, '--platform', 'macosx', '--minimum-deployment-target', '14.0', '--output-format', 'human-readable-text']);
 for (const scanner of scanners) {
   const destination = path.join(contents, 'MacOS', path.basename(scanner));
   await cp(scanner, destination);
@@ -104,6 +105,7 @@ ${checkOnly ? '<key>BlueFatFishAcceptanceOnly</key><true/>' : ''}
 <key>CFBundleShortVersionString</key><string>${version}</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
+<key>NSAccentColorName</key><string>AccentColor</string>
 ${checkOnly ? '' : `<key>CFBundleDocumentTypes</key><array><dict>
 <key>CFBundleTypeName</key><string>任务附件</string>
 <key>CFBundleTypeRole</key><string>Viewer</string>

@@ -188,6 +188,10 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 
 设置使用 AppKit 侧栏、搜索框、开关和可滚动的分组卡片。分类与搜索复用已有控件，保留未保存的输入；不增加 WebView、定时刷新或运行依赖。搜索只筛选设置，不会使模型连接检测状态失效。
 
+当前基础设置共用 `AgentSettingsStyle.formRow`：标签、行距和分隔保持一致，下拉框与开关靠右，文本输入保留宽度。原生输入框和下拉框使用统一字号与尺寸；外观页复用同一行，空状态不额外占用反馈行。管理列表使用至少 32 点行高和工作台的选中配色，分段选择也复用工作台强调色；表格数据、原控件、键盘顺序、目标动作和保存校验继续沿用原实现。
+
+工作台与原生控件共用 `native/Assets.xcassets` 的浅、深色强调色。默认验收构建和正式构建均编译该资源，并通过应用的 [`NSAccentColorName`](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaccentcolorname) 声明；不修改系统颜色偏好。无颜色资源的独立执行环境保留原有工作台配色。
+
 `npm run native:check-settings` 使用独立配置检查分类、跨分类搜索、草稿保留和 980×700／780×540 排版，并输出原生截图。[验证记录](verification/settings.json)与公开截图不含用户配置或凭据。该检查不启用麦克风，不调用在线模型或 TTS，也不重复运行上一版语音与口型测试。
 
 ## v0.8.0 的屏幕陪伴

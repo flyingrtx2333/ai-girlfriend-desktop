@@ -33,7 +33,7 @@ import QuartzCore
     static let surface = adaptive(0xfefefe, 0x242629)
     static let settings = adaptive(0xfcfcfc, 0x242629)
     static let line = adaptive(0xd6dbe0, 0x3a3d42)
-    static let accent = adaptive(0x057561, 0x6bd4b6)
+    static let accent = NSColor(named: "AccentColor") ?? adaptive(0x057561, 0x6bd4b6)
     static let accentText = adaptive(0xffffff, 0x10352b)
     static let selection = adaptive(0xd1e4e2, 0x28453f)
     static let navigationSelection = adaptive(0x000000, 0xffffff, alpha: 0.07)
