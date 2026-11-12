@@ -42,6 +42,10 @@ struct AgentKnowledgeReviewVersion {
     private var job: Task<Void, Never>?, closed = false, started = false
     private var showingDiff = false
     var hasPendingOperation: Bool { !closed && job != nil }
+    private var hasKeyboardFocus: Bool {
+        guard let content = pageContentView, let focus = presentingWindow?.firstResponder as? NSView else { return false }
+        return focus.isDescendant(of: content)
+    }
     var onClose: (() -> Void)?
 
     init(title: String, action: String, scope: String, versions: [AgentKnowledgeReviewVersion] = [], load: @escaping (Int?) async throws -> AgentKnowledgeReviewSnapshot, onApplied: @escaping (String) -> Void) {
@@ -78,6 +82,7 @@ struct AgentKnowledgeReviewVersion {
     func windowDidBecomeKey(_ notification: Notification) { startIfNeeded() }
     private func startIfNeeded() { guard !started else { return }; started = true; if !choosingVersion { readPreview() } }
     private func updatePage() {
+        let focused = presentingWindow?.firstResponder as? NSView, keepFocus = hasKeyboardFocus
         NSLayoutConstraint.deactivate(fullList + documentList); NSLayoutConstraint.activate(choosingVersion ? fullList : documentList)
         viewer.isHidden = choosingVersion || showingDiff; diff.isHidden = choosingVersion || !showingDiff; impact.isHidden = choosingVersion; back.isHidden = choosingVersion || versions.isEmpty
         preview.title = choosingVersion ? "预览" : "重新预览"; apply.isHidden = choosingVersion
@@ -85,6 +90,10 @@ struct AgentKnowledgeReviewVersion {
         for button in [back, cancel, preview] { button.isEnabled = enabled }
         preview.isEnabled = enabled && (!choosingVersion || selectedVersion != nil)
         apply.isEnabled = enabled && snapshot != nil; table.isEnabled = enabled
+        let initial: NSView = choosingVersion || enabled && snapshot != nil ? table : showingDiff ? diff.text : text
+        window?.initialFirstResponder = initial
+        // Hiding the focused preview must not hand arrow keys to the task list.
+        if keepFocus, isPageVisible, focused?.canBecomeKeyView != true, initial.canBecomeKeyView { presentingWindow?.makeFirstResponder(initial) }
         presentingWindow?.recalculateKeyViewLoop()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { choosingVersion ? versions.count : snapshot?.items.count ?? 0 }
@@ -112,11 +121,21 @@ struct AgentKnowledgeReviewVersion {
     }
     @objc private func readPreview() {
         guard job == nil, !closed, !choosingVersion || selectedVersion != nil else { return }
+        let waitingForVersion = choosingVersion && hasKeyboardFocus
+        if waitingForVersion { presentingWindow?.makeFirstResponder(nil) }
         let version = selectedVersion; snapshot = nil; showItem(nil); state.stringValue = "正在读取预览…"; state.textColor = AgentWorkbenchTheme.secondaryText
         job = Task { @MainActor [weak self] in
-            guard let self else { return }; defer { job = nil; if !closed { updatePage() } }
+            guard let self else { return }; var focusList = false
+            defer {
+                job = nil
+                if !closed {
+                    let restoreFocus = focusList || waitingForVersion && presentingWindow?.firstResponder === presentingWindow
+                    updatePage(); if restoreFocus, isPageVisible { presentingWindow?.makeFirstResponder(table) }
+                }
+            }
             do {
                 let value = try await load(version); try Task.checkCancellation(); guard !closed else { return }
+                focusList = hasKeyboardFocus
                 snapshot = value; choosingVersion = false; scope.stringValue = value.scope; impact.stringValue = value.impact
                 scope.toolTip = value.scope; impact.toolTip = value.impact
                 showItem(value.items.first); table.reloadData(); if !value.items.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
@@ -149,7 +168,7 @@ struct AgentKnowledgeReviewVersion {
     private func finishClose() { guard !closed else { return }; closed = true; job?.cancel(); onClose?(); onClose = nil }
     var checkState: [String: Any] {
         guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--knowledge-review-check") else { return [:] }
-        return ["phase": choosingVersion ? "versions" : "preview", "busy": hasPendingOperation, "closed": closed, "versionID": selectedVersion.map { versions[$0].id } ?? "", "versionCount": versions.count, "items": snapshot?.items.map { ["title": $0.title, "detail": $0.detail, "textHash": AgentFiles.hash(Data($0.text.utf8)), "isDiff": $0.isDiff] } ?? [], "selectedItem": table.selectedRow, "text": showingDiff ? diff.patch : text.string, "showingDiff": showingDiff && !diff.isHidden, "scope": scope.stringValue, "impact": impact.stringValue, "state": state.stringValue, "applyEnabled": apply.isEnabled]
+        return ["phase": choosingVersion ? "versions" : "preview", "busy": hasPendingOperation, "closed": closed, "versionID": selectedVersion.map { versions[$0].id } ?? "", "versionCount": versions.count, "items": snapshot?.items.map { ["title": $0.title, "detail": $0.detail, "textHash": AgentFiles.hash(Data($0.text.utf8)), "isDiff": $0.isDiff] } ?? [], "selectedItem": table.selectedRow, "text": showingDiff ? diff.patch : text.string, "showingDiff": showingDiff && !diff.isHidden, "scope": scope.stringValue, "impact": impact.stringValue, "state": state.stringValue, "applyEnabled": apply.isEnabled, "focusInReview": hasKeyboardFocus, "bodyFocused": presentingWindow?.firstResponder === text || presentingWindow?.firstResponder === diff.text]
     }
     func checkSelectVersion(_ index: Int) async {
         guard AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--knowledge-review-check"), choosingVersion, versions.indices.contains(index) else { return }
@@ -160,5 +179,6 @@ struct AgentKnowledgeReviewVersion {
     func checkLoad() async { startIfNeeded(); await job?.value }
     func checkReload() async { guard AgentKnowledgePageHost.readbackEnabled else { return }; readPreview(); await job?.value }
     func checkSelectItem(_ index: Int) { if AgentKnowledgePageHost.readbackEnabled, !choosingVersion, let items = snapshot?.items, items.indices.contains(index) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } }
+    func checkFocusBody() { if AgentKnowledgePageHost.readbackEnabled { presentingWindow?.makeFirstResponder(showingDiff ? diff.text : text) } }
     func checkVersions() { if AgentKnowledgePageHost.readbackEnabled { showVersions() } }
 }

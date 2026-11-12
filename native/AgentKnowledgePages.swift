@@ -56,7 +56,19 @@ import AppKit
             NSLayoutConstraint.activate([entry.content.leadingAnchor.constraint(equalTo: body.leadingAnchor), entry.content.trailingAnchor.constraint(equalTo: body.trailingAnchor), entry.content.topAnchor.constraint(equalTo: body.topAnchor), entry.content.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
             entry.controller.settingsDidAppear()
         }
-        updateHeader(); layoutSubtreeIfNeeded(); currentController?.pageDidLayout(); window?.recalculateKeyViewLoop(); onRootChange?(root)
+        updateHeader(); layoutSubtreeIfNeeded(); currentController?.pageDidLayout(); window?.recalculateKeyViewLoop(); focusCurrentPage(); onRootChange?(root)
+    }
+    func focusCurrentPage() {
+        guard !isHiddenOrHasHiddenAncestor, let window, window.isVisible, let content = currentController?.pageContentView else { return }
+        if let focused = window.firstResponder as? NSView, focused.isDescendant(of: content), focused.canBecomeKeyView { return }
+        func firstKeyView(_ view: NSView) -> NSView? {
+            guard !view.isHidden else { return nil }
+            if view.canBecomeKeyView { return view }
+            return view.subviews.lazy.compactMap(firstKeyView).first
+        }
+        let initial = currentController?.window?.initialFirstResponder as? NSView
+        let target = initial.flatMap { $0.isDescendant(of: content) && $0.canBecomeKeyView ? $0 : nil } ?? firstKeyView(content)
+        if let target { window.makeFirstResponder(target) }
     }
     private func updateHeader() {
         let entries = stacks[root] ?? []; back.isHidden = entries.count < 2
@@ -94,12 +106,14 @@ import AppKit
             let frame = convert(view.bounds, from: view)
             return ["label": view.accessibilityLabel() ?? (view as? NSButton)?.title ?? "", "frame": [frame.minX, frame.minY, frame.width, frame.height], "inside": frame.minX >= -1 && frame.maxX <= bounds.width + 1 && frame.minY >= -1 && frame.maxY <= bounds.height + 1 && frame.width > 0 && frame.height > 0]
         }
-        let checks = ["currentPageUsesOwnerWindow": currentController?.pageContentView?.window === window && currentController?.presentingWindow === window,
+        let checks = ["currentPageIsVisible": !isHiddenOrHasHiddenAncestor && currentController?.isPageVisible == true,
+                      "currentPageUsesOwnerWindow": currentController?.pageContentView?.window === window && currentController?.presentingWindow === window,
                       "noFloatingKnowledgeWindows": controllers.allSatisfy { $0.window?.isVisible != true },
                       "allActionsInsideMainContent": !frames.isEmpty && frames.allSatisfy { $0["inside"] as? Bool == true },
                       "rootTabsShownAtCatalog": tabs.isHidden == ((stacks[root]?.count ?? 0) > 1),
                       "readableMainColumn": body.bounds.width >= 500 && body.bounds.width <= 825 && body.bounds.height >= 290]
-        return ["root": root, "depth": stacks[root]?.count ?? 0, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "size": [bounds.width, bounds.height], "bodySize": [body.bounds.width, body.bounds.height], "backVisible": !back.isHidden, "controls": frames, "checks": checks]
+        let focused = window?.firstResponder as? NSView
+        return ["root": root, "depth": stacks[root]?.count ?? 0, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "focusInPage": currentController?.pageContentView.map { focused?.isDescendant(of: $0) == true } ?? false, "size": [bounds.width, bounds.height], "bodySize": [body.bounds.width, body.bounds.height], "backVisible": !back.isHidden, "controls": frames, "checks": checks]
     }
 }
 

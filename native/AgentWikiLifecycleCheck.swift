@@ -47,8 +47,10 @@ import AppKit
             let before = try await AgentWiki.snapshot(tasks, id, "zh"), originalDraft = tasks.task(id)?.draft
             control.showAgentKnowledge(); guard let catalog = host.currentController as? AgentRepoWikiWindow else { throw PetError("知识目录未打开") }
             for _ in 0..<200 { if catalog.checkState["loading"] as? Bool == false { break }; await wait(0.02) }
+            checks["catalogTakesKeyboardFocusFromTaskSidebar"] = host.checkState()["focusInPage"] as? Bool == true
             try catalog.checkOpen(workspace: workspace, action: "wiki")
             guard let reader = host.currentController as? AgentRecordWindow else { throw PetError("Wiki 正文未打开") }
+            checks["readerTakesKeyboardFocusFromTaskSidebar"] = host.checkState()["focusInPage"] as? Bool == true
             var created: [String] = []
             reader.configureWikiRuntime(runtime) { next in created.append(next); runtime.cancel(next) }
             func inspect(_ name: String, _ review: AgentKnowledgeReviewWindow) {
@@ -68,11 +70,20 @@ import AppKit
             await update.checkLoad()
             let actualDiff = try String(contentsOf: output.appendingPathComponent("initial-actual-diff.patch"), encoding: .utf8)
             checks["coloredDiffShowsCompleteActualCommittedPatch"] = update.checkState["showingDiff"] as? Bool == true && update.checkState["text"] as? String == actualDiff
+            checks["updateTakesKeyboardFocusFromTaskSidebar"] = update.checkState["focusInReview"] as? Bool == true
+            control.show(tab: "chat")
+            checks["hiddenReviewFailsVisibilityCheckWithoutLosingPreview"] = (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == false && host.currentController === update && update.checkState["text"] as? String == actualDiff
+            control.showAgentKnowledge()
+            checks["returnToRetainedReviewRestoresVisibilityAndFocus"] = (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == true && host.currentController === update && update.checkState["focusInReview"] as? Bool == true
             checks["updateNamesBothActualCommitIDs"] = (update.checkState["items"] as? [[String: Any]])?.first?["detail"] as? String == String((f["baseCommit"] as! String).prefix(8)) + " → " + String((f["head"] as! String).prefix(8))
             inspect("update", update); update.checkSelectItem(1)
             checks["fileListShowsExactCommittedPaths"] = update.checkState["text"] as? String == "README.md\ndocs/REPO-WIKI.md" && update.checkState["showingDiff"] as? Bool == false
             await update.checkReload()
             checks["repreviewRestoresCompleteFirstDiff"] = update.checkState["text"] as? String == actualDiff && update.checkState["showingDiff"] as? Bool == true
+            update.checkFocusBody()
+            checks["actualDiffBodyCanTakeKeyboardFocus"] = update.checkState["bodyFocused"] as? Bool == true
+            await update.checkReload()
+            checks["repreviewFromActualDiffBodyKeepsKeyboardFocus"] = update.checkState["focusInReview"] as? Bool == true && update.checkState["text"] as? String == actualDiff && (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == true
             update.close(); let canceled = await reader.markdownEditingReadback()
             checks["cancelLeavesPublicationAndOriginalInputUntouched"] = try await AgentWiki.snapshot(tasks, id, "zh").pointer == before.pointer && tasks.task(id)?.draft == originalDraft && created.isEmpty && (canceled["state"] as? String)?.hasPrefix("正在") == false
             guard let stale = await reader.checkKnowledgeReview("update") else { throw PetError("过期审阅页未打开") }; await stale.checkLoad()
@@ -93,6 +104,7 @@ import AppKit
             checks["updateDraftDoesNotPublishOrReplaceOriginalWiki"] = try await AgentWiki.snapshot(tasks, id, "zh").pointer == before.pointer && updated?.wikiJob?.root != before.root
             guard let regenerate = await reader.checkKnowledgeReview("regenerate") else { throw PetError("重新生成审阅页未打开") }; await regenerate.checkLoad()
             checks["defaultRegenerationPreviewUsesActualDefaultPlan"] = regenerate.checkState["text"] as? String == AgentWikiPlan.initialYAML && (regenerate.checkState["impact"] as? String)?.contains("自动规划") == true
+            checks["regenerationTakesKeyboardFocusFromTaskSidebar"] = regenerate.checkState["focusInReview"] as? Bool == true
             regenerate.close()
             let plan = "version: 1\nrepowiki:\n  template: architecture\n  documents:\n    - title: 项目文档\n      goal: 核对公开 README 的实际入口\n    - title: 公开来源\n      goal: 标明实际源码与阅读范围\nknowledgecard:\n  notes: []\n"
             let planURL = try files.literalURL(AgentWikiPlan.configurationPath); try files.writeData(Data(plan.utf8), to: planURL)

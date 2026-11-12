@@ -85,6 +85,7 @@ import AppKit
                     }
                 }
                 checks[name + "-noStandaloneWindow"] = review.window?.isVisible == false && review.presentingWindow === control.window
+                checks[name + "-keyboardFocusStaysInReview"] = review.checkState["focusInReview"] as? Bool == true
             }
             control.showAgentKnowledge(); guard let catalog = host.currentController as? AgentRepoWikiWindow else { throw PetError("项目目录未打开") }
             for _ in 0..<200 { if catalog.checkState["loading"] as? Bool == false { break }; await wait(0.02) }
@@ -128,8 +129,12 @@ import AppKit
             await restoring.checkSelectVersion(0)
             let firstPreview = restoring.checkState, firstItemHash = (restoring.checkState["items"] as? [[String: Any]])?.first?["textHash"] as? String
             checks["firstVersionSelectionShowsCompleteFirstDocument"] = (firstPreview["text"] as? String).map { AgentFiles.hash(Data($0.utf8)) } == firstItemHash && firstItemHash != nil
+            restoring.checkFocusBody()
+            checks["versionBodyCanTakeKeyboardFocus"] = restoring.checkState["bodyFocused"] as? Bool == true
             restoring.checkVersions()
+            checks["returnToVersionListKeepsKeyboardFocus"] = restoring.checkState["phase"] as? String == "versions" && restoring.checkState["focusInReview"] as? Bool == true
             await restoring.checkSelectVersion(wikiIndex)
+            checks["selectedVersionReloadKeepsKeyboardFocus"] = restoring.checkState["focusInReview"] as? Bool == true
             checks["selectedVersionPreviewNamesActualHistory"] = restoring.checkState["versionID"] as? String == wikiVersions[wikiIndex].id
             await restoring.checkApply(); checks["actualWikiRestoreKeepsCompleteVersion"] = try await wikiMatches("a") && host.currentController === reader
             let beforeCombined = try await AgentWiki.snapshot(tasks, id, "zh"), beforeCombinedCards = try tasks.knowledgeCards.book(tasks.task(id)!, language: "zh").1

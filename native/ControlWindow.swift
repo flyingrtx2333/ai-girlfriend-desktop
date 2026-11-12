@@ -1221,6 +1221,7 @@ final class FormDocumentView: NSView {
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { window?.makeFirstResponder(composer) }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         if selectedTab == "chat" { window?.makeFirstResponder(composer) }
+        if selectedTab == "knowledge" { knowledgePageHost.focusCurrentPage() }
         if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
         companion?.updatePetWorkspaceOcclusion()
     }
