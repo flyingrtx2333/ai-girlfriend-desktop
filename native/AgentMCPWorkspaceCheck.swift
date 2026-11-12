@@ -100,8 +100,19 @@ import AppKit
         let files = tasks.task(taskID)?.draftAttachmentIDs ?? []; report["attachmentIDs"] = files
         host.checkClose(.mcpContent); await wait(0.1)
         checks["closeDisconnectsOnlyOriginalPage"] = state(page)["closed"] as? Bool == true && state(page)["connected"] as? Bool == false && state(second)["connected"] as? Bool == true
+        checks["closeWithAnotherTabKeepsWorkspaceFocus"] = host.selectedRoot == .context && control.gitWorkspaceReadback()["composerFocused"] as? Bool == false
         control.presentMCPContent(taskID: taskID, serverID: serverID)
         checks["closedPageReopensWithNewOwner"] = host.currentController !== page && (host.currentController as? AgentMCPContentWindow)?.workspaceReadback()["sessionOwner"] as? String != sessionOwner
+        guard let reopened = host.currentController as? AgentMCPContentWindow else { throw PetError("MCP 资料页未重开") }
+        host.checkClose(.context); await wait(0.1)
+        checks["closingOtherTabKeepsMCPFocus"] = host.currentController === reopened && state(reopened)["focusInPage"] as? Bool == true && control.gitWorkspaceReadback()["composerFocused"] as? Bool == false
+        let originalDraft = tasks.task(taskID)?.draft ?? ""
+        reopened.checkAction("focus-preview"); host.checkHide(); await wait(0.05)
+        checks["hideWorkspaceReturnsFocusToOriginalDraft"] = !host.requested && control.gitWorkspaceReadback()["composerFocused"] as? Bool == true && control.gitWorkspaceReadback()["draft"] as? String == originalDraft
+        control.presentMCPContent(taskID: taskID)
+        checks["hiddenPageReentryRestoresItsFocus"] = host.currentController === reopened && state(reopened)["focusInPage"] as? Bool == true
+        host.checkClose(.mcpContent); await wait(0.1)
+        checks["lastTabCloseReturnsFocusToOriginalDraft"] = !host.requested && control.gitWorkspaceReadback()["composerFocused"] as? Bool == true && control.gitWorkspaceReadback()["draft"] as? String == originalDraft
         checks["zeroModelRequests"] = requests == 0
         report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["modelRequests"] = requests
         report["taskID"] = taskID; report["otherID"] = other; report["sessionOwner"] = sessionOwner

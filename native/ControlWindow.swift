@@ -526,7 +526,14 @@ final class FormDocumentView: NSView {
         terminalSplit.translatesAutoresizingMaskIntoConstraints = false
         chat.addSubview(terminalSplit); chat.addSubview(workbenchInspector); chat.addSubview(taskWorkspace)
         taskWorkspace.translatesAutoresizingMaskIntoConstraints = false
-        taskWorkspace.onLayoutChange = { [weak self] in self?.updateWorkbenchLayout() }
+        taskWorkspace.onLayoutChange = { [weak self] in
+            guard let self else { return }
+            let wasInWorkspace = (window?.firstResponder as? NSView)?.isDescendant(of: taskWorkspace) == true
+            updateWorkbenchLayout()
+            guard !taskWorkspace.requested, selectedTab == "chat", composer.isEditable, !composer.isHiddenOrHasHiddenAncestor,
+                  wasInWorkspace || window?.firstResponder === window else { return }
+            window?.contentView?.layoutSubtreeIfNeeded(); window?.makeFirstResponder(composer)
+        }
         taskWorkspace.onOpenRoot = { [weak self] root in
             switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) } }
         }
@@ -2191,6 +2198,7 @@ final class FormDocumentView: NSView {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         var value = taskWorkspace.checkState(); value["selectedTask"] = agentTaskID ?? ""; value["draft"] = composer.string
         value["conversationVisible"] = !terminalSplit.isHiddenOrHasHiddenAncestor; value["conversationWidth"] = Double(terminalSplit.bounds.width); value["mainPage"] = selectedTab
+        value["composerFocused"] = window?.firstResponder === composer
         value["windowSize"] = [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)]
         value["taskTitle"] = pageTitle.stringValue; value["taskTitleVisible"] = !pageTitle.isHidden
         for page in taskWorkspace.controllers {
