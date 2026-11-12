@@ -59,6 +59,7 @@ import AppKit
         checks["wikiVideoUsesExistingMainWindowAndChildPage"] = direct.presentingWindow === control.window && direct.window?.isVisible == false && host.checkState()["depth"] as? Int == 3
         checks["wikiMP4HasExactSourceBytesAndActualMetadata"] = initial["sourceHash"] as? String == mp4Hash && player["width"] as? Int == 960 && player["height"] as? Int == 540 && (player["duration"] as? Double ?? 0) > 5
         checks["wikiVideoStartsPausedWithNativeControls"] = player["paused"] as? Bool == true && player["controls"] as? Bool == true
+        checks["firstVideoLoadFocusesVisiblePage"] = host.checkState()["focusInPage"] as? Bool == true
         for (theme, name) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
             control.window?.appearance = NSAppearance(named: name)
             for (sizeName, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
@@ -69,6 +70,10 @@ import AppKit
                 report[theme + "-" + sizeName] = ["host": state, "video": media]
             }
         }
+        checks["videoFocusSurvivesAllThemeAndSizeChanges"] = ["light-normal", "light-narrow", "dark-normal", "dark-narrow"].allSatisfy {
+            guard let geometry = report[$0] as? [String: Any], let host = geometry["host"] as? [String: Any] else { return false }
+            return host["focusInPage"] as? Bool == true
+        }
         await direct.preview.checkWorkspace(time: 1.25)
         control.show(tab: "chat"); await wait(0.05)
         let hidden = await ready(direct), hiddenPlayer = hidden["player"] as? [String: Any] ?? [:]
@@ -76,6 +81,7 @@ import AppKit
         control.showAgentKnowledge()
         let returned = await ready(direct), returnedPlayer = returned["player"] as? [String: Any] ?? [:]
         checks["returnRestoresSameVideoAndSeekPosition"] = host.currentController === direct && direct.isPageVisible && returned["snapshotFolder"] as? String == snapshot && abs((returnedPlayer["time"] as? Double ?? 0) - 1.25) < 0.15
+        checks["returnToVideoRestoresItsKeyboardFocus"] = host.checkState()["focusInPage"] as? Bool == true
         host.checkBack()
         let closed = await direct.preview.checkState(), afterBack = await reader.markdownEditingReadback()
         checks["backReleasesVideoAndPreservesOriginalWiki"] = host.currentController === reader && closed["webPresent"] as? Bool == false && !FileManager.default.fileExists(atPath: snapshot) && afterBack["draft"] as? String == originalText
@@ -86,6 +92,7 @@ import AppKit
         guard let nested = host.currentController as? AgentVideoWindow else { throw PetError("来源页视频仍另开窗口") }
         let webm = await ready(nested), webmPlayer = webm["player"] as? [String: Any] ?? [:], nestedSnapshot = webm["snapshotFolder"] as? String ?? ""
         checks["sourceVideoUsesNestedMainPageAndActualWebM"] = nested.presentingWindow === control.window && nested.window?.isVisible == false && host.checkState()["depth"] as? Int == 4 && webm["sourceHash"] as? String == webmHash && webmPlayer["width"] as? Int == 960 && (webmPlayer["duration"] as? Double ?? 0) > 5
+        checks["nestedVideoLoadFocusesVisiblePage"] = host.checkState()["focusInPage"] as? Bool == true
         host.checkBack()
         checks["backKeepsSourceAndReleasesNestedVideo"] = host.currentController === source && source.encodingCheckState["textHash"] as? String == sourceHash && !FileManager.default.fileExists(atPath: nestedSnapshot)
         host.checkBack()

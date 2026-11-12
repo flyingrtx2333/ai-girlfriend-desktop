@@ -42,6 +42,12 @@ struct AgentVideoSnapshot: Sendable {
         const video=document.getElementById('video'),state=document.getElementById('state');
         video.addEventListener('error',()=>{state.textContent=video.error?.code===2?'视频读取失败，请刷新重试':'无法播放视频，请检查文件格式或编码';});
         video.addEventListener('loadedmetadata',()=>{state.textContent='';});
+        document.addEventListener('keydown',event=>{
+          if(event.defaultPrevented||event.altKey||event.ctrlKey||event.metaKey||(event.code!=='Space'&&event.key!==' '))return;
+          event.preventDefault();event.stopPropagation();if(event.repeat)return;
+          state.textContent='';
+          if(video.paused)video.play().catch(()=>{state.textContent='无法开始播放，请重试';});else video.pause();
+        },true);
         document.addEventListener('visibilitychange',()=>{if(document.hidden)video.pause();});
         window.addEventListener('pagehide',()=>video.pause());
         </script></body></html>
@@ -85,7 +91,7 @@ struct AgentVideoSnapshot: Sendable {
                 // WebKit reparents the web view for native fullscreen. Do not
                 // leave constraints pinning it to the original window.
                 web.autoresizingMask = [.width, .height]; player.addSubview(web)
-                web.loadFileURL(pinned.document, allowingReadAccessTo: pinned.folder); status.stringValue = ""; reload.isEnabled = true
+                web.loadFileURL(pinned.document, allowingReadAccessTo: pinned.folder); status.stringValue = ""; reload.isEnabled = true; focusIfNeeded()
             } catch { if generation == current, !Task.isCancelled { status.stringValue = error.localizedDescription; reload.isEnabled = true } }
         }
     }
@@ -98,6 +104,10 @@ struct AgentVideoSnapshot: Sendable {
         } catch { status.stringValue = error.localizedDescription }
     }
     func pause() { web?.pauseAllMediaPlayback(completionHandler: nil) }
+    func focusIfNeeded() {
+        guard let window, let web, window.isVisible, !isHiddenOrHasHiddenAncestor, window.firstResponder === window else { return }
+        window.makeFirstResponder(web)
+    }
     func clear() {
         generation = UUID(); opening?.cancel(); opening = nil
         pause(); web?.closeAllMediaPresentations(completionHandler: nil); web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web?.removeFromSuperview(); web = nil
@@ -107,6 +117,7 @@ struct AgentVideoSnapshot: Sendable {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         decisionHandler(navigationAction.targetFrame?.isMainFrame == true && navigationAction.request.url == snapshot?.document ? .allow : .cancel)
     }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { if webView === web { focusIfNeeded() } }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { status.stringValue = "视频预览未完成，请刷新重试" }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { status.stringValue = "视频预览无法读取，请刷新重试" }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
@@ -138,6 +149,7 @@ struct AgentVideoSnapshot: Sendable {
         preview.show(file: file, files: files, validate: validate)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() { super.settingsDidAppear(); preview.focusIfNeeded() }
     override func canLeaveSettings() -> Bool {
         guard super.canLeaveSettings() else { return false }; preview.pause(); return true
     }
