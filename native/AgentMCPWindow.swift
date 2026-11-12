@@ -4,9 +4,11 @@ import UniformTypeIdentifiers
 @MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
     private let table = NSTableView(), editor = NSTextView(), tools = NSTextView()
+    private let tabs = NSTabView()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let connect = NSButton(title: "连接", target: nil, action: nil), disconnect = NSButton(title: "断开", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
     private let state = NSTextField(labelWithString: ""), access = NSTextField(labelWithString: "")
     var scopeWorkspace: String? { workspace }
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
@@ -19,7 +21,11 @@ import UniformTypeIdentifiers
         window.title = "MCP 连接器" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 740, height: 520); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = NSView(); window.contentView = content
-        let add = NSButton(title: "新建", target: self, action: #selector(create)), importButton = NSButton(title: "导入 JSON", target: self, action: #selector(importJSON))
+        add.addItem(withTitle: "新建"); add.setAccessibilityLabel("新建 MCP 连接器")
+        for (title, type) in [("本机程序", "stdio"), ("HTTP", "http")] {
+            let item = NSMenuItem(title: title, action: #selector(create(_:)), keyEquivalent: ""); item.target = self; item.representedObject = type; add.menu?.addItem(item)
+        }
+        importButton.target = self; importButton.action = #selector(importJSON)
         let actions = NSStackView(views: [add, importButton, NSView()]); actions.spacing = 8
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("mcp"))); table.headerView = nil
         table.rowHeight = 46; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 连接器列表")
@@ -31,7 +37,7 @@ import UniformTypeIdentifiers
         tools.isEditable = false; tools.isRichText = false; tools.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         tools.textContainerInset = NSSize(width: 12, height: 12); tools.isVerticallyResizable = true; tools.autoresizingMask = [.width]; tools.textContainer?.widthTracksTextView = true; tools.setAccessibilityLabel("MCP 实际工具目录")
         let toolScroll = NSScrollView(); toolScroll.documentView = tools; toolScroll.hasVerticalScroller = true
-        let tabs = NSTabView(); tabs.tabViewType = .topTabsBezelBorder
+        tabs.tabViewType = .topTabsBezelBorder; tabs.setAccessibilityLabel("连接器详情标签")
         for (label, view) in [("配置", configScroll), ("工具", toolScroll)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (save, #selector(saveConfig)), (remove, #selector(removeConfig))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
@@ -52,6 +58,7 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : editor) }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -97,17 +104,20 @@ import UniformTypeIdentifiers
         connect.isEnabled = current?.enabled == true && !dirty && job == nil && !connected
         disconnect.isEnabled = selected != nil && (connected || job != nil)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
+        add.isEnabled = job == nil; importButton.isEnabled = job == nil
         access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (selected?.type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }
-    @objc private func create() {
-        guard canLeave() else { return }
-        let alert = NSAlert(); alert.messageText = "新建 MCP 连接器"; alert.addButton(withTitle: "本机程序"); alert.addButton(withTitle: "HTTP"); alert.addButton(withTitle: "取消")
-        let answer = alert.runModal(); guard answer != .alertThirdButtonReturn else { return }
-        selected = nil; creating = true; dirty = true; select(nil); tools.string = ""
-        let template = answer == .alertSecondButtonReturn ? AgentMCPServer(name: "新的连接器", type: "http") : nil
-        editor.string = (try? service.document(template)) ?? ""; editor.undoManager?.removeAllActions(); refreshState(); state.stringValue = "未保存"
+    @objc private func create(_ sender: NSMenuItem) {
+        guard job == nil, let type = sender.representedObject as? String, ["stdio", "http"].contains(type), canLeave() else { return }
+        do { loadDraft(try service.document(type == "http" ? AgentMCPServer(name: "新的连接器", type: "http") : nil)) }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    private func loadDraft(_ document: String) {
+        selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; editor.string = document
+        editor.undoManager?.removeAllActions(); tabs.selectTabViewItem(at: 0); editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        refreshState(); state.stringValue = "待保存"; presentingWindow?.makeFirstResponder(editor)
     }
     @objc private func saveConfig() {
         do { let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存" }
@@ -133,30 +143,19 @@ import UniformTypeIdentifiers
         do { try service.remove(selected.id, revision: selected.revision); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func importJSON() {
-        guard canLeave(), job == nil else { return }
+        guard job == nil, let window = presentingWindow, window.attachedSheet == nil, canLeave() else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]); guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 64_000 else { throw PetError("配置文件需小于 64KB") }
-            let data = try Data(contentsOf: url)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PetError("不是 JSON 对象") }
-            if let servers = json["mcpServers"] as? [String: [String: Any]] {
-                // Import one definition at a time into the editor; nothing is
-                // launched or saved merely by opening a foreign config file.
-                let names = servers.keys.sorted(); guard !names.isEmpty else { throw PetError("mcpServers 为空") }
-                let choice = NSPopUpButton(); choice.addItems(withTitles: names)
-                let alert = NSAlert(); alert.messageText = "选择连接器"; alert.accessoryView = choice; alert.addButton(withTitle: "导入"); alert.addButton(withTitle: "取消")
-                guard alert.runModal() == .alertFirstButtonReturn, let name = choice.titleOfSelectedItem, var value = servers[name] else { return }
-                value["name"] = name
-                if value["url"] != nil { value["type"] = "http"; value["bearerToken"] = value["bearerToken"] ?? "" }
-                else { value["type"] = "stdio"; value["args"] = value["args"] ?? []; value["env"] = value["env"] ?? [:] }
-                if let command = value["command"] as? String, !command.hasPrefix("/"), !command.contains("/") {
-                    value["command"] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map { $0 + "/" + command }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? command
-                }
-                editor.string = String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
-            } else { editor.string = String(decoding: data, as: UTF8.self) }
-            selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; refreshState(); state.stringValue = "待保存"
-        } catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            do { try self.reviewImport(url) }
+            catch { self.state.stringValue = error.localizedDescription; self.state.toolTip = self.state.stringValue }
+        }
+    }
+    func reviewImport(_ url: URL) throws {
+        guard job == nil else { throw PetError("请先等待连接操作完成") }
+        let page = try AgentMCPImportPage(source: url)
+        page.onLoad = { [weak self] document in self?.loadDraft(document) }
+        presentSettingsChild(page)
     }
     private func canLeave() -> Bool {
         guard !dirty else { let alert = NSAlert(); alert.messageText = "放弃未保存的配置？"; alert.addButton(withTitle: "放弃"); alert.addButton(withTitle: "继续编辑"); return alert.runModal() == .alertFirstButtonReturn }
