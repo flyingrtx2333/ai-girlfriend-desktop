@@ -7,8 +7,9 @@ import WebKit
     var onDraftCapture: ((String, AgentBrowserShot, [AgentBrowserMark], String) async throws -> Void)?
     var onPresent: ((AgentBrowserWindow) throws -> Void)?
     var onDetach: ((AgentBrowserWindow) throws -> Void)?
-    static func url(_ value: String) throws -> URL {
-        guard value.utf8.count < 8192, let url = URL(string: value), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+    var onChange: ((String) -> Void)?
+    nonisolated static func url(_ value: String) throws -> URL {
+        guard value.utf8.count < 8192, !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), let url = URL(string: value), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host?.isEmpty == false,
               parts.user == nil, parts.password == nil else { throw PetError("浏览器需要不含账户密码的 HTTP/HTTPS 网址") }
         return url
@@ -19,12 +20,18 @@ import WebKit
         guard sessions.count < 4 else { throw PetError("请先关闭一个任务浏览器，最多同时打开 4 个") }
         let session = AgentBrowserWindow(title: title, taskID: taskID)
         session.onPresent = onPresent; session.onDetach = onDetach
-        session.onClose = { [weak self] in self?.sessions[taskID] = nil }
+        session.onMonitorChange = { [weak self, weak session] in
+            guard let self, let session, sessions[taskID] === session else { return }; onChange?(taskID)
+        }
+        session.onClose = { [weak self, weak session] in
+            guard let self, let session, sessions[taskID] === session else { return }; sessions[taskID] = nil; onChange?(taskID)
+        }
         session.onDraftCapture = { [weak self] shot, marks, note in
             guard let handler = self?.onDraftCapture else { throw PetError("任务窗口尚未准备好") }
             try await handler(taskID, shot, marks, note)
         }
         sessions[taskID] = session
+        onChange?(taskID)
         do { try session.present(); return session } catch { session.close(); throw error }
     }
     func session(_ taskID: String) throws -> AgentBrowserWindow {
@@ -86,6 +93,7 @@ import WebKit
     var onPresent: ((AgentBrowserWindow) throws -> Void)? { didSet { updateControls() } }
     var onDetach: ((AgentBrowserWindow) throws -> Void)?
     var onWorkspaceChange: (() -> Void)?
+    var onMonitorChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
     var workspaceHasUnsavedChanges: Bool { annotationWindow?.hasPendingChanges == true }
     private var current: AgentBrowserPage { pages.first { $0.id == tabs.selectedTabViewItem?.identifier as? String } ?? pages[0] }
@@ -157,7 +165,7 @@ import WebKit
             let group = AgentThemeView(fill: page.id == current.id ? AgentWorkbenchTheme.navigationSelection : .clear); group.wantsLayer = true; group.layer?.cornerRadius = 6; group.addSubview(button); button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([group.widthAnchor.constraint(equalToConstant: min(180, max(84, ceil((label as NSString).size(withAttributes: [.font: button.font!]).width) + 22))), group.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 6), button.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -6), button.topAnchor.constraint(equalTo: group.topAnchor), button.bottomAnchor.constraint(equalTo: group.bottomAnchor)])
             pageTabs.addArrangedSubview(group)
-        }; pageDidLayout()
+        }; pageDidLayout(); onMonitorChange?()
     }
     @objc private func selectPageTab(_ sender: NSButton) { guard !busy, pages.indices.contains(sender.tag) else { return }; select(pages[sender.tag]) }
     private func addPage(configuration: WKWebViewConfiguration? = nil, origins: Set<String> = [], activate: Bool = true) throws -> AgentBrowserPage {

@@ -836,6 +836,7 @@ final class FormDocumentView: NSView {
         var value = AgentMonitorContent(task: task)
         guard let companion, let store = companion.agentStore else { return value }
         value.settings = companion.taskMonitor.settings
+        value.canAddSources = task.canAddSources
         if let files = try? AgentFiles(workspace: task.workspace) {
             for path in task.artifacts.prefix(8) {
                 if let url = try? files.resolve(path), let entry = try? files.entryMetadata(url), entry.kind == "missing" { value.missingArtifacts.insert(path) }
@@ -875,6 +876,44 @@ final class FormDocumentView: NSView {
         view.onPreview = { [weak self] in self?.toggleMonitorPreview() }
         view.onClose = { [weak self] in self?.closeTaskMonitor() }
         view.onPresentation = { [weak self] in self?.pinTaskMonitor() }
+        view.onAddSource = { [weak self] sender in self?.showSourceMenu(sender) }
+    }
+    private func showSourceMenu(_ sender: NSButton) {
+        guard let task = currentAgentTask, task.canAddSources else { return }
+        let menu = NSMenu()
+        for (title, kind) in [("添加文件", "file"), ("添加链接", "link")] {
+            let item = NSMenuItem(title: title, action: #selector(sourceMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = ["task": task.id, "kind": kind]; menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+    @objc private func sourceMenuAction(_ item: NSMenuItem) {
+        guard let value = item.representedObject as? [String: String], let id = value["task"], agentTaskID == id, currentAgentTask?.canAddSources == true else { return }
+        if value["kind"] == "file" { addAttachments() }
+        else { presentSourceLink(id) }
+    }
+    private func presentSourceLink(_ id: String) {
+        guard let window, agentTaskID == id, currentAgentTask?.canAddSources == true, nameEditor == nil, window.attachedSheet == nil, saveAgentDraft() else { return }
+        nameEditor = AgentNameEditor(title: "添加链接", label: "链接地址", value: "", actionTitle: "添加", note: "HTTP／HTTPS 链接会加入草稿，发送后显示为来源。", statusLabel: "链接状态", save: { [weak self] text in
+            guard let self else { throw PetError("任务窗口已关闭") }; try appendSourceLink(text, taskID: id)
+        }, onClose: { [weak self] in
+            guard let self else { return }; nameEditor = nil; renderMessages()
+            self.window?.contentView?.layoutSubtreeIfNeeded(); composer.scrollRangeToVisible(composer.selectedRange())
+        })
+        nameEditor?.begin(in: window); updateWorkbenchLayout()
+    }
+    func appendSourceLink(_ text: String, taskID: String) throws {
+        let link = try AgentSourceLinks.url(text).absoluteString
+        guard agentTaskID == taskID, currentAgentTask?.canAddSources == true, composer.isEditable else { throw PetError("请回到可以编辑的原任务后添加链接") }
+        guard saveAgentDraft(), companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存当前草稿") }
+        if !AgentSourceLinks.inText(composer.string).contains(link) {
+            let addition = (composer.string.isEmpty ? "" : "\n\n") + link
+            guard (composer.string + addition).utf8.count <= 100_000 else { throw PetError("草稿超过 100KB，请先缩减草稿") }
+            composer.insertText(addition, replacementRange: NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
+        }
+        guard saveAgentDraft() else { throw PetError("链接已加入草稿，但尚未保存；请恢复写入后重试") }
+        renderMessages()
+        let end = NSRange(location: (composer.string as NSString).length, length: 0)
+        composer.setSelectedRange(end); composer.scrollRangeToVisible(end)
     }
     private func closeTaskMonitor() {
         guard let id = agentTaskID else { return }; var state = taskMonitorState(id); state.visible = false; state.explicitVisibility = true; monitorStates[id] = state; inspectorRequested = false; updateWorkbenchLayout(animated: true)
@@ -916,8 +955,8 @@ final class FormDocumentView: NSView {
         return ["taskID": id, "presentation": state.presentation.rawValue, "requested": state.visible, "dockedVisible": !workbenchInspector.isHidden, "floatingVisible": monitorPanel?.isVisible == true, "applicationActive": NSApp.isActive, "floatingOnScreen": monitorPanel?.occlusionState.contains(.visible) == true, "floatingKey": monitorPanel?.isKeyWindow == true, "floatingMovable": monitorPanel?.isMovable == true, "floatingBackgroundMovable": monitorPanel?.isMovableByWindowBackground == true, "floatingOwner": monitorPanel?.parent?.windowNumber ?? -1, "ownerNumber": window?.windowNumber ?? -1, "floatingTaskID": monitorPanelTaskID ?? "", "floatingFrame": monitorPanel.map { NSStringFromRect($0.frame) } ?? "", "windowSize": window.map { [$0.frame.width, $0.frame.height] } ?? [], "fixed": workbenchInspector.readback(), "floating": monitorPanel?.inspector.readback() ?? [:], "taskStates": monitorStates.mapValues { ["presentation": $0.presentation.rawValue, "visible": $0.visible, "frame": $0.frame.map(NSStringFromRect) ?? ""] as [String: Any] }]
     }
     func checkTaskMonitor(_ action: String, frame: NSRect? = nil) {
-        guard CommandLine.arguments.contains("--task-monitor-check") else { return }
-        switch action { case "toggle": toggleTaskInspector(); case "pin": pinTaskMonitor(); case "close": closeTaskMonitor(); case "frame": if let frame { monitorPanel?.setFrame(frame, display: false) }; case "terminal": openTaskTerminal(); case "stop-terminals": stopTaskTerminals(); default: break }
+        guard ["--task-monitor-check", "--browser-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
+        switch action { case "toggle": toggleTaskInspector(); case "pin": pinTaskMonitor(); case "close": closeTaskMonitor(); case "frame": if let frame { monitorPanel?.setFrame(frame, display: false) }; case "terminal": openTaskTerminal(); case "stop-terminals": stopTaskTerminals(); case "source-link": if let id = agentTaskID { presentSourceLink(id) }; default: break }
     }
     @objc private func toggleLeftSidebar() {
         guard selectedTab == "chat" else { return }

@@ -242,6 +242,8 @@ import Foundation
         guard let task = task(id) else { return }
         if !recoveringRecords.contains(id) { try sideTasks.requireOpen(task) }
         let file = directory.appendingPathComponent(id + ".json")
+        let files = try AgentFiles(workspace: directory.path), entry = try files.entryMetadata(file)
+        guard entry.kind == "missing" || entry.kind == "file" && (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("任务记录只读或不可用，未保存") }
         let data = try encoder.encode(task); try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         taskHashes[id] = AgentFiles.hash(data)

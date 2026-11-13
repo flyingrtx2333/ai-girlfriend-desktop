@@ -103,8 +103,33 @@ import AppKit
             checks["attachmentMatchesActualStoredBytes"] = try AgentFiles.hash(Data(contentsOf: source)) == attached.sha256
             checks["submittedAnnotationReturnsToSameBrowser"] = annotation.workspaceIsClosed && host.currentController === browser && !browser.workspaceHasUnsavedChanges && browser.web === originalWeb
             checks["newWindowIsEnabledAfterAnnotationCapture"] = browser.workspaceReadback()["newWindowEnabled"] as? Bool == true
+            let originalMonitor = taskMonitor.settings
+            var monitorSettings = originalMonitor; monitorSettings.presentation = .floating; try taskMonitor.save(monitorSettings)
+            defer { try? taskMonitor.save(originalMonitor) }
+            control.checkTaskMonitor("toggle")
+            guard let monitor = control.window?.childWindows?.compactMap({ $0 as? AgentTaskMonitorPanel }).first else { throw PetError("实际浏览器任务的监控未展开") }
+            func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+            func monitorRows() -> [NSButton] { descendants(monitor.inspector).compactMap { $0 as? NSButton } }
+            func eventually(_ predicate: () -> Bool) async -> Bool {
+                let deadline = Date().addingTimeInterval(3)
+                while Date() < deadline { if predicate() { return true }; await wait(0.05) }; return predicate()
+            }
+            let monitorEncoder = JSONEncoder(); monitorEncoder.outputFormatting = [.sortedKeys]
+            let taskBeforeWebUpdates = try monitorEncoder.encode(tasks.task(f.taskID)!)
+            let changedTitle = "监控即时更新验收", changedURL = f.url.absoluteString + "?monitor=updated"
+            _ = try await browser.web.evaluateJavaScript("document.title='监控即时更新验收'; history.replaceState(null,'','?monitor=updated');")
+            checks["manualTitleAndHistoryChangesUpdateFloatingMonitorWithoutExplicitRefresh"] = await eventually { monitorRows().contains { $0.title == changedTitle && $0.toolTip == changedURL } }
+            let addedURL = f.url.absoluteString + "?monitor=second"
+            _ = try await browser.open(URL(string: addedURL)!, newTab: true); try await waitForBrowserProjectPreview(browser)
+            checks["newPageImmediatelyAppearsBesideRetainedPageInMonitor"] = await eventually { let rows = monitorRows(); return rows.contains { $0.toolTip == addedURL } && rows.contains { $0.title == changedTitle && $0.toolTip == changedURL } }
+            let addedID = browser.pages.last!.id; _ = try browser.manageTabs(["action": "close", "tab_id": addedID])
+            checks["closedPageImmediatelyLeavesMonitorWithoutRemovingRetainedPage"] = await eventually { let rows = monitorRows(); return !rows.contains { $0.toolTip == addedURL } && rows.contains { $0.title == changedTitle && $0.toolTip == changedURL } }
+            checks["browserMonitorRefreshDoesNotWriteConversationOrDraft"] = try monitorEncoder.encode(tasks.task(f.taskID)!) == taskBeforeWebUpdates
+            report["liveMonitorRows"] = monitorRows().map { ["title": $0.title, "url": $0.toolTip ?? ""] }
             let stale = try object(await tools.execute(call("browser_read", ["query": "棋盘背景"]))), staleAction = try toggle(stale)
             tasks.browser.close(f.taskID)
+            checks["closingBrowserImmediatelyRemovesWebAndPreviewModules"] = await eventually { !monitorRows().contains { ["monitor-group-web", "monitor-group-preview"].contains($0.identifier?.rawValue ?? "") } }
+            control.checkTaskMonitor("close"); try taskMonitor.save(originalMonitor)
             checks["closeReleasesSessionAndTaskRoot"] = tasks.browser.sessions[f.taskID] == nil && browser.workspaceIsClosed && host.rootController(.browser) == nil && originalWeb.superview == nil
             let fresh = try tasks.browser.show(taskID: f.taskID, title: "浏览器工作区")
             checks["reopenCreatesFreshWebsiteDataAndController"] = fresh !== browser && fresh.web.configuration.websiteDataStore !== originalWeb.configuration.websiteDataStore && host.currentController === fresh

@@ -5,9 +5,9 @@ import AppKit
     private let saveName: (String) throws -> Void, onClose: () -> Void
     private weak var previousResponder: NSResponder?
 
-    init(title: String, label: String, value: String, save: @escaping (String) throws -> Void, onClose: @escaping () -> Void) {
+    init(title: String, label: String, value: String, actionTitle: String = "保存", note: String? = nil, statusLabel: String = "名称保存状态", save: @escaping (String) throws -> Void, onClose: @escaping () -> Void) {
         saveName = save; self.onClose = onClose
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 208), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: note == nil ? 208 : 244), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         panel.title = title; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
         super.init(window: panel)
         let body = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = body
@@ -16,17 +16,20 @@ import AppKit
         let header = NSStackView(views: [heading, NSView(), close]); header.alignment = .centerY
         input.stringValue = value; input.font = .systemFont(ofSize: 13); input.bezelStyle = .roundedBezel; input.delegate = self; input.setAccessibilityLabel(label)
         input.heightAnchor.constraint(equalToConstant: 32).isActive = true
-        status.font = .systemFont(ofSize: 12); status.textColor = .systemRed; status.setAccessibilityLabel("名称保存状态")
+        status.font = .systemFont(ofSize: 12); status.textColor = .systemRed; status.setAccessibilityLabel(statusLabel)
         status.setContentCompressionResistancePriority(.required, for: .vertical)
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)), save = NSButton(title: "保存", target: self, action: #selector(submit))
+        let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)), save = NSButton(title: actionTitle, target: self, action: #selector(submit))
         for button in [cancel, save] { button.bezelStyle = .rounded; button.controlSize = .large; button.widthAnchor.constraint(equalToConstant: 84).isActive = true }
         cancel.keyEquivalent = "\u{1b}"; save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         save.bezelColor = AgentWorkbenchTheme.accent
         let actions = NSStackView(views: [NSView(), cancel, save]); actions.spacing = 8
-        let column = NSStackView(views: [header, input, status, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
+        var fields: [NSView] = [header]
+        if let note { let hint = NSTextField(wrappingLabelWithString: note); hint.font = .systemFont(ofSize: 12); hint.textColor = AgentWorkbenchTheme.secondaryText; fields.append(hint) }
+        fields += [input, status, actions]
+        let column = NSStackView(views: fields); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
         column.translatesAutoresizingMaskIntoConstraints = false; body.addSubview(column)
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor, constant: -20)])
-        for view in [header, input, status, actions] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        for view in fields { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         panel.initialFirstResponder = input
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

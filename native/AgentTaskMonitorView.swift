@@ -4,13 +4,14 @@ struct AgentMonitorEntry: Equatable { let id: String, title: String, detail: Str
 struct AgentMonitorContent {
     let task: AgentTaskRecord
     let toolNames: [String: String]
-    init(task: AgentTaskRecord) { self.task = task; toolNames = Dictionary(task.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last }) }
+    let sources: [String]
+    init(task: AgentTaskRecord) { self.task = task; sources = task.sourceReferences; toolNames = Dictionary(task.messages.flatMap { $0.toolCalls ?? [] }.map { ($0.id, $0.name) }, uniquingKeysWith: { _, last in last }) }
     var settings = AgentTaskMonitor.Settings()
     var children: [AgentTaskRecord] = [], sideChats: [AgentTaskRecord] = []
     var terminals: [AgentMonitorEntry] = [], pages: [AgentMonitorEntry] = []
     var environment: [String] = []
     var missingArtifacts = Set<String>()
-    var showChanges = true, canAnalyze = false
+    var showChanges = true, canAnalyze = false, canAddSources = false
     var analysis: String?, analysisError: String?
     var previewTitle: String?, previewVisible = false
     func name(_ event: AgentEvent) -> String { event.toolCallID.flatMap { toolNames[$0] } ?? event.title }
@@ -20,11 +21,11 @@ struct AgentMonitorContent {
     var memory: [AgentEvent] { task.events.filter { $0.kind == "tool" && name($0) == "write_memory" && $0.status == "completed" } }
     var hasContent: Bool {
         let s = settings
-        return s.shows(.recap) && (task.recap != nil || task.messages.contains(where: \.isHumanInput) || analysis != nil || analysisError != nil) || s.shows(.goal) && task.mode == .goal && task.messages.contains(where: \.isHumanInput) || s.shows(.plan) && !task.plan.isEmpty || s.shows(.agents) && !children.isEmpty || s.shows(.processes) && (!processes.isEmpty || !terminals.isEmpty) || s.shows(.sideChats) && !sideChats.isEmpty || s.shows(.capabilities) && (task.activeSkills?.isEmpty == false || !capabilities.isEmpty) || s.shows(.outputs) && (!task.artifacts.isEmpty || task.canvases?.isEmpty == false) || s.shows(.web) && !pages.isEmpty || s.shows(.sources) && !task.sources.isEmpty || s.shows(.knowledge) && !knowledge.isEmpty || s.shows(.memory) && !memory.isEmpty || s.shows(.preview) && previewTitle != nil || showChanges && !task.changes.isEmpty
+        return s.shows(.recap) && (task.recap != nil || task.messages.contains(where: \.isHumanInput) || analysis != nil || analysisError != nil) || s.shows(.goal) && task.mode == .goal && task.messages.contains(where: \.isHumanInput) || s.shows(.plan) && !task.plan.isEmpty || s.shows(.agents) && !children.isEmpty || s.shows(.processes) && (!processes.isEmpty || !terminals.isEmpty) || s.shows(.sideChats) && !sideChats.isEmpty || s.shows(.capabilities) && (task.activeSkills?.isEmpty == false || !capabilities.isEmpty) || s.shows(.outputs) && (!task.artifacts.isEmpty || task.canvases?.isEmpty == false) || s.shows(.web) && !pages.isEmpty || s.shows(.sources) && !sources.isEmpty || s.shows(.knowledge) && !knowledge.isEmpty || s.shows(.memory) && !memory.isEmpty || s.shows(.preview) && previewTitle != nil || showChanges && !task.changes.isEmpty
     }
     var signature: String {
         let t = task, preferences = (try? JSONEncoder().encode(settings)).map(AgentFiles.hash) ?? ""
-        return [t.id, preferences, t.status.rawValue, String(t.goalAccepted ?? false), t.messages.first(where: \.isHumanInput)?.content ?? "", t.recap?.text ?? "", t.recap?.created.description ?? "", t.recap?.model ?? "", t.recap?.throughMessageID ?? "", t.messages.last?.id ?? "", t.plan.map { $0.id + $0.title + $0.status }.joined(), t.artifacts.joined(), missingArtifacts.sorted().joined(), t.sources.joined(), (t.canvases ?? []).map { $0.id + $0.hash }.joined(), t.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined(), t.events.map { $0.id + $0.title + $0.status + String($0.duration ?? -1) }.joined(), (t.activeSkills ?? []).map { $0.id }.joined(), (children + sideChats).map { $0.id + $0.title + $0.statusTitle + String($0.sideTask?.retained ?? false) }.joined(), terminals.map { $0.id + $0.title + $0.detail }.joined(), pages.map { $0.id + $0.title + $0.detail }.joined(), environment.joined(), String(showChanges), String(canAnalyze), analysis ?? "", analysisError ?? "", previewTitle ?? "", String(previewVisible)].joined(separator: "|")
+        return [t.id, preferences, t.status.rawValue, String(t.goalAccepted ?? false), t.messages.first(where: \.isHumanInput)?.content ?? "", t.recap?.text ?? "", t.recap?.created.description ?? "", t.recap?.model ?? "", t.recap?.throughMessageID ?? "", t.messages.last?.id ?? "", t.plan.map { $0.id + $0.title + $0.status }.joined(), t.artifacts.joined(), missingArtifacts.sorted().joined(), sources.joined(), (t.canvases ?? []).map { $0.id + $0.hash }.joined(), t.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined(), t.events.map { $0.id + $0.title + $0.status + String($0.duration ?? -1) }.joined(), (t.activeSkills ?? []).map { $0.id }.joined(), (children + sideChats).map { $0.id + $0.title + $0.statusTitle + String($0.sideTask?.retained ?? false) }.joined(), terminals.map { $0.id + $0.title + $0.detail }.joined(), pages.map { $0.id + $0.title + $0.detail }.joined(), environment.joined(), String(showChanges), String(canAnalyze), String(canAddSources), analysis ?? "", analysisError ?? "", previewTitle ?? "", String(previewVisible)].joined(separator: "|")
     }
 }
 
@@ -33,6 +34,7 @@ struct AgentMonitorContent {
     var onOpenTerminal: (() -> Void)?, onTerminal: ((String) -> Void)?, onPage: ((String) -> Void)?
     var onRecap: (() -> Void)?, onContext: ((Int) -> Void)?, onSettings: (() -> Void)?, onMemory: (() -> Void)?, onPreview: (() -> Void)?
     var onClose: (() -> Void)?, onPresentation: (() -> Void)?
+    var onAddSource: ((NSButton) -> Void)?
     var canOpenTerminal = true
     private let column = NSStackView(), scroll = NSScrollView(), pin = AgentWorkbenchButton()
     private final class Action: NSObject {
@@ -50,7 +52,7 @@ struct AgentMonitorContent {
         AgentWorkbenchTheme.toolbar(pin, title: "改为浮动", symbol: "rectangle.portrait.and.arrow.right"); pin.target = self; pin.action = #selector(changePresentation)
         AgentWorkbenchTheme.toolbar(more, title: "任务监控操作", symbol: "ellipsis"); more.target = self; more.action = #selector(showMenu(_:))
         AgentWorkbenchTheme.toolbar(close, title: "关闭任务监控", symbol: "xmark"); close.target = self; close.action = #selector(closeMonitor)
-        let header = NSStackView(views: [title, NSView(), pin, more, close]); header.spacing = 3
+        let header = AgentTaskMonitorHeader(views: [title, NSView(), pin, more, close]); header.spacing = 3
         let line = AgentWorkbenchTheme.rule(), document = FormDocumentView(); column.orientation = .vertical; column.alignment = .leading; column.spacing = 20
         document.addSubview(column); document.translatesAutoresizingMaskIntoConstraints = false; column.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document
         scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; scroll.setAccessibilityLabel("任务监控内容")
@@ -88,14 +90,16 @@ struct AgentMonitorContent {
     private func label(_ value: String, secondary: Bool = false, lines: Int = 0) -> NSTextField {
         let text = NSTextField(wrappingLabelWithString: value); text.font = .systemFont(ofSize: 12); text.textColor = secondary ? AgentWorkbenchTheme.secondaryText : .labelColor; text.maximumNumberOfLines = lines; text.isSelectable = true; return text
     }
-    private func section(_ key: String, _ title: String, views: [NSView]) {
-        guard !views.isEmpty, let id = boundTaskID else { return }
+    private func section(_ key: String, _ title: String, views: [NSView], accessory: NSView? = nil) {
+        guard !views.isEmpty || accessory != nil, let id = boundTaskID else { return }
         let hidden = collapsed[id, default: []].contains(key)
         let heading = button(title, symbol: hidden ? "chevron.right" : "chevron.down") { [weak self] in
             guard let self else { return }; if hidden { collapsed[id]?.remove(key) } else { collapsed[id, default: []].insert(key) }; rerender()
         }
-        heading.font = .systemFont(ofSize: 12, weight: .medium); heading.contentTintColor = AgentWorkbenchTheme.secondaryText; heading.identifier = NSUserInterfaceItemIdentifier("monitor-group-" + key)
-        let group = NSStackView(views: [heading] + (hidden ? [] : views)); group.orientation = .vertical; group.alignment = .leading; group.spacing = 7
+        heading.font = .systemFont(ofSize: 12, weight: .medium); heading.contentTintColor = AgentWorkbenchTheme.secondaryText
+        let header: NSView = accessory.map { NSStackView(views: [heading, $0]) } ?? heading
+        header.identifier = NSUserInterfaceItemIdentifier("monitor-group-" + key)
+        let group = NSStackView(views: [header] + (hidden ? [] : views)); group.orientation = .vertical; group.alignment = .leading; group.spacing = 7
         column.addArrangedSubview(group); group.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         for view in group.arrangedSubviews { view.widthAnchor.constraint(equalTo: group.widthAnchor).isActive = true }
     }
@@ -167,12 +171,18 @@ struct AgentMonitorContent {
         if settings.shows(.web) { section("web", "网页查阅", views: value.pages.map { page in let b = button(page.title, symbol: "globe") { [weak self] in self?.onPage?(page.id) }; b.toolTip = page.detail; return b }) }
         if settings.shows(.sources) {
             var seen = Set<String>(), rows: [NSView] = []
-            for source in task.sources where seen.insert(source).inserted {
+            for source in value.sources where seen.insert(source).inserted {
                 let url = URL(string: source); var title = url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source
                 if url?.scheme == "attachment", let host = url?.host, let item = task.attachments?.first(where: { $0.id.caseInsensitiveCompare(host) == .orderedSame }) { title = item.name }
                 rows.append(file(title, value: source, section: 2, symbol: ["https", "http"].contains(url?.scheme) ? "globe" : "doc")); if rows.count == 10 { break }
             }
-            if task.sources.count > 10 { rows.append(button("全部来源") { [weak self] in self?.onShowAll?(2) }) }; section("sources", "来源", views: rows)
+            if value.sources.count > 10 { rows.append(button("全部来源") { [weak self] in self?.onShowAll?(2) }) }
+            var add: NSButton?
+            if value.canAddSources {
+                let control = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(control, title: "添加来源", symbol: "plus"); control.target = self; control.action = #selector(invoke(_:))
+                actions.setObject(Action(taskID: boundTaskID, generation: generation, body: { [weak self, weak control] in guard let control else { return }; self?.onAddSource?(control) }), forKey: control); add = control
+            }
+            section("sources", "来源", views: rows, accessory: add)
         }
         if settings.shows(.knowledge) { section("knowledge", "知识", views: events(value.knowledge)) }
         if settings.shows(.memory), !value.memory.isEmpty { section("memory", "记忆更新", views: [button("查看记忆", symbol: "brain") { [weak self] in self?.onMemory?() }]) }
@@ -186,6 +196,29 @@ struct AgentMonitorContent {
         func collect(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(collect) }
         return ["taskID": boundTaskID ?? "", "sections": column.arrangedSubviews.compactMap { ($0 as? NSStackView)?.arrangedSubviews.first?.identifier?.rawValue }, "text": collect(column).joined(separator: "\n"), "scrollY": scroll.contentView.bounds.origin.y]
     }
+}
+
+@MainActor private final class AgentTaskMonitorHeader: NSStackView {
+    private var dragStart: (frame: NSRect, screen: NSPoint)?
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); toolTip = window is AgentTaskMonitorPanel ? "拖动移动任务监控" : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point), window is AgentTaskMonitorPanel else { return super.hitTest(point) }
+        var candidate: NSView? = hit
+        while let view = candidate { if view is NSButton { return hit }; if view === self { break }; candidate = view.superview }
+        return self
+    }
+    override func mouseDown(with event: NSEvent) {
+        guard let window = window as? AgentTaskMonitorPanel else { super.mouseDown(with: event); return }
+        dragStart = (window.frame, window.convertPoint(toScreen: event.locationInWindow))
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let window = window as? AgentTaskMonitorPanel, let start = dragStart else { super.mouseDragged(with: event); return }
+        let point = window.convertPoint(toScreen: event.locationInWindow)
+        window.setFrameOrigin(NSPoint(x: start.frame.minX + point.x - start.screen.x, y: start.frame.minY + point.y - start.screen.y))
+    }
+    override func mouseUp(with event: NSEvent) { dragStart = nil }
 }
 
 @MainActor final class AgentTaskMonitorPanel: NSPanel, NSWindowDelegate {

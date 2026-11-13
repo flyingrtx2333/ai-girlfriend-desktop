@@ -213,7 +213,11 @@ import UniformTypeIdentifiers
         case 1:
             var seen = Set<String>()
             items = (task.artifacts + openedFiles).filter { seen.insert($0).inserted }.map { (URL(fileURLWithPath: $0).lastPathComponent, $0) } + (task.canvases ?? []).map { ($0.title, $0.reference) }
-        case 2: items = task.sources.map { source in let url = URL(string: source); return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source) }
+        case 2: items = task.sourceReferences.map { source in
+            let url = URL(string: source)
+            if url?.scheme == "attachment", let id = url?.host, let item = task.attachments?.first(where: { $0.id.caseInsensitiveCompare(id) == .orderedSame }) { return (item.name, source) }
+            return (url?.isFileURL == true ? url!.lastPathComponent : url?.host ?? source, source)
+        }
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
         case 4:
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
