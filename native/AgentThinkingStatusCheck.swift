@@ -51,6 +51,7 @@ import Darwin
             defer { runtime.stopAll() }
             let ids = try prepareThinkingStatusUI(output, seed: true), service = thinkingStatus, file = store.directory.appendingPathComponent("thinking-status.json")
             let originalGeneral = try? Data(contentsOf: store.directory.appendingPathComponent("general.json"))
+            checks["unopenedThinkingSettingsCreateNoPreviewOrEditor"] = (control.thinkingStatusReadback()["settings"] as? [String: Any])?.isEmpty == true
             checks["defaultsAreSixLoadersAndTwentyBilingualCaptionsWithoutWrite"] = AgentThinkingStatus.Loader.allCases.count == 6 && service.settings.captions == AgentThinkingStatus.defaults && service.settings.captions.count == 20 && service.settings.loader == .matrix && !FileManager.default.fileExists(atPath: file.path)
             checks["isolatedHomeAndSystemDeliveryBlocked"] = tasks.hooks.sharedHome == output.appendingPathComponent("shared-home") && !automationNotifications.allowsSystemDelivery
             for loader in AgentThinkingStatus.Loader.allCases { try service.saveLoader(loader); checks["loaderPersists-" + loader.rawValue] = AgentThinkingStatus(directory: store.directory).settings.loader == loader }
@@ -103,6 +104,11 @@ import Darwin
             guard control.showThinkingStatusSettings(), let window = control.window else { throw PetError("思考状态未进入设置内容页") }
             window.makeKeyAndOrderFront(nil); await wait(0.15)
             checks["settingsUseExistingRightContentWithFortyFieldsAndNoSheet"] = descendants(window.contentView!).filter { $0.identifier?.rawValue.hasPrefix("thinking-caption-") == true }.count == 40 && window.attachedSheet == nil && control.thinkingStatusReadback()["heading"] as? String == "思考状态"
+            guard let scroll = try input(control, "caption-1-zh").enclosingScrollView, let document = scroll.documentView else { throw PetError("缺少文案滚动页") }
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height))); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
+            checks["scrollingPreviewOutOfSightStopsItsTimer"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == false
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
+            checks["returningToPreviewResumesWithoutLayoutReentry"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == true
             try edit(control, "caption-1-zh", "公开自定义中文…"); try edit(control, "caption-1-en", "Public custom status...")
             checks["captionEditsStayUnsavedUntilExplicitSave"] = try Data(contentsOf: file) == saved && (control.thinkingStatusReadback()["settings"] as? [String: Any])?["dirty"] as? Bool == true
             control.show(tab: "chat"); _ = control.showThinkingStatusSettings()

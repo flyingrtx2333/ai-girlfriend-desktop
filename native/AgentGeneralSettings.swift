@@ -85,7 +85,8 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     private let slashMenu = NSPopUpButton(), artifactLocation = NSPopUpButton()
     private let questionAutoSkip = NSSwitch()
     private let overview = NSStackView(), conversationPage = NSStackView(), thinkingPage = NSStackView()
-    private let thinkingPanel: AgentThinkingStatusView
+    private let thinkingService: AgentThinkingStatus
+    private var thinkingPanel: AgentThinkingStatusView?
     private let thinkingButton = NSButton(title: "设置", target: nil, action: nil), thinkingBack = NSButton(title: "常规", target: nil, action: nil)
     private let conversationButton = NSButton(title: "设置", target: nil, action: nil), conversationBack = NSButton(title: "常规", target: nil, action: nil)
     private let readingStart = NSSwitch(), toolCount = NSSwitch(), expandTools = NSSwitch(), collapseProcess = NSSwitch(), durationFormat = NSPopUpButton()
@@ -96,7 +97,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     private let status = NSTextField(wrappingLabelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
     private var authorization = UNAuthorizationStatus.notDetermined, updatingPermission = false
     init(service: AgentGeneralSettings, thinking: AgentThinkingStatus, notifications: AgentAutomationNotifications, taskID: @escaping () -> String?) {
-        self.service = service; self.notifications = notifications; self.taskID = taskID; thinkingPanel = AgentThinkingStatusView(service: thinking); super.init(frame: .zero)
+        self.service = service; self.notifications = notifications; self.taskID = taskID; thinkingService = thinking; super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 22
         for page in [overview, conversationPage, thinkingPage] {
             page.orientation = .vertical; page.alignment = .leading; page.spacing = 22; addArrangedSubview(page); page.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -104,7 +105,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         conversationPage.isHidden = true; thinkingPage.isHidden = true
         thinkingButton.bezelStyle = .rounded; thinkingButton.identifier = NSUserInterfaceItemIdentifier("general-thinking-status"); thinkingButton.setAccessibilityLabel("思考状态设置"); thinkingButton.target = self; thinkingButton.action = #selector(openThinking)
         thinkingBack.isBordered = false; thinkingBack.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); thinkingBack.imagePosition = .imageLeading; thinkingBack.target = self; thinkingBack.action = #selector(closeConversation); thinkingBack.setAccessibilityLabel("返回常规设置")
-        thinkingPage.addArrangedSubview(thinkingBack); thinkingPage.addArrangedSubview(thinkingPanel); thinkingPanel.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        thinkingPage.addArrangedSubview(thinkingBack)
         runningInput.addItems(withTitles: AgentRunningInput.allCases.map(\.title)); runningInput.setAccessibilityLabel("运行中发送方式")
         goalTurns.addItems(withTitles: AgentGeneralSettings.Settings.goalTurnChoices.map { "\($0)" }); goalTurns.setAccessibilityLabel("目标驱动执行最大轮次")
         slashMenu.addItems(withTitles: AgentSlashPresentation.allCases.map(\.title)); slashMenu.setAccessibilityLabel("Slash 命令展示方式")
@@ -203,12 +204,13 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     }
     @objc private func openConversation() { showConversation(true) }
     func showThinking(focus: Bool = true) {
+        if thinkingPanel == nil { let panel = AgentThinkingStatusView(service: thinkingService); thinkingPanel = panel; thinkingPage.addArrangedSubview(panel); panel.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
         conversationVisible = false; thinkingVisible = true; overview.isHidden = true; conversationPage.isHidden = true; thinkingPage.isHidden = false; onPage?("思考状态")
         if focus { enclosingScrollView?.contentView.scroll(to: .zero); window?.makeFirstResponder(thinkingPanel) }
     }
     @objc private func openThinking() { showThinking() }
-    func prepareToClose() -> Bool { thinkingPanel.prepareToClose() }
-    func thinkingReadback() -> [String: Any] { thinkingPanel.readback() }
+    func prepareToClose() -> Bool { thinkingPanel?.prepareToClose() ?? true }
+    func thinkingReadback() -> [String: Any] { thinkingPanel?.readback() ?? [:] }
     @objc private func closeConversation() { showConversation(false) }
     @objc private func reloadSettings() { service.reload(); service.apply(); status.stringValue = service.error ?? "已重新载入"; refresh() }
     @objc private func refreshPermission() {

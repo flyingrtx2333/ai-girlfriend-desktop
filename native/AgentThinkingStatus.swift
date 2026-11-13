@@ -103,23 +103,31 @@ import AppKit
     private let glyph = AgentThinkingGlyph(), label = NSTextField(labelWithString: "")
     private var timer: Timer?, settings = AgentThinkingStatus.Settings(), active = false, tickCount = 0
     private var checkReducedMotion: Bool?
+    private weak var observedClip: NSClipView?
     init() {
         super.init(frame: .zero); orientation = .horizontal; alignment = .centerY; spacing = 8
         glyph.translatesAutoresizingMaskIntoConstraints = false; glyph.widthAnchor.constraint(equalToConstant: 24).isActive = true; glyph.heightAnchor.constraint(equalToConstant: 22).isActive = true
         label.font = .systemFont(ofSize: 13); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingTail; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addArrangedSubview(glyph); addArrangedSubview(label); label.setAccessibilityLabel("思考状态")
-        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification, NSView.boundsDidChangeNotification] {
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(refreshMotion), name: name, object: nil)
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refreshMotion), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { timer?.invalidate(); NotificationCenter.default.removeObserver(self); NSWorkspace.shared.notificationCenter.removeObserver(self) }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refreshMotion() }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observedClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip) }
+        observedClip = enclosingScrollView?.contentView
+        if let observedClip { NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: observedClip) }
+        refreshMotion()
+    }
     override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); refreshMotion() }
     override func viewDidHide() { super.viewDidHide(); refreshMotion() }
     override func viewDidUnhide() { super.viewDidUnhide(); refreshMotion() }
-    override func layout() { super.layout(); refreshMotion() }
+    override func viewWillDraw() { super.viewWillDraw(); refreshMotion() }
+    @objc private func scrolled() { DispatchQueue.main.async { [weak self] in self?.refreshMotion() } }
     func update(_ settings: AgentThinkingStatus.Settings, active: Bool) {
         if self.active != active { tickCount = 0 }
         self.settings = settings; self.active = active; glyph.loader = settings.loader; updateCaption(); refreshMotion()
