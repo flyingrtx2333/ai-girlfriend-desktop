@@ -198,7 +198,7 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 
 布局保存在独立的 `sidebar.json`，不扩展或重写旧的外观配置格式。配置使用私有文件权限，并拒绝只读、外部冲突、重复入口、未知字段与符号链接。`npm run native:check-sidebar` 复用原有独立配置检查入口，覆盖实际工作台、两个窗口、正常／窄尺寸、键盘移动、重开读取和文件保护；候选应用可通过 `BLUEFATFISH_APP` 指定。设置布局检查同时核对外观控件铺满内容列，实际窗口验收另行检查原生拖放、导航与恢复。
 
-`npm run native:check-settings` 使用独立配置检查分类、跨分类搜索、草稿保留和 980×700／780×540 排版，并输出原生截图。[验证记录](verification/settings.json)与公开截图不含用户配置或凭据。该检查不启用麦克风，不调用在线模型或 TTS，也不重复运行上一版语音与口型测试。
+`npm run native:check-settings` 现使用独立配置检查 1200×774／800×550 的可见设置布局、Hooks 分组、外观内容宽度、嵌套滚轮与原资料保持。当前侧栏候选通过 59 项设置布局与 26 项侧栏检查；实际 780×540、原生拖放、浅深色、导航高亮、只读保存及同一程序重开另有窗口证据，汇总在 `evidence/agent/sidebar-menu-k8m3r6v2/acceptance-index.json`。早期[验证记录](verification/settings.json)和公开截图保留为历史结果；当前检查不启用麦克风，不调用在线模型或 TTS。
 
 ## v0.8.0 的屏幕陪伴
 
