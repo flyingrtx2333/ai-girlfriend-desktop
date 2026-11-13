@@ -44,8 +44,8 @@ import AppKit
             let reset = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(reset, title: "恢复文案 \(index + 1)", symbol: "arrow.counterclockwise"); reset.tag = index; reset.target = self; reset.action = #selector(restoreRow(_:)); resets.append(reset)
             let row = NSStackView(views: [number] + columns + [reset]); row.spacing = 10; row.alignment = .centerY
             columns[0].widthAnchor.constraint(equalTo: columns[1].widthAnchor).isActive = true
-            if index == 0 { zh.widthAnchor.constraint(equalTo: columns[0].widthAnchor).isActive = true; en.widthAnchor.constraint(equalTo: columns[1].widthAnchor).isActive = true }
             table.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: table.widthAnchor).isActive = true
+            if index == 0 { zh.widthAnchor.constraint(equalTo: columns[0].widthAnchor).isActive = true; en.widthAnchor.constraint(equalTo: columns[1].widthAnchor).isActive = true }
             if index < 19 { let rule = AgentWorkbenchTheme.rule(); table.addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: table.widthAnchor).isActive = true }
         }
         append(table)

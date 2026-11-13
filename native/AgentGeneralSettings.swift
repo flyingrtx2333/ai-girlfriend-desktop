@@ -204,7 +204,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     }
     @objc private func openConversation() { showConversation(true) }
     func showThinking(focus: Bool = true) {
-        if thinkingPanel == nil { let panel = AgentThinkingStatusView(service: thinkingService); thinkingPanel = panel; thinkingPage.addArrangedSubview(panel); panel.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+        if thinkingPanel == nil { let panel = AgentThinkingStatusView(service: thinkingService); thinkingPanel = panel; thinkingPage.addArrangedSubview(panel); panel.widthAnchor.constraint(equalTo: thinkingPage.widthAnchor).isActive = true }
         conversationVisible = false; thinkingVisible = true; overview.isHidden = true; conversationPage.isHidden = true; thinkingPage.isHidden = false; onPage?("思考状态")
         if focus { enclosingScrollView?.contentView.scroll(to: .zero); window?.makeFirstResponder(thinkingPanel) }
     }
