@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, writeFile, lstat, copyFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -9,6 +9,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
 if (process.argv.includes('--live-agent')) throw Error('Artifact workspace acceptance does not call models');
 const reopen = option('--reopen'), manual = !!reopen || process.argv.includes('--manual-ui');
+const locations = process.argv.includes('--artifact-location');
 await mkdir(path.join(root, 'evidence/agent'), { recursive: true });
 const output = reopen ? path.resolve(reopen) : await mkdtemp(path.join(root, 'evidence/agent/artifact-workspace-command-'));
 for (const directory of ['shared-home', 'tmp']) await mkdir(path.join(output, directory), { recursive: true });
@@ -17,11 +18,21 @@ if (!reopen) {
   await mkdir(path.join(output, 'originals'));
   const fixture = spawnSync(python, [path.join(root, 'scripts/fixtures/office-documents.py'), path.join(output, 'originals')], { encoding: 'utf8', env: { ...process.env, TMPDIR: path.join(output, 'tmp') + '/' } });
   if (fixture.status !== 0) throw Error(fixture.stderr || 'Prepare python-docx, openpyxl, python-pptx and Pillow in the selected Python environment');
+  if (locations) {
+    const video = option('--video');
+    if (!video || !(await lstat(video)).isFile()) throw Error('Artifact opening acceptance needs an independently checked public MP4 via --video');
+    const bytes = await readFile(video), target = path.join(output, 'originals/opening.mp4');
+    await copyFile(video, target);
+    const hashes = JSON.parse(await readFile(path.join(output, 'originals/source-sha256.json'), 'utf8'));
+    hashes['opening.mp4'] = createHash('sha256').update(bytes).digest('hex');
+    await writeFile(path.join(output, 'originals/source-sha256.json'), JSON.stringify(hashes, null, 2) + '\n');
+  }
 }
 const app = process.env.BLUEFATFISH_APP ?? path.join(root, 'build/蓝色大肥鱼.app'), binary = path.join(app, 'Contents/MacOS/BlueFatFish');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex'), binaryHash = hash(await readFile(binary));
 const phase = reopen ? `restart-${Date.now()}` : 'initial';
 const args = ['--check', output, ...(manual ? ['--manual-ui', reopen ? '--artifact-workspace-reopen' : '--artifact-workspace-fixtures'] : ['--artifact-workspace-check'])];
+if (locations) args.push(manual ? '--artifact-location-fixtures' : '--artifact-location-check');
 const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TMPDIR: path.join(output, 'tmp') + '/' } });
 const log = createWriteStream(path.join(output, `launch-${phase}.log`)); child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
 await writeFile(path.join(output, `launch-${phase}.json`), JSON.stringify({ app, appPID: child.pid, binaryHash, args }, null, 2) + '\n');

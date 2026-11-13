@@ -49,8 +49,9 @@ import UniformTypeIdentifiers
     private var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
     private var activeSection = 0, saving = false
     var onWorkspaceChange: (() -> Void)?
+    var onWindowClose: (() -> Void)?
     var workspaceHasUnsavedChanges: Bool { dirty }
-    var workspaceDocumentURL: URL? { documentOnly ? openedFile : nil }
+    var workspaceDocumentURL: URL? { documentOnly ? openedFile ?? selection.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil } : nil }
     private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
     private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!
     private var compactTaskLayout: Bool?, filesRequested = false
@@ -161,15 +162,17 @@ import UniformTypeIdentifiers
         if let index = items.firstIndex(where: { $0.value == value }) { table.scrollRowToVisible(index) }
     }
     func selectSection(_ section: Int) { guard sections.selectedSegment != section else { return }; sections.selectedSegment = min(6, max(0, section)); refresh() }
-    func openWorkspaceDocument(_ path: String) throws {
+    @discardableResult func openWorkspaceDocument(_ path: String) throws -> Bool {
         let files = try AgentFiles(workspace: store.task(taskID)?.workspace), file = try files.resolve(path)
         guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
+        guard selection == file.path || canLeave() else { return false }
         if documentOnly { window?.title = file.lastPathComponent }
         if !openedFiles.contains(file.path) { openedFiles.append(file.path) }
         selectItem(section: 1, value: file.path)
+        return selection == file.path
     }
     override func pageDidLayout() {
-        guard taskHosted, let content = pageContentView else { return }
+        guard taskHosted, let content = pageContentView, documentLeading != nil else { return }
         let compact = content.bounds.width < 700, shown = !documentOnly && !items.isEmpty && filesRequested
         if compactTaskLayout != compact { NSLayoutConstraint.deactivate(wideNavigation + compactNavigation); NSLayoutConstraint.activate(compact ? compactNavigation : wideNavigation); compactTaskLayout = compact }
         taskNavigation.isHidden = !shown; navigationWidth.constant = shown ? 165 : 0; navigationHeight.constant = shown ? min(100, max(56, floor(content.bounds.height * 0.16))) : 0
@@ -823,7 +826,8 @@ import UniformTypeIdentifiers
     }
     private func closeContent() { load?.cancel(); wikiSharingTask?.cancel(); wikiReviewWindow?.close(); wikiReviewWindow = nil; if let alert = wikiSharingAlert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .abort) }; wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
     override func settingsWillLeave() { closeContent() }
-    func windowWillClose(_ notification: Notification) { closeContent() }
+    func windowWillClose(_ notification: Notification) { closeContent(); onWindowClose?(); onWindowClose = nil }
+    func windowDidResize(_ notification: Notification) { pageDidLayout() }
     func videoPreviewReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }
         var result = await video.checkState(); result["saveVisible"] = !save.isHidden; result["compareVisible"] = !compare.isHidden; result["textEditable"] = text.isEditable; result["selection"] = selection ?? ""; result["openTitle"] = open.title
@@ -864,12 +868,13 @@ import UniformTypeIdentifiers
         return value
     }
     func checkTaskDocument(text value: String? = nil, action: String? = nil) async {
-        guard ["--task-workspace-check", "--video-workspace-check", "--file-icons-check"].contains(where: CommandLine.arguments.contains) else { return }
+        guard AgentTaskWorkspace.readbackEnabled else { return }
         if let value, text.isEditable { displayMode.selectedSegment = 1; switchDocumentMode(); text.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: text)) }
         if action == "save" { saveFile(); await load?.value }
         else if action == "compare" { presentConflict() }
         else if action == "files" { toggleTaskFiles() }
     }
+    func waitForDocumentCheck() async { if AgentTaskWorkspace.readbackEnabled { await load?.value } }
     func checkReloadDocument() {
         guard CommandLine.arguments.contains("--file-icons-check"), let file = openedFile, let task = store.task(taskID),
               let files = try? AgentFiles(workspace: task.workspace), let data = try? files.readData(file), let document = try? AgentTextFile.decode(data) else { return }

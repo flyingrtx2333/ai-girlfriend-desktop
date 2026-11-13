@@ -16,7 +16,7 @@ struct AgentCanvasCapture: Codable, Sendable {
     private weak var store: AgentStore?
     private(set) var windows: [String: AgentCanvasWindow] = [:]
     var onChange: ((String) -> Void)?
-    var onPresent: ((AgentCanvasWindow, String) throws -> Void)?
+    var onPresent: ((AgentCanvasWindow, String, AgentArtifactLocation) throws -> Void)?
     var onDraftCapture: ((String, AgentCanvasShot, [AgentBrowserMark], String) async throws -> Void)?
     init(store: AgentStore) { self.store = store }
     static func definitions() -> [[String: Any]] {
@@ -121,7 +121,7 @@ struct AgentCanvasCapture: Codable, Sendable {
             }
         } catch { for target in created { try? FileManager.default.removeItem(at: target) }; throw error }
     }
-    func show(_ id: String, taskID: String) async throws -> AgentCanvasWindow {
+    func show(_ id: String, taskID: String, location: AgentArtifactLocation = .workspace) async throws -> AgentCanvasWindow {
         guard let store, let task = store.task(taskID), !task.archived else { throw PetError("任务不存在或已归档") }
         _ = try record(id, taskID: taskID)
         let window: AgentCanvasWindow, key = taskID + ":" + id, created: Bool
@@ -131,12 +131,19 @@ struct AgentCanvasCapture: Codable, Sendable {
             window = AgentCanvasWindow(canvas: self, taskID: taskID); created = true
             window.onClose = { [weak self] in self?.windows[key] = nil }; windows[key] = window
         }
-        do { try onPresent?(window, id) } catch { if created { window.finishClose() }; throw error }
+        do { try onPresent?(window, id, location) } catch { if created { window.finishClose() }; throw error }
         try await window.open(id); return window
     }
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.stop() } }
     func close(_ taskID: String) { for window in Array(windows.values) where window.taskID == taskID { window.finishClose() } }
     func closeAll() { for window in Array(windows.values) { window.finishClose() } }
+    func canQuit() async -> Bool {
+        for editor in Array(windows.values) where editor.settingsHostWindow == nil {
+            editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+            guard await editor.prepareForWorkspaceClose() else { return false }
+        }
+        return true
+    }
     func records(_ taskID: String) -> [AgentCanvasRecord] { store?.task(taskID)?.canvases ?? [] }
     func sourceURL(_ id: String, taskID: String) throws -> URL { try directory(id, taskID: taskID).appendingPathComponent("document.canvas.tsx") }
     @discardableResult func saveDraft(_ text: String?, hash: String?, id: String, taskID: String) -> Bool {

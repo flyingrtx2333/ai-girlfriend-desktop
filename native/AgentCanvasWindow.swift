@@ -192,8 +192,7 @@ import Darwin
     }
     @objc private func changeCanvas() {
         guard let id = picker.selectedItem?.representedObject as? String else { return }
-        if settingsHostWindow != nil { refreshCatalog(); run { _ = try await self.canvas.show(id, taskID: self.taskID) } }
-        else { run { try await self.open(id) } }
+        refreshCatalog(); run { _ = try await self.canvas.show(id, taskID: self.taskID, location: self.settingsHostWindow == nil ? .window : .workspace) }
     }
     @objc private func changeCanvasMode() { let source = mode.selectedSegment == 1; editorScroll.isHidden = !source; preview.isHidden = source; save.isHidden = !source; annotate.isEnabled = !source }
     @objc private func reloadDocument() { guard canLeave(), let id = selectedID else { return }; loadedHash = nil; editorHash = nil; run { try await self.open(id) } }
@@ -255,10 +254,17 @@ import Darwin
         }
     }
     private func canLeave() -> Bool {
+        guard canMoveWindow() else { return false }
         guard dirty else { return true }; guard AgentUnsavedChanges.discard("放弃未保存的源码？", detail: window?.title ?? "画布") else { return false }; dirty = false; draftTask?.cancel(); if let id = selectedID { canvas.saveDraft(nil, hash: nil, id: id, taskID: taskID) }; return true
     }
+    private func canMoveWindow() -> Bool {
+        if let child = [annotationWindow?.window, skillWindow?.window].compactMap({ $0 }).first(where: { $0.isVisible }) {
+            state.stringValue = "请先完成或关闭批注与打包窗口"; child.makeKeyAndOrderFront(nil); return false
+        }
+        return true
+    }
     func prepareWorkspaceNavigation() -> Bool {
-        guard !closed else { return false }
+        guard !closed, canMoveWindow() else { return false }
         guard !dirty || selectedID.map({ canvas.saveDraft(editor.string, hash: editorHash, id: $0, taskID: taskID) }) == true else { state.stringValue = "源码草稿未保存，请先保留编辑内容"; return false }
         draftTask?.cancel(); return true
     }
@@ -277,10 +283,10 @@ import Darwin
     }
     override func prepareForWorkspaceClose() async -> Bool {
         let accepted = canLeaveSettings()
-        if !accepted {
+        if !accepted, settingsHostWindow != nil {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.closed, let id = self.selectedID else { return }
-                try? self.canvas.onPresent?(self, id); self.presentingWindow?.makeKeyAndOrderFront(nil)
+                try? self.canvas.onPresent?(self, id, self.settingsHostWindow == nil ? .window : .workspace); self.presentingWindow?.makeKeyAndOrderFront(nil)
             }
         }; return accepted
     }

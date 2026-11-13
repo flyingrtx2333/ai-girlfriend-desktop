@@ -31,6 +31,7 @@ struct AgentMonitorContent {
 
 @MainActor final class AgentTaskInspector: AgentThemeView {
     var onOpen: ((Int, String) -> Void)?, onShowAll: ((Int) -> Void)?, onSideTask: ((String) -> Void)?
+    var onOpenIn: ((Int, String, AgentArtifactLocation) -> Void)?
     var onOpenTerminal: (() -> Void)?, onTerminal: ((String) -> Void)?, onPage: ((String) -> Void)?
     var onRecap: (() -> Void)?, onContext: ((Int) -> Void)?, onSettings: (() -> Void)?, onMemory: (() -> Void)?, onPreview: (() -> Void)?
     var onClose: (() -> Void)?, onPresentation: (() -> Void)?
@@ -110,7 +111,9 @@ struct AgentMonitorContent {
     }
     private func file(_ title: String, value: String, section: Int, symbol: String = "doc") -> NSView {
         let id = boundTaskID, token = generation, row = AgentInspectorFileButton(title: title, value: value, section: section, symbol: symbol); row.font = .systemFont(ofSize: 12)
-        row.onOpen = { [weak self] section, value in guard let self, boundTaskID == id, generation == token else { return }; onOpen?(section, value) }; return row
+        row.onOpen = { [weak self] section, value in guard let self, boundTaskID == id, generation == token else { return }; onOpen?(section, value) }
+        if section == 1 { row.onOpenIn = { [weak self] location in guard let self, boundTaskID == id, generation == token else { return }; onOpenIn?(section, value, location) } }
+        return row
     }
     private func events(_ events: [AgentEvent]) -> [NSView] {
         var rows = events.suffix(8).reversed().map { event -> NSView in let row = file(event.title + " · " + event.statusTitle, value: event.id, section: 4, symbol: event.status == "running" ? "clock" : "list.bullet.rectangle"); row.toolTip = event.detail; return row }

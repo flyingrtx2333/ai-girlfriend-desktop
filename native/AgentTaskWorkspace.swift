@@ -183,8 +183,16 @@ import AppKit
         if taskID == id { displayCurrent(); onLayoutChange?() }
     }
     func detachBrowser(_ browser: AgentBrowserWindow) -> Bool {
-        guard let id = taskID, rootController(.browser) === browser, stacks[id]?[.browser]?.count == 1, prepareToNavigate() else { return false }
-        removeRoot(taskID: id, root: .browser, detaching: true); return true
+        guard let id = taskID, rootController(.browser) === browser else { return false }
+        return detach(browser, taskID: id)
+    }
+    func root(for controller: AgentSettingsPageController, taskID id: String) -> Root? {
+        stacks[id]?.first(where: { $0.value.first?.controller === controller })?.key
+    }
+    func detach(_ controller: AgentSettingsPageController, taskID id: String) -> Bool {
+        guard let root = root(for: controller, taskID: id), let stack = stacks[id]?[root], stack.count == 1,
+              prepareToNavigate(), prepareToNavigate(stack) else { return false }
+        removeRoot(taskID: id, root: root, detaching: true); return true
     }
     @objc private func openMenu() {
         let menu = NSMenu()
@@ -208,6 +216,9 @@ import AppKit
         let entry = stacks[id]![root]!.removeLast(); entry.controller.endSettingsHosting(); if taskID == id, selectedRoot == root { displayCurrent() }
     }
     func prepareToNavigate() -> Bool {
+        prepareToNavigate(entries)
+    }
+    private func prepareToNavigate(_ entries: [Entry]) -> Bool {
         guard !closing, window?.attachedSheet == nil else { return false }
         for entry in entries {
             if let record = entry.controller as? AgentRecordWindow, !record.prepareWorkspaceNavigation() { return false }

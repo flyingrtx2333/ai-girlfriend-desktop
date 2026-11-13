@@ -50,10 +50,15 @@ struct AgentCanvasPreview: Codable {
 
 @MainActor final class AgentCanvasPreviewRow: AgentThemeView {
     var onOpen: (() -> Void)?
+    private weak var openButton: NSButton?
+    var onOpenIn: ((AgentArtifactLocation) -> Void)? { didSet {
+        menu = onOpenIn == nil ? nil : AgentArtifactLocation.menu(target: self, action: #selector(openIn(_:))); openButton?.menu = menu
+    } }
     init(record: AgentCanvasRecord, image: NSImage?, actionTitle: String = "打开画布") {
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
         layer?.cornerRadius = 10; layer?.borderWidth = 1; stroke = NSColor.separatorColor.withAlphaComponent(0.45)
         let title = NSTextField(labelWithString: record.title), open = NSButton(title: actionTitle, target: self, action: #selector(openCanvas))
+        openButton = open
         title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         open.bezelStyle = .texturedRounded; open.controlSize = .regular; open.font = .systemFont(ofSize: 12); open.setAccessibilityLabel(actionTitle + " · " + record.title)
         let header = NSStackView(views: [title, NSView(), open]); header.spacing = 8
@@ -70,4 +75,5 @@ struct AgentCanvasPreview: Codable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func openCanvas() { onOpen?() }
+    @objc private func openIn(_ sender: NSMenuItem) { if let value = sender.representedObject as? String, let location = AgentArtifactLocation(rawValue: value) { onOpenIn?(location) } }
 }

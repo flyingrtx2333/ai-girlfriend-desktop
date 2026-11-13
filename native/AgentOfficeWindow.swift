@@ -230,7 +230,7 @@ import Darwin
         let panel = NSOpenPanel(); panel.allowedContentTypes = AgentOffice.formats.compactMap { UTType(filenameExtension: $0) }; panel.directoryURL = files.root; panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            Task { @MainActor in do { _ = try await self.office.show(url.path, taskID: self.taskID) } catch { self.state.stringValue = error.localizedDescription } }
+            Task { @MainActor in do { _ = try await self.office.show(url.path, taskID: self.taskID, location: self.settingsHostWindow == nil ? .window : .workspace) } catch { self.state.stringValue = error.localizedDescription } }
         }
     }
     private func watch() {
@@ -268,7 +268,7 @@ import Darwin
             if !accepted {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, !self.closed else { return }
-                    try? self.office.onPresent?(self); self.presentingWindow?.makeKeyAndOrderFront(nil)
+                    try? self.office.onPresent?(self, self.settingsHostWindow == nil ? .window : .workspace); self.presentingWindow?.makeKeyAndOrderFront(nil)
                 }
             }
         }

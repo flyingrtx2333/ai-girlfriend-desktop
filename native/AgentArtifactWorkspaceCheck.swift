@@ -15,6 +15,15 @@ import AppKit
         let a = try tasks.canvases.create(title: "项目核对", source: code, taskID: first), b = try tasks.canvases.create(title: "交付记录", source: code.replacingOccurrences(of: "项目核对", with: "交付记录"), taskID: first), c = try tasks.canvases.create(title: "无工作区画布", source: code.replacingOccurrences(of: "项目核对", with: "无工作区画布"), taskID: standalone)
         tasks.update(first) { $0.artifacts = AgentOffice.formats.map { project.appendingPathComponent("sample." + $0).path }; $0.draft = "保留办公任务输入草稿。" }
         tasks.update(second) { $0.draft = "保留另一任务输入草稿。" }; tasks.update(standalone) { $0.draft = "保留无工作区输入草稿。" }
+        if CommandLine.arguments.contains("--artifact-location-check") || CommandLine.arguments.contains("--artifact-location-fixtures") {
+            let guide = project.appendingPathComponent("成果说明.md"), video = project.appendingPathComponent("opening.mp4")
+            try Data("# 公开产物\n\n原始公开内容。\n".utf8).write(to: guide)
+            try FileManager.default.copyItem(at: originals.appendingPathComponent("opening.mp4"), to: video)
+            tasks.update(first) { task in
+                task.artifacts = [guide.path, video.path] + task.artifacts; task.status = .completed
+                task.messages.append(AgentMessage(role: "user", content: "检查这些公开产物的打开位置。"))
+            }
+        }
         try tasks.organization.register(project.path, mode: .coding)
         let fixture = ArtifactWorkspaceFixture(taskID: first, secondID: second, standaloneID: standalone, workspace: project, firstCanvas: a.id, secondCanvas: b.id, standaloneCanvas: c.id)
         let value: [String: Any] = ["taskID": first, "secondID": second, "standaloneID": standalone, "workspace": project.path, "firstCanvas": a.id, "secondCanvas": b.id, "standaloneCanvas": c.id, "canvasSourceHash": a.hash, "modelTransmissions": 0]
@@ -36,6 +45,7 @@ import AppKit
             runtime.modelRequestCheck = { requests += 1; throw PetError("产物工作区验收禁止模型请求") }
             let fixture = try await prepareArtifactWorkspaceUI(output), host = control.taskWorkspace, files = try AgentFiles(workspace: fixture.workspace.path)
             var geometry: [String: Any] = [:], saved: [String: String] = [:]
+            if CommandLine.arguments.contains("--artifact-location-check") { for (key, value) in try await control.checkArtifactOpening(fixture, output: output, app: self) { checks["Opening-" + key] = value } }
             func inspectLayout(_ name: String) async {
                 for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                     control.window?.appearance = NSAppearance(named: theme)
@@ -69,6 +79,13 @@ import AppKit
                 }
                 try await editor.checkWorkspaceEdit(["expectVersion": version, "steps": [step]])
                 checks[format + "UnsavedEditHasNoDiskWrite"] = try editor.dirty && files.fileHash(file) == original
+                if CommandLine.arguments.contains("--artifact-location-check") {
+                    let beforeMove = await editor.workspaceReadback(), detached = try await tasks.offices.show(file.path, taskID: fixture.taskID, location: .window)
+                    let floating = await detached.workspaceReadback()
+                    checks[format + "DirtyEditorMovesToWindowWithoutReloadOrDiskWrite"] = try detached === editor && editor.dirty && editor.settingsHostWindow == nil && editor.window?.isVisible == true && floating["snapshot"] as? String == beforeMove["snapshot"] as? String && floating["loopbackURL"] as? String == beforeMove["loopbackURL"] as? String && files.fileHash(file) == original
+                    let inline = try await tasks.offices.show(file.path, taskID: fixture.taskID, location: .workspace)
+                    checks[format + "DirtyEditorReturnsToOriginalTaskWithoutDuplicate"] = inline === editor && editor.dirty && host.currentController === editor && editor.window?.isVisible != true
+                }
                 control.presentTaskContext(section: 0); control.showAgentTask(fixture.secondID); control.showAgentTask(fixture.taskID)
                 let returned = try await tasks.offices.show(file.path, taskID: fixture.taskID)
                 checks[format + "TaskAndTabSwitchRetainsActualEditor"] = returned === editor && returned.dirty && host.currentController === editor
@@ -88,6 +105,12 @@ import AppKit
             await inspectLayout("canvas")
             let draft = initial.code.replacingOccurrences(of: "原始版本", with: "保留在标签页的草稿")
             await a.checkWorkspaceSource(draft)
+            if CommandLine.arguments.contains("--artifact-location-check") {
+                let detached = try await tasks.canvases.show(fixture.firstCanvas, taskID: fixture.taskID, location: .window)
+                checks["DirtyCanvasMovesToWindowWithoutLosingDraft"] = detached === a && a.settingsHostWindow == nil && a.window?.isVisible == true && a.workspaceReadback()["source"] as? String == draft && a.workspaceHasUnsavedChanges
+                let inline = try await tasks.canvases.show(fixture.firstCanvas, taskID: fixture.taskID, location: .workspace)
+                checks["DirtyCanvasReturnsToSameTaskAndEditor"] = inline === a && host.currentController === a && a.window?.isVisible != true && a.workspaceReadback()["source"] as? String == draft
+            }
             let b = try await tasks.canvases.show(fixture.secondCanvas, taskID: fixture.taskID)
             let reloaded = AgentStore(directory: store.directory, legacy: [], extensionHome: output.appendingPathComponent("shared-home"))
             let diskSource = try tasks.canvases.source(fixture.firstCanvas, taskID: fixture.taskID).code
@@ -95,7 +118,7 @@ import AppKit
             checks["canvasNavigationFlushesPendingDraftToDisk"] = reloaded.task(fixture.taskID)?.canvases?.first(where: { $0.id == fixture.firstCanvas })?.draft == draft && diskSource == initial.code
             let existing = try await tasks.canvases.show(fixture.firstCanvas, taskID: fixture.taskID)
             checks["canvasReopenRetainsUnsavedBytes"] = existing === a && a.workspaceReadback()["source"] as? String == draft && a.workspaceHasUnsavedChanges
-            let presenter = tasks.canvases.onPresent; tasks.canvases.onPresent = { _, _ in throw PetError("验收：当前页面暂不能离开") }
+            let presenter = tasks.canvases.onPresent; tasks.canvases.onPresent = { _, _, _ in throw PetError("验收：当前页面暂不能离开") }
             do { _ = try await tasks.canvases.show(fixture.firstCanvas, taskID: fixture.taskID); checks["failedPresentationKeepsExistingCanvasDraft"] = false } catch { checks["failedPresentationKeepsExistingCanvasDraft"] = tasks.canvases.windows.values.contains(where: { $0 === a }) && a.workspaceReadback()["source"] as? String == draft }
             tasks.canvases.onPresent = presenter
             await a.checkWorkspaceSource(action: "save")
@@ -109,6 +132,11 @@ import AppKit
             checks["canvasSavingRestoredContentKeepsVersionsAndClearsDraft"] = unchangedCanvas.code == draft && unchangedCanvas.record.versions.map(\.hash) == savedCanvas.record.versions.map(\.hash) && unchangedCanvas.record.draft == nil
             await a.checkWorkspaceSource(action: "skill")
             checks["skillPackagingIsChildOfItsCanvasTab"] = host.currentController is AgentCanvasSkillWindow && host.currentController?.presentingWindow === control.window && host.checkState()["depth"] as? Int == 2 && host.currentController?.window?.isVisible != true
+            if CommandLine.arguments.contains("--artifact-location-check") {
+                let child = host.currentController
+                do { _ = try await tasks.canvases.show(fixture.firstCanvas, taskID: fixture.taskID, location: .window); checks["CanvasChildPageBlocksDetachmentWithoutLosingForm"] = false }
+                catch { checks["CanvasChildPageBlocksDetachmentWithoutLosingForm"] = host.currentController === child && host.checkState()["depth"] as? Int == 2 && !a.workspaceIsClosed }
+            }
             host.checkBack(); checks["skillBackRetainsItsCanvasEditor"] = host.currentController === a
             let docx = fixture.workspace.appendingPathComponent("sample.docx"), office = tasks.offices.windows[docx.path]!, officeState = await office.workspaceReadback(), selected = host.selectedRoot
             office.finishClose()

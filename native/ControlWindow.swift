@@ -157,6 +157,7 @@ final class FormDocumentView: NSView {
     private var windowDraft: AgentWindowDraft?
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
+    private var artifactDocuments: [AgentRecordWindow] = []
     private var taskModelWindow: AgentTaskModelWindow?
     private var contextWindow: AgentContextWindow?
     private let taskMCPContext = AgentWorkbenchButton()
@@ -659,7 +660,7 @@ final class FormDocumentView: NSView {
             window?.contentView?.layoutSubtreeIfNeeded(); window?.makeFirstResponder(composer)
         }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
@@ -862,6 +863,7 @@ final class FormDocumentView: NSView {
         view.onOpen = { [weak self] section, value in
             guard let self else { return }; if value.hasPrefix("canvas://"), let id = agentTaskID { openCanvasReference(value, taskID: id) } else { openAgentRecordItem(section: section, value: value) }
         }
+        view.onOpenIn = { [weak self] section, value, location in self?.openAgentRecordItem(section: section, value: value, location: location) }
         view.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
         view.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         view.onTerminal = { [weak self] entry in guard let self, let id = agentTaskID else { return }; do { try terminalPanel?.openMonitorEntry(entry, taskID: id); updateTerminalDock() } catch { setStatus(error.localizedDescription, error: true) } }
@@ -927,7 +929,7 @@ final class FormDocumentView: NSView {
     private func toggleMonitorPreview() {
         if taskWorkspace.requested, taskWorkspace.selectedRoot == .browser || { if case .canvas = taskWorkspace.selectedRoot { return true }; return false }() { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
         if let id = agentTaskID, companion?.agentStore?.browser.sessions[id] != nil { showAgentBrowser() }
-        else if case .canvas(let canvas) = taskWorkspace.selectedRoot, let id = agentTaskID { openCanvasReference("canvas://" + canvas, taskID: id) }
+        else if case .canvas(let canvas) = taskWorkspace.selectedRoot, let id = agentTaskID { openCanvasReference("canvas://" + canvas, taskID: id, location: .workspace) }
     }
     private func updateFloatingMonitor(_ content: AgentMonitorContent, state: AgentTaskMonitor.DisplayState, show: Bool) {
         guard show, let owner = window, owner.isVisible, !owner.isMiniaturized, owner.attachedSheet == nil else { monitorPanel?.orderOut(nil); return }
@@ -1434,7 +1436,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns")
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window")
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
@@ -1868,6 +1870,7 @@ final class FormDocumentView: NSView {
         settingsPageHost.finish()
         knowledgePageHost.finish()
         taskWorkspace.finish()
+        for record in Array(artifactDocuments) { record.window?.close() }
         stopTaskTerminals()
         if let panel = mcpInputPanel {
             try? companion?.agentStore?.mcp.userInputs.respond(taskID: panel.request.taskID, id: panel.request.id, action: .cancel)
@@ -1891,6 +1894,10 @@ final class FormDocumentView: NSView {
         guard knowledgePageHost.prepareToLeave() else { return false }
         guard await taskWorkspace.canFinish() else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
+        for record in Array(artifactDocuments) {
+            guard record.canLeaveSettings() else { record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil); return false }
+            record.window?.close()
+        }
         let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         knowledgePageHost.finish()
@@ -1899,6 +1906,7 @@ final class FormDocumentView: NSView {
     }
     func requireTaskDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
+        for record in artifactDocuments { try record.requireDeletionAllowed(ids) }
         try taskWorkspace.requireDeletionAllowed(ids, ignoring: controller)
         if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
         for page in knowledgePageHost.controllers {
@@ -1909,6 +1917,7 @@ final class FormDocumentView: NSView {
     }
     func closeDeletedTaskRecords(_ ids: Set<String>) {
         recordWindow?.closeDeletedTask(ids)
+        for record in Array(artifactDocuments) { record.closeDeletedTask(ids) }
         taskWorkspace.finish(tasks: ids)
         if let manager = settingsPageHost.currentController as? AgentWorktreeWindow, ids.contains(manager.boundTaskID) { manager.close() }
         worktreePolicyPanel?.refreshState()
@@ -2645,11 +2654,12 @@ final class FormDocumentView: NSView {
     @objc internal func showKnowledgeLibrary() { _ = showKnowledgeCenter(root: "library") }
     @objc func openAgentMemory() { companion?.ensureAgent(); showSettingsCategory("memory") }
     @objc func openAttentionSettings() { showSettingsCategory("attention") }
-    internal func openAgentRecordItem(section: Int, value: String) {
-        if section == 1, AgentOffice.supports(value), let store = companion?.agentStore, let id = agentTaskID {
-            Task { [weak self] in do { _ = try await store.offices.show(value, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
+    internal func openAgentRecordItem(section: Int, value: String, location: AgentArtifactLocation? = nil) {
+        if section == 1 {
+            if value.hasPrefix("canvas://"), let id = agentTaskID { openCanvasReference(value, taskID: id, location: location) }
+            else { showTaskDocument(value, location: location ?? companion?.generalSettings.settings.artifactLocation ?? .workspace) }
+            return
         }
-        if section == 1, !value.hasPrefix("canvas://"), let task = currentAgentTask, let files = try? AgentFiles(workspace: task.workspace), let file = try? files.resolve(value) { showTaskDocument(file.path); return }
         presentAgentRecords(section: section)
         if section == 6 { (knowledgePageHost.currentController as? AgentRecordWindow)?.selectItem(section: section, value: value) }
         else { (taskWorkspace.rootController(.records) as? AgentRecordWindow)?.selectItem(section: section, value: value) }
@@ -2664,22 +2674,34 @@ final class FormDocumentView: NSView {
         (taskWorkspace.rootController(.records) as? AgentRecordWindow)?.selectSection(section)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
-    internal func showTaskDocument(_ path: String) {
-        guard let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
+    internal func showTaskDocument(_ path: String, location: AgentArtifactLocation = .workspace) {
+        guard window?.attachedSheet == nil, let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
         if AgentOffice.supports(path) {
-            Task { @MainActor [weak self] in do { _ = try await store.offices.show(path, taskID: id) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
+            Task { @MainActor [weak self] in do { _ = try await store.offices.show(path, taskID: id, location: location) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
         do {
             let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path)
             guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
-            let root = AgentTaskWorkspace.Root.document(file.path)
-            if taskWorkspace.rootController(root) == nil {
+            let key = AgentTaskWorkspace.Root.document(file.path)
+            let existing = taskWorkspace.rootController(key) as? AgentRecordWindow ?? (taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow } + artifactDocuments).first { $0.belongsToTasks([id]) && $0.workspaceDocumentURL?.path == file.path }
+            if existing == nil {
                 if AgentVideoSnapshot.supports(file) { guard try files.entryMetadata(file).kind == "file" else { throw PetError("视频不存在或不是普通文件") } }
                 else { _ = try files.readData(file, maximum: 2_000_000) }
             }
+            if let existing, !(try existing.openWorkspaceDocument(file.path)) { return }
+            if location == .window {
+                let editor = existing ?? preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true)
+                if existing == nil { _ = try editor.openWorkspaceDocument(file.path) }
+                try presentArtifactWindow(editor, taskID: id)
+                if !artifactDocuments.contains(where: { $0 === editor }) { artifactDocuments.append(editor) }
+                editor.onWindowClose = { [weak self, weak editor] in self?.artifactDocuments.removeAll { $0 === editor } }
+                return
+            }
             if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
-            guard taskWorkspace.show(taskID: id, root: root, make: { preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true) }) else { return }
-            try (taskWorkspace.rootController(root) as? AgentRecordWindow)?.openWorkspaceDocument(file.path)
+            let root = existing.flatMap { taskWorkspace.root(for: $0, taskID: id) } ?? key
+            guard taskWorkspace.show(taskID: id, root: root, make: { existing ?? preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true) }), let editor = taskWorkspace.rootController(root) as? AgentRecordWindow else { return }
+            artifactDocuments.removeAll { $0 === editor }; editor.onWindowClose = nil; editor.window?.orderOut(nil)
+            if existing == nil { _ = try editor.openWorkspaceDocument(file.path) }
             updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
         } catch { setStatus(error.localizedDescription, error: true) }
     }
@@ -2723,6 +2745,7 @@ final class FormDocumentView: NSView {
         guard agentTaskID == editor.taskID else { throw PetError("办公文件所属任务未打开") }
         show(tab: "chat")
         guard taskWorkspace.show(taskID: editor.taskID, root: .document(editor.file.path), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        editor.window?.orderOut(nil)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func presentBrowserWorkspace(_ browser: AgentBrowserWindow) throws {
@@ -2742,7 +2765,15 @@ final class FormDocumentView: NSView {
         guard agentTaskID == editor.taskID else { throw PetError("画布所属任务未打开") }
         show(tab: "chat")
         guard taskWorkspace.show(taskID: editor.taskID, root: .canvas(id), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        editor.window?.orderOut(nil)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    internal func presentArtifactWindow(_ editor: AgentSettingsPageController, taskID: String) throws {
+        guard saveAgentDraft(), window?.attachedSheet == nil else { throw PetError("请先完成当前操作") }
+        if let host = editor.settingsHostWindow {
+            guard host === window, taskWorkspace.detach(editor, taskID: taskID) else { throw PetError("请先返回文件并完成当前操作，再切换打开位置") }
+        }
+        editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,
@@ -2845,6 +2876,7 @@ final class FormDocumentView: NSView {
         taskWorkspace.controllers.compactMap { $0 as? AgentContextWindow }.filter(\.isPageVisible).forEach { $0.refresh() }
         if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
+        for record in artifactDocuments { record.refreshLiveRecords(task.id) }
         taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }
         knowledgePageHost.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }
         repoWikiWindow?.refreshLiveState()
@@ -2957,11 +2989,13 @@ final class FormDocumentView: NSView {
                 for path in task.artifacts.prefix(4) {
                     let row = AgentInspectorFileButton(title: URL(fileURLWithPath: path).lastPathComponent, value: path, section: 1, symbol: "doc", inline: true)
                     row.onOpen = { [weak self] section, value in guard self?.agentTaskID == task.id else { return }; self?.openAgentRecordItem(section: section, value: value) }
+                    row.onOpenIn = { [weak self] location in guard self?.agentTaskID == task.id else { return }; self?.openAgentRecordItem(section: 1, value: path, location: location) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
                 for canvas in (task.canvases ?? []).prefix(4) {
                     let row = AgentCanvasPreviewRow(record: canvas, image: shownCanvases.contains(canvas.id + canvas.hash) ? nil : tasks.canvases.previewImage(canvas, taskID: task.id))
                     row.onOpen = { [weak self] in guard self?.agentTaskID == task.id else { return }; self?.openCanvasReference(canvas.reference, taskID: task.id) }
+                    row.onOpenIn = { [weak self] location in guard self?.agentTaskID == task.id else { return }; self?.openCanvasReference(canvas.reference, taskID: task.id, location: location) }
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
             }
@@ -3236,13 +3270,26 @@ final class FormDocumentView: NSView {
         else { selectAgentTask(taskID) }
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }
-    private func openCanvasReference(_ value: String, taskID: String) {
+    private func openCanvasReference(_ value: String, taskID: String, location: AgentArtifactLocation? = nil) {
         guard let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }), let tasks = companion?.agentStore else { return }
-        Task { @MainActor [weak self] in do { _ = try await tasks.canvases.show(id, taskID: taskID) } catch { self?.setStatus(error.localizedDescription, error: true) } }
+        let destination = location ?? companion?.generalSettings.settings.artifactLocation ?? .workspace
+        Task { @MainActor [weak self] in do { _ = try await tasks.canvases.show(id, taskID: taskID, location: destination) } catch { self?.setStatus(error.localizedDescription, error: true) } }
     }
 }
 
 extension ControlWindow {
+    func checkArtifactDocument(_ file: URL, taskID: String) -> AgentRecordWindow? {
+        guard companion?.checkDirectory != nil, AgentTaskWorkspace.readbackEnabled else { return nil }
+        return (artifactDocuments + taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow }).first { $0.belongsToTasks([taskID]) && $0.workspaceDocumentURL?.path == file.path }
+    }
+    func artifactOpeningReadback() async -> [String: Any] {
+        guard companion?.checkDirectory != nil else { return [:] }
+        var records: [[String: Any]] = [], offices: [[String: Any]] = []
+        for record in artifactDocuments { records.append(await record.workspaceReadback()) }
+        for editor in companion?.agentStore?.offices.windows.values.filter({ $0.settingsHostWindow == nil }) ?? [] { offices.append(await editor.workspaceReadback()) }
+        let canvases = companion?.agentStore?.canvases.windows.values.filter { $0.settingsHostWindow == nil }.map { $0.workspaceReadback() } ?? []
+        return ["location": companion?.generalSettings.settings.artifactLocation.rawValue ?? "workspace", "documents": records, "offices": offices, "canvases": canvases]
+    }
     func checkAddDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard companion?.checkDirectory != nil else { throw PetError("仅用于独立验收配置") }
         try addDocumentSelection(selection, taskID: taskID)

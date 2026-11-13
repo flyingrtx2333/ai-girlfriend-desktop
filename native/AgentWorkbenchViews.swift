@@ -128,6 +128,7 @@ class AgentWorkbenchButton: NSButton {
 @MainActor final class AgentInspectorFileButton: AgentWorkbenchButton {
     let value: String, section: Int
     var onOpen: ((Int, String) -> Void)?
+    var onOpenIn: ((AgentArtifactLocation) -> Void)? { didSet { menu = onOpenIn == nil ? nil : AgentArtifactLocation.menu(target: self, action: #selector(openIn(_:))) } }
     init(title: String, value: String, section: Int, symbol: String, inline: Bool = false) {
         self.value = value; self.section = section
         super.init(frame: .zero); self.title = title; target = self; action = #selector(open)
@@ -145,4 +146,5 @@ class AgentWorkbenchButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func open() { onOpen?(section, value) }
+    @objc private func openIn(_ sender: NSMenuItem) { if let value = sender.representedObject as? String, let location = AgentArtifactLocation(rawValue: value) { onOpenIn?(location) } }
 }

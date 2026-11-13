@@ -43,6 +43,7 @@
     "native:check-task-workspace": "node scripts/check-native-task-workspace.mjs",
     "native:check-conversation-workspace": "node scripts/check-native-task-workspace.mjs --conversation",
     "native:check-artifact-workspace": "node scripts/check-native-artifact-workspace.mjs",
+    "native:check-artifact-opening": "node scripts/check-native-artifact-workspace.mjs --artifact-location",
     "native:check-git-review-flow": "node scripts/check-native-git-review.mjs",
     "native:check-git-push": "node scripts/check-native-git-push.mjs",
     "native:check-index": "node scripts/check-native-agent.mjs --index",

@@ -64,15 +64,17 @@ import AppKit
         }
         tasks.projectChanges.onChange = { [weak runtime] id in runtime?.onChange?(id) }
         tasks.canvases.onChange = { [weak runtime] id in runtime?.onChange?(id) }
-        tasks.offices.onPresent = { [weak self] editor in
+        tasks.offices.onPresent = { [weak self] editor, location in
             guard let self else { throw PetError("任务窗口已关闭") }
             let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow }) ?? self.taskControl(for: editor.taskID)
-            try owner.presentOfficeWorkspace(editor)
+            if location == .window { try owner.presentArtifactWindow(editor, taskID: editor.taskID) }
+            else { try owner.presentOfficeWorkspace(editor) }
         }
-        tasks.canvases.onPresent = { [weak self] editor, id in
+        tasks.canvases.onPresent = { [weak self] editor, id, location in
             guard let self else { throw PetError("任务窗口已关闭") }
             let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow }) ?? self.taskControl(for: editor.taskID)
-            try owner.presentCanvasWorkspace(editor, id: id)
+            if location == .window { try owner.presentArtifactWindow(editor, taskID: editor.taskID) }
+            else { try owner.presentCanvasWorkspace(editor, id: id) }
         }
         tasks.canvases.onDraftCapture = { [weak self] id, shot, marks, note in
             guard let self else { throw PetError("任务窗口已关闭") }; try await self.taskControl(for: id).attachCanvasCapture(shot, marks: marks, note: note, taskID: id)

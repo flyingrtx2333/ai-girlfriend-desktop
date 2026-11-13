@@ -202,6 +202,7 @@ final class PetWebView: WKWebView {
             defer { self.terminationPending = false }
             for window in self.taskControls { if !(await window.closeOwnedTaskPanels()) { return } }
             if tasks.offices.hasWindows, !(await tasks.offices.canQuit()) { return }
+            if !(await tasks.canvases.canQuit()) { return }
             if !(await tasks.browser.canQuit()) { return }
             self.closing = true; self.agentRuntime?.stopAll(); await tasks.sideTasks.endSession()
             await self.appShot.cancelAndWait()
