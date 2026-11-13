@@ -220,25 +220,28 @@ import Foundation
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; return false }
         if text == "/compact", attachmentIDs.isEmpty {
             let started = analyze(id, recap: false)
+            if started { store.slashMenu.recordBuiltin(.compact) }
             if !started { submissionError = analysisErrors[id] }
             return started
         }
         let message: AgentMessage
         do { message = try prepareInput(text, attachmentIDs: attachmentIDs, task: task) }
         catch { submissionError = error.localizedDescription; return false }
+        var accepted = false
+        defer { if accepted { store.slashMenu.recordAccepted(message) } }
         cancelAnalysis(id)
         if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || task.status == .waiting {
-            cancel(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); return true
+            cancel(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); accepted = true; return true
         }
         if let reason = store.offices.unsavedReason(workspace: task.workspace) { submissionError = reason; return false }
         if isExecuting(id) {
             store.update(id) { if $0.queuedMessages == nil { $0.queuedMessages = [] }; $0.queuedMessages?.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; $0.goalAccepted = nil; $0.completionEvidence = nil; if $0.mode == .goal { $0.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) } }
             if taskSettings().runningInput == .interrupt, active[id] != nil { cancel(id, visited: [], restarting: startImmediately) }
             else { notifyChange(id) }
-            return true
+            accepted = true; return true
         }
         if task.status == .waiting, task.queuedCount == 0, let call = task.pendingCalls.first, call.name == "ask_user" {
-            decide(taskID: id, callID: call.id, decision: "answer:" + text, attachmentIDs: attachmentIDs, message: message); return true
+            decide(taskID: id, callID: call.id, decision: "answer:" + text, attachmentIDs: attachmentIDs, message: message); accepted = true; return true
         }
         store.update(id) { record in
             // A new instruction can steer away from a pending action, but does
@@ -251,7 +254,7 @@ import Foundation
             if record.model.isEmpty { record.model = preferences().model }
             record.status = .ready
         }
-        if startImmediately { start(id) } else { notifyChange(id) }; return true
+        if startImmediately { start(id) } else { notifyChange(id) }; accepted = true; return true
     }
     func prepareInput(_ text: String, attachmentIDs: [String], task: AgentTaskRecord) throws -> AgentMessage {
         var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)

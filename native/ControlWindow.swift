@@ -683,7 +683,7 @@ final class FormDocumentView: NSView {
         composer.onSend = { [weak self] in self?.send() }; composer.onInputChanged = { [weak self] in self?.composerChanged() }; composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
         composer.onExtensionKey = { [weak self] key in
             guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
-            switch key { case 125: extensionPicker.move(1); case 126: extensionPicker.move(-1); case 36, 48, 76: extensionPicker.pick(); case 53: dismissExtensionCandidates(); default: return false }; return true
+            switch key { case 125: extensionPicker.move(1); case 126: extensionPicker.move(-1); case 123, 124: return extensionPicker.moveCategory(key == 124 ? 1 : -1); case 36, 48, 76: extensionPicker.pick(); case 53: if !extensionPicker.goBack() { dismissExtensionCandidates() }; default: return false }; return true
         }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true; input.drawsBackground = false; input.borderType = .noBorder
         for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }; for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
@@ -1280,8 +1280,9 @@ final class FormDocumentView: NSView {
             switch key {
             case 125: extensionPicker.move(1)
             case 126: extensionPicker.move(-1)
+            case 123, 124: return extensionPicker.moveCategory(key == 124 ? 1 : -1)
             case 36, 48, 76: extensionPicker.pick()
-            case 53: dismissExtensionCandidates()
+            case 53: if !extensionPicker.goBack() { dismissExtensionCandidates() }
             default: return false
             }; return true
         }
@@ -1433,7 +1434,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns")
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns")
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
@@ -3103,15 +3104,37 @@ final class FormDocumentView: NSView {
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook" else { throw PetError("原任务已归档或为独立校验任务") }
         let current = try store.extensions.item(item.id, workspace: task.workspace)
-        dismissExtensionCandidates(); saveAgentDraft()
+        try insertSlashInvocation(current.invocation, taskID: taskID)
+    }
+    private func insertSlashInvocation(_ invocation: String, taskID: String) throws {
+        guard saveAgentDraft() else { throw PetError("原任务草稿未保存，请重试") }; dismissExtensionCandidates()
         if displayedTask != taskID { selectAgentTask(taskID) }
+        guard displayedTask == taskID else { throw PetError("原任务未打开，未添加指令") }
         let previous = composer.string
         if previous.hasPrefix("/"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
             let tail = String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            composer.string = "/" + current.invocation + " " + tail
-        } else { composer.string = "/" + current.invocation + " " + previous }
+            composer.string = "/" + invocation + " " + tail
+        } else { composer.string = "/" + invocation + " " + previous }
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
         show(tab: "chat"); window?.makeFirstResponder(composer)
+    }
+    private func selectSlashEntry(_ entry: AgentSlashEntry, taskID: String) throws {
+        guard let store = companion?.agentStore, let task = store.task(taskID), displayedTask == taskID, !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("原任务已不可用") }
+        switch entry {
+        case .item(let item): try insertExtension(item, taskID: taskID)
+        case .builtin(let value):
+            let current = store.slashMenu.entries([], task: task, idle: companion?.agentRuntime?.isBusy(taskID) == false, canChangeMode: false)
+            guard current.contains(where: { $0.id == entry.id }) else { throw PetError("当前任务不能使用此命令") }
+            try insertSlashInvocation(value.rawValue, taskID: taskID)
+        case .mode(let mode):
+            guard modePopup.isEnabled, companion?.agentRuntime?.isBusy(taskID) == false, ![.running, .waiting].contains(task.status), task.automation == nil, task.agent?.ownerID == nil, task.pendingCalls.isEmpty, saveAgentDraft() else { throw PetError("请先处理当前执行或未保存内容，再切换模式") }
+            permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
+            modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: mode) ?? 2); agentOptionsChanged()
+            guard store.writeError == nil, store.task(taskID)?.mode == mode else { throw PetError(store.writeError ?? "任务模式未保存") }
+            dismissExtensionCandidates(); composer.string = ""; composer.didChangeText(); guard saveAgentDraft() else { throw PetError("任务草稿未保存") }
+            store.slashMenu.recordMode(mode); window?.makeFirstResponder(composer)
+        case .plugin: break
+        }
     }
     private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
@@ -3136,31 +3159,43 @@ final class FormDocumentView: NSView {
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }
     private func updateExtensionCandidates() {
-        guard selectedTab == "chat", let store = companion?.agentStore, let task = currentAgentTask, task.id == displayedTask, !["wiki", "hook"].contains(task.kind ?? ""),
+        guard selectedTab == "chat", let store = companion?.agentStore, let task = currentAgentTask, task.id == displayedTask, !task.archived, !task.isProjectDocumentation, task.kind != "hook",
               composer.string.hasPrefix("/"), !composer.string.contains(where: { $0.isWhitespace }), !composer.hasMarkedText(), window?.isVisible == true else { dismissExtensionCandidates(); return }
         do {
             let query = String(composer.string.dropFirst())
-            let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false).filter { query.isEmpty || $0.invocation.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query) }.prefix(12)
-            let automation = !task.isProjectDocumentation && task.automation == nil && task.agent?.ownerID == nil && (query.isEmpty || "automation".localizedCaseInsensitiveContains(query) || "自动化".contains(query))
-            guard !items.isEmpty || automation else { dismissExtensionCandidates(); return }
-            extensionPickerTask = task.id; extensionPicker.setItems(Array(items), automation: automation)
-            extensionPicker.onAutomation = { [weak self] in
-                guard let self, let id = extensionPickerTask, id == displayedTask, let task = store.task(id), !task.archived, saveAgentDraft() else { return }
-                dismissExtensionCandidates(); composer.string = "/automation "; composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText(); window?.makeFirstResponder(composer)
-            }
-            extensionPicker.onPick = { [weak self] item in
+            guard !query.contains("/") else { dismissExtensionCandidates(); return }
+            let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false)
+            let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled)
+            guard !entries.isEmpty else { dismissExtensionCandidates(); return }
+            let opening = extensionPickerTask != task.id || !extensionPanel.isVisible
+            extensionPickerTask = task.id
+            extensionPicker.onLayoutChanged = { [weak self] in self?.positionExtensionCandidates() }
+            extensionPicker.setEntries(entries, service: store.slashMenu, presentation: companion?.generalSettings.settings.slashMenuPresentation ?? .recent, query: query, reset: opening)
+            extensionPicker.onPick = { [weak self] entry in
                 guard let self, let id = extensionPickerTask, id == displayedTask else { return }
-                do { try insertExtension(item, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
+                do { try selectSlashEntry(entry, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
             }
             guard let window else { dismissExtensionCandidates(); return }
             extensionPanel.contentViewController = extensionPicker
-            let anchor = window.convertToScreen(composer.convert(composer.visibleRect, to: nil))
-            let bounds = window.screen?.visibleFrame ?? window.frame, width = min(420, bounds.width), height = CGFloat(min(264, extensionPicker.candidateCount * 44 + 4))
-            let x = min(bounds.maxX - width, max(bounds.minX, anchor.minX)), y = min(bounds.maxY - height, max(bounds.minY, anchor.maxY + 6))
-            extensionPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
-            extensionPanel.contentView?.wantsLayer = true; extensionPanel.contentView?.layer?.cornerRadius = 8; extensionPanel.contentView?.layer?.masksToBounds = true
+            positionExtensionCandidates()
             if extensionPanel.parent !== window { window.addChildWindow(extensionPanel, ordered: .above) }; extensionPanel.orderFront(nil)
         } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
+    }
+    private func positionExtensionCandidates() {
+        guard extensionPickerTask != nil, let window else { return }
+        let anchor = window.convertToScreen(composer.convert(composer.visibleRect, to: nil)), bounds = (window.screen?.visibleFrame ?? window.frame).intersection(window.frame)
+        let width = min(560, max(320, anchor.width), bounds.width), height = min(extensionPicker.preferredHeight, bounds.height - 24)
+        let x = min(bounds.maxX - width, max(bounds.minX, anchor.minX)), y = min(bounds.maxY - height, max(bounds.minY, anchor.maxY + 6))
+        extensionPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        extensionPanel.contentView?.wantsLayer = true; extensionPanel.contentView?.layer?.cornerRadius = 8; extensionPanel.contentView?.layer?.masksToBounds = true
+    }
+    func slashMenuReadback() -> [String: Any] {
+        guard companion?.checkDirectory != nil else { return [:] }
+        return ["visible": extensionPanel.isVisible, "taskID": extensionPickerTask as Any? ?? NSNull(), "category": extensionPicker.category.rawValue,
+                "selectedID": extensionPicker.selectedID as Any? ?? NSNull(), "geometry": extensionPicker.layoutReadback(),
+                "entries": extensionPicker.entries.map { ["id": $0.id, "title": $0.title, "scope": $0.scope] }, "recentIDs": companion?.agentStore?.slashMenu.recentIDs ?? [],
+                "issue": companion?.agentStore?.slashMenu.issue as Any? ?? NSNull(), "composerHasKeyFocus": window?.firstResponder === composer && window?.isKeyWindow == true,
+                "panelIsKey": extensionPanel.isKeyWindow, "panelWidth": extensionPanel.frame.width, "panelHeight": extensionPanel.frame.height]
     }
     func attachBrowserCapture(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws {
         try await attachTaskCapture(taskID: taskID, note: note) { tasks in _ = try await shot.attach(store: tasks, taskID: taskID, draft: true, marks: marks) }
@@ -3243,6 +3278,98 @@ extension ControlWindow {
         try JSONSerialization.data(withJSONObject: observations, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("extension-composer-report.json"))
         selectAgentTask(taskID); composer.string = ""; composer.didChangeText(); saveAgentDraft()
         if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("extension-entry.png")) }
+        return checks
+    }
+    func checkSlashMenu(_ output: URL, fixture: AgentSlashMenuFixture) async throws -> [String: Bool] {
+        guard let app = companion, app.checkDirectory != nil, let tasks = app.agentStore, let runtime = app.agentRuntime, let window else { throw PetError("缺少命令菜单窗口") }
+        let service = tasks.slashMenu, history = app.store.directory.appendingPathComponent("slash-history.json")
+        var checks: [String: Bool] = [:]
+        func open(_ query: String = "/", _ style: AgentSlashPresentation = .recent, owner: String? = nil) async throws {
+            var value = app.generalSettings.settings; value.slashMenuPresentation = style; try app.generalSettings.save(value)
+            selectAgentTask(owner ?? fixture.taskID); show(tab: "chat"); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(composer)
+            composer.string = query; composer.didChangeText(); try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        func select(_ id: String) throws {
+            guard let index = extensionPicker.entries.firstIndex(where: { $0.id == id }) else { throw PetError("菜单缺少真实候选：" + id) }
+            extensionPicker.move(-10_000); extensionPicker.move(index); extensionPicker.pick()
+        }
+        try await open()
+        checks["RecentComesFromActualAcceptedInput"] = extensionPicker.entries.first?.id == "item." + fixture.commands.last! && tasks.task(fixture.seedID)?.messages.last?.content == "/command:slash-command-18 公开的最近使用参数"
+        checks["MenuKeepsComposerKeyFocus"] = window.isKeyWindow && window.firstResponder === composer && !extensionPanel.isKeyWindow
+        checks["SingleRecentRowIsFullyVisible"] = extensionPicker.layoutReadback()["shortListFits"] as? Bool == true
+        try await open("/", .expanded)
+        checks["ExpandedMenuContainsMoreThanTwelveAndLastCommand"] = extensionPicker.candidateCount > 12 && extensionPicker.entries.contains { $0.id == "item." + fixture.commands.last! }
+        let pluginItems = try tasks.extensions.catalog(workspace: tasks.task(fixture.taskID)?.workspace, includeDisabled: false).filter { $0.pluginName == fixture.pluginID }
+        checks["ExpandedMenuIncludesEveryEnabledPluginChild"] = pluginItems.count == 3 && pluginItems.allSatisfy { item in extensionPicker.entries.contains { $0.id == "item." + item.id } }
+        let oldHistory = try Data(contentsOf: history), picked = fixture.commands[16]
+        try select("item." + picked)
+        checks["PickingBeyondTwelveOnlyInsertsDraft"] = try composer.string == "/command:slash-command-17 " && tasks.task(fixture.taskID)?.messages.isEmpty == true && !extensionPanel.isVisible && Data(contentsOf: history) == oldHistory
+        checks["ActualRuntimeAcceptanceRecordsRecentAndOriginalArguments"] = runtime.submit(composer.string + "公开参数", taskID: fixture.taskID, startImmediately: false) && service.recentIDs.first == "item." + picked && tasks.task(fixture.taskID)?.messages.last?.content == "/command:slash-command-17 公开参数" && tasks.task(fixture.taskID)?.messages.last?.extensionReferences?.first?.id == picked
+        try await open("/", .collapsed)
+        checks["CollapsedMenuRetainsPluginRootAndHidesChildren"] = extensionPicker.entries.contains { $0.pluginKey == fixture.pluginID } && !extensionPicker.entries.contains { $0.extensionItem?.pluginName == fixture.pluginID }
+        let pluginSkill = pluginItems.first { $0.kind == .skill }!
+        try await open("/" + pluginSkill.invocation, .collapsed)
+        checks["ExplicitSearchFindsCollapsedPluginChild"] = extensionPicker.entries.contains { $0.id == "item." + pluginSkill.id }
+        try await open()
+        _ = composer.onExtensionKey?(124)
+        checks["RightArrowChangesCategoryWithoutMovingInputFocus"] = extensionPicker.category == .modes && window.firstResponder === composer
+        let oldPermission = tasks.task(fixture.taskID)!.permission, oldMessages = tasks.task(fixture.taskID)!.messages.count
+        try select("mode.goal")
+        checks["ModeEntryUsesActualModeWithoutSubmittingOrChangingPermission"] = tasks.task(fixture.taskID)?.mode == .goal && tasks.task(fixture.taskID)?.permission == oldPermission && tasks.task(fixture.taskID)?.messages.count == oldMessages && service.recentIDs.first == "mode.goal" && composer.string.isEmpty
+        try await open()
+        for _ in 0..<5 where extensionPicker.category != .plugins { _ = composer.onExtensionKey?(124) }
+        guard let root = extensionPicker.entries.first(where: { $0.pluginKey == fixture.pluginID }) else { throw PetError("缺少已启用的插件分组") }
+        let historyBeforeBrowsing = try Data(contentsOf: history)
+        try select(root.id)
+        checks["PluginGroupOpensActualChildrenWithoutRecordingUse"] = try extensionPicker.candidateCount == 3 && extensionPicker.entries.allSatisfy { $0.extensionItem?.pluginName == fixture.pluginID } && Data(contentsOf: history) == historyBeforeBrowsing
+        checks["EveryPluginChildRowIsFullyVisible"] = extensionPicker.layoutReadback()["shortListFits"] as? Bool == true
+        _ = composer.onExtensionKey?(123)
+        checks["LeftArrowReturnsToPluginList"] = extensionPanel.isVisible && extensionPicker.entries.contains { $0.pluginKey == fixture.pluginID }
+        try select(root.id); try select("item." + pluginSkill.id)
+        checks["ManualPluginSkillSelectionOnlyAddsDraft"] = try composer.string == "/" + pluginSkill.invocation + " " && Data(contentsOf: history) == historyBeforeBrowsing
+        checks["ActualExplicitPluginSkillAcceptanceKeepsSnapshotAndRecent"] = runtime.submit(composer.string + "公开参数", taskID: fixture.taskID, startImmediately: false) && service.recentIDs.first == "item." + pluginSkill.id && tasks.task(fixture.taskID)?.messages.last?.extensionReferences?.first?.snapshot?.contains(fixture.taskID) == true
+        try tasks.extensions.plugins.setEnabled(tasks.extensions.plugins.installation(fixture.pluginID), false)
+        try await open()
+        checks["DisabledPluginDisappearsFromRecentWithoutErasingHistory"] = !extensionPicker.entries.contains { $0.extensionItem?.pluginName == fixture.pluginID } && service.recentIDs.contains("item." + pluginSkill.id)
+        let disabledBytes = try Data(contentsOf: history)
+        checks["DisabledInvocationCannotBeAcceptedOrBecomeRecent"] = try !runtime.submit("/" + pluginSkill.invocation, taskID: fixture.taskID, startImmediately: false) && Data(contentsOf: history) == disabledBytes
+        var staleRefused = false; do { try selectSlashEntry(.item(pluginSkill), taskID: fixture.taskID) } catch { staleRefused = true }
+        checks["StalePickerEntryCannotBypassPluginDisable"] = staleRefused
+        try tasks.extensions.plugins.setEnabled(tasks.extensions.plugins.installation(fixture.pluginID), true)
+        checks["ProjectCommandCanBeAcceptedInItsOwnScope"] = runtime.submit("/command:project-palette 公开项目参数", taskID: fixture.taskID, startImmediately: false)
+        try await open("/", .recent, owner: fixture.otherID)
+        checks["NoWorkspaceRecentHidesForeignProjectButKeepsGlobalCommand"] = !extensionPicker.entries.contains { $0.id == "item." + fixture.projectID } && extensionPicker.entries.contains { $0.id == "item." + picked }
+        try await open("/", .expanded)
+        let beforeReadOnly = try Data(contentsOf: history); try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: history.path)
+        checks["HistoryFailureDoesNotRejectAnAcceptedCommand"] = runtime.submit("/command:slash-command-16 公开只读检查", taskID: fixture.taskID, startImmediately: false)
+        checks["ReadOnlyRecentFailureKeepsBytesAndShowsIssue"] = try Data(contentsOf: history) == beforeReadOnly && service.issue?.contains("未保存") == true
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: history.path)
+        _ = runtime.submit("/command:slash-command-16 公开重试", taskID: fixture.taskID, startImmediately: false)
+        checks["RecentRetrySavesPrivatelyAndReloads"] = try service.issue == nil && service.recentIDs.first == "item." + fixture.commands[15] && AgentSlashMenu(profile: app.store.directory).recentIDs == service.recentIDs && (FileManager.default.attributesOfItem(atPath: history.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600
+        for index in 0..<15 { _ = runtime.submit(String(format: "/command:slash-command-%02d 公开记录", index + 1), taskID: fixture.taskID, startImmediately: false) }
+        _ = runtime.submit("/command:slash-command-15 重复使用", taskID: fixture.taskID, startImmediately: false)
+        checks["AcceptedRecentHistoryIsBoundedAndDeduplicated"] = service.recentIDs.count == 12 && Set(service.recentIDs).count == 12 && service.recentIDs.first == "item." + fixture.commands[14]
+        for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); try await open("/", .expanded)
+            let intersection = window.frame.intersection(extensionPanel.frame)
+            checks["PopupFitsOwnerAndKeepsKeyFocus-" + label] = extensionPanel.isVisible && intersection == extensionPanel.frame && window.firstResponder === composer && !extensionPicker.view.hasAmbiguousLayout
+        }
+        try await open("/no-such-slash-native")
+        checks["EmptySearchShowsNoSelectableEntry"] = extensionPanel.isVisible && extensionPicker.candidateCount == 0
+        _ = composer.onExtensionKey?(48); checks["EmptySelectionDoesNotSubmit"] = tasks.task(fixture.taskID)?.messages.last?.content == "/command:slash-command-15 重复使用"
+        _ = composer.onExtensionKey?(53); checks["EscapeClosesMenuAndKeepsQuery"] = !extensionPanel.isVisible && composer.string == "/no-such-slash-native"
+        try await open(); selectAgentTask(fixture.otherID)
+        checks["TaskSwitchClosesOwnedMenu"] = extensionPickerTask == nil && !extensionPanel.isVisible
+        let invalid = output.appendingPathComponent("invalid-slash-history"); try FileManager.default.createDirectory(at: invalid, withIntermediateDirectories: true)
+        let invalidFile = invalid.appendingPathComponent("slash-history.json"), invalidBytes = Data("{\"version\":1,\"ids\":[\"item.invalid\"]}".utf8); try invalidBytes.write(to: invalidFile)
+        let invalidService = AgentSlashMenu(profile: invalid); invalidService.recordBuiltin(.canvas)
+        checks["InvalidRecentHistoryIsPreserved"] = try invalidService.issue != nil && Data(contentsOf: invalidFile) == invalidBytes
+        let linked = output.appendingPathComponent("linked-slash-history"); try FileManager.default.createDirectory(at: linked, withIntermediateDirectories: true); try FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("slash-history.json"), withDestinationURL: history)
+        let targetBytes = try Data(contentsOf: history), linkedService = AgentSlashMenu(profile: linked); linkedService.recordBuiltin(.canvas)
+        checks["SymlinkRecentHistoryCannotOverwriteTarget"] = try linkedService.issue != nil && Data(contentsOf: history) == targetBytes
+        selectAgentTask(fixture.taskID); composer.string = "命令菜单原草稿 🧭"; composer.didChangeText(); guard saveAgentDraft() else { throw PetError("命令菜单原草稿未保存") }
+        let report: [String: Any] = ["checks": checks, "fixture": try JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture)), "modelRequests": 0, "boundary": "Actual local extension/plugin catalog, native picker events, accepted input preparation and persisted metadata. No provider call or generated model answer."]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("slash-menu-report.json"))
         return checks
     }
     func checkBrowserCaptureDraft(_ shot: AgentBrowserShot, marks: [AgentBrowserMark], note: String, taskID: String) async throws -> [String: Bool] {

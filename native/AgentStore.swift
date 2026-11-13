@@ -25,6 +25,7 @@ import Foundation
     lazy var wikiMaintenance = AgentWikiMaintenance(store: self)
     lazy var projectKnowledge = AgentProjectKnowledgeGeneration(store: self)
     lazy var attention = AgentAttention(store: self)
+    lazy var slashMenu = AgentSlashMenu(profile: directory.deletingLastPathComponent())
     lazy var sideTasks = AgentSideTasks(store: self)
     private(set) var tasks: [AgentTaskRecord] = []
     private var cache: [String: AgentTaskRecord] = [:]

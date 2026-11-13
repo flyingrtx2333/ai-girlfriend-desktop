@@ -81,6 +81,7 @@ import WebKit
                 if CommandLine.arguments.contains("--file-icons-fixtures") { _ = try await prepareFileIconsUI(output) }
                 if CommandLine.arguments.contains("--task-monitor-fixtures") { try await prepareTaskMonitorUI(output) }
                 if CommandLine.arguments.contains("--task-monitor-reopen") { try reopenTaskMonitorUI(output) }
+                if CommandLine.arguments.contains("--slash-menu-fixtures") || CommandLine.arguments.contains("--slash-menu-reopen") { _ = try await prepareSlashMenuUI(output, seed: CommandLine.arguments.contains("--slash-menu-fixtures")) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
@@ -180,7 +181,8 @@ import WebKit
                         value["contentAppearance"] = taskControls.map { $0.contentAppearanceReadback() }
                         value["fileIcons"] = taskControls.map { $0.fileIconsReadback() }
                         value["taskMonitor"] = taskControls.map { $0.taskMonitorReadback() }
-                        value["generalSettings"] = ["menuBarIcon": generalSettings.settings.menuBarIcon, "completionNotifications": generalSettings.settings.completionNotifications.rawValue, "approvalNotifications": generalSettings.settings.approvalNotifications, "questionNotifications": generalSettings.settings.questionNotifications, "statusItemVisible": statusItem?.isVisible == true, "activationPolicy": NSApp.activationPolicy().rawValue]
+                        value["generalSettings"] = ["menuBarIcon": generalSettings.settings.menuBarIcon, "completionNotifications": generalSettings.settings.completionNotifications.rawValue, "approvalNotifications": generalSettings.settings.approvalNotifications, "questionNotifications": generalSettings.settings.questionNotifications, "runningInput": generalSettings.settings.runningInput.rawValue, "goalMaximumTurns": generalSettings.settings.goalMaximumTurns, "slashMenuPresentation": generalSettings.settings.slashMenuPresentation.rawValue, "statusItemVisible": statusItem?.isVisible == true, "activationPolicy": NSApp.activationPolicy().rawValue]
+                        value["slashMenu"] = inputControl.slashMenuReadback()
                         value["systemNotifications"] = await automationNotifications.verificationReadback()
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]

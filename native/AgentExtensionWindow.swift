@@ -276,7 +276,7 @@ import UniformTypeIdentifiers
     override var canBecomeMain: Bool { false }
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 420, height: 44), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        title = "命令与 Skills"; isReleasedWhenClosed = false; hasShadow = true; hidesOnDeactivate = true; animationBehavior = .none
+        title = "指令与扩展能力"; isReleasedWhenClosed = false; hasShadow = true; hidesOnDeactivate = true; animationBehavior = .none
         backgroundColor = .windowBackgroundColor
     }
 }
@@ -284,31 +284,99 @@ import UniformTypeIdentifiers
     override var acceptsFirstResponder: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
+@MainActor final class AgentSlashCategories: NSSegmentedControl {
+    override var acceptsFirstResponder: Bool { false }
+}
 @MainActor final class AgentExtensionPicker: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     private let table = AgentExtensionTable()
-    private(set) var items: [AgentExtensionItem] = []
-    var onPick: ((AgentExtensionItem) -> Void)?
-    var onAutomation: (() -> Void)?
-    private var automation = false
-    var candidateCount: Int { items.count + (automation ? 1 : 0) }
+    private let categories = AgentSlashCategories(labels: AgentSlashCategory.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let back = NSButton(title: "返回", target: nil, action: nil)
+    private let empty = NSTextField(labelWithString: "暂无最近使用"), footer = NSTextField(labelWithString: "")
+    private let scroll = NSScrollView(), header = NSStackView()
+    private var listHeight: NSLayoutConstraint!
+    private var service: AgentSlashMenu?, allEntries: [AgentSlashEntry] = [], presentation = AgentSlashPresentation.recent, query = "", plugin: String?
+    private(set) var category = AgentSlashCategory.recent, entries: [AgentSlashEntry] = []
+    var items: [AgentExtensionItem] { allEntries.compactMap(\.extensionItem) }
+    var onPick: ((AgentSlashEntry) -> Void)?, onLayoutChanged: (() -> Void)?
+    var candidateCount: Int { entries.count }
+    var preferredHeight: CGFloat { CGFloat(max(1, min(8, entries.count))) * 30 + (header.isHidden ? 0 : 26) + 30 }
+    var selectedID: String? { entries.indices.contains(table.selectedRow) ? entries[table.selectedRow].id : nil }
     override func loadView() {
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
+        let root = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); root.layer?.cornerRadius = 8; root.layer?.borderWidth = 1
+        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder; scroll.drawsBackground = false; scroll.automaticallyAdjustsContentInsets = false; scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("workflow"))); table.headerView = nil
-        table.rowHeight = 44; table.delegate = self; table.dataSource = self; table.target = self; table.action = #selector(pick)
-        table.setAccessibilityLabel("命令与 Skills 候选"); scroll.documentView = table; view = scroll
+        table.style = .plain; table.usesAutomaticRowHeights = false; table.rowHeight = 30; table.intercellSpacing = .zero; table.backgroundColor = .clear; table.delegate = self; table.dataSource = self; table.target = self; table.action = #selector(pick)
+        table.setAccessibilityLabel("指令与扩展能力建议"); table.identifier = NSUserInterfaceItemIdentifier("slash-menu-candidates"); scroll.documentView = table
+        categories.target = self; categories.action = #selector(changeCategory); categories.controlSize = .small; categories.font = .systemFont(ofSize: 11); categories.setAccessibilityLabel("Slash 能力类别")
+        back.target = self; back.action = #selector(backPressed); back.isBordered = false; back.font = .systemFont(ofSize: 11); back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading; back.setAccessibilityLabel("返回插件列表")
+        header.addArrangedSubview(back); header.addArrangedSubview(categories); header.addArrangedSubview(NSView()); header.spacing = 6
+        empty.font = .systemFont(ofSize: 12); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.alignment = .center
+        footer.font = .systemFont(ofSize: 10); footer.textColor = AgentWorkbenchTheme.secondaryText; footer.lineBreakMode = .byTruncatingTail; footer.setAccessibilityLabel("命令菜单状态")
+        header.heightAnchor.constraint(equalToConstant: 22).isActive = true; footer.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        let column = NSStackView(views: [header, scroll, empty, footer]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 4; column.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(column)
+        for child in [header, scroll, empty, footer] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        listHeight = scroll.heightAnchor.constraint(equalToConstant: 30); listHeight.isActive = true; empty.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8), column.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8), column.topAnchor.constraint(equalTo: root.topAnchor, constant: 6), column.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6)])
+        view = root
     }
-    func setItems(_ items: [AgentExtensionItem], automation: Bool = false) { loadViewIfNeeded(); self.items = items; self.automation = automation; table.reloadData(); if candidateCount > 0 { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) } }
+    func setEntries(_ entries: [AgentSlashEntry], service: AgentSlashMenu, presentation: AgentSlashPresentation, query: String, reset: Bool) {
+        loadViewIfNeeded()
+        if reset || self.presentation != presentation || self.query != query { category = .recent; plugin = nil }
+        self.allEntries = entries; self.service = service; self.presentation = presentation; self.query = query
+        if let plugin, !entries.contains(where: { $0.pluginKey == plugin }) { self.plugin = nil }
+        service.reload(); refresh()
+    }
+    private func refresh() {
+        guard let service else { return }
+        let previous = entries.indices.contains(table.selectedRow) ? entries[table.selectedRow].id : nil
+        entries = service.visible(allEntries, presentation: presentation, category: category, query: query, plugin: plugin)
+        categories.isHidden = presentation != .recent || !query.isEmpty || plugin != nil; back.isHidden = plugin == nil; header.isHidden = categories.isHidden && back.isHidden
+        categories.selectedSegment = AgentSlashCategory.allCases.firstIndex(of: category) ?? 0
+        for (index, value) in AgentSlashCategory.allCases.enumerated() {
+            categories.setEnabled(value == .recent || !service.visible(allEntries, presentation: .recent, category: value, query: "", plugin: nil).isEmpty, forSegment: index)
+        }
+        if let plugin { back.title = allEntries.first(where: { $0.pluginKey == plugin })?.title ?? "返回" }
+        scroll.isHidden = entries.isEmpty; empty.isHidden = !entries.isEmpty; empty.stringValue = !query.isEmpty ? "未找到匹配项" : category == .recent && plugin == nil && presentation == .recent ? "暂无最近使用" : "暂无可用能力"
+        listHeight.constant = CGFloat(max(1, min(8, entries.count))) * 30
+        let hints = !categories.isHidden ? "↑↓ 选择   ←→ 类别   Enter / Tab 添加   Esc 关闭" : plugin != nil ? "↑↓ 选择   ← 返回   Enter / Tab 添加   Esc 关闭" : "↑↓ 选择   Enter / Tab 添加   Esc 关闭"
+        footer.stringValue = service.issue ?? hints; footer.toolTip = service.issue
+        table.reloadData()
+        if !entries.isEmpty { table.selectRowIndexes(IndexSet(integer: entries.firstIndex(where: { $0.id == previous }) ?? 0), byExtendingSelection: false); table.scrollRowToVisible(table.selectedRow) }
+        else { table.deselectAll(nil) }
+        onLayoutChanged?()
+    }
+    @objc private func changeCategory() { category = AgentSlashCategory.allCases[max(0, categories.selectedSegment)]; plugin = nil; refresh() }
+    @objc private func backPressed() { _ = goBack() }
+    @discardableResult func goBack() -> Bool { guard plugin != nil else { return false }; plugin = nil; refresh(); return true }
+    func moveCategory(_ amount: Int) -> Bool {
+        if plugin != nil { return amount < 0 && goBack() }
+        guard !categories.isHidden else { return false }
+        let count = AgentSlashCategory.allCases.count, current = categories.selectedSegment
+        for offset in 1...count {
+            let index = (current + amount * offset + count * 2) % count
+            if categories.isEnabled(forSegment: index) { categories.selectedSegment = index; changeCategory(); return true }
+        }; return true
+    }
     func move(_ amount: Int) { guard candidateCount > 0 else { return }; let row = min(candidateCount - 1, max(0, table.selectedRow + amount)); table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
     func numberOfRows(in tableView: NSTableView) -> Int { candidateCount }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let item = automation && row == 0 ? nil : items[row - (automation ? 1 : 0)]
-        let title = NSTextField(labelWithString: item.map { "/" + $0.invocation + " · " + $0.scope } ?? "/automation · 自动化"); title.font = .systemFont(ofSize: 12, weight: .medium)
-        let description = NSTextField(labelWithString: item?.description ?? "按目标与时间起草计划"); description.font = .systemFont(ofSize: 11); description.textColor = AgentWorkbenchTheme.secondaryText
-        for field in [title, description] { field.lineBreakMode = .byTruncatingTail }
-        let stack = NSStackView(views: [title, description]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 3; return stack
+        guard entries.indices.contains(row) else { return nil }; let entry = entries[row]
+        let image = NSImageView(image: NSImage(systemSymbolName: entry.symbol, accessibilityDescription: nil) ?? NSImage()); image.contentTintColor = AgentWorkbenchTheme.secondaryText
+        image.widthAnchor.constraint(equalToConstant: 14).isActive = true; image.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        let title = NSTextField(labelWithString: entry.title); title.font = .systemFont(ofSize: 12, weight: .medium); title.widthAnchor.constraint(lessThanOrEqualToConstant: 210).isActive = true
+        let description = NSTextField(labelWithString: entry.detail); description.font = .systemFont(ofSize: 11); description.textColor = AgentWorkbenchTheme.secondaryText; description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for field in [title, description] { field.lineBreakMode = .byTruncatingTail; field.maximumNumberOfLines = 1 }
+        let stack = NSStackView(views: [image, title, description, NSView()]); stack.spacing = 7; stack.toolTip = entry.scope + "\n" + entry.detail; stack.setAccessibilityLabel(entry.kindTitle + " " + entry.title + "，" + entry.scope + "，" + entry.detail); return stack
+    }
+    func layoutReadback() -> [String: Any] {
+        guard isViewLoaded else { return ["loaded": false] }
+        view.layoutSubtreeIfNeeded(); table.layoutSubtreeIfNeeded()
+        let visible = table.visibleRect, first = entries.isEmpty ? NSRect.zero : table.rect(ofRow: 0), last = entries.isEmpty ? NSRect.zero : table.rect(ofRow: entries.count - 1)
+        let shortListFits = entries.isEmpty || entries.count > 8 || first.minY >= visible.minY - 0.5 && last.maxY <= visible.maxY + 0.5
+        return ["visibleRect": NSStringFromRect(visible), "firstRow": NSStringFromRect(first), "lastRow": NSStringFromRect(last), "shortListFits": shortListFits]
     }
     @objc func pick() {
-        if automation && table.selectedRow == 0 { onAutomation?(); return }
-        let row = table.selectedRow - (automation ? 1 : 0); if items.indices.contains(row) { onPick?(items[row]) }
+        guard entries.indices.contains(table.selectedRow) else { return }; let entry = entries[table.selectedRow]
+        if let key = entry.pluginKey { plugin = key; refresh(); return }; onPick?(entry)
     }
 }
