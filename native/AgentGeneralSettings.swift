@@ -23,9 +23,10 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         var artifactLocation = AgentArtifactLocation.workspace
         var questionAutoSkip = false
         var promptSuggestions = true
+        var homeGame = AgentHomeGameChoice.random
         var conversationDisplay = AgentConversationDisplay.Settings()
         static let goalTurnChoices = AgentGoalExecution.turnChoices
-        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation, questionAutoSkip, promptSuggestions, conversationDisplay }
+        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation, questionAutoSkip, promptSuggestions, homeGame, conversationDisplay }
         init() {}
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -40,6 +41,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             if values.contains(.artifactLocation) { artifactLocation = try values.decode(AgentArtifactLocation.self, forKey: .artifactLocation) }
             if values.contains(.questionAutoSkip) { questionAutoSkip = try values.decode(Bool.self, forKey: .questionAutoSkip) }
             if values.contains(.promptSuggestions) { promptSuggestions = try values.decode(Bool.self, forKey: .promptSuggestions) }
+            if values.contains(.homeGame) { homeGame = try values.decode(AgentHomeGameChoice.self, forKey: .homeGame) }
             if values.contains(.conversationDisplay) { conversationDisplay = try values.decode(AgentConversationDisplay.Settings.self, forKey: .conversationDisplay) }
         }
     }
@@ -57,7 +59,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             else {
                 let data = try files.readData(file, maximum: 4096)
                 let required: Set<String> = ["version", "completionNotifications", "approvalNotifications", "questionNotifications", "menuBarIcon"]
-                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation", "questionAutoSkip", "promptSuggestions", "conversationDisplay"])),
+                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation", "questionAutoSkip", "promptSuggestions", "homeGame", "conversationDisplay"])),
                       !raw.keys.contains("conversationDisplay") || (raw["conversationDisplay"] as? [String: Any]).map({ Set($0.keys) == AgentConversationDisplay.Settings.keys }) == true,
                       let value = try? JSONDecoder().decode(Settings.self, from: data), value.version == 1, Settings.goalTurnChoices.contains(value.goalMaximumTurns) else { throw PetError("常规配置版本或选项无效") }
                 settings = value; revision = AgentFiles.hash(data)
@@ -85,6 +87,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     private let completion = NSPopUpButton(), approval = NSSwitch(), question = NSSwitch(), menuBar = NSSwitch()
     private let runningInput = NSPopUpButton(), goalTurns = NSPopUpButton()
     private let slashMenu = NSPopUpButton(), artifactLocation = NSPopUpButton()
+    private let homeGame = NSPopUpButton()
     private let questionAutoSkip = NSSwitch(), promptSuggestions = NSSwitch()
     private let overview = NSStackView(), conversationPage = NSStackView(), thinkingPage = NSStackView()
     private let thinkingService: AgentThinkingStatus
@@ -112,9 +115,11 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         goalTurns.addItems(withTitles: AgentGeneralSettings.Settings.goalTurnChoices.map { "\($0)" }); goalTurns.setAccessibilityLabel("目标驱动执行最大轮次")
         slashMenu.addItems(withTitles: AgentSlashPresentation.allCases.map(\.title)); slashMenu.setAccessibilityLabel("Slash 命令展示方式")
         artifactLocation.addItems(withTitles: AgentArtifactLocation.allCases.map(\.title)); artifactLocation.setAccessibilityLabel("产物文件默认打开位置")
+        homeGame.addItems(withTitles: AgentHomeGameChoice.allCases.map(\.title)); homeGame.setAccessibilityLabel("首页小游戏")
+        homeGame.toolTip = "两种工作模式共用，更改从下次入口展示起生效。"
         runningInput.toolTip = "插话会停止当前执行，再处理新输入；已执行的操作会保留。"
         goalTurns.toolTip = "每次开始或继续目标任务时生效；等待授权不会重置轮次。"
-        for (control, id) in [(runningInput, "general-running-input"), (goalTurns, "general-goal-turns"), (slashMenu, "general-slash-menu"), (artifactLocation, "general-artifact-location")] {
+        for (control, id) in [(runningInput, "general-running-input"), (goalTurns, "general-goal-turns"), (slashMenu, "general-slash-menu"), (artifactLocation, "general-artifact-location"), (homeGame, "general-home-game")] {
             control.identifier = NSUserInterfaceItemIdentifier(id); control.target = self; control.action = #selector(change)
         }
         completion.addItems(withTitles: AgentCompletionNotification.allCases.map(\.title)); completion.setAccessibilityLabel("轮次完成通知")
@@ -139,7 +144,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         for button in [permissionButton, test, reload] { button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 12); button.target = self }
         permissionButton.action = #selector(requestPermission); test.action = #selector(testNotification); reload.action = #selector(reloadSettings)
         let permissionActions = NSStackView(views: [permission, permissionButton, test]); permissionActions.spacing = 8
-        group("任务与工具", rows: [("运行中发送方式", runningInput), ("Slash 命令展示方式", slashMenu), ("问答面板静默跳过", questionAutoSkip), ("产物文件默认打开位置", artifactLocation), ("提示建议", promptSuggestions), ("对话显示", conversationButton), ("思考状态", thinkingButton), ("目标驱动执行", goalTurns)])
+        group("任务与工具", rows: [("运行中发送方式", runningInput), ("Slash 命令展示方式", slashMenu), ("问答面板静默跳过", questionAutoSkip), ("产物文件默认打开位置", artifactLocation), ("提示建议", promptSuggestions), ("首页小游戏", homeGame), ("对话显示", conversationButton), ("思考状态", thinkingButton), ("目标驱动执行", goalTurns)])
         group("通知", rows: [("轮次完成通知", completion), ("权限请求通知", approval), ("等待回答通知", question), ("系统通知", permissionActions)])
         group("托盘与菜单栏", rows: [("显示菜单栏图标", menuBar)])
         group("阅读", rows: [("新消息保持在阅读起点", readingStart)], in: conversationPage)
@@ -172,12 +177,13 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         artifactLocation.selectItem(at: AgentArtifactLocation.allCases.firstIndex(of: value.artifactLocation) ?? 0)
         questionAutoSkip.state = value.questionAutoSkip ? .on : .off
         promptSuggestions.state = value.promptSuggestions ? .on : .off
+        homeGame.selectItem(at: AgentHomeGameChoice.allCases.firstIndex(of: value.homeGame) ?? 0)
         let display = value.conversationDisplay
         readingStart.state = display.readingStart ? .on : .off; toolCount.state = display.toolCount ? .on : .off
         expandTools.state = display.expandTools ? .on : .off; collapseProcess.state = display.collapseProcess ? .on : .off
         durationFormat.selectItem(at: AgentConversationDisplay.DurationFormat.allCases.firstIndex(of: display.durationFormat) ?? 0)
         approval.state = value.approvalNotifications ? .on : .off; question.state = value.questionNotifications ? .on : .off; menuBar.state = value.menuBarIcon ? .on : .off
-        for control in [completion, approval, question, menuBar, runningInput, goalTurns, slashMenu, artifactLocation, questionAutoSkip, promptSuggestions, readingStart, toolCount, expandTools, collapseProcess, durationFormat] as [NSControl] { control.isEnabled = service.error == nil }
+        for control in [completion, approval, question, menuBar, runningInput, goalTurns, slashMenu, artifactLocation, questionAutoSkip, promptSuggestions, homeGame, readingStart, toolCount, expandTools, collapseProcess, durationFormat] as [NSControl] { control.isEnabled = service.error == nil }
         if let error = service.error { status.stringValue = error }
         let hidden = status.stringValue.isEmpty || status.stringValue == "已保存"
         reload.isHidden = hidden; status.superview?.isHidden = hidden
@@ -194,6 +200,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         value.artifactLocation = AgentArtifactLocation.allCases[max(0, artifactLocation.indexOfSelectedItem)]
         value.questionAutoSkip = questionAutoSkip.state == .on
         value.promptSuggestions = promptSuggestions.state == .on
+        value.homeGame = AgentHomeGameChoice.allCases[max(0, homeGame.indexOfSelectedItem)]
         value.conversationDisplay = .init(readingStart: readingStart.state == .on, toolCount: toolCount.state == .on, expandTools: expandTools.state == .on, collapseProcess: collapseProcess.state == .on, durationFormat: AgentConversationDisplay.DurationFormat.allCases[max(0, durationFormat.indexOfSelectedItem)])
         do { try service.save(value); status.stringValue = "已保存" } catch { status.stringValue = error.localizedDescription }; refresh()
     }

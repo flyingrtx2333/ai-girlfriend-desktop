@@ -206,6 +206,7 @@ final class FormDocumentView: NSView {
     private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
     private let workbenchSidebar = NSView()
     private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
+    private var homeGamesView: AgentHomeGamesView?
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchLower = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
@@ -725,6 +726,10 @@ final class FormDocumentView: NSView {
         let add = AgentWorkbenchButton(title: "添加附件", target: self, action: #selector(addAttachments)); add.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil); add.imagePosition = .imageLeading; add.isBordered = false; add.font = .systemFont(ofSize: 12)
         let browse = AgentWorkbenchButton(title: "浏览器", target: self, action: #selector(showAgentBrowser)); browse.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil); browse.imagePosition = .imageLeading; browse.isBordered = false; browse.font = .systemFont(ofSize: 12)
         let shortcuts = stack([emptyProject, add, browse], spacing: 22); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
+        if let companion {
+            let games = AgentHomeGamesView(service: companion.homeGames, choice: { [weak companion] in companion?.generalSettings.settings.homeGame ?? .random })
+            homeGamesView = games; workbenchEmpty.addArrangedSubview(games); games.widthAnchor.constraint(equalTo: workbenchEmpty.widthAnchor).isActive = true
+        }
         emptyBeforeHeight = emptyBefore.heightAnchor.constraint(equalToConstant: 90); emptyBeforeHeight.isActive = true
         emptyAfter.setContentHuggingPriority(.defaultLow, for: .vertical)
         modelCaption.font = .systemFont(ofSize: 10); modelCaption.textColor = .tertiaryLabelColor; modelCaption.alignment = .right; modelCaption.lineBreakMode = .byTruncatingTail
@@ -788,7 +793,10 @@ final class FormDocumentView: NSView {
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
-        emptyBeforeHeight.constant = max(22, min(120, ((window?.contentView?.bounds.height ?? 800) - 320) * 0.21))
+        emptyBeforeHeight.constant = max(0, min(80, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.18))
+        let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
+        homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
+        if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
         emptyProject.title = companion?.agentStore?.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
@@ -1448,7 +1456,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms + " " + AgentPromptSuggestions.searchTerms)
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms + " " + AgentPromptSuggestions.searchTerms + " " + AgentHomeGames.searchTerms)
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, thinking: companion.thinkingStatus, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 generalSettingsPanel = panel
                 panel.onPage = { [weak self] title in
@@ -3259,7 +3267,8 @@ final class FormDocumentView: NSView {
         show(tab: "automation"); refreshAutomationBadge()
     }
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
-    func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates() }
+    func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates(); homeGamesView?.pause() }
+    internal func homeGamesReadback() -> [String:Any] { homeGamesView?.readback() ?? [:] }
     private func refreshBranch(_ task: AgentTaskRecord, force: Bool = false) {
         branchControl.isHidden = companion?.modePresentation.settings[task.organizationMode].inputEnvironment != true || task.workspace == nil
         guard !branchControl.isHidden, let tasks = companion?.agentStore, let workspace = task.workspace else { branchTask?.cancel(); branchTask = nil; branchKey = nil; return }

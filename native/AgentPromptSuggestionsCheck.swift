@@ -116,7 +116,7 @@ import Darwin
             toggle.state = .off; _ = toggle.sendAction(toggle.action, to: toggle.target)
             checks["nativeSettingsToggleSavesWithoutModal"] = !generalSettings.settings.promptSuggestions && control.window?.attachedSheet == nil
             let count = descendants(root).filter { $0.identifier?.rawValue.hasPrefix("general-") == true && $0 is NSControl }.count
-            checks["generalIncludesTwelveControls"] = count == 12
+            checks["generalIncludesThirteenControls"] = count == 13
             checks["noProviderRequestsOrForgedUsage"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 } && report["error"] == nil
