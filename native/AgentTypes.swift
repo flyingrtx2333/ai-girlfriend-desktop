@@ -28,6 +28,7 @@ struct AgentMessage: Codable, Identifiable {
     var role: String
     var content: String
     var reasoning: String?
+    var duration: TimeInterval?
     var toolCalls: [AgentToolCall]?
     var toolCallID: String?
     var attachmentIDs: [String]?

@@ -100,8 +100,10 @@ final class FormDocumentView: NSView {
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
     private var titleLeading: NSLayoutConstraint!
-    private let composer = ComposerView(), history = NSScrollView(), messageColumn = NSStackView()
+    private let composer = ComposerView(), history = AgentConversationHistory(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
+    private var reasoningRows: [String: ChatMessageRow] = [:], processRows: [String: AgentReplyProcessRow] = [:]
+    private var readingTaskID: String?, lastHumanMessageID: String?, readingAnchorID: String?, readingSpace: NSLayoutConstraint?
     private struct MessageSearch {
         var taskID: String, messageID: String, query: String
         var displayRange: NSRange? = nil, displayText: String? = nil
@@ -170,6 +172,7 @@ final class FormDocumentView: NSView {
     private var nameEditor: AgentNameEditor?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
+    private var generalSettingsPanel: AgentGeneralSettingsView?
     private var settingsFooter: NSStackView?
     private let executionLocation = AgentWorkbenchButton()
     private let branchControl = AgentWorkbenchButton()
@@ -257,6 +260,7 @@ final class FormDocumentView: NSView {
         }
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
+        if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(conversationDisplayChanged), name: AgentGeneralSettings.changed, object: companion.generalSettings) }
         refreshPreferences(); refreshShortcutControls(); refreshAppearancePreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         refreshThemeStyle()
@@ -678,7 +682,12 @@ final class FormDocumentView: NSView {
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
         messageColumn.orientation = .vertical; messageColumn.alignment = .leading; messageColumn.spacing = 20; document.addSubview(messageColumn)
         messageColumn.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: history.contentView.widthAnchor), messageColumn.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20), messageColumn.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20), messageColumn.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), messageColumn.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -4)])
+        let readingTail = NSView(); readingTail.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(readingTail)
+        let tailHeight = readingTail.heightAnchor.constraint(equalToConstant: 0); readingSpace = tailHeight
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: history.contentView.widthAnchor), messageColumn.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20), messageColumn.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20), messageColumn.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), readingTail.topAnchor.constraint(equalTo: messageColumn.bottomAnchor), readingTail.leadingAnchor.constraint(equalTo: document.leadingAnchor), readingTail.trailingAnchor.constraint(equalTo: document.trailingAnchor), readingTail.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -4), tailHeight])
+        history.onUserScroll = { [weak self] in
+            guard let self, readingAnchorID != nil else { return }; readingAnchorID = nil; readingSpace?.constant = 0; window?.contentView?.layoutSubtreeIfNeeded()
+        }
         composer.font = .systemFont(ofSize: 14); composer.textContainerInset = NSSize(width: 2, height: 8); composer.drawsBackground = false; composer.isRichText = false; composer.allowsUndo = true
         composer.isAutomaticQuoteSubstitutionEnabled = false; composer.isAutomaticTextReplacementEnabled = false; composer.autoresizingMask = [.width]; composer.setAccessibilityLabel("消息")
         composer.onSend = { [weak self] in self?.send() }; composer.onInputChanged = { [weak self] in self?.composerChanged() }; composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
@@ -809,7 +818,7 @@ final class FormDocumentView: NSView {
         if showWorkspace { taskWorkspace.setVisible(true) }
         let monitorVisible = showInspector || monitorPanel?.isVisible == true
         resultsButton.state = monitorVisible ? .on : .off; resultsButton.setAccessibilityLabel(monitorVisible ? "隐藏任务监控" : "显示任务监控"); resultsButton.toolTip = monitorVisible ? "隐藏任务监控" : "显示任务监控"
-        messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
+        (Array(messageRows.values) + Array(reasoningRows.values)).forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
     @objc private func toggleTaskInspector() {
@@ -1263,6 +1272,7 @@ final class FormDocumentView: NSView {
             settingsForm.addArrangedSubview(group.view); group.view.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
         }
         if matches.isEmpty { settingsForm.addArrangedSubview(noSettings) }
+        if matches.contains(where: { $0.category == "general" }) { generalSettingsPanel?.matchSearch(query) }
         settingsScroll.contentView.scroll(to: .zero); settingsScroll.reflectScrolledClipView(settingsScroll.contentView)
     }
     private func buildChat() {
@@ -1436,8 +1446,13 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window")
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms)
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
+                generalSettingsPanel = panel
+                panel.onConversationPage = { [weak self] visible in
+                    guard let self, selectedTab == "settings", settingsCategory == "general", settingsSearch.stringValue.isEmpty else { return }
+                    settingsHeading.stringValue = visible ? "对话显示" : "常规"; pageTitle.stringValue = settingsHeading.stringValue
+                }
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
             if companion.usesAgent {
@@ -2174,7 +2189,8 @@ final class FormDocumentView: NSView {
         refreshThemeStyle()
         if let task = tasks.task(id) { bindAgentDraft(task) }
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
-        renderedIDs = []; messageRows = [:]; toolRows = [:]
+        renderedIDs = []; messageRows = [:]; toolRows = [:]; reasoningRows = [:]; processRows = [:]
+        readingTaskID = nil; lastHumanMessageID = nil; readingAnchorID = nil; readingSpace?.constant = 0
         selectedTab = "chat"; changeTab(); renderAgentMessages(); focusTaskInput()
         if let readIssue { setStatus(readIssue, error: true) }
         companion?.refreshAgentAnimation(); companion?.refreshVoiceBusy(); companion?.startPendingVoiceListen()
@@ -2929,8 +2945,18 @@ final class FormDocumentView: NSView {
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true
         updateWorkbenchLayout()
-        let follow = messageSearch == nil && taskFind.isHidden && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
+        var follow = messageSearch == nil && taskFind.isHidden && (renderedIDs.isEmpty || history.contentView.bounds.maxY >= (history.documentView?.bounds.height ?? 0) - 65)
         let messages = task.messages.filter { ["user", "assistant"].contains($0.role) && $0.nativeContext != true }
+        let display = companion?.generalSettings.settings.conversationDisplay ?? .init()
+        let latestHuman = messages.last(where: \.isHumanInput)?.id
+        let newInput = readingTaskID == task.id && latestHuman != lastHumanMessageID && latestHuman != nil
+        if readingTaskID != task.id { readingAnchorID = nil; readingSpace?.constant = 0 }
+        if newInput { readingAnchorID = display.readingStart ? latestHuman : nil; follow = !display.readingStart }
+        readingTaskID = task.id; lastHumanMessageID = latestHuman
+        if !display.readingStart || messageSearch != nil || !taskFind.isHidden { readingAnchorID = nil; readingSpace?.constant = 0 }
+        let processes = AgentConversationDisplay.processes(task)
+        let processOwner = Dictionary(processes.flatMap { process in process.messageIDs.map { ($0, process.replyID) } }, uniquingKeysWith: { _, latest in latest })
+        let processStarts = Dictionary(processes.compactMap { process in process.messageIDs.first.map { ($0, process) } }, uniquingKeysWith: { _, latest in latest })
         let fileRollbackMessages = AgentRoundRollback.availableMessages(task)
         let fileMap = Dictionary((task.attachments ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let snapshotCalls = Set(task.messages.flatMap { $0.toolCalls ?? [] }.filter { $0.name == "canvas_screenshot" }.suffix(4).map(\.id))
@@ -2950,31 +2976,42 @@ final class FormDocumentView: NSView {
         }
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
+            if message.reasoning?.isEmpty == false { ids.append("reasoning:" + message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
         }
+        ids += processes.map { "process:" + $0.replyID }
         if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash + tasks.canvases.previewSignature($0, taskID: task.id) } }
         ids += inlineSnapshots.keys.sorted().map { "snapshot:" + $0 + ":" + inlineSnapshots[$0]!.id }
         if ids != renderedIDs {
+            for process in processRows.values { process.body.arrangedSubviews.forEach { process.body.removeArrangedSubview($0); $0.removeFromSuperview() } }
             messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
             var next: [String: ChatMessageRow] = [:], nextTools: [String: AgentToolRow] = [:]
+            var nextReasoning: [String: ChatMessageRow] = [:], nextProcesses: [String: AgentReplyProcessRow] = [:]
+            func append(_ view: NSView, to column: NSStackView) { column.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
             var shownCanvases: Set<String> = []
             for message in messages {
+                if let process = processStarts[message.id] {
+                    let row = processRows[process.replyID] ?? AgentReplyProcessRow(); nextProcesses[process.replyID] = row; append(row, to: messageColumn)
+                }
+                let processID = processOwner[message.id], processBody = processID.flatMap { nextProcesses[$0]?.body } ?? messageColumn
+                if let reasoning = message.reasoning, !reasoning.isEmpty {
+                    let row = reasoningRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: "reasoning-" + message.id, role: "assistant", content: reasoning), workbench: true, reasoning: true)
+                    nextReasoning[message.id] = row; row.fit(width: history.contentView.bounds.width - 40); append(row, to: processBody)
+                }
                 if ids.contains(message.id) {
                     let row = messageRows[message.id] ?? ChatMessageRow(message: ChatMessage(id: message.id, role: message.role, content: message.content), workbench: true); next[message.id] = row
-                    row.fit(width: history.contentView.bounds.width - 40); messageColumn.addArrangedSubview(row)
-                    row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                    row.fit(width: history.contentView.bounds.width - 40); append(row, to: processID == message.id ? messageColumn : processBody)
                 }
                 for call in (message.toolCalls ?? []).filter({ $0.name != "load_tools" }) {
                     let row = toolRows[call.id] ?? AgentToolRow(); row.useWorkbenchStyle(); nextTools[call.id] = row
-                    messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
-                    messageColumn.setCustomSpacing(8, after: row)
+                    append(row, to: processBody); processBody.setCustomSpacing(8, after: row)
                     if let file = inlineSnapshots[call.id], let capture = file.canvasCapture {
                         let image = AgentCanvas.capturePreviewImage(file, store: tasks, taskID: task.id)
                         if image != nil { shownCanvases.insert(capture.canvasID + capture.sourceHash) }
                         let record = AgentCanvasRecord(id: capture.canvasID, title: capture.title, hash: capture.sourceHash)
                         let snapshot = AgentCanvasPreviewRow(record: record, image: image, actionTitle: "查看快照")
                         snapshot.onOpen = { [weak self] in guard self?.agentTaskID == task.id else { return }; self?.openAttachment(taskID: task.id, id: file.id) }
-                        messageColumn.addArrangedSubview(snapshot); snapshot.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
+                        append(snapshot, to: processBody)
                     }
                 }
             }
@@ -3011,17 +3048,24 @@ final class FormDocumentView: NSView {
                     messageColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: messageColumn.widthAnchor).isActive = true
                 }
             }
-            messageRows = next; toolRows = nextTools; renderedIDs = ids
+            messageRows = next; toolRows = nextTools; reasoningRows = nextReasoning; processRows = nextProcesses; renderedIDs = ids
         }
         let events = Dictionary(task.events.compactMap { event in event.toolCallID.map { ($0, event) } }, uniquingKeysWith: { _, latest in latest })
+        let responses = Dictionary(task.messages.filter { $0.role == "tool" }.compactMap { message in message.toolCallID.map { ($0, message.content) } }, uniquingKeysWith: { _, latest in latest })
+        for process in processes {
+            processRows[process.replyID]?.update(collapsed: display.collapseProcess, toolCount: process.toolCount, showCount: display.toolCount)
+            if let search = messageSearch, search.taskID == task.id, process.messageIDs.contains(search.messageID) { processRows[process.replyID]?.setExpanded(true) }
+        }
         let owner = task.id
         for message in messages {
             let streaming = task.status == .running && message.id == task.messages.last?.id && (message.toolCalls ?? []).isEmpty
             let search = messageSearch?.taskID == task.id && messageSearch?.messageID == message.id ? messageSearch : nil
             messageRows[message.id]?.update(message.content, markdown: !streaming, searchQuery: search?.query, searchDisplayRange: search?.displayRange, searchDisplayText: search?.displayText)
+            reasoningRows[message.id]?.update(message.reasoning ?? "", markdown: false)
             messageRows[message.id]?.setAttachments((message.attachmentIDs ?? []).compactMap { fileMap[$0] }, onOpen: { [weak self] id in self?.openAttachment(taskID: owner, id: id) })
             if let row = messageRows[message.id] {
                 let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
+                row.setDuration(eligible && !streaming ? display.durationFormat.text(message.duration) : nil)
                 let canBranch = eligible && !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
                 row.setReplyActions(binding: eligible ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch,
                     copy: { [weak self] in self?.replyAction("copy", taskID: owner, messageID: message.id, hash: hash) ?? false },
@@ -3035,7 +3079,8 @@ final class FormDocumentView: NSView {
             for call in message.toolCalls ?? [] {
                 var visibleCall = call
                 if call.name == "delegate_task", let child = (events[call.id]?.childTaskID).flatMap({ tasks.task($0) }) { visibleCall.displayName = "委派 · " + (child.team?.team.name ?? child.agent?.profile.name ?? child.title) }
-                toolRows[call.id]?.update(call: visibleCall, event: events[call.id])
+                toolRows[call.id]?.applyDefaultExpanded(display.expandTools)
+                toolRows[call.id]?.update(call: visibleCall, event: events[call.id], response: responses[call.id], durationFormat: display.durationFormat)
                 let image = task.messages.first(where: { $0.role == "tool" && $0.toolCallID == call.id })?.visuals?.compactMap { fileMap[$0.id] }.first(where: { $0.browserCapture != nil || $0.desktopCapture != nil || $0.canvasCapture != nil })
                 toolRows[call.id]?.setCapture(image) { [weak self] in if let image { self?.openAttachment(taskID: owner, id: image.id) } }
                 if let childID = events[call.id]?.childTaskID, let child = tasks.task(childID) { toolRows[call.id]?.setSubtask(child) { [weak self] in self?.selectAgentTask(childID) } }
@@ -3066,6 +3111,15 @@ final class FormDocumentView: NSView {
         composer.isEditable = !task.archived && !managed
         taskFind.update(taskID: task.id, sources: taskFindSources(task))
         window?.contentView?.layoutSubtreeIfNeeded()
+        if let anchorID = readingAnchorID, let row = messageRows[anchorID], let document = history.documentView, history.contentView.bounds.height > 0 {
+            let y = row.convert(row.bounds, to: document).minY
+            let remaining = messageColumn.frame.maxY + 4 - y
+            let space = max(0, history.contentView.bounds.height - remaining)
+            readingSpace?.constant = space; window?.contentView?.layoutSubtreeIfNeeded()
+            if space > 0 {
+                history.contentView.scroll(to: NSPoint(x: 0, y: y)); history.reflectScrolledClipView(history.contentView); follow = false
+            } else { readingAnchorID = nil; follow = true }
+        }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
         if follow, let document = history.documentView {
             history.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - history.contentView.bounds.height))); history.reflectScrolledClipView(history.contentView)
@@ -3102,6 +3156,34 @@ final class FormDocumentView: NSView {
     func refreshWorktreeRetention() { worktreePolicyPanel?.refreshState(); if companion?.usesAgent == true { scheduleRender() } }
     func refreshAutomationBadge() { let count = companion?.agentStore?.automations.unreadCount ?? 0; automationButton.title = "自动化" + (count > 0 ? " · \(count)" : "") }
     @objc private func automationDefinitionsChanged() { refreshAutomationBadge(); scheduleRender() }
+    @objc private func conversationDisplayChanged() {
+        if companion?.generalSettings.settings.conversationDisplay.readingStart != true { readingAnchorID = nil; readingSpace?.constant = 0 }
+        scheduleRender()
+    }
+    @discardableResult func showConversationDisplaySettings() -> Bool {
+        guard showSettingsCategory("general"), let panel = generalSettingsPanel else { return false }; panel.showConversation(true); return true
+    }
+    func conversationDisplayReadback() -> [String: Any] {
+        let document = history.documentView
+        let rows = messageRows.mapValues { row -> [String: Any] in
+            ["text": row.text, "visible": !row.isHiddenOrHasHiddenAncestor, "duration": row.visibleDuration ?? "", "frame": NSStringFromRect(document.map { row.convert(row.bounds, to: $0) } ?? .zero)]
+        }
+        return ["settingsPageVisible": generalSettingsPanel?.conversationVisible == true && selectedTab == "settings", "heading": settingsHeading.stringValue,
+                "processes": processRows.mapValues { $0.readback() }, "tools": toolRows.mapValues { $0.readback() }, "messages": rows, "reasoning": reasoningRows.mapValues { $0.text },
+                "readingAnchor": readingAnchorID ?? "", "readingSpace": Double(readingSpace?.constant ?? 0), "viewport": NSStringFromRect(history.contentView.bounds), "documentHeight": Double(document?.bounds.height ?? 0),
+                "draft": composer.string, "modelRequests": currentAgentTask?.modelReceipts?.count ?? 0]
+    }
+    func checkConversationDisplay(_ action: String, id: String = "", query: String = "") {
+        guard CommandLine.arguments.contains("--conversation-display-check") else { return }
+        switch action {
+        case "collapseTool": toolRows[id]?.setExpanded(false, animated: false)
+        case "expandProcess": processRows[id]?.setExpanded(true)
+        case "cancelReading": history.onUserScroll?()
+        case "scrollTop": history.contentView.scroll(to: .zero); history.reflectScrolledClipView(history.contentView)
+        case "search": if let taskID = agentTaskID { selectAgentTask(taskID, searchQuery: query, messageID: id) }
+        default: break
+        }
+    }
     private func preparedAutomationWindow(_ store: AgentStore) -> AgentAutomationWindow {
         if let existing = automationWindow { return existing }
         let manager = AgentAutomationWindow(store: store)

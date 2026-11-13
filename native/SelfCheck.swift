@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--conversation-display-check") { await runConversationDisplayCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--question-auto-skip-check") { await runQuestionAutoSkipCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--general-settings-check") { await runGeneralSettingsCheck(output); NSApp.terminate(nil); return }
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
@@ -76,6 +77,7 @@ import WebKit
                 }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--question-auto-skip-fixtures") || CommandLine.arguments.contains("--question-auto-skip-reopen") { try prepareQuestionAutoSkipUI(output, seed: CommandLine.arguments.contains("--question-auto-skip-fixtures")) }
+                if CommandLine.arguments.contains("--conversation-display-fixtures") || CommandLine.arguments.contains("--conversation-display-reopen") { try prepareConversationDisplayUI(output, seed: CommandLine.arguments.contains("--conversation-display-fixtures")) }
                 if CommandLine.arguments.contains("--name-editor-fixtures") || CommandLine.arguments.contains("--name-editor-reopen") { try prepareNameEditorUI(output, seed: CommandLine.arguments.contains("--name-editor-fixtures")) }
                 if CommandLine.arguments.contains("--unsaved-changes-fixtures") || CommandLine.arguments.contains("--unsaved-changes-reopen") { try await prepareUnsavedChangesUI(output, seed: CommandLine.arguments.contains("--unsaved-changes-fixtures")) }
                 if CommandLine.arguments.contains("--operation-confirmation-fixtures") || CommandLine.arguments.contains("--operation-confirmation-reopen") { try await prepareOperationConfirmationUI(output, seed: CommandLine.arguments.contains("--operation-confirmation-fixtures")) }
@@ -174,6 +176,14 @@ import WebKit
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
                     mcpInput?.pollUI()
+                    if CommandLine.arguments.contains("--conversation-display-fixtures") || CommandLine.arguments.contains("--conversation-display-reopen"),
+                       let data = try? Data(contentsOf: output.appendingPathComponent("conversation-display-reading-step.json")) {
+                        let request = try JSONDecoder().decode([String: String].self, from: data)
+                        guard let label = request["id"], label.range(of: "^[a-z0-9-]{1,60}$", options: .regularExpression) != nil, let step = request["step"] else { throw PetError("公开阅读步骤无效") }
+                        try FileManager.default.removeItem(at: output.appendingPathComponent("conversation-display-reading-step.json"))
+                        try conversationDisplayReadingStep(step, output: output)
+                        try write(["appPID": getpid(), "binaryHash": hash, "step": step, "success": true, "modelRequests": requests], "conversation-display-step-" + label + ".json")
+                    }
                     if let name = try? String(contentsOf: output.appendingPathComponent("capture-manual-ui-" + pid), encoding: .utf8), name != capture, name.range(of: "^[a-z0-9-]{1,60}$", options: .regularExpression) != nil {
                         capture = name; var value = control.organizationSnapshot(); value["appPID"] = getpid(); value["binaryHash"] = hash; value["modelRequests"] = requests
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
@@ -186,6 +196,7 @@ import WebKit
                         value["generalSettings"] = ["menuBarIcon": generalSettings.settings.menuBarIcon, "completionNotifications": generalSettings.settings.completionNotifications.rawValue, "approvalNotifications": generalSettings.settings.approvalNotifications, "questionNotifications": generalSettings.settings.questionNotifications, "runningInput": generalSettings.settings.runningInput.rawValue, "goalMaximumTurns": generalSettings.settings.goalMaximumTurns, "slashMenuPresentation": generalSettings.settings.slashMenuPresentation.rawValue, "artifactLocation": generalSettings.settings.artifactLocation.rawValue, "questionAutoSkip": generalSettings.settings.questionAutoSkip, "statusItemVisible": statusItem?.isVisible == true, "activationPolicy": NSApp.activationPolicy().rawValue]
                         value["artifactOpening"] = await inputControl.artifactOpeningReadback()
                         value["questionAutoSkip"] = questionAutoSkip?.readback() ?? [:]
+                        value["conversationDisplay"] = control.conversationDisplayReadback()
                         value["questionRecords"] = tasks.tasks.compactMap { tasks.task($0.id) }.filter { $0.status == .waiting || $0.approvals.contains { $0.decision == "skip" || $0.autoSkipCancelled == true } }.map { record in
                             ["taskID": record.id, "title": record.title, "status": record.status.rawValue, "approvals": record.approvals.map { ["id": $0.id, "callID": $0.call.id, "name": $0.call.name, "decision": $0.decision ?? "", "interactionCancelled": $0.autoSkipCancelled == true] as [String: Any] }, "toolResults": record.messages.filter { $0.role == "tool" }.map { ["callID": $0.toolCallID ?? "", "content": $0.content] }] as [String: Any]
                         }

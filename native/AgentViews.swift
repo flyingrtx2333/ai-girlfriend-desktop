@@ -511,6 +511,7 @@ private final class AgentTaskTable: NSTableView {
     private var previewWidth: NSLayoutConstraint!, onPreview: (() -> Void)?
     private var height: NSLayoutConstraint!, lastDetail = ""
     private(set) var expanded = false, lastTransitionDuration: TimeInterval = 0
+    private var defaultExpanded: Bool?
     private var buttonLeading: NSLayoutConstraint!, workbench = false
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false
@@ -530,7 +531,7 @@ private final class AgentTaskTable: NSTableView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func useWorkbenchStyle() { workbench = true; buttonLeading.constant = 46; button.font = .systemFont(ofSize: 14); statusGlyph.isHidden = false; wantsLayer = true; layer?.masksToBounds = true }
-    func update(call: AgentToolCall, event: AgentEvent?) {
+    func update(call: AgentToolCall, event: AgentEvent?, response: String? = nil, durationFormat: AgentConversationDisplay.DurationFormat = .seconds) {
         let names = ["read_file": "读取", "list_directory": "浏览", "search_files": "搜索文件", "write_file": "写入", "edit_file": "编辑", "run_command": "终端", "web_search": "联网搜索", "fetch_url": "读取网页", "update_plan": "更新计划", "ask_user": "需要你", "finish_task": "核对结果", "read_task_history": "查回历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "StructuredOutput": "校验结论", "list_agents": "查找 Agent", "delegate_task": "委派任务", "draft_agent": "Agent 草稿", "draft_automation": "自动化草稿"]
         let state = event?.status ?? "running"
         let symbol = state == "completed" ? (workbench ? "checkmark.circle.fill" : "checkmark.circle") : state == "failed" ? "exclamationmark.circle" : state == "waiting" ? "hand.raised" : state == "stopped" ? "stop.circle" : "circle.dotted"
@@ -547,8 +548,10 @@ private final class AgentTaskTable: NSTableView {
         let browserNames = ["browser_open": "打开网页", "browser_read": "读取页面", "browser_action": "网页操作", "browser_close": "关闭浏览器", "browser_tabs": "浏览器标签页", "browser_screenshot": "截取页面", "desktop_status": "电脑操作状态", "desktop_windows": "查找窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取窗口", "desktop_screenshot": "截取窗口", "desktop_action": "窗口操作", "desktop_disconnect": "断开窗口", "canvas_create": "生成画布", "canvas_read": "读取画布", "canvas_update": "更新画布", "canvas_edit": "编辑画布", "canvas_restore": "恢复画布版本", "canvas_inspect": "核对画布", "canvas_screenshot": "截取画布", "canvas_list": "任务画布", "load_tools": "启用工具"]
         let knowledgeNames = ["list_knowledge": "知识库目录", "search_knowledge": "检索知识库", "read_knowledge": "读取知识文件", "read_project_knowledge": "读取知识卡片", "edit_project_knowledge": "更新知识卡片", "save_knowledge_card": "保存卡片草稿"]
         button.title = (expanded ? "⌄ " : "› ") + (call.displayName ?? names[call.name] ?? browserNames[call.name] ?? knowledgeNames[call.name] ?? call.name) + "  " + String(visibleDetail.prefix(85))
+        if let duration = durationFormat.text(event?.duration) { button.title += " · " + duration }
         button.cell?.lineBreakMode = .byTruncatingTail
-        let content = (event?.detail ?? AgentRuntime.description(call))
+        let input = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8))).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) }.flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
+        let content = "输入\n" + input + "\n\n响应\n" + (response ?? event?.detail ?? "等待响应")
         if content != lastDetail { lastDetail = content; text.string = content }
         button.toolTip = detail; button.setAccessibilityLabel(button.title)
     }
@@ -564,10 +567,13 @@ private final class AgentTaskTable: NSTableView {
     @objc private func toggle() {
         setExpanded(!expanded)
     }
+    func applyDefaultExpanded(_ value: Bool) { guard defaultExpanded != value else { return }; defaultExpanded = value; setExpanded(value, animated: false) }
+    func readback() -> [String: Any] { ["expanded": expanded, "title": button.title, "detail": lastDetail, "detailVisible": !scroll.isHiddenOrHasHiddenAncestor] }
     func setExpanded(_ value: Bool, animated: Bool = true) {
         guard expanded != value else { return }; expanded = value; scroll.isHidden = !expanded
         lastTransitionDuration = AgentWorkbenchTheme.layout(in: superview, duration: 0.14, animated: workbench && animated) { self.height.constant = self.expanded ? 202 : 28 }
         if button.title.hasPrefix("› ") { button.title = "⌄ " + button.title.dropFirst(2) }
         else { button.title = "› " + button.title.dropFirst(2) }
+        button.setAccessibilityLabel(button.title)
     }
 }

@@ -885,6 +885,7 @@ import Foundation
                 if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                 preparationPasses = 0
                 let requiredTool = task.kind == AgentKnowledgeCards.kind && definitions.count == 1 ? (definitions[0]["function"] as? [String: Any])?["name"] as? String : nil
+                let replyStarted = ProcessInfo.processInfo.systemUptime
                 var turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: context, tools: definitions, requiredTool: requiredTool, visuals: visuals, messageID: assistant.id, onReceipt: { [store] in store.recordUsage(id, $0) }) { [weak self] text in
                     guard let self, self.active[id]?.token == run.token, !run.restartAfterInterruption else { return }
                     self.store.update(id, persist: false) { if let i = $0.messages.firstIndex(where: { $0.id == assistant.id }) { $0.messages[i].content += text } }
@@ -900,7 +901,7 @@ import Foundation
                     for i in record.messages.indices {
                         if let references = record.messages[i].visuals, !references.isEmpty, references.allSatisfy(deliveredImages.contains) { record.messages[i].visualsDelivered = true }
                     }
-                    if let i = record.messages.firstIndex(where: { $0.id == assistant.id }) { record.messages[i].content = turn.content; record.messages[i].reasoning = turn.reasoning.isEmpty ? nil : turn.reasoning; record.messages[i].toolCalls = turn.calls.isEmpty ? nil : turn.calls }
+                    if let i = record.messages.firstIndex(where: { $0.id == assistant.id }) { record.messages[i].content = turn.content; record.messages[i].reasoning = turn.reasoning.isEmpty ? nil : turn.reasoning; record.messages[i].toolCalls = turn.calls.isEmpty ? nil : turn.calls; record.messages[i].duration = max(0, ProcessInfo.processInfo.systemUptime - replyStarted) }
                     record.pendingCalls = turn.calls
                     if !visuals.isEmpty {
                         let detail = visuals.values.flatMap { $0 }.map { "\($0.name) · 第\($0.part)部分 · \($0.image.width)×\($0.image.height)" }.sorted().joined(separator: "\n")

@@ -31,19 +31,21 @@ final class ChatMessageRow: NSView {
     private(set) var searchUsesSource = false
     private let isUser: Bool
     private let workbench: Bool
+    private let isReasoning: Bool
     private var renderedSize: CGFloat = 0
     private var renderedFontStyle: AgentContentFont?
     private let attachments = AgentAttachmentStrip()
     private let body = NSStackView(), replyActions = NSStackView()
     private let copyReply = NSButton(), helpful = NSButton(), unhelpful = NSButton(), branchReply = NSButton()
+    private let duration = NSTextField(labelWithString: "")
     private let roundActions = NSStackView(), rollbackFiles = NSButton(), editInput = NSButton()
     private var onRoundRollback: (() -> Void)?, onEditInput: (() -> Void)?
     private var replyBinding: String?, copiedReset: DispatchWorkItem?
     private var onCopyReply: (() -> Bool)?, onReplyFeedback: ((String) -> Void)?, onBranchReply: (() -> Void)?
-    init(message: ChatMessage, workbench: Bool = false) {
-        isUser = message.role == "user"; self.workbench = workbench
+    init(message: ChatMessage, workbench: Bool = false, reasoning: Bool = false) {
+        isUser = message.role == "user"; self.workbench = workbench; isReasoning = reasoning
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
-        setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel(isUser ? "你的消息" : "小鲸回复"); setAccessibilityIdentifier("message-" + message.id)
+        setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel(reasoning ? "思考过程" : isUser ? "你的消息" : "小鲸回复"); setAccessibilityIdentifier("message-" + message.id)
         let user = message.role == "user", container = AgentThemeView(fill: message.role == "user" && !workbench ? AgentWorkbenchTheme.subtle : .clear)
         container.translatesAutoresizingMaskIntoConstraints = false; container.wantsLayer = true
         container.layer?.cornerRadius = 14; addSubview(container); container.addSubview(body)
@@ -55,6 +57,7 @@ final class ChatMessageRow: NSView {
             button.target = self; button.action = action; button.toolTip = title; button.setAccessibilityLabel(title)
             button.widthAnchor.constraint(equalToConstant: 22).isActive = true; button.heightAnchor.constraint(equalToConstant: 22).isActive = true; replyActions.addArrangedSubview(button)
         }; replyActions.addArrangedSubview(NSView())
+        duration.font = .systemFont(ofSize: 11); duration.textColor = AgentWorkbenchTheme.secondaryText; duration.setAccessibilityLabel("回复耗时"); duration.isHidden = true; replyActions.addArrangedSubview(duration)
         roundActions.spacing = 6; roundActions.alignment = .centerY; roundActions.isHidden = true
         rollbackFiles.isBordered = false; rollbackFiles.font = .systemFont(ofSize: 12); rollbackFiles.contentTintColor = AgentWorkbenchTheme.secondaryText
         rollbackFiles.image = NSImage(systemSymbolName: "arrow.uturn.backward", accessibilityDescription: nil); rollbackFiles.imagePosition = .imageLeading
@@ -116,14 +119,16 @@ final class ChatMessageRow: NSView {
     @objc private func markHelpful() { onReplyFeedback?("helpful") }
     @objc private func markUnhelpful() { onReplyFeedback?("unhelpful") }
     @objc private func branchResponse() { onBranchReply?() }
+    func setDuration(_ value: String?) { duration.stringValue = value.map { "耗时 " + $0 } ?? ""; duration.isHidden = value == nil }
+    var visibleDuration: String? { duration.isHidden ? nil : duration.stringValue }
     func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil, searchDisplayRange: NSRange? = nil, searchDisplayText: String? = nil) {
-        let size = AgentAppearance.messageSize + (workbench ? 0 : 1)
+        let size = AgentAppearance.messageSize + (isReasoning ? -1 : workbench ? 0 : 1)
         guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || renderedSize != size || renderedFontStyle != AgentContentAppearance.fontStyle || label.stringValue.isEmpty else { return }
         renderedSize = size; renderedFontStyle = AgentContentAppearance.fontStyle
         text = value; renderedMarkdown = markdown; highlightQuery = searchQuery; highlightDisplayRange = searchDisplayRange; highlightDisplayText = searchDisplayText
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
         if workbench { paragraph.lineBreakMode = .byCharWrapping }
-        let content = value.isEmpty ? "…" : value, font = AgentContentAppearance.font(size: size), color = NSColor.labelColor
+        let content = value.isEmpty ? "…" : value, font = AgentContentAppearance.font(size: size), color = isReasoning ? AgentWorkbenchTheme.secondaryText : NSColor.labelColor
         let plain = NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
         var output = isUser || !markdown ? plain : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
         searchRange = nil; searchUsesSource = false

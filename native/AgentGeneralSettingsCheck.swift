@@ -34,6 +34,7 @@ import UserNotifications
             let baseline = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
             let legacyDirectory = output.appendingPathComponent("legacy-general"); try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: false)
             var legacy = baseline; legacy.removeValue(forKey: "runningInput"); legacy.removeValue(forKey: "goalMaximumTurns"); legacy.removeValue(forKey: "slashMenuPresentation"); legacy.removeValue(forKey: "artifactLocation"); legacy.removeValue(forKey: "questionAutoSkip")
+            legacy.removeValue(forKey: "conversationDisplay")
             let legacyBytes = try JSONSerialization.data(withJSONObject: legacy), legacyFile = legacyDirectory.appendingPathComponent("general.json"); try legacyBytes.write(to: legacyFile)
             let old = AgentGeneralSettings(directory: legacyDirectory); try old.save(old.settings)
             checks["LegacyFiveKeyConfigurationLoadsWithoutRewriting"] = try old.error == nil && old.settings.runningInput == .queue && old.settings.goalMaximumTurns == 20 && old.settings.slashMenuPresentation == .recent && old.settings.artifactLocation == .workspace && Data(contentsOf: legacyFile) == legacyBytes
@@ -41,16 +42,19 @@ import UserNotifications
             checks["ExplicitLegacyEditKeepsExistingNotificationPreferences"] = AgentGeneralSettings(directory: legacyDirectory).settings == upgraded && upgraded.completionNotifications == .unfocused && upgraded.approvalNotifications && upgraded.questionNotifications && upgraded.menuBarIcon
             let previousDirectory = output.appendingPathComponent("previous-general"); try FileManager.default.createDirectory(at: previousDirectory, withIntermediateDirectories: false)
             var previous = baseline; previous.removeValue(forKey: "slashMenuPresentation"); previous.removeValue(forKey: "artifactLocation"); previous.removeValue(forKey: "questionAutoSkip"); previous["runningInput"] = "interrupt"; previous["goalMaximumTurns"] = 100
+            previous.removeValue(forKey: "conversationDisplay")
             let previousBytes = try JSONSerialization.data(withJSONObject: previous), previousFile = previousDirectory.appendingPathComponent("general.json"); try previousBytes.write(to: previousFile)
             let existing = AgentGeneralSettings(directory: previousDirectory); try existing.save(existing.settings)
             checks["ExistingTaskPreferencesLoadWithoutRewritingOrResetting"] = try existing.error == nil && existing.settings.runningInput == .interrupt && existing.settings.goalMaximumTurns == 100 && existing.settings.slashMenuPresentation == .recent && Data(contentsOf: previousFile) == previousBytes
             let slashDirectory = output.appendingPathComponent("slash-general"); try FileManager.default.createDirectory(at: slashDirectory, withIntermediateDirectories: false)
             var slashLegacy = baseline; slashLegacy.removeValue(forKey: "artifactLocation"); slashLegacy.removeValue(forKey: "questionAutoSkip"); slashLegacy["slashMenuPresentation"] = "collapsed"
+            slashLegacy.removeValue(forKey: "conversationDisplay")
             let slashBytes = try JSONSerialization.data(withJSONObject: slashLegacy), slashFile = slashDirectory.appendingPathComponent("general.json"); try slashBytes.write(to: slashFile)
             let slashExisting = AgentGeneralSettings(directory: slashDirectory); try slashExisting.save(slashExisting.settings)
             checks["ExistingSlashPreferencesLoadWithoutRewritingOrResetting"] = try slashExisting.error == nil && slashExisting.settings.artifactLocation == .workspace && slashExisting.settings.slashMenuPresentation == .collapsed && Data(contentsOf: slashFile) == slashBytes
             let artifactDirectory = output.appendingPathComponent("artifact-general"); try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: false)
             var artifactLegacy = baseline; artifactLegacy.removeValue(forKey: "questionAutoSkip"); artifactLegacy["artifactLocation"] = "window"
+            artifactLegacy.removeValue(forKey: "conversationDisplay")
             let artifactBytes = try JSONSerialization.data(withJSONObject: artifactLegacy), artifactFile = artifactDirectory.appendingPathComponent("general.json"); try artifactBytes.write(to: artifactFile)
             let artifactExisting = AgentGeneralSettings(directory: artifactDirectory); try artifactExisting.save(artifactExisting.settings)
             checks["ExistingArtifactPreferencesKeepAutoSkipOffWithoutRewriting"] = try artifactExisting.error == nil && !artifactExisting.settings.questionAutoSkip && artifactExisting.settings.artifactLocation == .window && Data(contentsOf: artifactFile) == artifactBytes
@@ -118,7 +122,7 @@ import UserNotifications
             for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
                 let views = try controls(control)
-                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 9 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
+                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 10 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
                 checks[label + "GeneralPageHasNoDuplicateSave"] = !descendants(window.contentView!).contains { ($0 as? NSButton)?.title == "保存" && !$0.isHiddenOrHasHiddenAncestor }
             }
             window.setContentSize(NSSize(width: 1200, height: 774)); control.show(tab: "chat"); window.makeKeyAndOrderFront(nil); await wait(0.05)
