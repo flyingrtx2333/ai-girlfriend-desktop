@@ -45,6 +45,10 @@ import AppKit
             other.showAutomations()
             checks["eachTaskWindowOwnsItsAutomationView"] = other.automationWindow !== manager && other.automationWindow?.presentingWindow === other.window && manager.presentingWindow === control.window
             other.window?.performClose(nil)
+            report["otherWindowCloseImmediate"] = ["mainPageVisible": manager.isVisible, "otherWindowVisible": other.window?.isVisible == true]
+            let closeDeadline = Date().addingTimeInterval(3)
+            while other.window?.isVisible == true, Date() < closeDeadline { await wait(0.02) }
+            report["otherWindowCloseFinal"] = ["mainPageVisible": manager.isVisible, "otherWindowVisible": other.window?.isVisible == true]
             checks["closingOtherWindowRetainsMainPage"] = manager.isVisible && other.window?.isVisible != true
             checks.merge(try manager.checkPageOperations(fixture.automationID)) { _, new in new }
             report["selectionContrasts"] = manager.checkState()["selectionContrasts"]

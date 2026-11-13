@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--general-settings-check") { await runGeneralSettingsCheck(output); NSApp.terminate(nil); return }
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
         if CommandLine.arguments.contains("--mcp-input-check") { await runAgentMCPUserInputCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-find-check") { await runAgentTaskFindCheck(output); NSApp.terminate(nil); return }
@@ -179,6 +180,8 @@ import WebKit
                         value["contentAppearance"] = taskControls.map { $0.contentAppearanceReadback() }
                         value["fileIcons"] = taskControls.map { $0.fileIconsReadback() }
                         value["taskMonitor"] = taskControls.map { $0.taskMonitorReadback() }
+                        value["generalSettings"] = ["menuBarIcon": generalSettings.settings.menuBarIcon, "completionNotifications": generalSettings.settings.completionNotifications.rawValue, "approvalNotifications": generalSettings.settings.approvalNotifications, "questionNotifications": generalSettings.settings.questionNotifications, "statusItemVisible": statusItem?.isVisible == true, "activationPolicy": NSApp.activationPolicy().rawValue]
+                        value["systemNotifications"] = await automationNotifications.verificationReadback()
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]

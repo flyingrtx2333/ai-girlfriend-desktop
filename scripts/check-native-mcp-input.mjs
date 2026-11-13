@@ -1,4 +1,4 @@
-import { fork, spawnSync } from 'node:child_process';
+import { fork, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -64,10 +64,12 @@ async function verify() {
   const actualCommand = pid => spawnSync('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).stdout.trim();
   let pid;
   try {
-    const launched = spawnSync('/usr/bin/open', [...(ui ? [] : ['-g']), '-n', app, '--args', ...appArgs]);
-    if (launched.status !== 0) throw new Error('Candidate launch failed.');
+    let launchError;
+    const launched = spawn(binary, appArgs, { stdio: 'inherit' });
+    launched.once('error', error => { launchError = error; });
     let started;
     for (let attempt = 0; attempt < 120; attempt++) {
+      if (launchError) throw launchError;
       const marker = ui ? (await readdir(output)).find(name => /^manual-ui-process-\d+\.json$/.test(name)) : 'mcp-input-started.json';
       if (marker) started = await maybe(marker);
       if (started) break;
@@ -82,7 +84,7 @@ async function verify() {
       throw new Error('Original process ended before startup readback; preserve original output.');
     }
     pid = started.appPID;
-    if (actualCommand(pid) !== command || started.binaryHash !== binaryHash || (ui && (!started.modelTransmissionBlocked || started.modelRequestsAtStart !== 0))) throw new Error('Actual signed process did not match acceptance entry.');
+    if (pid !== launched.pid || actualCommand(pid) !== command || started.binaryHash !== binaryHash || (ui && (!started.modelTransmissionBlocked || started.modelRequestsAtStart !== 0))) throw new Error('Actual signed process did not match acceptance entry.');
     await writeFile(path.join(output, 'actual-process-command.json'), JSON.stringify({ pid, command, binaryHash, libraryHash }, null, 2));
     if (ui) console.log(JSON.stringify({ uiReady: true, output, appPID: pid, httpPID: worker.pid, publicURL: fixture.publicURL }));
     let report, warned = false;

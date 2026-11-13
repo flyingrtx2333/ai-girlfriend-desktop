@@ -21,6 +21,7 @@
     "native:check-microphone": "node scripts/check-native-microphone.mjs",
     "native:check-conversation": "node scripts/check-native-conversation.mjs",
     "native:check-settings": "node scripts/check-native-settings.mjs",
+    "native:check-general-settings": "node scripts/check-native-settings.mjs --general",
     "native:check-settings-pages": "node scripts/check-native-settings.mjs --pages",
     "native:check-sidebar": "node scripts/check-native-settings.mjs --sidebar",
     "native:check-content-appearance": "node scripts/check-native-settings.mjs --content",

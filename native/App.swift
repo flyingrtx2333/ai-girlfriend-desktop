@@ -54,6 +54,7 @@ final class PetWebView: WKWebView {
     lazy var contentAppearance = AgentContentAppearance(directory: store.directory)
     lazy var fileIcons = AgentFileIcons(directory: store.directory)
     lazy var taskMonitor = AgentTaskMonitor(directory: store.directory)
+    lazy var generalSettings = AgentGeneralSettings(directory: store.directory)
     lazy var shortcuts: AgentShortcuts = {
         let value = AgentShortcuts(directory: store.directory)
         value.onChange = { [weak self] in self?.refreshApplicationShortcuts() }
@@ -84,7 +85,7 @@ final class PetWebView: WKWebView {
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
-    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--conversation-workspace-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-remote-page-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--conversation-workspace-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-remote-page-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--general-settings-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -129,6 +130,7 @@ final class PetWebView: WKWebView {
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish", isDirectory: true)
         store = PreferencesStore(directory: directory, testing: checkDirectory != nil)
         super.init()
+        automationNotifications.allowsSystemDelivery = checkDirectory == nil || args.contains("--general-notifications-live-ui")
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -141,6 +143,9 @@ final class PetWebView: WKWebView {
         themeStyles.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshThemeStyle() } }
         contentAppearance.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshContentAppearance() } }
         taskMonitor.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshTaskMonitorPreferences() } }
+        generalSettings.onChange = { [weak self] in self?.syncMenuBarPreference() }
+        automationNotifications.preferences = { [weak self] in self?.generalSettings.settings ?? .init() }
+        automationNotifications.isTaskFocused = { [weak self] id in NSApp.isActive && self?.taskControls.contains(where: { $0.agentTaskID == id && $0.hasTaskFocus }) == true }
         setupMenu(); setupPet(); setupMouse()
         let workspace = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
@@ -179,6 +184,9 @@ final class PetWebView: WKWebView {
         try? store.saveHistory(); try? store.savePreferences()
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !taskControls.contains(where: { $0.window?.isVisible == true }) { inputControl.show(tab: "chat") }; return true
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationReady { return .terminateNow }
         guard !terminationPending else { return .terminateCancel }
@@ -203,8 +211,20 @@ final class PetWebView: WKWebView {
         // termination loop can otherwise block the calling MainActor task.
         return .terminateCancel
     }
-    func setupMenu() {
-        if !usesBackgroundAttachmentCheck {
+    func syncMenuBarPreference() {
+        guard !usesBackgroundAttachmentCheck else { return }
+        let visible = generalSettings.settings.menuBarIcon
+        let policy: NSApplication.ActivationPolicy = visible ? .accessory : .regular
+        if NSApp.activationPolicy() != policy {
+            let active = NSApp.isActive, owner = NSApp.keyWindow
+            NSApp.setActivationPolicy(policy)
+            if active {
+                DispatchQueue.main.async { [weak owner] in
+                    guard let owner, owner.isVisible else { return }; NSApp.activate(ignoringOtherApps: true); owner.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
+        if visible, statusItem == nil {
             statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             statusItem?.isVisible = true
             if let image = NSImage(systemSymbolName: "fish.fill", accessibilityDescription: "蓝色大肥鱼") {
@@ -213,6 +233,10 @@ final class PetWebView: WKWebView {
             statusItem?.button?.toolTip = "蓝色大肥鱼"
             statusItem?.menu = menu()
         }
+        if !visible, let statusItem { NSStatusBar.system.removeStatusItem(statusItem); self.statusItem = nil }
+    }
+    func setupMenu() {
+        syncMenuBarPreference()
         let main = NSMenu(), appMenu = NSMenu(), item = NSMenuItem()
         appMenu.addItem(withTitle: "停止录音", action: #selector(stopRecording), keyEquivalent: "\u{1b}").target = self
         appMenu.addItem(.separator())

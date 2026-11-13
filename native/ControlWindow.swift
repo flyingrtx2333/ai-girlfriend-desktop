@@ -79,6 +79,7 @@ final class FormDocumentView: NSView {
 @MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
+    var hasTaskFocus: Bool { selectedTab == "chat" && window?.isVisible == true && (window?.isKeyWindow == true || window?.childWindows?.contains(where: \.isKeyWindow) == true) }
     private var settingsReturnTab = "chat", settingsBackButton: NSButton?
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
@@ -93,7 +94,7 @@ final class FormDocumentView: NSView {
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
@@ -1252,7 +1253,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["general", "appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -1339,8 +1340,9 @@ final class FormDocumentView: NSView {
         var body: NSStackView!
         func group(_ category: String, _ title: String, _ keywords: String) {
             let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
-            let card = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line); card.translatesAutoresizingMaskIntoConstraints = false
-            card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+            let framed = category != "general"
+            let card = AgentThemeView(fill: framed ? .textBackgroundColor : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
+            card.layer?.cornerRadius = 12; card.layer?.borderWidth = framed ? 1 : 0
             body = stack([], vertical: true, spacing: 0); body.alignment = .centerX
             card.addSubview(body); pin(body, to: card)
             let section = stack([heading, card], vertical: true, spacing: 9)
@@ -1430,6 +1432,11 @@ final class FormDocumentView: NSView {
         resetPosition.controlSize = .large; resetPosition.font = .systemFont(ofSize: 13)
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
+            if companion.usesAgent {
+                group("general", "常规", "常规 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar")
+                let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
+                row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            }
             if companion.usesAgent {
                 for mode in AgentWorkMode.allCases {
                     group("modes", mode.title, "模式配置 编程 通用 绑定主题 森林 薄荷 蜜蜂 羊皮纸 项目选择入口 输入区运行环境 变更审阅 项目 文件夹 运行位置 运行环境 本地 工作树 分支 Git Mode Environment")
