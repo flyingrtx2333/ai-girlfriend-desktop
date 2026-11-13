@@ -45,6 +45,7 @@ import AppKit
             let controls = switches(content)
             guard controls.count == 6, let toggle = controls.first(where: { $0.identifier?.rawValue == "mode-coding-0" }) else { throw PetError("实际设置开关不完整") }
             checks["settingsPageContainsSixAccessibleModeControls"] = controls.allSatisfy { $0.accessibilityLabel()?.contains("：") == true }
+            checks.merge(control.checkModeSettingsSearch()) { _, next in next }
             for size in [NSSize(width: 1200, height: 774), NSSize(width: 780, height: 540)] {
                 control.window?.setFrame(NSRect(origin: .zero, size: size), display: false); content.layoutSubtreeIfNeeded()
                 checks["settings-\(Int(size.width))KeepsAllSwitchesInsideContentWidth"] = controls.allSatisfy { item in let frame = item.convert(item.bounds, to: content); return item.window === control.window && frame.minX >= 178 && frame.maxX <= size.width && frame.width >= 30 && frame.height >= 20 }
@@ -88,7 +89,7 @@ import AppKit
             checks["symbolicLinkConfigurationIsRejected"] = AgentModePresentation(directory: linked).error != nil
             checks["modeControlsRemainEnabledAfterValidReload"] = controls.allSatisfy(\.isEnabled)
             checks["allOriginalTaskFieldsAndModelPreferencesPreserved"] = try [coding, general, noWorkspace].map { try encoder.encode(tasks.task($0)!) } == originals && encoder.encode(store.preferences) == preferences
-            report["success"] = checks["allOriginalTaskFieldsAndModelPreferencesPreserved"] == true && checks.values.allSatisfy { $0 }
+            report["success"] = checks.count == 27 && checks["allOriginalTaskFieldsAndModelPreferencesPreserved"] == true && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mode-presentation-report.json"))

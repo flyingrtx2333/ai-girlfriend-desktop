@@ -1061,7 +1061,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["appearance", "modes", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["appearance", "modes", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -1241,7 +1241,7 @@ final class FormDocumentView: NSView {
         if let companion {
             if companion.usesAgent {
                 for mode in AgentWorkMode.allCases {
-                    group("modes", mode.title, "模式配置 编程 通用 项目 文件夹 运行位置 环境 本地 工作树 分支 Git 变更 审阅 Mode Environment")
+                    group("modes", mode.title, "模式配置 编程 通用 项目选择入口 输入区运行环境 变更审阅 项目 文件夹 运行位置 运行环境 本地 工作树 分支 Git Mode Environment")
                     let panel = AgentModeSettingsView(service: companion.modePresentation, mode: mode)
                     row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                 }
@@ -3127,6 +3127,20 @@ extension ControlWindow {
     func refreshModePresentation() {
         guard companion?.usesAgent == true, let task = currentAgentTask else { return }
         refreshBranch(task); updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    func checkModeSettingsSearch() -> [String: Bool] {
+        guard CommandLine.arguments.contains("--mode-presentation-check") else { return [:] }
+        let query = settingsSearch.stringValue, category = settingsCategory
+        defer { settingsSearch.stringValue = query; settingsCategory = category; updateSettingsSections() }
+        let groups = settingGroups.filter { $0.category == "modes" }.map(\.view)
+        var checks: [String: Bool] = [:]
+        for (text, key) in [("项目选择入口", "projectEntry"), ("运行环境", "environment"), ("变更审阅", "changeReview")] {
+            settingsSearch.stringValue = text; updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
+            checks["search-" + key + "ShowsBothModeFormsWithoutExtraSave"] = groups.count == 2 && groups.allSatisfy { $0.superview === settingsForm && !$0.isHiddenOrHasHiddenAncestor } && settingsHeading.stringValue == "搜索结果" && generalSettingsSave?.isHidden == true
+        }
+        settingsSearch.stringValue = "不存在的设置-a7k2m9v4"; updateSettingsSections()
+        checks["emptySettingsSearchHasNoSaveAction"] = noSettings.superview === settingsForm && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
+        return checks
     }
     func modePresentationReadback() -> [String: Any] {
         func changeRows(_ view: NSView) -> Int {
