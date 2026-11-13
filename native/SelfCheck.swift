@@ -53,6 +53,7 @@ import WebKit
         if CommandLine.arguments.contains("--mode-presentation-check") { await runModePresentationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--theme-styles-check") { await runThemeStylesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--content-appearance-check") { await runContentAppearanceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--file-icons-check") { await runFileIconsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
@@ -75,6 +76,7 @@ import WebKit
                 if CommandLine.arguments.contains("--unsaved-changes-fixtures") || CommandLine.arguments.contains("--unsaved-changes-reopen") { try await prepareUnsavedChangesUI(output, seed: CommandLine.arguments.contains("--unsaved-changes-fixtures")) }
                 if CommandLine.arguments.contains("--operation-confirmation-fixtures") || CommandLine.arguments.contains("--operation-confirmation-reopen") { try await prepareOperationConfirmationUI(output, seed: CommandLine.arguments.contains("--operation-confirmation-fixtures")) }
                 if CommandLine.arguments.contains("--content-appearance-fixtures") { try prepareContentAppearanceUI(output) }
+                if CommandLine.arguments.contains("--file-icons-fixtures") { _ = try await prepareFileIconsUI(output) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
@@ -172,6 +174,7 @@ import WebKit
                         value["modePresentation"] = control.modePresentationReadback()
                         value["themeStyles"] = taskControls.map { $0.themeStylesReadback() }
                         value["contentAppearance"] = taskControls.map { $0.contentAppearanceReadback() }
+                        value["fileIcons"] = taskControls.map { $0.fileIconsReadback() }
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]

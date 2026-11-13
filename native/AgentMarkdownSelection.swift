@@ -23,6 +23,15 @@ struct AgentMarkdownSelection {
         if item.action == #selector(redo(_:)) { return undoManager?.canRedo == true }
         return super.validateUserInterfaceItem(item)
     }
+    override func writeSelection(to pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        let range = selectedRange()
+        if type == .string, let storage = textStorage, range.location != NSNotFound, NSMaxRange(range) <= storage.length {
+            let value = storage.attributedSubstring(from: range); var decorated = false
+            value.enumerateAttribute(AgentFileIcons.marker, in: NSRange(location: 0, length: value.length)) { item, _, _ in if item != nil { decorated = true } }
+            if decorated { return pasteboard.setString(AgentFileIcons.plainText(value), forType: type) }
+        }
+        return super.writeSelection(to: pasteboard, type: type)
+    }
     override func accessibilityChildren() -> [Any]? { if let previewEditor { return [previewEditor] }; return super.accessibilityChildren() }
     // NSTextView tracks selection inside mouseDown and consumes mouseUp.
     override func mouseDown(with event: NSEvent) {

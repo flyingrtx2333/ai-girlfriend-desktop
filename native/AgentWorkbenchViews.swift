@@ -242,6 +242,7 @@ class AgentWorkbenchButton: NSButton {
         super.init(frame: .zero); self.title = title; target = self; action = #selector(open)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); imagePosition = .imageLeading; image?.size = NSSize(width: 15, height: 15)
         isBordered = false; alignment = .left; font = .systemFont(ofSize: 15); contentTintColor = .labelColor; cell?.lineBreakMode = .byTruncatingMiddle; toolTip = value
+        if symbol == "doc" { AgentFileIcons.bind(self, filename: title) }
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         heightAnchor.constraint(equalToConstant: inline ? 38 : 30).isActive = true; setAccessibilityLabel(title)
         if inline {

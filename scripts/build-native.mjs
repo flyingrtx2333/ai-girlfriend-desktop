@@ -128,6 +128,7 @@ for (const item of ['index.html', 'assets', 'canvas', 'office', 'diagrams', 'wik
 }
 await cp(path.join(sherpaRoot, 'model'), path.join(resources, 'wake-model'), { recursive: true });
 await mkdir(path.join(resources, 'licenses'), { recursive: true });
+await cp(path.join(root, 'native/FileIcons'), path.join(resources, 'file-icons'), { recursive: true });
 for (const name of ['Gitleaks-LICENSE.txt', 'ast-grep-LICENSE.txt', 'OSV-Scanner-LICENSE.txt', 'Opengrep-LICENSE.txt', 'Opengrep-NOTICE.txt']) await cp(path.join(security, name), path.join(resources, 'licenses', name));
 for (const name of ['LICENSE-sherpa.txt', 'LICENSE-onnxruntime.txt', 'THIRD-PARTY-NOTICES-onnxruntime.txt']) await cp(path.join(sherpaRoot, name), path.join(resources, 'licenses', name));
 for (const [repo, license] of [['swift-sdk', 'LICENSE'], ['swift-system', 'LICENSE.txt'], ['swift-log', 'LICENSE.txt'], ['eventsource', 'LICENSE.md']]) {

@@ -380,6 +380,9 @@ final class FormDocumentView: NSView {
         }
         return ["taskID": agentTaskID as Any? ?? NSNull(), "fontStyle": AgentContentAppearance.fontStyle.rawValue, "contentWidth": companion?.contentAppearance.settings.contentWidth.rawValue ?? "standard", "columnWidth": (workbenchColumnLeading?.firstItem as? NSView)?.bounds.width ?? 0, "composerWidth": composer.enclosingScrollView?.superview?.bounds.width ?? 0, "composerFont": composer.font?.fontName ?? "", "composerGlyphFonts": glyphFonts, "composerSize": composer.font?.pointSize ?? 0, "draft": composer.string, "messages": rows, "windowSize": [window.frame.width, window.frame.height]]
     }
+    func fileIconsReadback() -> [String: Any] {
+        guard let content = window?.contentView else { return [:] }; return AgentFileIcons.readback(in: content)
+    }
     func themeStylesReadback() -> [String: Any] {
         guard CommandLine.arguments.contains("--theme-styles-check") || CommandLine.arguments.contains("--manual-ui"), let window else { return [:] }
         window.contentView?.layoutSubtreeIfNeeded(); window.contentView?.displayIfNeeded()
@@ -1290,8 +1293,8 @@ final class FormDocumentView: NSView {
                     row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                 }
             }
-            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar")
-            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
+            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
+            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
             row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")

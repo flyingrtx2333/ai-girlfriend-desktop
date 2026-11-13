@@ -65,10 +65,10 @@ import ImageIO
         }
         func heading(_ title: String, level: Int) {
             let rendered = inline(title, font: .systemFont(ofSize: CGFloat(25 - min(5, level) * 2), weight: .semibold))
-            let base = anchor(rendered.string)
+            let headingTitle = AgentFileIcons.plainText(rendered), base = anchor(headingTitle)
             var name = base, count = 0
             while anchors.contains(name) { count += 1; name = base + "-\(count)" }; anchors.insert(name)
-            headings.append(Heading(title: rendered.string, anchor: name, level: level, range: NSRange(location: output.length, length: rendered.length)))
+            headings.append(Heading(title: headingTitle, anchor: name, level: level, range: NSRange(location: output.length, length: rendered.length)))
             append(rendered)
         }
         while index < lines.count {

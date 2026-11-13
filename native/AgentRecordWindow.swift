@@ -857,11 +857,16 @@ import UniformTypeIdentifiers
         return value
     }
     func checkTaskDocument(text value: String? = nil, action: String? = nil) async {
-        guard ["--task-workspace-check", "--video-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
+        guard ["--task-workspace-check", "--video-workspace-check", "--file-icons-check"].contains(where: CommandLine.arguments.contains) else { return }
         if let value, text.isEditable { displayMode.selectedSegment = 1; switchDocumentMode(); text.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: text)) }
         if action == "save" { saveFile(); await load?.value }
         else if action == "compare" { presentConflict() }
         else if action == "files" { toggleTaskFiles() }
+    }
+    func checkReloadDocument() {
+        guard CommandLine.arguments.contains("--file-icons-check"), let file = openedFile, let task = store.task(taskID),
+              let files = try? AgentFiles(workspace: task.workspace), let data = try? files.readData(file), let document = try? AgentTextFile.decode(data) else { return }
+        loadText(document, data: data, file: file, task: task)
     }
     func checkOpenKnowledgePlan() { if CommandLine.arguments.contains("--knowledge-page-check") { openWikiPlan() } }
     func checkKnowledgeReview(_ action: String, language: String? = nil) async -> AgentKnowledgeReviewWindow? {

@@ -82,6 +82,7 @@ import AppKit
         let result = AgentMarkdownDocument.render(source, document: file, files: files, width: max(220, bounds.width), cachedImages: cachedImages); document = result
         for diagram in result.diagrams { if let cached = cachedDrawings[diagram.source] { diagram.attachment.image = cached.image; drawings[diagram.range.location] = cached } }
         text.textStorage?.setAttributedString(result.body)
+        AgentFileIcons.track(text)
         outline.removeAllItems(); outline.addItem(withTitle: "章节")
         for heading in result.headings { outline.addItem(withTitle: String(repeating: "  ", count: max(0, heading.level - 1)) + heading.title) }
         outline.isEnabled = !result.headings.isEmpty

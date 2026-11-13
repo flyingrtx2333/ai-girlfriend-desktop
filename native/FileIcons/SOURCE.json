@@ -1,0 +1,11 @@
+{
+  "package": "material-file-icons",
+  "version": "2.4.0",
+  "source": "https://github.com/simonnilsson/material-file-icons",
+  "registryTarball": "https://registry.npmjs.org/material-file-icons/-/material-file-icons-2.4.0.tgz",
+  "registryIntegrity": "sha512-MgxhwBgoiNXyQdZVtXvdqP8t7Fu/Z3zW1aPeYN+UqtepzbKyf41b+Wme6DnwGk5Crt2JzmWLtl1XGE2YMooaQw==",
+  "iconSource": "https://github.com/material-extensions/vscode-material-icon-theme",
+  "upstreamLicense": "https://raw.githubusercontent.com/material-extensions/vscode-material-icon-theme/99e97c2630b22a0ec62dfb9af528e8e36ddaecdd/LICENSE.md",
+  "catalogSHA256": "eefcf405f68d684d2488e83c21f7aca3e00324ff731a084806003f018af18a47",
+  "generation": "Exported the complete icon data and first-match exact filename/extension maps; original SVG content unchanged. Native AppKit decodes SVG; no package code executes at runtime."
+}

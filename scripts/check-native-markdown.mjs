@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
+import { verifyNativeCandidate } from './native-signing.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tree = process.argv.includes('--wiki-tree'), tables = process.argv.includes('--tables'), encodings = process.argv.includes('--encodings'), conflicts = process.argv.includes('--conflicts'), editing = process.argv.includes('--editing') || conflicts || encodings || tables || tree;
@@ -126,9 +127,7 @@ if (encodings) {
 const binary = path.join(app, 'Contents/MacOS/BlueFatFish'), binaryHash = hash(await readFile(binary));
 let report;
 try {
-  command('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
-  const signing = spawnSync('/usr/bin/codesign', ['-d', '--verbose=4', app], { encoding: 'utf8' });
-  if (signing.status !== 0 || !/^Authority=(Developer ID Application:|Apple Development:)/m.test(signing.stderr) || !/^TeamIdentifier=8BPSC5L74V$/m.test(signing.stderr)) throw new Error('Use the project signing identity');
+  const signing = verifyNativeCandidate(app);
   command('/usr/bin/open', ['-n', app, '--args', '--check', output, '--' + prefix + '-check', '--' + prefix + '-source', source]);
   let ready;
   for (let i = 0; i < 480; i++) {
@@ -146,12 +145,13 @@ try {
     await pause(500);
   }
   if (!report) throw new Error('Keep the original reader process and inspect it before retrying');
+  report.signing = signing;
   const records = [];
   for (const name of await readdir(path.join(output, 'profile/agent'))) if (/^[0-9a-f-]{36}\.json$/i.test(name)) records.push(JSON.parse(await readFile(path.join(output, 'profile/agent', name), 'utf8')));
   const originalTask = records.find(record => record.id === ready.taskID), otherTask = records.find(record => record.id === ready.otherTaskID);
   report.actualTaskReadback = { tasks: records.length, modelRequests: records.reduce((sum, record) => sum + (record.modelReceipts?.length ?? 0), 0), messages: records.reduce((sum, record) => sum + record.messages.length, 0), queued: records.reduce((sum, record) => sum + (record.queuedMessages?.length ?? 0) + (record.queuedInputs?.length ?? 0), 0) };
   const originalDocuments = await Promise.all(Object.entries(sourceHashes).map(async ([name, digest]) => hash(await readFile(path.join(root, name))) === digest));
-  report.independent = { dailyProfileUnchanged: isDeepStrictEqual(before, await snapshot()), binaryMatches: report.binaryHash === binaryHash, projectSignatureVerified: true, originalRepositoryDocumentsUnchanged: originalDocuments.every(Boolean), actualTaskFilesHaveNoModelRequestsOrMessages: records.length >= 3 && report.actualTaskReadback.modelRequests === 0 && report.actualTaskReadback.messages === 0 && report.actualTaskReadback.queued === 0, bothTaskDraftsPersisted: (editing ? originalTask?.draft === '保留的A草稿' : originalTask?.draft?.startsWith('保留的A草稿\n\n[文件选文：docs/AGENT-READING.md]') === true) && otherTask?.draft === '保留的B草稿' };
+  report.independent = { dailyProfileUnchanged: isDeepStrictEqual(before, await snapshot()), binaryMatches: report.binaryHash === binaryHash, candidateSignatureVerified: true, originalRepositoryDocumentsUnchanged: originalDocuments.every(Boolean), actualTaskFilesHaveNoModelRequestsOrMessages: records.length >= 3 && report.actualTaskReadback.modelRequests === 0 && report.actualTaskReadback.messages === 0 && report.actualTaskReadback.queued === 0, bothTaskDraftsPersisted: (editing ? originalTask?.draft === '保留的A草稿' : originalTask?.draft?.startsWith('保留的A草稿\n\n[文件选文：docs/AGENT-READING.md]') === true) && otherTask?.draft === '保留的B草稿' };
   if (editing && !conflicts && !encodings && !tables && !tree) {
     const plan = JSON.parse(await readFile(path.join(output, 'markdown-edit-plan.json'), 'utf8'));
     report.independent.externalVersionPreserved = hash(await readFile(plan.file)) === plan.externalHash;

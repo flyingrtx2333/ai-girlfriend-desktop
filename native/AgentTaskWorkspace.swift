@@ -41,7 +41,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -125,10 +125,11 @@ import AppKit
             for (index, root) in roots.enumerated() {
                 let group = AgentThemeView(fill: .clear), button = NSButton(title: root.title, target: self, action: #selector(selectTab)), close = NSButton()
                 button.isBordered = false; button.font = .systemFont(ofSize: 12, weight: .medium); button.cell?.lineBreakMode = .byTruncatingMiddle; button.tag = index; button.setAccessibilityLabel(root.title + " 标签页")
+                if case .document(let path) = root { AgentFileIcons.bind(button, filename: path) }
                 close.isBordered = false; close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil); close.imageScaling = .scaleProportionallyDown; close.setAccessibilityLabel("关闭 " + root.title + " 标签页"); close.target = self; close.action = #selector(closeTab); close.tag = index
                 group.wantsLayer = true; group.layer?.cornerRadius = 6
                 for view in [button, close] { group.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-                let labelWidth = min(154, max(48, ceil((root.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width) + 12))
+                let labelWidth = min(174, max(48, ceil((root.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width) + 12 + (button.image == nil ? 0 : 20)))
                 let groupWidth = group.widthAnchor.constraint(equalToConstant: labelWidth + 26), buttonWidth = button.widthAnchor.constraint(equalToConstant: labelWidth)
                 NSLayoutConstraint.activate([groupWidth, group.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 4), buttonWidth, button.centerYAnchor.constraint(equalTo: group.centerYAnchor), close.leadingAnchor.constraint(equalTo: button.trailingAnchor), close.widthAnchor.constraint(equalToConstant: 18), close.heightAnchor.constraint(equalToConstant: 18), close.centerYAnchor.constraint(equalTo: group.centerYAnchor)])
                 tabs.addArrangedSubview(group); tabViews.append((root, group, button, close, groupWidth, buttonWidth))
@@ -138,7 +139,7 @@ import AppKit
             let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
             let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
-            buttonWidth.constant = min(154, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12)); groupWidth.constant = buttonWidth.constant + 26
+            buttonWidth.constant = min(174, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12 + (button.image == nil ? 0 : 20))); groupWidth.constant = buttonWidth.constant + 26
             close.setAccessibilityLabel("关闭 " + label + " 标签页")
             button.setAccessibilityLabel(label + (dirty ? " 未保存" : "") + " 标签页"); if case .document(let path) = root { button.toolTip = path }
         }

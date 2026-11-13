@@ -139,7 +139,7 @@ final class ChatMessageRow: NSView {
                 selected.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.42), range: range); output = selected
             }
         }
-        label.attributedStringValue = output; label.setAccessibilityHelp(searchRange == nil ? nil : "搜索命中")
+        label.attributedStringValue = output; AgentFileIcons.track(label); label.setAccessibilityHelp(searchRange == nil ? nil : "搜索命中")
         label.invalidateIntrinsicContentSize()
     }
     func refreshAppearance() { update(text, markdown: renderedMarkdown, searchQuery: highlightQuery, searchDisplayRange: highlightDisplayRange, searchDisplayText: highlightDisplayText); label.needsDisplay = true }

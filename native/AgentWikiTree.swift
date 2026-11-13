@@ -151,7 +151,11 @@ import AppKit
             NSLayoutConstraint.activate([image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2), image.widthAnchor.constraint(equalToConstant: 14), image.heightAnchor.constraint(equalToConstant: 16), image.centerYAnchor.constraint(equalTo: cell.centerYAnchor), title.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 5), title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -3), title.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
             cell.textField = title; cell.imageView = image
         }
-        cell.textField?.stringValue = node.title; cell.imageView?.image = NSImage(systemSymbolName: node.directory ? "folder" : "doc.text", accessibilityDescription: node.directory ? "文件夹" : "文档")
+        cell.textField?.stringValue = node.title
+        if let image = cell.imageView {
+            if node.directory { AgentFileIcons.unbind(image); image.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "文件夹") }
+            else { AgentFileIcons.bind(image, filename: node.path) }
+        }
         cell.toolTip = node.path; cell.setAccessibilityLabel(node.title + (node.directory ? "，文件夹" : "，文档")); return cell
     }
     var checkState: [String: Any] {

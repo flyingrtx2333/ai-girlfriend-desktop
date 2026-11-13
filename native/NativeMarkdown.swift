@@ -36,7 +36,7 @@ import AppKit
     static func inline(_ source: String, font: NSFont, color: NSColor, paragraph: NSParagraphStyle, codeSize: CGFloat? = nil, resolveLink: ((URL) -> URL?)? = nil) -> NSAttributedString {
         let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
         guard let parsed = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else { return NSAttributedString(string: source, attributes: base) }
-        let output = NSMutableAttributedString()
+        let output = NSMutableAttributedString(); var previousTarget: URL?
         for run in parsed.runs {
             var attributes = base, f = font
             if let intent = run.inlinePresentationIntent {
@@ -45,7 +45,15 @@ import AppKit
                 if intent.contains(.code) { f = .monospacedSystemFont(ofSize: codeSize ?? (font.pointSize - 1), weight: .regular); attributes[.backgroundColor] = AgentWorkbenchTheme.subtle }
                 if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             }
-            if let link = run.link, let target = resolveLink?(link) ?? (["https", "http"].contains(link.scheme) ? link : nil) { attributes[.link] = target; attributes[.foregroundColor] = NSColor.linkColor }
+            let target = run.link.flatMap { link in resolveLink?(link) ?? (["https", "http"].contains(link.scheme) ? link : nil) }
+            if let target {
+                attributes[.link] = target; attributes[.foregroundColor] = NSColor.linkColor
+                if target.isFileURL, previousTarget != target {
+                    let icon = NSMutableAttributedString(attributedString: AgentFileIcons.attachment(filename: target.lastPathComponent, font: font))
+                    icon.addAttributes([.link: target, .font: font, .paragraphStyle: paragraph], range: NSRange(location: 0, length: icon.length)); output.append(icon)
+                }
+            }
+            previousTarget = target
             attributes[.font] = f
             output.append(NSAttributedString(string: String(parsed[run.range].characters), attributes: attributes))
         }

@@ -24,7 +24,7 @@ import Quartz
         for (index, file) in files.enumerated() {
             let open = NSButton(title: file.name.replacingOccurrences(of: "\n", with: "↵"), target: self, action: #selector(openFile(_:)))
             open.tag = index; open.isBordered = false; open.font = .systemFont(ofSize: 11); open.alignment = .left; open.cell?.lineBreakMode = .byTruncatingMiddle
-            open.image = NSImage(systemSymbolName: file.width == nil ? "doc.text" : "photo", accessibilityDescription: nil); open.imagePosition = .imageLeading; open.toolTip = file.name
+            AgentFileIcons.bind(open, filename: file.name); open.toolTip = file.name
             open.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let remove = NSButton(image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "移除附件")!, target: self, action: #selector(removeFile(_:)))
             remove.isBordered = false; remove.tag = index; remove.isHidden = !removable; remove.isEnabled = enabled; remove.widthAnchor.constraint(equalToConstant: 20).isActive = true
