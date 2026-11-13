@@ -32,6 +32,7 @@ final class ChatMessageRow: NSView {
     private let isUser: Bool
     private let workbench: Bool
     private var renderedSize: CGFloat = 0
+    private var renderedFontStyle: AgentContentFont?
     private let attachments = AgentAttachmentStrip()
     private let body = NSStackView(), replyActions = NSStackView()
     private let copyReply = NSButton(), helpful = NSButton(), unhelpful = NSButton(), branchReply = NSButton()
@@ -64,7 +65,7 @@ final class ChatMessageRow: NSView {
         roundActions.addArrangedSubview(editInput); roundActions.addArrangedSubview(rollbackFiles); roundActions.addArrangedSubview(NSView())
         attachments.maximumRows = 6
         label.translatesAutoresizingMaskIntoConstraints = false; label.isSelectable = true; label.allowsEditingTextAttributes = true
-        label.font = .systemFont(ofSize: AgentAppearance.messageSize + (workbench ? 0 : 1)); label.textColor = .labelColor
+        label.font = AgentContentAppearance.font(size: AgentAppearance.messageSize + (workbench ? 0 : 1)); label.textColor = .labelColor
         if workbench { label.lineBreakMode = .byCharWrapping; label.cell?.wraps = true; label.cell?.usesSingleLineMode = false }
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let inset: CGFloat = workbench ? 0 : user ? 15 : 0
@@ -117,12 +118,12 @@ final class ChatMessageRow: NSView {
     @objc private func branchResponse() { onBranchReply?() }
     func update(_ value: String, markdown: Bool = true, searchQuery: String? = nil, searchDisplayRange: NSRange? = nil, searchDisplayText: String? = nil) {
         let size = AgentAppearance.messageSize + (workbench ? 0 : 1)
-        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || renderedSize != size || label.stringValue.isEmpty else { return }
-        renderedSize = size
+        guard text != value || renderedMarkdown != markdown || highlightQuery != searchQuery || highlightDisplayRange != searchDisplayRange || highlightDisplayText != searchDisplayText || renderedSize != size || renderedFontStyle != AgentContentAppearance.fontStyle || label.stringValue.isEmpty else { return }
+        renderedSize = size; renderedFontStyle = AgentContentAppearance.fontStyle
         text = value; renderedMarkdown = markdown; highlightQuery = searchQuery; highlightDisplayRange = searchDisplayRange; highlightDisplayText = searchDisplayText
         let paragraph = NSMutableParagraphStyle(); paragraph.lineSpacing = 5
         if workbench { paragraph.lineBreakMode = .byCharWrapping }
-        let content = value.isEmpty ? "…" : value, font = NSFont.systemFont(ofSize: size), color = NSColor.labelColor
+        let content = value.isEmpty ? "…" : value, font = AgentContentAppearance.font(size: size), color = NSColor.labelColor
         let plain = NSAttributedString(string: content, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
         var output = isUser || !markdown ? plain : NativeMarkdown.render(content, font: font, color: color, paragraph: paragraph)
         searchRange = nil; searchUsesSource = false

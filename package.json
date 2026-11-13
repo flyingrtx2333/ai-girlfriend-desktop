@@ -23,6 +23,7 @@
     "native:check-settings": "node scripts/check-native-settings.mjs",
     "native:check-settings-pages": "node scripts/check-native-settings.mjs --pages",
     "native:check-sidebar": "node scripts/check-native-settings.mjs --sidebar",
+    "native:check-content-appearance": "node scripts/check-native-settings.mjs --content",
     "native:check-theme-styles": "node scripts/check-native-settings.mjs --styles",
     "native:check-appearance": "node scripts/check-native-settings.mjs --appearance",
     "native:check-modes": "node scripts/check-native-settings.mjs --modes",

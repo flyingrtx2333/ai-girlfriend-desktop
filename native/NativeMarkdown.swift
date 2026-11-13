@@ -17,14 +17,14 @@ import AppKit
                 let cells = tableCells(original)
                 if tableColumns > 1, cells.count == tableColumns {
                     line = cells.joined(separator: "\t")
-                    lineFont = header ? .systemFont(ofSize: font.pointSize, weight: .semibold) : .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+                    lineFont = header ? NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) : .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
                     let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
                     style.tabStops = (1..<tableColumns).map { NSTextTab(textAlignment: .left, location: CGFloat($0) * 112) }
                     style.defaultTabInterval = 112; style.paragraphSpacing = 4
                     if tableColumns == 2 { style.headIndent = 112 }
                     lineParagraph = style
                 } else { tableColumns = 0 }
-                if let range = line.range(of: "^#{1,6}\\s+", options: .regularExpression) { line.removeSubrange(range); lineFont = .systemFont(ofSize: font.pointSize + 1, weight: .semibold) }
+                if let range = line.range(of: "^#{1,6}\\s+", options: .regularExpression) { line.removeSubrange(range); lineFont = NSFontManager.shared.convert(NSFontManager.shared.convert(font, toSize: font.pointSize + 1), toHaveTrait: .boldFontMask) }
                 if line.hasPrefix("- ") || line.hasPrefix("* ") { line = "• " + line.dropFirst(2) }
             }
             if code { output.append(NSAttributedString(string: line, attributes: [.font: NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular), .foregroundColor: color, .backgroundColor: AgentWorkbenchTheme.subtle, .paragraphStyle: paragraph])); continue }

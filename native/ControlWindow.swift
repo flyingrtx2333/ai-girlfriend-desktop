@@ -1,5 +1,6 @@
 import AppKit
 import UniformTypeIdentifiers
+import CoreText
 
 final class ComposerView: NSTextView {
     var placeholder = "发消息…" { didSet { needsDisplay = true } }
@@ -345,7 +346,7 @@ final class FormDocumentView: NSView {
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
             }
         }
-        composer.font = .systemFont(ofSize: AgentAppearance.messageSize)
+        composer.font = AgentContentAppearance.font(size: AgentAppearance.messageSize)
         messageRows.values.forEach { $0.refreshAppearance() }
         settingsPageHost.refreshAppearance()
         attentionPageController?.refreshAppearance()
@@ -356,6 +357,28 @@ final class FormDocumentView: NSView {
         guard let window, let companion, companion.usesAgent else { return }
         AgentThemeContext.bind(window, service: companion.themeStyles, mode: currentAgentTask?.organizationMode ?? displayedWorkMode)
         refreshAppearancePreferences()
+    }
+    func refreshContentAppearance() {
+        composer.font = AgentContentAppearance.font(size: AgentAppearance.messageSize)
+        messageRows.values.forEach { $0.refreshAppearance() }
+        updateWorkbenchLayout()
+    }
+    func contentAppearanceReadback() -> [String: Any] {
+        guard CommandLine.arguments.contains("--content-appearance-check") || CommandLine.arguments.contains("--manual-ui"), let window else { return [:] }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let rows: [[String: Any]] = messageRows.map { id, row in
+            var fonts = Set<String>()
+            row.label.attributedStringValue.enumerateAttribute(.font, in: NSRange(location: 0, length: row.label.attributedStringValue.length)) { value, _, _ in if let font = value as? NSFont { fonts.insert(font.fontName) } }
+            return ["id": id, "source": row.text, "display": row.label.stringValue, "fonts": fonts.sorted()]
+        }
+        var glyphFonts: [String: String] = [:]
+        for (script, pattern) in [("cjk", "\\p{Han}+"), ("latin", "[A-Za-z]+") ] {
+            if let range = composer.string.range(of: pattern, options: .regularExpression), let font = composer.textStorage?.attribute(.font, at: NSRange(range, in: composer.string).location, effectiveRange: nil) as? NSFont {
+                let token = String(composer.string[range]); let resolved = CTFontCreateForString(font as CTFont, token as CFString, CFRange(location: 0, length: (token as NSString).length))
+                glyphFonts[script] = CTFontCopyPostScriptName(resolved) as String
+            }
+        }
+        return ["taskID": agentTaskID as Any? ?? NSNull(), "fontStyle": AgentContentAppearance.fontStyle.rawValue, "contentWidth": companion?.contentAppearance.settings.contentWidth.rawValue ?? "standard", "columnWidth": (workbenchColumnLeading?.firstItem as? NSView)?.bounds.width ?? 0, "composerWidth": composer.enclosingScrollView?.superview?.bounds.width ?? 0, "composerFont": composer.font?.fontName ?? "", "composerGlyphFonts": glyphFonts, "composerSize": composer.font?.pointSize ?? 0, "draft": composer.string, "messages": rows, "windowSize": [window.frame.width, window.frame.height]]
     }
     func themeStylesReadback() -> [String: Any] {
         guard CommandLine.arguments.contains("--theme-styles-check") || CommandLine.arguments.contains("--manual-ui"), let window else { return [:] }
@@ -744,7 +767,8 @@ final class FormDocumentView: NSView {
         navigationLeading.constant = sidebarRequested ? 18 : 82
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
         sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
-        let columnInset: CGFloat = hasMessages ? 18 : max(18, (width - sidebarWidth.constant - (fullWorkspace ? 0 : target) - 760) / 2)
+        let maximum = companion?.contentAppearance.settings.contentWidth.maximum ?? AgentContentWidth.standard.maximum
+        let columnInset = max(18, (width - sidebarWidth.constant - (fullWorkspace ? 0 : target) - maximum) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
@@ -1266,8 +1290,8 @@ final class FormDocumentView: NSView {
                     row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                 }
             }
-            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Sidebar")
-            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
+            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar")
+            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
             row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")

@@ -204,6 +204,9 @@ HTTP／模型处理器使用 `npm run native:check-hook-services`：启动实际
 
 `BLUEFATFISH_APP=<独立验收包路径> npm run native:check-theme-styles` 覆盖双窗口的独立配色、四风格浅深色的实际颜色与对比度、预览／绑定动作、正常／窄窗口、只读回退与重试、外部冲突及配置保护；`native:check-appearance` 另行核对原有明暗、字号与层颜色。开发检查禁止模型请求。最终源码 `ef9f26c` 的同一优化程序通过主题 51、明暗 30、模式展示 27、设置布局 59 项，共 167 项；确认与名称表单继承任务主题。实际四风格浅深色选择、1200×774／780×540、只读回退与重试、模式绑定与任务切换、名称表单及同版重开已验，重开与退出的 24 份文件和 3 项任务保持。模型请求 0，日常应用及 10 份正式资料未变，日常发布仍待完成；汇总见 `evidence/agent/theme-styles-j3p7v8n2/acceptance-index.json`。
 
+字体风格（无衬线／衬线）和内容宽度（标准／宽）保存在独立 `content-appearance.json`。正文、Markdown 标题和输入区使用所选字体，代码保持等宽；标准沿用 760 点上限，宽为 1040 点，空间不足时收窄，已有任务窗口即时更新。两种字体使用系统中英文回退，不下载字体；旧的明暗字号、主题绑定、模式展示与侧栏配置不改格式。`BLUEFATFISH_APP=<独立验收包路径> npm run native:check-content-appearance` 核对实际中英文字体、格式、双窗口、宽度、配置保护与完整原任务字段；输入框在排版后会为中文和英文分配不同字体，检查分别读取实际文字使用的字体。调试程序已通过 46 项专项、30 项明暗字号及 59 项设置布局检查，共 135 项，并完成实际窗口初验；优化版本、窄窗口保存失败和重开验收待完成。记录保存在 `evidence/agent/content-appearance-f6m4r9q2`。
+
+
 
 `npm run native:check-settings` 现使用独立配置检查 1200×774／800×550 的可见设置布局、Hooks 分组、外观内容宽度、嵌套滚轮与原资料保持。侧栏候选阶段通过 59 项设置布局与 26 项侧栏检查；实际 780×540、原生拖放、浅深色、导航高亮、只读保存及同一程序重开另有窗口证据，汇总在 `evidence/agent/sidebar-menu-k8m3r6v2/acceptance-index.json`。早期[验证记录](verification/settings.json)和公开截图保留为历史结果；当前检查不启用麦克风，不调用在线模型或 TTS。
 
