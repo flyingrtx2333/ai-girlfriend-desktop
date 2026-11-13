@@ -51,6 +51,7 @@ import WebKit
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--sidebar-layout-check") { await runSidebarLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mode-presentation-check") { await runModePresentationCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--theme-styles-check") { await runThemeStylesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
@@ -167,6 +168,7 @@ import WebKit
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
                         value["sidebarLayout"] = control.sidebarLayoutReadback()
                         value["modePresentation"] = control.modePresentationReadback()
+                        value["themeStyles"] = taskControls.map { $0.themeStylesReadback() }
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]

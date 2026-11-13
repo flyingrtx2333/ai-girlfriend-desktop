@@ -56,7 +56,7 @@ import AppKit
     var selectionColor: NSColor { AgentWorkbenchTheme.selection }
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
     override func drawSelection(in dirtyRect: NSRect) {
-        selectionColor.setFill()
+        AgentThemeContext.resolve(selectionColor, in: self).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 2), xRadius: 7, yRadius: 7).fill()
     }
 }

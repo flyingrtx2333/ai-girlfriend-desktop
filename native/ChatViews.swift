@@ -1,9 +1,13 @@
 import AppKit
 
 final class SidebarBackground: NSView {
+    override func viewWillDraw() { AgentThemeContext.refresh(self); super.viewWillDraw() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
-        AgentWorkbenchTheme.sidebar.setFill(); bounds.fill()
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        if let style = AgentThemeContext.style(for: window), let gradient = AgentThemePalette.sidebarGradient(style: style, dark: dark) {
+            gradient.draw(in: bounds, angle: -90)
+        } else { AgentThemeContext.resolve(AgentWorkbenchTheme.sidebar, in: self).setFill(); bounds.fill() }
     }
 }
 
@@ -12,7 +16,7 @@ final class ContentSurface: NSView {
     var showsSettings = false { didSet { needsDisplay = true } }
     var usesWorkbenchSurface = false { didSet { needsDisplay = true } }
     override func draw(_ dirtyRect: NSRect) {
-        (showsSettings ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface).setFill(); bounds.fill()
+        AgentThemeContext.resolve(showsSettings ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface, in: self).setFill(); bounds.fill()
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true; onAppearanceChange?() }
 }

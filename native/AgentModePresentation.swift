@@ -78,7 +78,7 @@ import AppKit
         changes.toolTip = "显示 Git 审阅入口和记录侧栏中的文件变更；已打开的审阅与执行记录继续保留"
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText
         reload.target = self; reload.action = #selector(reloadSettings)
-        let restore = NSButton(title: "恢复默认", target: self, action: #selector(restoreDefaults)); restore.toolTip = "恢复" + mode.title + "模式的展示偏好"
+        let restore = NSButton(title: "恢复展示默认", target: self, action: #selector(restoreDefaults)); restore.toolTip = "恢复" + mode.title + "模式的展示偏好"
         let footer = NSStackView(views: [status, NSView(), reload, restore]); footer.spacing = 12
         addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         setCustomSpacing(12, after: arrangedSubviews[arrangedSubviews.count - 2])

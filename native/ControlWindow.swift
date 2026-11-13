@@ -253,6 +253,7 @@ final class FormDocumentView: NSView {
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
         refreshPreferences(); refreshShortcutControls(); refreshAppearancePreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
+        refreshThemeStyle()
         renderMessages()
         if windowNumber == 1 {
             companion.onScaleChange = { [weak companion] value in for window in companion?.taskControls ?? [] { window.scale.doubleValue = value; window.sizeValue.stringValue = "\(Int((value * 100).rounded()))%" } }
@@ -331,8 +332,9 @@ final class FormDocumentView: NSView {
         guard let window else { return }
         refreshSidebarLayout()
         window.effectiveAppearance.performAsCurrentDrawingAppearance {
-            sendButton.layer?.backgroundColor = (companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary).cgColor
-            sendButton.contentTintColor = companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText
+            window.backgroundColor = AgentThemeContext.resolve(AgentWorkbenchTheme.sidebar, window: window)
+            sendButton.layer?.backgroundColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary, window: window).cgColor
+            sendButton.contentTintColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText, window: window)
             generalSettingsSave?.layer?.backgroundColor = AgentWorkbenchTheme.primary.cgColor
             generalSettingsSave?.contentTintColor = AgentWorkbenchTheme.primaryText
             for (index, button) in categoryButtons.enumerated() {
@@ -348,6 +350,22 @@ final class FormDocumentView: NSView {
         settingsPageHost.refreshAppearance()
         attentionPageController?.refreshAppearance()
         contentSurface.needsDisplay = true
+        if let root = window.contentView { AgentThemeContext.refresh(root, invalidate: true) }
+    }
+    func refreshThemeStyle() {
+        guard let window, let companion, companion.usesAgent else { return }
+        AgentThemeContext.bind(window, service: companion.themeStyles, mode: currentAgentTask?.organizationMode ?? displayedWorkMode)
+        refreshAppearancePreferences()
+    }
+    func themeStylesReadback() -> [String: Any] {
+        guard CommandLine.arguments.contains("--theme-styles-check") || CommandLine.arguments.contains("--manual-ui"), let window else { return [:] }
+        window.contentView?.layoutSubtreeIfNeeded(); window.contentView?.displayIfNeeded()
+        var send: [CGFloat] = [], sidebar: [CGFloat] = []
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            if let color = sendButton.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB) { send = [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent] }
+            if let color = window.backgroundColor.usingColorSpace(.sRGB) { sidebar = [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent] }
+        }
+        return ["taskID": agentTaskID as Any? ?? NSNull(), "mode": currentAgentTask?.organizationMode.rawValue ?? displayedWorkMode.rawValue, "style": AgentThemeContext.style(for: window)?.rawValue ?? "unbound", "sendColor": send, "sidebarColor": sidebar, "draft": composer.string, "page": selectedTab]
     }
     func checkAppearanceComposerSize() -> CGFloat? {
         guard CommandLine.arguments.contains("--appearance-check") else { return nil }; return composer.font?.pointSize
@@ -1241,13 +1259,15 @@ final class FormDocumentView: NSView {
         if let companion {
             if companion.usesAgent {
                 for mode in AgentWorkMode.allCases {
-                    group("modes", mode.title, "模式配置 编程 通用 项目选择入口 输入区运行环境 变更审阅 项目 文件夹 运行位置 运行环境 本地 工作树 分支 Git Mode Environment")
+                    group("modes", mode.title, "模式配置 编程 通用 绑定主题 森林 薄荷 蜜蜂 羊皮纸 项目选择入口 输入区运行环境 变更审阅 项目 文件夹 运行位置 运行环境 本地 工作树 分支 Git Mode Environment")
+                    let binding = AgentThemeStyleSelectionView(service: companion.themeStyles, gallery: false, mode: { mode })
+                    row("", binding); binding.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                     let panel = AgentModeSettingsView(service: companion.modePresentation, mode: mode)
                     row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                 }
             }
-            group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Sidebar")
-            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil)
+            group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Sidebar")
+            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
             row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
@@ -1954,6 +1974,7 @@ final class FormDocumentView: NSView {
         var readIssue: String?
         do { try tasks.setTaskUnread(id, false) } catch { readIssue = error.localizedDescription }
         tasks.selectedID = id; displayedTask = id; displayedWorkMode = tasks.task(id)?.organizationMode ?? displayedWorkMode
+        refreshThemeStyle()
         if let task = tasks.task(id) { bindAgentDraft(task) }
         messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
         renderedIDs = []; messageRows = [:]; toolRows = [:]

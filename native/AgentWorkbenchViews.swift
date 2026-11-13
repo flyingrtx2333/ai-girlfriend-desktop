@@ -46,10 +46,11 @@ import QuartzCore
     static let removed = adaptive(0xfcebea, 0x492b2d)
     static func color(_ layer: CALayer?, _ color: NSColor, animated: Bool = true) {
         guard let layer else { return }
+        AgentThemeContext.remember(layer, color: color)
         let previous = layer.presentation()?.backgroundColor ?? layer.backgroundColor
         layer.removeAnimation(forKey: "selection")
         let appearance = (layer.delegate as? NSView)?.effectiveAppearance ?? NSApp.effectiveAppearance
-        appearance.performAsCurrentDrawingAppearance { layer.backgroundColor = color.cgColor }
+        appearance.performAsCurrentDrawingAppearance { layer.backgroundColor = AgentThemeContext.resolve(color, in: layer.delegate as? NSView).cgColor }
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let previous else { return }
         let transition = CABasicAnimation(keyPath: "backgroundColor"); transition.fromValue = previous; transition.toValue = color.cgColor
         transition.duration = 0.12; transition.toValue = layer.backgroundColor; layer.add(transition, forKey: "selection")
@@ -113,7 +114,7 @@ class AgentWorkbenchButton: NSButton {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() { effectiveAppearance.performAsCurrentDrawingAppearance { dot.layer?.backgroundColor = statusColor.cgColor; layer?.backgroundColor = statusColor.withAlphaComponent(0.08).cgColor } }
+    override func updateLayer() { effectiveAppearance.performAsCurrentDrawingAppearance { let color = AgentThemeContext.resolve(statusColor, in: self); dot.layer?.backgroundColor = color.cgColor; layer?.backgroundColor = color.withAlphaComponent(0.08).cgColor } }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + 27, height: 22) }
     func update(_ task: AgentTaskRecord) {

@@ -72,7 +72,7 @@ import AppKit
                 try appearance.save(value); await wait(0.03)
                 let expected: NSAppearance.Name = theme == .dark ? .darkAqua : .aqua
                 checks[theme.rawValue + "PropagatesToBothExistingTaskWindows"] = [control, second].allSatisfy { $0.window?.appearance == nil && $0.window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == expected }
-                let selection = resolved(AgentWorkbenchTheme.selection, in: control.window!.effectiveAppearance)
+                let selection = resolved(AgentThemeContext.resolve(AgentWorkbenchTheme.selection, window: control.window), in: control.window!.effectiveAppearance)
                 let actualSelections = [control, second].map { $0.checkAppearanceSelectionColor() ?? [] }; selections[theme.rawValue] = actualSelections
                 checks[theme.rawValue + "ActualSelectedTaskLayersMatchBothWindows"] = actualSelections.allSatisfy { actual in
                     actual.count == 4 && zip(actual, selection).allSatisfy { abs($0 - $1) < 0.0001 }
