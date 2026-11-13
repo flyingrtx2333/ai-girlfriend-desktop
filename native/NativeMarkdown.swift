@@ -17,7 +17,7 @@ import AppKit
                 let cells = tableCells(original)
                 if tableColumns > 1, cells.count == tableColumns {
                     line = cells.joined(separator: "\t")
-                    lineFont = header ? NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) : .monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+                    lineFont = header ? NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) : font
                     let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
                     style.tabStops = (1..<tableColumns).map { NSTextTab(textAlignment: .left, location: CGFloat($0) * 112) }
                     style.defaultTabInterval = 112; style.paragraphSpacing = 4
