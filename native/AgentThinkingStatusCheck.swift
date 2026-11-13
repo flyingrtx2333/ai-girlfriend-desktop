@@ -136,9 +136,10 @@ import Darwin
                 checks[name + "-bilingualHeadersAlignWithInputColumns"] = try ["zh", "en"].allSatisfy { language in
                     let header = try input(control, "column-" + language), field = try input(control, "caption-1-" + language)
                     var ancestor = field.superview; while let current = ancestor, !(current is AgentThemeView) { ancestor = current.superview }
-                    guard let box = ancestor else { return false }
-                    report[name + "-column-" + language] = ["header": NSStringFromRect(header.convert(header.bounds, to: window.contentView)), "inputBox": NSStringFromRect(box.convert(box.bounds, to: window.contentView))]
-                    return abs(header.convert(header.bounds, to: window.contentView).minX - box.convert(box.bounds, to: window.contentView).minX) < 1 && abs(header.bounds.width - box.bounds.width) < 1
+                    guard let box = ancestor, let parent = header.superview else { return false }
+                    let aligned = parent.convert(header.alignmentRect(forFrame: header.frame), to: window.contentView), inputBox = box.convert(box.bounds, to: window.contentView)
+                    report[name + "-column-" + language] = ["headerBounds": NSStringFromRect(header.convert(header.bounds, to: window.contentView)), "headerAlignment": NSStringFromRect(aligned), "inputBox": NSStringFromRect(inputBox)]
+                    return abs(aligned.minX - inputBox.minX) < 1 && abs(aligned.width - inputBox.width) < 1
                 }
                 checks[name + "-saveFailureVisible"] = descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains { $0.accessibilityLabel() == "思考状态保存状态" && $0.stringValue.contains("只读") && !$0.isHiddenOrHasHiddenAncestor }
             }
