@@ -68,7 +68,7 @@ enum AgentTheme: String, Codable, CaseIterable {
 @MainActor final class AgentAppearanceSettingsView: NSStackView {
     private let service: AgentAppearance, theme = NSPopUpButton(), size = NSPopUpButton()
     private let status = NSTextField(labelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
-    init(service: AgentAppearance) {
+    init(service: AgentAppearance, sidebar: AgentSidebarLayout? = nil) {
         self.service = service; super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 10
         theme.addItems(withTitles: AgentTheme.allCases.map(\.title)); theme.setAccessibilityLabel("界面主题")
@@ -81,6 +81,10 @@ enum AgentTheme: String, Codable, CaseIterable {
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText
         reload.target = self; reload.action = #selector(reloadSettings)
         let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        if let sidebar {
+            let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            let editor = AgentSidebarLayoutSettingsView(service: sidebar); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentAppearance.changed, object: service)
         refresh()
     }

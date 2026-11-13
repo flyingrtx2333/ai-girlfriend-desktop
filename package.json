@@ -22,6 +22,7 @@
     "native:check-conversation": "node scripts/check-native-conversation.mjs",
     "native:check-settings": "node scripts/check-native-settings.mjs",
     "native:check-settings-pages": "node scripts/check-native-settings.mjs --pages",
+    "native:check-sidebar": "node scripts/check-native-settings.mjs --sidebar",
     "native:check-attention": "node scripts/check-native-attention.mjs",
     "native:check-automation-page": "node scripts/check-native-automation-page.mjs",
     "native:check-screen": "node scripts/check-native-screen.mjs",

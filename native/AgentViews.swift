@@ -34,6 +34,7 @@ private final class AgentTaskTable: NSTableView {
     var onSearchVersion: ((String) -> UInt64)?
     var onOpenSearch: ((String, String, String?) -> Void)?
     var onSearchQueryChanged: (() -> Void)?
+    var onSearchVisibilityChanged: (() -> Void)?
     var onNew: (() -> Void)?
     var onNewWorkspace: (() -> Void)?
     var onNewInWorkspace: ((String, AgentWorkMode) -> Void)?
@@ -49,6 +50,7 @@ private final class AgentTaskTable: NSTableView {
     private enum Row { case group(String, String?), task(AgentTaskRecord, Int) }
     private let table = AgentTaskTable(), search = NSSearchField(), searchButton = AgentWorkbenchButton(), attention = AgentWorkbenchButton()
     private let create = AgentWorkbenchButton(), viewMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let upperNavigation = AgentSidebarNavigationList()
     private let workModePicker = NSPopUpButton(), heading = NSTextField(labelWithString: "工作区"), add = AgentWorkbenchButton()
     private let empty = NSTextField(labelWithString: "没有匹配的任务")
     private let bulkCount = NSTextField(labelWithString: ""), bulkAction = NSButton(), bulkCancel = NSButton(title: "取消选择", target: nil, action: nil)
@@ -111,8 +113,9 @@ private final class AgentTaskTable: NSTableView {
         let bulkHeader = NSStackView(views: [bulkCount, NSView(), bulkCancel]); bulkHeader.spacing = 4
         bulkBar.orientation = .vertical; bulkBar.alignment = .leading; bulkBar.spacing = 7; bulkBar.addArrangedSubview(bulkHeader); bulkBar.addArrangedSubview(bulkAction); bulkBar.isHidden = true
         bulkHeader.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true; bulkAction.widthAnchor.constraint(equalTo: bulkBar.widthAnchor).isActive = true
-        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, attention, searchButton, search, rule, header, empty, scroll, bulkBar])
-        content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(13, after: searchButton); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
+        upperNavigation.configure([attention, searchButton], priority: 751); upperNavigation.setAccessibilityLabel("侧栏上方入口")
+        let rule = AgentWorkbenchTheme.rule(), content = NSStackView(views: [workModePicker, create, upperNavigation, search, rule, header, empty, scroll, bulkBar])
+        content.orientation = .vertical; content.alignment = .leading; content.spacing = 3; content.setCustomSpacing(13, after: upperNavigation); content.setCustomSpacing(7, after: rule); content.setCustomSpacing(0, after: header)
         addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: leadingAnchor), content.trailingAnchor.constraint(equalTo: trailingAnchor), content.topAnchor.constraint(equalTo: topAnchor), content.bottomAnchor.constraint(equalTo: bottomAnchor)])
         for view in content.arrangedSubviews { view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
@@ -121,6 +124,13 @@ private final class AgentTaskTable: NSTableView {
     }
     deinit { searchTask?.cancel(); for observer in dayObservers { NotificationCenter.default.removeObserver(observer) } }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func navigationButton(_ item: AgentSidebarItem) -> NSButton? { switch item { case .attention: return attention; case .search: return searchButton; default: return nil } }
+    func setUpperNavigation(_ buttons: [NSButton]) { upperNavigation.configure(buttons, priority: 751) }
+    var isSearchPresented: Bool { searchVisible }
+    func navigationReadback() -> [String: Any] {
+        let viewport = table.enclosingScrollView
+        return ["actualUpper": upperNavigation.buttons.map { $0.identifier?.rawValue ?? "" }, "upperHeight": upperNavigation.frame.height, "upperDocumentHeight": upperNavigation.documentView?.frame.height ?? 0, "newTaskFixed": create.window === window && create.superview != nil, "taskListHeight": viewport?.frame.height ?? 0, "searchVisible": searchVisible]
+    }
     func appearanceSelectionColor() -> [CGFloat]? {
         guard CommandLine.arguments.contains("--appearance-check"), let selected,
               let index = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }),
@@ -156,8 +166,8 @@ private final class AgentTaskTable: NSTableView {
     func focusSearch() { if !searchVisible { showSearch() } else { window?.makeFirstResponder(search) } }
     func dismissSearch() { if searchVisible { closeSearch() } }
     @objc private func newWorkspace() { onNewWorkspace?() }
-    @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); window?.makeFirstResponder(search) } }
-    private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter() }
+    @objc private func showSearch() { if searchVisible { closeSearch() } else { searchVisible = true; search.isHidden = false; applyFilter(); onSearchVisibilityChanged?(); window?.makeFirstResponder(search) } }
+    private func closeSearch() { searchVisible = false; search.isHidden = true; search.stringValue = ""; searchSelection = nil; applyFilter(); onSearchVisibilityChanged?() }
     func setAttentionCount(_ count: Int, enabled: Bool) { attention.title = enabled && count > 0 ? "需要我  \(count)" : "需要我"; attention.toolTip = enabled ? nil : "需要我已关闭" }
     func setMainPage(_ page: String) {
         let active = page == "attention"

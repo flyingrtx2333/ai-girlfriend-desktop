@@ -49,6 +49,7 @@ import WebKit
         if CommandLine.arguments.contains("--knowledge-review-check") { await runKnowledgeReviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-page-check") { await runKnowledgePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-layout-check") { await runSettingsLayoutCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--sidebar-layout-check") { await runSidebarLayoutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
@@ -163,6 +164,7 @@ import WebKit
                     if let name = try? String(contentsOf: output.appendingPathComponent("capture-manual-ui-" + pid), encoding: .utf8), name != capture, name.range(of: "^[a-z0-9-]{1,60}$", options: .regularExpression) != nil {
                         capture = name; var value = control.organizationSnapshot(); value["appPID"] = getpid(); value["binaryHash"] = hash; value["modelRequests"] = requests
                         value["windows"] = taskControls.map { $0.organizationSnapshot() }
+                        value["sidebarLayout"] = control.sidebarLayoutReadback()
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]
                         value["automation"] = inputControl.automationWindow?.checkState() ?? [:]

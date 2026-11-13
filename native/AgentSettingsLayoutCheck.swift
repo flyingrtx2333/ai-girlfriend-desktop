@@ -110,7 +110,7 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            report["success"] = checks.count == 57 && checks.values.allSatisfy { $0 }
+            report["success"] = checks.count == 59 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))

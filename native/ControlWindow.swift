@@ -179,6 +179,9 @@ final class FormDocumentView: NSView {
     private var profileWindow: AgentProfileWindow?, teamWindow: AgentTeamWindow?
     private(set) var automationWindow: AgentAutomationWindow?
     private let automationButton = AgentWorkbenchButton(title: "自动化", target: nil, action: nil)
+    private let sidebarExtensions = AgentWorkbenchButton(title: "扩展", target: nil, action: nil)
+    private let sidebarLower = AgentSidebarNavigationList(), sidebarMore = AgentWorkbenchButton(title: "更多", target: nil, action: nil)
+    private var displayedSidebarLayout: AgentSidebarLayout.Settings?
     private let extensionPanel = AgentExtensionPanel(), extensionPicker = AgentExtensionPicker()
     private var extensionPickerTask: String?
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
@@ -231,6 +234,7 @@ final class FormDocumentView: NSView {
         }
         taskSidebar.onOpenSearch = { [weak self] id, query, message in self?.selectAgentTask(id, searchQuery: query, messageID: message) }
         taskSidebar.onSearchQueryChanged = { [weak self] in self?.taskFind.reset(); self?.clearMessageSearchHighlight() }
+        taskSidebar.onSearchVisibilityChanged = { [weak self] in self?.refreshSidebarMoreSelection() }
         taskFind.onMatch = { [weak self] query, match in
             guard let self, let id = agentTaskID, taskFind.taskID == id else { return }
             clearMessageSearchHighlight()
@@ -264,8 +268,68 @@ final class FormDocumentView: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    private func sidebarButton(_ item: AgentSidebarItem) -> NSButton {
+        if let button = taskSidebar.navigationButton(item) { return button }
+        switch item { case .automation: return automationButton; case .extensions: return sidebarExtensions; case .library: return libraryButton; case .wiki: return projectKnowledgeButton; default: preconditionFailure("Missing sidebar control") }
+    }
+    func refreshSidebarLayout() {
+        guard companion?.usesAgent == true, settingsNav.superview != nil, let service = companion?.sidebarLayout else { return }
+        let layout = service.settings
+        if displayedSidebarLayout != layout {
+            displayedSidebarLayout = layout
+            let focused = window?.firstResponder as? NSView
+            taskSidebar.setUpperNavigation([]); sidebarLower.configure([])
+            for item in AgentSidebarItem.allCases { sidebarButton(item).identifier = NSUserInterfaceItemIdentifier("sidebar-" + item.rawValue) }
+            taskSidebar.setUpperNavigation(layout.upper.map(sidebarButton)); sidebarLower.configure(layout.lower.map(sidebarButton))
+            sidebarMore.isHidden = layout.more.isEmpty
+            window?.contentView?.layoutSubtreeIfNeeded()
+            if let focused, focused.window === window { window?.makeFirstResponder(focused) }
+            else if let focused, AgentSidebarItem.allCases.contains(where: { sidebarButton($0) === focused }) { window?.makeFirstResponder(sidebarMore) }
+        }
+        refreshSidebarMoreSelection()
+    }
+    private var selectedSidebarItem: AgentSidebarItem? {
+        switch selectedTab {
+        case "attention": return .attention
+        case "automation": return .automation
+        case "knowledge": return knowledgePageHost.selectedRoot == "wiki" ? .wiki : .library
+        case "chat": return taskSidebar.isSearchPresented ? .search : nil
+        default: return nil
+        }
+    }
+    private func refreshSidebarMoreSelection() {
+        let active = selectedSidebarItem.map { companion?.sidebarLayout.settings.more.contains($0) == true } ?? false
+        AgentWorkbenchTheme.color(sidebarMore.layer, active ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
+    }
+    private func sidebarMoreMenu() -> NSMenu {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for item in companion?.sidebarLayout.settings.more ?? [] {
+            let button = sidebarButton(item), entry = NSMenuItem(title: button.title, action: #selector(openSidebarItem(_:)), keyEquivalent: "")
+            entry.target = self; entry.representedObject = item.rawValue; entry.image = button.image; entry.isEnabled = button.isEnabled; entry.state = selectedSidebarItem == item ? .on : .off; menu.addItem(entry)
+        }
+        return menu
+    }
+    @objc private func showSidebarMore() { sidebarMoreMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sidebarMore.bounds.maxY + 4), in: sidebarMore) }
+    @objc private func openSidebarItem(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let item = AgentSidebarItem(rawValue: raw), companion?.sidebarLayout.settings.more.contains(item) == true else { return }
+        sidebarButton(item).performClick(nil); refreshSidebarMoreSelection()
+    }
+    func sidebarLayoutReadback() -> [String: Any] {
+        let layout = companion?.sidebarLayout.settings ?? AgentSidebarLayout.Settings()
+        var result = taskSidebar.navigationReadback()
+        result["upper"] = layout.upper.map(\.rawValue); result["lower"] = layout.lower.map(\.rawValue); result["more"] = layout.more.map(\.rawValue)
+        result["actualLower"] = sidebarLower.buttons.map { $0.identifier?.rawValue ?? "" }
+        result["moreVisible"] = !sidebarMore.isHidden; result["moreMenu"] = sidebarMoreMenu().items.map { $0.representedObject as? String ?? "" }
+        result["settingsFixed"] = settingsNav.superview != nil && settingsNav.window === window
+        result["lowerHeight"] = sidebarLower.frame.height; result["lowerDocumentHeight"] = sidebarLower.documentView?.frame.height ?? 0
+        result["mainPage"] = selectedTab; result["activeMore"] = selectedSidebarItem.map { layout.more.contains($0) } ?? false
+        result["moreHighlighted"] = (sidebarMore.layer?.backgroundColor?.alpha ?? 0) > 0
+        return result
+    }
+
     func refreshAppearancePreferences() {
         guard let window else { return }
+        refreshSidebarLayout()
         window.effectiveAppearance.performAsCurrentDrawingAppearance {
             sendButton.layer?.backgroundColor = (companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary).cgColor
             sendButton.contentTintColor = companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText
@@ -342,6 +406,12 @@ final class FormDocumentView: NSView {
                 let aligned = centerError <= 0.5 && abs(heading.minX - column.minX - 16) < 0.5 && (50...64).contains(contentSurface.bounds.height - heading.maxY) && heading.minY > body.maxY
                 checks[key + "CenteredColumnAndContentHeading"] = fitsWindow && aligned && settingsHeading.stringValue == settingsCategories[index].1 && pageTitle.isHidden && workbenchChrome.allSatisfy(\.isHidden)
                 checks[key + "VisibleWindowRetainsRequestedSize"] = window.isVisible && window.contentView?.bounds.size == size
+                if category == "appearance", let group = settingGroups.first(where: { $0.category == category })?.view {
+                    func find(_ view: NSView) -> AgentAppearanceSettingsView? { (view as? AgentAppearanceSettingsView) ?? view.subviews.lazy.compactMap(find).first }
+                    let width = find(group)?.bounds.width ?? 0
+                    checks[key + "AppearanceControlsFillContentColumn"] = width >= group.bounds.width - 32.5
+                    frames[key]?["appearanceControlWidth"] = width
+                }
             }
         }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
@@ -472,17 +542,19 @@ final class FormDocumentView: NSView {
         }
         let knowledge = projectKnowledgeButton, library = libraryButton
         knowledge.target = self; knowledge.action = #selector(showAgentKnowledge); library.target = self; library.action = #selector(showKnowledgeLibrary)
-        let extensions = AgentWorkbenchButton(title: "扩展", target: self, action: #selector(showAgentExtensions))
+        let extensions = sidebarExtensions; extensions.target = self; extensions.action = #selector(showAgentExtensions)
         settingsNav.tag = 1; settingsNav.target = self; settingsNav.action = #selector(selectTab(_:))
         automationButton.target = self; automationButton.action = #selector(showAutomations)
-        for (button, symbol) in [(automationButton as NSButton, "clock.arrow.circlepath"), (library as NSButton, "tray.full"), (knowledge as NSButton, "books.vertical"), (extensions as NSButton, "puzzlepiece.extension"), (settingsNav, "gearshape")] {
+        sidebarMore.target = self; sidebarMore.action = #selector(showSidebarMore)
+        for (button, symbol) in [(automationButton as NSButton, "clock.arrow.circlepath"), (library as NSButton, "tray.full"), (knowledge as NSButton, "books.vertical"), (extensions as NSButton, "puzzlepiece.extension"), (sidebarMore as NSButton, "ellipsis"), (settingsNav, "gearshape")] {
             AgentWorkbenchTheme.sidebarControl(button)
             button.isBordered = false; button.alignment = .left; button.font = .systemFont(ofSize: 14)
             button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil); button.imagePosition = .imageLeading; button.contentTintColor = .labelColor
-            button.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         }
-        let footer = stack([AgentWorkbenchTheme.rule(), automationButton, library, knowledge, extensions, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
-        for button in [automationButton as NSView, library, knowledge, extensions, settingsNav] { button.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
+        sidebarLower.setAccessibilityLabel("侧栏下方入口")
+        let footer = stack([AgentWorkbenchTheme.rule(), sidebarLower, sidebarMore, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
+        for view in [sidebarLower as NSView, sidebarMore, settingsNav] { view.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         chatSidebarViews = [workbenchSidebar]
         let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 0
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
@@ -1164,8 +1236,9 @@ final class FormDocumentView: NSView {
         resetPosition.controlSize = .large; resetPosition.font = .systemFont(ofSize: 13)
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
-            group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 Theme Appearance Font")
-            row("", AgentAppearanceSettingsView(service: companion.appearance))
+            group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Sidebar")
+            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil)
+            row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
@@ -2261,6 +2334,7 @@ final class FormDocumentView: NSView {
     private func refreshKnowledgeNavigation() {
         AgentWorkbenchTheme.color(libraryButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         AgentWorkbenchTheme.color(projectKnowledgeButton.layer, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "wiki" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
+        refreshSidebarMoreSelection()
     }
     internal func knowledgePageReadback() async -> [String: Any] {
         guard AgentKnowledgePageHost.readbackEnabled else { return [:] }
