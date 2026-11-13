@@ -104,6 +104,7 @@ import AppKit
     private var timer: Timer?, settings = AgentThinkingStatus.Settings(), active = false, tickCount = 0
     private var checkReducedMotion: Bool?
     private weak var observedClip: NSClipView?
+    private let staticProbe = CommandLine.arguments.contains("--thinking-status-check") && CommandLine.arguments.contains("--thinking-status-static-probe")
     init() {
         super.init(frame: .zero); orientation = .horizontal; alignment = .centerY; spacing = 8
         glyph.translatesAutoresizingMaskIntoConstraints = false; glyph.widthAnchor.constraint(equalToConstant: 24).isActive = true; glyph.heightAnchor.constraint(equalToConstant: 22).isActive = true
@@ -139,9 +140,9 @@ import AppKit
     @objc func refreshMotion() {
         let reduced = checkReducedMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let visible = window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty && NSApp.isActive
-        if active && visible && !reduced {
+        if active && visible && !reduced && !staticProbe {
             if timer == nil {
-                let value = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.tick() } }
+                let value = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
                 value.tolerance = 0.025; timer = value; RunLoop.main.add(value, forMode: .common)
             }
         } else { timer?.invalidate(); timer = nil; if reduced { glyph.frameNumber = 0 } }
