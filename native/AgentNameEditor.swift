@@ -33,6 +33,7 @@ import AppKit
     func begin(in owner: NSWindow) {
         guard let panel = window, owner.attachedSheet == nil else { return }
         previousResponder = owner.firstResponder
+        AgentThemeContext.inherit(panel, from: owner)
         owner.beginSheet(panel) { [self, weak owner] _ in
             panel.orderOut(nil); onClose()
             if let view = previousResponder as? NSView, view.window === owner { owner?.makeFirstResponder(view) }

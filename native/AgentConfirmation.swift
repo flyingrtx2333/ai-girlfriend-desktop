@@ -66,6 +66,7 @@ import AppKit
     }
     @discardableResult func runModal() -> NSApplication.ModalResponse {
         prepare(in: NSApp.keyWindow); let panel = build()
+        AgentThemeContext.inherit(panel, from: owner)
         if let owner {
             let area = owner.screen?.visibleFrame ?? owner.frame, size = panel.frame.size
             panel.setFrameOrigin(NSPoint(x: max(area.minX, min(owner.frame.midX - size.width / 2, area.maxX - size.width)), y: max(area.minY, min(owner.frame.midY - size.height / 2, area.maxY - size.height))))
@@ -75,6 +76,7 @@ import AppKit
     }
     func beginSheetModal(for owner: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) {
         prepare(in: owner); let panel = build()
+        AgentThemeContext.inherit(panel, from: owner)
         owner.beginSheet(panel) { [self] response in panel.orderOut(nil); restoreFocus(); completionHandler?(response) }
         panel.makeFirstResponder(panel.initialFirstResponder)
     }

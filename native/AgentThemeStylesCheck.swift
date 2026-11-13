@@ -83,6 +83,13 @@ import AppKit
             checks["externalEditCannotBeOverwrittenByStaleStyles"] = try refused && service.settings == beforeConflict && Data(contentsOf: file) == externalBytes
             service.reload(); service.publish()
             checks["explicitReloadUpdatesBothControlsAndExistingWindows"] = service.error == nil && service.settings == external && generalBinding.indexOfSelectedItem == 2 && second.themeStylesReadback()["style"] as? String == "bee"
+            let confirmation = AgentConfirmation(); confirmation.messageText = "主题确认验收"; confirmation.addButton(withTitle: "取消"); let confirm = confirmation.addButton(withTitle: "确认")
+            confirmation.beginSheetModal(for: control.window!)
+            let look = control.window!.effectiveAppearance
+            checks["confirmationSheetInheritsOwnerPaletteAndPrimaryButton"] = AgentThemeContext.style(for: confirmation.window) == service.settings.coding && close(rgba(confirm.bezelColor ?? .clear, look: look), rgba(AgentThemePalette.color(.accent, style: service.settings.coding), look: look))
+            var whileOpen = service.settings; whileOpen.coding = .parchment; try service.save(whileOpen)
+            checks["alreadyOpenSheetReceivesOwnerStyleChange"] = close(rgba(confirm.bezelColor ?? .clear, look: look), rgba(AgentThemePalette.color(.accent, style: .parchment), look: look)) && second.themeStylesReadback()["style"] as? String == "bee"
+            control.window!.endSheet(confirmation.window, returnCode: .cancel)
             let base = try JSONSerialization.jsonObject(with: encoder.encode(AgentThemeStyles.Settings())) as! [String: Any]
             for label in ["version", "missing", "extra", "style", "type"] {
                 var invalid = base

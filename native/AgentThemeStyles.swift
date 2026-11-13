@@ -115,13 +115,19 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
         if let scope = scopes.object(forKey: window) { scope.service = service; scope.mode = mode }
         else { scopes.setObject(AgentThemeScope(service: service, mode: mode), forKey: window) }
     }
-    static func style(for window: NSWindow?) -> AgentThemeStyle? {
+    private static func scope(for window: NSWindow?) -> AgentThemeScope? {
         var current = window, visited = Set<ObjectIdentifier>()
         while let candidate = current, visited.insert(ObjectIdentifier(candidate)).inserted {
-            if let scope = scopes.object(forKey: candidate), let service = scope.service { return service.settings[scope.mode] }
+            if let scope = scopes.object(forKey: candidate), scope.service != nil { return scope }
             current = candidate.sheetParent ?? candidate.parent
         }
         return nil
+    }
+    static func style(for window: NSWindow?) -> AgentThemeStyle? { guard let scope = scope(for: window) else { return nil }; return scope.service?.settings[scope.mode] }
+    static func inherit(_ window: NSWindow, from owner: NSWindow?) {
+        guard let scope = scope(for: owner), let service = scope.service else { return }
+        bind(window, service: service, mode: scope.mode)
+        if let root = window.contentView { refresh(root, invalidate: true) }
     }
     static func resolve(_ color: NSColor, in view: NSView?) -> NSColor { resolve(color, window: view?.window) }
     static func resolve(_ color: NSColor, window: NSWindow?) -> NSColor {
@@ -136,6 +142,7 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
         func bind(_ view: NSView) {
             func color(_ value: NSColor?) -> NSColor? { value.map { resolve($0, in: view) } }
             if let control = view as? NSButton, let old = control.contentTintColor, let next = color(old), old !== next { control.contentTintColor = next }
+            if let control = view as? NSButton, let old = control.bezelColor, let next = color(old), old !== next { control.bezelColor = next }
             if let image = view as? NSImageView, let old = image.contentTintColor, let next = color(old), old !== next { image.contentTintColor = next }
             if let text = view as? NSTextField, let old = text.textColor, let next = color(old), old !== next { text.textColor = next }
             if let tabs = view as? NSSegmentedControl, let old = tabs.selectedSegmentBezelColor, let next = color(old), old !== next { tabs.selectedSegmentBezelColor = next }
@@ -149,5 +156,6 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
             view.subviews.forEach(bind)
         }
         bind(root)
+        if root === root.window?.contentView { root.window?.sheets.compactMap(\.contentView).forEach { refresh($0, invalidate: invalidate) } }
     }
 }
