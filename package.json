@@ -132,7 +132,8 @@
     "native:check-appshot": "node scripts/check-native-appshot.mjs",
     "native:check-name-editor": "node scripts/check-native-name-editor.mjs",
     "native:check-unsaved-changes": "node scripts/check-native-unsaved-changes.mjs",
-    "native:check-operation-confirmation": "node scripts/check-native-operation-confirmation.mjs"
+    "native:check-operation-confirmation": "node scripts/check-native-operation-confirmation.mjs",
+    "native:check-thinking-status": "node scripts/check-native-thinking-status.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

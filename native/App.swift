@@ -55,6 +55,7 @@ final class PetWebView: WKWebView {
     lazy var fileIcons = AgentFileIcons(directory: store.directory)
     lazy var taskMonitor = AgentTaskMonitor(directory: store.directory)
     lazy var generalSettings = AgentGeneralSettings(directory: store.directory)
+    lazy var thinkingStatus = AgentThinkingStatus(directory: store.directory)
     lazy var shortcuts: AgentShortcuts = {
         let value = AgentShortcuts(directory: store.directory)
         value.onChange = { [weak self] in self?.refreshApplicationShortcuts() }

@@ -193,6 +193,7 @@ final class FormDocumentView: NSView {
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
+    private let thinkingIndicator = AgentThinkingIndicator()
     private var monitorPanel: AgentTaskMonitorPanel?, monitorPanelTaskID: String?
     private var monitorStates: [String: AgentTaskMonitor.DisplayState] = [:]
     private var appliedMonitorSettings: AgentTaskMonitor.Settings?
@@ -261,6 +262,7 @@ final class FormDocumentView: NSView {
         if companion.usesAgent { NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityDisplayChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil) }
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(automationDefinitionsChanged), name: AgentAutomations.changed, object: companion.agentStore?.automations) }
         if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(conversationDisplayChanged), name: AgentGeneralSettings.changed, object: companion.generalSettings) }
+        if companion.usesAgent { NotificationCenter.default.addObserver(self, selector: #selector(thinkingStatusChanged), name: AgentThinkingStatus.changed, object: companion.thinkingStatus) }
         refreshPreferences(); refreshShortcutControls(); refreshAppearancePreferences()
         if let task = currentAgentTask { displayedTask = task.id; displayedWorkMode = task.organizationMode; bindAgentDraft(task); taskNavigation = [task.id]; taskNavigationIndex = 0 }
         refreshThemeStyle()
@@ -1446,12 +1448,12 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms)
-                let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms)
+                let panel = AgentGeneralSettingsView(service: companion.generalSettings, thinking: companion.thinkingStatus, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 generalSettingsPanel = panel
-                panel.onConversationPage = { [weak self] visible in
+                panel.onPage = { [weak self] title in
                     guard let self, selectedTab == "settings", settingsCategory == "general", settingsSearch.stringValue.isEmpty else { return }
-                    settingsHeading.stringValue = visible ? "对话显示" : "常规"; pageTitle.stringValue = settingsHeading.stringValue
+                    settingsHeading.stringValue = title; pageTitle.stringValue = title
                 }
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
@@ -1841,7 +1843,7 @@ final class FormDocumentView: NSView {
         if windowCloseApproved { return true }
         if let editor = nameEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
         guard closeWindowTask == nil else { return false }
-        guard canLeaveMainPage() else { return false }
+        guard generalSettingsPanel?.prepareToClose() != false, canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
         guard saveAgentDraft() else { return false }
         closeWindowTask = Task { @MainActor [weak self] in
@@ -1904,6 +1906,7 @@ final class FormDocumentView: NSView {
         updateTerminalDock()
     }
     func closeOwnedTaskPanels() async -> Bool {
+        guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave() else { return false }
@@ -2982,6 +2985,9 @@ final class FormDocumentView: NSView {
         ids += processes.map { "process:" + $0.replyID }
         if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash + tasks.canvases.previewSignature($0, taskID: task.id) } }
         ids += inlineSnapshots.keys.sorted().map { "snapshot:" + $0 + ":" + inlineSnapshots[$0]!.id }
+        let thinking = companion?.agentRuntime?.isExecuting(task.id) == true && task.status == .running && companion?.agentRuntime?.pendingReview(task.id) == nil && tasks.mcp.userInputs.first(taskID: task.id) == nil
+        thinkingIndicator.update(companion?.thinkingStatus.settings ?? .init(), active: thinking)
+        if thinking { ids.append("thinking:" + task.id) }
         if ids != renderedIDs {
             for process in processRows.values { process.body.arrangedSubviews.forEach { process.body.removeArrangedSubview($0); $0.removeFromSuperview() } }
             messageColumn.arrangedSubviews.forEach { messageColumn.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -3015,6 +3021,7 @@ final class FormDocumentView: NSView {
                     }
                 }
             }
+            if thinking { append(thinkingIndicator, to: messageColumn) }
             for draft in agentDrafts {
                 let saved = draft.savedAt != nil || profiles.contains { $0.id == draft.profile.id }
                 let issue: String?
@@ -3160,6 +3167,14 @@ final class FormDocumentView: NSView {
         if companion?.generalSettings.settings.conversationDisplay.readingStart != true { readingAnchorID = nil; readingSpace?.constant = 0 }
         scheduleRender()
     }
+    @objc private func thinkingStatusChanged() { scheduleRender() }
+    @discardableResult func showThinkingStatusSettings() -> Bool {
+        guard showSettingsCategory("general"), let panel = generalSettingsPanel else { return false }; panel.showThinking(); return true
+    }
+    func thinkingStatusReadback() -> [String: Any] {
+        ["settingsPageVisible": generalSettingsPanel?.thinkingVisible == true && selectedTab == "settings", "heading": settingsHeading.stringValue, "settings": generalSettingsPanel?.thinkingReadback() ?? [:], "indicator": thinkingIndicator.readback(), "taskID": agentTaskID ?? "", "runtimeExecuting": agentTaskID.map { companion?.agentRuntime?.isExecuting($0) == true } ?? false]
+    }
+    func checkThinkingMotion(_ reduced: Bool?) { thinkingIndicator.checkMotion(reduced) }
     @discardableResult func showConversationDisplaySettings() -> Bool {
         guard showSettingsCategory("general"), let panel = generalSettingsPanel else { return false }; panel.showConversation(true); return true
     }
