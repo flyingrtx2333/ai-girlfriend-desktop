@@ -86,6 +86,7 @@ import Foundation
         draft.files[path] = value; draft.calls[call.id] = payload
         guard draft.files.count <= 32, draft.calls.count <= 64, draft.files.values.reduce(0,{$0 + $1.utf8.count}) <= 1_000_000,
               Set(draft.files.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() }).count == draft.files.count else { throw PetError("Skill 草稿过大或路径重复") }
+        var resources = original; for (path,text) in draft.files { resources[path] = Data(text.utf8) }; try validateResources(resources)
         let expectedTask = try store.recordVersion(taskID); task.skillDraft = draft
         _ = try store.commitTaskRecord(task,expectedHash:expectedTask,transaction:transaction(store,"draft"),label:"Skill 草稿")
         return try receipt(draft,path:path,job:job,store:store)
@@ -110,7 +111,17 @@ import Foundation
             let protected: (String)->Bool = { !["name","description"].contains($0) }
             guard previous.metadata.filter({protected($0.key)}) == document.metadata.filter({protected($0.key)}) else { throw PetError("Skill 改进不能改变原权限与触发配置") }
         }
-        resources["SKILL.md"] = Data(try named(text,chosen).utf8); return resources
+        resources["SKILL.md"] = Data(try named(text,chosen).utf8); try validateResources(resources); return resources
+    }
+    private static func validateResources(_ resources:[String:Data]) throws {
+        let paths = Set(resources.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() })
+        guard paths.count == resources.count, resources.values.reduce(0,{$0 + $1.count}) <= 20_000_000 else { throw PetError("Skill 资源路径重复或总量超过20MB") }
+        var entries = paths
+        for path in paths {
+            var parent = (path as NSString).deletingLastPathComponent
+            while !parent.isEmpty { guard !paths.contains(parent) else { throw PetError("Skill 文件与资源目录重名") }; entries.insert(parent); parent = (parent as NSString).deletingLastPathComponent }
+        }
+        guard entries.count <= 2000 else { throw PetError("Skill 文件与目录超过2000项") }
     }
     static func named(_ text:String, _ name:String) throws -> String {
         _ = try AgentExtensionDocument(text); var lines = text.components(separatedBy:"\n")

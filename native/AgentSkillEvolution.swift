@@ -172,7 +172,8 @@ struct AgentSkillDraft: Codable {
             if adopt {
                 if let target = item.target { _ = try AgentSkillDrafts.currentTarget(target,workspace:task.workspace,store:store) }
                 if let existing = store.tasks.first(where:{$0.id == item.id}) {
-                    guard existing.parentID == taskID, existing.skillEvolutionJob?.suggestionID == item.id else { throw PetError("建议对应的新任务标识已存在") }
+                    guard existing.parentID == taskID, existing.workspace == task.workspace, existing.skillEvolutionJob?.suggestionID == item.id,
+                          existing.skillEvolutionJob?.sourceHash == source, existing.skillEvolutionJob?.sourceMessageID == reply.id else { throw PetError("建议对应的新任务标识已存在") }
                     item.state = .adopted; item.taskID = existing.id; saved.items[index] = item; result.append(existing.id); changed = true; continue
                 }
                 var child = AgentTaskRecord(title:item.title,workspace:task.workspace,mode:.plan); child.id = item.id
