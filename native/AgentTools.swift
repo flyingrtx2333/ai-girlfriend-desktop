@@ -80,6 +80,8 @@ import Foundation
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
+            tool("read_skill_source", "只读本次技能方案冻结的经验和当前版本资源。path=.列文件；指定相对path读取UTF-8。offset从0开始按Unicode码点分页，按next_offset续读。draft=true读取当前暂存草稿。不能读取其他技能或任务。", ["path":string,"offset":integer,"limit":integer,"draft":["type":"boolean"]], []),
+            tool("draft_skill", "确认方案后逐文件暂存Skill草稿，不修改已安装技能。path为SKILL.md或相对资源路径。新文件传content；已有文件先read_skill_source读当前sha256，再传expected_hash和content，或传唯一old_text/new_text做分段替换。资源不会自动执行，未提交的原资源保持。全部完成后请用户审阅并应用。", ["path":string,"content":string,"old_text":string,"new_text":string,"expected_hash":string], ["path"]),
             tool("draft_agent", "用户要求创建本机 Agent 时，按用途、范围和预期结果生成 name、description、instructions 草稿，在会话中审阅。只保存本任务草稿，不创建、启用或委派 Agent。请用户点卡片“继续配置”，在原生表单核对模型、权限和扩展并保存，成功后才能在新任务选择。", ["name": string, "description": string, "instructions": string], ["name", "description", "instructions"]),
             tool("draft_automation", "用户要求定时工作时，起草本机自动化，不创建、启用或运行计划。prompt写清输入、范围、约束、核对与输出。schedule必填frequency与IANA time_zone；once需含时区ISO8601的at；daily需hour/minute；weekly另需weekdays(日=1至六=7)；interval需interval_minutes，可选at。循环可选expires_at，字段不能混用。项目沿用本任务，未选项目可在表单补充。output可选independent/merged。生成后请用户在会话卡片继续配置并明确保存、选择是否启用。", ["name": string, "prompt": string, "schedule": automationSchedule, "output": ["type": "string", "enum": AgentAutomationOutput.allCases.map(\.rawValue)]], ["name", "prompt", "schedule"]),
             tool("list_agents", "列出当前设备已启用且可委派的 Agent/团队、职责、工具及选定扩展；团队任务只列本次成员。不创建任务或调用模型。", [:], []),
@@ -156,7 +158,9 @@ import Foundation
         if kind == "wiki" { tools.removeAll { item in let name = (item["function"] as? [String: Any])?["name"] as? String ?? ""; return !wikiTools.contains(name) } }
         if kind != "wiki" { tools.removeAll { ($0["function"] as? [String: Any])?["name"] as? String == "plan_wiki" } }
         if kind == AgentKnowledgeCards.kind { tools.removeAll { item in !AgentKnowledgeCards.generationTools.contains((item["function"] as? [String: Any])?["name"] as? String ?? "") } }
-        if let groups {
+        if kind == AgentSkillEvolution.kind { tools.removeAll { let name = ($0["function"] as? [String:Any])?["name"] as? String ?? ""; return !AgentSkillDrafts.tools.contains(name) || name == "draft_skill" && [.ask,.plan].contains(mode) } }
+        else { tools.removeAll { ["read_skill_source","draft_skill"].contains(($0["function"] as? [String:Any])?["name"] as? String ?? "") } }
+        if let groups, kind != AgentSkillEvolution.kind {
             let enabled = Set(["load_tools", "update_plan", "ask_user", "finish_task", "read_task_history"] + groups.flatMap { Self.groups[$0] ?? [] })
             tools.removeAll { !enabled.contains(($0["function"] as? [String: Any])?["name"] as? String ?? "") }
         }
@@ -166,6 +170,7 @@ import Foundation
         let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
         task.permission = try store.agents.executionPermission(task, store: store)
+        try AgentSkillDrafts.check(call,task:task,store:store)
         try checkHookTool(call, task: task)
         try store.agents.check(call, task: task, store: store)
         let rule = try store.agents.permission(call, task: task, store: store)
@@ -294,6 +299,7 @@ import Foundation
     }
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
+        guard let task = store.task(taskID) else { throw PetError("任务不存在") }; try AgentSkillDrafts.check(call,task:task,store:store)
         let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         if call.name == "run_command", let task = store.task(taskID), try store.agents.limits(task, store: store).readOnly {
             return try await executeCore(call, gitDirectory: gitDirectory)
@@ -325,6 +331,7 @@ import Foundation
         try Task.checkCancellation()
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
         task.permission = try store.agents.executionPermission(task, store: store)
+        try AgentSkillDrafts.check(call,task:task,store:store)
         try checkHookTool(call, task: task)
         try store.agents.check(call, task: task, store: store)
         if task.kind == "wiki" { try AgentWiki.checkScope(task, store: store) }
@@ -344,6 +351,8 @@ import Foundation
             guard let value = args[name] as? String else { throw PetError("缺少参数：\(name)") }; return value
         }
         switch call.name {
+        case "read_skill_source": return try AgentSkillDrafts.read(call,task:task,store:store)
+        case "draft_skill": return try AgentSkillDrafts.stage(call,taskID:taskID,store:store)
         case "list_rules":
             var all: [[String: Any]] = try store.extensions.plugins.ruleItems(workspace: task.workspace).filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
             all += try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).filter { $0.enabled && $0.definition?.trigger == .decision }.map { ["id": $0.id, "name": $0.invocation, "description": $0.definition!.description, "source": $0.source.path] }

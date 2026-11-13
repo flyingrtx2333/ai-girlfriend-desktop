@@ -1,14 +1,14 @@
 import AppKit
 
-@MainActor final class AgentSettingsReviewPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
-    private let sections: [(title: String, body: String)]
+@MainActor class AgentSettingsReviewPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+    private var sections: [(title: String, body: String)]
     private let list = NSTableView(), preview = NSTextView(), status = NSTextField(wrappingLabelWithString: "")
     private let apply = NSButton(), cancel = NSButton(title: "取消", target: nil, action: nil)
     private var working = false, finished = false
     var onApply: (() throws -> Void)? { didSet { apply.isEnabled = onApply != nil && !working && !finished } }
     var onApplied: (() -> Void)?
 
-    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String) {
+    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String, controls: [NSView] = []) {
         self.sections = sections
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
@@ -27,9 +27,9 @@ import AppKit
         cancel.target = self; cancel.action = #selector(cancelReview); cancel.keyEquivalent = "\u{1b}"
         apply.title = applyTitle; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
         let footer = NSStackView(views: [NSView(), cancel, apply]); footer.spacing = 10
-        let layout = NSStackView(views: [heading, context, consequence, split, status, footer]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 10; layout.distribution = .fill
+        let layout = NSStackView(views: [heading, context, consequence] + controls + [split, status, footer]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 10; layout.distribution = .fill
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
-        for view in [heading, context, consequence, split, status, footer] { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
+        for view in [heading, context, consequence, split, status, footer] + controls { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([
             layout.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18), layout.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18), layout.topAnchor.constraint(equalTo: root.topAnchor, constant: 18), layout.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
             detail.heightAnchor.constraint(equalTo: split.heightAnchor), split.heightAnchor.constraint(greaterThanOrEqualToConstant: 100), footer.heightAnchor.constraint(equalToConstant: 28)
@@ -44,6 +44,7 @@ import AppKit
         label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingMiddle; label.toolTip = label.stringValue; return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) { showSelection() }
+    func updateSections(_ values:[(String,String)]) { let row = list.selectedRow; sections = values; list.reloadData(); if !sections.isEmpty { list.selectRowIndexes(IndexSet(integer:min(max(0,row),sections.count - 1)),byExtendingSelection:false) }; showSelection() }
     private func showSelection() {
         guard sections.indices.contains(list.selectedRow) else { return }; preview.string = sections[list.selectedRow].body; preview.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }

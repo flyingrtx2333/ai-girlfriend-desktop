@@ -20,7 +20,7 @@ struct AgentPromptSuggestionSet: Codable {
     init(store: AgentStore, enabled: @escaping () -> Bool) { self.store = store; self.enabled = enabled }
     static func reply(_ task: AgentTaskRecord) -> AgentMessage? {
         guard !task.archived, task.status == .completed, task.pendingCalls.isEmpty, task.queuedCount == 0,
-              !task.isProjectDocumentation, task.kind != "hook", task.automation == nil, task.agent?.ownerID == nil,
+              !task.isProjectDocumentation, task.kind != "hook", task.skillEvolutionJob == nil, task.automation == nil, task.agent?.ownerID == nil,
               task.pendingFileCapture == nil, task.pendingFileRollback == nil,
               let human = task.messages.lastIndex(where: \.isHumanInput),
               let reply = task.messages.lastIndex(where: \.isReply), reply > human,

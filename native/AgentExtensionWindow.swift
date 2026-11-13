@@ -88,6 +88,7 @@ import UniformTypeIdentifiers
         }
         reload()
     }
+    func selectItem(_ id:String) { if canLeave() { reload(select:id) } }
     @objc private func showRules() {
         guard canLeave() else { return }
         if let window = ruleWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }

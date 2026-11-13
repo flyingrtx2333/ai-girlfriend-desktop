@@ -146,7 +146,7 @@ final class PetWebView: WKWebView {
         themeStyles.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshThemeStyle() } }
         contentAppearance.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshContentAppearance() } }
         taskMonitor.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshTaskMonitorPreferences() } }
-        generalSettings.onChange = { [weak self] in self?.syncMenuBarPreference(); self?.questionAutoSkip?.refresh(); self?.agentRuntime?.refreshPromptSuggestionsPreference() }
+        generalSettings.onChange = { [weak self] in self?.syncMenuBarPreference(); self?.questionAutoSkip?.refresh(); self?.agentRuntime?.refreshPromptSuggestionsPreference(); self?.agentRuntime?.refreshSkillEvolutionPreference() }
         automationNotifications.preferences = { [weak self] in self?.generalSettings.settings ?? .init() }
         automationNotifications.isTaskFocused = { [weak self] id in NSApp.isActive && self?.taskControls.contains(where: { $0.agentTaskID == id && $0.hasTaskFocus }) == true }
         setupMenu(); setupPet(); setupMouse()
@@ -332,7 +332,7 @@ final class PetWebView: WKWebView {
                       y: min(max(rect.minY, visible.minY), visible.maxY - rect.height), width: rect.width, height: rect.height)
     }
     func applyPreferences() {
-        agentRuntime?.promptSuggestions.cancelAll()
+        agentRuntime?.promptSuggestions.cancelAll(); agentRuntime?.skillEvolution.cancelAll()
         guard pet != nil else { return }
         pet.level = store.preferences.alwaysOnTop ? .floating : .normal
         resizePet(store.preferences.scale)

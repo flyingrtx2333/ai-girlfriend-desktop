@@ -122,7 +122,7 @@ import UserNotifications
             for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
                 let views = try controls(control)
-                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 13 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
+                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 14 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
                 checks[label + "GeneralPageHasNoDuplicateSave"] = !descendants(window.contentView!).contains { ($0 as? NSButton)?.title == "保存" && !$0.isHiddenOrHasHiddenAncestor }
             }
             window.setContentSize(NSSize(width: 1200, height: 774)); control.show(tab: "chat"); window.makeKeyAndOrderFront(nil); await wait(0.05)

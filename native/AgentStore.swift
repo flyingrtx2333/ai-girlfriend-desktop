@@ -125,6 +125,7 @@ import Foundation
         value.wikiEditReads = nil
         if var job = value.wikiJob { job.plan = AgentWikiPlan(); job.reviewed = nil; job.pageReads = nil; job.update?.diff = ""; job.update?.retained = [:]; job.update?.assets = [:]; job.update?.baseFiles = [:]; job.update?.changesRead = nil; value.wikiJob = job }
         value.knowledgeJob?.writingNotes = nil
+        value.skillDraft = nil; value.skillDraftHistory = nil; value.skillEvolutionJob?.brief = ""
         value.agent?.profile.instructions = ""
         value.agent?.teamCeiling?.instructions = ""
         value.team?.team.instructions = ""
@@ -288,7 +289,7 @@ import Foundation
     func hasFileRollback(in workspace: String, except taskID: String? = nil) -> Bool {
         tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspace.map { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } == true }
     }
-    @discardableResult func commitTaskRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL, continuation: AgentTaskRecord? = nil, label: String = "撤回文件") throws -> String {
+    @discardableResult func commitTaskRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL, continuation: AgentTaskRecord? = nil, label: String = "撤回文件", additionalWrites: [AgentKnowledgeFileWrite] = [], validating: () throws -> Void = {}) throws -> String {
         guard try recordVersion(record.id) == expectedHash, let i = tasks.firstIndex(where: { $0.id == record.id }) else { throw PetError("任务记录已变化，未保存") }
         var record = record
         if let continuation {
@@ -300,13 +301,13 @@ import Foundation
         var next = tasks; next[i] = Self.metadata(record)
         if let continuation { next.insert(Self.metadata(continuation), at: 0) }
         let index = try encoder.encode(Index(selectedID: continuation?.id ?? selectedID, tasks: next))
-        var writes = [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: expectedHash, permissions: 0o600, label: label),
+        var writes = additionalWrites + [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: expectedHash, permissions: 0o600, label: label),
                       try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, permissions: 0o600, label: label)]
         let continuationData = try continuation.map { try encoder.encode($0) }, selection = try continuation.flatMap { try organization.prepareSelection($0) }
         guard data.count <= 20_000_000, (continuationData?.count ?? 0) <= 20_000_000 else { throw PetError("任务记录过大，未保存") }
         if let continuation, let continuationData { writes.append(try AgentKnowledgeFileWrite(files: files, path: continuation.id + ".json", data: continuationData, missing: true, permissions: 0o600, label: "重新发送")) }
         if let selection { writes.append(selection.write) }
-        try AgentKnowledgeFileBatch.commit(writes, backup: transaction, label: label) { guard try self.recordVersion(record.id) == expectedHash else { throw PetError("任务记录已变化") } }
+        try AgentKnowledgeFileBatch.commit(writes, backup: transaction, label: label) { guard try self.recordVersion(record.id) == expectedHash else { throw PetError("任务记录已变化") }; try validating() }
         tasks = next; cache[record.id] = record; taskHashes[record.id] = AgentFiles.hash(data); indexHash = AgentFiles.hash(index); writeError = nil
         taskSearchRevision &+= 1; taskSearchRevisions[record.id] = taskSearchRevision
         if let continuation, let continuationData {
@@ -488,6 +489,7 @@ import Foundation
             original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
             original.workspaceArchiveID = nil
             original.changes = []; original.changeRounds = nil; original.changeTrackingFromID = nil; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
+            original.skillEvolutionJob = nil; original.skillDraft = nil; original.skillDraftHistory = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
             original.hookRewakePromptID = nil; original.hookRewakeCount = nil
@@ -519,6 +521,25 @@ import Foundation
         taskSearchRevision &+= 1; taskSearchRevisions[record.id] = taskSearchRevision
         applyingArchive = true; selectedID = record.id; applyingArchive = false; writeError = nil
         trimCache(keeping: record.id); worktreeRetention.tasksChanged(); onChange?()
+    }
+    func installRelatedRecords(_ records:[AgentTaskRecord], updating source:AgentTaskRecord, expectedHash:String, label:String) throws {
+        guard !records.isEmpty, records.count <= 3, refreshDeletedRecords(), let sourceIndex = tasks.firstIndex(where:{$0.id == source.id}), try recordVersion(source.id) == expectedHash,
+              Set(records.map(\.id)).count == records.count, records.allSatisfy({ UUID(uuidString:$0.id) != nil && $0.parentID == source.id && $0.workspace == source.workspace && $0.status == .ready && !$0.archived }) else { throw PetError("原任务或新任务已变化") }
+        for record in records { guard record.id != source.id, !tasks.contains(where:{$0.id == record.id}), !deletions.taskIDs.contains(record.id) else { throw PetError("新任务标识已存在") } }
+        let files = try AgentFiles(workspace:directory.path), sourceData = try encoder.encode(source), encoded = try records.map { try encoder.encode($0) }
+        guard sourceData.count <= 20_000_000, encoded.allSatisfy({$0.count <= 20_000_000}) else { throw PetError("任务记录过大") }
+        var next = tasks; next[sourceIndex] = Self.metadata(source); next.insert(contentsOf:records.map(Self.metadata),at:0)
+        let index = try encoder.encode(Index(selectedID:records[0].id,tasks:next))
+        var writes = try zip(records,encoded).map { try AgentKnowledgeFileWrite(files:files,path:$0.0.id + ".json",data:$0.1,missing:true,permissions:0o600,label:label) }
+        writes += [try .init(files:files,path:source.id + ".json",data:sourceData,expectedHash:expectedHash,permissions:0o600,label:label),try .init(files:files,path:"index.json",data:index,expectedHash:indexHash,missing:indexHash == nil,permissions:0o600,label:label)]
+        let selection = try organization.prepareSelection(records[0]); if let selection { writes.append(selection.write) }
+        try AgentKnowledgeFileBatch.commit(writes,backup:directory.deletingLastPathComponent().appendingPathComponent("skill-evolution-transactions/adopt-" + UUID().uuidString),label:label) {
+            guard self.refreshDeletedRecords(), try self.recordVersion(source.id) == expectedHash else { throw PetError("原任务已变化") }
+        }
+        tasks = next; cache[source.id] = source; taskHashes[source.id] = AgentFiles.hash(sourceData); indexHash = AgentFiles.hash(index); taskSearchRevision &+= 1; taskSearchRevisions[source.id] = taskSearchRevision
+        for (record,data) in zip(records,encoded) { cache[record.id] = record; taskHashes[record.id] = AgentFiles.hash(data); taskSearchRevisions[record.id] = taskSearchRevision }
+        applyingArchive = true; selectedID = records[0].id; applyingArchive = false; selection?.accept(); writeError = nil
+        trimCache(keeping:records[0].id); worktreeRetention.tasksChanged(); onChange?()
     }
     func backupDirectory(_ id: String) throws -> URL {
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }

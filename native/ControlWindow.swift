@@ -759,7 +759,7 @@ final class FormDocumentView: NSView {
         terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
         updateTerminalDock()
-        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
+        let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty || task.skillEvolutionJob != nil
         let monitorContent = makeMonitorContent(task), monitorState = taskMonitorState(task.id)
         let hasRecords = monitorContent.hasContent
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
@@ -872,6 +872,12 @@ final class FormDocumentView: NSView {
         if presentation.inputEnvironment, let workspace = task.workspace { value.environment = [store.organization.name(workspace, mode: task.organizationMode), workspace].compactMap { $0 } }
         value.canAnalyze = companion.agentRuntime?.isBusy(task.id) == false && !task.archived && task.kind != "hook" && task.pendingCalls.isEmpty && task.status != .waiting && task.messages.contains(where: \.isHumanInput)
         value.analysis = companion.agentRuntime?.analysisTitle(task.id); value.analysisError = companion.agentRuntime?.analysisError(task.id, recap: true)
+        if let service = companion.agentRuntime?.skillEvolution {
+            value.skillSuggestions = service.items(task).filter { $0.state != .dismissed }; value.skillSource = AgentSkillEvolution.source(task)
+            value.skillGenerating = service.isGenerating(task.id); value.skillError = service.error(task)
+            value.skillAnalyzed = AgentSkillEvolution.reply(task)?.skillEvolution?.source == value.skillSource && value.skillSource != nil
+            value.canGenerateSkills = companion.generalSettings.settings.skillEvolutionSuggestions && value.skillSource != nil && companion.agentRuntime?.isBusy(task.id) == false && task.modelReceipts?.contains(where: { $0.purpose == "conversation" && $0.completed && $0.messageID == AgentSkillEvolution.reply(task)?.id }) == true
+        }
         switch taskWorkspace.selectedRoot {
         case .canvas(let id) where (task.canvases ?? []).contains(where: { $0.id == id }): value.previewTitle = "画布"; value.previewVisible = taskWorkspace.requested
         default: if store.browser.sessions[task.id]?.monitorAvailable == true { value.previewTitle = "浏览器"; value.previewVisible = taskWorkspace.requested && taskWorkspace.selectedRoot == .browser }
@@ -899,6 +905,14 @@ final class FormDocumentView: NSView {
         view.onClose = { [weak self] in self?.closeTaskMonitor() }
         view.onPresentation = { [weak self] in self?.pinTaskMonitor() }
         view.onAddSource = { [weak self] sender in self?.showSourceMenu(sender) }
+        view.onSkillCurate = { [weak self] ids,source,adopt in
+            guard let self, let id = agentTaskID, let service = companion?.agentRuntime?.skillEvolution else { return }
+            do { let created = try service.curate(ids,taskID:id,source:source,adopt:adopt); if let first = created.first { selectAgentTask(first) } else { renderAgentMessages() } }
+            catch { setStatus(error.localizedDescription,error:true) }
+        }
+        view.onSkillTask = { [weak self, weak view] id in guard let self, let owner = view?.boundTaskID, agentTaskID == owner, companion?.agentStore?.tasks.contains(where: { $0.id == id && $0.skillEvolutionJob?.sourceTaskID == owner }) == true else { return }; selectAgentTask(id) }
+        view.onSkillRetry = { [weak self, weak view] in guard let self, agentTaskID == view?.boundTaskID, let id = agentTaskID else { return }; companion?.agentRuntime?.retrySkillEvolution(id) }
+        view.onSkillSource = { [weak self] in self?.presentAgentRecords(section:4) }
     }
     private func showSourceMenu(_ sender: NSButton) {
         guard let task = currentAgentTask, task.canAddSources else { return }
@@ -1456,7 +1470,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms + " " + AgentPromptSuggestions.searchTerms + " " + AgentHomeGames.searchTerms)
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms + " " + AgentPromptSuggestions.searchTerms + " " + AgentHomeGames.searchTerms + " " + AgentSkillEvolution.searchTerms)
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, thinking: companion.thinkingStatus, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 generalSettingsPanel = panel
                 panel.onPage = { [weak self] title in
@@ -2310,6 +2324,23 @@ final class FormDocumentView: NSView {
         profileWindow = manager
         window?.makeKeyAndOrderFront(nil)
     }
+    internal func confirmSkillPlan(taskID:String, source:String, start:Bool = true) throws {
+        guard agentTaskID == taskID, let store = companion?.agentStore, let runtime = companion?.agentRuntime, !runtime.isBusy(taskID) else { throw PetError("请在原任务确认当前方案") }
+        try AgentSkillDrafts.approvePlan(taskID,source:source,store:store)
+        guard runtime.submit("按已确认方案生成可审阅的 Skill 草稿，内容语言遵循原目标。",taskID:taskID,startImmediately:start) else { throw PetError(runtime.submissionError ?? "生成请求未提交") }; renderAgentMessages()
+    }
+    internal func reviewSkillDraft(taskID:String) throws {
+        guard agentTaskID == taskID, let store = companion?.agentStore, companion?.agentRuntime?.isBusy(taskID) == false else { throw PetError("请在原任务等待草稿生成完成") }
+        let page = try AgentSkillDraftReviewPage(store:store,taskID:taskID)
+        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }; settingsPageHost.selectPage("skills")
+        guard let parent = settingsPageHost.currentController else { throw PetError("技能设置页不可用") }
+        page.onApplied = { [weak self] in guard let self else { return }; show(tab:"chat"); renderAgentMessages() }; parent.presentSettingsChild(page)
+    }
+    private func openSavedSkill(taskID:String) throws {
+        guard agentTaskID == taskID, let store = companion?.agentStore, let id = store.task(taskID)?.skillDraft?.savedID else { throw PetError("技能尚未保存") }
+        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }; settingsPageHost.selectPage("skills")
+        guard let manager = settingsPageHost.currentController as? AgentExtensionWindow else { throw PetError("技能设置页不可用") }; manager.selectItem(id)
+    }
     func configureAutomationDraft(_ id: String, taskID: String) throws {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
         let draft = try AgentAutomationDrafts.load(id, taskID: taskID, store: store)
@@ -3014,6 +3045,7 @@ final class FormDocumentView: NSView {
             let saved = tasks.automations.values.first { $0.id == draft.automation.id }
             ids.append("automation-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + AgentFiles.hash((try? JSONEncoder().encode(saved)) ?? Data()) + ":" + String(task.archived) + ":" + String(tasks.automations.isStarted))
         }
+        if task.skillEvolutionJob != nil { let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; ids.append("skill-job:" + AgentFiles.hash((try? encoder.encode(task.skillEvolutionJob)) ?? Data()) + ":" + AgentFiles.hash((try? encoder.encode(task.skillDraft)) ?? Data()) + ":" + task.status.rawValue) }
         let thinking = companion?.agentRuntime?.isExecuting(task.id) == true && task.status == .running && companion?.agentRuntime?.pendingReview(task.id) == nil && tasks.mcp.userInputs.first(taskID: task.id) == nil
         let suggestions = companion?.agentRuntime?.promptSuggestions
         let suggestionItems = suggestions?.items(task) ?? [], suggestionError = suggestions?.error(task)
@@ -3063,6 +3095,20 @@ final class FormDocumentView: NSView {
                 }
             }
             if thinking { append(thinkingIndicator, to: messageColumn) }
+            if let job = task.skillEvolutionJob {
+                var issue: String?, ready = false
+                if task.skillDraft?.savedAt == nil, task.status != .running {
+                    do { _ = try AgentSkillDrafts.job(task,store:tasks); if let draft = task.skillDraft { _ = try AgentSkillDrafts.proposed(draft,job:job,store:tasks); ready = true } }
+                    catch { issue = error.localizedDescription }
+                }
+                let row = AgentSkillJobRow(task:task,ready:ready,issue:issue)
+                let plan = AgentSkillDrafts.planSource(task)
+                row.onConfirm = { [weak self] in guard let source = plan else { return }; do { try self?.confirmSkillPlan(taskID:task.id,source:source) } catch { self?.setStatus(error.localizedDescription,error:true) } }
+                row.onReview = { [weak self] in do { try self?.reviewSkillDraft(taskID:task.id) } catch { self?.setStatus(error.localizedDescription,error:true) } }
+                row.onOpen = { [weak self] in do { try self?.openSavedSkill(taskID:task.id) } catch { self?.setStatus(error.localizedDescription,error:true) } }
+                row.onSource = { [weak self] in guard let self, agentTaskID == task.id, tasks.tasks.contains(where:{$0.id == job.sourceTaskID}) else { return }; selectAgentTask(job.sourceTaskID) }
+                append(row,to:messageColumn)
+            }
             if !suggestionItems.isEmpty || suggestionError != nil || suggesting {
                 let source = AgentPromptSuggestions.source(task) ?? ""
                 let row = AgentPromptSuggestionsRow(items: suggestionItems, generating: suggesting, error: suggestionError, choose: { [weak self] text in _ = self?.usePromptSuggestion(text, taskID: task.id, source: source) }, retry: { [weak self] in self?.companion?.agentRuntime?.retryPromptSuggestions(task.id) })

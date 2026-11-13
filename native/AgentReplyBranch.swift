@@ -56,6 +56,7 @@ import Foundation
         task.contextSummary = nil; task.contextThroughID = nil; task.contextManualThroughID = nil; task.contextSize = nil; task.contextSnapshot = nil
         task.plan = []; task.artifacts = []; task.sources = []; task.resultHistory = nil; task.importOrigin = nil; task.automation = nil
         task.wikiJob = nil; task.wikiRevision = nil; task.wikiLanguage = nil; task.knowledgeJob = nil; task.wikiEditReads = nil; task.knowledgeReads = nil
+        task.skillEvolutionJob = nil; task.skillDraft = nil; task.skillDraftHistory = nil
         task.hookRejectedAnswers = nil; task.hookPromptIDs = nil; task.hookStopBlocks = nil; task.hookCwd = nil
         return task
     }

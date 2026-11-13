@@ -13,7 +13,7 @@ struct AgentModelReceipt: Codable, Identifiable {
     var completed: Bool
     var messageID: String?
     var purposeTitle: String {
-        switch purpose { case "compaction": return "上下文压缩"; case "recap": return "任务回顾"; case "suggestions": return "提示建议"; case "validation": return "Hook 校验"; default: return "对话" }
+        switch purpose { case "compaction": return "上下文压缩"; case "recap": return "任务回顾"; case "suggestions": return "提示建议"; case "skill_evolution": return "Skill 自进化建议"; case "validation": return "Hook 校验"; default: return "对话" }
     }
 }
 

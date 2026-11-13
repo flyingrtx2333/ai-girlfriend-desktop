@@ -30,6 +30,8 @@ struct AgentMessage: Codable, Identifiable {
     var reasoning: String?
     var duration: TimeInterval?
     var promptSuggestions: AgentPromptSuggestionSet?
+    var skillEvolution: AgentSkillEvolutionSet?
+    var skillEvolutionHistory: [AgentSkillEvolutionSet]?
     var toolCalls: [AgentToolCall]?
     var toolCallID: String?
     var attachmentIDs: [String]?
@@ -178,6 +180,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var toolGroups: [String]?
     var agentDrafts: [AgentProfileDraft]?
     var automationDrafts: [AgentAutomationDraft]?
+    var skillEvolutionJob: AgentSkillEvolutionJob?
+    var skillDraft: AgentSkillDraft?
+    var skillDraftHistory: [AgentSkillDraft]?
     var draft: String?
     var kind: String?
     var queuedInputs: [String]?
@@ -239,10 +244,10 @@ struct AgentTaskRecord: Codable, Identifiable {
     var team: AgentTeamAssignment?
     var automation: AgentAutomationAssignment?
     var canChooseExecutor: Bool {
-        status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && !isProjectDocumentation
+        status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
     }
     var canChooseEnvironment: Bool {
-        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && kind != "hook" && !isProjectDocumentation
+        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
     }
     var workspaceDisplayName: String? {
         if let origin = worktreeOrigin { return URL(fileURLWithPath: origin.root).lastPathComponent + " · 工作树" }

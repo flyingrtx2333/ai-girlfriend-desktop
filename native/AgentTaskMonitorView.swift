@@ -14,6 +14,9 @@ struct AgentMonitorContent {
     var showChanges = true, canAnalyze = false, canAddSources = false
     var analysis: String?, analysisError: String?
     var previewTitle: String?, previewVisible = false
+    var skillSuggestions: [AgentSkillEvolutionSuggestion] = []
+    var skillSource: String?, skillError: String?
+    var skillGenerating = false, skillAnalyzed = false, canGenerateSkills = false
     func name(_ event: AgentEvent) -> String { event.toolCallID.flatMap { toolNames[$0] } ?? event.title }
     var processes: [AgentEvent] { task.events.filter { ["running", "waiting"].contains($0.status) && (name($0) == "run_command" || $0.kind == "hook") } }
     var capabilities: [AgentEvent] { task.events.filter { let n = name($0); return AgentMCP.tools.contains(n) || AgentMCP.isModelToolName(n) } }
@@ -21,11 +24,13 @@ struct AgentMonitorContent {
     var memory: [AgentEvent] { task.events.filter { $0.kind == "tool" && name($0) == "write_memory" && $0.status == "completed" } }
     var hasContent: Bool {
         let s = settings
-        return s.shows(.recap) && (task.recap != nil || task.messages.contains(where: \.isHumanInput) || analysis != nil || analysisError != nil) || s.shows(.goal) && task.mode == .goal && task.messages.contains(where: \.isHumanInput) || s.shows(.plan) && !task.plan.isEmpty || s.shows(.agents) && !children.isEmpty || s.shows(.processes) && (!processes.isEmpty || !terminals.isEmpty) || s.shows(.sideChats) && !sideChats.isEmpty || s.shows(.capabilities) && (task.activeSkills?.isEmpty == false || !capabilities.isEmpty) || s.shows(.outputs) && (!task.artifacts.isEmpty || task.canvases?.isEmpty == false) || s.shows(.web) && !pages.isEmpty || s.shows(.sources) && !sources.isEmpty || s.shows(.knowledge) && !knowledge.isEmpty || s.shows(.memory) && !memory.isEmpty || s.shows(.preview) && previewTitle != nil || showChanges && !task.changes.isEmpty
+        return s.shows(.recap) && (task.recap != nil || task.messages.contains(where: \.isHumanInput) || analysis != nil || analysisError != nil) || s.shows(.goal) && task.mode == .goal && task.messages.contains(where: \.isHumanInput) || s.shows(.plan) && !task.plan.isEmpty || s.shows(.agents) && !children.isEmpty || s.shows(.processes) && (!processes.isEmpty || !terminals.isEmpty) || s.shows(.sideChats) && !sideChats.isEmpty || s.shows(.capabilities) && (task.activeSkills?.isEmpty == false || !capabilities.isEmpty || !skillSuggestions.isEmpty || skillGenerating || skillAnalyzed || skillError != nil || canGenerateSkills) || s.shows(.outputs) && (!task.artifacts.isEmpty || task.canvases?.isEmpty == false) || s.shows(.web) && !pages.isEmpty || s.shows(.sources) && !sources.isEmpty || s.shows(.knowledge) && !knowledge.isEmpty || s.shows(.memory) && !memory.isEmpty || s.shows(.preview) && previewTitle != nil || showChanges && !task.changes.isEmpty
     }
     var signature: String {
-        let t = task, preferences = (try? JSONEncoder().encode(settings)).map(AgentFiles.hash) ?? ""
-        return [t.id, preferences, t.status.rawValue, String(t.goalAccepted ?? false), t.messages.first(where: \.isHumanInput)?.content ?? "", t.recap?.text ?? "", t.recap?.created.description ?? "", t.recap?.model ?? "", t.recap?.throughMessageID ?? "", t.messages.last?.id ?? "", t.plan.map { $0.id + $0.title + $0.status }.joined(), t.artifacts.joined(), missingArtifacts.sorted().joined(), sources.joined(), (t.canvases ?? []).map { $0.id + $0.hash }.joined(), t.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined(), t.events.map { $0.id + $0.title + $0.status + String($0.duration ?? -1) }.joined(), (t.activeSkills ?? []).map { $0.id }.joined(), (children + sideChats).map { $0.id + $0.title + $0.statusTitle + String($0.sideTask?.retained ?? false) }.joined(), terminals.map { $0.id + $0.title + $0.detail }.joined(), pages.map { $0.id + $0.title + $0.detail }.joined(), environment.joined(), String(showChanges), String(canAnalyze), String(canAddSources), analysis ?? "", analysisError ?? "", previewTitle ?? "", String(previewVisible)].joined(separator: "|")
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let t = task, preferences = (try? encoder.encode(settings)).map(AgentFiles.hash) ?? ""
+        let skills = [(try? encoder.encode(skillSuggestions)).map(AgentFiles.hash) ?? "", skillSource ?? "", skillError ?? "", String(skillGenerating), String(skillAnalyzed), String(canGenerateSkills)].joined(separator: "|")
+        return [t.id, preferences, skills, t.status.rawValue, String(t.goalAccepted ?? false), t.messages.first(where: \.isHumanInput)?.content ?? "", t.recap?.text ?? "", t.recap?.created.description ?? "", t.recap?.model ?? "", t.recap?.throughMessageID ?? "", t.messages.last?.id ?? "", t.plan.map { $0.id + $0.title + $0.status }.joined(), t.artifacts.joined(), missingArtifacts.sorted().joined(), sources.joined(), (t.canvases ?? []).map { $0.id + $0.hash }.joined(), t.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined(), t.events.map { $0.id + $0.title + $0.status + String($0.duration ?? -1) }.joined(), (t.activeSkills ?? []).map { $0.id }.joined(), (children + sideChats).map { $0.id + $0.title + $0.statusTitle + String($0.sideTask?.retained ?? false) }.joined(), terminals.map { $0.id + $0.title + $0.detail }.joined(), pages.map { $0.id + $0.title + $0.detail }.joined(), environment.joined(), String(showChanges), String(canAnalyze), String(canAddSources), analysis ?? "", analysisError ?? "", previewTitle ?? "", String(previewVisible)].joined(separator: "|")
     }
 }
 
@@ -36,6 +41,8 @@ struct AgentMonitorContent {
     var onRecap: (() -> Void)?, onContext: ((Int) -> Void)?, onSettings: (() -> Void)?, onMemory: (() -> Void)?, onPreview: (() -> Void)?
     var onClose: (() -> Void)?, onPresentation: (() -> Void)?
     var onAddSource: ((NSButton) -> Void)?
+    var onSkillCurate: ((Set<String>,String,Bool)->Void)?, onSkillTask: ((String)->Void)?, onSkillRetry: (()->Void)?, onSkillSource: (()->Void)?
+    private var skillSelections: [String:Set<String>] = [:]
     var canOpenTerminal = true
     private let column = NSStackView(), scroll = NSScrollView(), pin = AgentWorkbenchButton()
     private final class Action: NSObject {
@@ -157,7 +164,18 @@ struct AgentMonitorContent {
         if settings.shows(.sideChats) { section("sideChats", "侧边聊天", views: taskRows(value.sideChats)) }
         if settings.shows(.capabilities) {
             let skills = (task.activeSkills ?? []).map { skill in button(skill.name, symbol: "puzzlepiece.extension") { [weak self] in self?.onContext?(0) } }
-            section("capabilities", "Skill 与 MCP", views: skills + events(value.capabilities))
+            var rows: [NSView] = skills + events(value.capabilities)
+            if !value.skillSuggestions.isEmpty || value.skillGenerating || value.skillAnalyzed || value.skillError != nil || value.canGenerateSkills {
+                let key = task.id + ":" + (value.skillSource ?? ""), token = generation
+                let suggestions = AgentSkillSuggestionsView(items:value.skillSuggestions,selected:skillSelections[key] ?? [],generating:value.skillGenerating,issue:value.skillError,analyzed:value.skillAnalyzed,canGenerate:value.canGenerateSkills)
+                suggestions.onSelection = { [weak self] ids in guard let self, boundTaskID == task.id, generation == token else { return }; skillSelections[key] = ids }
+                suggestions.onCurate = { [weak self] ids,adopt in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillCurate?(ids,value.skillSource ?? "",adopt) }
+                suggestions.onOpen = { [weak self] id in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillTask?(id) }
+                suggestions.onRetry = { [weak self] in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillRetry?() }
+                suggestions.onSource = { [weak self] in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillSource?() }
+                rows.append(suggestions)
+            }
+            section("capabilities", "Skill 与 MCP", views: rows)
         }
         if settings.shows(.outputs) {
             var rows: [NSView] = task.artifacts.prefix(8).map { path in
