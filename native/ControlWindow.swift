@@ -895,7 +895,7 @@ final class FormDocumentView: NSView {
             let panel = AgentTaskMonitorPanel(); configureTaskMonitor(panel.inspector)
             panel.onDismiss = { [weak self] in self?.closeTaskMonitor() }
             panel.onFrame = { [weak self] frame in guard let self, let id = monitorPanelTaskID, var value = monitorStates[id] else { return }; value.frame = frame; monitorStates[id] = value }
-            monitorPanel = panel; owner.addChildWindow(panel, ordered: .above)
+            monitorPanel = panel
         }
         guard let panel = monitorPanel else { return }
         if monitorPanelTaskID != content.task.id {
@@ -906,7 +906,9 @@ final class FormDocumentView: NSView {
             frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width); frame.origin.y = min(max(frame.minY, screen.minY), screen.maxY - frame.height); panel.setFrame(frame, display: false)
         }
         panel.title = "任务监控 · " + content.task.title.replacingOccurrences(of: "\n", with: " "); AgentThemeContext.inherit(panel, from: owner)
-        panel.inspector.canOpenTerminal = terminalButton.isEnabled; panel.inspector.update(content); panel.orderFront(nil)
+        panel.inspector.canOpenTerminal = terminalButton.isEnabled; panel.inspector.update(content)
+        if panel.parent !== owner { panel.parent?.removeChildWindow(panel); owner.addChildWindow(panel, ordered: .above) }
+        panel.orderFront(nil)
     }
     func taskMonitorReadback() -> [String: Any] {
         guard ["--task-monitor-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let id = agentTaskID else { return [:] }
@@ -1211,7 +1213,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["appearance", "modes", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {

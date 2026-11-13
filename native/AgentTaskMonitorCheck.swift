@@ -47,6 +47,9 @@ import AppKit
             control.checkTaskMonitor("pin"); let frameA = NSRect(x: 160, y: 120, width: 340, height: 450); control.checkTaskMonitor("frame", frame: frameA)
             report["firstFloating"] = control.taskMonitorReadback()
             checks["PinOpensRealFloatingPanelWithoutChangingOtherWindow"] = control.taskMonitorReadback()["floatingVisible"] as? Bool == true && control.taskMonitorReadback()["dockedVisible"] as? Bool == false && second.taskMonitorReadback()["presentation"] as? String == "fixed" && second.taskMonitorReadback()["dockedVisible"] as? Bool == true
+            _ = control.showSettingsCategory("monitor"); control.show(tab: "chat"); await wait(0.1)
+            let returned = control.taskMonitorReadback()
+            checks["FloatingMonitorReattachesToOwnerAfterSettingsReturn"] = returned["floatingOwner"] as? Int == returned["ownerNumber"] as? Int && returned["floatingVisible"] as? Bool == true && returned["floatingFrame"] as? String == NSStringFromRect(frameA)
             control.showAgentTask(b); checks["AnotherTaskKeepsOwnDefaultAndActualBackgroundProcess"] = control.taskMonitorReadback()["presentation"] as? String == "fixed" && tasks.hooks.isRunning(b) && kill(pid, 0) == 0
             control.checkTaskMonitor("pin"); let frameB = NSRect(x: 600, y: 100, width: 320, height: 430); control.checkTaskMonitor("frame", frame: frameB)
             report["secondFloating"] = control.taskMonitorReadback()
@@ -74,6 +77,7 @@ import AppKit
             var refused = false; do { _ = try runtime.analysisPreferences(a, model: "bad\nmodel") } catch { refused = true }; checks["InvalidRecapModelRejectedBeforeTransmission"] = refused
             func descendants(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(descendants) }
             guard control.showSettingsCategory("monitor"), let root = control.window?.contentView else { throw PetError("任务监控设置不可见") }
+            checks["ImmediateSettingsHaveNoUnrelatedGlobalSaveButton"] = !descendants(root).contains { ($0 as? NSButton)?.title == "保存" && !$0.isHiddenOrHasHiddenAncestor }
             let popups = descendants(root).compactMap { $0 as? NSPopUpButton }
             guard let form = popups.first(where: { $0.identifier?.rawValue == "monitor-presentation" }), let visibility = popups.first(where: { $0.identifier?.rawValue == "monitor-default-visible" }) else { throw PetError("监控展示控件缺失") }
             let toggles = descendants(root).compactMap { $0 as? NSSwitch }.filter { $0.identifier?.rawValue.hasPrefix("monitor-section-") == true }
