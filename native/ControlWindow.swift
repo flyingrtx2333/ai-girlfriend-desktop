@@ -3310,6 +3310,13 @@ extension ControlWindow {
         let pluginSkill = pluginItems.first { $0.kind == .skill }!
         try await open("/" + pluginSkill.invocation, .collapsed)
         checks["ExplicitSearchFindsCollapsedPluginChild"] = extensionPicker.entries.contains { $0.id == "item." + pluginSkill.id }
+        try await open("/菜单示例插件", .collapsed)
+        guard let searchedRoot = extensionPicker.entries.first(where: { $0.pluginKey == fixture.pluginID }) else { throw PetError("搜索未找到插件分组") }
+        let searchHistory = try Data(contentsOf: history)
+        try select(searchedRoot.id)
+        checks["SearchedPluginGroupShowsOnlyItsActualChildren"] = extensionPicker.candidateCount == 3 && extensionPicker.entries.allSatisfy { $0.extensionItem?.pluginName == fixture.pluginID }
+        _ = composer.onExtensionKey?(53)
+        checks["SearchedPluginBackRestoresQueryAndResultsWithoutRecordingUse"] = try extensionPanel.isVisible && extensionPicker.entries.contains { $0.id == searchedRoot.id } && composer.string == "/菜单示例插件" && Data(contentsOf: history) == searchHistory
         try await open()
         _ = composer.onExtensionKey?(124)
         checks["RightArrowChangesCategoryWithoutMovingInputFocus"] = extensionPicker.category == .modes && window.firstResponder === composer

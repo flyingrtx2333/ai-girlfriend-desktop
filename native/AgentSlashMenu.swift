@@ -105,8 +105,8 @@ enum AgentSlashEntry {
         return result + plugins
     }
     func visible(_ entries: [AgentSlashEntry], presentation: AgentSlashPresentation, category: AgentSlashCategory, query: String, plugin: String?) -> [AgentSlashEntry] {
-        if !query.isEmpty { return entries.filter { $0.matches(query) } }
         if let plugin { return entries.first(where: { $0.pluginKey == plugin })?.pluginChildren?.map(AgentSlashEntry.item) ?? [] }
+        if !query.isEmpty { return entries.filter { $0.matches(query) } }
         if presentation == .expanded { return entries.filter { $0.pluginKey == nil } }
         if presentation == .collapsed { return entries.filter { $0.extensionItem?.pluginName == nil } }
         switch category {
