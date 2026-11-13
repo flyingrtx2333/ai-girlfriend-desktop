@@ -66,9 +66,11 @@ import Darwin
             checks["optionalFailureKeepsCompletedAnswerAndShowsRetry"] = service.error(tasks.task(id)!) == "公开失败样例" && tasks.task(id)?.status == .completed && descendants(control.window!.contentView!).contains { ($0 as? NSButton)?.accessibilityLabel() == "重新生成提示建议" }
             service.cancel(id); control.renderMessages(); checks["cancellingSupplementaryWorkClearsErrorImmediately"] = service.error(tasks.task(id)!) == nil && control.promptSuggestionsReadback()["error"] as? String == ""
             checks["clickAppendsDraftWithoutSendingOrChangingHistory"] = try control.usePromptSuggestion(suggestion, taskID: id, source: source) && tasks.task(id)?.draft == draft + "\n" + suggestion && tasks.task(id)?.messages.count == original.messages.count && tasks.task(id)?.status == .completed && (tasks.task(id)?.modelReceipts ?? []).isEmpty && attempts == 0
+            checks["ChineseSuggestionPlacesCaretAfterInsertedText"] = control.promptSuggestionsReadback()["caretAtEnd"] as? Bool == true
             control.showAgentTask(other); control.show(tab: "chat"); control.renderMessages()
             let english = tasks.task(other)!, englishSource = AgentPromptSuggestions.source(english)!
             checks["askWithoutWorkspaceSupportsEnglishSuggestions"] = english.workspace == nil && english.mode == .ask && service.items(english).count == 3 && control.usePromptSuggestion(service.items(english)[0], taskID: other, source: englishSource)
+            checks["EnglishSuggestionPlacesCaretAfterInsertedText"] = control.promptSuggestionsReadback()["caretAtEnd"] as? Bool == true
             checks["staleOtherTaskClickCannotChangeCurrentDraft"] = !control.usePromptSuggestion(suggestion, taskID: id, source: source) && tasks.task(other)?.draft?.hasPrefix("Keep my unsent draft 🧭\n") == true
             control.showAgentTask(waiting); control.show(tab: "chat"); control.renderMessages()
             checks["waitingApprovalHasNoSuggestionRow"] = service.items(tasks.task(waiting)!).isEmpty && control.promptSuggestionsReadback()["rowVisible"] as? Bool == false

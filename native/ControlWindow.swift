@@ -2896,11 +2896,13 @@ final class FormDocumentView: NSView {
               !runtime.isBusy(taskID), AgentPromptSuggestions.source(task) == source, runtime.promptSuggestions.items(task).contains(text), composer.isEditable else { return false }
         let suffix = (composer.string.isEmpty || composer.string.hasSuffix("\n") ? "" : "\n") + text
         composer.insertText(suffix, replacementRange: NSRange(location: (composer.string as NSString).length, length: 0))
-        composer.didChangeText(); composerChanged(); _ = saveAgentDraft(); window?.makeFirstResponder(composer); return true
+        composer.didChangeText(); composerChanged(); _ = saveAgentDraft(); window?.makeFirstResponder(composer)
+        let end = NSRange(location: (composer.string as NSString).length, length: 0)
+        composer.setSelectedRange(end); composer.scrollRangeToVisible(end); return true
     }
     internal func promptSuggestionsReadback() -> [String: Any] {
         guard let task = currentAgentTask, let service = companion?.agentRuntime?.promptSuggestions else { return [:] }
-        return ["taskID": task.id, "items": service.items(task), "generating": service.isGenerating(task.id), "error": service.error(task) ?? "", "draft": composer.string, "rowVisible": messageColumn.arrangedSubviews.contains { $0.identifier?.rawValue == "prompt-suggestions-row" }]
+        return ["taskID": task.id, "items": service.items(task), "generating": service.isGenerating(task.id), "error": service.error(task) ?? "", "draft": composer.string, "caretAtEnd": composer.selectedRange() == NSRange(location: (composer.string as NSString).length, length: 0), "rowVisible": messageColumn.arrangedSubviews.contains { $0.identifier?.rawValue == "prompt-suggestions-row" }]
     }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
