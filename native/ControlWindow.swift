@@ -2895,14 +2895,30 @@ final class FormDocumentView: NSView {
         guard agentTaskID == taskID, let task = currentAgentTask, let runtime = companion?.agentRuntime,
               !runtime.isBusy(taskID), AgentPromptSuggestions.source(task) == source, runtime.promptSuggestions.items(task).contains(text), composer.isEditable else { return false }
         let suffix = (composer.string.isEmpty || composer.string.hasSuffix("\n") ? "" : "\n") + text
-        composer.insertText(suffix, replacementRange: NSRange(location: (composer.string as NSString).length, length: 0))
+        let input = NSAttributedString(string: suffix, attributes: [.font: AgentContentAppearance.font(size: AgentAppearance.messageSize), .foregroundColor: composer.textColor ?? .textColor])
+        composer.insertText(input, replacementRange: NSRange(location: (composer.string as NSString).length, length: 0))
         composer.didChangeText(); composerChanged(); _ = saveAgentDraft(); window?.makeFirstResponder(composer)
         let end = NSRange(location: (composer.string as NSString).length, length: 0)
         composer.setSelectedRange(end); composer.scrollRangeToVisible(end); return true
     }
     internal func promptSuggestionsReadback() -> [String: Any] {
         guard let task = currentAgentTask, let service = companion?.agentRuntime?.promptSuggestions else { return [:] }
-        return ["taskID": task.id, "items": service.items(task), "generating": service.isGenerating(task.id), "error": service.error(task) ?? "", "draft": composer.string, "caretAtEnd": composer.selectedRange() == NSRange(location: (composer.string as NSString).length, length: 0), "rowVisible": messageColumn.arrangedSubviews.contains { $0.identifier?.rawValue == "prompt-suggestions-row" }]
+        var result: [String: Any] = ["taskID": task.id, "items": service.items(task), "generating": service.isGenerating(task.id), "error": service.error(task) ?? "", "draft": composer.string, "caretAtEnd": composer.selectedRange() == NSRange(location: (composer.string as NSString).length, length: 0), "rowVisible": messageColumn.arrangedSubviews.contains { $0.identifier?.rawValue == "prompt-suggestions-row" }]
+        if CommandLine.arguments.contains("--prompt-suggestions-check") || CommandLine.arguments.contains("--manual-ui"), let storage = composer.textStorage, let layout = composer.layoutManager, let container = composer.textContainer {
+            layout.ensureLayout(for: container)
+            var fonts = Set<String>(), advances: [CGFloat] = []
+            let text = storage.string as NSString
+            for i in 0..<text.length where text.character(at: i) == 32 {
+                if let font = storage.attribute(.font, at: i, effectiveRange: nil) as? NSFont { fonts.insert(font.fontName) }
+                guard i + 1 < text.length else { continue }
+                let a = layout.glyphIndexForCharacter(at: i), b = layout.glyphIndexForCharacter(at: i + 1)
+                let first = layout.lineFragmentRect(forGlyphAt: a, effectiveRange: nil), next = layout.lineFragmentRect(forGlyphAt: b, effectiveRange: nil)
+                if first.minY == next.minY { advances.append(layout.location(forGlyphAt: b).x - layout.location(forGlyphAt: a).x) }
+            }
+            result["spaceFonts"] = fonts.sorted(); result["spaceAdvances"] = advances
+            result["expectedSpaceAdvance"] = (" " as NSString).size(withAttributes: [.font: AgentContentAppearance.font(size: AgentAppearance.messageSize)]).width
+        }
+        return result
     }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }

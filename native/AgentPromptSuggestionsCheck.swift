@@ -71,6 +71,16 @@ import Darwin
             let english = tasks.task(other)!, englishSource = AgentPromptSuggestions.source(english)!
             checks["askWithoutWorkspaceSupportsEnglishSuggestions"] = english.workspace == nil && english.mode == .ask && service.items(english).count == 3 && control.usePromptSuggestion(service.items(english)[0], taskID: other, source: englishSource)
             checks["EnglishSuggestionPlacesCaretAfterInsertedText"] = control.promptSuggestionsReadback()["caretAtEnd"] as? Bool == true
+            func ordinarySpaces() -> Bool {
+                let value = control.promptSuggestionsReadback(), fonts = value["spaceFonts"] as? [String] ?? [], advances = value["spaceAdvances"] as? [CGFloat] ?? [], expected = value["expectedSpaceAdvance"] as? CGFloat ?? 0
+                return !fonts.isEmpty && !fonts.contains(where: { $0.contains("Emoji") }) && !advances.isEmpty && expected > 0 && advances.allSatisfy { $0 > 0 && abs($0 - expected) < 0.5 }
+            }
+            checks["EnglishSpacesAfterEmojiUseOrdinaryFontAndAdvance"] = ordinarySpaces()
+            var content = contentAppearance.settings; content.fontStyle = .serif; try contentAppearance.save(content)
+            checks["SerifSuggestionUsesCurrentFontAndOrdinarySpaceWidth"] = control.usePromptSuggestion(service.items(english)[1], taskID: other, source: englishSource) && ordinarySpaces()
+            try service.save(["Explain 🧭 and disk space."], id: other, source: englishSource, model: "native-fixture"); control.renderMessages()
+            checks["EmojiInsideSuggestionKeepsTextWithoutChangingSpaceFont"] = control.usePromptSuggestion("Explain 🧭 and disk space.", taskID: other, source: englishSource) && tasks.task(other)?.draft?.hasSuffix("Explain 🧭 and disk space.") == true && ordinarySpaces()
+            content.fontStyle = .sans; try contentAppearance.save(content)
             checks["staleOtherTaskClickCannotChangeCurrentDraft"] = !control.usePromptSuggestion(suggestion, taskID: id, source: source) && tasks.task(other)?.draft?.hasPrefix("Keep my unsent draft 🧭\n") == true
             control.showAgentTask(waiting); control.show(tab: "chat"); control.renderMessages()
             checks["waitingApprovalHasNoSuggestionRow"] = service.items(tasks.task(waiting)!).isEmpty && control.promptSuggestionsReadback()["rowVisible"] as? Bool == false
