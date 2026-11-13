@@ -193,8 +193,8 @@ struct AgentMonitorContent {
     var onDismiss: (() -> Void)?, onFrame: ((NSRect) -> Void)?
     override var canBecomeKey: Bool { true }
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 340, height: 560), styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
-        title = "任务监控"; isReleasedWhenClosed = false; hidesOnDeactivate = true; isFloatingPanel = true; level = .floating; minSize = NSSize(width: 280, height: 300); delegate = self
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 340, height: 560), styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
+        title = "任务监控"; isMovable = true; isMovableByWindowBackground = true; isReleasedWhenClosed = false; hidesOnDeactivate = false; isFloatingPanel = false; level = .normal; minSize = NSSize(width: 280, height: 300); delegate = self
         let root = AgentThemeView(fill: AgentWorkbenchTheme.surface); contentView = root; root.addSubview(inspector)
         NSLayoutConstraint.activate([inspector.leadingAnchor.constraint(equalTo: root.leadingAnchor), inspector.trailingAnchor.constraint(equalTo: root.trailingAnchor), inspector.topAnchor.constraint(equalTo: root.topAnchor), inspector.bottomAnchor.constraint(equalTo: root.bottomAnchor)])
         inspector.setPresentation(.floating)
