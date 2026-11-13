@@ -3360,11 +3360,11 @@ extension ControlWindow {
         _ = runtime.submit("/command:slash-command-15 重复使用", taskID: fixture.taskID, startImmediately: false)
         checks["AcceptedRecentHistoryIsBoundedAndDeduplicated"] = service.recentIDs.count == 12 && Set(service.recentIDs).count == 12 && service.recentIDs.first == "item." + fixture.commands[14]
         for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
-            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); try await open("/", .expanded)
+            window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); try await open("/", .expanded, owner: fixture.otherID)
             let intersection = window.frame.intersection(extensionPanel.frame)
             checks["PopupFitsOwnerAndKeepsKeyFocus-" + label] = extensionPanel.isVisible && intersection == extensionPanel.frame && window.firstResponder === composer && !extensionPicker.view.hasAmbiguousLayout
             let inputFrame = window.convertToScreen(composer.convert(composer.visibleRect, to: nil))
-            checks["PopupStaysAboveComposerWithoutCoveringInput-" + label] = extensionPanel.frame.minY >= inputFrame.maxY + 5.5
+            checks["EmptyTaskPopupStaysAboveComposerWithoutCoveringInput-" + label] = tasks.task(fixture.otherID)?.messages.isEmpty == true && extensionPanel.frame.minY >= inputFrame.maxY + 5.5
         }
         try await open("/no-such-slash-native")
         checks["EmptySearchShowsNoSelectableEntry"] = extensionPanel.isVisible && extensionPicker.candidateCount == 0
