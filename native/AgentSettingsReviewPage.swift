@@ -8,7 +8,7 @@ import AppKit
     var onApply: (() throws -> Void)? { didSet { apply.isEnabled = onApply != nil && !working && !finished } }
     var onApplied: (() -> Void)?
 
-    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String, controls: [NSView] = []) {
+    init(title: String, metadata: String, notice: String, sections: [(String, String)], applyTitle: String?, controls: [NSView] = []) {
         self.sections = sections
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
@@ -25,7 +25,8 @@ import AppKit
         if sections.count > 1 { index.widthAnchor.constraint(equalToConstant: 180).isActive = true; index.heightAnchor.constraint(equalTo: split.heightAnchor).isActive = true }
         status.font = .systemFont(ofSize: 12); status.textColor = .systemRed; status.isHidden = true; status.setAccessibilityLabel("审阅操作错误")
         cancel.target = self; cancel.action = #selector(cancelReview); cancel.keyEquivalent = "\u{1b}"
-        apply.title = applyTitle; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
+        apply.title = applyTitle ?? ""; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false; apply.isHidden = applyTitle == nil
+        if applyTitle == nil { cancel.title = "返回" }
         let footer = NSStackView(views: [NSView(), cancel, apply]); footer.spacing = 10
         let layout = NSStackView(views: [heading, context, consequence] + controls + [split, status, footer]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 10; layout.distribution = .fill
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false

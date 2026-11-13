@@ -912,7 +912,10 @@ final class FormDocumentView: NSView {
         }
         view.onSkillTask = { [weak self, weak view] id in guard let self, let owner = view?.boundTaskID, agentTaskID == owner, companion?.agentStore?.tasks.contains(where: { $0.id == id && $0.skillEvolutionJob?.sourceTaskID == owner }) == true else { return }; selectAgentTask(id) }
         view.onSkillRetry = { [weak self, weak view] in guard let self, agentTaskID == view?.boundTaskID, let id = agentTaskID else { return }; companion?.agentRuntime?.retrySkillEvolution(id) }
-        view.onSkillSource = { [weak self] in self?.presentAgentRecords(section:4) }
+        view.onSkillSource = { [weak self, weak view] in
+            guard let self, let id = agentTaskID, view?.boundTaskID == id, let task = companion?.agentStore?.task(id), let source = AgentSkillEvolution.source(task) else { return }
+            do { try presentSkillSources(taskID:id,source:source) } catch { setStatus(error.localizedDescription,error:true) }
+        }
     }
     private func showSourceMenu(_ sender: NSButton) {
         guard let task = currentAgentTask, task.canAddSources else { return }
@@ -2328,6 +2331,13 @@ final class FormDocumentView: NSView {
         guard agentTaskID == taskID, let store = companion?.agentStore, let runtime = companion?.agentRuntime, !runtime.isBusy(taskID) else { throw PetError("请在原任务确认当前方案") }
         try AgentSkillDrafts.approvePlan(taskID,source:source,store:store)
         guard runtime.submit("按已确认方案生成可审阅的 Skill 草稿，内容语言遵循原目标。",taskID:taskID,startImmediately:start) else { throw PetError(runtime.submissionError ?? "生成请求未提交") }; renderAgentMessages()
+    }
+    internal func presentSkillSources(taskID:String, source:String) throws {
+        guard agentTaskID == taskID, let task = companion?.agentStore?.task(taskID), AgentSkillEvolution.source(task) == source else { throw PetError("建议来源已变化，请回到当前任务") }
+        presentTaskContext(section:0)
+        guard taskWorkspace.taskID == taskID, taskWorkspace.selectedRoot == .context, let parent = taskWorkspace.currentController else { throw PetError("请先完成当前页面编辑") }
+        if let page = parent as? AgentSkillSourcesPage, page.source == source { return }
+        parent.presentSettingsChild(AgentSkillSourcesPage(task:task,source:source)); updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func reviewSkillDraft(taskID:String) throws {
         guard agentTaskID == taskID, let store = companion?.agentStore, companion?.agentRuntime?.isBusy(taskID) == false else { throw PetError("请在原任务等待草稿生成完成") }

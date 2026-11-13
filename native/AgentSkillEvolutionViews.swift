@@ -1,5 +1,18 @@
 import AppKit
 
+@MainActor final class AgentSkillSourcesPage: AgentSettingsReviewPage {
+    let source:String
+    init(task:AgentTaskRecord, source:String) {
+        self.source = source
+        let replyID = AgentSkillEvolution.reply(task)?.id
+        let sections = [("原始要求",task.messages.last(where:\.isHumanInput)?.content ?? "")] + AgentSkillEvolution.sources(task).enumerated().map { index,row in
+            (row.id == replyID ? "任务回复" : "工具依据 \(index)",row.text)
+        }
+        super.init(title:"Skill 建议来源",metadata:task.title,notice:"",sections:sections,applyTitle:nil)
+    }
+    required init?(coder:NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
 @MainActor final class AgentSkillSuggestionsView: NSStackView {
     private let items: [AgentSkillEvolutionSuggestion]
     private var selected: Set<String>
