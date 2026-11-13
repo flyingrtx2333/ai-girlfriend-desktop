@@ -65,6 +65,8 @@ import AppKit
             for format in AgentOffice.formats {
                 let file = fixture.workspace.appendingPathComponent("sample." + format), original = try files.fileHash(file), editor = try await tasks.offices.show(file.path, taskID: fixture.taskID)
                 let actual = try await editor.inspect(format == "xlsx" ? ["sheet": "审阅", "range": "A1"] : [:]), version = actual["version"] as? String ?? ""
+                let snapshot = (await editor.workspaceReadback())["snapshot"] as? String ?? ""
+                checks[format + "OfficeSnapshotStaysInAcceptanceDirectory"] = !snapshot.isEmpty && URL(fileURLWithPath: snapshot).resolvingSymlinksInPath().path.hasPrefix(output.appendingPathComponent("tmp", isDirectory: true).resolvingSymlinksInPath().path + "/")
                 await inspectLayout(format)
                 var step: [String: Any]
                 if format == "docx" {

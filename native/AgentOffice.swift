@@ -103,7 +103,13 @@ struct AgentOfficeEditError: LocalizedError {
     nonisolated static func snapshot(files: AgentFiles, file: URL) throws -> AgentOfficeSnapshot {
         let metadata = try files.entryMetadata(file)
         guard metadata.kind == "file" else { throw PetError("办公文件不存在或已变成链接") }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bluefatfish-office-" + UUID().uuidString)
+        var temporary = FileManager.default.temporaryDirectory
+        if let index = CommandLine.arguments.firstIndex(of: "--check") {
+            guard CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少独立验收目录") }
+            temporary = URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true).appendingPathComponent("tmp", isDirectory: true)
+            try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        let folder = temporary.appendingPathComponent("bluefatfish-office-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         do {
             let snapshots = try AgentFiles(workspace: folder.path), copy = folder.appendingPathComponent("document." + file.pathExtension)
