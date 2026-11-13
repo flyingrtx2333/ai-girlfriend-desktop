@@ -55,6 +55,11 @@ import AppKit
             control.showTaskDocument(documentURL.path)
             guard let editor = control.taskWorkspace.currentController as? AgentRecordWindow else { throw PetError("未进入文档标签页") }
             documentToReload = editor
+            _ = await editor.checkVideoWorkspace(link: project.appendingPathComponent("Main.swift"))
+            let tabIcons = AgentFileIcons.readback(in: control.taskWorkspace)["views"] as? [[String: Any]] ?? []
+            checks["BodyFileLinkUpdatesExistingTabTitleIconAndCurrentPath"] = editor.workspaceDocumentURL == project.appendingPathComponent("Main.swift") && control.taskWorkspace.checkState()["tabLabels"] as? [String] == ["Main.swift"] && tabIcons.contains { $0["name"] as? String == "Main.swift" && $0["label"] as? String == "Main.swift" && ($0["imageHash"] as? String)?.isEmpty == false }
+            control.showTaskDocument(documentURL.path)
+            checks["ReturningToOriginalFileRestoresTabWithoutReplacingEditor"] = control.taskWorkspace.currentController === editor && editor.workspaceDocumentURL == documentURL && control.taskWorkspace.checkState()["tabLabels"] as? [String] == ["FILES.md"]
             await editor.checkTaskDocument(text: String(decoding: original, as: UTF8.self) + "\n保留未保存的编辑。\n")
             let beforeEditor = await editor.workspaceReadback(), beforeTasks = try [id, secondID].map { try encoder.encode(tasks.task($0)!) }, modelPreferences = try encoder.encode(store.preferences)
             let strip = AgentAttachmentStrip(), panel = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)), artifact = AgentInspectorFileButton(title: "Main.swift", value: project.appendingPathComponent("Main.swift").path, section: 1, symbol: "doc", inline: true)

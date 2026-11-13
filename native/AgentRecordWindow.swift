@@ -50,6 +50,7 @@ import UniformTypeIdentifiers
     private var activeSection = 0, saving = false
     var onWorkspaceChange: (() -> Void)?
     var workspaceHasUnsavedChanges: Bool { dirty }
+    var workspaceDocumentURL: URL? { documentOnly ? openedFile : nil }
     private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
     private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!
     private var compactTaskLayout: Bool?, filesRequested = false
@@ -600,6 +601,7 @@ import UniformTypeIdentifiers
             text.string = ""; viewer.isHidden = true; markdown.isHidden = true; video.isHidden = false; readingToolbar.isHidden = true; sourceAdd.isHidden = true
             openedFile = file; open.isHidden = false; open.title = "新窗口"; state.stringValue = files.relative(file)
             video.show(file: file, files: files, validate: videoScope(files))
+            if documentOnly { onWorkspaceChange?() }
         }
     }
     private func loadText(_ document: AgentTextFile, data: Data, file: URL, task: AgentTaskRecord) {
@@ -611,6 +613,7 @@ import UniformTypeIdentifiers
         markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = !["md", "markdown"].contains(file.pathExtension.lowercased())
         if !displayMode.isHidden { markdownFile = file; displayMode.selectedSegment = 0; switchDocumentMode() }
         sourceSelection.update()
+        if documentOnly { onWorkspaceChange?() }
     }
     @objc private func reopenEncoding() {
         let chosen = AgentTextEncoding.selection(encodingMenu)

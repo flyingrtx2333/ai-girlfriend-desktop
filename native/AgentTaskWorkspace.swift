@@ -137,11 +137,16 @@ import AppKit
         }
         for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
             let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
-            let label: String; if case .canvas = root { label = page?.window?.title ?? root.title } else { label = root.title }
+            let document = (page as? AgentRecordWindow)?.workspaceDocumentURL
+            let label: String
+            if case .document = root { label = document?.lastPathComponent ?? root.title }
+            else if case .canvas = root { label = page?.window?.title ?? root.title }
+            else { label = root.title }
+            if case .document(let path) = root { let current = document?.path ?? path; AgentFileIcons.bind(button, filename: current); button.toolTip = current }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(174, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12 + (button.image == nil ? 0 : 20))); groupWidth.constant = buttonWidth.constant + 26
             close.setAccessibilityLabel("关闭 " + label + " 标签页")
-            button.setAccessibilityLabel(label + (dirty ? " 未保存" : "") + " 标签页"); if case .document(let path) = root { button.toolTip = path }
+            button.setAccessibilityLabel(label + (dirty ? " 未保存" : "") + " 标签页")
         }
         layoutTabs(); if let group = tabViews.first(where: { $0.0 == selectedRoot })?.1 { tabs.scrollToVisible(group.frame) }
     }
