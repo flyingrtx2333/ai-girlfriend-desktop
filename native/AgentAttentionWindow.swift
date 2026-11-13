@@ -23,6 +23,13 @@ import AppKit
     var presentingWindow: NSWindow? { hostWindow ?? window }
     var isVisible: Bool { (hostedContent?.window?.isVisible ?? window?.isVisible ?? false) && hostedContent?.isHiddenOrHasHiddenAncestor != true }
     var onOpenTask: ((String) -> Void)?
+    func questionFocused(_ id: String) -> Bool {
+        isVisible && presentingWindow?.isKeyWindow == true && selected?.taskID == id && selected?.kind == .question && selected?.mcpInputID == nil && selected?.handled == false
+    }
+    func questionInteraction(_ event: NSEvent) -> String? {
+        guard isVisible, let item = selected, item.kind == .question, !item.handled, item.mcpInputID == nil else { return nil }
+        return AgentQuestionAutoSkip.containsInteraction(event, views: [body.enclosingScrollView ?? body, replyField, detailTitle, metadata, open, answer]) ? item.taskID : nil
+    }
     init(attention: AgentAttention, runtime: AgentRuntime) {
         self.attention = attention; self.runtime = runtime
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 680), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -157,7 +164,7 @@ import AppKit
     private func outcome(_ item: AgentAttentionItem) -> String {
         guard let decision = item.decision else { return item.handled ? "已处理" : "待处理" }
         if decision.hasPrefix("answer:") { return "已答复：" + decision.dropFirst(7) }
-        return ["allow": "已允许", "deny": "已拒绝", "ended": "请求已结束"][decision] ?? "已处理"
+        return ["allow": "已允许", "deny": "已拒绝", "skip": "已静默跳过，未收到答复", "ended": "请求已结束"][decision] ?? "已处理"
     }
     private func showSelection() {
         defer { hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop() }
@@ -167,7 +174,7 @@ import AppKit
         guard let item else { return }
         let date = DateFormatter.localizedString(from: item.date, dateStyle: .medium, timeStyle: .short)
         metadata.stringValue = item.kind.title + " · " + item.source.title + " · " + item.sender + " · " + date
-        let text = item.body + (item.handled ? "\n\n" + outcome(item) : "")
+        let text = item.body + (item.handled ? "\n\n" + outcome(item) : "") + (!item.handled && item.kind == .question && item.mcpInputID == nil ? runtime.questionSkipError(item.taskID).map { "\n\n" + $0 } ?? "" : "")
         body.string = text; open.isHidden = false
         if item.mcpInputID != nil { reply.string = ""; replySavedText = ""; replyLoaded = false; updateActions(); return }
         mark.isHidden = item.callID != nil; mark.title = item.handled ? "标记待处理" : "标记已处理"

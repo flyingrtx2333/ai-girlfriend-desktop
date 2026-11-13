@@ -12,6 +12,11 @@ import AppKit
         runtime.taskSettings = { [weak self] in self?.generalSettings.settings ?? .init() }
         if checkDirectory != nil && ["--conversation-workspace-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-remote-page-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--task-monitor-check", "--general-settings-check", "--settings-layout-check", "--appearance-check", "--settings-pages-check", "--mcp-input-check", "--task-find-check", "--appshot-external-ui", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check"].contains(where: CommandLine.arguments.contains) { runtime.modelRequestCheck = { throw PetError("会话创建验收尚未核对本轮授权") } }
         agentStore = tasks; agentRuntime = runtime
+        questionAutoSkip = AgentQuestionAutoSkip(runtime: runtime, enabled: { [weak self] in self?.closing == false && self?.generalSettings.error == nil && self?.generalSettings.settings.questionAutoSkip == true }, focused: { [weak self] id in
+            NSApp.isActive && (self?.taskControls.contains(where: { $0.questionFocused(id) }) == true || NSApp.windows.contains { ($0.windowController as? AgentAttentionWindow)?.questionFocused(id) == true })
+        }, interaction: { [weak self] event in
+            Array(Set((self?.taskControls.compactMap { $0.questionInteraction(event) } ?? []) + NSApp.windows.compactMap { ($0.windowController as? AgentAttentionWindow)?.questionInteraction(event) }))
+        })
         if tasks.deletions.pendingCount > 0 {
             Task { @MainActor [weak self] in
                 let issue = await tasks.deletions.cleanup()
@@ -57,6 +62,7 @@ import AppKit
             guard let self else { return }
             if !closing, let task = tasks.task(id) { automationNotifications.pending(task) }
             self.refreshTaskWindows(); self.refreshVoiceBusy()
+            self.questionAutoSkip?.refresh()
             if let task = tasks.task(id), task.kind == AgentKnowledgeCards.kind, task.status != .running, let root = task.workspace { self.taskControls.forEach { $0.refreshKnowledgeCards(workspace: root) } }
             if let task = tasks.task(id), task.kind == "wiki", [.failed, .stopped].contains(task.status), let root = task.workspace { tasks.wikiMaintenance.changed(workspace: root) }
             self.refreshAgentAnimation()
@@ -108,6 +114,7 @@ import AppKit
         tasks.worktreeRetention.onChange = { [weak self] in for window in self?.taskControls ?? [] { window.refreshWorktreeRetention() } }
         if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume(); tasks.wikiMaintenance.resume() }
         tasks.attention.refresh()
+        questionAutoSkip?.refresh()
     }
     private func completeAgentResponse(id: String, text: String) {
         if !closing, let task = agentStore?.task(id) { automationNotifications.completed(task) }

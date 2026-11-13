@@ -21,8 +21,9 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         var goalMaximumTurns = 20
         var slashMenuPresentation = AgentSlashPresentation.recent
         var artifactLocation = AgentArtifactLocation.workspace
+        var questionAutoSkip = false
         static let goalTurnChoices = AgentGoalExecution.turnChoices
-        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation }
+        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation, questionAutoSkip }
         init() {}
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -35,6 +36,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             if values.contains(.goalMaximumTurns) { goalMaximumTurns = try values.decode(Int.self, forKey: .goalMaximumTurns) }
             if values.contains(.slashMenuPresentation) { slashMenuPresentation = try values.decode(AgentSlashPresentation.self, forKey: .slashMenuPresentation) }
             if values.contains(.artifactLocation) { artifactLocation = try values.decode(AgentArtifactLocation.self, forKey: .artifactLocation) }
+            if values.contains(.questionAutoSkip) { questionAutoSkip = try values.decode(Bool.self, forKey: .questionAutoSkip) }
         }
     }
     static let changed = Notification.Name("BlueFatFishGeneralSettingsChanged")
@@ -51,7 +53,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             else {
                 let data = try files.readData(file, maximum: 4096)
                 let required: Set<String> = ["version", "completionNotifications", "approvalNotifications", "questionNotifications", "menuBarIcon"]
-                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation"])),
+                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation", "questionAutoSkip"])),
                       let value = try? JSONDecoder().decode(Settings.self, from: data), value.version == 1, Settings.goalTurnChoices.contains(value.goalMaximumTurns) else { throw PetError("常规配置版本或选项无效") }
                 settings = value; revision = AgentFiles.hash(data)
             }
@@ -78,6 +80,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     private let completion = NSPopUpButton(), approval = NSSwitch(), question = NSSwitch(), menuBar = NSSwitch()
     private let runningInput = NSPopUpButton(), goalTurns = NSPopUpButton()
     private let slashMenu = NSPopUpButton(), artifactLocation = NSPopUpButton()
+    private let questionAutoSkip = NSSwitch()
     private let permission = NSTextField(labelWithString: "正在检查…"), permissionButton = NSButton(title: "允许通知", target: nil, action: nil), test = NSButton(title: "发送测试通知", target: nil, action: nil)
     private let status = NSTextField(wrappingLabelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
     private var authorization = UNAuthorizationStatus.notDetermined, updatingPermission = false
@@ -95,14 +98,15 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         }
         completion.addItems(withTitles: AgentCompletionNotification.allCases.map(\.title)); completion.setAccessibilityLabel("轮次完成通知")
         completion.identifier = NSUserInterfaceItemIdentifier("general-completion-notifications"); completion.target = self; completion.action = #selector(change)
-        for (control, label, id) in [(approval, "权限请求通知", "general-approval-notifications"), (question, "等待回答通知", "general-question-notifications"), (menuBar, "显示菜单栏图标", "general-menu-bar-icon")] {
+        questionAutoSkip.toolTip = "开启后，当前任务前台无人操作 150 秒、后台 90 秒后，以空答案跳过未回答的问题；面板内交互会取消自动跳过。"
+        for (control, label, id) in [(approval, "权限请求通知", "general-approval-notifications"), (question, "等待回答通知", "general-question-notifications"), (menuBar, "显示菜单栏图标", "general-menu-bar-icon"), (questionAutoSkip, "问答面板静默跳过", "general-question-auto-skip")] {
             control.setAccessibilityLabel(label); control.identifier = NSUserInterfaceItemIdentifier(id); control.target = self; control.action = #selector(change)
         }
         permission.font = .systemFont(ofSize: 12); permission.textColor = AgentWorkbenchTheme.secondaryText; permission.setAccessibilityLabel("系统通知状态")
         for button in [permissionButton, test, reload] { button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 12); button.target = self }
         permissionButton.action = #selector(requestPermission); test.action = #selector(testNotification); reload.action = #selector(reloadSettings)
         let permissionActions = NSStackView(views: [permission, permissionButton, test]); permissionActions.spacing = 8
-        group("任务与工具", rows: [("运行中发送方式", runningInput), ("Slash 命令展示方式", slashMenu), ("产物文件默认打开位置", artifactLocation), ("目标驱动执行", goalTurns)])
+        group("任务与工具", rows: [("运行中发送方式", runningInput), ("Slash 命令展示方式", slashMenu), ("问答面板静默跳过", questionAutoSkip), ("产物文件默认打开位置", artifactLocation), ("目标驱动执行", goalTurns)])
         group("通知", rows: [("轮次完成通知", completion), ("权限请求通知", approval), ("等待回答通知", question), ("系统通知", permissionActions)])
         group("托盘与菜单栏", rows: [("显示菜单栏图标", menuBar)])
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; status.setAccessibilityLabel("常规设置保存状态")
@@ -131,8 +135,9 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         goalTurns.selectItem(at: AgentGeneralSettings.Settings.goalTurnChoices.firstIndex(of: value.goalMaximumTurns) ?? 3)
         slashMenu.selectItem(at: AgentSlashPresentation.allCases.firstIndex(of: value.slashMenuPresentation) ?? 0)
         artifactLocation.selectItem(at: AgentArtifactLocation.allCases.firstIndex(of: value.artifactLocation) ?? 0)
+        questionAutoSkip.state = value.questionAutoSkip ? .on : .off
         approval.state = value.approvalNotifications ? .on : .off; question.state = value.questionNotifications ? .on : .off; menuBar.state = value.menuBarIcon ? .on : .off
-        for control in [completion, approval, question, menuBar, runningInput, goalTurns, slashMenu, artifactLocation] as [NSControl] { control.isEnabled = service.error == nil }
+        for control in [completion, approval, question, menuBar, runningInput, goalTurns, slashMenu, artifactLocation, questionAutoSkip] as [NSControl] { control.isEnabled = service.error == nil }
         if let error = service.error { status.stringValue = error }
         let hidden = status.stringValue.isEmpty || status.stringValue == "已保存"
         reload.isHidden = hidden; status.superview?.isHidden = hidden
@@ -147,6 +152,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         value.goalMaximumTurns = AgentGeneralSettings.Settings.goalTurnChoices[max(0, goalTurns.indexOfSelectedItem)]
         value.slashMenuPresentation = AgentSlashPresentation.allCases[max(0, slashMenu.indexOfSelectedItem)]
         value.artifactLocation = AgentArtifactLocation.allCases[max(0, artifactLocation.indexOfSelectedItem)]
+        value.questionAutoSkip = questionAutoSkip.state == .on
         do { try service.save(value); status.stringValue = "已保存" } catch { status.stringValue = error.localizedDescription }; refresh()
     }
     @objc private func reloadSettings() { service.reload(); service.apply(); status.stringValue = service.error ?? "已重新载入"; refresh() }

@@ -76,6 +76,7 @@ final class PetWebView: WKWebView {
     lazy var screenCompanion = ScreenCompanion(host: self)
     var agentStore: AgentStore?
     var agentRuntime: AgentRuntime?
+    var questionAutoSkip: AgentQuestionAutoSkip?
     var applicationLaunched = false
     var pendingFileOpens: [[URL]] = []
     var fileOpenJob: Task<Void, Never>?
@@ -143,7 +144,7 @@ final class PetWebView: WKWebView {
         themeStyles.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshThemeStyle() } }
         contentAppearance.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshContentAppearance() } }
         taskMonitor.onChange = { [weak self] in self?.taskControls.forEach { $0.refreshTaskMonitorPreferences() } }
-        generalSettings.onChange = { [weak self] in self?.syncMenuBarPreference() }
+        generalSettings.onChange = { [weak self] in self?.syncMenuBarPreference(); self?.questionAutoSkip?.refresh() }
         automationNotifications.preferences = { [weak self] in self?.generalSettings.settings ?? .init() }
         automationNotifications.isTaskFocused = { [weak self] id in NSApp.isActive && self?.taskControls.contains(where: { $0.agentTaskID == id && $0.hasTaskFocus }) == true }
         setupMenu(); setupPet(); setupMouse()
@@ -163,6 +164,7 @@ final class PetWebView: WKWebView {
         applicationLaunched = true; importOpenedFiles()
     }
     func applicationWillTerminate(_ notification: Notification) {
+        questionAutoSkip?.stop()
         fileOpenJob?.cancel()
         if agentStore != nil {
             for window in taskControls {

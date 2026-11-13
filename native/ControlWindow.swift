@@ -1436,7 +1436,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window")
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window")
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
@@ -2807,6 +2807,7 @@ final class FormDocumentView: NSView {
         approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true
         approvalTitle.font = .systemFont(ofSize: 12, weight: .medium); approvalTitle.textColor = .systemOrange; approvalTitle.lineBreakMode = .byTruncatingTail
         approvalText.isEditable = false; approvalText.isRichText = false; approvalText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        approvalText.setAccessibilityLabel("待处理请求详情")
         approvalText.isVerticallyResizable = true; approvalText.autoresizingMask = [.width]; approvalText.textContainer?.widthTracksTextView = true
         let scroll = NSScrollView(); scroll.documentView = approvalText; scroll.hasVerticalScroller = true
         scroll.heightAnchor.constraint(equalToConstant: 92).isActive = true
@@ -2814,6 +2815,17 @@ final class FormDocumentView: NSView {
         denyButton.target = self; denyButton.action = #selector(denyAgentAction)
         let actions = stack([NSView(), denyButton, approveButton], spacing: 8)
         for view in [approvalTitle, scroll, actions] { approvalPanel.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: approvalPanel.widthAnchor).isActive = true }
+    }
+    internal func questionFocused(_ id: String) -> Bool {
+        if selectedTab == "attention" { return attentionPageController?.questionFocused(id) == true }
+        return hasTaskFocus && (agentTaskID == id || visibleApproval?.task == id)
+    }
+    internal func questionInteraction(_ event: NSEvent) -> String? {
+        if selectedTab == "attention" { return attentionPageController?.questionInteraction(event) }
+        guard selectedTab == "chat", event.window === window, !approvalPanel.isHidden, let pair = visibleApproval,
+              companion?.agentStore?.task(pair.task)?.pendingCalls.first?.name == "ask_user" else { return nil }
+        let views: [NSView] = [approvalPanel, composer.enclosingScrollView?.superview, entryToolbar, attachmentButton, draftAttachments].compactMap { $0 }
+        return AgentQuestionAutoSkip.containsInteraction(event, views: views) ? pair.task : nil
     }
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
@@ -3032,7 +3044,7 @@ final class FormDocumentView: NSView {
         if let review = companion?.agentRuntime?.pendingReview(task.id), let call = review.pendingCalls.first, let approval = review.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
             if visibleApproval?.task != review.id || visibleApproval?.call != call.id {
                 visibleApproval = (review.id, call.id)
-                approvalTitle.stringValue = (review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : "") + (approval.reason.components(separatedBy: "\n").first ?? approval.reason)
+                approvalTitle.stringValue = (review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : "") + (call.name == "ask_user" ? "需要补充信息" : approval.reason.components(separatedBy: "\n").first ?? approval.reason)
                 let mcpCall = AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name)
                 let approvalArguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
                 approvalText.string = (try? JSONSerialization.data(withJSONObject: approvalArguments, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
@@ -3040,6 +3052,10 @@ final class FormDocumentView: NSView {
                 else if AgentBrowser.tools.contains(call.name) { approvalText.string = approval.reason + "\n\n" + approvalText.string }
                 if call.name == "git_commit", let diff = review.gitReview, diff.hash == call.object["review_hash"] as? String { approvalText.string += "\n\n" + diff.diff }
                 approvalTitle.toolTip = approval.reason
+            }
+            if call.name == "ask_user" {
+                let body = (call.object["question"] as? String ?? approval.reason) + (companion?.agentRuntime?.questionSkipError(review.id).map { "\n\n" + $0 } ?? "")
+                if approvalText.string != body { approvalText.string = body }
             }
             approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived; approvalPanel.isHidden = false
         } else { visibleApproval = nil; approvalPanel.isHidden = true }

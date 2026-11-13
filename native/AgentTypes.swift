@@ -111,6 +111,7 @@ struct AgentApproval: Codable, Identifiable {
     var decision: String?
     var answerAttachments: [String]?
     var answerMessage: AgentMessage?
+    var autoSkipCancelled: Bool?
     var decidedAt: Date?
     var created = Date()
 }

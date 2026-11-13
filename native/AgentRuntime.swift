@@ -9,6 +9,7 @@ import Foundation
     var modelRequestCheck: (() throws -> Void)?
     var taskSettings: () -> AgentGeneralSettings.Settings = { .init() }
     private(set) var submissionError: String?
+    private var questionSkipErrors: [String: String] = [:]
     @MainActor private final class Run {
         let token = UUID().uuidString
         let tools: AgentTools
@@ -478,6 +479,32 @@ import Foundation
         }
         start(taskID, continuingGoal: true)
     }
+    func questionInteraction(_ id: String) {
+        guard let task = store.task(id), let request = AgentQuestionAutoSkip.request(task), !request.interacted else { return }
+        store.update(id) { record in if let i = record.approvals.firstIndex(where: { $0.id == request.approvalID }) { record.approvals[i].autoSkipCancelled = true } }
+        if store.writeError != nil { notifyChange(id) }
+    }
+    func questionSkipError(_ id: String) -> String? {
+        guard let task = store.task(id), let request = AgentQuestionAutoSkip.request(task) else { return nil }
+        return questionSkipErrors[request.approvalID]
+    }
+    @discardableResult func skipQuestion(_ request: AgentQuestionAutoSkip.Request) -> Bool {
+        guard taskSettings().questionAutoSkip, !isBusy(request.taskID), let task = store.task(request.taskID),
+              AgentQuestionAutoSkip.request(task) == request, !request.interacted,
+              (task.draft ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (task.draftAttachmentIDs ?? []).isEmpty,
+              let item = AgentAttentionItem.project(task).first(where: { $0.callID == request.callID && !$0.handled }) else { return false }
+        do {
+            guard try store.attention.replyDraft(item).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+            _ = try store.recordVersion(task.id)
+            store.update(task.id, persist: false) { record in
+                if let i = record.approvals.firstIndex(where: { $0.id == request.approvalID }) { record.approvals[i].decision = "skip"; record.approvals[i].decidedAt = Date() }
+                record.status = .ready
+            }
+            do { try store.save(task.id) }
+            catch { store.update(task.id, persist: false) { $0 = task }; throw error }
+            questionSkipErrors[request.approvalID] = nil; start(task.id, continuingGoal: true); return true
+        } catch { questionSkipErrors[request.approvalID] = "无法静默跳过，问题仍等待答复：" + error.localizedDescription; notifyChange(task.id); return false }
+    }
     private static func skipPending(_ record: inout AgentTaskRecord, reason: String) {
         for call in record.pendingCalls {
             record.messages.append(AgentMessage(role: "tool", content: reason, toolCallID: call.id))
@@ -721,6 +748,7 @@ import Foundation
                     }
                     if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                     var result: AgentToolResult, humanAnswer: String?, answerAttachments: [String]?, answerMessage: AgentMessage?
+                    var questionSkipped = false
                     do {
                         guard (try JSONSerialization.jsonObject(with: Data(call.arguments.utf8))) is [String: Any] else { throw PetError("工具参数不是完整 JSON，请读取后重试或拆小写入内容") }
                         var original = call; original.arguments = call.originalArguments ?? call.arguments
@@ -742,6 +770,10 @@ import Foundation
                         let approval = task.approvals.last { $0.call.id == call.id && $0.call.name == call.name && $0.call.arguments == call.arguments && $0.workspace == task.workspace && $0.gitDirectory == gitDirectory }
                         let denied = task.approvals.contains { $0.call.name == call.name && $0.call.arguments == call.arguments && $0.decision == "deny" && $0.intentID == intent && $0.workspace == task.workspace && $0.gitDirectory == gitDirectory }
                         if denied || approval?.decision == "deny" { result = AgentToolResult(text: "用户已拒绝此操作，请改用其他方案，不要再次请求相同操作。", failed: true) }
+                        else if call.name == "ask_user", approval?.decision == "skip" {
+                            questionSkipped = true
+                            result = AgentToolResult(text: "问答已静默跳过，答案为空；未收到用户答复或操作授权。")
+                        }
                         else if call.name == "ask_user", let answer = approval?.decision, answer.hasPrefix("answer:") {
                             let message = approval?.answerMessage ?? AgentMessage(role: "user", content: String(answer.dropFirst(7)), attachmentIDs: approval?.answerAttachments)
                             if try await !admitPrompt(message, id: id, secret: key) {
@@ -780,6 +812,7 @@ import Foundation
                     store.update(id) { record in
                         let message = AgentMessage(role: "tool", content: result.text, toolCallID: call.id, attachmentIDs: result.failed ? nil : result.attachmentIDs, visuals: result.failed ? nil : result.visuals, visualsDelivered: !result.failed && result.visuals?.isEmpty == false ? false : nil, extensionReferences: result.failed ? nil : result.extensionReferences)
                         record.messages.append(message); record.activateExtensions(message); record.pendingCalls.removeFirst()
+                        if questionSkipped { Self.skipPending(&record, reason: "问题未获答复，后续操作需重新规划。") }
                         if let humanAnswer {
                             Self.skipPending(&record, reason: "已收到用户答复，后续操作重新规划。")
                             let message = answerMessage ?? AgentMessage(role: "user", content: humanAnswer, attachmentIDs: answerAttachments)

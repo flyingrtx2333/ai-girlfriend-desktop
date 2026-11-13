@@ -33,23 +33,28 @@ import UserNotifications
             try service.save(.init())
             let baseline = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
             let legacyDirectory = output.appendingPathComponent("legacy-general"); try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: false)
-            var legacy = baseline; legacy.removeValue(forKey: "runningInput"); legacy.removeValue(forKey: "goalMaximumTurns"); legacy.removeValue(forKey: "slashMenuPresentation"); legacy.removeValue(forKey: "artifactLocation")
+            var legacy = baseline; legacy.removeValue(forKey: "runningInput"); legacy.removeValue(forKey: "goalMaximumTurns"); legacy.removeValue(forKey: "slashMenuPresentation"); legacy.removeValue(forKey: "artifactLocation"); legacy.removeValue(forKey: "questionAutoSkip")
             let legacyBytes = try JSONSerialization.data(withJSONObject: legacy), legacyFile = legacyDirectory.appendingPathComponent("general.json"); try legacyBytes.write(to: legacyFile)
             let old = AgentGeneralSettings(directory: legacyDirectory); try old.save(old.settings)
             checks["LegacyFiveKeyConfigurationLoadsWithoutRewriting"] = try old.error == nil && old.settings.runningInput == .queue && old.settings.goalMaximumTurns == 20 && old.settings.slashMenuPresentation == .recent && old.settings.artifactLocation == .workspace && Data(contentsOf: legacyFile) == legacyBytes
             var upgraded = old.settings; upgraded.runningInput = .interrupt; try old.save(upgraded)
             checks["ExplicitLegacyEditKeepsExistingNotificationPreferences"] = AgentGeneralSettings(directory: legacyDirectory).settings == upgraded && upgraded.completionNotifications == .unfocused && upgraded.approvalNotifications && upgraded.questionNotifications && upgraded.menuBarIcon
             let previousDirectory = output.appendingPathComponent("previous-general"); try FileManager.default.createDirectory(at: previousDirectory, withIntermediateDirectories: false)
-            var previous = baseline; previous.removeValue(forKey: "slashMenuPresentation"); previous.removeValue(forKey: "artifactLocation"); previous["runningInput"] = "interrupt"; previous["goalMaximumTurns"] = 100
+            var previous = baseline; previous.removeValue(forKey: "slashMenuPresentation"); previous.removeValue(forKey: "artifactLocation"); previous.removeValue(forKey: "questionAutoSkip"); previous["runningInput"] = "interrupt"; previous["goalMaximumTurns"] = 100
             let previousBytes = try JSONSerialization.data(withJSONObject: previous), previousFile = previousDirectory.appendingPathComponent("general.json"); try previousBytes.write(to: previousFile)
             let existing = AgentGeneralSettings(directory: previousDirectory); try existing.save(existing.settings)
             checks["ExistingTaskPreferencesLoadWithoutRewritingOrResetting"] = try existing.error == nil && existing.settings.runningInput == .interrupt && existing.settings.goalMaximumTurns == 100 && existing.settings.slashMenuPresentation == .recent && Data(contentsOf: previousFile) == previousBytes
             let slashDirectory = output.appendingPathComponent("slash-general"); try FileManager.default.createDirectory(at: slashDirectory, withIntermediateDirectories: false)
-            var slashLegacy = baseline; slashLegacy.removeValue(forKey: "artifactLocation"); slashLegacy["slashMenuPresentation"] = "collapsed"
+            var slashLegacy = baseline; slashLegacy.removeValue(forKey: "artifactLocation"); slashLegacy.removeValue(forKey: "questionAutoSkip"); slashLegacy["slashMenuPresentation"] = "collapsed"
             let slashBytes = try JSONSerialization.data(withJSONObject: slashLegacy), slashFile = slashDirectory.appendingPathComponent("general.json"); try slashBytes.write(to: slashFile)
             let slashExisting = AgentGeneralSettings(directory: slashDirectory); try slashExisting.save(slashExisting.settings)
             checks["ExistingSlashPreferencesLoadWithoutRewritingOrResetting"] = try slashExisting.error == nil && slashExisting.settings.artifactLocation == .workspace && slashExisting.settings.slashMenuPresentation == .collapsed && Data(contentsOf: slashFile) == slashBytes
-            for (name, key, bad) in [("version", "version", 9 as Any), ("policy", "completionNotifications", "sometimes" as Any), ("boolean", "menuBarIcon", "yes" as Any), ("unknown", "extra", true as Any), ("input", "runningInput", "later" as Any), ("turns", "goalMaximumTurns", 4 as Any), ("null-input", "runningInput", NSNull() as Any), ("null-turns", "goalMaximumTurns", NSNull() as Any), ("slash", "slashMenuPresentation", "other" as Any), ("null-slash", "slashMenuPresentation", NSNull() as Any), ("artifact", "artifactLocation", "external" as Any), ("null-artifact", "artifactLocation", NSNull() as Any)] {
+            let artifactDirectory = output.appendingPathComponent("artifact-general"); try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: false)
+            var artifactLegacy = baseline; artifactLegacy.removeValue(forKey: "questionAutoSkip"); artifactLegacy["artifactLocation"] = "window"
+            let artifactBytes = try JSONSerialization.data(withJSONObject: artifactLegacy), artifactFile = artifactDirectory.appendingPathComponent("general.json"); try artifactBytes.write(to: artifactFile)
+            let artifactExisting = AgentGeneralSettings(directory: artifactDirectory); try artifactExisting.save(artifactExisting.settings)
+            checks["ExistingArtifactPreferencesKeepAutoSkipOffWithoutRewriting"] = try artifactExisting.error == nil && !artifactExisting.settings.questionAutoSkip && artifactExisting.settings.artifactLocation == .window && Data(contentsOf: artifactFile) == artifactBytes
+            for (name, key, bad) in [("version", "version", 9 as Any), ("policy", "completionNotifications", "sometimes" as Any), ("boolean", "menuBarIcon", "yes" as Any), ("unknown", "extra", true as Any), ("input", "runningInput", "later" as Any), ("turns", "goalMaximumTurns", 4 as Any), ("null-input", "runningInput", NSNull() as Any), ("null-turns", "goalMaximumTurns", NSNull() as Any), ("slash", "slashMenuPresentation", "other" as Any), ("null-slash", "slashMenuPresentation", NSNull() as Any), ("artifact", "artifactLocation", "external" as Any), ("null-artifact", "artifactLocation", NSNull() as Any), ("auto-skip", "questionAutoSkip", "yes" as Any), ("null-auto-skip", "questionAutoSkip", NSNull() as Any)] {
                 let directory = output.appendingPathComponent("invalid-" + name); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
                 var raw = baseline; raw[key] = bad; let bytes = try JSONSerialization.data(withJSONObject: raw), target = directory.appendingPathComponent("general.json"); try bytes.write(to: target)
                 let invalid = AgentGeneralSettings(directory: directory); refused = false; do { try invalid.save(.init()) } catch { refused = true }
@@ -101,10 +106,19 @@ import UserNotifications
             checks["SlashPresentationSavesAndSyncsExistingWindows"] = try service.settings.slashMenuPresentation == .collapsed && (controls(second).first(where: { $0.identifier?.rawValue == "general-slash-menu" }) as? NSPopUpButton)?.selectedItem?.title == "收起插件内容" && AgentGeneralSettings(directory: store.directory).settings == service.settings
             artifact.selectItem(at: 1); _ = artifact.sendAction(artifact.action, to: artifact.target)
             checks["ArtifactLocationSavesAndSyncsExistingWindows"] = try service.settings.artifactLocation == .window && (controls(second).first(where: { $0.identifier?.rawValue == "general-artifact-location" }) as? NSPopUpButton)?.selectedItem?.title == "新窗口查看" && AgentGeneralSettings(directory: store.directory).settings == service.settings
+            let autoSkip = try switchValue("general-question-auto-skip", control)
+            autoSkip.state = .on; _ = autoSkip.sendAction(autoSkip.action, to: autoSkip.target)
+            checks["QuestionAutoSkipSavesAndSyncsExistingWindows"] = try service.settings.questionAutoSkip && runtime.taskSettings().questionAutoSkip && switchValue("general-question-auto-skip", second).state == .on
+            let autoSkipBytes = try Data(contentsOf: file); try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
+            autoSkip.state = .off; _ = autoSkip.sendAction(autoSkip.action, to: autoSkip.target)
+            checks["QuestionAutoSkipReadOnlyFailureRollsBackWithoutChangingBytes"] = try service.settings.questionAutoSkip && autoSkip.state == .on && switchValue("general-question-auto-skip", second).state == .on && Data(contentsOf: file) == autoSkipBytes
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            autoSkip.state = .off; _ = autoSkip.sendAction(autoSkip.action, to: autoSkip.target)
+            checks["QuestionAutoSkipCanBeDisabledWithoutChangingOtherPreferences"] = !service.settings.questionAutoSkip && service.settings.artifactLocation == .window && service.settings.slashMenuPresentation == .collapsed
             for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
                 let views = try controls(control)
-                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 8 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
+                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 9 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
                 checks[label + "GeneralPageHasNoDuplicateSave"] = !descendants(window.contentView!).contains { ($0 as? NSButton)?.title == "保存" && !$0.isHiddenOrHasHiddenAncestor }
             }
             window.setContentSize(NSSize(width: 1200, height: 774)); control.show(tab: "chat"); window.makeKeyAndOrderFront(nil); await wait(0.05)

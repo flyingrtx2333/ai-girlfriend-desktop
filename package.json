@@ -22,6 +22,7 @@
     "native:check-conversation": "node scripts/check-native-conversation.mjs",
     "native:check-settings": "node scripts/check-native-settings.mjs",
     "native:check-general-settings": "node scripts/check-native-settings.mjs --general",
+    "native:check-question-auto-skip": "node scripts/check-native-question-auto-skip.mjs",
     "native:check-settings-pages": "node scripts/check-native-settings.mjs --pages",
     "native:check-sidebar": "node scripts/check-native-settings.mjs --sidebar",
     "native:check-content-appearance": "node scripts/check-native-settings.mjs --content",
