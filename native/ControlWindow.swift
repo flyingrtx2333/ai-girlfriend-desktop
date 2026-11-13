@@ -2977,15 +2977,15 @@ final class FormDocumentView: NSView {
             let saved = tasks.automations.values.first { $0.id == draft.automation.id }
             ids.append("automation-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + AgentFiles.hash((try? JSONEncoder().encode(saved)) ?? Data()) + ":" + String(task.archived) + ":" + String(tasks.automations.isStarted))
         }
+        let thinking = companion?.agentRuntime?.isExecuting(task.id) == true && task.status == .running && companion?.agentRuntime?.pendingReview(task.id) == nil && tasks.mcp.userInputs.first(taskID: task.id) == nil
         for message in messages {
-            if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id) { ids.append(message.id) }
+            if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id && !(thinking && message.role == "assistant")) { ids.append(message.id) }
             if message.reasoning?.isEmpty == false { ids.append("reasoning:" + message.id) }
             ids += (message.toolCalls ?? []).filter { $0.name != "load_tools" }.map { "tool:" + $0.id }
         }
         ids += processes.map { "process:" + $0.replyID }
         if task.status == .completed { ids += task.artifacts.prefix(4).map { "artifact:" + $0 }; ids += (task.canvases ?? []).prefix(4).map { "canvas:" + $0.id + $0.hash + tasks.canvases.previewSignature($0, taskID: task.id) } }
         ids += inlineSnapshots.keys.sorted().map { "snapshot:" + $0 + ":" + inlineSnapshots[$0]!.id }
-        let thinking = companion?.agentRuntime?.isExecuting(task.id) == true && task.status == .running && companion?.agentRuntime?.pendingReview(task.id) == nil && tasks.mcp.userInputs.first(taskID: task.id) == nil
         thinkingIndicator.update(companion?.thinkingStatus.settings ?? .init(), active: thinking)
         if thinking { ids.append("thinking:" + task.id) }
         if ids != renderedIDs {

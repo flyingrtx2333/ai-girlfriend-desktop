@@ -166,6 +166,9 @@ import Darwin
                 let deadline = Date().addingTimeInterval(4); while Date() < deadline && !FileManager.default.fileExists(atPath: marker.path) { await wait(0.02) }
                 let pid = pid_t(try String(contentsOf: marker)) ?? 0; control.renderMessages(); await wait(0.2)
                 checks[key + "-actualLocalCommandIsRunningWithoutModel"] = pid > 0 && kill(pid, 0) == 0 && runtime.isExecuting(id) && tasks.task(id)?.status == .running
+                let placeholder = AgentMessage(role: "assistant", content: "")
+                tasks.update(id) { $0.messages.append(placeholder) }; control.renderMessages()
+                checks[key + "-nativeEmptyStreamingPlaceholderDoesNotAddBlankReply"] = (control.conversationDisplayReadback()["messages"] as? [String: [String: Any]])?[placeholder.id] == nil && (control.thinkingStatusReadback()["indicator"] as? [String: Any])?["active"] as? Bool == true
                 let before = (control.thinkingStatusReadback()["indicator"] as? [String: Any])?["ticks"] as? Int ?? -1; await wait(0.3)
                 checks[key + "-visibleRunningIndicatorAdvances"] = (control.thinkingStatusReadback()["indicator"] as? [String: Any])?["animating"] as? Bool == true && ((control.thinkingStatusReadback()["indicator"] as? [String: Any])?["ticks"] as? Int ?? 0) > before
                 control.checkThinkingMotion(true); let frozen = (control.thinkingStatusReadback()["indicator"] as? [String: Any])?["ticks"] as? Int; await wait(0.2)
