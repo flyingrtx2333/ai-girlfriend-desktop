@@ -80,6 +80,16 @@ import Darwin
             homeGames.refreshActivity(tasks); for _ in 0..<50 where homeGames.activityLoading { await wait(0.01) }
             report["activityReadback"] = ["loading":homeGames.activityLoading,"issue":homeGames.activityIssue ?? "","counts":homeGames.activity.sorted { $0.key < $1.key }.map { ["day":ISO8601DateFormatter().string(from:$0.key),"tasks":$0.value] }]
             checks["heatmapUsesRecordedDatesAndExcludesEmptyDrafts"] = homeGames.activity.count == 8 && homeGames.activity.values.allSatisfy { $0 == 1 } && homeGames.activityIssue == nil
+            let cold = AgentStore(directory:output.appendingPathComponent("cold-activity"),legacy:[],extensionHome:output.appendingPathComponent("shared-home"))
+            var interrupted = tasks.task(history)!; interrupted.id = UUID().uuidString; interrupted.status = .running
+            interrupted.pendingCalls = [AgentToolCall(id:UUID().uuidString,name:"read_file",arguments:"{\"path\":\"README.md\"}")]
+            let coldFile = cold.directory.appendingPathComponent(interrupted.id + ".json"), coldBytes = try JSONEncoder().encode(interrupted)
+            try coldBytes.write(to:coldFile); try FileManager.default.setAttributes([.posixPermissions:0o400],ofItemAtPath:coldFile.path)
+            let coldIndex = cold.directory.appendingPathComponent("index.json"), indexBefore = try Data(contentsOf:coldIndex), searchBefore = cold.taskSearchRevision
+            let coldDates = cold.recordedActivityDates(interrupted.id) ?? []
+            checks["coldRunningTaskStatisticsNeverRecoverWriteOrChangeIndex"] = try Set(coldDates.map { Calendar.current.startOfDay(for:$0) }).count == 8 && Data(contentsOf:coldFile) == coldBytes && Data(contentsOf:coldIndex) == indexBefore && cold.taskSearchRevision == searchBefore && cold.writeError == nil
+            try FileManager.default.moveItem(at:coldFile,to:coldFile.appendingPathExtension("original")); try FileManager.default.createSymbolicLink(at:coldFile,withDestinationURL:tasks.directory.appendingPathComponent(history + ".json"))
+            checks["statisticsRejectLinkedRecordsWithoutChangingSource"] = try cold.recordedActivityDates(interrupted.id) == nil && Data(contentsOf:tasks.directory.appendingPathComponent(history + ".json")) == original[2]
             checks["emptyCodingShowsHeatmapWithNoGameTimer"] = control.homeGamesReadback()["visible"] as? Bool == true && control.homeGamesReadback()["timer"] as? Bool == false && control.homeGamesReadback()["cells"] as? Int == 371
             control.showAgentTask(general); control.show(tab:"chat"); checks["askWithoutWorkspaceShowsSameHomeGames"] = tasks.task(general)?.workspace == nil && control.homeGamesReadback()["visible"] as? Bool == true
             control.showAgentTask(history); control.show(tab:"chat"); checks["conversationHidesGamesAndStopsTimer"] = control.homeGamesReadback()["visible"] as? Bool == false && control.homeGamesReadback()["timer"] as? Bool == false

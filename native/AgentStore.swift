@@ -166,6 +166,22 @@ import Foundation
         trimCache(keeping: id)
         return task
     }
+    func recordedActivityDates(_ id: String) -> [Date]? {
+        guard UUID(uuidString: id) != nil, !deletions.taskIDs.contains(id) else { return nil }
+        let record: AgentTaskRecord
+        if let current = cache[id] { record = current }
+        else {
+            // Statistics must not recover interrupted tasks, acquire leases, write records or evict drafts.
+            guard let files = try? AgentFiles(workspace: directory.path), let file = try? files.literalURL(id + ".json"),
+                  (try? files.entryMetadata(file).kind) == "file", (try? files.resolve(id + ".json")) == file,
+                  let data = try? files.readData(file, maximum: 20_000_000), let value = try? JSONDecoder().decode(AgentTaskRecord.self, from: data) else { return nil }
+            record = value
+        }
+        guard record.id == id else { return nil }
+        var dates = record.events.map(\.created) + (record.modelReceipts ?? []).map(\.created) + (record.resultHistory ?? []).map(\.created)
+        if record.messages.contains(where: \.isHumanInput), let date = record.activityAt { dates.append(date) }
+        return dates
+    }
     func taskViewMetadata() -> [AgentTaskRecord] {
         // Older indexes lack activity dates; load each missing entry once without rewriting its task file.
         _ = refreshDeletedRecords()

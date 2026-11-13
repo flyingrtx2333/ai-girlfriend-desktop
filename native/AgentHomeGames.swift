@@ -186,9 +186,7 @@ struct AgentSidewaysBlocks {
             var counts: [Date:Int] = [:], unreadable = false
             for id in ids {
                 if Task.isCancelled { return }
-                if let task = store.task(id) {
-                    var dates = task.events.map(\.created) + (task.modelReceipts ?? []).map(\.created) + (task.resultHistory ?? []).map(\.created)
-                    if task.messages.contains(where: \.isHumanInput), let date = task.activityAt { dates.append(date) }
+                if let dates = store.recordedActivityDates(id) {
                     for date in Set(dates.map { Calendar.current.startOfDay(for: $0) }) where date <= day { counts[date,default:0] += 1 }
                 } else { unreadable = true }
                 await Task.yield()
