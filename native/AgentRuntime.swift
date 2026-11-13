@@ -326,6 +326,12 @@ import Foundation
         guard let task = store.task(id) else { throw PetError("任务不存在") }
         return try store.models.resolve(delegatedModels[id]?.preferences ?? preferences(), task: task)
     }
+    func analysisPreferences(_ id: String, model: String?) throws -> PetPreferences {
+        guard let model else { return try taskPreferences(id) }
+        guard AgentTaskModels.validID(model), var task = store.task(id) else { throw PetError("回顾模型 ID 无效或任务不存在") }
+        task.modelOverride = model
+        return try store.models.resolve(delegatedModels[id]?.preferences ?? preferences(), task: task)
+    }
     func chooseModel(_ id: String, model: String?) throws {
         guard let task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty else { throw PetError("请先停止执行或处理待确认操作") }
         if let model, !AgentTaskModels.validID(model) { throw PetError("请输入有效的模型 ID（少于 200 字符）") }
@@ -378,7 +384,7 @@ import Foundation
         let messages = (task.kind == AgentKnowledgeCards.kind || task.isKnowledgeEditing || task.wikiJob != nil) ? try store.knowledgeCards.modelMessages(task, maximum: p.contextLimit - p.outputLimit - overhead - 256, label: task.wikiJob == nil ? "知识卡片" : "Wiki") : AgentContext.window(task, maximumImages: maximumImages, archivedFactBudget: budget)
         return try AgentContext.snapshot(preferences: p, system: payload.text, skills: payload.skills, messages: messages, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0)
     }
-    @discardableResult func analyze(_ id: String, recap: Bool) -> Bool {
+    @discardableResult func analyze(_ id: String, recap: Bool, model: String? = nil) -> Bool {
         analysisErrorModes[id] = recap
         guard let task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty, task.status != .waiting, analyses.count < 2 else { analysisErrors[id] = "请先停止执行或处理待确认操作"; notifyChange(id); return false }
         do { try store.sideTasks.requireCanRun(task) } catch { analysisErrors[id] = error.localizedDescription; notifyChange(id); return false }
@@ -395,7 +401,7 @@ import Foundation
             do {
                 try self.store.teams.check(task, store: self.store)
                 if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role, workspace: task.workspace) }
-                let p = try self.taskPreferences(id), key = try self.keychain.read("chat")
+                let p = try self.analysisPreferences(id, model: recap ? model : nil), key = try self.keychain.read("chat")
                 if recap { try await self.generateRecap(id, preferences: p, key: key) }
                 else {
                     let system = try self.systemContext(task), definitions = try self.toolDefinitions(task, preferences: p)

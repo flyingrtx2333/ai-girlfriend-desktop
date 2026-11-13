@@ -28,6 +28,8 @@ import CoreText
         do {
             ensureAgent(); guard usesAgent, let tasks = agentStore, let runtime = agentRuntime else { throw PetError("内容外观验收未进入独立工作台") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("内容外观验收禁止模型请求") }
+            // Width limits are tested with the optional monitor hidden; monitor layout has its own acceptance gate.
+            var monitor = taskMonitor.settings; monitor.dockedDefaultVisible = false; try taskMonitor.save(monitor)
             let coding = tasks.create(title: "编程阅读排版", workMode: .coding), general = tasks.create(title: "通用阅读排版", workMode: .general)
             for id in [coding, general] { tasks.update(id) { $0.messages = [AgentMessage(role: "user", content: "公开提问 English 🧭"), AgentMessage(role: "assistant", content: Self.contentAppearanceSample)]; $0.draft = "保留中文 English 🧭 未发送草稿" } }
             control.showAgentTask(coding); let second = ControlWindow(companion: self, taskID: general, windowNumber: 2); additionalTaskWindows.append(second)

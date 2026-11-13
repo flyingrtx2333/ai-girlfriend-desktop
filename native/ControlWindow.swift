@@ -93,7 +93,7 @@ final class FormDocumentView: NSView {
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("modes", "模式配置", "square.stack.3d.up"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
@@ -188,6 +188,9 @@ final class FormDocumentView: NSView {
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
+    private var monitorPanel: AgentTaskMonitorPanel?, monitorPanelTaskID: String?
+    private var monitorStates: [String: AgentTaskMonitor.DisplayState] = [:]
+    private var appliedMonitorSettings: AgentTaskMonitor.Settings?
     private let terminalButton = AgentWorkbenchButton(), terminalSplit = AgentTerminalSplitView()
     private(set) var taskWorkspace = AgentTaskWorkspace()
     private var taskDocumentOpenState: [String: Any] = [:]
@@ -619,7 +622,7 @@ final class FormDocumentView: NSView {
         AgentWorkbenchTheme.toolbar(terminalButton, title: "打开终端", symbol: "terminal")
         desktopButton.target = self; desktopButton.action = #selector(showDesktopSettings); AgentWorkbenchTheme.toolbar(desktopButton, title: "电脑操作", symbol: "computermouse")
         gitButton.target = self; gitButton.action = #selector(showAgentGit); AgentWorkbenchTheme.toolbar(gitButton, title: "Git", symbol: "arrow.triangle.branch")
-        resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务记录", symbol: "sidebar.right")
+        resultsButton.target = self; resultsButton.action = #selector(toggleTaskInspector); AgentWorkbenchTheme.toolbar(resultsButton, title: "任务监控", symbol: "checklist")
         let actions = stack([projectButton, browserButton, terminalButton, desktopButton, gitButton, resultsButton, taskMore], spacing: 4); main.addSubview(actions)
         let headerRule = AgentWorkbenchTheme.rule(); main.addSubview(headerRule)
         workbenchChrome = [navigation, actions, workbenchBadge, headerRule]
@@ -668,13 +671,7 @@ final class FormDocumentView: NSView {
         inspectorPreferredWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
         inspectorRule.translatesAutoresizingMaskIntoConstraints = false; chat.addSubview(inspectorRule)
         NSLayoutConstraint.activate([terminalSplit.leadingAnchor.constraint(equalTo: chat.leadingAnchor), conversationTrailing, terminalSplit.topAnchor.constraint(equalTo: chat.topAnchor), terminalSplit.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorWidth, inspectorPreferredWidth, workbenchInspector.trailingAnchor.constraint(equalTo: chat.trailingAnchor), workbenchInspector.topAnchor.constraint(equalTo: chat.topAnchor), workbenchInspector.bottomAnchor.constraint(equalTo: chat.bottomAnchor), inspectorRule.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), inspectorRule.widthAnchor.constraint(equalToConstant: 1), inspectorRule.topAnchor.constraint(equalTo: chat.topAnchor), inspectorRule.bottomAnchor.constraint(equalTo: chat.bottomAnchor), taskWorkspace.leadingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor), taskWorkspace.trailingAnchor.constraint(equalTo: workbenchInspector.trailingAnchor), taskWorkspace.topAnchor.constraint(equalTo: workbenchInspector.topAnchor), taskWorkspace.bottomAnchor.constraint(equalTo: workbenchInspector.bottomAnchor)])
-        workbenchInspector.onOpen = { [weak self] section, value in
-            if value.hasPrefix("canvas://"), let id = self?.agentTaskID { self?.openCanvasReference(value, taskID: id) }
-            else { self?.openAgentRecordItem(section: section, value: value) }
-        }
-        workbenchInspector.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
-        workbenchInspector.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
-        workbenchInspector.onSideTask = { [weak self] id in guard let self else { return }; companion?.openSideTask(id, from: self) }
+        configureTaskMonitor(workbenchInspector)
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
         messageColumn.orientation = .vertical; messageColumn.alignment = .leading; messageColumn.spacing = 20; document.addSubview(messageColumn)
@@ -745,24 +742,25 @@ final class FormDocumentView: NSView {
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
         updateTerminalDock()
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty
-        let sides = companion?.agentStore?.sideTasks.children(of: task.id) ?? []
-        let hasRecords = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.sources.isEmpty || !task.plan.isEmpty || !sides.isEmpty
+        let monitorContent = makeMonitorContent(task), monitorState = taskMonitorState(task.id)
+        let hasRecords = monitorContent.hasContent
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
         let settingsWidth: CGFloat = width < 980 ? 180 : 231
         sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
         taskWorkspace.selectTask(task.id)
         let showWorkspace = chatting && taskWorkspace.requested, remaining = width - sidebarWidth.constant
         let fullWorkspace = showWorkspace && (taskWorkspace.expanded || remaining < 920)
-        let showInspector = chatting && !showWorkspace && hasRecords && inspectorRequested && width >= 1080
-        let target: CGFloat = showWorkspace ? (fullWorkspace ? remaining : min(560, max(470, floor(remaining * 0.51)))) : showInspector ? 281 : 0
-        if fullWorkspace {
+        let showInspector = chatting && !showWorkspace && monitorState.presentation == .fixed && monitorState.visible && (hasRecords || monitorState.explicitVisibility) && (width >= 1080 || monitorState.explicitVisibility)
+        let fullMonitor = showInspector && width < 1080
+        let target: CGFloat = showWorkspace ? (fullWorkspace ? remaining : min(560, max(470, floor(remaining * 0.51)))) : showInspector ? (fullMonitor ? remaining : 281) : 0
+        if fullWorkspace || fullMonitor {
             conversationTrailing.isActive = false; fullConversationTrailing.isActive = true
         } else {
             fullConversationTrailing.isActive = false; conversationTrailing.isActive = true
         }
         if showWorkspace { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
         else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
-        terminalSplit.isHidden = fullWorkspace
+        terminalSplit.isHidden = fullWorkspace || fullMonitor
         if !showWorkspace { taskWorkspace.setVisible(false) }
         taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
         settingsSidebarWidth?.constant = settingsWidth
@@ -771,7 +769,7 @@ final class FormDocumentView: NSView {
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
         sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
         let maximum = companion?.contentAppearance.settings.contentWidth.maximum ?? AgentContentWidth.standard.maximum
-        let columnInset = max(18, (width - sidebarWidth.constant - (fullWorkspace ? 0 : target) - maximum) / 2)
+        let columnInset = max(18, (width - sidebarWidth.constant - (fullWorkspace || fullMonitor ? 0 : target) - maximum) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
@@ -785,7 +783,9 @@ final class FormDocumentView: NSView {
         let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
         projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
         executionLocation.isHidden = !presentation.inputEnvironment; gitButton.isHidden = !presentation.changeReview
-        workbenchBadge.update(task); workbenchInspector.update(task, sideTasks: sides, showChanges: presentation.changeReview)
+        workbenchBadge.update(task)
+        workbenchInspector.update(monitorContent); workbenchInspector.setPresentation(.fixed)
+        updateFloatingMonitor(monitorContent, state: monitorState, show: chatting && monitorState.presentation == .floating && monitorState.visible)
         taskBack.isEnabled = sideTaskTabID == nil && taskNavigationIndex > 0; taskForward.isEnabled = sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
         let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
         taskModel.title = modelName; taskModel.setAccessibilityLabel("模型：" + modelName)
@@ -805,12 +805,117 @@ final class FormDocumentView: NSView {
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target; self.inspectorPreferredWidth.constant = target }
         if showWorkspace { taskWorkspace.setVisible(true) }
+        let monitorVisible = showInspector || monitorPanel?.isVisible == true
+        resultsButton.state = monitorVisible ? .on : .off; resultsButton.setAccessibilityLabel(monitorVisible ? "隐藏任务监控" : "显示任务监控"); resultsButton.toolTip = monitorVisible ? "隐藏任务监控" : "显示任务监控"
         messageRows.values.forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
     @objc private func toggleTaskInspector() {
-        if taskWorkspace.requested, taskWorkspace.selectedRoot == .records { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
-        presentAgentRecords(section: 4)
+        guard selectedTab == "chat", let id = agentTaskID else { return }
+        var state = taskMonitorState(id)
+        if state.presentation == .fixed, taskWorkspace.requested { taskWorkspace.hideForNavigation(); guard !taskWorkspace.requested else { return }; state.visible = true }
+        else { state.visible = !(state.presentation == .fixed ? !workbenchInspector.isHidden : monitorPanel?.isVisible == true) }
+        state.explicitVisibility = true; monitorStates[id] = state; inspectorRequested = state.visible; updateWorkbenchLayout(animated: true)
+    }
+    private func taskMonitorState(_ id: String) -> AgentTaskMonitor.DisplayState {
+        if let state = monitorStates[id] { return state }
+        let settings = companion?.taskMonitor.settings ?? .init(); if appliedMonitorSettings == nil { appliedMonitorSettings = settings }
+        let state = AgentTaskMonitor.DisplayState(settings); monitorStates[id] = state; return state
+    }
+    func refreshTaskMonitorPreferences() {
+        guard let settings = companion?.taskMonitor.settings else { return }
+        for id in Array(monitorStates.keys) {
+            guard var state = monitorStates[id] else { continue }
+            if appliedMonitorSettings?.presentation != settings.presentation { state.presentation = settings.presentation }
+            if !state.explicitVisibility { state.visible = settings.presentation == .fixed && settings.dockedDefaultVisible }
+            monitorStates[id] = state
+        }
+        appliedMonitorSettings = settings; updateWorkbenchLayout()
+    }
+    private func makeMonitorContent(_ task: AgentTaskRecord) -> AgentMonitorContent {
+        var value = AgentMonitorContent(task: task)
+        guard let companion, let store = companion.agentStore else { return value }
+        value.settings = companion.taskMonitor.settings
+        if let files = try? AgentFiles(workspace: task.workspace) {
+            for path in task.artifacts.prefix(8) {
+                if let url = try? files.resolve(path), let entry = try? files.entryMetadata(url), entry.kind == "missing" { value.missingArtifacts.insert(path) }
+            }
+        }
+        let presentation = companion.modePresentation.settings[task.organizationMode]
+        value.showChanges = presentation.changeReview
+        value.children = store.tasks.filter { $0.agent?.ownerID == task.id && !$0.archived }.sorted { $0.updated > $1.updated }
+        value.sideChats = store.sideTasks.children(of: task.id) + store.tasks.filter { $0.parentID == task.id && $0.branchMessageID != nil && $0.sideTask == nil && !$0.archived }
+        value.terminals = terminalPanel?.monitorEntries(taskID: task.id) ?? []
+        value.pages = store.browser.sessions[task.id]?.monitorEntries ?? []
+        if presentation.inputEnvironment, let workspace = task.workspace { value.environment = [store.organization.name(workspace, mode: task.organizationMode), workspace].compactMap { $0 } }
+        value.canAnalyze = companion.agentRuntime?.isBusy(task.id) == false && !task.archived && task.kind != "hook" && task.pendingCalls.isEmpty && task.status != .waiting && task.messages.contains(where: \.isHumanInput)
+        value.analysis = companion.agentRuntime?.analysisTitle(task.id); value.analysisError = companion.agentRuntime?.analysisError(task.id, recap: true)
+        switch taskWorkspace.selectedRoot {
+        case .canvas(let id) where (task.canvases ?? []).contains(where: { $0.id == id }): value.previewTitle = "画布"; value.previewVisible = taskWorkspace.requested
+        default: if store.browser.sessions[task.id]?.monitorAvailable == true { value.previewTitle = "浏览器"; value.previewVisible = taskWorkspace.requested && taskWorkspace.selectedRoot == .browser }
+        }
+        return value
+    }
+    private func configureTaskMonitor(_ view: AgentTaskInspector) {
+        view.onOpen = { [weak self] section, value in
+            guard let self else { return }; if value.hasPrefix("canvas://"), let id = agentTaskID { openCanvasReference(value, taskID: id) } else { openAgentRecordItem(section: section, value: value) }
+        }
+        view.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
+        view.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
+        view.onTerminal = { [weak self] entry in guard let self, let id = agentTaskID else { return }; do { try terminalPanel?.openMonitorEntry(entry, taskID: id); updateTerminalDock() } catch { setStatus(error.localizedDescription, error: true) } }
+        view.onSideTask = { [weak self] id in
+            guard let self, let task = companion?.agentStore?.task(id) else { return }
+            if task.sideTask != nil { companion?.openSideTask(id, from: self) } else { selectAgentTask(id) }
+        }
+        view.onPage = { [weak self] id in guard let self, let taskID = agentTaskID else { return }; do { guard let browser = companion?.agentStore?.browser.sessions[taskID] else { throw PetError("此任务的浏览器已关闭") }; guard browser.prepareWorkspaceNavigation() else { return }; _ = try browser.manageTabs(["action": "switch", "tab_id": id]); showAgentBrowser() } catch { setStatus(error.localizedDescription, error: true) } }
+        view.onContext = { [weak self] section in self?.presentTaskContext(section: section) }
+        view.onRecap = { [weak self] in guard let self, let id = agentTaskID else { return }; _ = companion?.agentRuntime?.analyze(id, recap: true, model: companion?.taskMonitor.settings.recapModel) }
+        view.onSettings = { [weak self] in _ = self?.showSettingsCategory("monitor") }
+        view.onMemory = { [weak self] in self?.openAgentMemory() }
+        view.onPreview = { [weak self] in self?.toggleMonitorPreview() }
+        view.onClose = { [weak self] in self?.closeTaskMonitor() }
+        view.onPresentation = { [weak self] in self?.pinTaskMonitor() }
+    }
+    private func closeTaskMonitor() {
+        guard let id = agentTaskID else { return }; var state = taskMonitorState(id); state.visible = false; state.explicitVisibility = true; monitorStates[id] = state; inspectorRequested = false; updateWorkbenchLayout(animated: true)
+    }
+    private func pinTaskMonitor() {
+        guard let id = agentTaskID else { return }; var state = taskMonitorState(id)
+        if state.presentation == .floating, taskWorkspace.requested { taskWorkspace.hideForNavigation(); guard !taskWorkspace.requested else { return } }
+        state.presentation = state.presentation == .fixed ? .floating : .fixed; state.visible = true; state.explicitVisibility = true; monitorStates[id] = state; updateWorkbenchLayout(animated: true)
+    }
+    private func toggleMonitorPreview() {
+        if taskWorkspace.requested, taskWorkspace.selectedRoot == .browser || { if case .canvas = taskWorkspace.selectedRoot { return true }; return false }() { taskWorkspace.hideForNavigation(); updateWorkbenchLayout(); return }
+        if let id = agentTaskID, companion?.agentStore?.browser.sessions[id] != nil { showAgentBrowser() }
+        else if case .canvas(let canvas) = taskWorkspace.selectedRoot, let id = agentTaskID { openCanvasReference("canvas://" + canvas, taskID: id) }
+    }
+    private func updateFloatingMonitor(_ content: AgentMonitorContent, state: AgentTaskMonitor.DisplayState, show: Bool) {
+        guard show, let owner = window, owner.isVisible, !owner.isMiniaturized, owner.attachedSheet == nil else { monitorPanel?.orderOut(nil); return }
+        if monitorPanel == nil {
+            let panel = AgentTaskMonitorPanel(); configureTaskMonitor(panel.inspector)
+            panel.onDismiss = { [weak self] in self?.closeTaskMonitor() }
+            panel.onFrame = { [weak self] frame in guard let self, let id = monitorPanelTaskID, var value = monitorStates[id] else { return }; value.frame = frame; monitorStates[id] = value }
+            monitorPanel = panel; owner.addChildWindow(panel, ordered: .above)
+        }
+        guard let panel = monitorPanel else { return }
+        if monitorPanelTaskID != content.task.id {
+            monitorPanelTaskID = content.task.id
+            let screen = owner.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? owner.frame
+            var frame = state.frame ?? NSRect(x: owner.frame.maxX - 360, y: owner.frame.maxY - min(620, owner.frame.height), width: 340, height: min(560, screen.height - 60))
+            frame.size.width = min(frame.width, screen.width); frame.size.height = min(frame.height, screen.height)
+            frame.origin.x = min(max(frame.minX, screen.minX), screen.maxX - frame.width); frame.origin.y = min(max(frame.minY, screen.minY), screen.maxY - frame.height); panel.setFrame(frame, display: false)
+        }
+        panel.title = "任务监控 · " + content.task.title.replacingOccurrences(of: "\n", with: " "); AgentThemeContext.inherit(panel, from: owner)
+        panel.inspector.canOpenTerminal = terminalButton.isEnabled; panel.inspector.update(content); panel.orderFront(nil)
+    }
+    func taskMonitorReadback() -> [String: Any] {
+        guard ["--task-monitor-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let id = agentTaskID else { return [:] }
+        let state = taskMonitorState(id)
+        return ["taskID": id, "presentation": state.presentation.rawValue, "requested": state.visible, "dockedVisible": !workbenchInspector.isHidden, "floatingVisible": monitorPanel?.isVisible == true, "floatingTaskID": monitorPanelTaskID ?? "", "floatingFrame": monitorPanel.map { NSStringFromRect($0.frame) } ?? "", "windowSize": window.map { [$0.frame.width, $0.frame.height] } ?? [], "fixed": workbenchInspector.readback(), "floating": monitorPanel?.inspector.readback() ?? [:], "taskStates": monitorStates.mapValues { ["presentation": $0.presentation.rawValue, "visible": $0.visible, "frame": $0.frame.map(NSStringFromRect) ?? ""] as [String: Any] }]
+    }
+    func checkTaskMonitor(_ action: String, frame: NSRect? = nil) {
+        guard CommandLine.arguments.contains("--task-monitor-check") else { return }
+        switch action { case "toggle": toggleTaskInspector(); case "pin": pinTaskMonitor(); case "close": closeTaskMonitor(); case "frame": if let frame { monitorPanel?.setFrame(frame, display: false) }; case "terminal": openTaskTerminal(); case "stop-terminals": stopTaskTerminals(); default: break }
     }
     @objc private func toggleLeftSidebar() {
         guard selectedTab == "chat" else { return }
@@ -922,7 +1027,7 @@ final class FormDocumentView: NSView {
     internal func presentTaskContext(section: Int) {
         guard let runtime = companion?.agentRuntime, let id = agentTaskID, saveAgentDraft() else { return }
         if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
-        guard taskWorkspace.show(taskID: id, root: .context, make: { AgentContextWindow(runtime: runtime, taskID: id, section: section) }) else { return }
+        guard taskWorkspace.show(taskID: id, root: .context, make: { let page = AgentContextWindow(runtime: runtime, taskID: id, section: section); page.recapModel = { [weak self] in self?.companion?.taskMonitor.settings.recapModel }; return page }) else { return }
         (taskWorkspace.rootController(.context) as? AgentContextWindow)?.selectSection(section)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
@@ -1293,6 +1398,11 @@ final class FormDocumentView: NSView {
                     row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
                 }
             }
+            if companion.usesAgent {
+                group("monitor", "任务监控", "任务监控 固定 浮动 浮层 默认展示 默认隐藏 回顾 模型 目标 计划 子智能体 后台进程 侧边聊天 Skill MCP 产出 网页 来源 知识 记忆更新 演示画面 Task Monitor Recap")
+                let panel = AgentTaskMonitorSettingsView(service: companion.taskMonitor, models: { [weak self] in guard let self, let id = agentTaskID else { return [] }; return companion.agentRuntime?.modelChoices(id) ?? [] })
+                row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            }
             group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
             let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
             row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
@@ -1650,11 +1760,12 @@ final class FormDocumentView: NSView {
         messageRows.values.forEach { $0.fit(width: width) }
     }
     func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
-    func windowDidMiniaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
-    func windowDidDeminiaturize(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidMiniaturize(_ notification: Notification) { monitorPanel?.orderOut(nil); companion?.updatePetWorkspaceOcclusion() }
+    func windowDidDeminiaturize(_ notification: Notification) { updateWorkbenchLayout(); companion?.updatePetWorkspaceOcclusion() }
     func windowDidBecomeKey(_ notification: Notification) {
         companion?.updatePetWorkspaceOcclusion()
         companion?.focusedTaskControl = self
+        updateWorkbenchLayout()
         if let task = currentAgentTask {
             if companion?.agentStore?.selectedID != task.id { companion?.agentStore?.selectedID = task.id }
             refreshBranch(task, force: true)
@@ -1691,7 +1802,7 @@ final class FormDocumentView: NSView {
         if taskWindowNumber != 1 { guard await closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
         stopTaskTerminals()
-        sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
+        monitorPanel?.orderOut(nil); sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
     }
     private func finishClosingSideTask() {
         guard closingSideTask, !discardingSideTask, let id = sideTaskTabID, let tasks = companion?.agentStore else { return }
@@ -1704,6 +1815,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
+        monitorPanel?.orderOut(nil); if let monitorPanel { window?.removeChildWindow(monitorPanel) }; monitorPanel = nil
         settingsPageHost.finish()
         knowledgePageHost.finish()
         taskWorkspace.finish()
@@ -2322,6 +2434,7 @@ final class FormDocumentView: NSView {
         if terminalSplit.isHidden && taskWorkspace.requested { taskWorkspace.hideForNavigation() }
         let panel = terminalPanel ?? AgentTerminalPanel(store: store, checkHome: companion.checkDirectory)
         terminalPanel = panel
+        panel.onMonitorChange = { [weak self] in self?.scheduleRender() }
         panel.onHide = { [weak self] in
             guard let self else { return }
             updateTerminalDock()

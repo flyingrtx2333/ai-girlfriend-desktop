@@ -54,6 +54,7 @@ import BlueFatFishTerminal
     private let close = AgentWorkbenchButton()
     var onClose: (() -> Void)?
     var name: String { "终端 \(number)" }
+    private(set) var exitCode: Int32?
 
     init(number: Int, directory: URL) {
         self.number = number
@@ -95,7 +96,7 @@ import BlueFatFishTerminal
         title.textColor = selected ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText
     }
 
-    func exited(_ code: Int32) { state.stringValue = "已退出（\(code)）" }
+    func exited(_ code: Int32) { exitCode = code; state.stringValue = "已退出（\(code)）" }
 }
 
 @MainActor final class AgentTerminalPanel: AgentThemeView {
@@ -145,9 +146,19 @@ import BlueFatFishTerminal
     private let add = AgentWorkbenchButton(), right = AgentWorkbenchButton(), down = AgentWorkbenchButton()
     private let theme = AgentWorkbenchButton(), hide = AgentWorkbenchButton()
     var onHide: (() -> Void)?
+    var onMonitorChange: (() -> Void)?
     var isShown: Bool { current?.shown == true && current?.selected != nil }
     private var current: TaskTerminals? { currentID.flatMap { states[$0] } }
     private var paneCount: Int { states.values.reduce(0) { count, state in count + state.tabs.reduce(0) { $0 + $1.panes.count } } }
+    func monitorEntries(taskID: String) -> [AgentMonitorEntry] {
+        (states[taskID]?.tabs ?? []).flatMap(\.panes).map { pane in
+            AgentMonitorEntry(id: pane.id.uuidString, title: pane.name + (pane.exitCode.map { " · 已退出（\($0)）" } ?? ""), detail: "PID \(pane.surface.pid)")
+        }
+    }
+    func openMonitorEntry(_ id: String, taskID: String) throws {
+        guard currentID == taskID, let state = current, let index = state.tabs.firstIndex(where: { $0.panes.contains { $0.id.uuidString == id } }), let pane = state.tabs[index].panes.first(where: { $0.id.uuidString == id }) else { throw PetError("此任务的终端会话已关闭") }
+        state.index = index; state.tabs[index].active = pane; state.shown = true; render(); focus()
+    }
 
     init(store: AgentStore, checkHome: URL?) {
         self.store = store
@@ -260,9 +271,10 @@ import BlueFatFishTerminal
         let operation = pane.id
         let taskID = state.id
         let retention = store.worktreeRetention
-        pane.surface.onExit = { [weak pane, weak retention] code in
+        pane.surface.onExit = { [weak self, weak pane, weak retention] code in
             retention?.setNativeOperation(operation, taskID: taskID, busy: false)
             pane?.exited(code)
+            self?.onMonitorChange?()
         }
         do { try pane.surface.start(in: state.directory, checkHome: checkHome) }
         catch { throw PetError("终端无法启动。\(error.localizedDescription)") }
@@ -404,6 +416,7 @@ import BlueFatFishTerminal
         right.isEnabled = canAdd
         down.isEnabled = canAdd
         if let tab = state?.selected { tab.panes.forEach { $0.select($0 === tab.active) } }
+        onMonitorChange?()
     }
 
     private func showIssue(_ error: Error) {

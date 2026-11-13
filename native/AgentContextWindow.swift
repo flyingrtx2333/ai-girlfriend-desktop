@@ -9,6 +9,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
     private let scroll = NSScrollView()
     private let action = NSButton(title: "压缩上下文", target: nil, action: nil), stop = NSButton(title: "取消", target: nil, action: nil)
     private var rendered = ""
+    var recapModel: (() -> String?)?
     init(runtime: AgentRuntime, taskID: String, section: Int = 0) {
         self.runtime = runtime; self.taskID = taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -41,7 +42,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         return ["taskID": taskID, "section": tabs.selectedSegment, "source": source.indexOfSelectedItem, "text": body.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n"), "actionEnabled": action.isEnabled, "action": action.title, "state": state.stringValue, "mainWindow": pageContentView?.window === presentingWindow && settingsHostWindow != nil]
     }
-    @objc private func performAction() { _ = runtime.analyze(taskID, recap: tabs.selectedSegment == 1); refresh() }
+    @objc private func performAction() { _ = runtime.analyze(taskID, recap: tabs.selectedSegment == 1, model: recapModel?()); refresh() }
     @objc private func cancelAction() { runtime.cancel(taskID); refresh() }
     private func label(_ value: String, size: CGFloat = 13, bold: Bool = false, secondary: Bool = false) {
         let label = NSTextField(wrappingLabelWithString: value); label.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); label.textColor = secondary ? AgentWorkbenchTheme.secondaryText : .labelColor; label.isSelectable = true

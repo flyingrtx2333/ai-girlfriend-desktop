@@ -327,6 +327,11 @@ import WebKit
         let data = try JSONSerialization.data(withJSONObject: ["tabs": entries, "selected_tab_id": current.id], options: [.prettyPrinted, .sortedKeys])
         return AgentToolResult(text: String(decoding: data, as: UTF8.self))
     }
+    var monitorAvailable: Bool { !closed }
+    var monitorEntries: [AgentMonitorEntry] {
+        guard !closed else { return [] }
+        return pages.compactMap { page in guard let url = page.web.url else { return nil }; return AgentMonitorEntry(id: page.id, title: page.web.title.flatMap { $0.isEmpty ? nil : $0 } ?? url.host ?? url.lastPathComponent, detail: url.absoluteString) }
+    }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         let content = pageContentView, buttons = [back, forward, reload, halt, add, remove, copyLink, copyImage, annotate, separate]
