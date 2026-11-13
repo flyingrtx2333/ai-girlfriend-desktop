@@ -105,7 +105,7 @@ import Darwin
             window.makeKeyAndOrderFront(nil); await wait(0.15)
             checks["settingsUseExistingRightContentWithFortyFieldsAndNoSheet"] = descendants(window.contentView!).filter { $0.identifier?.rawValue.hasPrefix("thinking-caption-") == true }.count == 40 && window.attachedSheet == nil && control.thinkingStatusReadback()["heading"] as? String == "思考状态"
             guard let scroll = try input(control, "caption-1-zh").enclosingScrollView, let document = scroll.documentView else { throw PetError("缺少文案滚动页") }
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height))); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: Swift.max(0, document.bounds.height - scroll.contentView.bounds.height))); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
             checks["scrollingPreviewOutOfSightStopsItsTimer"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == false
             scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
             checks["returningToPreviewResumesWithoutLayoutReentry"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == true
