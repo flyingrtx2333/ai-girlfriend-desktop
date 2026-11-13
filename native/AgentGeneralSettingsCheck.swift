@@ -81,6 +81,12 @@ import UserNotifications
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
             question.state = .on; _ = question.sendAction(question.action, to: question.target)
             checks["FailedVisibleSaveRollsBackControlsInBothWindows"] = try question.state == .off && switchValue("general-question-notifications", second).state == .off && Data(contentsOf: file) == saved
+            for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
+                window.makeKeyAndOrderFront(nil); window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
+                let field = descendants(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "常规设置保存状态" }
+                checks[name + "FailedSaveFeedbackIsVisibleWithoutScrolling"] = field.map { $0.stringValue.contains("只读") && !$0.isHiddenOrHasHiddenAncestor && $0.bounds.height > 0 && $0.visibleRect.height >= $0.bounds.height - 1 } == true
+            }
+            window.setContentSize(NSSize(width: 1200, height: 774))
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path); question.state = .on; _ = question.sendAction(question.action, to: question.target)
             checks["VisibleRetrySavesPreference"] = service.settings.questionNotifications && AgentGeneralSettings(directory: store.directory).settings == service.settings
             guard let input = try controls(control).first(where: { $0.identifier?.rawValue == "general-running-input" }) as? NSPopUpButton,

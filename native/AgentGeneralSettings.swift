@@ -106,7 +106,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         group("通知", rows: [("轮次完成通知", completion), ("权限请求通知", approval), ("等待回答通知", question), ("系统通知", permissionActions)])
         group("托盘与菜单栏", rows: [("显示菜单栏图标", menuBar)])
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; status.setAccessibilityLabel("常规设置保存状态")
-        let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; insertArrangedSubview(footer, at: 0); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentGeneralSettings.changed, object: service)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshPermission), name: NSApplication.didBecomeActiveNotification, object: nil)
         refresh(); refreshPermission()
@@ -134,7 +134,11 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         approval.state = value.approvalNotifications ? .on : .off; question.state = value.questionNotifications ? .on : .off; menuBar.state = value.menuBarIcon ? .on : .off
         for control in [completion, approval, question, menuBar, runningInput, goalTurns, slashMenu, artifactLocation] as [NSControl] { control.isEnabled = service.error == nil }
         if let error = service.error { status.stringValue = error }
-        reload.isHidden = status.stringValue.isEmpty || status.stringValue == "已保存"; status.superview?.isHidden = status.stringValue.isEmpty
+        let hidden = status.stringValue.isEmpty || status.stringValue == "已保存"
+        reload.isHidden = hidden; status.superview?.isHidden = hidden
+        if !hidden, window?.isKeyWindow == true {
+            DispatchQueue.main.async { [weak self] in guard let self, !status.isHiddenOrHasHiddenAncestor else { return }; window?.contentView?.layoutSubtreeIfNeeded(); status.scrollToVisible(status.bounds) }
+        }
     }
     @objc private func change() {
         var value = service.settings; value.completionNotifications = AgentCompletionNotification.allCases[max(0, completion.indexOfSelectedItem)]
