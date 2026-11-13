@@ -169,25 +169,36 @@ import AppKit
     private func showSelection() {
         defer { hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop() }
         let item = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil, changed = item?.id != selected?.id
-        selected = item; detailTitle.stringValue = item?.title ?? ""; metadata.stringValue = ""; body.string = ""
-        for view in [replyCaption, replyField, open, mark, answer, allow, deny, execute] { view.isHidden = true }
-        guard let item else { return }
+        selected = item; detailTitle.stringValue = item?.title ?? ""
+        guard let item else {
+            metadata.stringValue = ""; body.string = ""
+            for view in [replyCaption, replyField, open, mark, answer, allow, deny, execute] { view.isHidden = true }; return
+        }
         let date = DateFormatter.localizedString(from: item.date, dateStyle: .medium, timeStyle: .short)
         metadata.stringValue = item.kind.title + " · " + item.source.title + " · " + item.sender + " · " + date
         let text = item.body + (item.handled ? "\n\n" + outcome(item) : "") + (!item.handled && item.kind == .question && item.mcpInputID == nil ? runtime.questionSkipError(item.taskID).map { "\n\n" + $0 } ?? "" : "")
-        body.string = text; open.isHidden = false
-        if item.mcpInputID != nil { reply.string = ""; replySavedText = ""; replyLoaded = false; updateActions(); return }
-        mark.isHidden = item.callID != nil; mark.title = item.handled ? "标记待处理" : "标记已处理"
-        if item.kind == .question {
+        if body.string != text { body.string = text }; open.isHidden = false
+        let question = item.kind == .question && item.mcpInputID == nil
+        mark.isHidden = item.callID != nil || item.mcpInputID != nil; mark.title = item.handled ? "标记待处理" : "标记已处理"
+        answer.isHidden = !question || item.handled
+        allow.isHidden = item.kind != .approval || item.handled; deny.isHidden = allow.isHidden
+        execute.isHidden = item.kind == .question || item.handled || !item.canExecutePlan
+        if item.mcpInputID != nil { reply.string = ""; replySavedText = ""; replyLoaded = false }
+        if question {
             if changed || !replyLoaded {
                 do { reply.string = try attention.replyDraft(item); replySavedText = reply.string; replyLoaded = true; reply.undoManager?.removeAllActions() }
                 catch { reply.string = ""; replySavedText = ""; replyLoaded = false; operationIssue = "答复草稿无法读取：" + error.localizedDescription }
             }
             replyCaption.isHidden = item.handled && reply.string.isEmpty; replyField.isHidden = replyCaption.isHidden
             replyCaption.stringValue = item.handled ? "未发送答复" : "答复"; reply.isEditable = !item.handled && replyLoaded
-            answer.isHidden = item.handled
-        } else if !item.handled { allow.isHidden = item.kind != .approval; deny.isHidden = allow.isHidden; execute.isHidden = !item.canExecutePlan }
+        } else { replyCaption.isHidden = true; replyField.isHidden = true }
         updateActions()
+    }
+    func checkQuestionInteractionFocus() async -> Bool {
+        guard CommandLine.arguments.contains("--attention-page-check"), isVisible, let item = selected, item.kind == .question, item.mcpInputID == nil, !item.handled, let owner = presentingWindow else { return false }
+        owner.makeFirstResponder(reply); let text = reply.string, range = reply.selectedRange()
+        runtime.questionInteraction(item.taskID); refresh(); try? await Task.sleep(nanoseconds: 100_000_000)
+        return owner.firstResponder === reply && reply.string == text && reply.selectedRange() == range
     }
     private func updateActions() {
         let enabled = attention.settings.enabled && !attention.loading

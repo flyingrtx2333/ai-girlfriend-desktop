@@ -61,6 +61,8 @@ import AppKit
             checks.merge(await control.checkAttentionSaveFailure()) { _, new in new }
             guard let record = tasks.task(parent), let item = AgentAttentionItem.project(record).first(where: { $0.kind == .question && !$0.handled }) else { throw PetError("问题原件丢失") }
             checks["savedReplyReopensFromOriginalProfile"] = try AgentAttention(store: tasks).replyDraft(item) == "保留父任务的公开答复草稿。"
+            control.showAttentionPage(); guard page.checkChooseTask(parent) else { throw PetError("焦点检查需要可见的原问题") }
+            checks["QuestionInteractionRefreshKeepsReplyFocusTextAndSelection"] = await page.checkQuestionInteractionFocus()
             checks["nativeRequestsContainNoInventedAssistantOrCompletedReceipt"] = tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && !($0.modelReceipts ?? []).contains { $0.completed } }
             checks["originalChatDraftSurvivesAllInboxOperations"] = tasks.task(id)?.draft == "原任务尚未发送的草稿。"
             report["success"] = checks.count >= 30 && checks.values.allSatisfy { $0 }
