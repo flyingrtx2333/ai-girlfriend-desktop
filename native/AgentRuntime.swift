@@ -8,6 +8,12 @@ import Foundation
     var onComplete: ((String, String) -> Void)?
     var modelRequestCheck: (() throws -> Void)?
     var taskSettings: () -> AgentGeneralSettings.Settings = { .init() }
+    lazy var promptSuggestions: AgentPromptSuggestions = {
+        let service = AgentPromptSuggestions(store: store, enabled: { [weak self] in self?.taskSettings().promptSuggestions == true })
+        service.requestCheck = { [weak self] in guard let self else { throw CancellationError() }; try self.modelRequestCheck?() }
+        service.onChange = { [weak self] id in self?.onChange?(id) }
+        return service
+    }()
     private(set) var submissionError: String?
     private var questionSkipErrors: [String: String] = [:]
     @MainActor private final class Run {
@@ -46,6 +52,7 @@ import Foundation
     init(store: AgentStore, keychain: PetKeychain, preferences: @escaping () -> PetPreferences) {
         self.store = store; self.keychain = keychain; self.preferences = preferences
         store.onArchive = { [weak self] id in self?.cancel(id) }
+        store.onTaskChange = { [weak self] id in self?.promptSuggestions.sourceChanged(id) }
         store.archiveIsBusy = { [weak self] id in self?.isBusy(id) == true }
         store.agents.onDisable = { [weak self] profileID in
             guard let self else { return }
@@ -231,6 +238,7 @@ import Foundation
         var accepted = false
         defer { if accepted { store.slashMenu.recordAccepted(message) } }
         cancelAnalysis(id)
+        promptSuggestions.cancel(id)
         if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || task.status == .waiting {
             cancel(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); accepted = true; return true
         }
@@ -277,6 +285,7 @@ import Foundation
     }
     func start(_ id: String, continuingGoal: Bool = false) {
         cancelAnalysis(id)
+        promptSuggestions.cancel(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; notifyChange(id); return }
@@ -305,6 +314,7 @@ import Foundation
         guard !visited.contains(id) else { return }
         var next = visited; next.insert(id)
         cancelAnalysis(id)
+        promptSuggestions.cancel(id)
         if let child = store.task(id)?.wikiJob?.knowledgeGeneration?.cardTaskID { cancel(child, visited: next) }
         for child in store.tasks where child.agent?.ownerID == id { cancel(child.id, visited: next) }
         store.desktop.disconnect(id)
@@ -329,7 +339,13 @@ import Foundation
         notifyChange(id)
         if run == nil { drainQueue() }
     }
-    func stopAll() { store.projectKnowledge.cancelPreparations(); for id in Array(active.keys) + queued + Array(analyses.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
+    func stopAll() { promptSuggestions.cancelAll(); store.projectKnowledge.cancelPreparations(); for id in Array(active.keys) + queued + Array(analyses.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
+    func refreshPromptSuggestionsPreference() { if !taskSettings().promptSuggestions { promptSuggestions.cancelAll() } }
+    func retryPromptSuggestions(_ id: String) {
+        guard !isBusy(id), taskSettings().promptSuggestions else { return }
+        do { _ = promptSuggestions.generate(id, preferences: try taskPreferences(id), key: try keychain.read("chat")) }
+        catch { promptSuggestions.fail(id, error) }
+    }
     private func cancelAnalysis(_ id: String) {
         guard let analysis = analyses.removeValue(forKey: id) else { return }
         analysis.task?.cancel(); notifyChange(id)
@@ -349,6 +365,7 @@ import Foundation
         if let model, !AgentTaskModels.validID(model) { throw PetError("请输入有效的模型 ID（少于 200 字符）") }
         var preview = task; preview.modelOverride = model
         _ = try store.models.resolve(preferences(), task: preview)
+        promptSuggestions.cancel(id)
         store.update(id) { $0.modelOverride = model }; notifyChange(id)
     }
     func refreshTaskModels() async throws { try await store.models.refresh(preferences(), key: keychain.read("chat")) }
@@ -958,6 +975,7 @@ import Foundation
         _ = try await hook(.sessionEnd, id: id, trigger: session, fields: ["reason": "completed"], secret: key)
         try Task.checkCancellation(); guard active[id]?.token == run.token, store.task(id)?.queuedCount == 0 else { return false }
         store.update(id) { $0.status = .completed; $0.summary = String(content.prefix(2000)); $0.hookSession = nil }
+        if let preferences = run.preferences { promptSuggestions.generate(id, preferences: preferences, key: key) }
         onComplete?(id, content); return true
     }
     static func description(_ call: AgentToolCall) -> String {

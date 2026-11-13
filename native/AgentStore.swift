@@ -38,6 +38,7 @@ import Foundation
     private(set) var selectionFallbackMode = AgentWorkMode.coding
     private(set) var writeError: String?
     var onArchive: ((String) -> Void)?
+    var onTaskChange: ((String) -> Void)?
     var onChange: (() -> Void)?
     var archiveIsBusy: ((String) -> Bool)?
     var selectedID: String? { didSet {
@@ -235,6 +236,7 @@ import Foundation
         }
         if value.archived && !wasArchived { onArchive?(id) }
         offices.changed(id)
+        onTaskChange?(id)
         let hookChanged = (previous.events.last?.hook != nil || value.events.last?.hook != nil) && (previous.events.last?.id != value.events.last?.id || previous.events.last?.status != value.events.last?.status)
         if coreScopeChanged || previous.status != value.status || previous.pendingFileCapture?.id != value.pendingFileCapture?.id || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
     }

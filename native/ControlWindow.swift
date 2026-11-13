@@ -1448,7 +1448,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms)
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 Slash 命令展示方式 最近使用与分类 全部展开 收起插件内容 问答面板静默跳过 产物文件默认打开位置 在右侧栏查看 新窗口查看 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns Artifact Window " + AgentConversationDisplay.searchTerms + " " + AgentThinkingStatus.searchTerms + " " + AgentPromptSuggestions.searchTerms)
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, thinking: companion.thinkingStatus, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 generalSettingsPanel = panel
                 panel.onPage = { [weak self] title in
@@ -2891,6 +2891,17 @@ final class FormDocumentView: NSView {
             renderAgentMessages(); return true
         } catch { renderAgentMessages(); setStatus(error.localizedDescription, error: true); return false }
     }
+    @discardableResult internal func usePromptSuggestion(_ text: String, taskID: String, source: String) -> Bool {
+        guard agentTaskID == taskID, let task = currentAgentTask, let runtime = companion?.agentRuntime,
+              !runtime.isBusy(taskID), AgentPromptSuggestions.source(task) == source, runtime.promptSuggestions.items(task).contains(text), composer.isEditable else { return false }
+        let suffix = (composer.string.isEmpty || composer.string.hasSuffix("\n") ? "" : "\n") + text
+        composer.insertText(suffix, replacementRange: NSRange(location: (composer.string as NSString).length, length: 0))
+        composer.didChangeText(); composerChanged(); _ = saveAgentDraft(); window?.makeFirstResponder(composer); return true
+    }
+    internal func promptSuggestionsReadback() -> [String: Any] {
+        guard let task = currentAgentTask, let service = companion?.agentRuntime?.promptSuggestions else { return [:] }
+        return ["taskID": task.id, "items": service.items(task), "generating": service.isGenerating(task.id), "error": service.error(task) ?? "", "draft": composer.string, "rowVisible": messageColumn.arrangedSubviews.contains { $0.identifier?.rawValue == "prompt-suggestions-row" }]
+    }
     func renderAgentMessages() {
         guard let tasks = companion?.agentStore else { return }
         if closingSideTask { finishClosingSideTask(); return }
@@ -2978,6 +2989,10 @@ final class FormDocumentView: NSView {
             ids.append("automation-draft:" + draft.id + ":" + AgentFiles.hash((try? JSONEncoder().encode(draft)) ?? Data()) + ":" + AgentFiles.hash((try? JSONEncoder().encode(saved)) ?? Data()) + ":" + String(task.archived) + ":" + String(tasks.automations.isStarted))
         }
         let thinking = companion?.agentRuntime?.isExecuting(task.id) == true && task.status == .running && companion?.agentRuntime?.pendingReview(task.id) == nil && tasks.mcp.userInputs.first(taskID: task.id) == nil
+        let suggestions = companion?.agentRuntime?.promptSuggestions
+        let suggestionItems = suggestions?.items(task) ?? [], suggestionError = suggestions?.error(task)
+        let suggesting = companion?.generalSettings.settings.promptSuggestions == true && suggestions?.isGenerating(task.id) == true
+        if !suggestionItems.isEmpty || suggestionError != nil || suggesting { ids.append("suggestions:" + (AgentPromptSuggestions.source(task) ?? "") + ":" + suggestionItems.joined(separator: "|") + ":" + String(suggesting) + ":" + (suggestionError ?? "")) }
         for message in messages {
             if !message.content.isEmpty || ((message.toolCalls ?? []).isEmpty && task.status == .running && message.id == task.messages.last?.id && !(thinking && message.role == "assistant")) { ids.append(message.id) }
             if message.reasoning?.isEmpty == false { ids.append("reasoning:" + message.id) }
@@ -3022,6 +3037,11 @@ final class FormDocumentView: NSView {
                 }
             }
             if thinking { append(thinkingIndicator, to: messageColumn) }
+            if !suggestionItems.isEmpty || suggestionError != nil || suggesting {
+                let source = AgentPromptSuggestions.source(task) ?? ""
+                let row = AgentPromptSuggestionsRow(items: suggestionItems, generating: suggesting, error: suggestionError, choose: { [weak self] text in _ = self?.usePromptSuggestion(text, taskID: task.id, source: source) }, retry: { [weak self] in self?.companion?.agentRuntime?.retryPromptSuggestions(task.id) })
+                append(row, to: messageColumn)
+            }
             for draft in agentDrafts {
                 let saved = draft.savedAt != nil || profiles.contains { $0.id == draft.profile.id }
                 let issue: String?

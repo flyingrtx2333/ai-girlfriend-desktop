@@ -13,7 +13,7 @@ struct AgentModelReceipt: Codable, Identifiable {
     var completed: Bool
     var messageID: String?
     var purposeTitle: String {
-        switch purpose { case "compaction": return "上下文压缩"; case "recap": return "任务回顾"; case "validation": return "Hook 校验"; default: return "对话" }
+        switch purpose { case "compaction": return "上下文压缩"; case "recap": return "任务回顾"; case "suggestions": return "提示建议"; case "validation": return "Hook 校验"; default: return "对话" }
     }
 }
 
@@ -71,9 +71,9 @@ struct AgentTaskRecap: Codable {
 }
 
 extension AgentStore {
-    func recordUsage(_ id: String, _ receipt: AgentModelReceipt) {
+    func recordUsage(_ id: String, _ receipt: AgentModelReceipt, persist: Bool = true) {
         guard task(id) != nil else { return }
-        update(id) { record in
+        update(id, persist: persist) { record in
             if record.modelReceipts == nil { record.modelReceipts = [] }
             guard record.modelReceipts?.contains(where: { $0.id == receipt.id }) != true else { return }
             record.modelReceipts?.append(receipt)
