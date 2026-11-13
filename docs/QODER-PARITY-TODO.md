@@ -12,7 +12,7 @@
 
 - Agent 执行、任务管理、文件与终端、Git 等本机核心已有实际验收证据，完整功能仍有明显缺口。
 - 主工作台完成过对用户选定 A 设计稿的布局与屏幕对照；设置、扩展、知识等管理界面尚未完成全应用的统一设计和 Qoder 实机对照。
-- 设置已有分组导航、固定搜索和 18 个分类。扩展、MCP、Hooks、智能体、团队、记忆与规则均迁入右侧内容页，插件启用配置和 Hooks 编辑器在页内进入与返回；需要我配置可直接编辑。原配置、权限与冲突保护继续复用。
+- 设置已有分组导航、固定搜索和 19 个分类。扩展、MCP、Hooks、智能体、团队、记忆与规则均迁入右侧内容页，插件启用配置和 Hooks 编辑器在页内进入与返回；需要我配置可直接编辑。原配置、权限与冲突保护继续复用。
 - 外观基础已实现跟随系统、浅色、深色及对话字号；移除 38 处窗口强制浅色，统一主要表面、文字和选中颜色。设置正文已居中并限制最大宽度，标题迁入内容列；Hooks 使用实际事件分组和页内详情。生产候选的正常／窄窗口、浅深色、保存和重开已验；公共短确认也已完成独立候选，系统表格、按钮与其余表单仍需逐页打磨。
 - 侧栏菜单自定义已进入外观页候选：上方、下方及更多三组支持原生拖放和方向键调整，新任务与设置固定。85 项相关原生检查、正常／窄窗口、浅深色、只读保存保护、实际导航高亮和同版重开已验；日常发布待完成。
 - 日常应用已更新到 `bf6a50e` 的同一份生产构建，沿用原签名身份。正常入口启动、设置内容页、Hooks 入口和返回原任务已验，9 份原配置与聊天资料的内容和权限一致。此前“日常未替换”的记录保留为当时状态；其余页面仍需逐项核对日常入口。
@@ -72,6 +72,7 @@
 - [x] **记录侧栏折叠与最小窗口候选**：此前 961、826 及 796 点限制来自侧栏及隐藏工作区标签栏的宽度约束，模型页本身没有撑宽。最新同一优化程序通过 45 项可见设置布局、117 项对话页面及 132 项文件工作区检查，共 294 项；实际从 1200×774 一次到达 780×540、文件审阅分栏切换、隐藏缓存标签、浅深色、设置往返及同版重开已验。所选文件差异、焦点与原草稿保持；19 份验收资料、4 份空白任务资料及 10 份正式资料字节与权限一致，模型请求 0。800 点阶段与原始失败保留在 `evidence/agent/model-width-j6n4v8c2`，最小尺寸诊断及最终候选保留在 `evidence/agent/minimum-window-p4n7s2h6`；日常发布仍待完成。
 - [x] **侧栏菜单自定义候选**：外观页内预览上方／下方／更多三组，支持原生拖放、空分组放入、上下键排序、左右键换组及恢复默认；新任务和设置固定。复用六个原入口及其动作，搜索开关、知识库／Wiki 切换同步更新实际选中高亮。独立 `sidebar.json` 保留旧外观配置格式，拒绝只读、外部冲突、无效配置和符号链接。已提交源码 `12e7b92` 的同一优化程序通过 26 项侧栏与 59 项设置布局检查，共 85 项；实际 1200×774／780×540、浅深色、预览区域双向滚轮、设置搜索、导航、保存失败后修正及同版重开已验。原 19 份资料与两个任务全部字段保持；新增四份验收配置后，重开及正常退出的全部 23 份文件字节与权限一致。模型请求 0；原始失败、被替代构建及 44 次窗口调用／88 份原始记录／28 张原始图片保留在 `evidence/agent/sidebar-menu-k8m3r6v2`，汇总见 `acceptance-index.json`。原生日常程序及 10 份正式资料未变；独立本地验收不需要解锁钥匙串，日常发布待完成。
 - [ ] **补齐其余常规与个性化设置**：模式偏好、任务监控、通知和菜单栏偏好，按真实已实现能力提供控件；侧栏位置与排序已完成上述候选验收。
+- [ ] **模式展示偏好候选（验收中）**：编程与通用分别控制项目选择入口、输入区运行环境和变更审阅，可独立恢复默认；已有任务窗口即时更新，任务权限及已打开的审阅保持。23 项调试检查通过，实际入口显隐、默认恢复及 Git 审阅填写的设置往返已验；优化程序与完整窗口重开仍待验证。初轮按键焦点偏离时曾清空公开验收草稿，已用原撤回操作恢复，原始操作保留；当前两个任务的正文与草稿保持，仅其中一项更新时间和索引随编辑刷新。记录位于 `evidence/agent/mode-presentation-a7k2m9v4`；主题风格及模式绑定仍未完成，日常包未替换。
 - [x] 按 Qoder 实机参考将设置正文限制在居中内容列，标题迁入正文；Hooks 按真实事件显示数量、展开处理器与详情，支持键盘操作及页内保存。800 点实际窗口、浅深色、编辑范围和重开已验，已进入当前日常包。
 - [x] 本轮日常发布：原应用正常退出后更换，沿用原签名并保留可恢复备份；真实启动使用正式资料，原 4 项已完成任务、设置入口与返回已验，本轮模型请求 0。
 - [x] **开发验收与安装保护**：默认 `native:build` 与兼容的 `native:build-check` 均使用无需证书私钥的独立验收构建，正式更新由 `native:release` 显式发起。本轮默认命令在钥匙串锁定时完成全量优化构建、严格验签与 45 项设置布局检查；缺少独立目录的启动在初始化日常资料前以 64 退出。299 份原生输入与上一轮已验版本一致；构建前、中、后的只读查询均为锁定，未更改钥匙串设置。正式构建仍先写独立目录并核对原签名；占用拒绝、旧版备份与安装失败恢复已有 15 项隔离检查。日常程序及签名未替换，10 份正式资料字节及权限一致，模型请求 0；本轮记录保留在 `evidence/agent/default-build-u8r2k5m9`，日常发布仍待完成。
@@ -194,6 +195,7 @@
 - 设置创建及 MCP 规则子页：[AgentSettingsFormPages.swift](../native/AgentSettingsFormPages.swift)；[AgentSettingsFormCheck.swift](../native/AgentSettingsFormCheck.swift) 与 `npm run native:check-settings-pages` 核对实际保存、范围、错误保留、取消和模板草稿。
 - 外观配置、动态表面与相关检查：[AgentAppearance.swift](../native/AgentAppearance.swift)、[AgentAppearanceCheck.swift](../native/AgentAppearanceCheck.swift)。
 - 侧栏菜单配置、原生预览及入口布局：[AgentSidebarLayout.swift](../native/AgentSidebarLayout.swift)；[AgentSidebarLayoutCheck.swift](../native/AgentSidebarLayoutCheck.swift) 和 `BLUEFATFISH_APP=<独立验收包路径> npm run native:check-sidebar` 核对实际入口、双窗口、正常／窄尺寸、键盘与私有配置保护，不调用模型。实际拖放、导航高亮及重开另留窗口记录。
+- 模式展示偏好及设置控件：[AgentModePresentation.swift](../native/AgentModePresentation.swift)；[AgentModePresentationCheck.swift](../native/AgentModePresentationCheck.swift) 和 `BLUEFATFISH_APP=<独立验收包路径> npm run native:check-modes` 核对独立模式、实际开关、双窗口、配置冲突及原数据，不调用模型。
 - 基础设置公共行、管理列表和分段样式：[AgentSettingsPages.swift](../native/AgentSettingsPages.swift)、[ControlWindow.swift](../native/ControlWindow.swift)；原生强调色资源：[Assets.xcassets](../native/Assets.xcassets)，由 [build-native.mjs](../scripts/build-native.mjs) 同时用于独立验收与正式构建。现有 `native:check-settings` 检查布局与存储保持，实际控件颜色、滚动和键盘另留窗口记录。
 - 扩展列表与实际编辑逻辑：[AgentExtensionWindow.swift](../native/AgentExtensionWindow.swift)。
 - MCP 新建菜单、导入审阅和编辑器衔接：[AgentMCPWindow.swift](../native/AgentMCPWindow.swift)、[AgentMCPImportPage.swift](../native/AgentMCPImportPage.swift)；[AgentMCPImportCheck.swift](../native/AgentMCPImportCheck.swift) 经 `npm run native:check-settings-pages` 核对实际配置、工具页进入、保存与取消，不请求模型。

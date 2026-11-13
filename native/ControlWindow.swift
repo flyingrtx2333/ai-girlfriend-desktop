@@ -92,7 +92,7 @@ final class FormDocumentView: NSView {
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("modes", "模式配置", "square.stack.3d.up"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
@@ -737,7 +737,10 @@ final class FormDocumentView: NSView {
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
         emptyProject.title = companion?.agentStore?.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
         composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
-        workbenchBadge.update(task); workbenchInspector.update(task, sideTasks: sides)
+        let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
+        projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
+        executionLocation.isHidden = !presentation.inputEnvironment; gitButton.isHidden = !presentation.changeReview
+        workbenchBadge.update(task); workbenchInspector.update(task, sideTasks: sides, showChanges: presentation.changeReview)
         taskBack.isEnabled = sideTaskTabID == nil && taskNavigationIndex > 0; taskForward.isEnabled = sideTaskTabID == nil && taskNavigationIndex >= 0 && taskNavigationIndex + 1 < taskNavigation.count
         let modelName = (try? companion?.agentRuntime?.taskPreferences(task.id).model) ?? task.modelOverride ?? companion?.store.preferences.model ?? ""
         taskModel.title = modelName; taskModel.setAccessibilityLabel("模型：" + modelName)
@@ -1058,7 +1061,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["appearance", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = !matches.isEmpty && matches.allSatisfy { ["appearance", "modes", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -1236,6 +1239,13 @@ final class FormDocumentView: NSView {
         resetPosition.controlSize = .large; resetPosition.font = .systemFont(ofSize: 13)
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
+            if companion.usesAgent {
+                for mode in AgentWorkMode.allCases {
+                    group("modes", mode.title, "模式配置 编程 通用 项目 文件夹 运行位置 环境 本地 工作树 分支 Git 变更 审阅 Mode Environment")
+                    let panel = AgentModeSettingsView(service: companion.modePresentation, mode: mode)
+                    row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+                }
+            }
             group("appearance", "外观", "外观 主题 深色 浅色 系统 字号 字体 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Sidebar")
             let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil)
             row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
@@ -2646,7 +2656,6 @@ final class FormDocumentView: NSView {
         let rollbackBlocked = task.pendingFileRollback != nil || task.workspace.map { tasks.hasFileRollback(in: $0) } == true
         let locked = running || task.status == .waiting || rollbackBlocked
         executionLocation.title = task.worktreeOrigin == nil ? "本地" : "工作树"
-        executionLocation.isHidden = task.organizationMode == .general
         refreshBranch(task)
         executionLocation.toolTip = task.workspace ?? "终端使用当前任务目录"; executionLocation.isEnabled = task.canChooseEnvironment && !running
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
@@ -2857,7 +2866,7 @@ final class FormDocumentView: NSView {
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
     func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates() }
     private func refreshBranch(_ task: AgentTaskRecord, force: Bool = false) {
-        branchControl.isHidden = task.organizationMode == .general || task.workspace == nil
+        branchControl.isHidden = companion?.modePresentation.settings[task.organizationMode].inputEnvironment != true || task.workspace == nil
         guard !branchControl.isHidden, let tasks = companion?.agentStore, let workspace = task.workspace else { branchTask?.cancel(); branchTask = nil; branchKey = nil; return }
         let key = task.id + "\n" + workspace + "\n" + (task.gitDirectory ?? "")
         guard force || branchKey != key else { return }
@@ -3115,6 +3124,20 @@ extension ControlWindow {
         return value
     }
     func refreshDataImport() { dataImportView?.refresh() }
+    func refreshModePresentation() {
+        guard companion?.usesAgent == true, let task = currentAgentTask else { return }
+        refreshBranch(task); updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    func modePresentationReadback() -> [String: Any] {
+        func changeRows(_ view: NSView) -> Int {
+            (view as? AgentInspectorFileButton).map { $0.section == 3 ? 1 : 0 } ?? view.subviews.reduce(0) { $0 + changeRows($1) }
+        }
+        let mode = currentAgentTask?.organizationMode ?? displayedWorkMode
+        return ["mode": mode.rawValue, "projectEntryHidden": projectButton.isHidden, "emptyProjectHidden": emptyProject.isHidden,
+                "inputEnvironmentHidden": executionLocation.isHidden, "branchHidden": branchControl.isHidden, "gitEntryHidden": gitButton.isHidden,
+                "inspectorChangeRows": changeRows(workbenchInspector), "draft": composer.string,
+                "taskID": agentTaskID as Any? ?? NSNull(), "settingsCategory": settingsCategory]
+    }
     func archiveReadback() -> [String: Any] {
         guard CommandLine.arguments.contains("--task-archive-check") || CommandLine.arguments.contains("--task-records-check"), let store = companion?.agentStore else { return [:] }
         return ["sidebar": taskSidebar.organizationSnapshot(), "archive": archivedTasksView?.checkState() ?? [:], "selected": agentTaskID as Any? ?? NSNull(), "displayed": displayedTask as Any? ?? NSNull(), "composer": composer.string, "sendEnabled": sendButton.isEnabled, "composerEditable": composer.isEditable, "settingsCategory": settingsCategory,

@@ -185,11 +185,11 @@ class AgentWorkbenchButton: NSButton {
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
     }
     @objc private func openSideTask(_ sender: NSMenuItem) { if let id = sender.representedObject as? String { onSideTask?(id) } }
-    func update(_ task: AgentTaskRecord, sideTasks: [AgentTaskRecord] = []) {
+    func update(_ task: AgentTaskRecord, sideTasks: [AgentTaskRecord] = [], showChanges: Bool = true) {
         self.sideTasks = sideTasks
         let hooks = Array(task.events.filter { $0.kind == "hook" }.suffix(8))
         let hookSignature = hooks.map { "\($0.id)|\($0.status)|\($0.duration ?? -1)|\($0.hook?.delivery ?? "")" }.joined()
-        let next = task.id + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + (task.canvases ?? []).map { $0.id + $0.hash }.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature + sideTasks.map { $0.id + sideTitle($0) }.joined()
+        let next = task.id + String(showChanges) + task.plan.map { $0.id + $0.status }.joined() + task.artifacts.joined() + (task.canvases ?? []).map { $0.id + $0.hash }.joined() + task.sources.joined() + task.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined() + "|\(task.events.count)|\(task.inputTokens)|\(task.outputTokens)|" + hookSignature + sideTasks.map { $0.id + sideTitle($0) }.joined()
         guard signature != next else { return }; signature = next
         column.arrangedSubviews.forEach { column.removeArrangedSubview($0); $0.removeFromSuperview() }
         if !sideTasks.isEmpty {
@@ -221,7 +221,7 @@ class AgentWorkbenchButton: NSButton {
             if sources.count == 10 { break }
         }
         if !sources.isEmpty { section("来源", views: sources) }
-        if !task.changes.isEmpty { section("变更", views: task.changes.prefix(6).map { file(URL(fileURLWithPath: $0.path).lastPathComponent, value: $0.id, section: 3, symbol: $0.restoredAt == nil ? "square.and.pencil" : "arrow.uturn.backward") }) }
+        if showChanges && !task.changes.isEmpty { section("变更", views: task.changes.prefix(6).map { file(URL(fileURLWithPath: $0.path).lastPathComponent, value: $0.id, section: 3, symbol: $0.restoredAt == nil ? "square.and.pencil" : "arrow.uturn.backward") }) }
         if !hooks.isEmpty {
             section("Hooks", views: hooks.reversed().map { event in
                 let title = event.statusTitle + " · " + event.title + (event.duration.map { " · " + String(format: "%.1fs", $0) } ?? "")
