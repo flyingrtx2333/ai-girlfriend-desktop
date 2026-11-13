@@ -299,7 +299,12 @@ import UniformTypeIdentifiers
     var items: [AgentExtensionItem] { allEntries.compactMap(\.extensionItem) }
     var onPick: ((AgentSlashEntry) -> Void)?, onLayoutChanged: (() -> Void)?
     var candidateCount: Int { entries.count }
-    var preferredHeight: CGFloat { CGFloat(max(1, min(8, entries.count))) * 30 + (header.isHidden ? 0 : 26) + 30 }
+    func fitHeight(_ maximum: CGFloat) -> CGFloat {
+        let padding: CGFloat = header.isHidden ? 30 : 56
+        let rows = max(1, min(8, entries.count, Int(max(0, (maximum - padding) / 30).rounded(.down))))
+        listHeight.constant = CGFloat(rows) * 30
+        return listHeight.constant + padding
+    }
     var selectedID: String? { entries.indices.contains(table.selectedRow) ? entries[table.selectedRow].id : nil }
     override func loadView() {
         let root = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); root.layer?.cornerRadius = 8; root.layer?.borderWidth = 1

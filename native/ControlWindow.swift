@@ -3184,15 +3184,18 @@ final class FormDocumentView: NSView {
     private func positionExtensionCandidates() {
         guard extensionPickerTask != nil, let window else { return }
         let anchor = window.convertToScreen(composer.convert(composer.visibleRect, to: nil)), bounds = (window.screen?.visibleFrame ?? window.frame).intersection(window.frame)
-        let width = min(560, max(320, anchor.width), bounds.width), height = min(extensionPicker.preferredHeight, bounds.height - 24)
+        let width = min(560, max(320, anchor.width), bounds.width)
+        let height = extensionPicker.fitHeight(min(bounds.height - 24, max(0, bounds.maxY - anchor.maxY - 6)))
         let x = min(bounds.maxX - width, max(bounds.minX, anchor.minX)), y = min(bounds.maxY - height, max(bounds.minY, anchor.maxY + 6))
         extensionPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
         extensionPanel.contentView?.wantsLayer = true; extensionPanel.contentView?.layer?.cornerRadius = 8; extensionPanel.contentView?.layer?.masksToBounds = true
     }
     func slashMenuReadback() -> [String: Any] {
         guard companion?.checkDirectory != nil else { return [:] }
+        let composerFrame = window?.convertToScreen(composer.convert(composer.visibleRect, to: nil)) ?? .zero
         return ["visible": extensionPanel.isVisible, "taskID": extensionPickerTask as Any? ?? NSNull(), "category": extensionPicker.category.rawValue,
                 "selectedID": extensionPicker.selectedID as Any? ?? NSNull(), "geometry": extensionPicker.layoutReadback(),
+                "panelFrame": NSStringFromRect(extensionPanel.frame), "composerFrame": NSStringFromRect(composerFrame), "overlapsComposer": extensionPanel.isVisible && extensionPanel.frame.intersects(composerFrame),
                 "entries": extensionPicker.entries.map { ["id": $0.id, "title": $0.title, "scope": $0.scope] }, "recentIDs": companion?.agentStore?.slashMenu.recentIDs ?? [],
                 "issue": companion?.agentStore?.slashMenu.issue as Any? ?? NSNull(), "composerHasKeyFocus": window?.firstResponder === composer && window?.isKeyWindow == true,
                 "panelIsKey": extensionPanel.isKeyWindow, "panelWidth": extensionPanel.frame.width, "panelHeight": extensionPanel.frame.height]
@@ -3360,6 +3363,8 @@ extension ControlWindow {
             window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); try await open("/", .expanded)
             let intersection = window.frame.intersection(extensionPanel.frame)
             checks["PopupFitsOwnerAndKeepsKeyFocus-" + label] = extensionPanel.isVisible && intersection == extensionPanel.frame && window.firstResponder === composer && !extensionPicker.view.hasAmbiguousLayout
+            let inputFrame = window.convertToScreen(composer.convert(composer.visibleRect, to: nil))
+            checks["PopupStaysAboveComposerWithoutCoveringInput-" + label] = extensionPanel.frame.minY >= inputFrame.maxY + 5.5
         }
         try await open("/no-such-slash-native")
         checks["EmptySearchShowsNoSelectableEntry"] = extensionPanel.isVisible && extensionPicker.candidateCount == 0
