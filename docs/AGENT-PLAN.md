@@ -1880,3 +1880,18 @@ Wiki、整套项目知识和知识卡片的六个导入／恢复入口改用同�
 日常目录在本轮非 CUA 操作时段新增一项有实际模型用量的已完成普通任务，同时观察到组织导航和任务索引变化。旧九文件基线不再全部字节一致，其中七份（含四项原任务、聊天和设置）仍保持内容与权限。新增任务不属于本轮 39 个验收任务编号，也没有验收目录引用，未将其用作验收成功记录或计入本轮额度。保留旧基线及不一致报告，不回滚新数据；随后以只读方式记录包含新任务的 10 份当前文件，最终重开验收期间全部逐字节及权限保持。23 份旧真实模型原件、日常程序及签名保持，旧临时签名启动配置不存在。日常包仍为 `bf6a50e`，未替换；P0／P1／P2 完整目标仍未完成。
 
 证据：`evidence/agent/wiki-navigation-n5b4c2e8/acceptance-index.json`、`final04-native-summary.json`、`final-04/source-staged-proof.json`、`final-04/source-HEAD-proof.json`、`final-04/signature-details.txt`、`final04-repreview-proof.json`、`final04-hidden-page-proof.json`、`final04-version-reload-proof.json`、`final04-narrow-plan-proof.json`、`final04-reopen-ui-proof.json`、`final04-normal-exit-proof.json`、`final04-restart-semantic-proof.json`、`daily-drift-observed.json`、`daily-drift-classification.json`、`daily-current-reopen-proof.json`、`originals-current.json`、`earlier-attempts.json`、`appkit-focus-probe-result.json`、`cua-final04/` 与 `cua-reopen04/`。最终原生报告位于 `wiki-lifecycle-command-s5Jjzx/`、`knowledge-review-command-jFlk1h/`、`knowledge-page-command-mhYYcZ/`，原窗口资料仍为 `wiki-lifecycle-command-7eD1AJ/`。首次缺陷及中间差异见 `cua-baseline-focus/`、`cua-debug01-repreview/`、`cua-debug02-versions/`、`final01-findings.json`、`final03-findings.json`；此前无按键记录的原失败仍在 `wiki-lifecycle-f2s9czr7/cua-final01-jump/`。复验沿用 `native:check-wiki-lifecycle`、`native:check-knowledge-review`、`native:check-knowledge-page`，指定独立验收包，禁止模型请求。
+
+
+## 2026-11-14 思考状态候选：设置子页与实际执行动效
+
+常规设置新增右侧“思考状态”子页，复用设置壳、配色和短确认。六种原生动效、20 组中英文文案、逐条／全部恢复和 64 个 UTF-16 码元的长度限制已实现；动效即时保存，文案明确保存。文案独立存于受保护的 `thinking-status.json`，旧常规配置不用改写；只读、文件版本冲突、未知字段和多窗口编辑冲突保持原文件及未保存内容。页面按需创建，页内切换保留填写，关闭提供保存／放弃／继续编辑。
+
+最终源码 `f7c0053fdc32a4360ac96d86d19563a207a04c9b` 的同一优化候选位于 `evidence/agent/thinking-status-w4m8r2p6/final-08/小鲸思考状态验收.app`，程序 SHA-256 为 `ce659d880d1e0dc582f95c937b1228ad80b3ee036e9851661dafe82fbb6f6fa5`。严格签名检查通过，签名为 ad hoc，没有使用证书私钥或要求解锁登录钥匙串。342 份原生输入、4 份资源输入和 4 份辅助输入与当前源码一致。68 项思考状态专项、135 项常规、36 项对话显示和 59 项设置布局检查全部通过，共 298 项；未重复全量回归。
+
+最终实际窗口及同版重开共 46 次调用、92 份原始记录、11 张原始 JPEG。已核对正常／780×540 窗口、浅深色、六项菜单、Music／Fish 实际绘制、非默认中英文文案、只读失败保留、原字节不变、恢复权限后的原草稿重试保存、关闭时继续编辑及完整标签搜索。外观已恢复跟随系统／14，思考偏好恢复本轮公开样例的 Fish 及原中英文文案，全部字节与保存失败前一致。
+
+运行提示跟随真实执行状态：原生专项在编程和问答无工作区中执行实际本机命令，验证停止接口清理真实进程，以及隐藏、返回和减弱动态效果。实际窗口另运行问答无工作区的公开命令，进程 PID 7733 存活时动效前进；本轮验收的 45 秒上限通过原运行器停止它，进程随后退出，动效消失。此窗口步骤不声称手动点击停止。等待回答的公开任务也未显示执行动效。模型请求、专项及实际窗口被拦截的模型尝试均为 0，没有生成或冒称真实模型答复；原常规检查内的独立守卫预检按原记录保留。减弱动态效果通过检查视图注入，未更改系统开关。
+
+两次正常退出各自保留全部 12 份验收文件。跨重开 4 项完整任务记录和组织配置一致，12 份权限一致；索引仅按最近活动重排行顺序，所选任务和逐条索引内容不变，其余 11 份文件字节一致。原有消息与未发送输入全部保留；本轮实际命令产生的工具记录保留在原问答样例中。日常应用源码仍为 `bf6a50e`，原程序和 10 份正式资料的内容及权限保持，本候选尚未安装到日常入口。
+
+首次优化验收发现列标题的跨行约束早于公共表格挂载，独立 AppKit 对照复现 `NSGenericException` 并验证正确顺序；修复后进一步处理首行压缩和离屏动效未停止。最后两项检查按原生标签对齐区域计算，独立核对确认了标签两侧 2 点边距。此前回调假设、读取失败的误判更正、调试器未获非交互权限、全部失败记录及被替代构建均保留，未计入最终通过数。汇总与原始证据索引见 `evidence/agent/thinking-status-w4m8r2p6/acceptance-index.json`、`final-proof.json`、`confirmed-layout-diagnosis.json` 和 `layout-viewport-verification.json`。
