@@ -106,7 +106,8 @@ import Darwin
             checks["settingsUseExistingRightContentWithFortyFieldsAndNoSheet"] = descendants(window.contentView!).filter { $0.identifier?.rawValue.hasPrefix("thinking-caption-") == true }.count == 40 && window.attachedSheet == nil && control.thinkingStatusReadback()["heading"] as? String == "思考状态"
             guard let scroll = try input(control, "caption-1-zh").enclosingScrollView, let document = scroll.documentView else { throw PetError("缺少文案滚动页") }
             scroll.contentView.scroll(to: NSPoint(x: 0, y: Swift.max(0, document.bounds.height - scroll.contentView.bounds.height))); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
-            checks["scrollingPreviewOutOfSightStopsItsTimer"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == false
+            let previewAtBottom = (control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any] ?? [:]; report["previewAtBottom"] = previewAtBottom
+            checks["scrollingPreviewOutOfSightStopsItsTimer"] = previewAtBottom["animating"] as? Bool == false && previewAtBottom["inViewport"] as? Bool == false
             scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView); await wait(0.25)
             checks["returningToPreviewResumesWithoutLayoutReentry"] = ((control.thinkingStatusReadback()["settings"] as? [String: Any])?["preview"] as? [String: Any])?["animating"] as? Bool == true
             try edit(control, "caption-1-zh", "公开自定义中文…"); try edit(control, "caption-1-en", "Public custom status...")
@@ -134,7 +135,9 @@ import Darwin
                 checks[name + "-fortyFieldsFitWithoutAmbiguousLayout"] = fields.count == 40 && fields.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width >= 40 && $0.convert($0.bounds, to: window.contentView).maxX <= window.contentView!.bounds.maxX }
                 checks[name + "-bilingualHeadersAlignWithInputColumns"] = try ["zh", "en"].allSatisfy { language in
                     let header = try input(control, "column-" + language), field = try input(control, "caption-1-" + language)
-                    guard let box = field.superview?.superview else { return false }
+                    var ancestor = field.superview; while let current = ancestor, !(current is AgentThemeView) { ancestor = current.superview }
+                    guard let box = ancestor else { return false }
+                    report[name + "-column-" + language] = ["header": NSStringFromRect(header.convert(header.bounds, to: window.contentView)), "inputBox": NSStringFromRect(box.convert(box.bounds, to: window.contentView))]
                     return abs(header.convert(header.bounds, to: window.contentView).minX - box.convert(box.bounds, to: window.contentView).minX) < 1 && abs(header.bounds.width - box.bounds.width) < 1
                 }
                 checks[name + "-saveFailureVisible"] = descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains { $0.accessibilityLabel() == "思考状态保存状态" && $0.stringValue.contains("只读") && !$0.isHiddenOrHasHiddenAncestor }

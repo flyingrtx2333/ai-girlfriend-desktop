@@ -136,9 +136,13 @@ import AppKit
         let text = AgentThinkingStatus.text(settings, index: (tickCount / 34) % 20)
         if label.stringValue != text { label.stringValue = text; label.toolTip = text }
     }
+    private var inViewport: Bool {
+        guard let scroll = enclosingScrollView, let document = scroll.documentView else { return !visibleRect.isEmpty }
+        return convert(bounds, to: document).intersects(scroll.documentVisibleRect)
+    }
     @objc func refreshMotion() {
         let reduced = checkReducedMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let visible = window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor && !visibleRect.isEmpty && NSApp.isActive
+        let visible = window?.isVisible == true && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor && inViewport && NSApp.isActive
         if active && visible && !reduced {
             if timer == nil {
                 let value = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
@@ -147,7 +151,7 @@ import AppKit
         } else { timer?.invalidate(); timer = nil; if reduced { glyph.frameNumber = 0 } }
     }
     private func tick() { refreshMotion(); guard timer != nil else { return }; tickCount += 1; glyph.frameNumber = tickCount; updateCaption() }
-    func readback() -> [String: Any] { ["active": active, "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "animating": timer != nil, "frame": glyph.frameNumber, "ticks": tickCount, "loader": settings.loader.rawValue, "caption": label.stringValue, "reducedMotion": checkReducedMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion] }
+    func readback() -> [String: Any] { ["active": active, "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true && inViewport, "inViewport": inViewport, "animating": timer != nil, "frame": glyph.frameNumber, "ticks": tickCount, "loader": settings.loader.rawValue, "caption": label.stringValue, "reducedMotion": checkReducedMotion ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion] }
     func checkMotion(_ reduced: Bool?) {
         guard CommandLine.arguments.contains("--thinking-status-check") else { return }; checkReducedMotion = reduced; refreshMotion()
     }

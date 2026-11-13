@@ -26,7 +26,7 @@ import AppKit
         let number = cell(""), zh = cell("中文"), en = cell("English"), end = NSView()
         number.widthAnchor.constraint(equalToConstant: 22).isActive = true; end.widthAnchor.constraint(equalToConstant: 28).isActive = true
         zh.identifier = NSUserInterfaceItemIdentifier("thinking-column-zh"); en.identifier = NSUserInterfaceItemIdentifier("thinking-column-en")
-        let header = NSStackView(views: [number, zh, en, end]); header.spacing = 10; zh.widthAnchor.constraint(equalTo: en.widthAnchor).isActive = true
+        let header = NSStackView(views: [number, zh, en, end]); header.spacing = 10; header.distribution = .fill; zh.widthAnchor.constraint(equalTo: en.widthAnchor).isActive = true
         table.addArrangedSubview(header); header.widthAnchor.constraint(equalTo: table.widthAnchor).isActive = true
         for index in 0..<20 {
             let number = cell(String(index + 1)); number.widthAnchor.constraint(equalToConstant: 22).isActive = true
@@ -42,7 +42,7 @@ import AppKit
                 fields.append(field); counts.append(count); columns.append(box)
             }
             let reset = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(reset, title: "恢复文案 \(index + 1)", symbol: "arrow.counterclockwise"); reset.tag = index; reset.target = self; reset.action = #selector(restoreRow(_:)); resets.append(reset)
-            let row = NSStackView(views: [number] + columns + [reset]); row.spacing = 10; row.alignment = .centerY
+            let row = NSStackView(views: [number] + columns + [reset]); row.spacing = 10; row.alignment = .centerY; row.distribution = .fill
             columns[0].widthAnchor.constraint(equalTo: columns[1].widthAnchor).isActive = true
             table.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: table.widthAnchor).isActive = true
             if index == 0 { zh.widthAnchor.constraint(equalTo: columns[0].widthAnchor).isActive = true; en.widthAnchor.constraint(equalTo: columns[1].widthAnchor).isActive = true }
