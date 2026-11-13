@@ -22,7 +22,7 @@ private final class AgentTaskTable: NSTableView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func select(_ selected: Bool, animated: Bool = true) { selection.fill = selected ? AgentWorkbenchTheme.selection : .clear; AgentWorkbenchTheme.color(selection.layer, selection.fill, animated: animated) }
     func appearanceSelectionColor() -> [CGFloat]? {
-        guard CommandLine.arguments.contains("--appearance-check"), let cg = selection.layer?.backgroundColor, let color = NSColor(cgColor: cg)?.usingColorSpace(.sRGB) else { return nil }
+        guard ["--appearance-check", "--theme-styles-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let cg = selection.layer?.backgroundColor, let color = NSColor(cgColor: cg)?.usingColorSpace(.sRGB) else { return nil }
         return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
     }
 }
@@ -132,7 +132,7 @@ private final class AgentTaskTable: NSTableView {
         return ["actualUpper": upperNavigation.buttons.map { $0.identifier?.rawValue ?? "" }, "upperHeight": upperNavigation.frame.height, "upperDocumentHeight": upperNavigation.documentView?.frame.height ?? 0, "newTaskFixed": create.window === window && create.superview != nil, "taskListHeight": viewport?.frame.height ?? 0, "searchVisible": searchVisible]
     }
     func appearanceSelectionColor() -> [CGFloat]? {
-        guard CommandLine.arguments.contains("--appearance-check"), let selected,
+        guard ["--appearance-check", "--theme-styles-check", "--manual-ui"].contains(where: CommandLine.arguments.contains), let selected,
               let index = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == selected }; return false }),
               let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? AgentTaskCell else { return nil }
         return cell.appearanceSelectionColor()

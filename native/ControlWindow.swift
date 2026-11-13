@@ -365,7 +365,7 @@ final class FormDocumentView: NSView {
             if let color = sendButton.layer?.backgroundColor.flatMap(NSColor.init(cgColor:))?.usingColorSpace(.sRGB) { send = [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent] }
             if let color = window.backgroundColor.usingColorSpace(.sRGB) { sidebar = [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent] }
         }
-        return ["taskID": agentTaskID as Any? ?? NSNull(), "mode": currentAgentTask?.organizationMode.rawValue ?? displayedWorkMode.rawValue, "style": AgentThemeContext.style(for: window)?.rawValue ?? "unbound", "sendColor": send, "sidebarColor": sidebar, "draft": composer.string, "page": selectedTab]
+        return ["taskID": agentTaskID as Any? ?? NSNull(), "mode": currentAgentTask?.organizationMode.rawValue ?? displayedWorkMode.rawValue, "style": AgentThemeContext.style(for: window)?.rawValue ?? "unbound", "sendColor": send, "sidebarColor": sidebar, "selectedTaskColor": taskSidebar.appearanceSelectionColor() ?? [], "draft": composer.string, "page": selectedTab]
     }
     func checkAppearanceComposerSize() -> CGFloat? {
         guard CommandLine.arguments.contains("--appearance-check") else { return nil }; return composer.font?.pointSize

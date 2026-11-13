@@ -39,7 +39,7 @@ import AppKit
                     let state = control.themeStylesReadback(), other = second.themeStylesReadback(), look = control.window!.effectiveAppearance, dark = theme == .dark
                     let key = theme.rawValue + "-" + style.rawValue
                     captures[key] = ["coding": state, "general": other]
-                    checks[key + "ActualWindowAndSendLayersUseBoundPalette"] = close(state["sidebarColor"] as? [CGFloat] ?? [], rgba(AgentThemePalette.literal(.sidebar, style: style, dark: dark), look: look)) && close(state["sendColor"] as? [CGFloat] ?? [], rgba(AgentThemePalette.literal(.accent, style: style, dark: dark), look: look))
+                    checks[key + "ActualWindowAndSendLayersUseBoundPalette"] = close(state["sidebarColor"] as? [CGFloat] ?? [], rgba(AgentThemePalette.literal(.sidebar, style: style, dark: dark), look: look)) && close(state["sendColor"] as? [CGFloat] ?? [], rgba(AgentThemePalette.literal(.accent, style: style, dark: dark), look: look)) && close(state["selectedTaskColor"] as? [CGFloat] ?? [], rgba(AgentThemePalette.literal(.selection, style: style, dark: dark), look: look))
                     checks[key + "OtherModeKeepsItsPaletteAndBothInheritBrightness"] = (other["sidebarColor"] as? [CGFloat]) == (unchanged["sidebarColor"] as? [CGFloat]) && (other["sendColor"] as? [CGFloat]) == (unchanged["sendColor"] as? [CGFloat]) && [control, second].allSatisfy { $0.window?.appearance == nil && $0.window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == (dark ? .darkAqua : .aqua) }
                     let selected = AgentThemePalette.literal(.selection, style: style, dark: dark), sidebar = AgentThemePalette.literal(.sidebar, style: style, dark: dark)
                     var valuesByRole = ["body": contrast(.labelColor, AgentThemePalette.literal(.surface, style: style, dark: dark), look: look), "sidebarSecondary": contrast(AgentThemePalette.literal(.secondaryText, style: style, dark: dark), sidebar, look: look), "selectedSecondary": contrast(AgentThemePalette.literal(.secondaryText, style: style, dark: dark), selected, look: look), "sendAction": contrast(AgentThemePalette.literal(.accentText, style: style, dark: dark), AgentThemePalette.literal(.accent, style: style, dark: dark), look: look)]
@@ -47,6 +47,7 @@ import AppKit
                     ratios[key] = valuesByRole; checks[key + "TextAndActionContrast"] = valuesByRole.values.allSatisfy { $0 >= 4.5 }
                 }
             }
+            let brightnessBeforeStyleActions = try Data(contentsOf: store.directory.appendingPathComponent("appearance.json"))
             var values = service.settings; values.coding = .mint; values.general = .parchment; try service.save(values)
             second.showAgentTask(coding); checks["switchingTaskUsesItsModeStyleAndDraft"] = second.themeStylesReadback()["style"] as? String == "mint" && second.themeStylesReadback()["draft"] as? String == "保留编程主题验收草稿"
             second.showAgentTask(general)
@@ -54,6 +55,7 @@ import AppKit
             func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
             let previews = descendants(content).compactMap { $0 as? AgentThemePreviewButton }
             checks["appearanceHasFourAccessiblePreviewControls"] = previews.count == 4 && previews.allSatisfy { $0.accessibilityLabel() == $0.style.title + "主题" }
+            checks["previewCoordinatesMatchWindowAndGradientDirection"] = previews.count == 4 && previews.allSatisfy { !$0.isFlipped }
             for size in [NSSize(width: 1200, height: 774), NSSize(width: 780, height: 540)] {
                 control.window?.setFrame(NSRect(origin: .zero, size: size), display: false); content.layoutSubtreeIfNeeded()
                 checks["previewGalleryFits-\(Int(size.width))"] = previews.count == 4 && previews.allSatisfy { let frame = $0.convert($0.bounds, to: content); return frame.minX >= 178 && frame.maxX <= size.width && frame.width >= 65 && frame.height == 112 }
@@ -99,6 +101,7 @@ import AppKit
             let brightnessBytes = try Data(contentsOf: store.directory.appendingPathComponent(oldFiles[0]))
             let brightnessKeys = try JSONSerialization.jsonObject(with: brightnessBytes) as! [String: Any]
             checks["legacyAppearanceSchemaRemainsUnchanged"] = Set(brightnessKeys.keys) == ["version", "theme", "textSize"]
+            checks["styleActionsKeepBrightnessFileByteIdentical"] = brightnessBytes == brightnessBeforeStyleActions
             checks["allOriginalTasksAndModelPreferencesPreserved"] = try [coding, general].map { try encoder.encode(tasks.task($0)!) } == originals && encoder.encode(store.preferences) == preferences
             report["windowColors"] = captures; report["contrastRatios"] = ratios
             report["success"] = checks.count >= 45 && checks.values.allSatisfy { $0 }

@@ -8,6 +8,7 @@ import AppKit
         setAccessibilityLabel(style.title + "主题"); identifier = NSUserInterfaceItemIdentifier("theme-preview-" + style.rawValue)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override var isFlipped: Bool { false }
     override func draw(_ dirtyRect: NSRect) {
         let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let selected = state == .on, accent = AgentThemePalette.literal(.accent, style: style, dark: dark)
