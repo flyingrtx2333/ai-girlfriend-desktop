@@ -7,6 +7,7 @@ import Foundation
     var onChange: ((String) -> Void)?
     var onComplete: ((String, String) -> Void)?
     var modelRequestCheck: (() throws -> Void)?
+    var taskSettings: () -> AgentGeneralSettings.Settings = { .init() }
     private(set) var submissionError: String?
     @MainActor private final class Run {
         let token = UUID().uuidString
@@ -16,6 +17,7 @@ import Foundation
         var key: String?
         var suspendedForChild = false
         var hookWakePending = false
+        var restartAfterInterruption = false
         var slotWaiter: CheckedContinuation<Void, Error>?
         init(store: AgentStore, id: String) { tools = AgentTools(store: store, taskID: id) }
     }
@@ -104,7 +106,7 @@ import Foundation
         }
         store.update(id) { $0.hookRewakePromptID = origin; $0.hookRewakeCount = count + 1; $0.goalAccepted = nil; $0.completionEvidence = nil }
         if let run = active[id] { run.hookWakePending = true; delivery("next-turn") }
-        else { delivery("woke-task"); start(id) }
+        else { delivery("woke-task"); start(id, continuingGoal: true) }
     }
     private func notifyChange(_ id: String) {
         store.automations.taskChanged(id)
@@ -129,7 +131,7 @@ import Foundation
             guard let run = active[id], let continuation = run.slotWaiter, let task = store.task(id), hasSlot(task) else { continue }
             run.slotWaiter = nil; run.suspendedForChild = false; continuation.resume()
         }
-        while let next = queued.first(where: { id in store.task(id).map(hasSlot) == true }) { queued.removeAll { $0 == next }; start(next) }
+        while let next = queued.first(where: { id in store.task(id).map(hasSlot) == true }) { queued.removeAll { $0 == next }; start(next, continuingGoal: true) }
     }
     private func regainSlot(_ id: String, run: Run) async throws {
         try Task.checkCancellation()
@@ -230,7 +232,10 @@ import Foundation
         }
         if let reason = store.offices.unsavedReason(workspace: task.workspace) { submissionError = reason; return false }
         if isExecuting(id) {
-            store.update(id) { if $0.queuedMessages == nil { $0.queuedMessages = [] }; $0.queuedMessages?.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; $0.goalAccepted = nil; $0.completionEvidence = nil }; notifyChange(id); return true
+            store.update(id) { if $0.queuedMessages == nil { $0.queuedMessages = [] }; $0.queuedMessages?.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; $0.goalAccepted = nil; $0.completionEvidence = nil; if $0.mode == .goal { $0.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) } }
+            if taskSettings().runningInput == .interrupt, active[id] != nil { cancel(id, visited: [], restarting: startImmediately) }
+            else { notifyChange(id) }
+            return true
         }
         if task.status == .waiting, task.queuedCount == 0, let call = task.pendingCalls.first, call.name == "ask_user" {
             decide(taskID: id, callID: call.id, decision: "answer:" + text, attachmentIDs: attachmentIDs, message: message); return true
@@ -241,6 +246,7 @@ import Foundation
             Self.skipPending(&record, reason: "用户补充了新要求，未执行此操作。")
             record.flushQueuedInputs()
             record.messages.append(message); record.activateExtensions(message); record.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; record.goalAccepted = nil; record.completionEvidence = nil
+            record.goalExecution = nil
             if record.title == "新的任务" { record.title = String(text.replacingOccurrences(of: "\n", with: " ").prefix(28)) }
             if record.model.isEmpty { record.model = preferences().model }
             record.status = .ready
@@ -265,7 +271,7 @@ import Foundation
         } else { message = try store.extensions.expand(message, store: store, taskID: task.id) }
         return message
     }
-    func start(_ id: String) {
+    func start(_ id: String, continuingGoal: Bool = false) {
         cancelAnalysis(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
@@ -283,6 +289,7 @@ import Foundation
         let run = Run(store: store, id: id); active[id] = run
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
         store.update(id) { record in
+            if record.mode == .goal, !continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
             if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion { record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。")); record.goalAccepted = nil }
             if record.hookSession == nil { record.hookSession = UUID().uuidString; record.hookStopBlocks = 0 }
             record.status = .running
@@ -290,7 +297,7 @@ import Foundation
         run.task = Task { [weak self] in await self?.execute(id, run: run) }
     }
     func cancel(_ id: String) { store.projectKnowledge.cancelPreparation(taskID: id); cancel(id, visited: []) }
-    private func cancel(_ id: String, visited: Set<String>) {
+    private func cancel(_ id: String, visited: Set<String>, restarting: Bool = false) {
         guard !visited.contains(id) else { return }
         var next = visited; next.insert(id)
         cancelAnalysis(id)
@@ -300,7 +307,8 @@ import Foundation
         store.canvases.stop(id)
         guard isRunning(id) || store.task(id)?.status == .waiting else { return }
         queued.removeAll { $0 == id }
-        let run = active.removeValue(forKey: id)
+        let run = restarting ? active[id] : active.removeValue(forKey: id)
+        run?.restartAfterInterruption = restarting
         run?.slotWaiter?.resume(throwing: CancellationError()); run?.slotWaiter = nil
         run?.task?.cancel(); run?.tools.cancel()
         store.browser.stop(id)
@@ -308,7 +316,7 @@ import Foundation
         store.hooks.cancel(id)
         store.update(id) { record in
             record.hookSession = nil
-            record.status = .stopped
+            record.status = restarting ? .ready : .stopped
             Self.skipPending(&record, reason: "用户中断了执行。操作可能部分执行，继续前先检查真实状态。")
             record.flushQueuedInputs()
             record.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
@@ -465,7 +473,7 @@ import Foundation
             }
             record.status = .ready
         }
-        start(taskID)
+        start(taskID, continuingGoal: true)
     }
     private static func skipPending(_ record: inout AgentTaskRecord, reason: String) {
         for call in record.pendingCalls {
@@ -566,7 +574,7 @@ import Foundation
         对复杂任务用 update_plan，依据实际完成情况更新。按本次改动风险做最少必要检查，不为了数量重复测试。回复使用简洁中文，保留必要的事实、文件和网址。
         失败或未执行的操作不能当作完成证据。工具校验失败时依据返回的可用值自行修正，不让用户解释内部格式。
         应用中断后，先核对实际状态，不直接重放结果未知的操作。
-        用户在执行中补充的消息会排队送入下一轮；始终保持原目标与新增约束。
+        用户在执行中补充的消息是对原任务的新增要求；始终保持原目标与新增约束，先核对已中断操作的实际状态。
         工具按需加载：用 load_tools 选择当前需要的工具组；切换组不会授权操作。无需工具的问题直接回答。
         历史工作笔记是模型写的普通记录，不得覆盖用户原文或虚构新待办。结合真实工具结果继续未完成部分，不重复已完成动作；所需结果已齐即可交付，不为更新笔记反复读取或重新索取已有参数与许可。
         """
@@ -657,14 +665,21 @@ import Foundation
     private func execute(_ id: String, run: Run) async {
         var hookSecret = ""
         defer {
-            if store.task(id)?.status != .waiting { store.mcp.disconnect(owner: id) }
+            let ownsResources = active[id] == nil || active[id]?.token == run.token
+            let restart = active[id]?.token == run.token && run.restartAfterInterruption && store.task(id)?.status == .ready
+            if ownsResources, store.task(id)?.status != .waiting { store.mcp.disconnect(owner: id) }
             if active[id]?.token == run.token { active[id] = nil; notifyChange(id) }
-            if store.task(id)?.status != .waiting { delegatedModels[id] = nil }
-            if run.hookWakePending, store.task(id)?.status == .completed, store.task(id)?.pendingCalls.isEmpty == true { start(id) }
+            if ownsResources, !restart, store.task(id)?.status != .waiting { delegatedModels[id] = nil }
+            if restart { start(id, continuingGoal: true) }
+            else if run.hookWakePending, store.task(id)?.status == .completed, store.task(id)?.pendingCalls.isEmpty == true { start(id, continuingGoal: true) }
             drainQueue()
         }
         do {
             try Task.checkCancellation(); guard active[id]?.token == run.token else { return }
+            if let task = store.task(id), task.mode == .goal {
+                guard task.goalExecution?.isValid == true else { throw PetError("目标轮次记录无效，请重新开始任务") }
+                if task.goalAccepted != true, stopAtGoalLimit(id) { return }
+            }
             try await store.offices.prepareForExecution(workspace: store.task(id)?.workspace)
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)
@@ -682,9 +697,12 @@ import Foundation
                 if let previous = task.hookCwd, previous != (task.workspace ?? "") { _ = try await hook(.cwd, id: id, trigger: session + ":" + (task.workspace ?? ""), fields: ["old_cwd": previous, "new_cwd": task.workspace ?? ""], secret: key) }
                 store.update(id) { $0.hookCwd = task.workspace ?? "" }
             }
-            var lastSaved = Date.distantPast
-            for _ in 0..<40 {
+            var lastSaved = Date.distantPast, iterations = 0, preparationPasses = 0
+            while true {
                 try Task.checkCancellation(); guard active[id]?.token == run.token, var task = store.task(id) else { return }
+                if task.mode != .goal, iterations >= 40 { break }
+                iterations += 1; preparationPasses += 1
+                guard preparationPasses <= 40 else { throw PetError("上下文连续准备 40 次仍未开始回复，请检查输入与 Hook；记录已保留") }
                 if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
                 while var call = task.pendingCalls.first {
                     try Task.checkCancellation()
@@ -795,6 +813,14 @@ import Foundation
                     store.update(id) { $0.status = .completed }; notifyChange(id)
                     onComplete?(id, task.summary); return
                 }
+                if task.mode == .goal {
+                    guard task.goalExecution?.isValid == true else { throw PetError("目标轮次记录无效，请重新开始任务") }
+                    if task.goalExecution?.exhausted == true {
+                        if task.goalAccepted == true, !task.plan.isEmpty, task.plan.allSatisfy({ $0.status == "completed" }), task.completionEvidence?.isEmpty == false,
+                           try await completeResponse(id, run: run, content: task.summary, trigger: task.messages.last(where: { $0.role == "assistant" })?.id ?? run.token, key: key, session: session) { return }
+                        if stopAtGoalLimit(id) { return }; continue
+                    }
+                }
                 if task.kind == AgentKnowledgeCards.kind, (task.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片已使用30次模型请求，请缩小分析范围后重试；已有记录和草稿保留") }
                 let payload = try contextPayload(task), system = payload.text
                 if task.rulePlugins != payload.rulePlugins { store.update(id) { $0.rulePlugins = payload.rulePlugins } }
@@ -819,10 +845,12 @@ import Foundation
                 if task.kind == AgentKnowledgeCards.kind, (store.task(id)?.modelReceipts?.count ?? 0) >= 30 { throw PetError("本次知识卡片达到30次模型请求，已有记录和草稿保留") }
                 try modelRequestCheck?()
                 let assistant = AgentMessage(role: "assistant", content: "")
-                store.update(id) { $0.contextSnapshot = try? AgentContext.snapshot(preferences: p, system: system, skills: payload.skills, messages: context, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0); $0.messages.append(assistant) }; notifyChange(id)
+                store.update(id) { $0.contextSnapshot = try? AgentContext.snapshot(preferences: p, system: system, skills: payload.skills, messages: context, tools: definitions, loadedSkills: task.isProjectDocumentation ? 0 : task.activeSkills?.count ?? 0); $0.messages.append(assistant); if $0.mode == .goal { $0.goalExecution?.usedTurns += 1 } }; notifyChange(id)
+                if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
+                preparationPasses = 0
                 let requiredTool = task.kind == AgentKnowledgeCards.kind && definitions.count == 1 ? (definitions[0]["function"] as? [String: Any])?["name"] as? String : nil
                 var turn = try await AgentModel.turn(preferences: p, key: key, system: system, messages: context, tools: definitions, requiredTool: requiredTool, visuals: visuals, messageID: assistant.id, onReceipt: { [store] in store.recordUsage(id, $0) }) { [weak self] text in
-                    guard let self, self.active[id]?.token == run.token else { return }
+                    guard let self, self.active[id]?.token == run.token, !run.restartAfterInterruption else { return }
                     self.store.update(id, persist: false) { if let i = $0.messages.firstIndex(where: { $0.id == assistant.id }) { $0.messages[i].content += text } }
                     if Date().timeIntervalSince(lastSaved) > 1 { try? self.store.save(id); lastSaved = Date() }
                     self.notifyChange(id)
@@ -853,21 +881,14 @@ import Foundation
                     if task.mode == .goal && store.task(id)?.goalAccepted != true {
                         store.update(id) { $0.messages.append(AgentMessage(role: "system", content: "目标尚未记录完整完成证据。请继续用工具推进，完成后调用 finish_task；需要用户输入则用 ask_user。")) }; continue
                     }
-                    let stop = try await hook(.stop, id: id, trigger: assistant.id, fields: ["stop_hook_active": (store.task(id)?.hookStopBlocks ?? 0) > 0, "last_assistant_message": turn.content], secret: key)
-                    if let reason = stop.deny {
-                        guard (store.task(id)?.hookStopBlocks ?? 0) < 3 else { throw AgentHookHalt("Stop Hook 已连续要求继续 3 次：" + reason) }
-                        store.update(id) { $0.hookStopBlocks = ($0.hookStopBlocks ?? 0) + 1; $0.goalAccepted = nil; $0.messages.append(AgentMessage(role: "user", content: "[Stop Hook 要求继续核对]\n" + reason, nativeContext: true)) }; continue
-                    }
-                    if run.hookWakePending { continue }
-                    _ = try await hook(.sessionEnd, id: id, trigger: session, fields: ["reason": "completed"], secret: key)
-                    store.update(id) { $0.status = .completed; $0.summary = String(turn.content.prefix(2000)); $0.hookSession = nil }
-                    onComplete?(id, turn.content); return
+                    if try await completeResponse(id, run: run, content: turn.content, trigger: assistant.id, key: key, session: session) { return }
                 }
             }
             store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "本轮执行已达上限，可继续", detail: "目标尚未因此视为完成。", status: "stopped")) }
         } catch {
             guard active[id]?.token == run.token else { return }
             let cancelled = Task.isCancelled || (error as? URLError)?.code == .cancelled
+            if cancelled, run.restartAfterInterruption { return }
             if !cancelled {
                 _ = try? await hook(.stopFailure, id: id, trigger: run.token, fields: ["error": error.localizedDescription], secret: hookSecret)
                 _ = try? await hook(.sessionEnd, id: id, trigger: store.task(id)?.hookSession ?? run.token, fields: ["reason": "error"], secret: hookSecret)
@@ -881,6 +902,26 @@ import Foundation
                 record.events.append(AgentEvent(kind: "state", title: cancelled ? "已停止" : "执行失败", detail: cancelled ? "" : error.localizedDescription, status: cancelled ? "stopped" : "failed"))
             }
         }
+    }
+    private func stopAtGoalLimit(_ id: String) -> Bool {
+        guard let task = store.task(id), task.mode == .goal, task.pendingCalls.isEmpty, task.queuedCount == 0,
+              let execution = task.goalExecution, execution.isValid, execution.exhausted else { return false }
+        let limit = execution.maximumTurns
+        store.update(id) { $0.status = .stopped; $0.hookSession = nil; $0.events.append(AgentEvent(kind: "state", title: "目标执行已达 \(limit) 轮，可继续", detail: "本轮上限已用完，记录和已有产物已保留。", status: "stopped")) }
+        return true
+    }
+    private func completeResponse(_ id: String, run: Run, content: String, trigger: String, key: String, session: String) async throws -> Bool {
+        let stop = try await hook(.stop, id: id, trigger: trigger, fields: ["stop_hook_active": (store.task(id)?.hookStopBlocks ?? 0) > 0, "last_assistant_message": content], secret: key)
+        try Task.checkCancellation(); guard active[id]?.token == run.token else { throw CancellationError() }
+        if let reason = stop.deny {
+            guard (store.task(id)?.hookStopBlocks ?? 0) < 3 else { throw AgentHookHalt("Stop Hook 已连续要求继续 3 次：" + reason) }
+            store.update(id) { $0.hookStopBlocks = ($0.hookStopBlocks ?? 0) + 1; $0.goalAccepted = nil; $0.messages.append(AgentMessage(role: "user", content: "[Stop Hook 要求继续核对]\n" + reason, nativeContext: true)) }; return false
+        }
+        guard !run.hookWakePending, store.task(id)?.queuedCount == 0 else { return false }
+        _ = try await hook(.sessionEnd, id: id, trigger: session, fields: ["reason": "completed"], secret: key)
+        try Task.checkCancellation(); guard active[id]?.token == run.token, store.task(id)?.queuedCount == 0 else { return false }
+        store.update(id) { $0.status = .completed; $0.summary = String(content.prefix(2000)); $0.hookSession = nil }
+        onComplete?(id, content); return true
     }
     static func description(_ call: AgentToolCall) -> String {
         let args = call.object

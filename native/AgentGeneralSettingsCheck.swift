@@ -32,7 +32,14 @@ import UserNotifications
             service.reload(); service.apply(); checks["ExplicitReloadAcceptsExternalPreference"] = service.settings == external
             try service.save(.init())
             let baseline = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
-            for (name, key, bad) in [("version", "version", 9 as Any), ("policy", "completionNotifications", "sometimes" as Any), ("boolean", "menuBarIcon", "yes" as Any), ("unknown", "extra", true as Any)] {
+            let legacyDirectory = output.appendingPathComponent("legacy-general"); try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: false)
+            var legacy = baseline; legacy.removeValue(forKey: "runningInput"); legacy.removeValue(forKey: "goalMaximumTurns")
+            let legacyBytes = try JSONSerialization.data(withJSONObject: legacy), legacyFile = legacyDirectory.appendingPathComponent("general.json"); try legacyBytes.write(to: legacyFile)
+            let old = AgentGeneralSettings(directory: legacyDirectory); try old.save(old.settings)
+            checks["LegacyFiveKeyConfigurationLoadsWithoutRewriting"] = try old.error == nil && old.settings.runningInput == .queue && old.settings.goalMaximumTurns == 20 && Data(contentsOf: legacyFile) == legacyBytes
+            var upgraded = old.settings; upgraded.runningInput = .interrupt; try old.save(upgraded)
+            checks["ExplicitLegacyEditKeepsExistingNotificationPreferences"] = AgentGeneralSettings(directory: legacyDirectory).settings == upgraded && upgraded.completionNotifications == .unfocused && upgraded.approvalNotifications && upgraded.questionNotifications && upgraded.menuBarIcon
+            for (name, key, bad) in [("version", "version", 9 as Any), ("policy", "completionNotifications", "sometimes" as Any), ("boolean", "menuBarIcon", "yes" as Any), ("unknown", "extra", true as Any), ("input", "runningInput", "later" as Any), ("turns", "goalMaximumTurns", 4 as Any), ("null-input", "runningInput", NSNull() as Any), ("null-turns", "goalMaximumTurns", NSNull() as Any)] {
                 let directory = output.appendingPathComponent("invalid-" + name); try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
                 var raw = baseline; raw[key] = bad; let bytes = try JSONSerialization.data(withJSONObject: raw), target = directory.appendingPathComponent("general.json"); try bytes.write(to: target)
                 let invalid = AgentGeneralSettings(directory: directory); refused = false; do { try invalid.save(.init()) } catch { refused = true }
@@ -66,10 +73,16 @@ import UserNotifications
             checks["FailedVisibleSaveRollsBackControlsInBothWindows"] = try question.state == .off && switchValue("general-question-notifications", second).state == .off && Data(contentsOf: file) == saved
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path); question.state = .on; _ = question.sendAction(question.action, to: question.target)
             checks["VisibleRetrySavesPreference"] = service.settings.questionNotifications && AgentGeneralSettings(directory: store.directory).settings == service.settings
+            guard let input = try controls(control).first(where: { $0.identifier?.rawValue == "general-running-input" }) as? NSPopUpButton,
+                  let turns = try controls(control).first(where: { $0.identifier?.rawValue == "general-goal-turns" }) as? NSPopUpButton else { throw PetError("缺少任务与工具设置") }
+            input.selectItem(at: 1); _ = input.sendAction(input.action, to: input.target)
+            turns.selectItem(at: 0); _ = turns.sendAction(turns.action, to: turns.target)
+            checks["TaskPreferencesSaveAndReachActualRuntime"] = service.settings.runningInput == .interrupt && service.settings.goalMaximumTurns == 5 && runtime.taskSettings() == service.settings
+            checks["TaskPreferencePopupsSyncAcrossExistingWindows"] = try (controls(second).first(where: { $0.identifier?.rawValue == "general-running-input" }) as? NSPopUpButton)?.selectedItem?.title == "插话" && (controls(second).first(where: { $0.identifier?.rawValue == "general-goal-turns" }) as? NSPopUpButton)?.selectedItem?.title == "5"
             for (label, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
                 let views = try controls(control)
-                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 4 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
+                checks[label + "NativeControlsFitAndHaveNoAmbiguousLayout"] = views.count == 6 && views.allSatisfy { !$0.hasAmbiguousLayout && $0.bounds.width > 20 } && window.contentView?.bounds.size == size
                 checks[label + "GeneralPageHasNoDuplicateSave"] = !descendants(window.contentView!).contains { ($0 as? NSButton)?.title == "保存" && !$0.isHiddenOrHasHiddenAncestor }
             }
             window.setContentSize(NSSize(width: 1200, height: 774)); control.show(tab: "chat"); window.makeKeyAndOrderFront(nil); await wait(0.05)
@@ -129,7 +142,8 @@ import UserNotifications
             checks["IndependentCheckCannotDeliverOSNotification"] = refused
             checks["NoModelMessagesOrReceiptsWereSaved"] = tasks.tasks.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["capturedNativeRequests"] = captured.map { ["id": $0.identifier, "body": $0.content.body, "taskID": $0.content.userInfo["task_id"] as? String ?? ""] }
-            report["boundary"] = "Native metadata copies exercise notification policy and request construction. No model answer or delivered OS notification is claimed."
+            for (key, value) in try await checkTaskExecutionPreferences(output) { checks["Execution-" + key] = value }
+            report["boundary"] = "Native metadata copies exercise notification policy and request construction. Execution preferences additionally exercise actual local command cancellation and persisted goal budgets in a separate isolated profile. No model answer, provider request or delivered OS notification is claimed."
             report["success"] = checks.count >= 35 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()

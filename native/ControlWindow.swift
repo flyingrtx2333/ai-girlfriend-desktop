@@ -1433,7 +1433,7 @@ final class FormDocumentView: NSView {
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {
-                group("general", "常规", "常规 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar")
+                group("general", "常规", "常规 任务与工具 运行中发送方式 排队 插话 目标驱动执行 最大轮次 目标驱动执行最大轮次 通知 轮次完成通知 权限请求通知 等待回答通知 系统通知 显示菜单栏图标 托盘 测试通知 General Notification Menu Bar Queue Interrupt Goal Turns")
                 let panel = AgentGeneralSettingsView(service: companion.generalSettings, notifications: companion.automationNotifications, taskID: { [weak self] in self?.agentTaskID })
                 row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }

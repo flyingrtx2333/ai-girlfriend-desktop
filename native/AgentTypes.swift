@@ -130,6 +130,13 @@ struct AgentTaskResult: Codable, Identifiable {
     }
 }
 struct AgentInheritedLimits: Codable { var readOnly: Bool; var network: Bool; var permission: AgentPermissionMode }
+struct AgentGoalExecution: Codable {
+    static let turnChoices = [5, 10, 15, 20, 50, 100]
+    var maximumTurns: Int
+    var usedTurns = 0
+    var isValid: Bool { Self.turnChoices.contains(maximumTurns) && (0...maximumTurns).contains(usedTurns) }
+    var exhausted: Bool { usedTurns >= maximumTurns }
+}
 struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
     var title: String
@@ -173,6 +180,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var queuedInputs: [String]?
     var queuedMessages: [AgentMessage]?
     var goalAccepted: Bool?
+    var goalExecution: AgentGoalExecution?
     var completionEvidence: [String]?
     var contextSummary: String?
     var contextThroughID: String?
