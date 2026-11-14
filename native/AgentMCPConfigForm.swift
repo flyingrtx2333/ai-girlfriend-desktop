@@ -10,11 +10,11 @@ import AppKit
     private let original: [String: Any]
     var onChange: (() -> Void)?
     var firstInput: NSView { name.isEnabled ? name : type == "stdio" ? command : address }
-    var type: String { transport.indexOfSelectedItem == 0 ? "stdio" : "http" }
+    var type: String { ["stdio", "http", "sse"][max(0, transport.indexOfSelectedItem)] }
 
     init(document: String, pluginLocked: Bool) throws {
         guard document.utf8.count <= 64_000, let value = try JSONSerialization.jsonObject(with: Data(document.utf8)) as? [String: Any],
-              let title = value["name"] as? String, let type = value["type"] as? String, ["stdio", "http"].contains(type) else { throw PetError("请先载入单个连接器的有效 JSON 配置") }
+              let title = value["name"] as? String, let type = value["type"] as? String, ["stdio", "http", "sse"].contains(type) else { throw PetError("请先载入单个连接器的有效 JSON 配置") }
         let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("请先在 JSON 中处理未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard value["args"] == nil || value["args"] is [String], value["env"] == nil || value["env"] is [String: String], value["headers"] == nil || value["headers"] is [String: String],
@@ -23,7 +23,7 @@ import AppKit
         original = value
         super.init()
         name.stringValue = title; name.isEnabled = !pluginLocked
-        transport.addItems(withTitles: ["STDIO", "HTTP"]); transport.selectItem(at: type == "stdio" ? 0 : 1); transport.isEnabled = !pluginLocked
+        transport.addItems(withTitles: ["STDIO", "HTTP", "SSE"]); transport.selectItem(at: ["stdio", "http", "sse"].firstIndex(of: type)!); transport.isEnabled = !pluginLocked
         command.stringValue = value["command"] as? String ?? ""; directory.stringValue = value["cwd"] as? String ?? ""
         address.stringValue = value["url"] as? String ?? ""; bearer.stringValue = value["bearerToken"] as? String ?? ""
         if let seconds = value["timeoutSeconds"] as? Double { timeout.stringValue = NSNumber(value: seconds * 1000).stringValue }

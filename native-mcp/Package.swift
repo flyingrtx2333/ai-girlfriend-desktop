@@ -5,6 +5,7 @@ let package = Package(
     name: "BlueFatFishMCP",
     platforms: [.macOS(.v14)],
     products: [.library(name: "BlueFatFishMCP", type: .dynamic, targets: ["BlueFatFishMCP"])],
-    dependencies: [.package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.1"), .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0")],
-    targets: [.target(name: "BlueFatFishMCP", dependencies: [.product(name: "MCP", package: "swift-sdk"), .product(name: "Logging", package: "swift-log")])]
+    dependencies: [.package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.1"), .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"), .package(url: "https://github.com/mattt/eventsource.git", exact: "1.6.0")],
+    targets: [.target(name: "BlueFatFishMCP", dependencies: [.product(name: "MCP", package: "swift-sdk"), .product(name: "Logging", package: "swift-log"), .product(name: "EventSource", package: "eventsource")]),
+              .testTarget(name: "BlueFatFishMCPTests", dependencies: ["BlueFatFishMCP"], resources: [.copy("legacy-sse.mjs")])]
 )

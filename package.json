@@ -58,6 +58,7 @@
     "native:check-plugin-updates": "node scripts/check-native-plugin-updates.mjs",
     "native:check-live-rules": "node scripts/check-live-rules.mjs",
     "native:check-mcp": "node scripts/check-native-mcp.mjs",
+    "native:check-mcp-sse": "node scripts/check-native-mcp-sse.mjs",
     "native:check-hooks": "node scripts/check-native-hooks.mjs",
     "native:check-hook-services": "node scripts/check-native-hook-services.mjs",
     "native:check-async-hooks": "node scripts/check-native-async-hooks.mjs",

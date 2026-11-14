@@ -65,8 +65,8 @@ import AppKit
         guard let save = find(NSButton.self, in: detail.pageContentView, matching: { $0.title == "保存" }) else { throw PetError("缺少连接器保存操作") }
         checks["mcpNarrowDetailKeepsSaveVisibleAndFullErrorAccessible"] = state.bounds.height >= 36 && state.accessibilityValue() == state.stringValue && state.isSelectable && save.visibleRect.height >= save.bounds.height - 1 && details.bounds.height >= 100
         state.stringValue = previous; host.setContentSize(size); pane.layoutSubtreeIfNeeded()
-        checks["mcpCreationMenuContainsBothTransports"] = add.pullsDown && add.menu?.items.compactMap { $0.representedObject as? String } == ["stdio", "http"]
-        for type in ["stdio", "http"] {
+        checks["mcpCreationMenuContainsAllThreeTransports"] = add.pullsDown && add.menu?.items.compactMap { $0.representedObject as? String } == ["stdio", "http", "sse"]
+        for type in ["stdio", "http", "sse"] {
             let before = try Data(contentsOf: configuration), item = add.menu!.items.first { ($0.representedObject as? String) == type }!
             details.selectTabViewItem(at: 1); detail.close()
             checks["mcpDetailReturnsToItsOriginalKeyboardList-" + type] = pane.currentController === manager && host.firstResponder === catalog && kinds.selectedSegment == 1
@@ -76,7 +76,7 @@ import AppKit
             let draft = try JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as! [String: Any]
             checks["mcpNewDraftWithoutModal-" + type] = try pane.currentController === detail && host.attachedSheet == nil && draft["type"] as? String == type && editor.isEditable && Data(contentsOf: configuration) == before && host.firstResponder === editor
             checks["mcpNewDraftRevealsEditorFromTools-" + type] = details.selectedTabViewItem?.identifier as? String == "配置" && editor.window === host && !editor.isHiddenOrHasHiddenAncestor
-            checks["mcpNewDraftShowsCurrentTransportHint-" + type] = text(detail.pageContentView).contains(type == "http" ? "凭据保存在钥匙串" : "本机程序使用当前账户权限")
+            checks["mcpNewDraftShowsCurrentTransportHint-" + type] = text(detail.pageContentView).contains(type == "stdio" ? "本机程序使用当前账户权限" : "凭据保存在钥匙串")
             var value = draft; value["name"] = "页内新建-" + type
             if type == "stdio" { value["command"] = "/usr/bin/true" }
             editor.string = try encode(value); manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try press("保存", page: detail)

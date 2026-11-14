@@ -50,6 +50,15 @@ public actor MCPConnection {
         })
         return try await initialize(transport, timeout: timeout)
     }
+    public func connectSSE(endpoint: URL, bearerToken: String, headers: [String: String] = [:], timeout: Double) async throws -> Data {
+        let transport = SSETransport(endpoint: endpoint, bearerToken: bearerToken, headers: headers, timeout: timeout) { [weak self] in Task { await self?.transportClosed() } }
+        return try await initialize(transport, timeout: timeout)
+    }
+    private func transportClosed() async {
+        guard !closed else { return }
+        await disconnect()
+        changeHandler?("disconnected", nil)
+    }
     private func initialize(_ transport: any Transport, timeout: Double) async throws -> Data {
         guard !closed else { throw MCPConnectionError("连接已关闭，请重新连接") }
         await client.onNotification(ResourceListChangedNotification.self) { [weak self] _ in await self?.changed("resources", uri: nil) }
@@ -71,6 +80,7 @@ public actor MCPConnection {
             let result = try await withTaskCancellationHandler(operation: { try await client.connect(transport: transport) }, onCancel: { [client] in Task { await client.disconnect() } })
             try Task.checkCancellation()
             guard !closed else { throw MCPConnectionError("连接已关闭") }
+            guard Version.supported.contains(result.protocolVersion) else { throw MCPConnectionError("连接器返回了不支持的 MCP 协议版本") }
             ready = true; supportsTools = result.capabilities.tools != nil
             supportsResources = result.capabilities.resources != nil; supportsPrompts = result.capabilities.prompts != nil
             supportsSubscriptions = result.capabilities.resources?.subscribe == true

@@ -115,7 +115,7 @@ struct AgentMCPServer: Codable, Identifiable {
         if server.type == "stdio" {
             guard let command = server.command, command.hasPrefix("/"), !command.contains("\0"), server.args.count <= 100, server.args.allSatisfy({ !$0.contains("\0") }) else { throw PetError("本机 MCP 程序配置无效") }
         } else {
-            guard server.type == "http", let address = server.url, let url = URL(string: address), let host = url.host?.lowercased(), url.user == nil, url.password == nil, url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else { throw PetError("MCP HTTP 地址无效") }
+            guard ["http", "sse"].contains(server.type), let address = server.url, let url = URL(string: address), let host = url.host?.lowercased(), url.user == nil, url.password == nil, url.fragment == nil, url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else { throw PetError("MCP 远程地址无效") }
         }
         if let revision, revision != server.revision { throw PetError("连接器配置已变化，请重新读取并批准") }
         return server
@@ -134,7 +134,7 @@ struct AgentMCPServer: Codable, Identifiable {
             return String(decoding: try JSONSerialization.data(withJSONObject: plugins.mcpConfiguration(reference), options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
         }
         var value: [String: Any] = ["name": server?.name ?? "新的连接器", "type": server?.type ?? "stdio", "timeoutSeconds": server?.timeoutSeconds ?? 60]
-        if server?.type == "http" { value["url"] = server?.url ?? "https://example.com/mcp"; value["bearerToken"] = server?.hasBearerToken == true ? Self.placeholder : ""; if let keys = server?.headerKeys, !keys.isEmpty { value["headers"] = Dictionary(uniqueKeysWithValues: keys.map { ($0, Self.placeholder) }) } }
+        if let server, ["http", "sse"].contains(server.type) { value["url"] = server.url ?? (server.type == "sse" ? "https://example.com/sse" : "https://example.com/mcp"); value["bearerToken"] = server.hasBearerToken == true ? Self.placeholder : ""; if let keys = server.headerKeys, !keys.isEmpty { value["headers"] = Dictionary(uniqueKeysWithValues: keys.map { ($0, Self.placeholder) }) } }
         else { value["command"] = server?.command ?? "/opt/homebrew/bin/node"; value["args"] = server?.args ?? []; value["env"] = Dictionary(uniqueKeysWithValues: (server?.environmentKeys ?? []).map { ($0, Self.placeholder) }); value["cwd"] = server?.workingDirectory }
         return String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
     }
@@ -144,7 +144,7 @@ struct AgentMCPServer: Codable, Identifiable {
         let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !name.contains("\0"), name.count <= 160,
-              let type = value["type"] as? String, ["stdio", "http"].contains(type) else { throw PetError("需要名称和 type（stdio 或 http）") }
+              let type = value["type"] as? String, ["stdio", "http", "sse"].contains(type) else { throw PetError("需要名称和 type（stdio、http 或 sse）") }
         let scopedServers = availableServers(workspace: workspace)
         let old = id.flatMap { id in scopedServers.first { $0.id == id } }
         if id != nil && (old == nil || old?.revision != expectedRevision) { throw PetError("配置已由其他窗口更新，请重新打开后编辑") }
@@ -272,7 +272,10 @@ struct AgentMCPServer: Codable, Identifiable {
             await session.client.onChange { [weak self, weak session] kind, uri in
                 Task { @MainActor in
                     guard let self, let session, self.sessions[sessionKey] === session else { return }
-                    if kind == "elicitation-complete" {
+                    if kind == "disconnected" {
+                        if session.connected { self.disconnectKey(sessionKey); self.notify() }
+                        return
+                    } else if kind == "elicitation-complete" {
                         guard let store = self.taskStore, let scope, self.inputScope(owner, workspace: workspace) == scope else { return }
                         store.update(owner) { $0.events.append(AgentEvent(kind: "mcp-elicitation", title: server.name, detail: "连接器已完成网页确认", status: "completed")) }
                     } else if kind == "resource", let uri {
@@ -297,7 +300,8 @@ struct AgentMCPServer: Codable, Identifiable {
                 info = try await session.client.connectProgram(command: server.command!, arguments: server.args, environment: env, directory: server.workingDirectory ?? workspace ?? NSHomeDirectory(), timeout: server.timeoutSeconds)
             } else {
                 let headers = try Dictionary(uniqueKeysWithValues: (server.headerKeys ?? []).map { name -> (String, String) in guard let value = secrets["header:" + name] else { throw PetError("请求头凭据缺失，请重新保存") }; return (name, value) }); try Self.validateHeaders(headers)
-                info = try await session.client.connectHTTP(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", headers: headers, timeout: server.timeoutSeconds)
+                if server.type == "sse" { info = try await session.client.connectSSE(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", headers: headers, timeout: server.timeoutSeconds) }
+                else { info = try await session.client.connectHTTP(endpoint: URL(string: server.url!)!, bearerToken: secrets["bearerToken"] ?? "", headers: headers, timeout: server.timeoutSeconds) }
             }
             session.catalog = try await session.client.tools(timeout: server.timeoutSeconds)
             try Task.checkCancellation(); _ = try self.server(id, revision: revision, workspace: workspace)

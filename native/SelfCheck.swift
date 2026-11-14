@@ -69,6 +69,7 @@ import WebKit
         if CommandLine.arguments.contains("--task-monitor-check") { await runTaskMonitorCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-icons-check") { await runFileIconsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--mcp-sse-check") { await runMCPSSECheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
             // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.

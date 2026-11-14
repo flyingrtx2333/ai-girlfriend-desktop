@@ -33,7 +33,7 @@ import UniformTypeIdentifiers
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(); window.contentView = content
         add.addItem(withTitle: "新建"); add.setAccessibilityLabel("新建 MCP 连接器")
-        for (title, type) in [("本机程序", "stdio"), ("HTTP", "http")] {
+        for (title, type) in [("本机程序", "stdio"), ("HTTP", "http"), ("SSE", "sse")] {
             let item = NSMenuItem(title: title, action: #selector(create(_:)), keyEquivalent: ""); item.target = self; item.representedObject = type; add.menu?.addItem(item)
         }
         importButton.target = self; importButton.action = #selector(importJSON)
@@ -155,7 +155,7 @@ import UniformTypeIdentifiers
             let label = NSTextField(labelWithString: catalogRows[row].heading ?? ""); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; return label
         }
         let name = NSTextField(labelWithString: server.name); name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
+        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : server.type == "sse" ? "SSE" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
         let labels = NSStackView(views: [name, type]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 6
         let status = NSTextField(labelWithString: service.status(server.id, owner: sessionOwner, workspace: workspace)); status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail; status.toolTip = status.stringValue
         let toggle = NSSwitch(); toggle.target = self; toggle.action = #selector(toggleListedServer(_:)); toggle.identifier = .init(server.id); toggle.state = server.enabled ? .on : .off; toggle.isEnabled = server.configured != false && server.pluginEnabled != false && job == nil; toggle.setAccessibilityLabel("启用连接器 " + server.name)
@@ -224,13 +224,13 @@ import UniformTypeIdentifiers
         add.isEnabled = job == nil; importButton.isEnabled = job == nil
         let draftType = (dirty || creating) && editor.string.utf8.count <= 64_000 ? ((try? JSONSerialization.jsonObject(with: Data(editor.string.utf8))) as? [String: Any])?["type"] as? String : nil
         let type = configurationKind.selectedSegment == 0 ? form?.type : dirty || creating ? draftType : selected?.type
-        access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (type == "http" ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
+        access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (["http", "sse"].contains(type) ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }
     @objc private func create(_ sender: NSMenuItem) {
-        guard job == nil, let type = sender.representedObject as? String, ["stdio", "http"].contains(type), canLeave() else { return }
-        do { loadDraft(try service.document(type == "http" ? AgentMCPServer(name: "新的连接器", type: "http") : nil)) }
+        guard job == nil, let type = sender.representedObject as? String, ["stdio", "http", "sse"].contains(type), canLeave() else { return }
+        do { loadDraft(try service.document(type == "stdio" ? nil : AgentMCPServer(name: "新的连接器", type: type))) }
         catch { state.stringValue = error.localizedDescription }
     }
     private func loadDraft(_ document: String) {

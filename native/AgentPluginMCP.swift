@@ -48,7 +48,7 @@ extension AgentPluginInstallation {
                 guard Set(value.keys).isSubset(of: allowed) else { throw PetError("插件 MCP 尚未支持字段：" + Set(value.keys).subtracting(allowed).sorted().joined(separator: ", ")) }
                 guard value["type"] == nil || value["type"] is String else { throw PetError("插件 MCP type 须为文字") }
                 let rawType = value["type"] as? String ?? (value["url"] == nil ? "stdio" : "http"), type = rawType == "streamable-http" ? "http" : rawType
-                guard ["stdio", "http"].contains(type) else { throw PetError("插件 MCP 目前支持 stdio 和 Streamable HTTP：" + key) }; value["type"] = type
+                guard ["stdio", "http", "sse"].contains(type) else { throw PetError("插件 MCP 支持 stdio、Streamable HTTP 和 SSE：" + key) }; value["type"] = type
                 for field in ["description", "cwd"] where value[field] != nil { guard let text = value[field] as? String, text.utf8.count <= 4000, !text.contains("\0") else { throw PetError("插件 MCP 字段无效：" + field) } }
                 if let disabled = value["disabled"] { guard CFGetTypeID(disabled as CFTypeRef) == CFBooleanGetTypeID() else { throw PetError("插件 MCP disabled 须为布尔值") } }
                 if let raw = value["timeout"] { guard let timeout = raw as? Double, CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(), timeout.isFinite, (5000...600_000).contains(timeout) else { throw PetError("插件 MCP timeout 须为5000至600000毫秒") } }
@@ -61,7 +61,7 @@ extension AgentPluginInstallation {
                           variables.allSatisfy({ validEnvironmentKey($0.key) && !$0.value.contains("\0") && $0.value.utf8.count <= 16_000 }) else { throw PetError("插件 MCP args 或 env 无效") }
                     value["args"] = list; value["env"] = variables
                 } else {
-                    guard let address = value["url"] as? String, address.utf8.count <= 4000, !address.contains("\0"), value["command"] == nil, value["args"] == nil, value["env"] == nil, value["cwd"] == nil else { throw PetError("插件 HTTP MCP 需要 url") }
+                    guard let address = value["url"] as? String, address.utf8.count <= 4000, !address.contains("\0"), value["command"] == nil, value["args"] == nil, value["env"] == nil, value["cwd"] == nil else { throw PetError("插件远程 MCP 需要 url") }
                     let rawHeaders = value["headers"] ?? [String: String]()
                     guard let headers = rawHeaders as? [String: String] else { throw PetError("插件 MCP headers 须为文字对象") }; try AgentMCP.validateHeaders(headers)
                     value["headers"] = headers
