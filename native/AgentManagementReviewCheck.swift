@@ -92,6 +92,27 @@ import AppKit
         let approvedBefore = try bytes(authorization); try press("启用", page: stale)
         checks["hookStaleReviewRefusesApprovalAndKeepsPage"] = try pane.currentController === stale && control(NSTextField.self, "审阅操作错误", page: stale).stringValue.contains("Hook 已变化") && bytes(authorization) == approvedBefore
         try press("取消", page: stale); checks["hookReviewReturnRefreshesChangedDefinition"] = try pane.currentController === manager && !service.trusted(hook(names[0]))
+        let configBefore = try bytes(source), grantsBefore = try bytes(authorization)
+        let editConfig = try control(NSButton.self, "编辑当前范围的 Hooks 配置", page: manager); editConfig.performClick(nil)
+        guard let configuration = pane.currentController, configuration !== manager else { throw PetError("Hooks 配置未进入设置子页") }
+        let editor = try control(NSTextView.self, "Hooks JSON 配置", page: configuration), feedback = try control(NSTextField.self, "Hooks 配置保存状态", page: configuration)
+        let originalConfig = editor.string
+        checks["hookConfigHostedAndEditorFocused"] = configuration.presentingWindow === host && configuration.window?.isVisible == false && host.firstResponder === editor && host.attachedSheet == nil
+        checks["hookConfigEmptyFeedbackCollapses"] = feedback.isHidden
+        editor.string = "{ invalid public configuration"; try press("保存", page: configuration)
+        checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == "{ invalid public configuration" && !feedback.stringValue.isEmpty && bytes(source) == configBefore && bytes(authorization) == grantsBefore
+        editor.string = originalConfig + String(repeating: "\n", count: 200)
+        for (label, size) in [("normal", NSSize(width: 800, height: 540)), ("narrow", NSSize(width: 420, height: 360))] {
+            host.setContentSize(size); pane.layoutSubtreeIfNeeded(); editor.layoutManager?.ensureLayout(for: editor.textContainer!)
+            guard let scroll = editor.enclosingScrollView, let save = find(NSButton.self, in: configuration.pageContentView, matching: { $0.title == "保存" }), let page = configuration.pageContentView else { throw PetError("缺少 Hooks 配置编辑区域") }
+            editor.scrollRangeToVisible(NSRange(location: editor.string.utf16.count, length: 0))
+            let viewport = scroll.documentVisibleRect, buttonFrame = save.convert(save.bounds, to: page), feedbackFrame = feedback.convert(feedback.bounds, to: page)
+            checks["hookConfigLongEditorScrollsAndSaveStaysVisible-" + label] = !scroll.hasAmbiguousLayout && viewport.width >= 140 && viewport.height >= 80 && viewport.minY > 0 && page.visibleRect.contains(buttonFrame)
+            checks["hookConfigErrorWrapsWithoutClipping-" + label] = !feedback.isHidden && feedback.isSelectable && !feedback.usesSingleLineMode && feedback.maximumNumberOfLines == 0 && page.visibleRect.contains(feedbackFrame) && feedbackFrame.height >= feedback.intrinsicContentSize.height - 1
+            measurements["hookConfig-" + label] = ["editorViewport": [viewport.width, viewport.height], "saveVisible": page.visibleRect.contains(buttonFrame), "feedbackHeight": feedbackFrame.height]
+        }
+        host.setContentSize(NSSize(width: 800, height: 540)); editor.string = originalConfig; try press("保存", page: configuration)
+        checks["hookConfigValidRetryReturnsToListAndPreservesDefinition"] = try pane.currentController === manager && service.document(project: false, workspace: workspace).0 == originalConfig && bytes(authorization) == grantsBefore
         let teams = AgentTeamWindow(store: tasks, workspace: workspace)
         guard pane.show(category: "teams", identity: "inline-team-template", scope: "设置项目", make: { _ in teams }) else { throw PetError("无法进入团队模板") }
         let originalAgents = try tasks.agents.document(), originalTeams = try tasks.teams.document(), previousName = try control(NSTextField.self, "团队名称", page: teams).stringValue

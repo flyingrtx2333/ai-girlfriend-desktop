@@ -309,26 +309,32 @@ private extension AgentHookEvent {
 }
 
 @MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate {
-    private let editor = NSTextView(), state = NSTextField(labelWithString: "")
+    private let editor = NSTextView(), state = AgentSettingsStatusField("Hooks 配置保存状态")
     private let save: (String) throws -> Void
     private let original: String
     private var saved = false
+    override var minimumSettingsContentHeight: CGFloat { 220 }
+    override var usesInternalScrolling: Bool { true }
     init(text: String, title: String, save: @escaping (String) throws -> Void) {
         self.save = save; original = text
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 560, height: 350); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        editor.string = text; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
+        editor.string = text; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 16, height: 16)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("Hooks JSON 配置")
-        let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-        let button = NSButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
-        let footer = NSStackView(views: [state, NSView(), button]); footer.spacing = 8
-        let content = NSView(); window.contentView = content
-        for view in [scroll, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), scroll.topAnchor.constraint(equalTo: content.topAnchor, constant: 12), scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10), footer.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), footer.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12), footer.heightAnchor.constraint(equalToConstant: 28)])
+        let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.identifier = .init("form-input"); scroll.scrollerStyle = .overlay
+        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-hook-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+        card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
+        let button = NSButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
+        let actions = NSStackView(views: [NSView(), button]); actions.spacing = 8
+        let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for view in [actions, state, card] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), actions.heightAnchor.constraint(equalToConstant: 28)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(editor) }
     @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue } }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !saved, editor.string != original else { return true }
