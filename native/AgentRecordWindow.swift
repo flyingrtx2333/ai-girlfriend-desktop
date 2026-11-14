@@ -818,6 +818,10 @@ import UniformTypeIdentifiers
         guard AgentUnsavedChanges.discard("放弃未保存的更改？", detail: openedFile?.lastPathComponent ?? state.stringValue) else { return false }; dirty = false; return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        if sections.selectedSegment == 5, isPageVisible, !viewer.isHidden, !text.isHiddenOrHasHiddenAncestor { presentingWindow?.makeFirstResponder(text) }
+    }
     override func canLeaveSettings() -> Bool {
         let edited = dirty
         guard super.canLeaveSettings() else { return false }

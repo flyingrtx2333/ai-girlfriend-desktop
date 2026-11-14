@@ -9,6 +9,7 @@ import AppKit
     private let reload = NSButton(title: "重新载入", target: nil, action: nil)
     private var states: [String: NSTextField] = [:], buttons: [NSButton] = []
     private var saveFailed = false
+    private weak var lastOpened: NSButton?
     override var usesInternalScrolling: Bool { true }
 
     init(store: AgentStore, taskID: String, workspace: String?, service: AgentGeneralSettings) {
@@ -43,7 +44,10 @@ import AppKit
         window.contentView = content; update()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func settingsDidAppear() { service.reload(); update() }
+    override func settingsDidAppear() {
+        service.reload(); update()
+        if isPageVisible, let lastOpened, lastOpened.window === presentingWindow, lastOpened.isEnabled { presentingWindow?.makeFirstResponder(lastOpened) }
+    }
     private func update() {
         global.state = service.settings.globalMemory ? .on : .off; project.state = service.settings.projectMemory ? .on : .off
         global.isEnabled = service.error == nil; project.isEnabled = service.error == nil
@@ -74,6 +78,7 @@ import AppKit
     }
     @objc private func openMemory(_ sender: NSButton) {
         guard sender.isEnabled, AgentMemoryScope.allCases.indices.contains(sender.tag) else { return }
+        lastOpened = sender
         let scope = AgentMemoryScope.allCases[sender.tag]
         let editor = AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace)
         editor.window?.title = scope.title; editor.selectItem(section: 5, value: scope.rawValue)

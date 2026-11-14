@@ -76,7 +76,7 @@ import Darwin
             report["visibleWindowsBefore"] = windows()
             var windowStages: [[String: Any]] = []
             let profile = tasks.directory.deletingLastPathComponent()
-            checks.merge(try await checkMemorySettings(output)) { _, value in value }
+            let memoryChecks = try await checkMemorySettings(output)
             func fingerprints() throws -> [String: String] {
                 let entries = FileManager.default.enumerator(at: profile, includingPropertiesForKeys: [.isRegularFileKey])
                 var result: [String: String] = [:]
@@ -150,7 +150,8 @@ import Darwin
             report["visibleWindowsAfter"] = windows(); report["visibleWindowStages"] = windowStages
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
-            guard checks.count == 20 else { throw PetError("设置页面基础检查缺失") }
+            guard checks.count == managers.count + 11 else { throw PetError("设置页面基础检查缺失") }
+            checks.merge(memoryChecks) { _, value in value }
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
