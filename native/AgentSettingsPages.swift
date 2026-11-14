@@ -313,6 +313,7 @@ import AppKit
         viewport.contentView.scroll(to: .zero); viewport.reflectScrolledClipView(viewport.contentView)
         startScrollMonitor()
         entry.controller.settingsDidAppear(); updateHeader()
+        window?.recalculateKeyViewLoop()
     }
     private func updateHeader() {
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
