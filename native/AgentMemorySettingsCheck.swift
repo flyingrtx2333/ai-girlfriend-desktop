@@ -106,12 +106,24 @@ import AppKit
         let buttonID = { (path: String) in "memory-project-" + AgentFiles.hash(Data(path.utf8)) }
         checks["noWorkspaceMemoryPageListsExistingProjects"] = find(projectRoot, id: "settings-card-memory-projects") != nil && (find(projectRoot, id: buttonID(second.path)) as? NSButton)?.isEnabled == true
         checks["unavailableMemoryProjectDoesNotBlockOtherProjects"] = (find(projectRoot, id: buttonID(unavailable.path)) as? NSButton)?.isEnabled == false && (find(projectRoot, id: buttonID(secondary.path)) as? NSButton)?.isEnabled == true
-        var projectChild: AgentSettingsPageController?
-        projectPage.onSettingsPush = { projectChild = $0 }
-        (find(projectRoot, id: buttonID(secondary.path)) as? NSButton)?.performClick(nil)
+        projectPage.window?.close()
+        let hostedPage = AgentMemorySettingsPage(store: tasks, taskID: multiID, workspace: second.path, service: service)
+        let projectHost = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+        projectHost.isReleasedWhenClosed = false
+        let projectPane = AgentSettingsPageHost(); projectHost.contentView = projectPane; projectHost.orderFront(nil)
+        guard projectPane.show(category: "memory", identity: multiID, scope: "项目 · " + second.lastPathComponent, make: { _ in hostedPage }) else { throw PetError("缺少实际承载的项目记忆页") }
+        projectPane.setSourceFolders([second.path, secondary.path], selected: second.path, primary: second.path, onSelect: { _ in false })
+        guard let hostedRoot = hostedPage.pageContentView else { throw PetError("跨项目列表未承载") }
+        (find(hostedRoot, id: buttonID(secondary.path)) as? NSButton)?.performClick(nil)
+        let projectChild = projectPane.currentController
         checks["otherProjectMemoryOpensOriginalScopedEditor"] = projectChild is AgentRecordWindow && projectChild?.pageContentView.map { containsText($0, "SECONDARY_MEMORY_PUBLIC_529") } == true
-        checks["otherProjectMemoryEditorNamesItsProject"] = projectChild?.window?.title.contains(secondary.lastPathComponent) == true
-        projectChild?.window?.close(); projectPage.window?.close()
+        projectPane.layoutSubtreeIfNeeded()
+        let editing = find(projectPane, id: "settings-editing-context") as? NSTextField, sourcePicker = find(projectPane, id: "settings-source-folder") as? NSPopUpButton
+        checks["otherProjectMemoryNamesItsVisibleEditingContext"] = editing?.stringValue == "项目 · " + secondary.lastPathComponent && editing?.toolTip == secondary.path && editing?.isHiddenOrHasHiddenAncestor == false && editing?.window === projectHost && projectHost.isVisible && (editing?.visibleRect.width ?? 0) > 100
+        checks["otherProjectMemoryHidesTheOriginalSourcePicker"] = sourcePicker?.isHiddenOrHasHiddenAncestor == true
+        projectChild?.close(); projectPane.layoutSubtreeIfNeeded()
+        checks["returnFromOtherProjectRestoresOriginalSourcePicker"] = projectPane.currentController === hostedPage && sourcePicker?.isHiddenOrHasHiddenAncestor == false && sourcePicker?.selectedItem?.representedObject as? String == second.path && editing?.stringValue == "项目 · " + second.lastPathComponent
+        projectPane.finish(); projectHost.close()
         do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID, workspace: secondary.path); checks["crossProjectInventoryDoesNotExpandOwnerScope"] = false }
         catch { checks["crossProjectInventoryDoesNotExpandOwnerScope"] = error.localizedDescription.contains("不属于当前任务") }
         let reloaded = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: store.keychain, hookKeychain: store.keychain)

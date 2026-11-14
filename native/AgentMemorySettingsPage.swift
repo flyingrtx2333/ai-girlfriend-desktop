@@ -135,6 +135,7 @@ import AppKit
         lastOpened = sender
         let editor = AgentRecordWindow(store: store, taskID: source.taskID, section: 5, memoryOnly: true, memoryWorkspace: source.workspace)
         editor.window?.title = source.title + " · 项目记忆"; editor.selectItem(section: 5, value: AgentMemoryScope.project.rawValue)
+        editor.settingsContext = ("项目 · " + source.title, source.workspace)
         presentSettingsChild(editor)
     }
 }

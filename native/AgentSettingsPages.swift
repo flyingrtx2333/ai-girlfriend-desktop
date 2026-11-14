@@ -7,6 +7,7 @@ import AppKit
     private var embeddedContent: NSView?
     var onSettingsPush: ((AgentSettingsPageController) -> Void)?
     var onSettingsClose: (() -> Void)?
+    var settingsContext: (title: String, location: String)?
     var presentingWindow: NSWindow? { settingsHostWindow ?? window }
     var pageContentView: NSView? { embeddedContent ?? window?.contentView }
     var isPageVisible: Bool { pageContentView?.window?.isVisible == true && pageContentView?.isHiddenOrHasHiddenAncestor != true }
@@ -196,7 +197,7 @@ import AppKit
     private var selectedSource:String?, onSelectSource:((String)->Bool)?
     private let viewport = NSScrollView(), document = AgentSettingsDocument(), empty = NSTextField(labelWithString: "请先选择任务")
     private var entries: [Entry] = [], keys: [String] = [], selectedTab = 0
-    private var category = "", identity = ""
+    private var category = "", identity = "", contextTitle = ""
     private var makePage: ((String) -> AgentSettingsPageController?)?
     private var scrollMonitor: Any?
     private var pageHeight: NSLayoutConstraint?
@@ -212,6 +213,7 @@ import AppKit
         tabs.trackingMode = .selectOne; tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
         tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
+        context.identifier = .init("settings-editing-context"); context.setAccessibilityLabel("设置编辑对象")
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12
         sourceFolder.target = self; sourceFolder.action = #selector(changeSource); sourceFolder.setAccessibilityLabel("设置源文件夹"); sourceFolder.identifier = .init("settings-source-folder")
@@ -275,14 +277,13 @@ import AppKit
     @discardableResult func show(category: String, identity: String, scope: String, make: @escaping (String) -> AgentSettingsPageController?) -> Bool {
         if self.category == category, self.identity == identity, !entries.isEmpty { return true }
         guard leave() else { return false }
-        self.category = category; self.identity = identity; makePage = make; context.stringValue = scope
+        self.category = category; self.identity = identity; makePage = make; contextTitle = scope
         let options: [(String, String)] = category == "extensions" ? [("plugins", "插件"), ("skills", "技能"), ("commands", "指令"), ("mcp", "连接器"), ("agents", "智能体")] : category == "memory" ? [("memory", "记忆与指令"), ("rules", "规则")] : [(category, category)]
         keys = options.map(\.0); tabs.segmentCount = options.count
         for (index, option) in options.enumerated() { tabs.setLabel(option.1, forSegment: index) }
         selectedTab = 0; tabs.selectedSegment = 0; loadRoot(); return true
     }
     func setSourceFolders(_ folders:[String], selected:String?, primary:String?, onSelect:((String)->Bool)?) {
-        sourceRow.isHidden = folders.count < 2; context.isHidden = !sourceRow.isHidden
         selectedSource = selected; onSelectSource = onSelect; sourceFolder.removeAllItems()
         let names = folders.map{URL(fileURLWithPath:$0).lastPathComponent}
         for (index,path) in folders.enumerated() {
@@ -291,6 +292,7 @@ import AppKit
             if path == selected { sourceFolder.select(item) }
         }
         sourceFolder.toolTip = selected
+        updateHeader()
     }
     @objc private func changeSource() {
         guard let path = sourceFolder.selectedItem?.representedObject as? String, path != selectedSource else { return }
@@ -326,6 +328,9 @@ import AppKit
         window?.recalculateKeyViewLoop()
     }
     private func updateHeader() {
+        let editing = entries.reversed().compactMap { $0.controller.settingsContext }.first
+        context.stringValue = editing?.title ?? contextTitle; context.toolTip = editing?.location
+        sourceRow.isHidden = editing != nil || sourceFolder.numberOfItems < 2; context.isHidden = !sourceRow.isHidden
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
