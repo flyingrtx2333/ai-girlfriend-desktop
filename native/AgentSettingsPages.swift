@@ -234,6 +234,7 @@ import AppKit
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        window?.autorecalculatesKeyViewLoop = true
         if window == nil { stopScrollMonitor() }
         else if !entries.isEmpty { startScrollMonitor() }
     }

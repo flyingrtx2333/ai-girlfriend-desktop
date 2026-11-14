@@ -28,6 +28,20 @@ import Darwin
         NSApp.sendAction(item.action!, to: item.target, from: item)
         guard let detail = pane.currentController, detail !== manager else { throw PetError("未进入表单子页") }
         let editor = try control(NSTextView.self, "MCP 配置 JSON", page: detail), kinds = try control(NSSegmentedControl.self, "MCP 配置方式", page: detail)
+        let wasVisible = host.isVisible; host.makeKeyAndOrderFront(nil)
+        defer { if !wasVisible { host.orderOut(nil) } }
+        var keyboard: [String: [[String: Bool]]] = [:]
+        func tabToValue(_ kind: String) async throws -> Bool {
+            let name = try control(NSTextField.self, "MCP " + kind + " 1 名称", page: detail), value = try control(NSTextField.self, "MCP " + kind + " 1 值", page: detail)
+            pane.layoutSubtreeIfNeeded(); let focused = host.makeFirstResponder(name)
+            try await Task.sleep(for: .milliseconds(50))
+            (host.firstResponder as? NSTextView)?.doCommand(by: #selector(NSResponder.insertTab(_:)))
+            try await Task.sleep(for: .milliseconds(50)); let forward = value.currentEditor().map { host.firstResponder === $0 } == true
+            (host.firstResponder as? NSTextView)?.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
+            try await Task.sleep(for: .milliseconds(50)); let backward = name.currentEditor().map { host.firstResponder === $0 } == true
+            keyboard[kind, default: []].append(["focusedName": focused, "tabReachedValue": forward, "shiftTabReturnedToName": backward])
+            return focused && forward && backward
+        }
         var checks: [String: Bool] = [:]
         checks["mcpFormIsDefaultAndJSONRemainsAvailable"] = try kinds.selectedSegment == 0 && !control(NSScrollView.self, "MCP 配置表单", page: detail).isHiddenOrHasHiddenAncestor && editor.isHiddenOrHasHiddenAncestor
         let formScroll = try control(NSScrollView.self, "MCP 配置表单", page: detail), originalSize = host.contentView!.frame.size
@@ -40,8 +54,10 @@ import Darwin
         try edit("MCP 名称", "表单公开连接器", page: detail); try edit("MCP 命令", "true", page: detail); try edit("MCP 工作目录", workspace!, page: detail); try edit("MCP 超时毫秒", "1250", page: detail)
         for value in ["第一项 🧭", ""] { try press("添加 MCP 参数", page: detail); let index = value.isEmpty ? 2 : 1; try edit("MCP 参数 \(index) 值", value, page: detail) }
         try press("添加 MCP 环境变量", page: detail); try edit("MCP 环境变量 1 名称", "PUBLIC_VALUE", page: detail); try edit("MCP 环境变量 1 值", "公开值", page: detail)
+        checks["mcpAddedEnvironmentRowTabsFromNameToSecureValue"] = try await tabToValue("环境变量")
         checks["mcpFormMasksEnvironmentValues"] = try control(NSTextField.self, "MCP 环境变量 1 值", page: detail) is NSSecureTextField
         try mode(1, page: detail); let configured = try object(editor.string)
+        try mode(0, page: detail); checks["mcpRebuiltFormKeepsTheActualEnvironmentKeyboardOrder"] = try await tabToValue("环境变量"); try mode(1, page: detail)
         checks["mcpFormJSONRoundTripKeepsArgumentsEnvironmentDirectoryAndMilliseconds"] = configured["args"] as? [String] == ["第一项 🧭", ""] && configured["env"] as? [String: String] == ["PUBLIC_VALUE": "公开值"] && configured["cwd"] as? String == workspace && configured["timeoutSeconds"] as? Double == 1.25
         checks["mcpFormEditingAndModeSwitchesDoNotSave"] = try Data(contentsOf: file) == initial
         checks["mcpFormUsesTheSameBareCommandResolutionAsImportAndPlugins"] = configured["command"] as? String == "/usr/bin/true" && AgentMCP.configurationCommand("node") == "/opt/homebrew/bin/node" && AgentMCP.configurationCommand("") == "" && AgentMCP.configurationCommand("relative/program") == "relative/program"
@@ -79,6 +95,7 @@ import Darwin
         try press("载入草稿", page: review)
         checks["mcpPastedDefinitionLoadsIntoFormWithoutSaving"] = try pane.currentController === detail && kinds.selectedSegment == 0 && control(NSTextField.self, "MCP 名称", page: detail).stringValue == "粘贴 HTTP" && Data(contentsOf: file) == beforePaste
         try press("添加 MCP 请求头", page: detail); try edit("MCP 请求头 1 名称", "X-Public", page: detail); try edit("MCP 请求头 1 值", "first", page: detail)
+        checks["mcpAddedHeaderRowTabsFromNameToSecureValue"] = try await tabToValue("请求头")
         try press("添加 MCP 请求头", page: detail); try edit("MCP 请求头 2 名称", "x-public", page: detail); try edit("MCP 请求头 2 值", "second", page: detail); try press("保存", page: detail)
         checks["mcpDuplicateHeadersRejectCaseInsensitivelyBeforeCredentialWrites"] = try Data(contentsOf: file) == beforePaste && control(AgentSettingsStatusField.self, "MCP 保存与连接状态", page: detail).stringValue.contains("名称重复")
         try press("移除 MCP 请求头行", page: detail); try press("移除 MCP 请求头行", page: detail)
@@ -111,7 +128,7 @@ import Darwin
         checks["mcpFormCheckLeavesTheManagerNormally"] = pane.leave()
         if let childPID { for _ in 0..<30 { if kill(childPID, 0) != 0 { break }; try await Task.sleep(for: .milliseconds(50)) } }
         checks["mcpToolCatalogCheckReleasesItsActualOwnedProcess"] = childPID.map { kill($0, 0) != 0 } == true
-        try JSONSerialization.data(withJSONObject: ["modelRequests": 0, "actualProcess": childPID.map { Int($0) } ?? -1, "checks": checks], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-form-check.json"))
+        try JSONSerialization.data(withJSONObject: ["modelRequests": 0, "actualProcess": childPID.map { Int($0) } ?? -1, "checks": checks, "keyboard": keyboard], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-form-check.json"))
         return checks
     }
 }
