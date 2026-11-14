@@ -80,15 +80,16 @@ struct AgentMemoryProjectSource: Equatable {
         } else {
             let (files, url, maximum) = try file(scope, store: store, taskID: taskID, workspace: workspace)
             guard data.count <= maximum else { throw PetError(scope.isInstructions ? "指令最多 64 KB" : "记忆最多 24 KB") }
+            let metadata = try files.entryMetadata(url)
+            guard metadata.kind == "missing" || (metadata.permissions ?? 0) & 0o222 != 0 else { throw PetError(scope.title + "文件只读，未保存") }
+            if metadata.kind == "missing", expectedHash != AgentFiles.hash(Data()) { throw PetError("记忆文件已被移除，请重新打开后编辑") }
+            if metadata.kind != "missing", try files.fileHash(url, maximum: maximum) != expectedHash { throw PetError("记忆已更改，请重新打开后编辑") }
             if !previous.content.isEmpty {
                 let directory = store.directory.appendingPathComponent("memory-backups", isDirectory: true)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 let backup = directory.appendingPathComponent(UUID().uuidString + ".md")
                 try Data(previous.content.utf8).write(to: backup, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
             }
-            let metadata = try files.entryMetadata(url)
-            if metadata.kind == "missing", expectedHash != AgentFiles.hash(Data()) { throw PetError("记忆文件已被移除，请重新打开后编辑") }
-            if metadata.kind != "missing", try files.fileHash(url, maximum: maximum) != expectedHash { throw PetError("记忆已更改，请重新打开后编辑") }
             let permissions = metadata.permissions ?? ([.global, .userInstructions].contains(scope) ? 0o600 : 0o644)
             if scope.isInstructions { store.instructions.onChange?(nil, scope == .userInstructions ? nil : files.root.path) }
             try files.writeData(data, to: url, permissions: permissions, expectedTarget: metadata.signature)

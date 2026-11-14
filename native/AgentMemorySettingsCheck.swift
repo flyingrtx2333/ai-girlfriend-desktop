@@ -80,6 +80,22 @@ import AppKit
         checks["memoryCardOpensExistingEditorAtRequestedScope"] = child is AgentRecordWindow && child?.pageContentView.map { containsText($0, "PROJECT_MEMORY_PUBLIC_692") } == true
         child?.window?.close(); page.window?.close()
         checks["memoryPreferencesPreserveProjectSourceAndTaskDraft"] = try AgentMemory.snapshot(.project, store: tasks, taskID: id).content == "PROJECT_MEMORY_PUBLIC_692" && tasks.task(id)?.draft == "MEMORY_TASK_DRAFT_PUBLIC"
+        for scope in [AgentMemoryScope.global, .project, .instructions, .userInstructions, .localInstructions] {
+            var original = try AgentMemory.snapshot(scope, store: tasks, taskID: id)
+            if original.content.isEmpty { original = try AgentMemory.save(scope, content: "READONLY_MEMORY_PUBLIC_" + scope.rawValue, expectedHash: original.hash, store: tasks, taskID: id) }
+            let url = scope == .global ? tasks.directory.appendingPathComponent("memory.md") : scope == .userInstructions ? profile.appendingPathComponent("AGENTS.md") : workspace.appendingPathComponent(scope == .project ? ".bluefatfish/memory.md" : scope == .instructions ? "AGENTS.md" : "AGENTS.local.md")
+            let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as! NSNumber
+            let backups = tasks.directory.appendingPathComponent("memory-backups"), beforeBackups = try FileManager.default.contentsOfDirectory(atPath: backups.path).sorted()
+            try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: url.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: url.path) }
+            do { _ = try AgentMemory.save(scope, content: "READONLY_OVERWRITE_REJECTED_PUBLIC", expectedHash: original.hash, store: tasks, taskID: id); checks["readOnlyMemoryRejectsSave-" + scope.rawValue] = false }
+            catch { checks["readOnlyMemoryRejectsSave-" + scope.rawValue] = try error.localizedDescription.contains("只读") && AgentMemory.snapshot(scope, store: tasks, taskID: id).hash == original.hash && FileManager.default.contentsOfDirectory(atPath: backups.path).sorted() == beforeBackups && (FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue == 0o444 }
+            if scope == .global {
+                let arguments = try JSONSerialization.data(withJSONObject: ["scope": "global", "content": "TOOL_READONLY_OVERWRITE_REJECTED_PUBLIC", "expected_hash": original.hash])
+                do { _ = try await tools.execute(AgentToolCall(id: UUID().uuidString, name: "write_memory", arguments: String(decoding: arguments, as: UTF8.self))); checks["actualWriteMemoryToolRejectsReadOnlyTarget"] = false }
+                catch { checks["actualWriteMemoryToolRejectsReadOnlyTarget"] = try error.localizedDescription.contains("只读") && AgentMemory.snapshot(.global, store: tasks, taskID: id).hash == original.hash }
+            }
+        }
         let second = output.appendingPathComponent("memory-second-project"), secondary = output.appendingPathComponent("memory-secondary-source"), unavailable = output.appendingPathComponent("memory-unavailable-project")
         for url in [second, secondary, unavailable] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         let peerID = tasks.create(title: "其他项目原任务", workspace: second.path)
