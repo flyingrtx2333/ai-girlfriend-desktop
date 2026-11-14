@@ -106,6 +106,8 @@ final class FormDocumentView: NSView {
     }
     private var settingsResults: [SettingsSearchResult] = []
     private var settingsGroupLabels: [(String, NSTextField)] = []
+    private weak var settingsEditingInput: NSView?
+    private var settingsEditingSelection: NSRange?
     private var titleLeading: NSLayoutConstraint!
     private let composer = ComposerView(), history = AgentConversationHistory(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
@@ -1179,11 +1181,26 @@ final class FormDocumentView: NSView {
     private func leaveSettingsPage() -> Bool {
         guard !settingsPageHost.leave() else { return true }
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
+            let input = settingsEditingInput, selection = settingsEditingSelection
             settingsSearch.stringValue = ""; updateSettingsSections()
             window?.contentView?.layoutSubtreeIfNeeded()
             settingsPageHost.currentController?.settingsDidAppear()
+            if let input, input.window === window, input.isDescendant(of: settingsPageHost), !input.isHiddenOrHasHiddenAncestor,
+               window?.makeFirstResponder(input) == true, let selection, let editor = window?.firstResponder as? NSTextView,
+               NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
         }
         return false
+    }
+    func windowDidUpdate(_ notification: Notification) {
+        guard selectedTab == "settings", !settingsPageHost.isHidden, let window, window.isVisible,
+              let responder = window.firstResponder, let root = settingsPageHost.currentController?.pageContentView else { return }
+        func find(_ view: NSView) -> NSView? {
+            if view === responder || (view as? NSControl)?.currentEditor() === responder { return view }
+            for child in view.subviews { if let value = find(child) { return value } }; return nil
+        }
+        if let input = find(root), !input.isHiddenOrHasHiddenAncestor {
+            settingsEditingInput = input; settingsEditingSelection = (responder as? NSTextView)?.selectedRange()
+        }
     }
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
@@ -1305,14 +1322,15 @@ final class FormDocumentView: NSView {
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
     private func settingsSearchMatches(_ query: String) -> [SettingsSearchResult] {
+        func children(_ view: NSView) -> [NSView] { (view as? NSStackView)?.arrangedSubviews ?? view.subviews }
         func rows(_ view: NSView) -> [(String, NSView)] {
             var result: [(String, NSView)] = []
             if let id = view.identifier?.rawValue, id.hasPrefix(AgentSettingsStyle.searchRowPrefix) {
                 result.append((String(id.dropFirst(AgentSettingsStyle.searchRowPrefix.count)), view))
             }
-            return result + view.subviews.flatMap(rows)
+            return result + children(view).flatMap(rows)
         }
-        func identifiers(_ view: NSView) -> String { (view.identifier?.rawValue ?? "") + " " + view.subviews.map(identifiers).joined(separator: " ") }
+        func identifiers(_ view: NSView) -> String { (view.identifier?.rawValue ?? "") + " " + children(view).map(identifiers).joined(separator: " ") }
         var result: [SettingsSearchResult] = []
         for group in settingGroups {
             let direct = group.key == nil ? rows(group.view).filter { ($0.0 + " " + identifiers($0.1)).lowercased().contains(query) } : []
@@ -2155,8 +2173,8 @@ final class FormDocumentView: NSView {
             checks["managedSearchHasNoUnrelatedSave-" + query] = !settingsResults.isEmpty && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
         }
         search("mCp")
-        checks["settingsSearchFiltersSidebarToMatchingCategory"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["extensions"]
-        checks["settingsSearchFiltersSidebarGroupHeadings"] = settingsGroupLabels.filter { !$0.1.isHidden }.map(\.0) == ["集成"]
+        checks["settingsSearchFiltersSidebarToMatchingCategories"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["monitor", "extensions"]
+        checks["settingsSearchFiltersSidebarGroupHeadings"] = settingsGroupLabels.filter { !$0.1.isHidden }.map(\.0) == ["个人", "集成"]
         search("Token")
         checks["regularSettingsSearchShowsNavigationWithoutEditableFieldsOrSave"] = settingsResults.contains { $0.category == "model" } && find(NSTextField.self, in: settingsForm, matching: { $0.isEditable }) == nil && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
         let endpointBefore = endpoint.stringValue, savedEndpoint = companion?.store.preferences.endpoint
@@ -2172,6 +2190,13 @@ final class FormDocumentView: NSView {
         openSettingsSearchResult(widthButton)
         checks["regularSearchOpensRequestedCategoryAndRevealsActualRow"] = settingsCategory == "appearance" && settingsSearch.stringValue.isEmpty && !widthTarget.isHiddenOrHasHiddenAncestor && widthTarget.window === window && widthTarget.visibleRect.height >= min(28, widthTarget.bounds.height)
         checks["openingSearchResultRestoresFullSettingsNavigation"] = categoryButtons.allSatisfy { !$0.isHidden } && settingsGroupLabels.allSatisfy { !$0.1.isHidden }
+        search("显示工具调用次数")
+        guard let displayIndex = settingsResults.firstIndex(where: { $0.category == "general" && $0.title == "显示工具调用次数" }),
+              let displayButton = find(NSButton.self, in: settingsForm, matching: { $0.tag == displayIndex && $0.action == #selector(openSettingsSearchResult(_:)) }) else { throw PetError("未找到隐藏子页中的设置入口") }
+        let displayTarget = settingsResults[displayIndex].target
+        openSettingsSearchResult(displayButton)
+        checks["searchIndexesAndRevealsHiddenGeneralSubpageRows"] = settingsCategory == "general" && !displayTarget.isHiddenOrHasHiddenAncestor && displayTarget.window === window
+        checks["searchOpenedGeneralSubpageKeepsItsBackAction"] = find(NSButton.self, in: settingsForm, matching: { $0.accessibilityLabel() == "返回常规设置" && !$0.isHiddenOrHasHiddenAncestor }) != nil
         search("不存在的导航验收-a7k2")
         checks["emptySettingsSearchKeepsSaveHidden"] = noSettings.superview === settingsForm && generalSettingsSave?.isHidden == true
         search("")
@@ -2201,6 +2226,21 @@ final class FormDocumentView: NSView {
         let accepted = try rulesResult()
         checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openSettingsSearchResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
         checks["discardSearchDraftDoesNotSaveConnectorChanges"] = try Data(contentsOf: file) == before
+        guard let rules = settingsPageHost.currentController as? AgentRuleWindow,
+              let body = find(NSTextView.self, in: rules.pageContentView, matching: { $0.accessibilityLabel() == "规则正文" }),
+              let ruleName = find(NSTextField.self, in: rules.pageContentView, matching: { $0.accessibilityLabel() == "规则名称" }),
+              let source = try tasks.rules.catalog(workspace: task.workspace).first(where: { $0.name == ruleName.stringValue })?.source else { throw PetError("缺少规则正文焦点验收来源") }
+        let ruleBefore = try Data(contentsOf: source)
+        body.string = "规则搜索焦点草稿 🧭"; rules.textDidChange(Notification(name: NSText.didChangeNotification, object: body))
+        let selection = NSRange(location: body.string.utf16.count, length: 0)
+        window.makeFirstResponder(body); body.setSelectedRange(selection); windowDidUpdate(Notification(name: NSWindow.didUpdateNotification, object: window))
+        search("连接器")
+        guard let connector = find(NSButton.self, in: settingsForm, matching: { $0.identifier?.rawValue == "mcp" }) else { throw PetError("缺少连接器搜索入口") }
+        checks["cancelRuleNavigationRestoresActualBodyFocus"] = try !choose("继续编辑", { openSettingsSearchResult(connector); return settingsCategory == "extensions" }) && settingsPageHost.currentController === rules && window.firstResponder === body && body.string == "规则搜索焦点草稿 🧭"
+        checks["cancelRuleNavigationRestoresOriginalCursor"] = body.selectedRange() == selection
+        search("连接器")
+        guard let finalConnector = find(NSButton.self, in: settingsForm, matching: { $0.identifier?.rawValue == "mcp" }) else { throw PetError("缺少恢复后的连接器搜索入口") }
+        checks["discardRuleNavigationPreservesSourceAndOpensRequestedPage"] = try choose("放弃更改", { openSettingsSearchResult(finalConnector); return settingsCategory == "extensions" && settingsPageHost.selectedPageKey == "mcp" }) && Data(contentsOf: source) == ruleBefore
         returnToChat()
         checks["settingsSearchNavigationPreservesOriginalTaskAndInput"] = selectedTab == "chat" && agentTaskID == id && composer.string == draft && tasks.task(id)?.draft == task.draft
         return checks
