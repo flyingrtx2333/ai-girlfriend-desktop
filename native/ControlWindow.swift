@@ -1168,7 +1168,16 @@ final class FormDocumentView: NSView {
         guard attentionPageController?.prepareToClose() != false else { return false }
         if selectedTab == "automation", automationWindow?.prepareToLeave() == false { return false }
         if selectedTab == "knowledge", !knowledgePageHost.prepareToLeave() { return false }
-        return settingsPageHost.leave()
+        return leaveSettingsPage()
+    }
+    private func leaveSettingsPage() -> Bool {
+        guard !settingsPageHost.leave() else { return true }
+        if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
+            settingsSearch.stringValue = ""; updateSettingsSections()
+            window?.contentView?.layoutSubtreeIfNeeded()
+            settingsPageHost.currentController?.settingsDidAppear()
+        }
+        return false
     }
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
@@ -1269,7 +1278,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
-        guard settingsPageHost.leave() else { return }
+        guard leaveSettingsPage() else { return }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
@@ -1302,13 +1311,13 @@ final class FormDocumentView: NSView {
                 guard let self, let id, (agentTaskID ?? companion?.agentStore?.selectedID) == id,
                       companion?.agentStore?.task(id)?.workspacePaths == folders, folders.contains(path) else { return false }
                 let page = settingsPageHost.selectedPageKey
-                guard settingsPageHost.leave() else { return false }
+                guard leaveSettingsPage() else { return false }
                 settingsSourceFolders[id] = path; updateSettingsSections()
                 if let page { settingsPageHost.selectPage(page) }; return true
             }
             return
         }
-        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { ["general", "appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { managedSettings.contains($0.category) || ["general", "appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -2051,6 +2060,58 @@ final class FormDocumentView: NSView {
         page.checkSetReply(saved)
         checks["correctedReplyCanSaveAndLeave"] = page.prepareToClose()
         show(tab: "chat"); checks["correctedReplyRestoresNormalNavigation"] = selectedTab == "chat"
+        return checks
+    }
+    func checkSettingsSearchNavigation(choose: (String, () -> Bool) throws -> Bool) throws -> [String: Bool] {
+        guard CommandLine.arguments.contains("--unsaved-changes-check"), let tasks = companion?.agentStore,
+              let id = agentTaskID, let task = tasks.task(id), let window else { throw PetError("缺少设置搜索验收上下文") }
+        func find<T: NSView>(_ type: T.Type, in view: NSView?, matching: (T) -> Bool) -> T? {
+            guard let view else { return nil }
+            if let value = view as? T, matching(value) { return value }
+            for child in view.subviews { if let value = find(type, in: child, matching: matching) { return value } }; return nil
+        }
+        func search(_ query: String) { settingsSearch.stringValue = query; updateSettingsSections(); window.contentView?.layoutSubtreeIfNeeded() }
+        var checks: [String: Bool] = [:]
+        let draft = composer.string
+        window.makeKeyAndOrderFront(nil)
+        guard showSettingsCategory("model") else { throw PetError("无法进入设置搜索验收") }
+        for query in ["连接器", "规则", "团队", "Hooks", "技能", "自定义命令", "mCp", "AGENTS"] {
+            search(query)
+            checks["managedSearchHasNoUnrelatedSave-" + query] = settingGroups.contains { $0.view.superview === settingsForm } && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
+        }
+        search("Token")
+        checks["editableSettingsSearchKeepsItsOwnSave"] = generalSettingsSave?.isHidden == false && settingsFooter?.isHidden == false
+        search("不存在的导航验收-a7k2")
+        checks["emptySettingsSearchKeepsSaveHidden"] = noSettings.superview === settingsForm && generalSettingsSave?.isHidden == true
+        search("")
+        guard showSettingsCategory("extensions") else { throw PetError("无法打开设置管理页") }
+        settingsPageHost.selectPage("mcp")
+        guard let manager = settingsPageHost.currentController as? AgentMCPWindow,
+              let server = tasks.mcp.availableServers(workspace: task.workspace).first(where: { $0.name == "设置连接器" }) else { throw PetError("未找到公开连接器") }
+        let file = tasks.mcp.profile.appendingPathComponent("extensions/mcp.json"), before = try Data(contentsOf: file)
+        manager.selectServer(server.id)
+        guard let detail = settingsPageHost.currentController, detail !== manager,
+              let name = find(NSTextField.self, in: detail.pageContentView, matching: { $0.accessibilityLabel() == "MCP 名称" }) else { throw PetError("未进入实际连接器表单") }
+        name.stringValue = "设置搜索未保存草稿 🧭"; name.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: name))
+        func rulesResult() throws -> NSButton {
+            search("规则")
+            guard let result = find(NSButton.self, in: settingsForm, matching: { $0.identifier?.rawValue == "rules" }) else { throw PetError("未找到实际规则搜索结果") }; return result
+        }
+        let result = try rulesResult()
+        checks["searchTemporarilyHidesEditorWithoutDiscardingIt"] = settingsPageHost.isHidden && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
+        checks["cancelSearchResultNavigationRevealsSameEditor"] = try !choose("继续编辑", { openManagedSettingsResult(result); return settingsCategory == "memory" }) && settingsSearch.stringValue.isEmpty && !settingsPageHost.isHidden && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
+        checks["cancelSearchNavigationRestoresActualEditorFocus"] = name.currentEditor().map { window.firstResponder === $0 } == true
+        _ = try rulesResult()
+        checks["cancelMainPageNavigationRevealsSameEditor"] = try !choose("继续编辑", { returnToChat(); return selectedTab == "chat" }) && selectedTab == "settings" && settingsSearch.stringValue.isEmpty && !settingsPageHost.isHidden && settingsPageHost.currentController === detail
+        _ = try rulesResult()
+        guard let appearance = settingsCategories.firstIndex(where: { $0.0 == "appearance" }) else { throw PetError("缺少外观分类") }
+        checks["cancelCategoryNavigationRevealsSameEditor"] = try !choose("继续编辑", { selectSettingsCategory(categoryButtons[appearance]); return settingsCategory == "appearance" }) && settingsCategory == "extensions" && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController === detail && !settingsPageHost.isHidden
+        checks["allCancelledNavigationPreservesStoredConnectorAndDraft"] = try Data(contentsOf: file) == before && name.stringValue == "设置搜索未保存草稿 🧭"
+        let accepted = try rulesResult()
+        checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openManagedSettingsResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
+        checks["discardSearchDraftDoesNotSaveConnectorChanges"] = try Data(contentsOf: file) == before
+        returnToChat()
+        checks["settingsSearchNavigationPreservesOriginalTaskAndInput"] = selectedTab == "chat" && agentTaskID == id && composer.string == draft && tasks.task(id)?.draft == task.draft
         return checks
     }
     func checkSettings(_ output: URL) async -> [String: Any] {

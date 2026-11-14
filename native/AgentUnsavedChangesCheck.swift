@@ -102,6 +102,7 @@ import AppKit
             checks["longFileListRemainsCompleteAndScrollable"] = longDialog["detail"] as? String == filenames && (longDialog["detailHeight"] as? CGFloat ?? 0) <= 160 && (longDialog["documentHeight"] as? CGFloat ?? 0) > 160 && longDialog["detailFits"] as? Bool == true && (longDialog["height"] as? CGFloat ?? 1000) < host.frame.height
             checks["longFileListContinueUsesSafeDefault"] = !longResult && longDialog["default"] as? String == "继续编辑"
             checks["originalConversationDraftAndReceiptsPreserved"] = requests == 0 && tasks.task(id)?.draft == "保留未保存确认验收输入" && tasks.task(id)?.modelReceipts?.isEmpty != false
+            checks.merge(try self.control.checkSettingsSearchNavigation(choose: choose)) { _, next in next }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["dialogs"] = dialogs; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("unsaved-changes-report.json"))
