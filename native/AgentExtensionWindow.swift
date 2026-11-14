@@ -128,11 +128,11 @@ import UniformTypeIdentifiers
             if manager.scopeWorkspace == workspace { if let id { manager.selectProfile(id) }; window.makeKeyAndOrderFront(nil); return }
             window.performClose(nil); if window.isVisible { window.makeKeyAndOrderFront(nil); return }
         }
-        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; presentSettingsChild(manager)
+        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; presentSettingsChild(manager)
     }
     @objc private func showTeams() {
         if let window = teamWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode); manager.onUse = onStartAgent; teamWindow = manager; presentSettingsChild(manager)
+        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartAgent; teamWindow = manager; presentSettingsChild(manager)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {

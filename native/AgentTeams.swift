@@ -50,19 +50,33 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
             if let path = value.workspace { guard path.hasPrefix("/"), path.utf8.count <= 4000, !path.contains("\0"), URL(fileURLWithPath: path).standardizedFileURL.path == path else { throw PetError("团队项目路径无效") } }
             let roles = Set([value.leaderID] + value.memberIDs)
             guard (value.roleSources?.count ?? 0) <= 5 else { throw PetError("团队成员来源超过五项") }
+            let projects = try Set((value.roleSources ?? [:]).values.compactMap { try AgentPlugins.scope($0.name).workspace })
             for (id, source) in value.roleSources ?? [:] {
                 guard UUID(uuidString: id) != nil, draft || roles.contains(id), UUID(uuidString: source.installationID) != nil, !source.activationID.isEmpty, source.activationID.utf8.count <= 256,
                       source.sha256.count == 64, source.sha256.allSatisfy(\.isHexDigit), AgentExtensions.validName(source.key), !source.key.contains(":"),
-                      try AgentPlugins.scope(source.name).workspace.map({ $0 == value.workspace }) ?? true else { throw PetError("团队成员来源与项目不匹配") }
+                      try AgentPlugins.scope(source.name).workspace.map({ $0 == value.workspace || value.workspace == nil && projects.count > 1 }) ?? true else { throw PetError("团队成员来源与项目不匹配") }
             }
         }
         return values
     }
     func encode(_ values: [AgentTeam]) throws -> String { String(decoding: try encoder.encode(Document(teams: values)), as: UTF8.self) }
     func list() throws -> [AgentTeam] { try decode(document().0) }
-    private func roles(_ team: AgentTeam, store: AgentStore, enabled: Bool, workspace: String? = nil, validateSources: Bool = true) throws -> [AgentProfile] {
-        if let required = team.workspace { guard let workspace, try AgentFiles(workspace: workspace).root.path == required else { throw PetError("团队仅属于项目：" + URL(fileURLWithPath: required).lastPathComponent) } }
-        let agents = try store.agents.list(workspace: workspace)
+    func sourceWorkspaces(_ team: AgentTeam) throws -> Set<String> {
+        var projects = try Set((team.roleSources ?? [:]).values.compactMap { try AgentPlugins.scope($0.name).workspace })
+        if let workspace = team.workspace { projects.insert(workspace) }; return projects
+    }
+    private func requireSources(_ team: AgentTeam, workspace: String?, task: AgentTaskRecord?) throws {
+        let required = try sourceWorkspaces(team)
+        if let task {
+            guard required.allSatisfy(task.includesWorkspaceRoot) else { throw PetError("此团队需要当前任务包含全部源文件夹") }
+        } else if !required.isEmpty {
+            guard required.count == 1, let workspace, try required.contains(AgentFiles(workspace: workspace).root.path) else { throw PetError("此团队不属于当前项目或需要多源工作区") }
+        }
+    }
+    private func roles(_ team: AgentTeam, store: AgentStore, enabled: Bool, workspace: String? = nil, task: AgentTaskRecord? = nil, validateSources: Bool = true) throws -> [AgentProfile] {
+        try requireSources(team, workspace: workspace, task: task)
+        let agents: [AgentProfile]
+        if let task { agents = try store.agents.list(task: task) } else { agents = try store.agents.list(workspace: workspace) }
         let values = try ([team.leaderID] + team.memberIDs).map { id -> AgentProfile in
             guard let role = agents.first(where: { $0.id == id }), !enabled || role.enabled else { throw PetError("团队成员已停用或不存在，请检查当前项目的 Agent 与插件") }
             if validateSources, let sources = team.roleSources, sources[id] != role.pluginSource { throw PetError("团队成员的插件来源或启用状态已变化，请重新审阅并保存团队") }; return role
@@ -70,15 +84,15 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
         guard let leader = values.first, leader.availableTools.isSuperset(of: ["list_agents", "delegate_task"]), leader.toolPermissions?["delegate_task"] != .deny, leader.toolPermissions?["list_agents"] != .deny else { throw PetError("负责人需要查找 Agent 与委派子任务权限") }
         return values
     }
-    func team(_ id: String, store: AgentStore, workspace: String? = nil) throws -> AgentTeam {
+    func team(_ id: String, store: AgentStore, workspace: String? = nil, task: AgentTaskRecord? = nil) throws -> AgentTeam {
         guard var value = try list().first(where: { $0.id == id && $0.enabled }) else { throw PetError("团队未启用或已不存在") }
-        let profiles = try roles(value, store: store, enabled: true, workspace: workspace)
+        let profiles = try roles(value, store: store, enabled: true, workspace: workspace, task: task)
         if value.roleSources == nil { value.roleSources = sources(profiles) }; return value
     }
     private func sources(_ profiles: [AgentProfile]) -> [String: AgentPluginAgentReference]? {
         let values = Dictionary(uniqueKeysWithValues: profiles.compactMap { profile in profile.pluginSource.map { (profile.id, $0) } }); return values.isEmpty ? nil : values
     }
-    func save(_ text: String, expectedHash: String?, store: AgentStore, activating: String? = nil, workspace: String? = nil) throws {
+    func save(_ text: String, expectedHash: String?, store: AgentStore, activating: String? = nil, workspace: String? = nil, task: AgentTaskRecord? = nil) throws {
         var values = try decode(text, draft: true); let previous = try document()
         guard previous.1 == expectedHash else { throw PetError("团队配置已改变，请重新读取后保存") }
         let previousTeams = try decode(previous.0)
@@ -87,11 +101,12 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
             if old == values[i] && values[i].id != activating { continue }
             if var disabled = old { disabled.enabled = false; if values[i] == disabled { continue } }
             if let required = old?.workspace { guard let workspace, try AgentFiles(workspace: workspace).root.path == required else { throw PetError("请在原项目修改此团队：" + URL(fileURLWithPath: required).lastPathComponent) } }
-            let profiles = try roles(values[i], store: store, enabled: false, workspace: workspace, validateSources: false)
+            if let old { try requireSources(old, workspace: workspace, task: task) }
+            let profiles = try roles(values[i], store: store, enabled: false, workspace: workspace, task: task, validateSources: false)
             if values[i].enabled, let unavailable = profiles.first(where: { $0.pluginSource != nil && !$0.enabled }) { throw PetError("请先在插件窗口审阅并启用：" + unavailable.name) }
             let projects = try Set(profiles.compactMap { try $0.pluginSource.flatMap { try AgentPlugins.scope($0.name).workspace } })
-            guard projects.count <= 1 else { throw PetError("团队成员必须属于同一项目") }
-            values[i].workspace = projects.first; values[i].roleSources = sources(profiles)
+            guard projects.count <= 1 || task?.workspaceScope != nil && projects.allSatisfy({ task?.includesWorkspaceRoot($0) == true }) else { throw PetError("团队成员必须属于当前任务的源文件夹") }
+            values[i].workspace = projects.count == 1 ? projects.first : nil; values[i].roleSources = sources(profiles)
         }
         let data = Data(try encode(values).utf8); _ = try decode(String(decoding: data, as: UTF8.self))
         let files = try AgentFiles(workspace: directory.path), write = try AgentKnowledgeFileWrite(files: files, path: try file().path, data: data, expectedHash: previous.1, missing: previous.1 == nil, permissions: 0o600, label: "团队配置")
@@ -123,7 +138,7 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     }
     func check(_ task: AgentTaskRecord, store: AgentStore) throws {
         guard let saved = try binding(task, store: store) else { return }
-        let live = try team(saved.id, store: store, workspace: task.workspace)
+        let live = try team(saved.id, store: store, task: task)
         guard live.leaderID == saved.leaderID, live.workspace == saved.workspace, let role = task.agent?.profile.id,
               (role == saved.leaderID && task.team != nil) || (saved.memberIDs.contains(role) && live.memberIDs.contains(role)) else { throw PetError("团队角色已改变，请重新发起任务") }
         for id in [saved.leaderID] + saved.memberIDs where saved.roleSources?[id] != live.roleSources?[id] { throw PetError("团队成员的插件来源已变化，请重新发起任务") }
@@ -131,19 +146,20 @@ struct AgentTeamAssignment: Codable { var team: AgentTeam }
     func checkDelegate(_ id: String, owner: AgentTaskRecord, store: AgentStore) throws {
         try check(owner, store: store)
         guard let saved = try binding(owner, store: store) else { return }
-        let live = try team(saved.id, store: store, workspace: owner.workspace)
+        let live = try team(saved.id, store: store, task: owner)
         guard saved.memberIDs.contains(id), live.memberIDs.contains(id), id != owner.agent?.profile.id else { throw PetError("团队只可委派给本次任务中已配置的其他成员") }
     }
     func configureDraft(_ id: String, taskID: String, store: AgentStore) throws {
-        let value = try team(id, store: store, workspace: store.task(taskID)?.workspace)
+        guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+        let value = try team(id, store: store, task: task)
         try store.agents.configureDraft(value.leaderID, taskID: taskID, store: store)
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         if let error = store.writeError { throw PetError("团队任务未保存：" + error) }
     }
-    func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil) throws -> String {
+    func createTask(_ id: String, store: AgentStore, workspace: String?, owner: AgentTaskRecord? = nil, workMode: AgentWorkMode? = nil, context: AgentTaskRecord? = nil) throws -> String {
         if let owner, try binding(owner, store: store) != nil { throw PetError("团队任务不能委派到另一个团队") }
-        let value = try team(id, store: store, workspace: workspace)
-        let taskID = try store.agents.createTask(value.leaderID, store: store, workspace: workspace, owner: owner, workMode: workMode)
+        let value = try team(id, store: store, workspace: workspace, task: owner ?? context)
+        let taskID = try store.agents.createTask(value.leaderID, store: store, workspace: workspace, owner: owner, workMode: workMode, context: context)
         store.update(taskID) { $0.team = AgentTeamAssignment(team: value) }
         return taskID
     }

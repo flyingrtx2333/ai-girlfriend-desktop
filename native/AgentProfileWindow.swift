@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor final class AgentProfileWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     let store: AgentStore
     let workspace: String?
+    let taskID: String?
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
     var onSaved: ((String) throws -> Void)?
@@ -15,8 +16,8 @@ import UniformTypeIdentifiers
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
-    init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil) {
-        self.store = store; self.workspace = workspace; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
+    init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil, taskID: String? = nil) {
+        self.store = store; self.workspace = workspace; self.taskID = taskID; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "自定义 Agent" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
@@ -63,6 +64,15 @@ import UniformTypeIdentifiers
         reload()
     }
     var scopeWorkspace: String? { workspace }
+    private func sourceTask() throws -> AgentTaskRecord? { try AgentWorkspaceScope.settingsSourceTask(taskID, workspace: workspace, store: store) }
+    private func availableSkills() throws -> [AgentExtensionItem] {
+        if let task = try sourceTask() { return try store.extensions.catalog(task: task).filter { $0.kind == .skill } }
+        return try store.extensions.catalog(workspace: workspace).filter { $0.kind == .skill }
+    }
+    private func availableServers() throws -> [AgentMCPServer] {
+        if let task = try sourceTask() { return try store.mcp.availableServers(task: task) }
+        return store.mcp.availableServers(workspace: workspace)
+    }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private static func toolTitle(_ name: String) -> String {
         let names = ["list_directory": "浏览文件", "read_file": "读取文件", "search_files": "搜索文件", "write_file": "写入文件", "edit_file": "编辑文件", "run_command": "终端命令", "web_search": "联网搜索", "fetch_url": "读取网页", "list_agents": "查找 Agent", "delegate_task": "委派子任务", "draft_agent": "生成 Agent 草稿", "update_plan": "执行计划", "ask_user": "向用户提问", "read_task_history": "读取本任务历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "search_project": "项目检索", "index_project": "更新项目索引", "project_wiki": "读取项目 Wiki", "git_status": "Git 状态", "git_diff": "Git 差异", "git_commit": "Git 提交", "git_init": "初始化 Git", "git_create_worktree": "创建工作树", "list_attachments": "列出附件", "read_attachment": "读取附件", "search_attachment": "搜索附件", "browser_open": "打开网页", "browser_tabs": "浏览器标签页", "browser_read": "读取页面", "browser_screenshot": "网页截图", "browser_action": "网页操作", "browser_close": "关闭浏览器", "load_tools": "按需载入工具", "list_skills": "查找 Skills", "read_skill": "载入 Skill", "read_skill_resource": "读取 Skill 资源", "unload_skill": "移出 Skill", "list_mcp_servers": "列出 MCP", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "call_mcp_tool": "调用 MCP 工具", "disconnect_mcp": "断开 MCP"]
@@ -133,20 +143,22 @@ import UniformTypeIdentifiers
             item.submenu = menu; item.toolTip = key; tools.menu?.addItem(item)
         }
         skills.removeAllItems(); skills.addItem(withTitle: "Skills（\(selectedSkills.count)）")
-        let available = (try? store.extensions.catalog(workspace: workspace))?.filter { $0.kind == .skill } ?? []
+        let available = (try? availableSkills()) ?? [], multipleSources = (try? sourceTask())?.workspaceScope != nil
         for item in available {
-            let row = NSMenuItem(title: item.name + (item.enabled ? "" : " · 已停用"), action: #selector(toggleSkill(_:)), keyEquivalent: ""); row.target = self; row.representedObject = item.id; row.state = selectedSkills.contains(item.id) ? .on : .off; row.isEnabled = item.enabled || selectedSkills.contains(item.id); row.toolTip = item.description; skills.menu?.addItem(row)
+            let row = NSMenuItem(title: item.name + (multipleSources ? " · " + item.scope : "") + (item.enabled ? "" : " · 已停用"), action: #selector(toggleSkill(_:)), keyEquivalent: ""); row.target = self; row.representedObject = item.id; row.state = selectedSkills.contains(item.id) ? .on : .off; row.isEnabled = item.enabled || selectedSkills.contains(item.id); row.toolTip = item.description + "\n" + item.file.path; skills.menu?.addItem(row)
         }
         for id in selectedSkills.subtracting(available.map(\.id)).sorted() { let row = NSMenuItem(title: "不可用 Skill · " + id.prefix(8), action: #selector(toggleSkill(_:)), keyEquivalent: ""); row.target = self; row.representedObject = id; row.state = .on; skills.menu?.addItem(row) }
         mcp.removeAllItems(); mcp.addItem(withTitle: "MCP（\(selectedMCP.count)）")
-        for item in store.mcp.availableServers(workspace: workspace) {
-            let row = NSMenuItem(title: item.name + (item.enabled ? "" : " · 已停用"), action: #selector(toggleMCP(_:)), keyEquivalent: ""); row.target = self; row.representedObject = item.id; row.state = selectedMCP.contains(item.id) ? .on : .off; row.isEnabled = item.enabled || selectedMCP.contains(item.id); mcp.menu?.addItem(row)
+        let servers = (try? availableServers()) ?? []
+        for item in servers {
+            let row = NSMenuItem(title: (multipleSources ? AgentMCPSelection.title(item) : item.name) + (item.enabled ? "" : " · 已停用"), action: #selector(toggleMCP(_:)), keyEquivalent: ""); row.target = self; row.representedObject = item.id; row.state = selectedMCP.contains(item.id) ? .on : .off; row.isEnabled = item.enabled || selectedMCP.contains(item.id); row.toolTip = AgentMCPSelection.selectionTitle(item); mcp.menu?.addItem(row)
         }
-        for id in selectedMCP.subtracting(store.mcp.availableServers(workspace: workspace).map(\.id)).sorted() { let row = NSMenuItem(title: "不可用 MCP · " + id.prefix(8), action: #selector(toggleMCP(_:)), keyEquivalent: ""); row.target = self; row.representedObject = id; row.state = .on; mcp.menu?.addItem(row) }
+        for id in selectedMCP.subtracting(servers.map(\.id)).sorted() { let row = NSMenuItem(title: "不可用 MCP · " + id.prefix(8), action: #selector(toggleMCP(_:)), keyEquivalent: ""); row.target = self; row.representedObject = id; row.state = .on; mcp.menu?.addItem(row) }
         if !selectedMCP.isEmpty {
             mcp.menu?.addItem(.separator())
             for rule in mcpPermissions {
-                let row = NSMenuItem(title: (store.mcp.availableServers(workspace: workspace).first { $0.id == rule.serverID }?.name ?? "MCP") + " / " + rule.tool, action: nil, keyEquivalent: ""), menu = NSMenu()
+                let selected = servers.first { $0.id == rule.serverID }
+                let row = NSMenuItem(title: (selected.map { multipleSources ? AgentMCPSelection.title($0) : $0.name } ?? "MCP") + " / " + rule.tool, action: nil, keyEquivalent: ""), menu = NSMenu()
                 for (title, value) in [("移除规则", "remove")] + AgentToolPermission.allCases.map({ ($0.title, $0.rawValue) }) {
                     let option = NSMenuItem(title: title, action: #selector(changeMCPRule(_:)), keyEquivalent: ""); option.target = self; option.representedObject = [rule.serverID, rule.tool, value]; option.state = rule.permission.rawValue == value ? .on : .off; menu.addItem(option)
                 }; row.submenu = menu; mcp.menu?.addItem(row)
@@ -168,10 +180,10 @@ import UniformTypeIdentifiers
         if let rule = AgentToolPermission(rawValue: value[2]) { mcpPermissions.append(AgentMCPToolPermission(serverID: value[0], tool: value[1], permission: rule)) }; refreshMenus(); changed()
     }
     @objc private func addMCPRule() {
-        let servers = store.mcp.availableServers(workspace: workspace).filter { selectedMCP.contains($0.id) }; guard !servers.isEmpty else { return }
+        let servers = ((try? availableServers()) ?? []).filter { selectedMCP.contains($0.id) }; guard !servers.isEmpty else { return }
         let page = AgentMCPToolRulePage(servers: servers), profileID = selectedID
         page.onApply = { [weak self] rule in
-            guard let self, selectedID == profileID, selectedMCP.contains(rule.serverID), store.mcp.availableServers(workspace: workspace).contains(where: { $0.id == rule.serverID }) else { throw PetError("连接器已变化，请返回重新选择") }
+            guard let self, selectedID == profileID, selectedMCP.contains(rule.serverID), try availableServers().contains(where: { $0.id == rule.serverID }) else { throw PetError("连接器已变化，请返回重新选择") }
             mcpPermissions.removeAll { $0.serverID == rule.serverID && $0.tool == rule.tool }; mcpPermissions.append(rule); refreshMenus(); changed()
         }
         page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(mcp) }
@@ -193,6 +205,7 @@ import UniformTypeIdentifiers
     }
     @objc private func saveProfile() {
         do {
+            _ = try sourceTask()
             capture()
             let savedID = selectedID
             if let value = values.first(where: { $0.id == selectedID }), value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
@@ -201,7 +214,7 @@ import UniformTypeIdentifiers
             if let savedID { do { try onSaved?(savedID) } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription } }
         } catch { state.stringValue = error.localizedDescription }
     }
-    @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let id = try store.agents.createTask(selectedID, store: store, workspace: workspace, workMode: workMode); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
+    @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let context = try sourceTask(); let id = try store.agents.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
     @objc private func importProfiles() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false

@@ -137,6 +137,13 @@ struct AgentPluginAgentDefinition {
         guard current.pluginSource == snapshot.pluginSource else { throw PetError("插件 Agent 已变化，请重新选择执行者") }
         if let source = snapshot.pluginSource { try plugins.validateAgent(source, workspace: workspace) }; return current
     }
+    func currentProfile(_ snapshot: AgentProfile, task: AgentTaskRecord) throws -> AgentProfile {
+        guard task.workspaceScope != nil else { return try currentProfile(snapshot, workspace: task.workspace) }
+        _ = try AgentWorkspaceScope.roots(task)
+        let project = try snapshot.pluginSource.flatMap { try AgentPlugins.scope($0.name).workspace }
+        if let project, !task.includesWorkspaceRoot(project) { throw PetError("Agent 来源超出当前任务的源文件夹") }
+        return try currentProfile(snapshot, workspace: project ?? task.workspace)
+    }
     private func pluginModels() throws -> ([String: String], String?) {
         let files = try AgentFiles(workspace: directory.path), url = try files.literalURL("extensions/plugin-agent-models.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return ([:], nil) }

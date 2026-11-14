@@ -78,7 +78,13 @@ import AppKit
     init(servers: [AgentMCPServer]) {
         self.servers = servers
         let server = NSPopUpButton(), tool = NSTextField(), permission = NSPopUpButton(); self.server = server; self.tool = tool; self.permission = permission
-        server.addItems(withTitles: servers.map(\.name)); server.setAccessibilityLabel("MCP 连接器")
+        for item in servers {
+            let duplicate = servers.filter { $0.name == item.name }.count > 1
+            let title = duplicate ? AgentMCPSelection.title(item) : item.name
+            let repeated = duplicate && servers.filter { AgentMCPSelection.title($0) == title }.count > 1
+            server.addItem(withTitle: repeated ? AgentMCPSelection.selectionTitle(item) : title); server.lastItem?.toolTip = AgentMCPSelection.selectionTitle(item)
+        }
+        server.setAccessibilityLabel("MCP 连接器")
         tool.placeholderString = "实际工具名"; tool.setAccessibilityLabel("MCP 工具名")
         permission.addItems(withTitles: AgentToolPermission.allCases.map(\.title)); permission.selectItem(at: AgentToolPermission.allCases.firstIndex(of: .ask)!); permission.setAccessibilityLabel("MCP 工具权限")
         super.init(title: "MCP 工具权限", rows: [[NSTextField(labelWithString: "连接器"), server], [NSTextField(labelWithString: "工具"), tool], [NSTextField(labelWithString: "权限"), permission]], submitTitle: "应用")

@@ -1217,10 +1217,10 @@ final class FormDocumentView: NSView {
             let manager = AgentHookWindow(service: store.hooks, workspace: workspace)
             if let selection { manager.selectHook(selection) }; return manager
         case "agents":
-            let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: mode); manager.onUse = use
+            let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: mode, taskID: taskID); manager.onUse = use
             if let selection { manager.selectProfile(selection) }; return manager
         case "teams":
-            let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: mode); manager.onUse = use; return manager
+            let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: mode, taskID: taskID); manager.onUse = use; return manager
         case "worktrees":
             let manager = AgentWorktreeSettingsWindow(store: store) { [weak self] id in
                 guard let self, self.canLeaveMainPage() else { return }; self.showAgentTask(id); self.show(tab: "chat")
@@ -2311,13 +2311,13 @@ final class FormDocumentView: NSView {
         }
         item("小鲸", "default", selected: task.agent == nil)
         do {
-            let profiles = try store.agents.list(enabledOnly: true, workspace: task.workspace), teams = try store.teams.list().filter(\.enabled)
+            let profiles = try store.agents.list(enabledOnly: true, task: task), teams = try store.teams.list().filter(\.enabled)
             if !profiles.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "自定义 Agent")) }
-            for value in profiles { item(value.name, "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
+            for value in profiles { item(AgentProfiles.title(value, task: task), "agent:" + value.id, selected: task.team == nil && task.agent?.profile.id == value.id) }
             if !teams.isEmpty { menu.addItem(.separator()); menu.addItem(NSMenuItem.sectionHeader(title: "Agent 团队")) }
             for value in teams {
-                let available = (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil
-                let sameProject = value.workspace.map { (try? AgentFiles(workspace: task.workspace).root.path) == $0 } ?? true
+                let available = (try? store.teams.team(value.id, store: store, task: task)) != nil
+                let sameProject = (try? store.teams.sourceWorkspaces(value).allSatisfy(task.includesWorkspaceRoot)) ?? false
                 item(value.name + (sameProject ? (available ? "" : " · 成员不可用") : " · 其他项目"), "team:" + value.id, selected: task.team?.team.id == value.id, available: available)
             }
         } catch { setStatus(error.localizedDescription, error: true) }
@@ -2345,7 +2345,11 @@ final class FormDocumentView: NSView {
         let draft = try AgentProfileDrafts.load(id, taskID: taskID, store: store)
         let manager: AgentProfileWindow
         if let existing = settingsPageHost.currentController as? AgentProfileWindow, selectedTab == "settings" {
-            guard existing.workspace == store.task(taskID)?.workspace else { throw PetError("请先完成已打开项目的 Agent 配置") }; manager = existing
+            if existing.workspace != store.task(taskID)?.workspace {
+                guard existing.taskID == taskID else { throw PetError("请先完成已打开项目的 Agent 配置") }
+                _ = try AgentWorkspaceScope.settingsSourceTask(taskID, workspace: existing.workspace, store: store)
+            }
+            manager = existing
         } else {
             guard showSettingsCategory("agents"), let embedded = settingsPageHost.currentController as? AgentProfileWindow else { throw PetError("请先完成当前设置编辑") }
             manager = embedded
@@ -3883,7 +3887,7 @@ extension ControlWindow {
         return ["category": settingsCategory, "page": settingsPageHost.selectedPageKey ?? "", "source": agentTaskID.flatMap { settingsSourceFolders[$0] } ?? currentAgentTask?.workspace ?? "", "folders": currentAgentTask?.workspacePaths ?? [], "primary": currentAgentTask?.workspace ?? "", "taskID": agentTaskID ?? "", "draft": composer.string, "controller": settingsPageHost.currentController.map { String(describing: type(of: $0)) } ?? ""]
     }
     var settingsControllerForCheck: AgentSettingsPageController? {
-        guard ["--workspace-extensions-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), companion?.checkDirectory != nil else { return nil }
+        guard ["--workspace-extensions-check", "--workspace-capabilities-check", "--workspace-roles-check"].contains(where: CommandLine.arguments.contains), companion?.checkDirectory != nil else { return nil }
         return settingsPageHost.currentController
     }
     func switchWorkMode(_ mode: AgentWorkMode) {
@@ -4061,7 +4065,7 @@ extension ControlWindow {
         if let stoppedTask, tasks.task(stoppedTask) != nil {
             setSize(NSSize(width: 1200, height: 800)); selectAgentTask(stoppedTask); await capture("workbench-stopped")
             checks["actualStoppedTaskHasResumeAndStoppedState"] = tasks.task(stoppedTask)?.status == .stopped && !resumeButton.isHidden && !workbenchBadge.isHidden
-            if let binding = tasks.task(stoppedTask)?.agent, (try? tasks.agents.profile(binding.profile.id, workspace: tasks.task(stoppedTask)?.workspace)) == nil {
+            if let stopped = tasks.task(stoppedTask), let binding = stopped.agent, (try? tasks.agents.profile(binding.profile.id, task: stopped)) == nil {
                 resumeAgentTask()
                 for _ in 0..<40 { if tasks.task(stoppedTask)?.status == .failed { break }; try? await Task.sleep(nanoseconds: 50_000_000) }
                 renderAgentMessages(); await capture("workbench-real-disabled-error")

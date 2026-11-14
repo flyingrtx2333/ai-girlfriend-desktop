@@ -456,7 +456,7 @@ import Foundation
             defer { if self.analyses[id]?.token == analysis.token { self.analyses[id] = nil; self.notifyChange(id) } }
             do {
                 try self.store.teams.check(task, store: self.store)
-                if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role, workspace: task.workspace) }
+                if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role, task: task) }
                 let p = try self.analysisPreferences(id, model: recap ? model : nil), key = try self.keychain.read("chat")
                 if recap { try await self.generateRecap(id, preferences: p, key: key) }
                 else {
@@ -703,15 +703,15 @@ import Foundation
         if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id, task: task) }
         if !task.isProjectDocumentation, task.agent == nil { context += "\n\n[角色设定]\n" + String(preferences().persona.prefix(4000)) }
         if let binding = task.agent {
-            context += "\n\n[自定义 Agent：\(binding.profile.name)]\n" + binding.profile.instructions
+            context += "\n\n[自定义 Agent：\(AgentProfiles.title(binding.profile, task: task))]\n" + binding.profile.instructions
             context += "\n工具范围：" + binding.tools.sorted().joined(separator: ", ") + (binding.readOnly ? "。只读项目，终端也不能写项目。" : "。修改仍遵循当前审批与项目边界。")
             if !binding.mcpServers.isEmpty { context += "\n仅可使用已选 MCP：" + binding.mcpServers.sorted().joined(separator: ", ") + "。建立连接须确认，调用遵循逐工具规则与所属任务权限。" }
             if let owner = binding.ownerID { context += "\n这是独立委派任务，仅接收本任务的要求，不具有主任务 \(owner) 的聊天历史。依据实际工具结果完成明确子任务，结果会返回主任务；不要声称整个主任务因此完成。" }
         } else if !task.isProjectDocumentation, tools.contains("delegate_task") { context += "\n需要专门职责时，用 load_tools 的 agents 组查找已启用 Agent，再通过 delegate_task 交付明确要求和必要资料。委派不复制本次会话，子任务保持独立权限与记录；以工具返回的真实最终结果核对完成，不能把创建或分派当作完成。" }
         if let team = task.team?.team {
-            let members = try store.agents.list(workspace: task.workspace).filter { team.memberIDs.contains($0.id) }
+            let members = try store.agents.list(task: task).filter { team.memberIDs.contains($0.id) }
             context += "\n\n[团队：\(team.name)；你是负责人]\n" + team.instructions
-            context += "\n本次成员：" + members.map { "\($0.name) (\($0.id))：\($0.description)" }.joined(separator: "；")
+            context += "\n本次成员：" + members.map { "\(AgentProfiles.title($0, task: task)) (\($0.id))：\($0.description)" }.joined(separator: "；")
             context += "\n只委派给本次成员，按实际需要明确分工；先等待所需成员真实完成，再核对其工具结果与产物后汇总。成员失败或未完成时明确报告，不能写成已完成。"
         } else if let team = try store.teams.binding(task, store: store) {
             context += "\n[团队：\(team.name)；你是成员]\n" + team.instructions + "\n只完成当前明确分工，结果返回负责人；不声称整个团队目标已完成。"
@@ -765,8 +765,8 @@ import Foundation
             if let task = store.task(id) { for root in task.workspacePaths { try await store.offices.prepareForExecution(workspace:root) } }
             if let task = store.task(id) { try store.teams.check(task, store: store) }
             let p = try taskPreferences(id)
-            if let binding = store.task(id)?.agent {
-                _ = try store.agents.currentProfile(binding.profile, workspace: store.task(id)?.workspace)
+            if let task = store.task(id), let binding = task.agent {
+                _ = try store.agents.currentProfile(binding.profile, task: task)
             }
             run.preferences = p
             store.update(id) { $0.model = p.model }

@@ -383,12 +383,13 @@ import Foundation
             let team = try store.teams.binding(task, store: store)
             let skills = (try? store.extensions.catalog(task: task, includeDisabled: false)) ?? []
             let mcpServers = (try? store.mcp.availableServers(task: task)) ?? []
-            let values = try store.agents.list(enabledOnly: true, workspace: task.workspace).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in
-                return ["id": value.id, "name": value.name, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": mcpServers.first(where: { $0.id == id })?.name ?? "不可用"] }]
+            let values = try store.agents.list(enabledOnly: true, task: task).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in
+                let source = value.pluginSource.flatMap { try? AgentPlugins.scope($0.name).workspace } ?? "用户"
+                return ["id": value.id, "name": value.name, "source": source, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": mcpServers.first(where: { $0.id == id })?.name ?? "不可用"] }]
             }
             let teams: [[String: Any]] = try team == nil ? store.teams.list().compactMap { value in
-                guard (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil else { return nil }
-                return ["id": value.id, "name": value.name, "description": value.description, "leader_id": value.leaderID, "member_ids": value.memberIDs]
+                guard (try? store.teams.team(value.id, store: store, task: task)) != nil else { return nil }
+                return ["id": value.id, "name": value.name, "sources": try store.teams.sourceWorkspaces(value).sorted(), "description": value.description, "leader_id": value.leaderID, "member_ids": value.memberIDs]
             } : []
             return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: ["agents": values, "teams": teams], options: [.sortedKeys]), as: UTF8.self))
         case "delegate_task":

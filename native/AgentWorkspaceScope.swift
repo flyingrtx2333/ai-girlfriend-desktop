@@ -53,6 +53,15 @@ struct AgentWorkspaceScope: Codable, Equatable, Sendable {
         guard let context = try contexts(task).first(where:{$0.workspace == workspace}) else { throw PetError("源文件夹不属于当前任务，请重新打开设置") }
         return context
     }
+    @MainActor static func settingsSourceTask(_ id: String?, workspace: String?, store: AgentStore) throws -> AgentTaskRecord? {
+        guard let id else { return nil }
+        guard let task = store.task(id) else { throw PetError("原任务已不存在，请重新打开设置") }
+        if task.workspaceScope != nil { _ = try roots(task) }
+        if let workspace {
+            guard try task.includesWorkspaceRoot(AgentFiles(workspace: workspace).root.path) else { throw PetError("设置来源超出当前任务的源文件夹") }
+        }
+        return task
+    }
 }
 
 extension AgentTaskRecord {

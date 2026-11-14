@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--workspace-roles-check") { await runWorkspaceRolesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-capabilities-check") { await runWorkspaceCapabilitiesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-extensions-check") { await runWorkspaceExtensionsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-editor-check") { await runWorkspaceEditorCheck(output); NSApp.terminate(nil); return }
@@ -94,6 +95,7 @@ import WebKit
                 if CommandLine.arguments.contains("--workspace-editor-fixtures") || CommandLine.arguments.contains("--workspace-editor-reopen") { try await prepareWorkspaceEditorUI(output,seed:CommandLine.arguments.contains("--workspace-editor-fixtures")) }
                 if CommandLine.arguments.contains("--workspace-extensions-fixtures") || CommandLine.arguments.contains("--workspace-extensions-reopen") { try await prepareWorkspaceExtensionsUI(output, seed: CommandLine.arguments.contains("--workspace-extensions-fixtures")) }
                 if CommandLine.arguments.contains("--workspace-capabilities-fixtures") || CommandLine.arguments.contains("--workspace-capabilities-reopen") { try await prepareWorkspaceCapabilitiesUI(output, seed: CommandLine.arguments.contains("--workspace-capabilities-fixtures")) }
+                if CommandLine.arguments.contains("--workspace-roles-fixtures") || CommandLine.arguments.contains("--workspace-roles-reopen") { try await prepareWorkspaceRolesUI(output, seed: CommandLine.arguments.contains("--workspace-roles-fixtures")) }
                 if CommandLine.arguments.contains("--name-editor-fixtures") || CommandLine.arguments.contains("--name-editor-reopen") { try prepareNameEditorUI(output, seed: CommandLine.arguments.contains("--name-editor-fixtures")) }
                 if CommandLine.arguments.contains("--unsaved-changes-fixtures") || CommandLine.arguments.contains("--unsaved-changes-reopen") { try await prepareUnsavedChangesUI(output, seed: CommandLine.arguments.contains("--unsaved-changes-fixtures")) }
                 if CommandLine.arguments.contains("--operation-confirmation-fixtures") || CommandLine.arguments.contains("--operation-confirmation-reopen") { try await prepareOperationConfirmationUI(output, seed: CommandLine.arguments.contains("--operation-confirmation-fixtures")) }
@@ -228,6 +230,7 @@ import WebKit
                         value["skillEvolution"] = skillEvolutionReadback()
                         value["settingsSources"] = control.settingsSourceReadback()
                         value["sourceCapabilities"] = workspaceCapabilitiesReadback()
+                        value["sourceRoles"] = workspaceRolesReadback()
                         value["questionRecords"] = tasks.tasks.compactMap { tasks.task($0.id) }.filter { $0.status == .waiting || $0.approvals.contains { $0.decision == "skip" || $0.autoSkipCancelled == true } }.map { record in
                             ["taskID": record.id, "title": record.title, "status": record.status.rawValue, "approvals": record.approvals.map { ["id": $0.id, "callID": $0.call.id, "name": $0.call.name, "decision": $0.decision ?? "", "interactionCancelled": $0.autoSkipCancelled == true] as [String: Any] }, "toolResults": record.messages.filter { $0.role == "tool" }.map { ["callID": $0.toolCallID ?? "", "content": $0.content] }] as [String: Any]
                         }
