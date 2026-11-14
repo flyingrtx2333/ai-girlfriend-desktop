@@ -30,6 +30,13 @@ import Darwin
         let editor = try control(NSTextView.self, "MCP 配置 JSON", page: detail), kinds = try control(NSSegmentedControl.self, "MCP 配置方式", page: detail)
         var checks: [String: Bool] = [:]
         checks["mcpFormIsDefaultAndJSONRemainsAvailable"] = try kinds.selectedSegment == 0 && !control(NSScrollView.self, "MCP 配置表单", page: detail).isHiddenOrHasHiddenAncestor && editor.isHiddenOrHasHiddenAncestor
+        let formScroll = try control(NSScrollView.self, "MCP 配置表单", page: detail), originalSize = host.contentView!.frame.size
+        host.setContentSize(NSSize(width: 420, height: 360)); pane.layoutSubtreeIfNeeded()
+        guard let formDocument = formScroll.documentView, let saveButton = find(NSButton.self, in: detail.pageContentView, matching: { $0.title == "保存" }), let outer = find(NSScrollView.self, in: pane, matching: { $0.accessibilityLabel() == "设置内容" }) else { throw PetError("缺少表单滚动或保存区域") }
+        checks["mcpLongFormScrollsInsideTheNarrowSettingsViewport"] = formDocument.bounds.height > formScroll.contentView.bounds.height + 1 && (outer.documentView?.bounds.height ?? -1) <= outer.contentView.bounds.height + 1
+        formScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, formDocument.bounds.height - formScroll.contentView.bounds.height))); formScroll.reflectScrolledClipView(formScroll.contentView); pane.layoutSubtreeIfNeeded()
+        checks["mcpLongFormKeepsSaveVisibleAfterScrollingToTheLastField"] = formScroll.documentVisibleRect.maxY >= formDocument.bounds.maxY - 1 && saveButton.visibleRect.height >= saveButton.bounds.height - 1 && outer.contentView.bounds.minY < 1
+        formScroll.contentView.scroll(to: .zero); host.setContentSize(originalSize); pane.layoutSubtreeIfNeeded()
         try edit("MCP 名称", "表单公开连接器", page: detail); try edit("MCP 命令", "true", page: detail); try edit("MCP 工作目录", workspace!, page: detail); try edit("MCP 超时毫秒", "1250", page: detail)
         for value in ["第一项 🧭", ""] { try press("添加 MCP 参数", page: detail); let index = value.isEmpty ? 2 : 1; try edit("MCP 参数 \(index) 值", value, page: detail) }
         try press("添加 MCP 环境变量", page: detail); try edit("MCP 环境变量 1 名称", "PUBLIC_VALUE", page: detail); try edit("MCP 环境变量 1 值", "公开值", page: detail)

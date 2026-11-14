@@ -72,7 +72,8 @@ import UniformTypeIdentifiers
         let navigation = NSStackView(views: [detailKinds, NSView(), browse, remove]); navigation.spacing = 8
         let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-mcp-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(tabs); tabs.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([tabs.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), tabs.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), tabs.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), tabs.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)])
+        let preferredCardHeight = card.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); preferredCardHeight.priority = .defaultHigh; preferredCardHeight.isActive = true
+        NSLayoutConstraint.activate([tabs.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), tabs.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), tabs.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), tabs.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
         let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, card, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         detail.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [header, state, navigation, card, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -306,6 +307,7 @@ import UniformTypeIdentifiers
 @MainActor private final class AgentMCPDetailPage: AgentSettingsPageController, NSWindowDelegate {
     var onCanLeave: (() -> Bool)?, onAppear: (() -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 220 }
+    override var usesInternalScrolling: Bool { true }
     init(content: NSView) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "连接器配置"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()

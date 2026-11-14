@@ -11,6 +11,7 @@ import AppKit
     var pageContentView: NSView? { embeddedContent ?? window?.contentView }
     var isPageVisible: Bool { pageContentView?.window?.isVisible == true && pageContentView?.isHiddenOrHasHiddenAncestor != true }
     var minimumSettingsContentHeight: CGFloat { max(360, (window?.minSize.height ?? 420) - 22) }
+    var usesInternalScrolling: Bool { false }
 
     func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         guard let content = embeddedContent ?? window?.contentView else { return nil }
@@ -196,6 +197,7 @@ import AppKit
     private var category = "", identity = ""
     private var makePage: ((String) -> AgentSettingsPageController?)?
     private var scrollMonitor: Any?
+    private var pageHeight: NSLayoutConstraint?
     private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { entries.map(\.controller) }
@@ -306,9 +308,14 @@ import AppKit
     }
     private func displayCurrent() {
         guard let entry = entries.last else { updateHeader(); return }
+        pageHeight?.isActive = false; pageHeight = nil
         forwardedScrolls.removeAllObjects()
         let content = entry.view; document.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: document.leadingAnchor), content.trailingAnchor.constraint(equalTo: document.trailingAnchor), content.topAnchor.constraint(equalTo: document.topAnchor), content.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
+        if entry.controller.usesInternalScrolling {
+            pageHeight = content.heightAnchor.constraint(equalTo: viewport.contentView.heightAnchor)
+            pageHeight?.isActive = true
+        }
         layoutSubtreeIfNeeded()
         viewport.contentView.scroll(to: .zero); viewport.reflectScrolledClipView(viewport.contentView)
         startScrollMonitor()
@@ -336,6 +343,7 @@ import AppKit
     }
     private func clearEntries() {
         stopScrollMonitor()
+        pageHeight?.isActive = false; pageHeight = nil
         for entry in entries.reversed() { entry.controller.endSettingsHosting() }
         entries = []; updateHeader()
     }
