@@ -105,15 +105,22 @@ import AppKit
     private func checkTask() throws {
         guard let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("来源任务正在执行或已归档，请稍后重试") }
     }
+    private func matchesInputs(_ value: AgentWorktreeCreationReview) -> Bool {
+        guard points.indices.contains(start.indexOfSelectedItem), value.branch == branch.stringValue,
+              value.startPoint == points[start.indexOfSelectedItem].ref, value.includeChanges == (include.state == .on) else { return false }
+        return value.sources?.allSatisfy { selectedStarts[$0.root] == $0.startPoint } ?? true
+    }
     @objc private func previewCreation() {
         guard !busy, points.indices.contains(start.indexOfSelectedItem) else { return }
-        let name = branch.stringValue, base = points[start.indexOfSelectedItem].ref, carry = include.state == .on
+        let name = branch.stringValue, base = points[start.indexOfSelectedItem].ref, carry = include.state == .on, starts = selectedStarts
         review = nil; setBusy(true); state.stringValue = "正在预览…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                try checkTask(); let value = try await git.prepareWorktreeCreation(branch: name, startPoint: base, includeChanges: carry, sourceStartPoints: selectedStarts, resumeTaskID: resumeTaskID)
-                try Task.checkCancellation(); review = value; state.stringValue = value.sources.map { "\($0.count) 个待创建源 · 已保留 \(value.retained?.count ?? 0) 个 · \(value.paths.count) 个文件" } ?? (value.includeChanges ? "将带入 \(value.paths.count) 个文件 · 保持未暂存" : "预览完成")
+                try checkTask(); let value = try await git.prepareWorktreeCreation(branch: name, startPoint: base, includeChanges: carry, sourceStartPoints: starts, resumeTaskID: resumeTaskID)
+                try Task.checkCancellation()
+                guard selectedStarts == starts, matchesInputs(value) else { throw PetError("创建选项已变化，请重新预览") }
+                review = value; state.stringValue = value.sources.map { "\($0.count) 个待创建源 · 已保留 \(value.retained?.count ?? 0) 个 · \(value.paths.count) 个文件" } ?? (value.includeChanges ? "将带入 \(value.paths.count) 个文件 · 保持未暂存" : "预览完成")
                 diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树")
             } catch { showFailure(error.localizedDescription, title: "预览失败"); review = nil }
             setBusy(false)
@@ -121,6 +128,9 @@ import AppKit
     }
     @objc private func confirm() {
         guard !busy, let review else { return }
+        guard matchesInputs(review) else {
+            self.review = nil; showFailure("创建选项已变化，请重新预览", title: "预览已失效"); setBusy(false); return
+        }
         createReviewed(review)
     }
     private func createReviewed(_ review: AgentWorktreeCreationReview) {

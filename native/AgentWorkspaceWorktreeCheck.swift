@@ -83,6 +83,35 @@ import AppKit
             let localID = tasks.create(workspace: beta.path, mode: child.mode, workspaceScope: AgentWorkspaceScope(group: beta.path, folders: roots.map(\.path), primary: beta.path))
             try tasks.copyEnvironmentDraft(sourceID: created.taskID, targetID: localID)
             checks["returningToLocalRetainsLimitsAndAllSources"] = try encoder.encode(tasks.task(localID)?.inheritedLimits) == encoder.encode(child.inheritedLimits) && tasks.task(localID)?.workspacePaths == roots.map(\.path) && tasks.task(localID)?.workspace == beta.path && tasks.task(localID)?.worktreeOrigins == nil
+            var inputTaskID: String?
+            let inputController = try AgentWorktreeCreationWindow(store: tasks, taskID: id, directory: helper.directory) { inputTaskID = $0 }
+            func popup(_ view: NSView, label: String) -> NSPopUpButton? {
+                if let value = view as? NSPopUpButton, value.accessibilityLabel() == label { return value }
+                return view.subviews.lazy.compactMap { popup($0, label: label) }.first
+            }
+            await inputController.checkWorkspace(branch: "late-control-input", action: "preview")
+            guard let content = inputController.window?.contentView,
+                  let primaryPopup = popup(content, label: "起点分支"), let secondaryPopup = popup(content, label: "起点分支 · " + alpha.path),
+                  let primaryRelease = primaryPopup.itemTitles.firstIndex(where: { $0.hasPrefix("release · ") }),
+                  let secondaryRelease = secondaryPopup.itemTitles.firstIndex(where: { $0.hasPrefix("release · ") }) else { throw PetError("未找到实际起点控件") }
+            let beforeLatePrimary = try await helper.worktrees().count, beforeLateSecondary = try await secondary.worktrees().count
+            secondaryPopup.selectItem(at: secondaryRelease)
+            await inputController.checkWorkspace(action: "create")
+            let afterLatePrimary = try await helper.worktrees().count, afterLateSecondary = try await secondary.worktrees().count
+            checks["lateSecondarySelectionRejectsStalePreviewBeforeAnyCheckout"] = inputTaskID == nil && beforeLatePrimary == afterLatePrimary && beforeLateSecondary == afterLateSecondary && inputController.workspaceReadback()["createEnabled"] as? Bool == false
+            await inputController.checkWorkspace(action: "preview")
+            primaryPopup.selectItem(at: primaryRelease)
+            await inputController.checkWorkspace(action: "create")
+            checks["latePrimarySelectionRejectsStalePreviewBeforeAnyTask"] = inputTaskID == nil && inputController.workspaceReadback()["createEnabled"] as? Bool == false
+            await inputController.checkWorkspace(action: "preview"); await inputController.checkWorkspace(action: "create")
+            guard let inputTaskID, let inputTask = tasks.task(inputTaskID) else { throw PetError("起点变化后重新预览未能创建") }
+            var correctInputs = true
+            for origin in inputTask.managedWorktreeOrigins {
+                let actual = try await workspaceWorktreeGit(["rev-parse", "HEAD"], root: URL(fileURLWithPath: origin.path), output: output).trimmingCharacters(in: .whitespacesAndNewlines)
+                let expected = try await workspaceWorktreeGit(["rev-parse", "release"], root: URL(fileURLWithPath: origin.root), output: output).trimmingCharacters(in: .whitespacesAndNewlines)
+                correctInputs = correctInputs && actual == expected
+            }
+            checks["repreviewUsesActualSelectedCommitsAfterLateChanges"] = correctInputs && inputTask.managedWorktreeOrigins.count == 2
             let tools = AgentTools(store: tasks, taskID: created.taskID)
             for root in childRoots {
                 let value = try String(decoding: JSONSerialization.data(withJSONObject: ["path": root.appendingPathComponent("native-created.txt").path, "content": "isolated write\n"]), as: UTF8.self)
