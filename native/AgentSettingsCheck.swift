@@ -76,6 +76,7 @@ import Darwin
             report["visibleWindowsBefore"] = windows()
             var windowStages: [[String: Any]] = []
             let profile = tasks.directory.deletingLastPathComponent()
+            checks.merge(try await checkMemorySettings(output)) { _, value in value }
             func fingerprints() throws -> [String: String] {
                 let entries = FileManager.default.enumerator(at: profile, includingPropertiesForKeys: [.isRegularFileKey])
                 var result: [String: String] = [:]
@@ -95,6 +96,7 @@ import Darwin
                 ("agents", AgentProfileWindow(store: tasks, workspace: workspace), "只读"),
                 ("teams", AgentTeamWindow(store: tasks, workspace: workspace), "设置团队原文"),
                 ("memory", AgentRecordWindow(store: tasks, taskID: id, section: 5, memoryOnly: true), "设置记忆原文"),
+                ("memory-overview", AgentMemorySettingsPage(store: tasks, taskID: id, workspace: workspace, service: AgentGeneralSettings(directory: profile)), "记忆行为"),
                 ("rules", AgentRuleWindow(store: tasks, taskID: id), "设置规则正文")
             ]
             func text(_ view: NSView) -> String {

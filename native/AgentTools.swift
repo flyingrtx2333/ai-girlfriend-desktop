@@ -276,6 +276,7 @@ import Foundation
         }
         if call.name == "write_memory" {
             guard let value = call.object["scope"] as? String, let scope = AgentMemoryScope(rawValue: value), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
+            try AgentMemory.requireAgentEnabled(scope, store: store)
             if scope == .project && [.ask, .plan].contains(task.mode) { throw PetError("当前模式不能修改项目记忆") }
             _ = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
             return "保存" + scope.title
@@ -571,6 +572,7 @@ import Foundation
             return AgentToolResult(text: String(decoding: data, as: UTF8.self))
         case "read_memory", "write_memory":
             guard let scope = AgentMemoryScope(rawValue: try string("scope")), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
+            try AgentMemory.requireAgentEnabled(scope, store: store)
             let memory = call.name == "read_memory" ? try AgentMemory.snapshot(scope, store: store, taskID: taskID)
                 : try AgentMemory.save(scope, content: string("content"), expectedHash: string("expected_hash"), store: store, taskID: taskID)
             let data = try JSONSerialization.data(withJSONObject: ["scope": scope.rawValue, "content": memory.content, "sha256": memory.hash, "location": memory.location], options: [.prettyPrinted, .sortedKeys])

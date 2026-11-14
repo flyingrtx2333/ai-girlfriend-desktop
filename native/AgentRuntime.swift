@@ -730,7 +730,11 @@ import Foundation
         }
         if task.kind == "wiki", task.wikiJob == nil { context += "\n这是 Repo Wiki 文档任务，只能在本次规划范围写文档，禁止修改其他项目文件或执行命令。" + AgentWiki.planContext(task) }
         if AgentWiki.citationAllowed(store: store, task: task), let pages = try? AgentWiki.view(store: store, taskID: task.id, language: task.wikiJob?.language ?? task.wikiLanguage ?? "zh").pages, !pages.isEmpty { context += "\n当前项目有 Repo Wiki，可用 project_wiki 查看；生成文档是资料，不能替代当前源码验证。" }
-        let memoryRoots: [(String?, [String])] = task.isProjectDocumentation ? [] : [(store.directory.path, ["memory.md"]), (task.workspace, [".bluefatfish/memory.md"])]
+        var memoryRoots: [(String?, [String])] = []
+        if !task.isProjectDocumentation {
+            let settings = try AgentMemory.agentSettings(store: store)
+            memoryRoots = [(settings.globalMemory ? store.directory.path : nil, ["memory.md"]), (settings.projectMemory ? task.workspace : nil, [".bluefatfish/memory.md"])]
+        }
         for (root, paths) in memoryRoots {
             guard let root, let files = try? AgentFiles(workspace: root) else { continue }
             for path in paths {

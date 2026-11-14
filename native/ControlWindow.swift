@@ -1273,7 +1273,8 @@ final class FormDocumentView: NSView {
             worktreePolicyPanel = manager.policy; return manager
         case "memory":
             guard let taskID else { return nil }
-            return AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace)
+            guard let companion else { return nil }
+            return AgentMemorySettingsPage(store: store, taskID: taskID, workspace: workspace, service: companion.generalSettings)
         case "rules":
             guard let taskID else { return nil }
             let manager = AgentRuleWindow(store: store, taskID: taskID, managementWorkspace: workspace)

@@ -8,6 +8,15 @@ enum AgentMemoryScope: String, CaseIterable {
 struct AgentMemorySnapshot { var content: String; var hash: String; var location: String }
 
 @MainActor enum AgentMemory {
+    static func agentSettings(store: AgentStore) throws -> AgentGeneralSettings.Settings {
+        let service = AgentGeneralSettings(directory: store.directory.deletingLastPathComponent())
+        if let error = service.error { throw PetError(error) }
+        return service.settings
+    }
+    static func requireAgentEnabled(_ scope: AgentMemoryScope, store: AgentStore) throws {
+        let settings = try agentSettings(store: store)
+        guard scope == .global ? settings.globalMemory : settings.projectMemory else { throw PetError(scope.title + "已关闭；可在设置中重新启用") }
+    }
     private static func file(_ scope: AgentMemoryScope, store: AgentStore, taskID: String, workspace: String?) throws -> (AgentFiles, URL, Int) {
         let files: AgentFiles, path: String
         if scope == .global { files = try AgentFiles(workspace: store.directory.path); path = "memory.md" }

@@ -24,10 +24,11 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         var questionAutoSkip = false
         var promptSuggestions = true
         var skillEvolutionSuggestions = true
+        var globalMemory = true, projectMemory = true
         var homeGame = AgentHomeGameChoice.random
         var conversationDisplay = AgentConversationDisplay.Settings()
         static let goalTurnChoices = AgentGoalExecution.turnChoices
-        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation, questionAutoSkip, promptSuggestions, skillEvolutionSuggestions, homeGame, conversationDisplay }
+        private enum CodingKeys: String, CodingKey { case version, completionNotifications, approvalNotifications, questionNotifications, menuBarIcon, runningInput, goalMaximumTurns, slashMenuPresentation, artifactLocation, questionAutoSkip, promptSuggestions, skillEvolutionSuggestions, globalMemory, projectMemory, homeGame, conversationDisplay }
         init() {}
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,6 +44,8 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             if values.contains(.questionAutoSkip) { questionAutoSkip = try values.decode(Bool.self, forKey: .questionAutoSkip) }
             if values.contains(.promptSuggestions) { promptSuggestions = try values.decode(Bool.self, forKey: .promptSuggestions) }
             if values.contains(.skillEvolutionSuggestions) { skillEvolutionSuggestions = try values.decode(Bool.self, forKey: .skillEvolutionSuggestions) }
+            if values.contains(.globalMemory) { globalMemory = try values.decode(Bool.self, forKey: .globalMemory) }
+            if values.contains(.projectMemory) { projectMemory = try values.decode(Bool.self, forKey: .projectMemory) }
             if values.contains(.homeGame) { homeGame = try values.decode(AgentHomeGameChoice.self, forKey: .homeGame) }
             if values.contains(.conversationDisplay) { conversationDisplay = try values.decode(AgentConversationDisplay.Settings.self, forKey: .conversationDisplay) }
         }
@@ -61,7 +64,7 @@ enum AgentRunningInput: String, Codable, CaseIterable {
             else {
                 let data = try files.readData(file, maximum: 4096)
                 let required: Set<String> = ["version", "completionNotifications", "approvalNotifications", "questionNotifications", "menuBarIcon"]
-                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation", "questionAutoSkip", "promptSuggestions", "skillEvolutionSuggestions", "homeGame", "conversationDisplay"])),
+                guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], required.isSubset(of: Set(raw.keys)), Set(raw.keys).isSubset(of: required.union(["runningInput", "goalMaximumTurns", "slashMenuPresentation", "artifactLocation", "questionAutoSkip", "promptSuggestions", "skillEvolutionSuggestions", "globalMemory", "projectMemory", "homeGame", "conversationDisplay"])),
                       !raw.keys.contains("conversationDisplay") || (raw["conversationDisplay"] as? [String: Any]).map({ Set($0.keys) == AgentConversationDisplay.Settings.keys }) == true,
                       let value = try? JSONDecoder().decode(Settings.self, from: data), value.version == 1, Settings.goalTurnChoices.contains(value.goalMaximumTurns) else { throw PetError("常规配置版本或选项无效") }
                 settings = value; revision = AgentFiles.hash(data)
