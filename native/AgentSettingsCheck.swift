@@ -66,7 +66,15 @@ import Darwin
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
             let pane = AgentSettingsPageHost(); host.contentView = pane
-            let visible = NSApp.windows.filter(\.isVisible).count
+            func visibleContentWindows() -> Set<ObjectIdentifier> {
+                Set(NSApp.windows.filter { $0.isVisible && $0 !== pet && $0 !== statusItem?.button?.window }.map(ObjectIdentifier.init))
+            }
+            let visible = visibleContentWindows()
+            func windows() -> [[String: Any]] {
+                NSApp.windows.filter(\.isVisible).map { ["number": $0.windowNumber, "title": $0.title, "class": String(describing: type(of: $0)), "pet": $0 === pet, "bubble": $0 === bubble, "statusItem": $0 === statusItem?.button?.window] }
+            }
+            report["visibleWindowsBefore"] = windows()
+            var windowStages: [[String: Any]] = []
             let profile = tasks.directory.deletingLastPathComponent()
             func fingerprints() throws -> [String: String] {
                 let entries = FileManager.default.enumerator(at: profile, includingPropertiesForKeys: [.isRegularFileKey])
@@ -128,6 +136,7 @@ import Darwin
                     checks["returningFromMCPDetailKeepsTheOwnedConnectionAndActualStatus"] = pane.currentController === mcp && childPID.map { kill($0, 0) == 0 } == true && mcp.pageContentView.map { text($0).contains("已连接") } == true
                 }
                 guard pane.leave() else { throw PetError("设置页未退出：" + key) }
+                windowStages.append(["page": key, "windows": windows()])
                 if key == "mcp", let childPID {
                     for _ in 0..<30 { if kill(childPID, 0) != 0 { break }; await wait(0.1) }
                     checks["leavingHostedMCPStopsActualProcess"] = kill(childPID, 0) != 0
@@ -135,7 +144,8 @@ import Darwin
             }
             checks["pagesLoadActualStoredContent"] = actualTexts
             checks["openingPagesPreservesActualConfiguration"] = try fingerprints() == before
-            checks["hostingDoesNotCreateVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visible
+            checks["hostingDoesNotCreateVisibleManagementWindows"] = visibleContentWindows() == visible && managers.allSatisfy { $0.1.window?.isVisible == false }
+            report["visibleWindowsAfter"] = windows(); report["visibleWindowStages"] = windowStages
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
             guard checks.count == 20 else { throw PetError("设置页面基础检查缺失") }
