@@ -83,6 +83,10 @@ import AppKit
             let localID = tasks.create(workspace: beta.path, mode: child.mode, workspaceScope: AgentWorkspaceScope(group: beta.path, folders: roots.map(\.path), primary: beta.path))
             try tasks.copyEnvironmentDraft(sourceID: created.taskID, targetID: localID)
             checks["returningToLocalRetainsLimitsAndAllSources"] = try encoder.encode(tasks.task(localID)?.inheritedLimits) == encoder.encode(child.inheritedLimits) && tasks.task(localID)?.workspacePaths == roots.map(\.path) && tasks.task(localID)?.workspace == beta.path && tasks.task(localID)?.worktreeOrigins == nil
+            let sidebar = AgentTaskSidebar(frame: NSRect(x: 0, y: 0, width: 232, height: 700))
+            sidebar.refresh(tasks.tasks, selected: localID, organization: tasks.organization)
+            let directoryNames = sidebar.organizationSnapshot()["directories"] as? [String] ?? []
+            checks["mixedLocalAndWorktreeTasksKeepOriginalWorkspaceGroupTitle"] = directoryNames.contains("Beta 公开项目") && !directoryNames.contains("Beta 公开项目 · 工作树 · 2 个源")
             var inputTaskID: String?
             let inputController = try AgentWorktreeCreationWindow(store: tasks, taskID: id, directory: helper.directory) { inputTaskID = $0 }
             func popup(_ view: NSView, label: String) -> NSPopUpButton? {

@@ -313,7 +313,7 @@ private final class AgentTaskTable: NSTableView {
             for entry in entries {
                 let workspace = entry.path, members = unpinned.filter { $0.organizationWorkspace == workspace }
                 guard !narrowed || !members.isEmpty else { continue }
-                let title = entry.name ?? members.first(where: { $0.worktreeOrigin != nil })?.workspaceDisplayName ?? entry.title
+                let title = entry.name ?? members.first(where: { $0.worktreeOrigin != nil && $0.organizationWorkspace == $0.workspace })?.workspaceDisplayName ?? entry.title
                 rows.append(.group(title, workspace))
                 if !collapsed.contains(groupKey(workspace)) || !query.isEmpty { for task in members { append(task) } }
             }
