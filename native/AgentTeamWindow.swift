@@ -9,7 +9,7 @@ import AppKit
     private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), instructions = NSTextView()
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
     private let enabled = NSButton(checkboxWithTitle: "启用团队及成员", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = NSTextField(labelWithString: "")
+    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
     private var values: [AgentTeam] = [], agents: [AgentProfile] = [], pendingAgents: [AgentProfile] = []
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
@@ -39,16 +39,16 @@ import AppKit
             AgentSettingsStyle.section("协作指令", id: "team-instructions", rows: [editor]),
             AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), AgentSettingsStyle.formRow("额外成员", members, trailing: true), AgentSettingsStyle.formRow("", manage, trailing: true)])
         ], label: "团队配置")
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         save.target = self; save.action = #selector(saveTeam); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; use.target = self; use.action = #selector(useTeam)
         AgentSettingsStyle.primaryAction(save)
-        let footer = NSStackView(views: [state, NSView(), use, save]); footer.spacing = 10
-        for view in [list, actions, form, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
+        let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+        for view in [list, actions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), actions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), actions.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: actions.leadingAnchor), list.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            footer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), footer.topAnchor.constraint(equalTo: actions.topAnchor), footer.heightAnchor.constraint(equalToConstant: 28),
-            form.leadingAnchor.constraint(equalTo: footer.leadingAnchor), form.trailingAnchor.constraint(equalTo: footer.trailingAnchor), form.topAnchor.constraint(equalTo: footer.bottomAnchor, constant: 18), form.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)
+            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: actions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 180)
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

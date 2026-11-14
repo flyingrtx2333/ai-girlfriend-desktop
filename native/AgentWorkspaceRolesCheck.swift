@@ -167,8 +167,16 @@ import Darwin
                 form.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.maxY - form.documentVisibleRect.height))); form.reflectScrolledClipView(form.contentView)
                 let visible = form.documentVisibleRect
                 checks[prefix + "LastGroupIsReachableWithoutMovingSaveAction"] = rectangles.last.map { $0.minY >= visible.minY - 1 && $0.maxY <= visible.maxY + 1 } == true && save.convert(save.bounds, to: root) == saveFrame
-                checks[prefix + "TopSaveRetainsNativeShortcutAndState"] = save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command && save.isEnabled == enabled && saveFrame.minY >= form.frame.maxY && save.bezelColor != nil
+                checks[prefix + "TopSaveRetainsNativeShortcutAndState"] = save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command && save.isEnabled == enabled && saveFrame.minY >= form.convert(form.bounds, to: root).maxY && save.bezelColor != nil
                 form.contentView.scroll(to: original); form.reflectScrolledClipView(form.contentView)
+                guard let status = find(AgentSettingsStatusField.self, root, { _ in true }) else { throw PetError("缺少完整保存反馈") }
+                let previous = status.stringValue, frame = host.frame
+                status.stringValue = "配置目标只读，请检查权限后重试。\n/Volumes/Public source/settings/agents.json\n原文件与未保存填写保持。"
+                host.setFrame(NSRect(origin: frame.origin, size: NSSize(width: 780, height: 540)), display: true); root.layoutSubtreeIfNeeded()
+                let statusRect = status.convert(status.bounds, to: root), formRect = form.convert(form.bounds, to: root)
+                checks[prefix + "NarrowStatusWrapsWithoutOverlappingFormOrChangingSaveState"] = !status.isHidden && status.bounds.height >= 36 && status.maximumNumberOfLines == 0 && status.lineBreakMode == .byWordWrapping && statusRect.minY >= formRect.maxY && save.isEnabled == enabled
+                status.stringValue = previous; host.setFrame(frame, display: true); root.layoutSubtreeIfNeeded()
+                checks[prefix + "EmptyStatusCollapsesAndFullTextRemainsCopyable"] = status.isHidden == previous.isEmpty && status.isSelectable
             }
             picker.select(chosen); NSApp.sendAction(choose, to: picker.target, from: picker)
             guard let manager = control.settingsControllerForCheck as? AgentProfileWindow else { throw PetError("角色设置页未打开") }

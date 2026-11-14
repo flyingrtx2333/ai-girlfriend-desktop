@@ -61,6 +61,18 @@ import AppKit
     }
 }
 
+@MainActor final class AgentSettingsStatusField: NSTextField {
+    override var stringValue: String { didSet { isHidden = stringValue.isEmpty; toolTip = stringValue } }
+    init(_ label: String) {
+        super.init(frame: .zero)
+        isEditable = false; isSelectable = true; isBezeled = false; drawsBackground = false
+        cell?.wraps = true; cell?.isScrollable = false; usesSingleLineMode = false; maximumNumberOfLines = 0; lineBreakMode = .byWordWrapping
+        font = .systemFont(ofSize: 11); textColor = AgentWorkbenchTheme.secondaryText; isHidden = true; setAccessibilityLabel(label)
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal); setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
 @MainActor enum AgentSettingsStyle {
     static func field(_ field: NSTextField) {
         field.font = .systemFont(ofSize: 13); field.controlSize = .large

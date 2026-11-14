@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = NSTextField(labelWithString: "")
+    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
@@ -47,17 +47,17 @@ import UniformTypeIdentifiers
             AgentSettingsStyle.section("工作指令", id: "agent-instructions", rows: [editor]),
             AgentSettingsStyle.section("可选能力", id: "agent-capabilities", rows: [AgentSettingsStyle.formRow("Skills", skills, trailing: true), AgentSettingsStyle.formRow("MCP", mcp, trailing: true), AgentSettingsStyle.formRow("工具权限", tools, trailing: true)])
         ], label: "智能体配置")
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         save.target = self; save.action = #selector(saveProfile); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         AgentSettingsStyle.primaryAction(save)
         use.target = self; use.action = #selector(useProfile)
-        let footer = NSStackView(views: [state, NSView(), use, save]); footer.spacing = 10
-        for view in [list, listActions, form, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
+        let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+        for view in [list, listActions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             listActions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), listActions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), listActions.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: listActions.leadingAnchor), list.topAnchor.constraint(equalTo: listActions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            footer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), footer.topAnchor.constraint(equalTo: listActions.topAnchor), footer.heightAnchor.constraint(equalToConstant: 28),
-            form.leadingAnchor.constraint(equalTo: footer.leadingAnchor), form.trailingAnchor.constraint(equalTo: footer.trailingAnchor), form.topAnchor.constraint(equalTo: footer.bottomAnchor, constant: 18), form.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)
+            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: listActions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 180)
         ])
         reload()
     }
