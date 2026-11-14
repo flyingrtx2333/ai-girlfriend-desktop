@@ -3362,7 +3362,7 @@ final class FormDocumentView: NSView {
         guard displayedTask == taskID else { throw PetError("原任务未打开，未添加指令") }
         let previous = composer.string
         if previous.hasPrefix("/"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
-            let tail = String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let tail = try AgentMCPSelection.command(previous)?.arguments ?? String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             composer.string = "/" + invocation + " " + tail
         } else { composer.string = "/" + invocation + " " + previous }
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
@@ -3384,6 +3384,9 @@ final class FormDocumentView: NSView {
             dismissExtensionCandidates(); composer.string = ""; composer.didChangeText(); guard saveAgentDraft() else { throw PetError("任务草稿未保存") }
             store.slashMenu.recordMode(mode); window?.makeFirstResponder(composer)
         case .plugin: break
+        case .connector(let server):
+            let current = try AgentMCPSelection.current(AgentMCPSelection.reference(server),task:task,store:store)
+            try insertSlashInvocation(AgentMCPSelection.invocation(current),taskID:taskID)
         }
     }
     private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
@@ -3415,12 +3418,12 @@ final class FormDocumentView: NSView {
             let query = String(composer.string.dropFirst())
             guard !query.contains("/") else { dismissExtensionCandidates(); return }
             let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false)
-            let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled)
+            let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled, connectors:AgentMCPSelection.candidates(task:task,store:store))
             guard !entries.isEmpty else { dismissExtensionCandidates(); return }
             let opening = extensionPickerTask != task.id || !extensionPanel.isVisible
             extensionPickerTask = task.id
             extensionPicker.onLayoutChanged = { [weak self] in self?.positionExtensionCandidates() }
-            extensionPicker.setEntries(entries, service: store.slashMenu, presentation: companion?.generalSettings.settings.slashMenuPresentation ?? .recent, query: query, reset: opening)
+            extensionPicker.setEntries(entries, service: store.slashMenu, presentation: companion?.generalSettings.settings.slashMenuPresentation ?? .recent, query: query, reset: opening, connectorIssue:store.mcp.loadError)
             extensionPicker.onPick = { [weak self] entry in
                 guard let self, let id = extensionPickerTask, id == displayedTask else { return }
                 do { try selectSlashEntry(entry, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
@@ -3544,6 +3547,47 @@ extension ControlWindow {
         try JSONSerialization.data(withJSONObject: observations, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("extension-composer-report.json"))
         selectAgentTask(taskID); composer.string = ""; composer.didChangeText(); saveAgentDraft()
         if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("extension-entry.png")) }
+        return checks
+    }
+    func checkSlashConnectors(_ output:URL, ids:[String:String]) async throws -> [String:Bool] {
+        guard let app = companion, app.checkDirectory != nil, let tasks = app.agentStore, let window, let id = ids["task"] else { throw PetError("缺少连接器菜单窗口") }
+        var checks:[String:Bool] = [:]
+        func open(_ query:String = "/", owner:String? = nil) async throws {
+            selectAgentTask(owner ?? id); show(tab:"chat"); NSApp.activate(ignoringOtherApps:true); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(composer)
+            composer.string = query; composer.didChangeText(); try await Task.sleep(nanoseconds:50_000_000)
+        }
+        let seed = tasks.create(title:"原生最近使用的模式记录",mode:.agent)
+        try await open(owner:seed); try selectSlashEntry(.mode(.plan),taskID:seed)
+        let history = app.store.directory.appendingPathComponent("slash-history.json"), before = try Data(contentsOf:history)
+        try await open()
+        for _ in 0..<AgentSlashCategory.allCases.count where extensionPicker.category != .connectors { _ = composer.onExtensionKey?(124) }
+        checks["connectorCategoryUsesKeyboardWithoutTakingInputFocus"] = extensionPanel.isVisible && extensionPicker.category == .connectors && window.firstResponder === composer && !extensionPanel.isKeyWindow
+        checks["categoryContainsOnlyActualConnectorRows"] = extensionPicker.entries.count == 4 && extensionPicker.entries.allSatisfy{if case .connector = $0 { return true }; return false}
+        checks["sixCategoryLabelsAndRowsFitPalette"] = extensionPicker.layoutReadback()["categoriesFit"] as? Bool == true && extensionPicker.layoutReadback()["categoryCount"] as? Int == 6 && extensionPicker.layoutReadback()["shortListFits"] as? Bool == true
+        try await open("/README")
+        checks["searchFindsConfiguredConnectorByActualName"] = extensionPicker.entries.count == 1 && extensionPicker.entries.first?.id == "connector." + ids["server"]!
+        _ = composer.onExtensionKey?(48); _ = saveAgentDraft()
+        let primary = try tasks.mcp.server(ids["server"]!), invocation = "/" + (try AgentMCPSelection.invocation(primary))
+        checks["tabOnlyInsertsQuotedDraftWithoutSendingOrRecordingUse"] = try composer.string == invocation + " " && tasks.task(id)?.draft == composer.string && tasks.task(id)?.messages.isEmpty == true && !extensionPanel.isVisible && Data(contentsOf:history) == before
+        let font = composer.font?.pointSize, otherDraft = tasks.task(ids["other"]!)?.draft
+        composer.string = "保留原始要求 🧭"; _ = saveAgentDraft(); try selectSlashEntry(.connector(primary),taskID:id); _ = saveAgentDraft()
+        checks["insertionPreservesOriginalTextFontAndOtherTaskDraft"] = composer.string == invocation + " 保留原始要求 🧭" && composer.font?.pointSize == font && tasks.task(ids["other"]!)?.draft == otherDraft
+        let second = try tasks.mcp.server(ids["second"]!)
+        composer.string = "/" + (try AgentMCPSelection.invocation(second)) + " 保留后续参数 🧭"; _ = saveAgentDraft()
+        try selectSlashEntry(.connector(primary),taskID:id)
+        checks["replacingConnectorDoesNotKeepOldQuotedNameAsGoal"] = composer.string == invocation + " 保留后续参数 🧭"
+        _ = try tasks.mcp.save(tasks.mcp.document(second),id:second.id,expectedRevision:second.revision)
+        let currentDraft = composer.string
+        do { try selectSlashEntry(.connector(second),taskID:id); checks["stalePopupRowCannotSelectChangedConfiguration"] = false } catch { checks["stalePopupRowCannotSelectChangedConfiguration"] = composer.string == currentDraft && tasks.task(id)?.messages.isEmpty == true }
+        try await open(); selectAgentTask(ids["ask"]!)
+        checks["taskSwitchDismissesOldConnectorPopup"] = !extensionPanel.isVisible && extensionPickerTask == nil
+        try await open()
+        let entries = tasks.slashMenu.entries([],task:tasks.task(id)!,idle:true,canChangeMode:true)
+        extensionPicker.setEntries(entries,service:tasks.slashMenu,presentation:.recent,query:"",reset:true,connectorIssue:"公开配置读取失败")
+        for _ in 0..<AgentSlashCategory.allCases.count where extensionPicker.category != .connectors { _ = extensionPicker.moveCategory(1) }
+        checks["connectorLoadIssueIsVisibleWithoutDisablingCommands"] = extensionPicker.category == .connectors && (extensionPicker.layoutReadback()["footer"] as? String)?.contains("公开配置读取失败") == true && entries.contains{if case .builtin = $0 { return true }; return false}
+        dismissExtensionCandidates(); composer.string = "保留公开核对要求 🧭"; _ = saveAgentDraft()
+        try JSONSerialization.data(withJSONObject:checks,options:[.prettyPrinted,.sortedKeys]).write(to:output.appendingPathComponent("slash-connectors-composer.json"))
         return checks
     }
     func checkSlashMenu(_ output: URL, fixture: AgentSlashMenuFixture) async throws -> [String: Bool] {

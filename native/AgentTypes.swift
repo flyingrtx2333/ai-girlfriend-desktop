@@ -32,6 +32,7 @@ struct AgentMessage: Codable, Identifiable {
     var promptSuggestions: AgentPromptSuggestionSet?
     var skillEvolution: AgentSkillEvolutionSet?
     var skillEvolutionHistory: [AgentSkillEvolutionSet]?
+    var mcpSelection: AgentMCPSelection?
     var toolCalls: [AgentToolCall]?
     var toolCallID: String?
     var attachmentIDs: [String]?
@@ -278,6 +279,7 @@ struct AgentTaskRecord: Codable, Identifiable {
         queuedInputs = []; queuedMessages = []
     }
     mutating func activateExtensions(_ message: AgentMessage) {
+        if message.isHumanInput, message.mcpSelection != nil { toolGroups = Array(Set((toolGroups ?? []) + ["mcp"])).sorted() }
         for reference in message.ruleReferences ?? [] { activateRule(reference) }
         for reference in message.localRuleReferences ?? [] { activateLocalRule(reference) }
         if message.isHumanInput, message.extensionInstructions != nil, message.content.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit", !isProjectDocumentation, [.agent, .goal].contains(mode) { toolGroups = ["project_knowledge"] }

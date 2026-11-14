@@ -136,7 +136,8 @@
     "native:check-thinking-status": "node scripts/check-native-thinking-status.mjs",
     "native:check-prompt-suggestions": "node scripts/check-native-prompt-suggestions.mjs",
     "native:check-home-games": "node scripts/check-native-home-games.mjs",
-    "native:check-skill-evolution": "node scripts/check-native-skill-evolution.mjs"
+    "native:check-skill-evolution": "node scripts/check-native-skill-evolution.mjs",
+    "native:check-slash-connectors": "node scripts/check-native-slash-connectors.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

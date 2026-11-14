@@ -296,6 +296,7 @@ import UniformTypeIdentifiers
     private let scroll = NSScrollView(), header = NSStackView()
     private var listHeight: NSLayoutConstraint!
     private var service: AgentSlashMenu?, allEntries: [AgentSlashEntry] = [], presentation = AgentSlashPresentation.recent, query = "", plugin: String?
+    private var connectorIssue:String?
     private(set) var category = AgentSlashCategory.recent, entries: [AgentSlashEntry] = []
     var items: [AgentExtensionItem] { allEntries.compactMap(\.extensionItem) }
     var onPick: ((AgentSlashEntry) -> Void)?, onLayoutChanged: (() -> Void)?
@@ -325,10 +326,11 @@ import UniformTypeIdentifiers
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8), column.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8), column.topAnchor.constraint(equalTo: root.topAnchor, constant: 6), column.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6)])
         view = root
     }
-    func setEntries(_ entries: [AgentSlashEntry], service: AgentSlashMenu, presentation: AgentSlashPresentation, query: String, reset: Bool) {
+    func setEntries(_ entries: [AgentSlashEntry], service: AgentSlashMenu, presentation: AgentSlashPresentation, query: String, reset: Bool, connectorIssue:String? = nil) {
         loadViewIfNeeded()
         if reset || self.presentation != presentation || self.query != query { category = .recent; plugin = nil }
         self.allEntries = entries; self.service = service; self.presentation = presentation; self.query = query
+        self.connectorIssue = connectorIssue
         if let plugin, !entries.contains(where: { $0.pluginKey == plugin }) { self.plugin = nil }
         service.reload(); refresh()
     }
@@ -339,13 +341,15 @@ import UniformTypeIdentifiers
         categories.isHidden = presentation != .recent || !query.isEmpty || plugin != nil; back.isHidden = plugin == nil; header.isHidden = categories.isHidden && back.isHidden
         categories.selectedSegment = AgentSlashCategory.allCases.firstIndex(of: category) ?? 0
         for (index, value) in AgentSlashCategory.allCases.enumerated() {
-            categories.setEnabled(value == .recent || !service.visible(allEntries, presentation: .recent, category: value, query: "", plugin: nil).isEmpty, forSegment: index)
+            categories.setEnabled(value == .recent || value == .connectors && connectorIssue != nil || !service.visible(allEntries, presentation: .recent, category: value, query: "", plugin: nil).isEmpty, forSegment: index)
+            if value == .connectors { categories.setToolTip("在 Agent 或目标任务中选择已配置连接器",forSegment:index) }
         }
         if let plugin { back.title = allEntries.first(where: { $0.pluginKey == plugin })?.title ?? "返回" }
         scroll.isHidden = entries.isEmpty; empty.isHidden = !entries.isEmpty; empty.stringValue = !query.isEmpty ? "未找到匹配项" : category == .recent && plugin == nil && presentation == .recent ? "暂无最近使用" : "暂无可用能力"
         listHeight.constant = CGFloat(max(1, min(8, entries.count))) * 30
         let hints = !categories.isHidden ? "↑↓ 选择   ←→ 类别   Enter / Tab 添加   Esc 关闭" : plugin != nil ? "↑↓ 选择   ← 返回   Enter / Tab 添加   Esc 关闭" : "↑↓ 选择   Enter / Tab 添加   Esc 关闭"
-        footer.stringValue = service.issue ?? hints; footer.toolTip = service.issue
+        let issue = category == .connectors ? connectorIssue.map { "连接器未载入：" + $0 } ?? service.issue : service.issue
+        footer.stringValue = issue ?? hints; footer.toolTip = issue
         table.reloadData()
         if !entries.isEmpty { table.selectRowIndexes(IndexSet(integer: entries.firstIndex(where: { $0.id == previous }) ?? 0), byExtendingSelection: false); table.scrollRowToVisible(table.selectedRow) }
         else { table.deselectAll(nil) }
@@ -379,7 +383,7 @@ import UniformTypeIdentifiers
         view.layoutSubtreeIfNeeded(); table.layoutSubtreeIfNeeded()
         let visible = table.visibleRect, first = entries.isEmpty ? NSRect.zero : table.rect(ofRow: 0), last = entries.isEmpty ? NSRect.zero : table.rect(ofRow: entries.count - 1)
         let shortListFits = entries.isEmpty || entries.count > 8 || first.minY >= visible.minY - 0.5 && last.maxY <= visible.maxY + 0.5
-        return ["visibleRect": NSStringFromRect(visible), "firstRow": NSStringFromRect(first), "lastRow": NSStringFromRect(last), "shortListFits": shortListFits]
+        return ["visibleRect": NSStringFromRect(visible), "firstRow": NSStringFromRect(first), "lastRow": NSStringFromRect(last), "shortListFits": shortListFits, "footer":footer.stringValue, "categoryCount":categories.segmentCount, "categoriesFit":categories.isHidden || categories.frame.maxX <= header.bounds.maxX + 0.5]
     }
     @objc func pick() {
         guard entries.indices.contains(table.selectedRow) else { return }; let entry = entries[table.selectedRow]

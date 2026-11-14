@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--slash-connectors-check") { await runSlashConnectorsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-evolution-check") { await runSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--home-games-check") { await runHomeGamesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--prompt-suggestions-check") { await runPromptSuggestionsCheck(output); NSApp.terminate(nil); return }
@@ -86,6 +87,7 @@ import WebKit
                 if CommandLine.arguments.contains("--prompt-suggestions-fixtures") || CommandLine.arguments.contains("--prompt-suggestions-reopen") { try preparePromptSuggestionsUI(output, seed: CommandLine.arguments.contains("--prompt-suggestions-fixtures")) }
                 if CommandLine.arguments.contains("--home-games-fixtures") || CommandLine.arguments.contains("--home-games-reopen") { try prepareHomeGamesUI(output, seed: CommandLine.arguments.contains("--home-games-fixtures")) }
                 if CommandLine.arguments.contains("--skill-evolution-fixtures") || CommandLine.arguments.contains("--skill-evolution-reopen") { try prepareSkillEvolutionUI(output,seed:CommandLine.arguments.contains("--skill-evolution-fixtures")) }
+                if CommandLine.arguments.contains("--slash-connectors-fixtures") || CommandLine.arguments.contains("--slash-connectors-reopen") { try await prepareSlashConnectorsUI(output,seed:CommandLine.arguments.contains("--slash-connectors-fixtures")) }
                 if CommandLine.arguments.contains("--name-editor-fixtures") || CommandLine.arguments.contains("--name-editor-reopen") { try prepareNameEditorUI(output, seed: CommandLine.arguments.contains("--name-editor-fixtures")) }
                 if CommandLine.arguments.contains("--unsaved-changes-fixtures") || CommandLine.arguments.contains("--unsaved-changes-reopen") { try await prepareUnsavedChangesUI(output, seed: CommandLine.arguments.contains("--unsaved-changes-fixtures")) }
                 if CommandLine.arguments.contains("--operation-confirmation-fixtures") || CommandLine.arguments.contains("--operation-confirmation-reopen") { try await prepareOperationConfirmationUI(output, seed: CommandLine.arguments.contains("--operation-confirmation-fixtures")) }
@@ -222,6 +224,7 @@ import WebKit
                             ["taskID": record.id, "title": record.title, "status": record.status.rawValue, "approvals": record.approvals.map { ["id": $0.id, "callID": $0.call.id, "name": $0.call.name, "decision": $0.decision ?? "", "interactionCancelled": $0.autoSkipCancelled == true] as [String: Any] }, "toolResults": record.messages.filter { $0.role == "tool" }.map { ["callID": $0.toolCallID ?? "", "content": $0.content] }] as [String: Any]
                         }
                         value["slashMenu"] = inputControl.slashMenuReadback()
+                        value["slashConnectors"] = slashConnectorsReadback()
                         value["systemNotifications"] = await automationNotifications.verificationReadback()
                         value["backgroundTaskIDs"] = tasks.tasks.filter { tasks.hooks.isRunning($0.id) }.map(\.id)
                         value["attention"] = attentionWindow?.checkState() ?? [:]

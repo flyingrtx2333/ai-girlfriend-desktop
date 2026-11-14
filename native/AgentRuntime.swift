@@ -278,7 +278,9 @@ import Foundation
         if !snapshots.isEmpty { message.visuals = snapshots.suffix(AgentAttachmentVisuals.maximumImages(preferences())).map { .init(id: $0.id, part: 1) }; message.visualsDelivered = false }
         if let rule = try store.rules.ruleInput(text, task: task) { message.localRuleReferences = [rule] }
         else if let rule = try store.extensions.plugins.ruleInput(text, task: task) { message.ruleReferences = [rule] }
-        if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {
+        if try AgentMCPSelection.prepare(&message,task:task,store:store) {
+            // Explicit service intent is stored; connecting still uses the existing approval path.
+        } else if text.split(whereSeparator: \.isWhitespace).first == "/canvas" {
             guard !task.isProjectDocumentation else { throw PetError("请在普通任务中生成画布") }
             message.extensionInstructions = "[用户选择内置 /canvas。按需载入canvas工具，生成可交互画布；保留原始要求，使用实际数据，完成前核对渲染结果。]"
         } else if text.split(whereSeparator: \.isWhitespace).first == "/knowledge-edit" {
@@ -299,6 +301,7 @@ import Foundation
             catch { submissionError = error.localizedDescription; notifyChange(id); return }
         }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
+        do { try AgentMCPSelection.validate(task,store:store) } catch { submissionError = error.localizedDescription; notifyChange(id); return }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; notifyChange(id); return }
         do { try store.projectKnowledge.checkTask(task) }
         catch { store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "knowledge-generation", title: "项目知识范围已变化", detail: error.localizedDescription, status: "failed")) }; notifyChange(id); return }
@@ -314,7 +317,9 @@ import Foundation
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
         store.update(id) { record in
             if record.mode == .goal, !continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
-            if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion { record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。")); record.goalAccepted = nil }
+            if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion {
+                record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。", mcpSelection:task.messages.last(where:\.isHumanInput)?.mcpSelection)); record.goalAccepted = nil
+            }
             if record.hookSession == nil { record.hookSession = UUID().uuidString; record.hookStopBlocks = 0 }
             record.status = .running
         }; notifyChange(id)
@@ -390,6 +395,7 @@ import Foundation
         return Set(([preferences().model, task.model, task.modelOverride ?? "", task.agent?.profile.model ?? ""] + store.models.models(preferences()).map(\.id) + (task.modelReceipts ?? []).map(\.requestedModel)).filter { AgentTaskModels.validID($0) }).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
     func toolDefinitions(_ task: AgentTaskRecord, preferences: PetPreferences) throws -> [[String: Any]] {
+        try AgentMCPSelection.validate(task,store:store)
         var definitions = AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.isProjectDocumentation ? nil : task.toolGroups ?? [])
         if !task.isProjectDocumentation, task.skillEvolutionJob == nil, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6, workspace: task.workspace) }
         if task.skillEvolutionJob != nil { definitions.removeAll { let name = ($0["function"] as? [String:Any])?["name"] as? String ?? ""; return !AgentSkillDrafts.tools.contains(name) || name == "draft_skill" && task.skillEvolutionJob?.approvedPlan == nil } }
@@ -685,6 +691,7 @@ import Foundation
         }
         if task.mode == .goal, task.kind != AgentKnowledgeCards.kind { context += "\n目标模式必须完成完整目标，不能把局部进展冒充完成。先列完整计划；核对每项实际证据后调用 finish_task。未完成时继续执行，缺少用户输入时用 ask_user。" }
         if let binding = task.automation { context += "\n[自动化：\(binding.name)]\n本轮由用户保存的计划触发。范围仅限指定项目，遵循当前审批、只读和联网限制；以真实结果核对交付。必要信息缺失或需要确认时按实际流程等待用户，不能假定已获许可。合并任务中保留历史，但不重放结果未知的旧操作。" }
+        try AgentMCPSelection.validate(task,store:store)
         let skills = (task.isProjectDocumentation || task.isKnowledgeEditing) ? "" : try store.extensions.context(store: store, task: task)
         context += skills
         if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id, workspace: task.workspace) }

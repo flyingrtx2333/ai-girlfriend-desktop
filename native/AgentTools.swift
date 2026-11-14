@@ -171,6 +171,7 @@ import Foundation
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
         task.permission = try store.agents.executionPermission(task, store: store)
         try AgentSkillDrafts.check(call,task:task,store:store)
+        if AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name) { try AgentMCPSelection.validate(task,store:store) }
         try checkHookTool(call, task: task)
         try store.agents.check(call, task: task, store: store)
         let rule = try store.agents.permission(call, task: task, store: store)
@@ -300,6 +301,7 @@ import Foundation
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }; try AgentSkillDrafts.check(call,task:task,store:store)
+        if AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name) { try AgentMCPSelection.validate(task,store:store) }
         let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         if call.name == "run_command", let task = store.task(taskID), try store.agents.limits(task, store: store).readOnly {
             return try await executeCore(call, gitDirectory: gitDirectory)
