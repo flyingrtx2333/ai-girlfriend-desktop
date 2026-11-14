@@ -68,7 +68,13 @@ import AppKit
             let resource = try await AgentTools(store: tasks, taskID: other).execute(call("read_skill_resource", ["id": manual.id, "path": "SKILL.md"]))
             checks["activeSkillResourceReadableWithoutTerminal"] = resource.text.contains("只在用户手动选择后执行")
             do { _ = try await AgentTools(store: tasks, taskID: other).execute(call("read_skill_resource", ["id": manual.id, "path": "../../settings.json"])); checks["resourcePathCannotEscapeSnapshot"] = false } catch { checks["resourcePathCannotEscapeSnapshot"] = true }
-            do { _ = try AgentTools(store: tasks, taskID: other).approvalReason(for: call("run_command", ["command": "true"])); checks["skillDoesNotBroadenAskMode"] = false } catch { checks["skillDoesNotBroadenAskMode"] = true }
+            let askTools = AgentTools(store: tasks, taskID: other)
+            let query = try await askTools.execute(call("run_command", ["command": "printf ask-skill-read-only", "timeout_seconds": 10]))
+            checks["askSkillReadOnlyQueryActuallyRuns"] = !query.failed && query.text.contains("ask-skill-read-only")
+            let forbiddenWrite = otherWorkspace.appendingPathComponent("skill-must-not-grant-write.txt")
+            let write = try await askTools.execute(call("run_command", ["command": "printf denied > " + AgentGit.quote(forbiddenWrite.path), "timeout_seconds": 10]))
+            let askLimits = try tasks.agents.limits(tasks.task(other)!, store: tasks)
+            checks["skillDoesNotBroadenAskMode"] = tasks.task(other)?.mode == .ask && askLimits.readOnly && write.failed && !FileManager.default.fileExists(atPath: forbiddenWrite.path)
             let fork = tasks.fork(other)
             if let fork, let reference = tasks.task(fork)?.activeSkills?.first, let copy = reference.snapshot, let originalPath = manualMessage.extensionReferences?.first?.snapshot {
                 let copied = try Data(contentsOf: URL(fileURLWithPath: copy).appendingPathComponent("SKILL.md")), original = try Data(contentsOf: URL(fileURLWithPath: originalPath).appendingPathComponent("SKILL.md"))
