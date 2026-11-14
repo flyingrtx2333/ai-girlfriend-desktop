@@ -1,0 +1,27 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const app = process.env.BLUEFATFISH_APP;
+if (!app || process.argv.length !== 2) throw Error('请指定独立验收应用，不调用模型。');
+const info = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', path.join(app, 'Contents/Info.plist')], { encoding: 'utf8' });
+if (info.status !== 0 || JSON.parse(info.stdout).BlueFatFishAcceptanceOnly !== true) throw Error('工作区恢复检查只能使用独立验收应用。');
+await mkdir(path.join(root, 'evidence/agent'), { recursive: true });
+const output = await mkdtemp(path.join(root, 'evidence/agent/workspace-recovery-command-'));
+await mkdir(path.join(output, 'tmp'));
+const binary = path.join(app, 'Contents/MacOS/BlueFatFish');
+const hash = async () => createHash('sha256').update(await readFile(binary)).digest('hex');
+const binaryHash = await hash();
+const run = spawnSync(binary, ['--check', output, '--workspace-recovery-check'], { encoding: 'utf8', timeout: 180000, env: { ...process.env, TMPDIR: path.join(output, 'tmp') + '/' } });
+await writeFile(path.join(output, 'stdout.log'), run.stdout ?? '');
+await writeFile(path.join(output, 'stderr.log'), run.stderr ?? '');
+await writeFile(path.join(output, 'process.json'), JSON.stringify({ app, appPID: run.pid, binaryHash, exit: run.status, signal: run.signal }, null, 2) + '\n');
+if (run.error || run.status !== 0) throw run.error ?? Error(run.stderr || '工作区恢复检查未完成');
+const report = JSON.parse(await readFile(path.join(output, 'workspace-recovery-report.json'), 'utf8'));
+const sameApplication = report.appPID === run.pid && report.binaryHash === binaryHash && await hash() === binaryHash;
+const success = sameApplication && report.success === true && report.modelRequests === 0 && Object.keys(report.checks).length > 0 && Object.values(report.checks).every(Boolean);
+console.log(JSON.stringify({ output, appPID: run.pid, binaryHash, sameApplication, success, checks: Object.keys(report.checks).length, failed: Object.keys(report.checks).filter(key => !report.checks[key]), error: report.error, modelRequests: report.modelRequests }));
+process.exitCode = success ? 0 : 1;
