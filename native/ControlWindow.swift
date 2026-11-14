@@ -2584,29 +2584,37 @@ final class FormDocumentView: NSView {
         saveAgentDraft()
         let menu = NSMenu(); menu.autoenablesItems = false
         let local = NSMenuItem(title: "本地", action: #selector(selectLocalEnvironment), keyEquivalent: ""); local.target = self; local.state = task.worktreeOrigin == nil ? .on : .off; local.isEnabled = task.worktreeOrigin != nil; menu.addItem(local)
-        let worktree = NSMenuItem(title: "工作树…", action: #selector(createTaskWorktree), keyEquivalent: ""); worktree.target = self; worktree.state = task.worktreeOrigin == nil ? .off : .on; worktree.isEnabled = task.workspace != nil && task.worktreeOrigin == nil; menu.addItem(worktree)
+        let worktree = NSMenuItem(title: task.worktreeSetup == nil ? "工作树…" : "继续创建工作树…", action: #selector(createTaskWorktree), keyEquivalent: ""); worktree.target = self; worktree.state = task.worktreeOrigin == nil ? .off : .on; worktree.isEnabled = task.workspace != nil && (task.worktreeOrigin == nil || task.worktreeSetup != nil); menu.addItem(worktree)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: executionLocation.bounds.height + 4), in: executionLocation)
     }
     @objc internal func createTaskWorktree() {
         guard let tasks = companion?.agentStore, let task = currentAgentTask, task.canChooseEnvironment, task.workspace != nil else { return }
         guard saveAgentDraft() else { return }
         do {
-            let directory = try AgentGit.metadata(workspace: task.workspace)
-            if !directory.path.hasPrefix((task.workspace ?? "") + "/"), task.gitDirectory != directory.path {
+            let source = task.worktreeSetup.flatMap { tasks.task($0.sourceTaskID) } ?? task
+            guard task.worktreeSetup == nil || source.id != task.id else { throw PetError("来源任务已不存在，已创建工作树与记录仍保留") }
+            let directory = try AgentGit.metadata(workspace: source.workspace)
+            if !directory.path.hasPrefix((source.workspace ?? "") + "/"), source.gitDirectory != directory.path {
                 let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(task.id) { $0.gitDirectory = directory.path }
+                guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(source.id) { $0.gitDirectory = directory.path }
             }
             showAgentGit()
             guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(), let parent = taskWorkspace.currentController else { return }
             if parent is AgentWorktreeCreationWindow { return }
-            let controller = try AgentWorktreeCreationWindow(store: tasks, taskID: task.id, directory: directory) { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
+            let controller = try AgentWorktreeCreationWindow(store: tasks, taskID: source.id, directory: directory, resumeTaskID: task.worktreeSetup == nil ? nil : task.id) { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
             worktreeCreationWindow = controller; parent.presentSettingsChild(controller)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func selectLocalEnvironment() {
         guard let tasks = companion?.agentStore, let source = currentAgentTask, source.canChooseEnvironment, let origin = source.worktreeOrigin else { return }
-        saveAgentDraft(); let id = tasks.create(workspace: origin.root, mode: source.mode, workMode: source.organizationMode)
-        do { try tasks.copyEnvironmentDraft(sourceID: source.id, targetID: id); selectAgentTask(id) }
+        saveAgentDraft()
+        do {
+            let folders = source.worktreeSetup?.folders ?? source.workspacePaths.map { path in source.managedWorktreeOrigins.first(where: { $0.path == path })?.root ?? path }
+            let scope = source.workspaceScope.map { AgentWorkspaceScope(group: $0.group, folders: folders, primary: origin.root) }
+            if let scope { _ = try AgentWorkspaceScope.validateFolders(scope.folders, primary: scope.primary) }
+            let id = tasks.create(workspace: origin.root, mode: source.mode, workMode: source.organizationMode, workspaceScope: scope)
+            try tasks.copyEnvironmentDraft(sourceID: source.id, targetID: id); selectAgentTask(id)
+        }
         catch { tasks.selectedID = source.id; setStatus(error.localizedDescription, error: true) }
     }
     @objc func resumeAgentTask() { if let id = agentTaskID { companion?.agentRuntime?.start(id) } }

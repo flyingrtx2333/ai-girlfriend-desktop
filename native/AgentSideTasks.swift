@@ -81,6 +81,7 @@ import Darwin
         AgentWorkspaceScope.copy(parent,to:&task)
         task.workMode = parent.workMode; task.parentID = parentID; task.permission = parent.permission; task.agent = scope.agent; task.team = scope.team; task.inheritedLimits = scope.inheritedLimits
         task.model = parent.model; task.modelOverride = parent.modelOverride; task.gitDirectory = parent.gitDirectory; task.worktreeOrigin = parent.worktreeOrigin
+        task.worktreeOrigins = parent.worktreeOrigins
         task.sideTask = AgentSideTask(parentID: parentID, retained: settings.recoverable, sessionID: Self.sessionID); try bindToSession(&task)
         try store.installRelatedRecord(task, sourceID: parentID, expectedHash: version, label: "新建侧任务"); return task.id
     }

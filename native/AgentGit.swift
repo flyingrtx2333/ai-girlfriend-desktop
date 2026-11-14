@@ -10,7 +10,7 @@ struct AgentGitReview: Codable {
     enum CodingKeys: String, CodingKey { case paths, head, hash = "review_hash", diff, created, source, branchRef }
 }
 struct AgentGitCommit: Codable { var commit: String; var branch: String; var output: String }
-struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; var branch: String; var baseCommit: String? = nil; var includedChanges: Bool? = nil }
+struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; var branch: String; var baseCommit: String? = nil; var includedChanges: Bool? = nil; var sources: [AgentWorktreeOrigin]? = nil }
 
 @MainActor final class AgentGit {
     static let externalTools = ["git_prepare_push", "git_push", "git_push_status"]
@@ -34,11 +34,17 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     var pushTransport: AgentGitTransport?
     var pushHookCommand: AgentCommand?
     var worktreeCopy: AgentCommand?
+    var workspaceWorktreeHelpers: [AgentGit] = []
+    var lastCreatedWorktreeTaskID: String?
     let allowsArchivedWorktreeSource: Bool
+    private let selectedWorkspace: String?
     var worktreeEligibilityCheck: ((AgentWorktreeEntry, Date) throws -> Void)?
-    init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false) throws {
+    init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false, workspace: String? = nil) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
-        self.store = store; self.taskID = taskID; files = try AgentFiles(workspace: task.workspace); self.directory = directory
+        let selectedFiles = try AgentFiles(workspace: workspace ?? task.workspace)
+        self.store = store; self.taskID = taskID; files = selectedFiles; self.directory = directory
+        selectedWorkspace = workspace == nil ? nil : selectedFiles.root.path
+        if workspace != nil { guard task.includesWorkspaceRoot(selectedFiles.root.path) else { throw PetError("Git 来源超出当前任务的源文件夹") } }
         self.allowsArchivedWorktreeSource = allowsArchivedWorktreeSource
         scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -55,7 +61,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let raw = String(line.dropFirst(8)), url = URL(fileURLWithPath: raw, relativeTo: files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL.resolvingSymlinksInPath()
         return url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
     }
-    func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel() }
+    func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil) async throws -> AgentToolResult {
         let process = AgentCommand(); command = process; defer { command = nil }
@@ -75,7 +81,9 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     func validateWorkspace() throws {
         guard let task = store.task(taskID), !task.archived || allowsArchivedWorktreeSource else { throw PetError("任务不存在或已归档") }
-        let current = try AgentFiles(workspace: task.workspace), metadata = try Self.metadata(workspace: task.workspace, creating: true)
+        let workspace = selectedWorkspace ?? task.workspace
+        if selectedWorkspace != nil { guard task.includesWorkspaceRoot(files.root.path) else { throw PetError("Git 来源已不属于当前任务") } }
+        let current = try AgentFiles(workspace: workspace), metadata = try Self.metadata(workspace: workspace, creating: true)
         guard current.root == files.root, metadata.standardizedFileURL.resolvingSymlinksInPath() == directory.standardizedFileURL.resolvingSymlinksInPath() else { throw PetError("任务项目已变化，请重新打开 Git 后审阅") }
     }
     func filePaths() async throws -> [String] {
@@ -181,6 +189,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
                   matches.count == 1, matches.first?.ref == review.startPoint else { throw PetError("创建选项与审阅不一致，请重新预览") }
             return try await createReviewedWorktree(reviewHash)
         }
+        guard (store.task(taskID)?.workspacePaths.count ?? 0) <= 1 else { throw PetError("多源工作树需要先使用 git_prepare_worktree 核对各源起点，并传入 review_hash") }
         guard !includeChanges else { throw PetError("带入修改前请先使用 git_prepare_worktree 审阅，并传入 review_hash") }
         let review = try await prepareWorktreeCreation(branch: branch, startPoint: startPoint)
         return try await createReviewedWorktree(review.hash)

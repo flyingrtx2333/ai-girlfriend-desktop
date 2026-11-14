@@ -107,7 +107,7 @@ import AppKit
     @objc private func openManager() {
         guard roots.indices.contains(projects.indexOfSelectedItem), let onOpenManager else { return }
         do {
-            let controller = try AgentWorktreeWindow(store: store, taskID: roots[projects.indexOfSelectedItem].taskID, allowsArchivedSource: true, onSelectTask: onOpenTask)
+            let controller = try AgentWorktreeWindow(store: store, taskID: roots[projects.indexOfSelectedItem].taskID, allowsArchivedSource: true, workspace: roots[projects.indexOfSelectedItem].path, onSelectTask: onOpenTask)
             onOpenManager(controller)
         } catch { state.stringValue = error.localizedDescription }
     }

@@ -2,7 +2,10 @@ import Foundation
 import CryptoKit
 import Darwin
 
-struct AgentWorktreeOrigin: Codable { var root: String; var metadata: String; var path: String }
+struct AgentWorktreeOrigin: Codable, Equatable { var root: String; var metadata: String; var path: String }
+extension AgentTaskRecord {
+    var managedWorktreeOrigins: [AgentWorktreeOrigin] { worktreeOrigins ?? worktreeOrigin.map { [$0] } ?? [] }
+}
 struct AgentWorktreeEntry: Codable {
     static let tools = ["git_worktrees", "git_prepare_worktree_recycle", "git_recycle_worktree", "git_restore_worktree"]
     var path: String; var head: String?; var branch: String?; var locked: String?; var prunable: String?
@@ -94,18 +97,19 @@ enum AgentWorktreeSnapshot {
         }
         if let value = item { entries.append(value) }
         let archivedPaths = try worktreeBackups().map { canonical($0.origin.path) }
-        let knownOrigins = store.tasks.compactMap { $0.worktreeOrigin.map { canonical($0.path) } }
+        let knownOrigins = store.tasks.flatMap { $0.managedWorktreeOrigins.map { canonical($0.path) } }
         let registeredPaths = entries.map { canonical($0.path) } + knownOrigins + archivedPaths
         for i in entries.indices {
             let path = canonical(entries[i].path)
             entries[i].path = path
             let related = store.tasks.filter { task in
-                guard let workspace = task.workspace.map(canonical), workspace == path || workspace.hasPrefix(path + "/") else { return false }
-                return !registeredPaths.contains { other in other != path && other.hasPrefix(path + "/") && (workspace == other || workspace.hasPrefix(other + "/")) }
+                task.workspacePaths.map(canonical).contains { workspace in
+                    (workspace == path || workspace.hasPrefix(path + "/")) && !registeredPaths.contains { other in other != path && other.hasPrefix(path + "/") && (workspace == other || workspace.hasPrefix(other + "/")) }
+                }
             }
             entries[i].taskIDs = related.map(\.id).sorted()
             entries[i].owned = store.tasks.contains { task in
-                if let origin = task.worktreeOrigin { return canonical(origin.root) == files.root.path && canonical(origin.metadata) == canonical(directory.path) && canonical(origin.path) == path }
+                if !task.managedWorktreeOrigins.isEmpty { return task.managedWorktreeOrigins.contains { canonical($0.root) == files.root.path && canonical($0.metadata) == canonical(directory.path) && canonical($0.path) == path } }
                 // Earlier releases recorded native creation in the task history.
                 guard task.parentID != nil, canonical(task.gitDirectory ?? "") == canonical(directory.path), path.hasPrefix(files.root.path + "/.bluefatfish/worktrees/"), UUID(uuidString: URL(fileURLWithPath: path).lastPathComponent) != nil else { return false }
                 return store.task(task.id)?.events.contains { $0.kind == "git" && $0.title == "已创建工作树" && $0.detail.hasSuffix("\n" + path) } == true
@@ -218,7 +222,10 @@ enum AgentWorktreeSnapshot {
         let removed = try await run(["worktree", "remove", "--force", "--", entry.path], write: true)
         guard !removed.failed else { throw PetError("Git 未完成回收，备份已保留（" + id + "）：" + removed.text) }
         backup.state = "recycled"; try saveWorktree(backup, folder.appendingPathComponent("record.json"))
-        for id in entry.taskIDs { store.update(id) { $0.archived = true; $0.gitReview = nil; $0.gitPushReview = nil; $0.events.append(AgentEvent(kind: "git", title: "工作树已回收", detail: entry.path + "\n备份：" + backup.id, status: "completed")) } }
+        for id in entry.taskIDs { store.update(id) {
+            if $0.workspacePaths.count > 1, $0.worktreeRecycleArchived == nil { $0.worktreeRecycleArchived = $0.archived }
+            $0.archived = true; $0.gitReview = nil; $0.gitPushReview = nil; $0.events.append(AgentEvent(kind: "git", title: "工作树已回收", detail: entry.path + "\n备份：" + backup.id, status: "completed"))
+        } }
         if entry.taskIDs.contains(store.selectedID ?? "") { store.selectedID = taskID }
         if let error = store.writeError { throw PetError("工作树已回收，关联任务保存失败；备份：" + id + "\n" + error) }
         return backup
@@ -263,8 +270,15 @@ enum AgentWorktreeSnapshot {
         let restoredBranch = actualRef.exitCode == 0 ? actualRef.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         guard actualHead == backup.head, restoredBranch == branch, actualRef.exitCode == (branch == nil ? 1 : 0) else { throw PetError("恢复后的实际分支或提交不一致，备份保留，请核对 Git 状态") }
         backup.state = "restored"; backup.restoredBranch = restoredBranch; try saveWorktree(backup, folder.appendingPathComponent("record.json"))
-        for (id, archived) in backup.tasks where store.task(id)?.workspace.map({ canonical($0) == destination.path || canonical($0).hasPrefix(destination.path + "/") }) == true {
-            store.update(id) { $0.archived = archived; $0.gitReview = nil; $0.gitPushReview = nil; $0.events.append(AgentEvent(kind: "git", title: "工作树已恢复", detail: destination.path + "\n" + (branch ?? "分离状态"), status: "completed")) }
+        for (id, archived) in backup.tasks where store.task(id)?.workspacePaths.contains(where: { canonical($0) == destination.path || canonical($0).hasPrefix(destination.path + "/") }) == true {
+            store.update(id) { task in
+                let available = (try? AgentWorkspaceScope.roots(task)) != nil && task.managedWorktreeOrigins.allSatisfy { origin in
+                    (try? AgentFiles(workspace: origin.path).root.path) == origin.path && (try? Self.metadata(workspace: origin.path).path) == origin.metadata
+                }
+                if available { task.archived = task.worktreeRecycleArchived ?? archived; task.worktreeRecycleArchived = nil }
+                else { task.archived = true }
+                task.gitReview = nil; task.gitPushReview = nil; task.events.append(AgentEvent(kind: "git", title: "工作树已恢复", detail: destination.path + "\n" + (branch ?? "分离状态") + (available ? "" : "\n仍有源文件夹待恢复，任务保持归档。"), status: "completed"))
+            }
         }
         if let error = store.writeError { throw PetError("文件已恢复，关联任务保存失败：" + error) }; return backup
     }

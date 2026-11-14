@@ -229,6 +229,7 @@ import Foundation
               task.kind != "hook", attachmentIDs.count <= 6, !task.isProjectDocumentation || attachmentIDs.isEmpty,
               attachmentIDs.allSatisfy({ candidate in task.attachments?.contains(where: { $0.id == candidate }) == true }) else { return false }
         guard !task.archived else { submissionError = "任务已归档，请先恢复"; return false }
+        guard task.worktreeSetup == nil else { submissionError = "多源工作树尚未创建完成，请重新预览并继续创建"; return false }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; return false }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; return false }
         if text == "/compact", attachmentIDs.isEmpty {
@@ -298,6 +299,7 @@ import Foundation
         cancelAnalysis(id)
         promptSuggestions.cancel(id); skillEvolution.cancel(id)
         guard active[id] == nil, let task = store.task(id), !task.archived, task.kind != "hook" else { return }
+        guard task.worktreeSetup == nil else { submissionError = "多源工作树尚未创建完成，请先继续创建"; notifyChange(id); return }
         if task.skillEvolutionJob != nil {
             do { let job = try AgentSkillDrafts.job(task,store:store); guard task.mode == .plan || job.approvedPlan != nil else { throw PetError("请先在会话中确认 Skill 方案") } }
             catch { submissionError = error.localizedDescription; notifyChange(id); return }
@@ -443,6 +445,7 @@ import Foundation
     @discardableResult func analyze(_ id: String, recap: Bool, model: String? = nil) -> Bool {
         analysisErrorModes[id] = recap
         guard let task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty, task.status != .waiting, analyses.count < 2 else { analysisErrors[id] = "请先停止执行或处理待确认操作"; notifyChange(id); return false }
+        guard task.worktreeSetup == nil else { analysisErrors[id] = "请先完成多源工作树创建"; notifyChange(id); return false }
         do { try store.sideTasks.requireCanRun(task) } catch { analysisErrors[id] = error.localizedDescription; notifyChange(id); return false }
         if task.kind == AgentKnowledgeCards.kind, (task.modelReceipts?.count ?? 0) >= 30 { analysisErrors[id] = "本次知识卡片已达到模型请求上限"; notifyChange(id); return false }
         if recap && task.messages.isEmpty { analysisErrors[id] = "任务尚无对话记录"; notifyChange(id); return false }

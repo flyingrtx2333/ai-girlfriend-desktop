@@ -6,6 +6,20 @@ struct AgentWorktreeStart: Codable {
     var title: String
     var commit: String
 }
+struct AgentWorkspaceWorktreeSetup: Codable, Equatable {
+    var sourceTaskID: String
+    var scope: String
+    var folders: [String]
+    var primary: String
+    var branch: String
+    var startPoints: [String: String]
+    var includeChanges: Bool
+}
+struct AgentWorktreeRetainedReview: Codable {
+    var origin: AgentWorktreeOrigin
+    var fingerprint: String
+    var status: AgentGitStatus
+}
 struct AgentWorktreeCreationReview: Codable {
     var hash = UUID().uuidString
     var taskID: String
@@ -25,8 +39,14 @@ struct AgentWorktreeCreationReview: Codable {
     var paths: [String]
     var patch: String
     var consumed = false
+    var sources: [AgentWorktreeCreationReview]?
+    var resumeTaskID: String?
+    var retained: [AgentWorktreeRetainedReview]?
     var summary: String {
-        "新分支：" + branch + "\n起点：" + startPoint + " · " + String(baseCommit.prefix(12)) + "\n" +
+        if let sources {
+            return "\(sources.count) 个待创建源文件夹" + ((retained?.isEmpty == false) ? " · 保留 \(retained!.count) 个已有源" : "") + "\n" + sources.map { URL(fileURLWithPath: $0.root).lastPathComponent + " · " + $0.branch + " · " + String($0.baseCommit.prefix(12)) }.joined(separator: "\n") + "\n" + (includeChanges ? "带入待创建源的当前修改，保持未暂存；忽略文件不带入。" : "使用各源选定的提交。")
+        }
+        return "新分支：" + branch + "\n起点：" + startPoint + " · " + String(baseCommit.prefix(12)) + "\n" +
         (includeChanges ? "带入 \(paths.count) 个文件的当前修改，保持未暂存；忽略文件不带入。" : "不带入当前未提交修改。")
     }
 }
@@ -37,7 +57,9 @@ struct AgentWorktreeCreationReview: Codable {
         guard let task = store.task(taskID), task.automation == nil, task.agent?.ownerID == nil,
               !["hook", "wiki"].contains(task.kind ?? "") else { throw PetError("请从独立任务创建工作树") }
         try store.agents.check(AgentToolCall(id: "create-worktree", name: "git_create_worktree", arguments: "{}"), task: task, store: store)
-        return AgentFiles.hash(Data([files.root.path, task.mode.rawValue, task.permission.rawValue, task.agent?.profile.id ?? "", task.team?.team.id ?? ""].joined(separator: "\0").utf8))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let bindings = try encoder.encode(task.agent) + encoder.encode(task.team) + encoder.encode(task.inheritedLimits)
+        return AgentFiles.hash(Data(([files.root.path, task.mode.rawValue, task.permission.rawValue, task.organizationWorkspace ?? ""] + task.workspacePaths).joined(separator: "\0").utf8) + bindings)
     }
     private func creationDirectory(_ hash: String) throws -> URL {
         guard UUID(uuidString: hash) != nil else { throw PetError("工作树审阅编号无效") }
@@ -135,7 +157,10 @@ struct AgentWorktreeCreationReview: Codable {
         if !paths.isEmpty { _ = try await creationRun(["add", "-A", "--pathspec-from-file=" + list.path, "--pathspec-file-nul"], session: session, protected: protected, index: index) }
         return try await creationRun(["write-tree"], session: session, protected: protected, index: index).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    func prepareWorktreeCreation(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false) async throws -> AgentWorktreeCreationReview {
+    func prepareWorktreeCreation(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false, sourceStartPoints: [String: String] = [:], resumeTaskID: String? = nil, singleSource: Bool = false) async throws -> AgentWorktreeCreationReview {
+        if !singleSource, let task = store.task(taskID), task.workspacePaths.count > 1 {
+            return try await prepareWorkspaceWorktree(branch: branch, startPoint: startPoint, includeChanges: includeChanges, sourceStartPoints: sourceStartPoints, resumeTaskID: resumeTaskID)
+        }
         let scope = try creationScope(), state = try await creationState()
         guard !branch.isEmpty, branch.utf8.count <= 200, !branch.hasPrefix("-"), !branch.contains("\0"),
               try await run(["check-ref-format", "--branch", branch]).exitCode == 0 else { throw PetError("分支名称无效") }
@@ -166,8 +191,7 @@ struct AgentWorktreeCreationReview: Codable {
               try await startingPoint(base.ref).commit == base.commit else { throw PetError("来源或起点已变化，请重新预览") }
         try saveCreation(review); return review
     }
-    func createReviewedWorktree(_ hash: String) async throws -> AgentGitWorktree {
-        var review = try storedWorktreeCreation(hash)
+    private func validateCreation(_ review: AgentWorktreeCreationReview) async throws -> (head: String, ref: String, index: String, protected: [URL]) {
         let scope = try creationScope(), state = try await creationState()
         guard scope == review.scope, state.head == review.sourceHead, state.ref == review.sourceRef, state.index == review.sourceIndex,
               try await startingPoint(review.startPoint).commit == review.baseCommit else { throw PetError("分支、暂存区或任务范围已变化，请重新预览") }
@@ -179,6 +203,17 @@ struct AgentWorktreeCreationReview: Codable {
         }
         guard try await run(["show-ref", "--verify", "--quiet", "refs/heads/" + review.branch]).exitCode == 1 else { throw PetError("新分支已存在，请更换名称后重新预览") }
         try await validateHooks(); try Task.checkCancellation()
+        return state
+    }
+    func createReviewedWorktree(_ hash: String, addingToTask: String? = nil) async throws -> AgentGitWorktree {
+        lastCreatedWorktreeTaskID = nil
+        var review = try storedWorktreeCreation(hash)
+        if review.sources != nil { return try await createWorkspaceWorktree(review) }
+        if let addingToTask {
+            guard let target = store.task(addingToTask), target.parentID == taskID, target.worktreeSetup?.sourceTaskID == taskID, target.workspaceScope != nil,
+                  !target.managedWorktreeOrigins.contains(where: { $0.root == files.root.path }) else { throw PetError("待完成的多源工作树任务已变化，请重新预览") }
+        }
+        let state = try await validateCreation(review)
         let relative = ".bluefatfish/worktrees/" + UUID().uuidString.lowercased(), destination = try files.resolve(relative)
         try ignoreAppWorktrees()
         let session = try creationDirectory(hash)
@@ -195,11 +230,19 @@ struct AgentWorktreeCreationReview: Codable {
         }
         guard try Self.metadata(workspace: destination.path) == directory else { throw PetError("工作树已创建但元数据不匹配：" + destination.path) }
         let selection = store.selectedID, source = store.task(taskID)
-        let id = store.create(title: (source?.title ?? "任务") + " · " + review.branch, workspace: destination.path, mode: source?.mode ?? .agent, workMode: source?.organizationMode)
-        store.update(id) {
-            $0.parentID = taskID; $0.permission = source?.permission ?? .workspace; $0.gitDirectory = directory.path
-            $0.model = source?.model ?? ""; $0.modelOverride = source?.modelOverride; $0.agent = source?.agent; $0.agent?.workspace = destination.path; $0.team = source?.team
-            $0.worktreeOrigin = AgentWorktreeOrigin(root: files.root.path, metadata: directory.path, path: destination.path)
+        let id = addingToTask ?? store.create(title: (source?.title ?? "任务") + " · " + review.branch, workspace: destination.path, mode: source?.mode ?? .agent, workMode: source?.organizationMode)
+        lastCreatedWorktreeTaskID = id
+        let origin = AgentWorktreeOrigin(root: files.root.path, metadata: directory.path, path: destination.path)
+        store.update(id) { record in
+            if addingToTask != nil {
+                record.worktreeOrigins = record.managedWorktreeOrigins + [origin]
+                record.workspaceScope?.folders.append(destination.path)
+            } else {
+                record.parentID = taskID; record.permission = source?.permission ?? .workspace; record.gitDirectory = directory.path
+                record.model = source?.model ?? ""; record.modelOverride = source?.modelOverride; record.agent = source?.agent; record.agent?.workspace = destination.path; record.team = source?.team
+                record.inheritedLimits = source?.inheritedLimits; record.toolGroups = source?.toolGroups
+                record.worktreeOrigin = origin
+            }
         }
         store.selectedID = selection
         do {
@@ -210,7 +253,7 @@ struct AgentWorktreeCreationReview: Codable {
             }
             let actual = try await creationRun(["-C", destination.path, "symbolic-ref", "HEAD"], session: session, protected: state.protected)
             guard actual.trimmingCharacters(in: .whitespacesAndNewlines) == "refs/heads/" + review.branch else { throw PetError("新工作树分支不匹配") }
-            let child = try AgentGit(store: store, taskID: id, directory: directory), childState = try await child.creationState()
+            let child = try AgentGit(store: store, taskID: id, directory: directory, workspace: addingToTask == nil ? nil : destination.path), childState = try await child.creationState()
             guard childState.head == review.baseCommit else { throw PetError("新工作树起点已被 Hook 改变") }
             if review.includeChanges {
                 let verify = session.appendingPathComponent("verify-result")
@@ -226,6 +269,152 @@ struct AgentWorktreeCreationReview: Codable {
         } catch {
             store.update(id) { $0.status = .failed; $0.events.append(AgentEvent(kind: "git", title: "工作树需要检查", detail: error.localizedDescription, status: "failed")) }
             throw PetError("工作树已创建并保留，请检查：" + destination.path + "\n" + error.localizedDescription)
+        }
+    }
+    private func workspaceSources() throws -> [String] {
+        guard let task = store.task(taskID), let primary = task.workspace else { throw PetError("来源任务不可用") }
+        _ = try AgentWorkspaceScope.roots(task)
+        return [primary] + task.workspacePaths.filter { $0 != primary }
+    }
+    private func sourceHelper(_ root: String) throws -> AgentGit {
+        do {
+            let value = try AgentGit(store: store, taskID: taskID, directory: Self.metadata(workspace: root), workspace: root)
+            workspaceWorktreeHelpers.append(value); return value
+        } catch { throw PetError("无法隔离源文件夹：" + root + "\n" + error.localizedDescription) }
+    }
+    func workspaceWorktreeStartingPoints() async throws -> [(root: String, points: [AgentWorktreeStart])] {
+        workspaceWorktreeHelpers = []; defer { workspaceWorktreeHelpers = [] }
+        var result: [(String, [AgentWorktreeStart])] = []
+        for root in try workspaceSources() {
+            let helper = try sourceHelper(root)
+            do { result.append((root, try await helper.worktreeStartingPoints())) }
+            catch { throw PetError("无法隔离源文件夹：" + root + "\n" + error.localizedDescription) }
+        }
+        return result
+    }
+    private func resumeWorkspaceTask(_ id: String, roots: [String], scope: String) throws -> AgentTaskRecord {
+        guard let source = store.task(taskID), let task = store.task(id), let setup = task.worktreeSetup,
+              setup.sourceTaskID == taskID, setup.scope == scope, setup.folders == source.workspacePaths, setup.primary == source.workspace,
+              task.parentID == taskID, !task.archived, task.workspaceScope?.group == source.organizationWorkspace,
+              task.workspaceScope?.primary == task.workspace, task.workspace == task.worktreeOrigin?.path else { throw PetError("待完成的工作树范围已变化，或来源任务已不可用；已创建目录仍保留") }
+        let origins = task.managedWorktreeOrigins
+        guard !origins.isEmpty, origins.count <= roots.count, Set(origins.map(\.root)).count == origins.count,
+              Set(origins.map(\.root)).isSubset(of: Set(roots)), Set(task.workspacePaths) == Set(origins.map(\.path)) else { throw PetError("待完成任务的工作树关联已变化") }
+        for origin in origins {
+            guard origin.path.hasPrefix(origin.root + "/.bluefatfish/worktrees/"), UUID(uuidString: URL(fileURLWithPath: origin.path).lastPathComponent) != nil,
+                  try Self.metadata(workspace: origin.root).path == origin.metadata,
+                  try AgentFiles(workspace: origin.path).root.path == origin.path,
+                  try Self.metadata(workspace: origin.path).path == origin.metadata else { throw PetError("请先恢复或修复已保留的工作树：" + origin.path) }
+        }
+        return task
+    }
+    private func retainedReview(_ origin: AgentWorktreeOrigin, taskID id: String) async throws -> AgentWorktreeRetainedReview {
+        let helper = try AgentGit(store: store, taskID: id, directory: URL(fileURLWithPath: origin.metadata), workspace: origin.path)
+        workspaceWorktreeHelpers.append(helper)
+        try helper.validateWorkspace()
+        let status = try await helper.status(), path = origin.path
+        let scan = Task.detached { try AgentWorktreeSnapshot.read(URL(fileURLWithPath: path)) }
+        let tree = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
+        let raw = try await helper.output(["rev-parse", "--git-path", "index"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let index = URL(fileURLWithPath: raw, relativeTo: helper.files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL
+        let indexHash = try AgentFiles.hash(AgentFiles(workspace: origin.metadata).readData(index, maximum: 32_000_000))
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let fingerprint = AgentFiles.hash(try encoder.encode(status) + Data((tree.hash + indexHash + origin.path + origin.metadata).utf8))
+        return AgentWorktreeRetainedReview(origin: origin, fingerprint: fingerprint, status: status)
+    }
+    private func prepareWorkspaceWorktree(branch: String, startPoint: String, includeChanges: Bool, sourceStartPoints: [String: String], resumeTaskID: String?) async throws -> AgentWorktreeCreationReview {
+        let roots = try workspaceSources(), scope = try creationScope()
+        guard Set(sourceStartPoints.keys).isSubset(of: Set(roots)) else { throw PetError("起点分支包含不属于当前任务的源目录") }
+        workspaceWorktreeHelpers = []; defer { workspaceWorktreeHelpers = [] }
+        let previous = try resumeTaskID.map { try resumeWorkspaceTask($0, roots: roots, scope: scope) }
+        guard previous?.worktreeSetup?.branch == nil || previous?.worktreeSetup?.branch == branch else { throw PetError("继续创建时保留原分支名称；可调整尚未创建源的起点") }
+        let origins = previous?.managedWorktreeOrigins ?? []
+        var retained: [AgentWorktreeRetainedReview] = [], reviews: [AgentWorktreeCreationReview] = []
+        for (index, root) in roots.enumerated() {
+            if let origin = origins.first(where: { $0.root == root }), let resumeTaskID {
+                retained.append(try await retainedReview(origin, taskID: resumeTaskID)); continue
+            }
+            let helper = try sourceHelper(root)
+            var name = branch + (index == 0 ? "" : "-\(index + 1)")
+            if resumeTaskID != nil, try await helper.run(["show-ref", "--verify", "--quiet", "refs/heads/" + name]).exitCode == 0 {
+                while name.utf8.count > 180 { name.removeLast() }
+                name += "-retry-" + String(UUID().uuidString.lowercased().prefix(8))
+            }
+            reviews.append(try await helper.prepareWorktreeCreation(branch: name, startPoint: sourceStartPoints[root] ?? (index == 0 ? startPoint : "HEAD"), includeChanges: includeChanges, singleSource: true))
+        }
+        guard try creationScope() == scope else { throw PetError("来源范围已变化，请重新预览") }
+        var review = reviews.first ?? AgentWorktreeCreationReview(taskID: taskID, root: files.root.path, scope: scope, branch: branch, startPoint: startPoint, baseCommit: "", sourceHead: "", sourceRef: "", sourceIndex: "", includeChanges: includeChanges, targetTree: "", paths: [], patch: "")
+        review.hash = UUID().uuidString; review.root = files.root.path; review.scope = scope; review.branch = branch
+        review.startPoint = sourceStartPoints[roots[0]] ?? startPoint
+        if let primary = retained.first(where: { $0.origin.root == roots[0] }) { review.baseCommit = primary.status.head ?? "" }
+        review.sources = reviews; review.resumeTaskID = resumeTaskID; review.retained = retained
+        review.paths = reviews.flatMap { item in item.paths.map { item.root + "/" + $0 } }
+        review.patch = reviews.map { "源文件夹：" + $0.root + "\n新分支：" + $0.branch + "\n起点：" + $0.startPoint + " · " + $0.baseCommit + "\n" + $0.patch }.joined(separator: "\n\n")
+        for item in retained { review.patch += "\n已保留源：" + item.origin.root + "\n工作树：" + item.origin.path + "\n分支：" + item.status.branch + "\n提交：" + (item.status.head ?? "") + "\n" + item.status.changes.map { $0.status + " " + $0.path }.joined(separator: "\n") + "\n" }
+        try saveCreation(review); return review
+    }
+    private func createWorkspaceWorktree(_ initial: AgentWorktreeCreationReview) async throws -> AgentGitWorktree {
+        guard let sources = initial.sources, sources.count + (initial.retained?.count ?? 0) <= 16 else { throw PetError("多源工作树审阅无效") }
+        let roots = try workspaceSources(), scope = try creationScope()
+        guard initial.scope == scope, Set(sources.map(\.root) + (initial.retained ?? []).map { $0.origin.root }) == Set(roots), Set(sources.map(\.root)).count == sources.count else { throw PetError("来源范围已变化，请重新预览") }
+        workspaceWorktreeHelpers = []; defer { workspaceWorktreeHelpers = [] }
+        var targetID = initial.resumeTaskID
+        if let targetID { _ = try resumeWorkspaceTask(targetID, roots: roots, scope: scope) }
+        var helpers: [String: AgentGit] = [:]
+        for source in sources {
+            let helper = try sourceHelper(source.root), stored = try helper.storedWorktreeCreation(source.hash)
+            guard stored.sources == nil, stored.branch == source.branch, stored.baseCommit == source.baseCommit else { throw PetError("源文件夹审阅已变化，请重新预览") }
+            _ = try await helper.validateCreation(stored); helpers[source.root] = helper
+        }
+        for retained in initial.retained ?? [] {
+            guard let targetID, try await retainedReview(retained.origin, taskID: targetID).fingerprint == retained.fingerprint else { throw PetError("已保留工作树内容已变化，请重新预览") }
+        }
+        var review = initial; review.consumed = true; try saveCreation(review)
+        guard let sourceTask = store.task(taskID), let primary = sourceTask.workspace else { throw PetError("来源任务不可用") }
+        var starts = targetID.flatMap { store.task($0)?.worktreeSetup?.startPoints } ?? [:]
+        for source in sources { starts[source.root] = source.startPoint }
+        let setup = AgentWorkspaceWorktreeSetup(sourceTaskID: taskID, scope: scope, folders: sourceTask.workspacePaths, primary: primary, branch: review.branch, startPoints: starts, includeChanges: review.includeChanges)
+        let owner = UUID()
+        func bind(_ id: String) {
+            store.update(id) { task in
+                task.worktreeSetup = setup; task.status = .failed
+                let origins = task.managedWorktreeOrigins; task.worktreeOrigins = origins
+                if let primary = task.worktreeOrigin?.path { task.workspaceScope = AgentWorkspaceScope(group: sourceTask.organizationWorkspace!, folders: origins.map(\.path), primary: primary) }
+            }
+            store.worktreeRetention.setNativeOperation(owner, taskID: id, busy: true)
+        }
+        if let targetID { bind(targetID) }
+        defer { if let targetID { store.worktreeRetention.setNativeOperation(owner, taskID: targetID, busy: false) } }
+        do {
+            for source in sources {
+                guard let helper = helpers[source.root] else { throw PetError("源审阅不可用") }
+                do {
+                    let result = try await helper.createReviewedWorktree(source.hash, addingToTask: targetID)
+                    targetID = result.taskID; lastCreatedWorktreeTaskID = result.taskID; bind(result.taskID)
+                } catch {
+                    if let id = helper.lastCreatedWorktreeTaskID { targetID = id; lastCreatedWorktreeTaskID = id; bind(id) }
+                    throw error
+                }
+            }
+            guard let targetID, let child = store.task(targetID), child.managedWorktreeOrigins.count == roots.count, try creationScope() == scope else { throw PetError("创建结果或原任务范围已变化") }
+            for retained in initial.retained ?? [] {
+                guard try await retainedReview(retained.origin, taskID: targetID).fingerprint == retained.fingerprint else { throw PetError("已保留工作树在创建期间变化，请重新预览") }
+            }
+            let origins = child.managedWorktreeOrigins
+            let ordered = try sourceTask.workspacePaths.map { root -> String in guard let origin = origins.first(where: { $0.root == root }) else { throw PetError("工作树源不完整") }; return origin.path }
+            store.update(targetID) { task in
+                task.workspaceScope?.folders = ordered; task.worktreeSetup = nil; task.status = .ready
+                task.events.append(AgentEvent(kind: "git", title: "已创建多源工作树", detail: origins.map { $0.root + "\n→ " + $0.path }.joined(separator: "\n"), status: "completed"))
+            }
+            guard store.writeError == nil else { throw PetError(store.writeError!) }
+            return AgentGitWorktree(taskID: targetID, workspace: child.workspace!, branch: review.branch, baseCommit: review.baseCommit, includedChanges: review.includeChanges, sources: origins)
+        } catch {
+            if let targetID {
+                bind(targetID)
+                store.update(targetID) { $0.events.append(AgentEvent(kind: "git", title: "多源工作树尚未完成", detail: error.localizedDescription + "\n已创建的目录保留，可重新预览后继续创建。", status: "failed")) }
+                throw PetError("多源工作树尚未完成，已保留任务与目录：" + targetID + "\n" + error.localizedDescription)
+            }
+            throw error
         }
     }
     private func ignoreAppWorktrees() throws {

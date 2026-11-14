@@ -39,7 +39,8 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
     private var policyObserver: NSObjectProtocol?
     private var target: String?, rescan = false
     private var knownActivity: [String: Date] = [:], retryAfter: [String: Date] = [:]
-    private var nativeOperations: [UUID: String] = [:]
+    private var nativeOperations: [UUID: [String]] = [:]
+    private var nativeOperationPaths: [String] { nativeOperations.values.flatMap { $0 } }
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     init(profile: URL) { directory = profile.appendingPathComponent("worktrees"); reload() }
     deinit { timer?.invalidate(); debounce?.cancel(); if ownerFD >= 0 { close(ownerFD) }; if let policyObserver { DistributedNotificationCenter.default().removeObserver(policyObserver) } }
@@ -87,19 +88,19 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
     private func cancelWork() { job?.cancel(); git?.cancel(); timer?.invalidate(); timer = nil; nextCheck = nil }
     func tasksChanged(_ id: String? = nil) {
         if let target, let store {
-            if let id, store.tasks.contains(where: { $0.id == id && $0.archived && $0.workspace.map { Self.within($0, target) } == true }), !FileManager.default.fileExists(atPath: target) { return }
-            let affected = store.tasks.filter { $0.workspace.map { Self.within($0, target) } == true }
-            if affected.contains(where: { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }) || store.selected?.workspace.map({ Self.within($0, target) }) == true || nativeOperations.values.contains(where: { Self.within(target, $0) || Self.within($0, target) }) { job?.cancel(); git?.cancel() }
+            if let id, store.tasks.contains(where: { $0.id == id && $0.archived && $0.workspacePaths.contains { Self.within($0, target) } }), !FileManager.default.fileExists(atPath: target) { return }
+            let affected = store.tasks.filter { $0.workspacePaths.contains { Self.within($0, target) } }
+            if affected.contains(where: { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }) || store.selected?.workspacePaths.contains(where: { Self.within($0, target) }) == true || nativeOperationPaths.contains(where: { Self.within(target, $0) || Self.within($0, target) }) { job?.cancel(); git?.cancel() }
         }
         changed()
     }
     func setNativeOperation(_ owner: UUID, taskID: String, busy: Bool) {
-        if busy, let workspace = store?.task(taskID)?.workspace { nativeOperations[owner] = workspace }
+        if busy, let task = store?.task(taskID) { nativeOperations[owner] = task.workspacePaths }
         else { nativeOperations[owner] = nil }
         tasksChanged()
     }
     func hasNativeOperation(_ workspace: String?) -> Bool {
-        guard let workspace else { return false }; return nativeOperations.values.contains { Self.within($0, workspace) || Self.within(workspace, $0) }
+        guard let workspace else { return false }; return nativeOperationPaths.contains { Self.within($0, workspace) || Self.within(workspace, $0) }
     }
     private func changed() {
         debounce?.cancel(); timer?.invalidate(); timer = nil; nextCheck = nil
@@ -127,33 +128,33 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
     func roots() -> [AgentWorktreeRoot] {
         guard let store else { return [] }
         var result: [AgentWorktreeRoot] = [], seen = Set<String>()
-        for task in store.tasks {
-            guard let origin = task.worktreeOrigin else { continue }
+        for origin in store.tasks.flatMap(\.managedWorktreeOrigins) {
             let root = URL(fileURLWithPath: origin.root).standardizedFileURL.resolvingSymlinksInPath().path
             let metadata = URL(fileURLWithPath: origin.metadata).standardizedFileURL.resolvingSymlinksInPath().path
             let key = root + "\0" + metadata
-            guard seen.insert(key).inserted, let owner = store.tasks.first(where: { $0.workspace.map { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path == root } == true }) else { continue }
+            guard seen.insert(key).inserted, let owner = store.tasks.first(where: { $0.workspacePaths.contains { URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path == root } }) else { continue }
             result.append(AgentWorktreeRoot(id: AgentFiles.hash(Data(key.utf8)), taskID: owner.id, path: root, metadata: metadata))
         }
         return result.sorted { $0.path < $1.path }
     }
     private func related(_ entry: AgentWorktreeEntry) throws -> [AgentTaskRecord] {
         guard let store else { throw PetError("应用正在退出") }
-        let tasks = store.tasks.filter { $0.workspace.map { Self.within($0, entry.path) } == true }
+        let tasks = store.tasks.filter { $0.workspacePaths.contains { Self.within($0, entry.path) } }
         guard !tasks.isEmpty, Set(tasks.map(\.id)) == Set(entry.taskIDs) else { throw PetError("关联任务已变化，稍后重新检查") }
         return tasks
     }
     private func protectedReason(_ entry: AgentWorktreeEntry, tasks: [AgentTaskRecord]) -> String? {
         guard let store else { return "应用正在退出" }
         if let unavailable = entry.unavailable { return unavailable }
-        if store.selected?.workspace.map({ Self.within($0, entry.path) }) == true { return "当前任务" }
+        if store.selected?.workspacePaths.contains(where: { Self.within($0, entry.path) }) == true { return "当前任务" }
+        if tasks.contains(where: { $0.worktreeSetup != nil }) { return "工作树创建尚未完成" }
         if tasks.contains(where: \.pinned) { return "已固定任务" }
         if policy.archivedOnly && tasks.contains(where: { !$0.archived }) { return "任务未归档" }
         var ancestors = tasks, seen = Set<String>()
         while let task = ancestors.popLast() {
             guard seen.insert(task.id).inserted else { continue }
             if [.running, .waiting].contains(task.status) || task.pendingFileCapture != nil || task.pendingFileRollback != nil || store.hooks.isRunning(task.id) { return "关联任务正在运行或等待处理" }
-            if let workspace = task.workspace, nativeOperations.values.contains(where: { Self.within($0, workspace) && Self.within(workspace, $0) }) { return "Git 操作进行中" }
+            if task.workspacePaths.contains(where: { workspace in nativeOperationPaths.contains { Self.within($0, workspace) && Self.within(workspace, $0) } }) { return "Git 操作进行中" }
             if let id = task.parentID, let parent = store.tasks.first(where: { $0.id == id }) { ancestors.append(parent) }
         }
         return nil
@@ -179,7 +180,7 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
             for root in roots() {
                 if Task.isCancelled { break }
                 do {
-                    let helper = try AgentGit(store: store, taskID: root.taskID, directory: URL(fileURLWithPath: root.metadata), allowsArchivedWorktreeSource: true)
+                    let helper = try AgentGit(store: store, taskID: root.taskID, directory: URL(fileURLWithPath: root.metadata), allowsArchivedWorktreeSource: true, workspace: root.path)
                     guard try AgentGit.metadata(workspace: root.path).path == root.metadata else { throw PetError("项目 Git 元数据已变化") }
                     git = helper
                     let entries = try await helper.worktrees()

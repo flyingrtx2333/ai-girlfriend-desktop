@@ -200,6 +200,9 @@ struct AgentTaskRecord: Codable, Identifiable {
     var gitDirectory: String?
     var gitReview: AgentGitReview?
     var worktreeOrigin: AgentWorktreeOrigin?
+    var worktreeOrigins: [AgentWorktreeOrigin]?
+    var worktreeSetup: AgentWorkspaceWorktreeSetup?
+    var worktreeRecycleArchived: Bool?
     var gitTurn: AgentGitTurn?
     var pendingFileCapture: AgentFileCapture?
     var gitPushReview: AgentGitPushReview?
@@ -250,10 +253,10 @@ struct AgentTaskRecord: Codable, Identifiable {
         status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
     }
     var canChooseEnvironment: Bool {
-        status == .ready && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
+        (status == .ready || status == .failed && worktreeSetup != nil) && !archived && !messages.contains(where: { $0.isHumanInput || $0.role == "assistant" }) && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
     }
     var workspaceDisplayName: String? {
-        if let origin = worktreeOrigin { return URL(fileURLWithPath: origin.root).lastPathComponent + " · 工作树" }
+        if let origin = managedWorktreeOrigins.first(where: { $0.path == workspace }) ?? worktreeOrigin { return URL(fileURLWithPath: origin.root).lastPathComponent + " · 工作树" + (workspaceScope != nil && workspacePaths.count > 1 ? " · \(workspacePaths.count) 个源" : "") }
         return workspace.map { URL(fileURLWithPath: $0).lastPathComponent }
     }
     var inputTokens = 0, outputTokens = 0

@@ -14,9 +14,9 @@ import AppKit
     private var selectedEntryPath: String?, selectedBackupID: String?
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: git.taskID, busy: busy) } } }
-    init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, onSelectTask: @escaping (String) -> Void) throws {
+    init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, workspace: String? = nil, onSelectTask: @escaping (String) -> Void) throws {
         self.store = store; self.onSelectTask = onSelectTask
-        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource)
+        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: workspace ?? store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource, workspace: workspace)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 400); window.isReleasedWhenClosed = false
         window.center(); super.init(window: window); window.delegate = self

@@ -114,6 +114,11 @@ import WebKit
                     if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     control.showAgentTask(id)
                 }
+                if CommandLine.arguments.contains("--workspace-worktrees-fixtures") {
+                    guard !attentionLiveUI else { throw PetError("多源工作树窗口验收不调用模型") }
+                    control.showAgentTask(try await prepareWorkspaceWorktreeFixtures(output, tasks: tasks))
+                }
+                if CommandLine.arguments.contains("--workspace-worktrees-reopen") { tasks.worktreeRetention.start(store: tasks) }
                 if CommandLine.arguments.contains("--plugin-review-fixtures") { _ = try AgentPluginReviewCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-import-fixtures") { _ = try AgentMCPImportCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-cards-fixtures") { try await AgentMCPImportCheck.prepareCardsUI(output, tasks: tasks) }
@@ -325,6 +330,7 @@ import WebKit
         if CommandLine.arguments.contains("--desktop-check") { await runAgentDesktopCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--file-change-check") { await runAgentProjectChangesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-creation-check") { await runAgentWorktreeCreationCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workspace-worktrees-check") { await runWorkspaceWorktreeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-check") { await runAgentWorktreeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-review-check") { await runAgentGitReviewCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-push-check") { await runAgentGitPushCheck(output); NSApp.terminate(nil); return }

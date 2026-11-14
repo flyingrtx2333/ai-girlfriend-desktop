@@ -261,7 +261,7 @@ import Foundation
         offices.changed(id)
         onTaskChange?(id)
         let hookChanged = (previous.events.last?.hook != nil || value.events.last?.hook != nil) && (previous.events.last?.id != value.events.last?.id || previous.events.last?.status != value.events.last?.status)
-        if coreScopeChanged || previous.status != value.status || previous.pendingFileCapture?.id != value.pendingFileCapture?.id || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || hookChanged { worktreeRetention.tasksChanged(id) }
+        if coreScopeChanged || previous.status != value.status || previous.pendingFileCapture?.id != value.pendingFileCapture?.id || previous.archived != value.archived || previous.pinned != value.pinned || previous.worktreeOrigin?.path != value.worktreeOrigin?.path || previous.worktreeOrigins != value.worktreeOrigins || previous.worktreeSetup != value.worktreeSetup || hookChanged { worktreeRetention.tasksChanged(id) }
     }
     func save(_ id: String) throws {
         guard UUID(uuidString: id) != nil else { throw PetError("任务标识无效") }
