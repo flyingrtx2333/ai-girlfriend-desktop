@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
     private let use = NSButton(title: "在任务中使用", target: nil, action: nil), reveal = NSButton(title: "打开来源", target: nil, action: nil)
     private let location = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
     private var items: [AgentExtensionItem] = [], selected: AgentExtensionItem?, openedHash: String?, dirty = false, selectedKind = 0
+    private var availableInTask = false
     private var job: Task<Void, Never>?
     private var mcpWindow: AgentMCPWindow?
     private var hookWindow: AgentHookWindow?
@@ -23,10 +24,10 @@ import UniformTypeIdentifiers
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
     var onInsertRule: ((AgentPluginRuleItem) throws -> Void)?
     var onInsertLocalRule: ((AgentLocalRuleItem) throws -> Void)?
-    private var workspace: String? { store.task(taskID)?.workspace }
+    private let workspace: String?
     private var kind: AgentExtensionKind { kinds.selectedSegment == 1 ? .command : .skill }
-    init(store: AgentStore, taskID: String) {
-        self.store = store; self.taskID = taskID
+    init(store: AgentStore, taskID: String, managementWorkspace: String? = nil) {
+        self.store = store; self.taskID = taskID; workspace = managementWorkspace ?? store.task(taskID)?.workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "扩展"; window.minSize = NSSize(width: 720, height: 480); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
@@ -92,7 +93,7 @@ import UniformTypeIdentifiers
     @objc private func showRules() {
         guard canLeave() else { return }
         if let window = ruleWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentRuleWindow(store: store, taskID: taskID); manager.onInsert = onInsertLocalRule; ruleWindow = manager; presentSettingsChild(manager)
+        let manager = AgentRuleWindow(store: store, taskID: taskID, managementWorkspace: workspace); manager.onInsert = onInsertLocalRule; ruleWindow = manager; presentSettingsChild(manager)
     }
     @objc private func showPlugins() {
         guard canLeave() else { return }
@@ -157,7 +158,7 @@ import UniformTypeIdentifiers
             table.delegate = nil; table.reloadData(); table.delegate = self
             let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
             selectRow(next?.id); if let next { open(next) }
-            else { selected = nil; openedHash = nil; editor.string = ""; editor.isEditable = false; location.stringValue = ""; updateControls() }
+            else { selected = nil; availableInTask = false; openedHash = nil; editor.string = ""; editor.isEditable = false; location.stringValue = ""; updateControls() }
             if !store.extensions.warnings.isEmpty { state.stringValue = store.extensions.warnings.joined(separator: "\n"); state.toolTip = state.stringValue }
             else { state.stringValue = items.isEmpty ? "暂无扩展" : "\(items.count) 项"; state.toolTip = nil }
         } catch { state.stringValue = error.localizedDescription }
@@ -166,6 +167,7 @@ import UniformTypeIdentifiers
         do {
             let (text, _) = try store.extensions.document(item)
             selected = item; openedHash = AgentFiles.hash(Data(text.utf8)); editor.string = text; editor.isEditable = item.managed
+            availableInTask = (try? store.extensions.item(item.id, workspace: store.task(taskID)?.workspace, enabled: false).file) == item.file
             editor.undoManager?.removeAllActions(); dirty = false
             location.stringValue = item.scope + " · /" + item.invocation; location.toolTip = item.file.path
             enabled.state = item.enabled ? .on : .off; updateControls()
@@ -174,7 +176,9 @@ import UniformTypeIdentifiers
     private func updateControls() {
         let idle = job == nil, managed = selected?.managed == true
         kinds.isEnabled = idle; search.isEnabled = idle; table.isEnabled = idle; add.isEnabled = idle; importButton.isEnabled = idle
-        enabled.isEnabled = idle && selected != nil && selected?.pluginName == nil; use.isEnabled = idle && selected?.enabled == true && onInsert != nil
+        enabled.isEnabled = idle && selected != nil && selected?.pluginName == nil
+        use.isEnabled = idle && selected?.enabled == true && onInsert != nil && availableInTask
+        use.toolTip = availableInTask ? nil : "请在此源文件夹的任务中使用"
         remove.isEnabled = idle && managed; save.isEnabled = idle && managed && dirty; reveal.isEnabled = idle && selected != nil
         editor.isEditable = idle && managed
     }

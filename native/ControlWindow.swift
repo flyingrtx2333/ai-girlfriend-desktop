@@ -92,6 +92,7 @@ final class FormDocumentView: NSView {
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
+    private var settingsSourceFolders: [String: String] = [:]
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
     private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
@@ -1199,7 +1200,7 @@ final class FormDocumentView: NSView {
             }
             return manager
         case "skills", "commands":
-            let manager = AgentExtensionWindow(store: store, taskID: taskID ?? "")
+            let manager = AgentExtensionWindow(store: store, taskID: taskID ?? "", managementWorkspace: workspace)
             manager.prepareSettings(kind: key == "commands" ? .command : .skill); manager.onStartAgent = use
             if let taskID {
                 manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
@@ -1227,10 +1228,10 @@ final class FormDocumentView: NSView {
             worktreePolicyPanel = manager.policy; return manager
         case "memory":
             guard let taskID else { return nil }
-            return AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true)
+            return AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace)
         case "rules":
             guard let taskID else { return nil }
-            let manager = AgentRuleWindow(store: store, taskID: taskID)
+            let manager = AgentRuleWindow(store: store, taskID: taskID, managementWorkspace: workspace)
             manager.onInsert = { [weak self] in try self?.insertLocalRule($0, taskID: taskID) }; return manager
         default: return nil
         }
@@ -1288,9 +1289,21 @@ final class FormDocumentView: NSView {
         if managed {
             generalSettingsSave?.isHidden = true
             let id = agentTaskID ?? companion?.agentStore?.selectedID
-            let task = id.flatMap { companion?.agentStore?.task($0) }, workspace = task?.workspace
-            _ = settingsPageHost.show(category: settingsCategory, identity: (id ?? "") + "|" + (workspace ?? ""), scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置") { [weak self] kind in
+            let task = id.flatMap { companion?.agentStore?.task($0) }
+            let folders = settingsCategory == "worktrees" ? [] : task?.workspacePaths ?? []
+            let remembered = id.flatMap { settingsSourceFolders[$0] }
+            let workspace = remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
+            let identity = ([id ?? "", workspace ?? "", task?.organizationWorkspace ?? ""] + folders).joined(separator: "\0")
+            guard settingsPageHost.show(category: settingsCategory, identity: identity, scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", make: { [weak self] kind in
                 self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
+            }) else { return }
+            settingsPageHost.setSourceFolders(folders, selected: workspace, primary: task?.workspace) { [weak self] path in
+                guard let self, let id, (agentTaskID ?? companion?.agentStore?.selectedID) == id,
+                      companion?.agentStore?.task(id)?.workspacePaths == folders, folders.contains(path) else { return false }
+                let page = settingsPageHost.selectedPageKey
+                guard settingsPageHost.leave() else { return false }
+                settingsSourceFolders[id] = path; updateSettingsSections()
+                if let page { settingsPageHost.selectPage(page) }; return true
             }
             return
         }
@@ -3398,6 +3411,7 @@ final class FormDocumentView: NSView {
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook" else { throw PetError("原任务已归档或为独立校验任务") }
         let current = try store.extensions.item(item.id, workspace: task.workspace)
+        guard current.file == item.file, current.sha256 == item.sha256 else { throw PetError("扩展来源已变化，请刷新后重新选择") }
         try insertSlashInvocation(current.invocation, taskID: taskID)
     }
     private func insertSlashInvocation(_ invocation: String, taskID: String) throws {
@@ -3435,23 +3449,27 @@ final class FormDocumentView: NSView {
     }
     private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
-        let current = try store.extensions.plugins.currentRule(item.id, workspace: task.workspace)
-        guard current.reference == item.reference else { throw PetError("规则来源已变化，请刷新插件") }
-        insertRuleInvocation(current.name, taskID: taskID)
+        let current = try store.extensions.plugins.currentRule(item.id, task: task)
+        var unbound = current.reference; unbound.workspace = item.reference.workspace
+        guard unbound == item.reference, current.source == item.source else { throw PetError("规则来源已变化，请刷新插件") }
+        try insertRuleInvocation(AgentRuleSelection.invocation(AgentRuleSelection.title(current)), taskID: taskID)
     }
     private func insertLocalRule(_ item: AgentLocalRuleItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
         let current = try store.rules.current(item.id, task: task)
         guard current.definition != nil, current.sha256 == item.sha256, current.signature == item.signature else { throw PetError("规则来源已变化，请刷新规则") }
-        insertRuleInvocation(current.invocation, taskID: taskID)
+        try insertRuleInvocation(AgentRuleSelection.invocation(AgentRuleSelection.title(current)), taskID: taskID)
     }
-    private func insertRuleInvocation(_ invocation: String, taskID: String) {
-        dismissExtensionCandidates(); saveAgentDraft()
+    private func insertRuleInvocation(_ invocation: String, taskID: String) throws {
+        guard saveAgentDraft() else { throw PetError("原任务草稿未保存，请重试") }; dismissExtensionCandidates()
         if displayedTask != taskID { selectAgentTask(taskID) }
+        guard displayedTask == taskID else { throw PetError("原任务未打开，未添加规则") }
         let previous = composer.string
-        if previous.hasPrefix("@rule:"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
-            composer.string = "@rule:" + invocation + " " + previous.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else { composer.string = "@rule:" + invocation + " " + previous }
+        let tail: String
+        if let command = try AgentRuleSelection.command(previous) { tail = command.arguments }
+        else if let first = previous.split(maxSplits: 1, whereSeparator: \.isWhitespace).first, first.hasPrefix("@rule:") { tail = previous.dropFirst(first.count).trimmingCharacters(in: .whitespacesAndNewlines) }
+        else { tail = previous }
+        composer.string = invocation + " " + tail
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
         show(tab: "chat"); window?.makeFirstResponder(composer)
     }
@@ -3859,6 +3877,14 @@ extension ControlWindow {
                 "deletions": ["ids": store.deletions.taskIDs.sorted(), "workspaces": store.deletions.workspaceIDs.sorted(), "pending": store.deletions.pendingCount, "working": store.deletions.working, "issue": store.deletions.issue as Any? ?? NSNull()]]
     }
     func showDataImportSettings() { showSettingsCategory("imports") }
+    func settingsSourceReadback() -> [String: Any] {
+        guard companion?.checkDirectory != nil else { return [:] }
+        return ["category": settingsCategory, "page": settingsPageHost.selectedPageKey ?? "", "source": agentTaskID.flatMap { settingsSourceFolders[$0] } ?? currentAgentTask?.workspace ?? "", "folders": currentAgentTask?.workspacePaths ?? [], "primary": currentAgentTask?.workspace ?? "", "taskID": agentTaskID ?? "", "draft": composer.string, "controller": settingsPageHost.currentController.map { String(describing: type(of: $0)) } ?? ""]
+    }
+    var settingsControllerForCheck: AgentSettingsPageController? {
+        guard CommandLine.arguments.contains("--workspace-extensions-check"), companion?.checkDirectory != nil else { return nil }
+        return settingsPageHost.currentController
+    }
     func switchWorkMode(_ mode: AgentWorkMode) {
         guard let tasks = companion?.agentStore, currentAgentTask?.organizationMode != mode else { return }
         saveAgentDraft()

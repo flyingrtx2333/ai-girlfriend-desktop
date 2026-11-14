@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 @MainActor final class AgentRecordWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let taskHosted: Bool, documentOnly: Bool
+    private let memoryWorkspace: String?
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
     private let list = NSScrollView(), wikiTree = AgentWikiTree()
@@ -70,8 +71,8 @@ import UniformTypeIdentifiers
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
     private var videoWindow: AgentVideoWindow?
-    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false) {
-        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly
+    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
+        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.memoryWorkspace = memoryWorkspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.backgroundColor = .windowBackgroundColor
@@ -539,7 +540,7 @@ import UniformTypeIdentifiers
                 }.joined(separator: "\n\n────────\n\n"); return
             }
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
-                let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
+                let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: memoryWorkspace)
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
                 text.isEditable = scope != .effectiveInstructions && task.status != .running && (!scope.isInstructions || task.status != .waiting)
                 save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
@@ -688,7 +689,7 @@ import UniformTypeIdentifiers
         do {
             try markdown.finishEditing()
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: path), let hash = openedHash {
-                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID)
+                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID, workspace: memoryWorkspace)
                 openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
             }
             let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)

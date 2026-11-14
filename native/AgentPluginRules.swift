@@ -71,9 +71,14 @@ struct AgentPluginRuleItem: Identifiable {
         else if first == "@rule", parts.count > 1 { name = String(parts[1]) }
         else { return nil }
         let matches = try ruleItems(task:task).filter{$0.name == name && $0.enabled}
-        guard !task.isProjectDocumentation, task.kind != "hook", matches.count == 1, let item = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请按规则编号选择") }
+        guard matches.count == 1, let item = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请在设置中按源文件夹选择") }
+        return try ruleSelection(item.id, task: task)
+    }
+    func ruleSelection(_ id: String, task: AgentTaskRecord) throws -> AgentPluginRuleReference {
+        guard !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在普通任务中使用规则") }
+        let item = try currentRule(id, task: task)
         guard (task.activeRules?.count ?? 0) < 256 || task.activeRules?.contains(where: { $0.name == item.reference.name && $0.key == item.reference.key }) == true else { throw PetError("当前任务已载入256项规则，请使用新任务") }
-        return try currentRule(item.id,task:task).reference
+        return item.reference
     }
     func activateRule(_ reference: AgentPluginRuleReference, store: AgentStore, taskID: String) throws {
         guard let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.workspace == reference.workspace || reference.workspace.map(task.workspacePaths.contains) == true else { throw PetError("规则不属于当前任务范围") }

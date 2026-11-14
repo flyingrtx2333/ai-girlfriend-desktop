@@ -164,7 +164,12 @@ struct AgentLocalRuleItem: Identifiable {
         guard name.contains("/") else { return nil }
         try requireTask(task)
         let matches = try catalog(task:task).filter{$0.invocation == name && $0.enabled}
-        guard matches.count == 1, let value = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请按规则编号选择") }
+        guard matches.count == 1, let value = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请在设置中按源文件夹选择") }
+        return try selection(value.id, task: task)
+    }
+    func selection(_ id: String, task: AgentTaskRecord) throws -> AgentLocalRuleReference {
+        try requireTask(task)
+        let value = try current(id, task: task)
         guard value.definition != nil else { throw PetError(value.error ?? "规则格式无效") }
         try requireCapacity(task, id: value.id); return AgentLocalRuleReference(id: value.id, workspace: value.project && task.workspaceScope != nil ? value.owner.path : task.workspace)
     }

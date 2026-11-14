@@ -276,7 +276,9 @@ import Foundation
         var message = AgentMessage(role: "user", content: text, attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs)
         let snapshots = (task.attachments ?? []).filter { attachmentIDs.contains($0.id) && $0.desktopCapture?.appShot == true }
         if !snapshots.isEmpty { message.visuals = snapshots.suffix(AgentAttachmentVisuals.maximumImages(preferences())).map { .init(id: $0.id, part: 1) }; message.visualsDelivered = false }
-        if let rule = try store.rules.ruleInput(text, task: task) { message.localRuleReferences = [rule] }
+        if try AgentRuleSelection.prepare(&message, task: task, store: store) {
+            // The selected source is bound to the existing task scope; tool approvals are unchanged.
+        } else if let rule = try store.rules.ruleInput(text, task: task) { message.localRuleReferences = [rule] }
         else if let rule = try store.extensions.plugins.ruleInput(text, task: task) { message.ruleReferences = [rule] }
         if try AgentMCPSelection.prepare(&message,task:task,store:store) {
             // Explicit service intent is stored; connecting still uses the existing approval path.

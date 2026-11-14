@@ -48,6 +48,11 @@ struct AgentWorkspaceScope: Codable, Equatable, Sendable {
             return value
         }
     }
+    static func settingsTask(_ task:AgentTaskRecord, workspace:String?) throws -> AgentTaskRecord {
+        guard let workspace else { return task }
+        guard let context = try contexts(task).first(where:{$0.workspace == workspace}) else { throw PetError("源文件夹不属于当前任务，请重新打开设置") }
+        return context
+    }
 }
 
 extension AgentTaskRecord {

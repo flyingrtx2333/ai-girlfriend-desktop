@@ -138,6 +138,8 @@ import AppKit
     private struct Entry { let controller: AgentSettingsPageController; let view: NSView; let title: String }
     private let back = NSButton(title: "返回", target: nil, action: nil), header = NSStackView()
     private let tabs = NSSegmentedControl(), context = NSTextField(labelWithString: "")
+    private let sourceFolder = NSPopUpButton(), sourceRow = NSStackView()
+    private var selectedSource:String?, onSelectSource:((String)->Bool)?
     private let viewport = NSScrollView(), document = AgentSettingsDocument(), empty = NSTextField(labelWithString: "请先选择任务")
     private var entries: [Entry] = [], keys: [String] = [], selectedTab = 0
     private var category = "", identity = ""
@@ -146,6 +148,7 @@ import AppKit
     private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { entries.map(\.controller) }
+    var selectedPageKey:String? { keys.indices.contains(selectedTab) ? keys[selectedTab] : nil }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -156,16 +159,19 @@ import AppKit
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12
+        sourceFolder.target = self; sourceFolder.action = #selector(changeSource); sourceFolder.setAccessibilityLabel("设置源文件夹"); sourceFolder.identifier = .init("settings-source-folder")
+        sourceFolder.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        sourceRow.addArrangedSubview(NSTextField(labelWithString:"源文件夹")); sourceRow.addArrangedSubview(sourceFolder); sourceRow.addArrangedSubview(NSView()); sourceRow.spacing = 10; sourceRow.isHidden = true
         viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay; viewport.setAccessibilityLabel("设置内容")
         document.translatesAutoresizingMaskIntoConstraints = false; viewport.documentView = document
         // Short pages fill the viewport; longer pages keep their own minimum
         // height and scroll without imposing that height on the window.
         let preferredHeight = document.heightAnchor.constraint(equalTo: viewport.contentView.heightAnchor); preferredHeight.priority = .defaultLow
-        let column = NSStackView(views: [header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14; column.distribution = .fill
+        let column = NSStackView(views: [sourceRow, header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14; column.distribution = .fill
         for view in [column, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor),
-            header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 30), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
+            sourceRow.widthAnchor.constraint(equalTo:column.widthAnchor),sourceFolder.widthAnchor.constraint(lessThanOrEqualTo:column.widthAnchor,multiplier:0.8),sourceRow.heightAnchor.constraint(equalToConstant:30),header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 30), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
             document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor), preferredHeight,
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
@@ -218,6 +224,21 @@ import AppKit
         keys = options.map(\.0); tabs.segmentCount = options.count
         for (index, option) in options.enumerated() { tabs.setLabel(option.1, forSegment: index) }
         selectedTab = 0; tabs.selectedSegment = 0; loadRoot(); return true
+    }
+    func setSourceFolders(_ folders:[String], selected:String?, primary:String?, onSelect:((String)->Bool)?) {
+        sourceRow.isHidden = folders.count < 2; context.isHidden = !sourceRow.isHidden
+        selectedSource = selected; onSelectSource = onSelect; sourceFolder.removeAllItems()
+        let names = folders.map{URL(fileURLWithPath:$0).lastPathComponent}
+        for (index,path) in folders.enumerated() {
+            let label = names.filter{$0 == names[index]}.count > 1 ? URL(fileURLWithPath:path).deletingLastPathComponent().lastPathComponent + "/" + names[index] : names[index]
+            let item = NSMenuItem(title:label + (path == primary ? " · 主要" : ""),action:nil,keyEquivalent:""); item.representedObject = path; item.toolTip = path; sourceFolder.menu?.addItem(item)
+            if path == selected { sourceFolder.select(item) }
+        }
+        sourceFolder.toolTip = selected
+    }
+    @objc private func changeSource() {
+        guard let path = sourceFolder.selectedItem?.representedObject as? String, path != selectedSource else { return }
+        if onSelectSource?(path) != true, let previous = selectedSource, let item = sourceFolder.itemArray.first(where:{$0.representedObject as? String == previous}) { sourceFolder.select(item) }
     }
     private func loadRoot() {
         if keys.indices.contains(selectedTab), let controller = makePage?(keys[selectedTab]) { push(controller) }

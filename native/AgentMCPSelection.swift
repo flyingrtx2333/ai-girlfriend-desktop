@@ -15,19 +15,7 @@ struct AgentMCPSelection: Codable, Equatable {
         guard text.split(whereSeparator:\.isWhitespace).first == "/mcp" else { return nil }
         let input = String(text.dropFirst(4)).trimmingCharacters(in:.whitespacesAndNewlines)
         guard input.first == "\"" else { throw PetError("请从连接器分类选择服务，或在 /mcp 后填写带引号的连接器名称") }
-        var escaped = false
-        for index in input.indices.dropFirst() {
-            let character = input[index]
-            if escaped { escaped = false; continue }
-            if character == "\\" { escaped = true; continue }
-            if character == "\"" {
-                let end = input.index(after:index), rest = input[end...]
-                guard rest.isEmpty || rest.first?.isWhitespace == true,
-                      let name = try? JSONDecoder().decode(String.self,from:Data(input[..<end].utf8)), !name.isEmpty, name.utf8.count <= 4096 else { throw PetError("连接器名称或后续要求格式无效") }
-                return (name,String(rest).trimmingCharacters(in:.whitespacesAndNewlines))
-            }
-        }
-        throw PetError("连接器名称的引号尚未结束")
+        return try AgentQuotedCommand.parse(input, label: "连接器")
     }
 }
 

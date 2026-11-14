@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor final class AgentRuleWindow: AgentSettingsPageController, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate {
     private let store: AgentStore, taskID: String
+    private let managementWorkspace: String?
     private let scopes = NSSegmentedControl(labels: ["全部", "用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = NSTableView(), name = NSTextField(), editor = NSTextView(), descriptionField = NSTextField(), patterns = NSTextField()
     private let trigger = NSPopUpButton(), createScope = NSPopUpButton()
@@ -13,9 +14,13 @@ import AppKit
     private let triggers: [AgentRuleTrigger] = [.always, .manual, .decision, .glob]
     private var items: [AgentLocalRuleItem] = [], selected: AgentLocalRuleItem?, creating = false, dirty = false, loading = false, selectedScope = 0
     var onInsert: ((AgentLocalRuleItem) throws -> Void)? { didSet { updateControls() } }
-    private var task: AgentTaskRecord? { store.task(taskID) }
-    init(store: AgentStore, taskID: String) {
-        self.store = store; self.taskID = taskID
+    private var task: AgentTaskRecord? { try? editingTask() }
+    private func editingTask() throws -> AgentTaskRecord {
+        guard let original = store.task(taskID) else { throw PetError("原任务已不存在") }
+        return try AgentWorkspaceScope.settingsTask(original, workspace: managementWorkspace)
+    }
+    init(store: AgentStore, taskID: String, managementWorkspace: String? = nil) {
+        self.store = store; self.taskID = taskID; self.managementWorkspace = managementWorkspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "规则"; window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
@@ -79,8 +84,8 @@ import AppKit
         guard confirmClosing() else { selectRow(selected?.id); return }; open(next)
     }
     private func reload(select id: String? = nil) {
-        guard let task else { setState("原任务已不存在"); return }
         do {
+            let task = try editingTask()
             let query = search.stringValue, all = try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? [])
             items = all.filter { (scopes.selectedSegment == 0 || $0.project == (scopes.selectedSegment == 2)) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.invocation.localizedCaseInsensitiveContains(query)) }
             table.delegate = nil; table.reloadData(); table.delegate = self; let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
@@ -124,8 +129,8 @@ import AppKit
         trigger.selectItem(at: 0); editor.setAccessibilityLabel("规则正文"); location.stringValue = ""; dirty = true; selectRow(nil); updateControls(); presentingWindow?.makeFirstResponder(name)
     }
     @discardableResult private func saveChanges() -> Bool {
-        guard let task else { setState("原任务已不存在"); return false }
         do {
+            let task = try editingTask()
             let text: String
             if !creating, selected?.definition == nil { text = editor.string }
             else { text = try AgentRuleDocument.text(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), trigger: triggers[trigger.indexOfSelectedItem], description: descriptionField.stringValue, patterns: patterns.stringValue.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }, body: editor.string) }
@@ -137,18 +142,18 @@ import AppKit
     }
     @objc private func saveItem() { _ = saveChanges() }
     @objc private func toggleEnabled() {
-        guard let selected, let task else { return }
-        do { try store.rules.setEnabled(selected, enabled.state == .on, task: task); reload(select: selected.id) }
+        guard let selected else { return }
+        do { try store.rules.setEnabled(selected, enabled.state == .on, task: editingTask()); reload(select: selected.id) }
         catch { enabled.state = selected.enabled ? .on : .off; setState(error.localizedDescription) }
     }
     @objc private func useItem() { guard let selected else { return }; do { try onInsert?(selected) } catch { setState(error.localizedDescription) } }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.source]) } }
     @objc private func removeItem() {
-        guard let selected, let task, let window = presentingWindow else { return }
+        guard let selected, let window = presentingWindow else { return }
         let alert = AgentConfirmation(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            do { try store.rules.trash(selected, task: task); self.selected = nil; reload(); setState("已移到废纸篓") } catch { setState(error.localizedDescription) }
+            do { try store.rules.trash(selected, task: editingTask()); self.selected = nil; reload(); setState("已移到废纸篓") } catch { setState(error.localizedDescription) }
         }
     }
     func confirmClosing() -> Bool {

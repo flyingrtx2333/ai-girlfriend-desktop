@@ -8,17 +8,18 @@ enum AgentMemoryScope: String, CaseIterable {
 struct AgentMemorySnapshot { var content: String; var hash: String; var location: String }
 
 @MainActor enum AgentMemory {
-    private static func file(_ scope: AgentMemoryScope, store: AgentStore, taskID: String) throws -> (AgentFiles, URL, Int) {
+    private static func file(_ scope: AgentMemoryScope, store: AgentStore, taskID: String, workspace: String?) throws -> (AgentFiles, URL, Int) {
         let files: AgentFiles, path: String
         if scope == .global { files = try AgentFiles(workspace: store.directory.path); path = "memory.md" }
         else if scope == .userInstructions { files = try AgentFiles(workspace: store.directory.deletingLastPathComponent().path); path = "AGENTS.md" }
         else {
-            guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+            guard let original = store.task(taskID) else { throw PetError("任务不存在") }
+            let task = try AgentWorkspaceScope.settingsTask(original, workspace: workspace)
             files = try AgentFiles(workspace: task.workspace); path = scope == .instructions ? "AGENTS.md" : scope == .localInstructions ? "AGENTS.local.md" : ".bluefatfish/memory.md"
         }
         return (files, try files.resolve(path), scope.isInstructions ? 65_536 : 24_000)
     }
-    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String) throws -> AgentMemorySnapshot {
+    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String, workspace: String? = nil) throws -> AgentMemorySnapshot {
         if scope == .effectiveInstructions {
             guard let task = store.task(taskID) else { throw PetError("任务不存在") }
             let report = store.instructions.report(task), text = report.preview
@@ -29,15 +30,15 @@ struct AgentMemorySnapshot { var content: String; var hash: String; var location
             let text = task.contextSummary ?? ""
             return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(Data(text.utf8)), location: "当前任务摘要")
         }
-        let (files, url, maximum) = try file(scope, store: store, taskID: taskID)
+        let (files, url, maximum) = try file(scope, store: store, taskID: taskID, workspace: workspace)
         let data = FileManager.default.fileExists(atPath: url.path) ? try files.readData(url, maximum: maximum) : Data()
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("记忆文件不是 UTF-8 文本") }
         return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: scope == .global ? "全局 memory.md" : files.relative(url))
     }
-    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String) throws -> AgentMemorySnapshot {
+    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String, workspace: String? = nil) throws -> AgentMemorySnapshot {
         guard scope != .effectiveInstructions else { throw PetError("请编辑原指令文件，有效指令只读") }
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
-        let previous = try snapshot(scope, store: store, taskID: taskID)
+        let previous = try snapshot(scope, store: store, taskID: taskID, workspace: workspace)
         guard previous.hash == expectedHash else { throw PetError("记忆已更改，请重新打开后编辑") }
         let data = Data(content.utf8)
         if scope == .summary {
@@ -45,7 +46,7 @@ struct AgentMemorySnapshot { var content: String; var hash: String; var location
             store.update(taskID) { $0.contextSummary = content.isEmpty ? nil : content; if content.isEmpty { $0.contextThroughID = nil } }
             if let error = store.writeError { throw PetError(error) }
         } else {
-            let (files, url, maximum) = try file(scope, store: store, taskID: taskID)
+            let (files, url, maximum) = try file(scope, store: store, taskID: taskID, workspace: workspace)
             guard data.count <= maximum else { throw PetError(scope.isInstructions ? "指令最多 64 KB" : "记忆最多 24 KB") }
             if !previous.content.isEmpty {
                 let directory = store.directory.appendingPathComponent("memory-backups", isDirectory: true)
@@ -57,9 +58,9 @@ struct AgentMemorySnapshot { var content: String; var hash: String; var location
             if metadata.kind == "missing", expectedHash != AgentFiles.hash(Data()) { throw PetError("记忆文件已被移除，请重新打开后编辑") }
             if metadata.kind != "missing", try files.fileHash(url, maximum: maximum) != expectedHash { throw PetError("记忆已更改，请重新打开后编辑") }
             let permissions = metadata.permissions ?? ([.global, .userInstructions].contains(scope) ? 0o600 : 0o644)
-            if scope.isInstructions { store.instructions.onChange?(nil, scope == .userInstructions ? nil : task.workspace) }
+            if scope.isInstructions { store.instructions.onChange?(nil, scope == .userInstructions ? nil : files.root.path) }
             try files.writeData(data, to: url, permissions: permissions, expectedTarget: metadata.signature)
         }
-        return try snapshot(scope, store: store, taskID: taskID)
+        return try snapshot(scope, store: store, taskID: taskID, workspace: workspace)
     }
 }
