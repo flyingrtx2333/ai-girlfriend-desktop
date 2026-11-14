@@ -44,7 +44,7 @@ import Darwin
             let manualText = "@rule:native-rules:manual 保留原始要求并核对公开文件"
             checks["explicitManualInputLoadsRuleWithoutCopyingBodyIntoHistory"] = try runtime.submit(manualText, taskID: id, startImmediately: false) && context(id).contains("RULE_MANUAL_583") && tasks.task(id)?.messages.last?.content == manualText && tasks.task(id)?.messages.last?.extensionInstructions == nil
             let saved = try Data(contentsOf: tasks.directory.appendingPathComponent(id + ".json")), decoded = try JSONDecoder().decode(AgentTaskRecord.self, from: saved)
-            checks["ruleReferencesReloadWithoutMutatingImmutablePackage"] = try AgentPlugins(profile: store.directory).ruleContext(decoded).text.contains("RULE_MANUAL_583") && installed.receipt.hashes.allSatisfy { path, hash in (try? plugins.content(path, installation: plugins.installation(installed.id))).map(AgentFiles.hash) == hash }
+            checks["ruleReferencesReloadWithoutMutatingImmutablePackage"] = try AgentPlugins(profile: store.directory,sharedHome:plugins.sharedHome).ruleContext(decoded).text.contains("RULE_MANUAL_583") && installed.receipt.hashes.allSatisfy { path, hash in (try? plugins.content(path, installation: plugins.installation(installed.id))).map(AgentFiles.hash) == hash }
             var moved = decoded; moved.workspace = output.appendingPathComponent("other project").path
             checks["previousWorkspaceSelectionsDoNotLeakToAnotherWorkspace"] = try !plugins.ruleContext(moved).text.contains("RULE_MANUAL_583") && !plugins.ruleContext(moved).text.contains("RULE_GLOB_684")
             let fixture = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("glob-oracle.json"))) as! [[String: Any]]
