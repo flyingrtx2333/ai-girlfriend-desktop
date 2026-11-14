@@ -73,11 +73,12 @@ import Darwin
         !task.archived && !task.isProjectDocumentation && !["hook", "voice"].contains(task.kind ?? "") && task.automation == nil && task.agent?.ownerID == nil && task.sideTask == nil && task.pendingFileRollback == nil
     }
     @discardableResult func create(parentID: String) throws -> String {
-        guard let store, !cleaning, !ending, !store.deletions.working, let parent = store.task(parentID), Self.supported(parent), store.organization.archiveID(parent.workspace, mode: parent.organizationMode) == nil else { throw PetError("此任务暂时不能新建侧任务") }
+        guard let store, !cleaning, !ending, !store.deletions.working, let parent = store.task(parentID), Self.supported(parent), store.organization.archiveID(parent.organizationWorkspace, mode: parent.organizationMode) == nil else { throw PetError("此任务暂时不能新建侧任务") }
         try refreshSettings(); let version = try store.recordVersion(parentID)
-        if let workspace = parent.workspace, store.hasFileRollback(in: workspace) { throw PetError("请先恢复此项目未完成的文件撤回") }
+        if parent.workspacePaths.contains(where:{store.hasFileRollback(in:$0)}) { throw PetError("请先恢复此项目未完成的文件撤回") }
         var scope = parent; try store.agents.detachForFork(&scope, store: store)
         var task = AgentTaskRecord(title: "新的任务", workspace: parent.workspace, mode: parent.mode)
+        AgentWorkspaceScope.copy(parent,to:&task)
         task.workMode = parent.workMode; task.parentID = parentID; task.permission = parent.permission; task.agent = scope.agent; task.team = scope.team; task.inheritedLimits = scope.inheritedLimits
         task.model = parent.model; task.modelOverride = parent.modelOverride; task.gitDirectory = parent.gitDirectory; task.worktreeOrigin = parent.worktreeOrigin
         task.sideTask = AgentSideTask(parentID: parentID, retained: settings.recoverable, sessionID: Self.sessionID); try bindToSession(&task)

@@ -251,9 +251,10 @@ struct AgentProfileAssignment: Codable {
         }
     }
     func check(_ call: AgentToolCall, task: AgentTaskRecord, store: AgentStore? = nil) throws {
+        if task.workspaceScope != nil { _ = try AgentWorkspaceScope.roots(task) }
         if let store { try store.sideTasks.requireCanRun(task) }
         guard task.pendingFileRollback == nil else { throw PetError("文件撤回尚未完成，请先在原消息中恢复") }
-        if let store, let workspace = task.workspace, store.hasFileRollback(in: workspace) { throw PetError("此项目有未完成的文件撤回，请先恢复") }
+        if let store, task.workspacePaths.contains(where:{store.hasFileRollback(in:$0)}) { throw PetError("此项目有未完成的文件撤回，请先恢复") }
         if let store { try store.teams.check(task, store: store) }
         if let store { for record in [task] + (try ancestors(task, store: store)) { try store.automations.check(call, task: task, owner: record) } }
         for record in [task] + (try ancestors(task, store: store)) {
@@ -278,7 +279,7 @@ struct AgentProfileAssignment: Codable {
         }
         if !limits.network, (["web_search", "fetch_url", "browser_open", "browser_action"] + AgentGit.externalTools + AgentDesktop.externalTools).contains(call.name) || (call.name == "run_command" && call.object["network"] as? Bool == true) { throw PetError("此 Agent 未允许联网或外部应用连接") }
         for owner in try ancestors(task, store: store) {
-            guard owner.workspace == task.workspace else { throw PetError("所属任务项目范围已改变，请重新发起委派") }
+            guard owner.workspace == task.workspace, Set(task.workspacePaths).isSubset(of:Set(owner.workspacePaths)) else { throw PetError("所属任务项目范围已改变，请重新发起委派") }
             if [.ask, .plan].contains(owner.mode), Self.mutating.contains(call.name) || AgentMCP.externalOperations.contains(call.name) { throw PetError("所属任务当前为只读模式") }
             guard let parent = owner.agent else { continue }
             let live = try profile(parent.profile.id, workspace: owner.workspace)
@@ -336,7 +337,7 @@ struct AgentProfileAssignment: Codable {
             _ = try store.mcp.server(id, workspace: workspace)
             if let parent = owner?.agent { guard parent.mcpServers.contains(id), !parent.readOnly, parent.network else { throw PetError("MCP 委派不能扩大所属 Agent 的连接或权限范围") } }
         }
-        let taskID = store.create(title: "新的任务", workspace: workspace, mode: mode, workMode: owner?.organizationMode ?? workMode)
+        let taskID = store.create(title: "新的任务", workspace: workspace, mode: mode, workMode: owner?.organizationMode ?? workMode, workspaceScope:owner?.workspaceScope)
         store.update(taskID) {
             $0.agent = AgentProfileAssignment(profile: value, ownerID: owner?.id, permissionCeiling: ceiling, modeCeiling: mode, readOnlyCeiling: owner?.agent?.readOnly, networkCeiling: owner?.agent?.network, toolCeiling: owner?.agent.map { Array($0.tools) }, workspace: workspace)
             $0.agent?.mcpCeiling = owner?.agent.map { Array($0.mcpServers) }

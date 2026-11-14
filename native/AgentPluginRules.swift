@@ -48,6 +48,17 @@ struct AgentPluginRuleItem: Identifiable {
         guard let item = try ruleItems(workspace: workspace).first(where: { $0.id == id && $0.enabled }) else { throw PetError("未找到已启用的规则id，请使用当前上下文或list_rules中的编号；停用、移除或更新后请重新选择规则") }
         try validateRuleParent(item.reference, workspace: workspace); return item
     }
+    func ruleItems(task:AgentTaskRecord) throws -> [AgentPluginRuleItem] {
+        var seen = Set<String>(), result:[AgentPluginRuleItem] = []
+        for context in try AgentWorkspaceScope.contexts(task) {
+            for var item in try ruleItems(workspace:context.workspace) where seen.insert(item.id).inserted { item.reference.workspace = context.workspace; result.append(item) }
+        }
+        return result
+    }
+    func currentRule(_ id:String, task:AgentTaskRecord) throws -> AgentPluginRuleItem {
+        guard let item = try ruleItems(task:task).first(where:{$0.id == id && $0.enabled}) else { throw PetError("规则已停用、移除或不属于当前任务") }
+        _ = try currentRule(id,workspace:item.reference.workspace); return item
+    }
     private func validateRuleParent(_ reference: AgentPluginRuleReference, workspace: String?) throws {
         let item = try requireScope(reference.name, workspace: workspace)
         guard item.enabled, item.instanceID == reference.installationID, item.activationID == reference.activationID else { throw PetError("所属插件已停用、移除或更新") }
@@ -59,25 +70,26 @@ struct AgentPluginRuleItem: Identifiable {
         if first.hasPrefix("@rule:") { name = String(first.dropFirst(6)) }
         else if first == "@rule", parts.count > 1 { name = String(parts[1]) }
         else { return nil }
-        guard !task.isProjectDocumentation, task.kind != "hook", let item = try ruleItems(workspace: task.workspace).first(where: { $0.name == name && $0.enabled }) else { throw PetError("未找到已启用的规则，请在插件中选择") }
+        let matches = try ruleItems(task:task).filter{$0.name == name && $0.enabled}
+        guard !task.isProjectDocumentation, task.kind != "hook", matches.count == 1, let item = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请按规则编号选择") }
         guard (task.activeRules?.count ?? 0) < 256 || task.activeRules?.contains(where: { $0.name == item.reference.name && $0.key == item.reference.key }) == true else { throw PetError("当前任务已载入256项规则，请使用新任务") }
-        let current = try currentRule(item.id, workspace: task.workspace); var reference = current.reference; reference.workspace = task.workspace; return reference
+        return try currentRule(item.id,task:task).reference
     }
     func activateRule(_ reference: AgentPluginRuleReference, store: AgentStore, taskID: String) throws {
-        guard let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.workspace == reference.workspace else { throw PetError("规则不属于当前任务范围") }
+        guard let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.workspace == reference.workspace || reference.workspace.map(task.workspacePaths.contains) == true else { throw PetError("规则不属于当前任务范围") }
         var unbound = reference; unbound.workspace = nil
-        guard let item = try ruleItems(workspace: task.workspace).first(where: { $0.reference == unbound && $0.enabled }) else { throw PetError("规则来源已变化，请重新选择") }
+        guard let item = try ruleItems(workspace: reference.workspace).first(where: { $0.reference == unbound && $0.enabled }) else { throw PetError("规则来源已变化，请重新选择") }
         guard (task.activeRules?.count ?? 0) < 256 || task.activeRules?.contains(where: { $0.name == reference.name && $0.key == reference.key }) == true else { throw PetError("当前任务已载入256项规则，请使用新任务") }
-        _ = try currentRule(item.id, workspace: task.workspace)
+        _ = try currentRule(item.id, workspace: reference.workspace)
         store.update(taskID) { $0.activateRule(reference) }
         if let error = store.writeError { throw PetError("规则状态未保存：" + error) }
     }
     func accessRules(_ path: String, store: AgentStore, taskID: String) throws {
-        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", let workspace = task.workspace else { return }
-        let files = try AgentFiles(workspace: workspace), url = try files.resolve(path), relative = files.relative(url)
-        for item in try ruleItems(workspace: task.workspace) where item.enabled && item.definition.trigger == .glob {
+        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", task.workspace != nil else { return }
+        let (files,url) = try AgentWorkspaceScope.location(task,path:path), relative = files.relative(url)
+        for item in try ruleItems(workspace: files.root.path) where item.enabled && item.definition.trigger == .glob {
             guard try Self.ruleMatches(item.definition.patterns, path: relative) else { continue }
-            var reference = item.reference; reference.workspace = task.workspace
+            var reference = item.reference; reference.workspace = task.workspaceScope == nil ? task.workspace : files.root.path
             if store.task(taskID)?.activeRules?.contains(reference) != true { try activateRule(reference, store: store, taskID: taskID) }
         }
     }
@@ -86,6 +98,19 @@ struct AgentPluginRuleItem: Identifiable {
         return (AgentRuleContextEntry.render(result.entries), result.plugins)
     }
     func ruleContextEntries(_ task: AgentTaskRecord) throws -> (entries: [AgentRuleContextEntry], plugins: [String]) {
+        if task.workspaceScope != nil {
+            var entries:[AgentRuleContextEntry] = [], used = Set<String>()
+            for context in try AgentWorkspaceScope.contexts(task) {
+                let part = try ruleContextEntries(context); used.formUnion(part.plugins)
+                for entry in part.entries {
+                    if let index = entries.firstIndex(where:{$0.id == entry.id}) {
+                        guard entries[index].sha256 == entry.sha256 else { throw PetError("规则来源在载入期间变化，请重试") }
+                        entries[index].loaded = entries[index].loaded || entry.loaded
+                    } else { entries.append(entry) }
+                }
+            }
+            return (entries,used.sorted())
+        }
         guard !task.isProjectDocumentation, task.kind != "hook" else { return ([], []) }
         try validateProjectActivations(task.workspace)
         let all = try ruleItems(workspace: task.workspace), enabled = all.filter(\.enabled)

@@ -17,7 +17,7 @@ import AppKit
     static func candidates(store: AgentStore, query: String) -> [AgentTaskRecord] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = store.tasks.filter { task in
-            guard !task.archived, store.organization.archiveID(task.workspace, mode: task.organizationMode) == nil else { return false }
+            guard !task.archived, store.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil else { return false }
             let directory = store.organization.name(task.workspace, mode: task.organizationMode) ?? "无" + task.organizationMode.directoryTitle
             return query.isEmpty || [task.title, directory, task.organizationMode.title, task.workspace ?? ""].joined(separator: "\n").localizedCaseInsensitiveContains(query)
         }

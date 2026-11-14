@@ -280,8 +280,8 @@ import Foundation
         let mutating = ["write_file", "edit_file"].contains(call.name)
         if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改项目文件，请切换到 Agent 模式") }
         if ["read_file", "write_file", "edit_file", "list_directory", "search_files"].contains(call.name) {
-            let files = try AgentFiles(workspace: task.workspace), path = call.object["path"] as? String ?? "."
-            let url = try projectURL(path, files: files, writing: ["write_file", "edit_file"].contains(call.name), readingFile: call.name == "read_file")
+            let (files,location) = try AgentWorkspaceScope.location(task,path:call.object["path"] as? String ?? ".")
+            let url = try projectURL(location.path, files: files, writing: ["write_file", "edit_file"].contains(call.name), readingFile: call.name == "read_file")
             if AgentFiles.sensitive(files.relative(url)) { return "访问受保护文件：\(files.relative(url))" }
         }
         if call.name == "ask_user" { return call.object["question"] as? String ?? "需要补充信息" }
@@ -356,21 +356,21 @@ import Foundation
         case "read_skill_source": return try AgentSkillDrafts.read(call,task:task,store:store)
         case "draft_skill": return try AgentSkillDrafts.stage(call,taskID:taskID,store:store)
         case "list_rules":
-            var all: [[String: Any]] = try store.extensions.plugins.ruleItems(workspace: task.workspace).filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
-            all += try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).filter { $0.enabled && $0.definition?.trigger == .decision }.map { ["id": $0.id, "name": $0.invocation, "description": $0.definition!.description, "source": $0.source.path] }
+            var all: [[String: Any]] = try store.extensions.plugins.ruleItems(task:task).filter { $0.enabled && $0.definition.trigger == .decision }.map { ["id": $0.id, "name": $0.name, "description": $0.definition.description, "source": $0.source.path] }
+            all += try store.rules.catalog(task:task).filter { $0.enabled && $0.definition?.trigger == .decision }.map { ["id": $0.id, "name": $0.invocation, "description": $0.definition!.description, "source": $0.source.path] }
             let offset = min(all.count, max(0, args["offset"] as? Int ?? 0)), page = Array(all.dropFirst(offset).prefix(12))
             let value: [String: Any] = ["total": all.count, "offset": offset, "next_offset": offset + page.count < all.count ? offset + page.count : NSNull(), "rules": page]
             return AgentToolResult(text: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self))
         case "read_rule":
             let selected = try string("id")
             if selected.hasPrefix("local-rule-") {
-                let item = try store.rules.current(selected, task: task), reference = AgentLocalRuleReference(id: item.id, workspace: task.workspace)
+                let item = try store.rules.current(selected, task: task), reference = AgentLocalRuleReference(id: item.id, workspace: item.project && task.workspaceScope != nil ? item.owner.path : task.workspace)
                 guard item.definition?.trigger == .decision || task.activeLocalRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
                 try store.rules.activate(reference, store: store, taskID: taskID)
                 return AgentToolResult(text: "已载入规则 " + item.invocation + "\nSHA256: " + item.sha256, sources: [item.source.absoluteString])
             }
-            let item = try store.extensions.plugins.currentRule(selected, workspace: task.workspace)
-            var reference = item.reference; reference.workspace = task.workspace
+            let item = try store.extensions.plugins.currentRule(selected,task:task)
+            let reference = item.reference
             guard item.definition.trigger == .decision || task.activeRules?.contains(reference) == true else { throw PetError("此规则需要用户明确选择，不能自动载入") }
             try store.extensions.plugins.activateRule(reference, store: store, taskID: taskID)
             return AgentToolResult(text: "已载入规则 " + item.name + "\nSHA256: " + reference.sha256, sources: [item.source.absoluteString])
@@ -584,10 +584,10 @@ import Foundation
             if !query.isEmpty { output += "[当前任务共\(task.messages.count)条记录，offset=\(start)之后匹配\(matches.count)条。]" }
             return AgentToolResult(text: output)
         case "list_directory":
-            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
+            let (files,location) = try AgentWorkspaceScope.location(task,path:args["path"] as? String ?? "."), url = try projectURL(location.path,files:files)
             return AgentToolResult(text: try files.listResolved(url))
         case "read_file":
-            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, readingFile: true)
+            let (files,location) = try AgentWorkspaceScope.location(task,path:string("path")), url = try projectURL(location.path,files:files,readingFile:true)
             let exact = try JSONDecoder().decode(FileTextArguments.self, from: Data(call.arguments.utf8)), encoding = try AgentTextEncoding.argument(exact.encoding)
             let recording = task.recordsKnowledgeSources
             let hash = recording ? try files.fileHash(url, maximum: 4_000_000) : ""
@@ -601,10 +601,10 @@ import Foundation
             }
             return AgentToolResult(text: task.wikiJob != nil ? "SHA256: " + hash + "\n" + text : text, sources: [url.absoluteString])
         case "search_files":
-            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(args["path"] as? String ?? ".", files: files)
+            let (files,location) = try AgentWorkspaceScope.location(task,path:args["path"] as? String ?? "."), url = try projectURL(location.path,files:files)
             return AgentToolResult(text: try await files.search(path: url.path, pattern: string("pattern"), namesOnly: args["names_only"] as? Bool ?? false, excluding: [store.directory.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path.lowercased()]))
         case "write_file", "edit_file":
-            let files = try AgentFiles(workspace: task.workspace), url = try projectURL(string("path"), files: files, writing: true)
+            let (files,location) = try AgentWorkspaceScope.location(task,path:string("path")), url = try projectURL(location.path,files:files,writing:true)
             let existing = FileManager.default.fileExists(atPath: url.path), before = existing ? try files.readData(url) : nil
             if task.wikiJob != nil, call.name == "write_file", existing, args["expected_hash"] == nil { throw PetError("覆盖已有 Wiki 草稿需要当前 expected_hash，请先读取页面") }
             if args.keys.contains("expected_hash") { guard let expected = args["expected_hash"] as? String, let before, AgentFiles.hash(before) == expected else { throw PetError("文件已更改或哈希无效，草稿未写入；请先比较当前文件") } }
@@ -643,7 +643,8 @@ import Foundation
             let workspace = try task.workspace.map { try AgentFiles(workspace: $0).root } ?? scratch
             let process = AgentCommand(); commands[call.id] = process; defer { commands[call.id] = nil }
             let git = task.gitDirectory.flatMap { candidate -> URL? in guard (try? AgentGit.metadata(workspace: task.workspace).path) == candidate else { return nil }; return URL(fileURLWithPath: candidate) }
-            var result = try await process.run(command: command, workspace: workspace, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60), readOnly: task.kind == "hook" || (try store.agents.limits(task, store: store)).readOnly, gitDirectory: git, protectedData: store.directory.deletingLastPathComponent())
+            let extraRoots = try AgentWorkspaceScope.roots(task).map(\.root).filter{$0 != workspace}
+            var result = try await process.run(command: command, workspace: workspace, scratch: scratch, network: args["network"] as? Bool ?? false, timeout: Double(args["timeout_seconds"] as? Int ?? 60), readOnly: task.kind == "hook" || (try store.agents.limits(task, store: store)).readOnly, gitDirectory: git, protectedData: store.directory.deletingLastPathComponent(), workspaceRoots:extraRoots)
             if task.workspace == nil { result.text = "[工作目录：" + workspace.path + "]\n" + result.text }
             return result
         case "update_plan":

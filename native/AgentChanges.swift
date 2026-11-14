@@ -36,7 +36,7 @@ import Foundation
     static func restore(_ change: AgentChange, taskID: String, store: AgentStore) throws {
         guard let task = store.task(taskID), task.status != .running, task.pendingFileCapture == nil, task.pendingFileRollback == nil, change.restoredAt == nil else { throw PetError("请先停止任务并等待变更记录完成") }
         guard change.reviewOnly != true else { throw PetError("执行期间有其他任务操作此项目，请审阅文件后手动处理") }
-        let files = try AgentFiles(workspace: task.workspace), url = try files.literalURL(change.path)
+        let (files,url) = try AgentWorkspaceScope.location(task,path:change.path,literal:true)
         let current = try AgentCapturedFile.read(url.path, files: files, backups: nil)
         guard let expected = change.afterState, expected.matches(current.state) else { throw PetError("文件已被其他操作修改，未覆盖你的改动") }
         guard ["file", "link", "missing"].contains(current.state.kind), ["file", "link", "missing"].contains(change.beforeState.kind) else { throw PetError("路径类型已改变，请先处理目录内容；未覆盖任何文件") }
@@ -78,7 +78,7 @@ import Foundation
     }
     static func comparison(_ change: AgentChange, taskID: String, store: AgentStore, strict: Bool) throws -> Comparison {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
-        let files = try AgentFiles(workspace: task.workspace), current = try files.literalURL(change.path)
+        let (files,current) = try AgentWorkspaceScope.location(task,path:change.path,literal:true)
         let actual = try AgentCapturedFile.read(current.path, files: files, backups: nil)
         if strict, change.reviewOnly == true { throw PetError("执行期间有其他任务操作此项目，请核对未提交修改") }
         let changedAgain = change.afterState?.matches(actual.state) != true

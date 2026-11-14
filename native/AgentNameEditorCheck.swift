@@ -125,7 +125,7 @@ import AppKit
                 control.checkNameEditor("directory", id: directory, mode: mode)
                 guard let directorySheet = host.attachedSheet else { throw PetError("目录名称表单未打开") }
                 let directoryInput = try field(label, directorySheet); directoryInput.stringValue = String(repeating: "长", count: 81); try click("保存", directorySheet)
-                checks["directoryErrorRetainsInput-" + mode.rawValue] = try directoryInput.stringValue.count == 81 && field("名称保存状态", directorySheet).stringValue.contains("80")
+                checks["directoryErrorRetainsInput-" + mode.rawValue] = try directoryInput.stringValue.count == 81 && field("工作区保存状态", directorySheet).stringValue.contains("80")
                 directoryInput.stringValue = name; try click("保存", directorySheet); try await closed(host)
                 checks["directoryRenameIsDisplayOnly-" + mode.rawValue] = try tasks.organization.name(directory, mode: mode) == name && Data(contentsOf: readme) == projectBytes && Data(contentsOf: taskFile) == taskBeforeGroups
             }

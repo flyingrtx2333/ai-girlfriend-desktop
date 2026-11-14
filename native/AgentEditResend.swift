@@ -11,12 +11,10 @@ import Foundation
     }
     static func review(taskID: String, messageID: String, store: AgentStore) throws -> Review {
         guard let task = store.task(taskID), supported(task), ![.running, .waiting].contains(task.status), task.pendingFileCapture == nil, task.pendingFileRollback == nil, task.pendingCalls.isEmpty, task.queuedCount == 0, store.archiveIsBusy?(taskID) != true,
-              store.organization.archiveID(task.workspace, mode: task.organizationMode) == nil,
+              store.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil,
               let start = task.messages.firstIndex(where: { $0.id == messageID && $0.isHumanInput }) else { throw PetError("请先停止任务并处理等待中的操作") }
-        if let workspace = task.workspace {
-            guard !store.projectChanges.isObserving(workspace), !store.hasFileRollback(in: workspace) else { throw PetError("此项目正在记录或恢复文件，请稍后重试") }
-        }
-        if let reason = store.offices.unsavedReason(workspace: task.workspace) { throw PetError(reason) }
+        guard !task.workspacePaths.contains(where:{store.projectChanges.isObserving($0) || store.hasFileRollback(in:$0)}) else { throw PetError("此项目正在记录或恢复文件，请稍后重试") }
+        if let reason = store.offices.unsavedReason(task:task) { throw PetError(reason) }
         let hash = try store.recordVersion(taskID), ids = Set(task.messages[start...].filter(\.isHumanInput).map(\.id))
         let changed = (task.changeRounds ?? []).contains { ids.contains($0.id) && ($0.warning != nil || $0.changes.contains { $0.restoredAt == nil }) }
         let rollback = changed ? try AgentRoundRollback.review(taskID: taskID, from: messageID, store: store) : nil

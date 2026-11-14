@@ -102,14 +102,20 @@ import Foundation
             selectedID = tasks.first(where: { $0.id == parent && !$0.archived })?.id ?? tasks.first(where: { $0.sideTask == nil && !$0.archived })?.id
         }
     }
-    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil) -> String {
-        var task = AgentTaskRecord(title: title, workspace: workspace, mode: mode)
+    @discardableResult func create(title: String = "新的任务", workspace: String? = nil, mode: AgentMode = .agent, workMode: AgentWorkMode? = nil, workspaceScope:AgentWorkspaceScope? = nil) -> String {
+        var task = AgentTaskRecord(title: title, workspace: workspaceScope?.primary ?? workspace, workspaceScope:workspaceScope, mode: mode)
         task.workMode = workMode == .coding ? nil : workMode
         selectionFallbackMode = task.organizationMode
-        if let token = organization.archiveID(workspace, mode: task.organizationMode) { task.archived = true; task.workspaceArchiveID = token }
+        if let token = organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) { task.archived = true; task.workspaceArchiveID = token }
         tasks.insert(Self.metadata(task), at: 0); cache[task.id] = task; selectedID = task.id
         do { try save(task.id); try organization.remember(task) } catch { writeError = error.localizedDescription }
         trimCache(keeping: task.id); return task.id
+    }
+    @discardableResult func createWorkspaceTask(_ group:String, mode:AgentWorkMode, title:String = "新的任务", taskMode:AgentMode = .agent) throws -> String {
+        guard let entry = organization.entry(group,mode:mode,tasks:tasks) else { throw PetError("工作区已变化，请重新选择") }
+        let folders = try AgentWorkspaceScope.validateFolders(entry.sourceFolders,primary:entry.primary)
+        guard folders == entry.sourceFolders else { throw PetError("源文件夹指向已变化，请重新编辑工作区") }
+        return create(title:title,workspace:entry.primary,mode:taskMode,workMode:mode,workspaceScope:entry.scope)
     }
     private static func metadata(_ task: AgentTaskRecord) -> AgentTaskRecord {
         var value = task
@@ -135,7 +141,7 @@ import Foundation
         guard refreshDeletedRecords(), !deletions.taskIDs.contains(value.id) else { throw PetError(deletions.issue ?? "此任务已永久删除，请重新导入为新任务") }
         var value = value
         guard UUID(uuidString: value.id) != nil, value.importOrigin != nil, ![.running, .waiting].contains(value.status), value.pendingCalls.isEmpty, value.approvals.isEmpty, value.automation == nil, value.agent == nil, value.team == nil else { throw PetError("导入任务包含不能继承的运行状态") }
-        if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
+        if let token = organization.archiveID(value.organizationWorkspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let previousTasks = tasks, previousCache = cache[value.id]
         if let index = tasks.firstIndex(where: { $0.id == value.id }) { tasks[index] = Self.metadata(value) }
         else { tasks.append(Self.metadata(value)) }
@@ -235,7 +241,7 @@ import Foundation
         body(&value); value.updated = Date()
         if !wasArchived, value.archived, browser.sessions[id]?.workspaceHasUnsavedChanges == true { writeError = "请先添加或处理未保存的网页标注，再归档任务"; return }
         guard refreshDeletedRecords(), let index = tasks.firstIndex(where: { $0.id == id }) else { return }
-        if let token = organization.archiveID(value.workspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
+        if let token = organization.archiveID(value.organizationWorkspace, mode: value.organizationMode) { value.archived = true; value.workspaceArchiveID = token }
         let messagesChanged = value.messages.count != previous.messages.count || value.messages.last?.id != previous.messages.last?.id || value.messages.last?.content != previous.messages.last?.content || value.messages.last?.reasoning != previous.messages.last?.reasoning || value.messages.last?.toolCalls?.last?.arguments != previous.messages.last?.toolCalls?.last?.arguments
         let eventsChanged = !messagesChanged && (value.events.count != previous.events.count || zip(value.events, previous.events).contains { pair in pair.0.id != pair.1.id || pair.0.status != pair.1.status || pair.0.detail != pair.1.detail || pair.0.duration != pair.1.duration })
         value.activityAt = messagesChanged || eventsChanged ? value.updated : previous.activityAt ?? Self.metadata(previous).activityAt
@@ -243,7 +249,7 @@ import Foundation
             if value.resultHistory?.contains(where: { $0.id == result.id }) != true { if value.resultHistory == nil { value.resultHistory = [] }; value.resultHistory?.append(result) }
         }
         cache[id] = value; tasks[index] = Self.metadata(value)
-        let coreScopeChanged = previous.workspace != value.workspace || previous.mode != value.mode || previous.permission != value.permission
+        let coreScopeChanged = previous.workspace != value.workspace || previous.workspaceScope != value.workspaceScope || previous.mode != value.mode || previous.permission != value.permission
         let agentScopeChanged = previous.agent?.profile.id != value.agent?.profile.id || previous.agent?.ownerID != value.agent?.ownerID || previous.agent?.readOnly != value.agent?.readOnly || previous.agent?.network != value.agent?.network || previous.agent?.permissionCeiling != value.agent?.permissionCeiling
         let scheduleChanged = previous.automation?.runID != value.automation?.runID || previous.automation?.readOnly != value.automation?.readOnly || previous.automation?.network != value.automation?.network || previous.team?.team.id != value.team?.team.id
         if coreScopeChanged || agentScopeChanged || scheduleChanged { hooks.cancel(id) }
@@ -287,14 +293,14 @@ import Foundation
         _ = try commitTaskRecord(record, expectedHash: expectedHash, transaction: directory.deletingLastPathComponent().appendingPathComponent("rename-transactions/" + UUID().uuidString), label: "重命名任务")
     }
     func hasFileRollback(in workspace: String, except taskID: String? = nil) -> Bool {
-        tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspace.map { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } == true }
+        tasks.contains { record in record.id != taskID && record.pendingFileRollback != nil && record.workspacePaths.contains { AgentWorktreeRetention.within($0, workspace) || AgentWorktreeRetention.within(workspace, $0) } }
     }
     @discardableResult func commitTaskRecord(_ record: AgentTaskRecord, expectedHash: String, transaction: URL, continuation: AgentTaskRecord? = nil, label: String = "撤回文件", additionalWrites: [AgentKnowledgeFileWrite] = [], validating: () throws -> Void = {}) throws -> String {
         guard try recordVersion(record.id) == expectedHash, let i = tasks.firstIndex(where: { $0.id == record.id }) else { throw PetError("任务记录已变化，未保存") }
         var record = record
         if let continuation {
             try requireArchivable(record)
-            guard UUID(uuidString: continuation.id) != nil, continuation.parentID == record.id, !tasks.contains(where: { $0.id == continuation.id }), !deletions.taskIDs.contains(continuation.id), continuation.workspace == record.workspace, continuation.status == .ready, !continuation.archived else { throw PetError("重新发送的任务已变化") }
+            guard UUID(uuidString: continuation.id) != nil, continuation.parentID == record.id, !tasks.contains(where: { $0.id == continuation.id }), !deletions.taskIDs.contains(continuation.id), continuation.workspace == record.workspace, continuation.workspaceScope == record.workspaceScope, continuation.status == .ready, !continuation.archived else { throw PetError("重新发送的任务已变化") }
             record.archived = true; record.pinned = false; record.sideTask = nil; record.title += " · 编辑前"
         }
         let files = try AgentFiles(workspace: directory.path), data = try encoder.encode(record)
@@ -333,7 +339,7 @@ import Foundation
         let entries = AgentWorkMode.allCases.flatMap { organization.directories($0, tasks: tasks, includingArchived: true) }.filter { $0.archiveID.map(workspaceIDs.contains) == true }
         guard entries.count == workspaceIDs.count else { throw PetError("工作区归档已变化，请刷新后重试") }
         var selected = Set(ids)
-        for entry in entries { selected.formUnion(tasks.filter { $0.workspace == entry.path && $0.organizationMode == entry.mode }.map(\.id)) }
+        for entry in entries { selected.formUnion(tasks.filter { $0.organizationWorkspace == entry.path && $0.organizationMode == entry.mode }.map(\.id)) }
         guard selected.allSatisfy({ id in tasks.contains(where: { $0.id == id }) }) else { throw PetError("任务已不存在，请刷新后重试") }
         var previous = Set<String>()
         while previous != selected {
@@ -406,7 +412,7 @@ import Foundation
             guard var task = task(id), task.archived != archived else { throw PetError("所选任务已变化，请刷新后重试") }
             try requireArchivable(task, protectingBrowserDraft: archived)
             task.archived = archived; task.workspaceArchiveID = nil; if archived { task.sideTask = nil }; changed.append(task)
-            if !archived, let path = task.workspace, let entry = organization.directories(task.organizationMode, tasks: tasks, includingArchived: true).first(where: { $0.path == path && $0.archiveID != nil }), !directories.contains(where: { $0.path == path && $0.mode == task.organizationMode }) {
+            if !archived, let path = task.organizationWorkspace, let entry = organization.directories(task.organizationMode, tasks: tasks, includingArchived: true).first(where: { $0.path == path && $0.archiveID != nil }), !directories.contains(where: { $0.path == path && $0.mode == task.organizationMode }) {
                 var active = entry; active.archiveID = nil; active.archivedAt = nil; directories.append(active)
             }
         }
@@ -416,7 +422,7 @@ import Foundation
         guard var entry = organization.directories(mode, tasks: tasks, includingArchived: true).first(where: { $0.path == path }), (entry.archiveID != nil) != archived else { throw PetError("工作区已变化，请刷新后重试") }
         let previousToken = entry.archiveID, token = UUID().uuidString
         var changed: [AgentTaskRecord] = []
-        for metadata in tasks where metadata.workspace == path && metadata.organizationMode == mode {
+        for metadata in tasks where metadata.organizationWorkspace == path && metadata.organizationMode == mode {
             guard var task = task(metadata.id) else { throw PetError("任务无法读取，未归档工作区") }
             if archived && !task.archived || !archived && task.workspaceArchiveID == previousToken {
                 try requireArchivable(task, protectingBrowserDraft: archived); task.archived = archived; task.workspaceArchiveID = archived ? token : nil; if archived { task.sideTask = nil }; changed.append(task)
@@ -471,7 +477,7 @@ import Foundation
         let targetID = UUID().uuidString, target = directory.appendingPathComponent(targetID + ".json")
         do {
             guard refreshDeletedRecords(), var original = task(id), original.status != .running, original.pendingFileCapture == nil, original.pendingFileRollback == nil else { throw PetError("任务正在执行或记录不可用，未创建分支") }
-            guard organization.archiveID(original.workspace, mode: original.organizationMode) == nil else { throw PetError("请先恢复此任务的工作区") }
+            guard organization.archiveID(original.organizationWorkspace, mode: original.organizationMode) == nil else { throw PetError("请先恢复此任务的工作区") }
             let files = try AgentFiles(workspace: directory.path), source = try files.literalURL(id + ".json"), sourceHash = try files.fileHash(source, maximum: 20_000_000)
             guard sourceHash == taskHashes[id] else { throw PetError("原任务已变化，请重新打开后重试") }
             try agents.detachForFork(&original, store: self)

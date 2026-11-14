@@ -163,7 +163,7 @@ import UniformTypeIdentifiers
     }
     func selectSection(_ section: Int) { guard sections.selectedSegment != section else { return }; sections.selectedSegment = min(6, max(0, section)); refresh() }
     @discardableResult func openWorkspaceDocument(_ path: String) throws -> Bool {
-        let files = try AgentFiles(workspace: store.task(taskID)?.workspace), file = try files.resolve(path)
+        guard let task = store.task(taskID) else { throw PetError("任务不存在") }; let (files,file) = try AgentWorkspaceScope.location(task,path:path)
         guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
         guard selection == file.path || canLeave() else { return false }
         if documentOnly { window?.title = file.lastPathComponent }
@@ -552,7 +552,7 @@ import UniformTypeIdentifiers
                 revokeInstruction.isEnabled = revokeInstruction.numberOfItems > 1; return
             }
             if sections.selectedSegment == 2 {
-                if let url = URL(string: value), url.isFileURL, AgentVideoSnapshot.supports(url) { let files = try AgentFiles(workspace: task.workspace); try showVideo(files.resolve(url.path), files: files) }
+                if let url = URL(string: value), url.isFileURL, AgentVideoSnapshot.supports(url) { let (files,file) = try AgentWorkspaceScope.location(task,path:url.path); try showVideo(file, files: files) }
                 else { text.string = value; open.isHidden = false }
                 return
             }
@@ -566,7 +566,7 @@ import UniformTypeIdentifiers
                     catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
                 }; return
             }
-            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(value)
+            let (files,file) = try AgentWorkspaceScope.location(task,path:value)
             if AgentVideoSnapshot.supports(file) { try showVideo(file, files: files); return }
             if AgentOffice.supports(file.path) { text.string = file.lastPathComponent; state.stringValue = files.relative(file); open.isHidden = false; open.title = "编辑"; return }
             let data = try files.readData(file)
@@ -584,13 +584,13 @@ import UniformTypeIdentifiers
     }
     private func fileIsEditable(_ task: AgentTaskRecord, file: URL) -> Bool {
         guard !task.archived, ![.running, .waiting].contains(task.status), task.kind != "hook", task.kind != AgentKnowledgeCards.kind,
-              FileManager.default.isWritableFile(atPath: file.path), let files = try? AgentFiles(workspace: task.workspace), !AgentFiles.sensitive(files.relative(file)),
+              FileManager.default.isWritableFile(atPath: file.path), let files = try? AgentWorkspaceScope.files(task,path:file.path), !AgentFiles.sensitive(files.relative(file)),
               (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
         return true
     }
     private func resetDocumentMode() { readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
     private func videoScope(_ files: AgentFiles) -> () throws -> Void {
-        { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("视频所属任务或工作区已变化") } }
+        { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentWorkspaceScope.roots(task).contains(where:{$0.root == files.root}) else { throw PetError("视频所属任务或工作区已变化") } }
     }
     private enum VideoPresentation { case inline, page, window }
     private func showVideo(_ file: URL, files: AgentFiles, presentation: VideoPresentation = .inline) throws {
@@ -627,18 +627,18 @@ import UniformTypeIdentifiers
         var retainedDirty = dirty
         do {
             guard !saving, let task = store.task(taskID), let file = openedFile, let path = selection else { throw PetError("文档当前不可重新打开") }
-            let files = try AgentFiles(workspace: task.workspace); guard try files.resolve(path) == file else { throw PetError("文件位置已变化") }
+            let (files,resolved) = try AgentWorkspaceScope.location(task,path:path); guard resolved == file else { throw PetError("文件位置已变化") }
             try markdown.finishEditing(); retainedDirty = dirty
             let data = try files.readData(file), document = try AgentTextFile.decode(data, encoding: chosen)
             guard canLeave() else { AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: fileFormat); return }
             guard let current = store.task(taskID), selection == path, openedFile == file else { throw PetError("文档或任务已变化，草稿已保留") }
-            let currentFiles = try AgentFiles(workspace: current.workspace); guard try currentFiles.resolve(path) == file else { throw PetError("文件位置已变化，草稿已保留") }
+            let (currentFiles,latestLocation) = try AgentWorkspaceScope.location(current,path:path); guard latestLocation == file else { throw PetError("文件位置已变化，草稿已保留") }
             let latest = try currentFiles.readData(file), decoded = latest == data ? document : try AgentTextFile.decode(latest, encoding: chosen)
             conflictWindow?.close(); conflictWindow = nil; requestedEncoding = chosen; encodings[file.path] = chosen; loadText(decoded, data: latest, file: file, task: current); state.stringValue = (text.isEditable ? "" : "只读 · ") + currentFiles.relative(file)
         } catch { dirty = dirty || retainedDirty; state.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: openedHash == nil ? nil : fileFormat) }
     }
     @objc private func switchDocumentMode() {
-        guard let file = markdownFile, let workspace = store.task(taskID)?.workspace else { return }
+        guard let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; displayMode.selectedSegment = markdown.isHidden ? 1 : 0; return }
         let preview = displayMode.selectedSegment == 0
         markdown.isHidden = !preview; viewer.isHidden = preview
@@ -648,7 +648,7 @@ import UniformTypeIdentifiers
     private func openDocumentLink(_ url: URL) {
         do {
             if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url); return }
-            guard let workspace = store.task(taskID)?.workspace, let file = markdownFile else { return }
+            guard let task = store.task(taskID), let file = markdownFile else { return }; let workspace = try AgentWorkspaceScope.files(task,path:file.path).root.path
             let files = try AgentFiles(workspace: workspace), target = try AgentMarkdownDocument.target(url, document: file, files: files)
             if taskHosted, AgentVideoSnapshot.supports(target), let onOpenVideo { try onOpenVideo(target); return }
             if settingsHostWindow != nil, !taskHosted, AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, presentation: .page); return }
@@ -691,7 +691,7 @@ import UniformTypeIdentifiers
                 let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID)
                 openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
             }
-            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path), current = try files.readData(file)
+            let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)
             guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
             guard let hash = openedHash else { throw PetError("打开的文件版本不可用，草稿已保留") }
             guard AgentFiles.hash(current) == hash else { state.stringValue = "文件已更改，草稿已保留"; presentConflict(); return }
@@ -707,7 +707,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     private func persistFile(path: String, content: String, format: AgentTextFormat, expectedHash: String) async throws {
-        guard !saving, let task = store.task(taskID), let file = openedFile, fileIsEditable(task, file: file), try AgentFiles(workspace: task.workspace).resolve(path) == file else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
+        guard !saving, let task = store.task(taskID), let file = openedFile, fileIsEditable(task, file: file), try AgentWorkspaceScope.location(task,path:path).1 == file else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
         let data = try format.encode(content)
         let args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": expectedHash, "encoding": format.encoding.rawValue, "byte_order_mark": format.bom])
         saving = true; save.isEnabled = false; compare.isEnabled = false; state.stringValue = "正在保存…"
@@ -754,7 +754,7 @@ import UniformTypeIdentifiers
             do { try onOpenVideo(file) } catch { state.stringValue = error.localizedDescription }; return
         }
         if !video.isHidden, let file = openedFile, let task = store.task(taskID) {
-            do { try showVideo(file, files: AgentFiles(workspace: task.workspace), presentation: .window) } catch { state.stringValue = error.localizedDescription }; return
+            do { try showVideo(file, files: AgentWorkspaceScope.files(task,path:file.path), presentation: .window) } catch { state.stringValue = error.localizedDescription }; return
         }
         if sections.selectedSegment == 1, AgentOffice.supports(value) { showOffice(value); return }
         if let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
@@ -771,23 +771,22 @@ import UniformTypeIdentifiers
                 } catch { state.stringValue = error.localizedDescription }
             }
             else if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
-            else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let safe = try? files.resolve(url.path) { if AgentOffice.supports(safe.path) { showOffice(safe.path) } else { NSWorkspace.shared.open(safe) } }
+            else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentWorkspaceScope.files(task,path:url.path), let safe = try? files.resolve(url.path) { if AgentOffice.supports(safe.path) { showOffice(safe.path) } else { NSWorkspace.shared.open(safe) } }
         }
-        else if let task = store.task(taskID), let files = try? AgentFiles(workspace: task.workspace), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }
+        else if let task = store.task(taskID), let files = try? AgentWorkspaceScope.files(task,path:value), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }
     }
     private func showOffice(_ path: String) {
         load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func chooseOffice() {
         if taskHosted, let onChooseWorkspaceFile { onChooseWorkspaceFile(); return }
-        guard let window = presentingWindow, let workspace = store.task(taskID)?.workspace, canLeave() else { return }
+        guard let window = presentingWindow, let original = store.task(taskID), let workspace = original.workspace, canLeave() else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.directoryURL = URL(fileURLWithPath: workspace)
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let file = panel.url, let self else { return }
             do {
-                let files = try AgentFiles(workspace: workspace)
-                guard let task = self.store.task(self.taskID), try AgentFiles(workspace: task.workspace).root == files.root else { throw PetError("任务工作区已变化，请重新打开文件") }
-                let safe = try files.resolve(file.path)
+                guard let task = self.store.task(self.taskID), task.workspace == original.workspace, task.workspaceScope == original.workspaceScope else { throw PetError("任务工作区已变化，请重新打开文件") }
+                let (files,safe) = try AgentWorkspaceScope.location(task,path:file.path)
                 guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能打开敏感文件") }
                 if AgentVideoSnapshot.supports(safe) { try self.showVideo(safe, files: files, presentation: self.settingsHostWindow != nil && !self.taskHosted ? .page : .window) }
                 else if AgentOffice.supports(safe.path) { self.showOffice(safe.path) }

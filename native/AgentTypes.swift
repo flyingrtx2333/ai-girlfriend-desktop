@@ -111,6 +111,7 @@ struct AgentApproval: Codable, Identifiable {
     var call: AgentToolCall
     var reason: String
     var workspace: String?
+    var workspaceScope: AgentWorkspaceScope?
     var gitDirectory: String?
     var intentID: String?
     var decision: String?
@@ -147,6 +148,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var id = UUID().uuidString
     var title: String
     var workspace: String?
+    var workspaceScope: AgentWorkspaceScope?
     var workMode: AgentWorkMode?
     var organizationMode: AgentWorkMode { workMode ?? .coding }
     var activityAt: Date?

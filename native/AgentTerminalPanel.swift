@@ -117,6 +117,7 @@ import BlueFatFishTerminal
     @MainActor private final class TaskTerminals {
         let id: String
         let workspace: String?
+        let workspaceScope:AgentWorkspaceScope?
         let directory: URL
         var tabs: [Tab] = []
         var index = 0
@@ -125,6 +126,7 @@ import BlueFatFishTerminal
         init(task: AgentTaskRecord, directory: URL) {
             id = task.id
             workspace = task.workspace
+            workspaceScope = task.workspaceScope
             self.directory = directory
         }
 
@@ -218,14 +220,14 @@ import BlueFatFishTerminal
     }
 
     private func taskIsAvailable(_ task: AgentTaskRecord, store: AgentStore) -> Bool {
-        Self.available(task) && store.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+        Self.available(task) && store.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
     }
 
     func selectTask(_ task: AgentTaskRecord?) {
         guard let store else { return }
         for id in Array(states.keys) {
             guard let state = states[id] else { continue }
-            if let record = store.task(id), taskIsAvailable(record, store: store), record.workspace == state.workspace { continue }
+            if let record = store.task(id), taskIsAvailable(record, store: store), record.workspace == state.workspace, record.workspaceScope == state.workspaceScope { continue }
             closeState(id)
         }
         let id = task?.id
@@ -260,7 +262,7 @@ import BlueFatFishTerminal
     }
 
     private func makePane(for state: TaskTerminals) throws -> AgentTerminalPane {
-        guard paneCount < maximumPanes, let store, let task = store.task(state.id), taskIsAvailable(task, store: store), task.workspace == state.workspace else {
+        guard paneCount < maximumPanes, let store, let task = store.task(state.id), taskIsAvailable(task, store: store), task.workspace == state.workspace, task.workspaceScope == state.workspaceScope else {
             throw PetError("任务已变化或终端数量已达上限")
         }
         if let workspace = state.workspace, try AgentFiles(workspace: workspace).root != state.directory {

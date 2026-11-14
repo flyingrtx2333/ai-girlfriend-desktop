@@ -150,8 +150,8 @@ private final class AgentTaskTable: NSTableView {
         workMode = mode; taskView = view
         workModePicker.selectItem(at: AgentWorkMode.allCases.firstIndex(of: workMode) ?? 0)
         add.toolTip = "添加" + workMode.directoryTitle; add.setAccessibilityLabel("添加" + workMode.directoryTitle)
-        if previous != selected, let path = values.first(where: { $0.id == selected })?.workspace { collapsed.remove(groupKey(path)) }
-        let next = values.map { "\($0.id)|\($0.title)|\($0.workspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))|\(search.stringValue.isEmpty ? 0 : searchRevision)"
+        if previous != selected, let path = values.first(where: { $0.id == selected })?.organizationWorkspace { collapsed.remove(groupKey(path)) }
+        let next = values.map { "\($0.id)|\($0.title)|\($0.organizationWorkspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))|\(search.stringValue.isEmpty ? 0 : searchRevision)"
         if onAttention == nil { setAttentionCount(values.filter { !$0.archived && $0.status == .waiting }.count, enabled: true) }
         if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
     }
@@ -199,7 +199,7 @@ private final class AgentTaskTable: NSTableView {
     @objc private func customGroupAction(_ sender: NSMenuItem) { guard let values = sender.representedObject as? [String], values.count == 2 else { return }; onCustomGroup?(values[0].isEmpty ? nil : values[0], workMode, values[1]) }
     @objc private func assignGroup(_ sender: NSMenuItem) { guard let values = sender.representedObject as? [String], values.count == 3, let mode = AgentWorkMode(rawValue: values[2]) else { return }; _ = onAssignGroup?(values[0], values[1].isEmpty ? nil : values[1], mode) }
     private func rebuildViewMenu() {
-        let next = "\(organization?.revision ?? 0)|\(workMode.rawValue)|\(filter)|" + Set(tasks.filter { $0.organizationMode == workMode }.compactMap(\.workspace)).sorted().joined(separator: "\n")
+        let next = "\(organization?.revision ?? 0)|\(workMode.rawValue)|\(filter)|" + Set(tasks.filter { $0.organizationMode == workMode }.compactMap(\.organizationWorkspace)).sorted().joined(separator: "\n")
         guard next != viewMenuSignature else { return }; viewMenuSignature = next
         guard let menu = viewMenu.menu else { return }; while menu.items.count > 1 { menu.removeItem(at: 1) }
         func item(_ title: String, _ action: Selector?, value: Any? = nil, checked: Bool = false, enabled: Bool = true) -> NSMenuItem { let result = NSMenuItem(title: title, action: action, keyEquivalent: ""); result.target = self; result.representedObject = value; result.state = checked ? .on : .off; result.isEnabled = enabled; return result }
@@ -309,15 +309,15 @@ private final class AgentTaskTable: NSTableView {
         case .workspace:
             var entries = organization?.directories(workMode, tasks: visible, includingArchived: filter == 2) ?? []
             let known = Set(entries.map(\.path))
-            for path in Set(unpinned.compactMap(\.workspace)).sorted() where !known.contains(path) { entries.append(AgentDirectoryEntry(path: path, mode: workMode)) }
+            for path in Set(unpinned.compactMap(\.organizationWorkspace)).sorted() where !known.contains(path) { entries.append(AgentDirectoryEntry(path: path, mode: workMode)) }
             for entry in entries {
-                let workspace = entry.path, members = unpinned.filter { $0.workspace == workspace }
+                let workspace = entry.path, members = unpinned.filter { $0.organizationWorkspace == workspace }
                 guard !narrowed || !members.isEmpty else { continue }
                 let title = entry.name ?? members.first(where: { $0.worktreeOrigin != nil })?.workspaceDisplayName ?? entry.title
                 rows.append(.group(title, workspace))
                 if !collapsed.contains(groupKey(workspace)) || !query.isEmpty { for task in members { append(task) } }
             }
-            let ungrouped = unpinned.filter { $0.workspace == nil }
+            let ungrouped = unpinned.filter { $0.organizationWorkspace == nil }
             if !ungrouped.isEmpty { rows.append(.group(filter == 2 ? "归档" : "最近任务", nil)); for task in ungrouped { append(task) } }
         case .custom:
             for group in custom {
@@ -405,6 +405,10 @@ private final class AgentTaskTable: NSTableView {
                 return view
             }
             let view = NSView(), button = AgentWorkbenchButton(title: "", target: self, action: #selector(toggleGroup(_:))), label = NSTextField(labelWithString: title), icon = NSImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!)
+            if effectiveGrouping != .custom, let entry = organization?.entry(path!,mode:workMode,tasks:tasks) {
+                icon.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); icon.contentTintColor = (entry.color ?? .forest).nsColor
+                icon.setAccessibilityLabel("工作区图标：" + (entry.icon ?? .folder).title + "，" + (entry.color ?? .forest).title)
+            }
             let closed = collapsed.contains(groupKey(path!)); button.image = NSImage(systemSymbolName: closed ? "chevron.right" : "chevron.down", accessibilityDescription: nil); button.tag = row; button.isBordered = false; button.contentTintColor = AgentWorkbenchTheme.secondaryText; button.setAccessibilityLabel((closed ? "展开 " : "收起 ") + title)
             button.isHidden = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             label.font = .systemFont(ofSize: 15); label.lineBreakMode = .byTruncatingTail; view.toolTip = effectiveGrouping == .custom ? "自定义分组" : path
@@ -437,7 +441,7 @@ private final class AgentTaskTable: NSTableView {
             let pinned = organization?.directories(workMode, tasks: tasks).first(where: { $0.path == path })?.pinned == true
             let archived = organization?.archiveID(path, mode: workMode) != nil
             item.isEnabled = !archived
-            for (title, action) in [("设置显示名称…", "rename"), (pinned ? "取消置顶" : "置顶" + workMode.directoryTitle, "pin"), (archived ? "恢复" + workMode.directoryTitle : "归档" + workMode.directoryTitle, archived ? "restore" : "archive")] {
+            for (title, action) in [("编辑" + workMode.directoryTitle + "…", "rename"), ("打开主文件夹", "open"), (pinned ? "取消置顶" : "置顶" + workMode.directoryTitle, "pin"), (archived ? "恢复" + workMode.directoryTitle : "归档" + workMode.directoryTitle, archived ? "restore" : "archive")] {
                 let entry = NSMenuItem(title: title, action: #selector(directoryAction(_:)), keyEquivalent: ""); entry.target = self; entry.representedObject = [path, workMode.rawValue, action]; menu.addItem(entry)
             }
             return menu

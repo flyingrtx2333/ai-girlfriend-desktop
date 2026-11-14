@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor enum AgentRoundRollback {
     struct Entry: Codable { var path: String; var current: AgentCapturedFile; var desired: AgentCapturedFile; var temporaryName: String? = nil; var temporarySignature: String? = nil }
-    private struct Journal: Codable { var id: String; var taskID: String; var messageID: String; var workspace: String; var entries: [Entry] }
+    private struct Journal: Codable { var id: String; var taskID: String; var messageID: String; var workspace: String; var workspaceScope:AgentWorkspaceScope?; var entries: [Entry] }
     struct Review {
         var taskID: String; var messageID: String; var taskHash: String; var workspace: String
         var roundIDs: Set<String>; var changeIDs: Set<String>; var paths: [String]; var entries: [Entry]; var issues: [String]
@@ -29,7 +29,7 @@ import Foundation
     private static func validateTask(_ taskID: String, store: AgentStore) throws -> AgentTaskRecord {
         guard let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.status != .running, task.pendingFileCapture == nil,
               task.pendingCalls.isEmpty, task.queuedCount == 0, store.archiveIsBusy?(taskID) != true, let workspace = task.workspace else { throw PetError("请先停止任务并处理等待中的操作") }
-        guard !store.projectChanges.isObserving(workspace) else { throw PetError("此项目正在记录其他文件操作，请稍后重试") }; return task
+        guard !task.workspacePaths.contains(where:{store.projectChanges.isObserving($0)}) else { throw PetError("此项目正在记录其他文件操作，请稍后重试") }; return task
     }
     private static func directory(_ id: String, taskID: String, store: AgentStore) throws -> URL {
         guard UUID(uuidString: id) != nil else { throw PetError("撤回记录编号无效") }
@@ -43,19 +43,20 @@ import Foundation
     }
     static func review(taskID: String, from messageID: String, store: AgentStore) throws -> Review {
         let task = try validateTask(taskID, store: store), version = try store.recordVersion(taskID), files = try AgentFiles(workspace: task.workspace)
-        guard !store.hasFileRollback(in: files.root.path, except: taskID) else { throw PetError("此项目有其他未完成的文件撤回，请先恢复") }
+        guard !task.workspacePaths.contains(where:{store.hasFileRollback(in:$0,except:taskID)}) else { throw PetError("此项目有其他未完成的文件撤回，请先恢复") }
         let backups = try AgentFiles(workspace: store.backupDirectory(taskID).path)
         var review = Review(taskID: taskID, messageID: messageID, taskHash: version, workspace: files.root.path, roundIDs: [], changeIDs: [], paths: [], entries: [], issues: [], recovery: task.pendingFileRollback != nil)
         if let pending = task.pendingFileRollback {
             guard pending.messageID == messageID else { throw PetError("请先恢复未完成的文件撤回") }
             let folder = try AgentFiles(workspace: directory(pending.id, taskID: taskID, store: store).path)
             let journal = try JSONDecoder().decode(Journal.self, from: folder.readData(folder.literalURL("manifest.json"), maximum: 4_000_000))
-            guard journal.id == pending.id, journal.taskID == taskID, journal.messageID == messageID, journal.workspace == files.root.path, Set(journal.entries.map(\.path)).count == journal.entries.count else { throw PetError("撤回记录与当前任务或项目不一致") }
+            guard journal.id == pending.id, journal.taskID == taskID, journal.messageID == messageID, journal.workspace == files.root.path, journal.workspaceScope == task.workspaceScope, Set(journal.entries.map(\.path)).count == journal.entries.count else { throw PetError("撤回记录与当前任务或项目不一致") }
             review.paths = journal.entries.map(\.path)
             for (i, entry) in journal.entries.enumerated() {
                 do {
                     try verify(entry.current, backups: folder)
-                    let current = try AgentCapturedFile.read(files.literalURL(entry.path).path, files: files, backups: nil)
+                    let (files,file) = try AgentWorkspaceScope.location(task,path:entry.path,literal:true)
+                    let current = try AgentCapturedFile.read(file.path, files: files, backups: nil)
                     guard current.state == entry.current.state || current.state == entry.desired.state else { throw PetError("文件又被修改，未覆盖后来的内容") }
                     var signature: String?
                     if let name = entry.temporaryName {
@@ -64,7 +65,7 @@ import Foundation
                         guard ["missing", "file", "link"].contains(metadata.kind) else { throw PetError("暂存路径类型已变化，未移除") }; signature = metadata.signature
                     }
                     review.entries.append(Entry(path: entry.path, current: current, desired: entry.current, temporaryName: entry.temporaryName, temporarySignature: signature))
-                } catch { review.issues.append(files.relative(URL(fileURLWithPath: entry.path)) + "：" + error.localizedDescription) }
+                } catch { review.issues.append(entry.path + "：" + error.localizedDescription) }
             }
             return review
         }
@@ -78,19 +79,20 @@ import Foundation
         let grouped = Dictionary(grouping: changes, by: \.path); review.paths = grouped.keys.sorted()
         for path in review.paths {
             do {
-                let chain = grouped[path]!, first = chain[0], last = chain[chain.count - 1], url = try files.literalURL(path)
+                let chain = grouped[path]!, first = chain[0], last = chain[chain.count - 1]
+                let (files,url) = try AgentWorkspaceScope.location(task,path:path,literal:true)
                 guard !AgentFiles.sensitive(files.relative(url)), chain.allSatisfy({ $0.reviewOnly != true }), let after = last.afterState else { throw PetError("文件不具备独占且完整的检查点") }
                 for pair in zip(chain, chain.dropFirst()) { guard pair.0.afterState?.matches(pair.1.beforeState) == true else { throw PetError("回合之间有其他文件修改，未覆盖这些内容") } }
                 let current = try AgentCapturedFile.read(url.path, files: files, backups: nil)
                 guard after.matches(current.state), ["file", "link", "missing"].contains(current.state.kind) else { throw PetError("文件又被修改或类型已变化，未覆盖后来的内容") }
                 let desired = AgentCapturedFile(state: first.beforeState, signature: "", backup: first.backup)
                 try verify(desired, backups: backups); review.entries.append(Entry(path: path, current: current, desired: desired))
-            } catch { review.issues.append(files.relative(URL(fileURLWithPath: path)) + "：" + error.localizedDescription) }
+            } catch { review.issues.append(path + "：" + error.localizedDescription) }
         }
         if review.paths.isEmpty { review.issues.append("这些回合没有可撤回的文件修改") }; return review
     }
-    private static func write(_ desired: AgentCapturedFile, path: String, expected: String, files: AgentFiles, backups: AgentFiles, temporaryName: String? = nil) throws -> String {
-        let url = try files.literalURL(path)
+    private static func write(_ desired: AgentCapturedFile, path: String, expected: String, task:AgentTaskRecord, backups: AgentFiles, temporaryName: String? = nil) throws -> String {
+        let (files,url) = try AgentWorkspaceScope.location(task,path:path,literal:true)
         switch desired.state.kind {
         case "file":
             guard let backup = desired.backup else { throw PetError("检查点不存在") }
@@ -111,19 +113,20 @@ import Foundation
         let review = try self.review(taskID: expected.taskID, from: expected.messageID, store: store)
         guard review.canApply else { throw PetError(review.issues.joined(separator: "\n")) }
         guard review.fingerprint == expected.fingerprint else { throw PetError("文件或任务已变化，请重新审阅") }
-        let original = try validateTask(review.taskID, store: store), files = try AgentFiles(workspace: review.workspace)
+        let original = try validateTask(review.taskID, store: store)
         let backups = try AgentFiles(workspace: store.backupDirectory(review.taskID).path)
         if let pending = original.pendingFileRollback {
             guard continuation == nil else { throw PetError("请先恢复未完成的文件撤回") }
             let folder = try directory(pending.id, taskID: review.taskID, store: store), journal = try AgentFiles(workspace: folder.path)
-            for entry in review.entries { guard try files.entryMetadata(files.literalURL(entry.path)).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
+            for entry in review.entries { let (files,file) = try AgentWorkspaceScope.location(original,path:entry.path,literal:true); guard try files.entryMetadata(file).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
             for entry in review.entries {
+                let files = try AgentWorkspaceScope.files(original,path:entry.path,literal:true)
                 if let name = entry.temporaryName, let signature = entry.temporarySignature {
                     let temporary = try files.literalURL(URL(fileURLWithPath: entry.path).deletingLastPathComponent().appendingPathComponent(name).path)
                     guard try files.entryMetadata(temporary).signature == signature else { throw PetError("撤回暂存文件已变化，请重新审阅") }
                     if signature != "missing" { try files.remove(temporary) }
                 }
-                _ = try write(entry.desired, path: entry.path, expected: entry.current.signature, files: files, backups: journal, temporaryName: entry.temporaryName)
+                _ = try write(entry.desired, path: entry.path, expected: entry.current.signature, task:original, backups: journal, temporaryName: entry.temporaryName)
             }
             var recovered = original; recovered.pendingFileRollback = nil; recovered.updated = Date(); recovered.activityAt = recovered.updated
             recovered.events.append(AgentEvent(kind: "change", title: "已恢复撤回前文件", detail: "\(review.entries.count) 个文件；对话记录保留", status: "completed"))
@@ -135,11 +138,12 @@ import Foundation
         let journal = try AgentFiles(workspace: folder.path), objects = try AgentFiles(workspace: folder.appendingPathComponent("objects").path)
         var entries = review.entries
         for i in entries.indices {
+            let files = try AgentWorkspaceScope.files(original,path:entries[i].path,literal:true)
             let current = try AgentCapturedFile.read(entries[i].path, files: files, backups: objects)
             guard current.state == entries[i].current.state, current.signature == entries[i].current.signature else { throw PetError("备份期间文件已变化，请重新审阅") }; entries[i].current = current
             entries[i].temporaryName = ".bluefatfish-rollback-" + id + "-" + String(i) + ".tmp"
         }
-        let manifest = Journal(id: id, taskID: review.taskID, messageID: review.messageID, workspace: review.workspace, entries: entries)
+        let manifest = Journal(id: id, taskID: review.taskID, messageID: review.messageID, workspace: review.workspace, workspaceScope:original.workspaceScope, entries: entries)
         let manifestData = try JSONEncoder().encode(manifest); guard manifestData.count <= 4_000_000 else { throw PetError("文件数量过多，请分回合撤回") }
         try journal.writeData(manifestData, to: journal.literalURL("manifest.json"), permissions: 0o600)
         let records = try AgentFiles(workspace: store.directory.path)
@@ -148,8 +152,8 @@ import Foundation
         let pendingHash = try store.commitTaskRecord(pending, expectedHash: review.taskHash, transaction: folder.appendingPathComponent("pending-record"))
         var attempted: [Int] = [], written: [Int: String] = [:]
         do {
-            for entry in entries { guard try files.entryMetadata(files.literalURL(entry.path)).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
-            for (i, entry) in entries.enumerated() { attempted.append(i); written[i] = try write(entry.desired, path: entry.path, expected: entry.current.signature, files: files, backups: backups, temporaryName: entry.temporaryName) }
+            for entry in entries { let (files,file) = try AgentWorkspaceScope.location(original,path:entry.path,literal:true); guard try files.entryMetadata(file).signature == entry.current.signature else { throw PetError("文件已变化，请重新审阅") } }
+            for (i, entry) in entries.enumerated() { attempted.append(i); written[i] = try write(entry.desired, path: entry.path, expected: entry.current.signature, task:original, backups: backups, temporaryName: entry.temporaryName) }
             var restored = original; let now = Date()
             for r in (restored.changeRounds ?? []).indices { for i in restored.changeRounds![r].changes.indices where review.changeIDs.contains(restored.changeRounds![r].changes[i].id) { restored.changeRounds?[r].changes[i].restoredAt = now } }
             for entry in entries {
@@ -167,8 +171,8 @@ import Foundation
             var retained: [String] = []
             for i in attempted.reversed() {
                 do {
-                    if let signature = written[i] { _ = try write(entries[i].current, path: entries[i].path, expected: signature, files: files, backups: journal, temporaryName: entries[i].temporaryName) }
-                    else if try AgentCapturedFile.read(entries[i].path, files: files, backups: nil).state != entries[i].current.state { retained.append(entries[i].path) }
+                    if let signature = written[i] { _ = try write(entries[i].current, path: entries[i].path, expected: signature, task:original, backups: journal, temporaryName: entries[i].temporaryName) }
+                    else if try AgentCapturedFile.read(entries[i].path, files: AgentWorkspaceScope.files(original,path:entries[i].path,literal:true), backups: nil).state != entries[i].current.state { retained.append(entries[i].path) }
                 } catch { retained.append(entries[i].path) }
             }
             if retained.isEmpty { do { _ = try store.commitTaskRecord(original, expectedHash: pendingHash, transaction: folder.appendingPathComponent("cancelled-record")) } catch { retained.append("任务记录") } }

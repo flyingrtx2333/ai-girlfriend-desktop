@@ -26,7 +26,7 @@ enum AgentRepoWikiOverview {
         var result: [AgentRepoWikiProject] = [], seen = Set<String>()
         for mode in [selected] + AgentWorkMode.allCases.filter({ $0 != selected }) {
             for entry in store.organization.directories(mode, tasks: tasks) {
-                let path = URL(fileURLWithPath: entry.path).standardizedFileURL.path
+                let path = URL(fileURLWithPath: entry.primary).standardizedFileURL.path
                 guard seen.insert(path).inserted else { continue }
                 let candidates = tasks.filter { task in
                     task.workspace.map { URL(fileURLWithPath: $0).standardizedFileURL.path == path } == true && !task.archived && !task.isProjectDocumentation && task.kind != "hook" && task.agent == nil && task.team == nil && task.automation == nil

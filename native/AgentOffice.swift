@@ -28,8 +28,8 @@ struct AgentOfficeEditError: LocalizedError {
             tool("office_edit", "编辑并保存刚由office_read读取的办公文件。expected_hash取实际sha256；edits是JSON字符串，遵循该格式返回的edit_format，expectVersion取实际version。修改后重新office_read核对。冲突或未保存人工编辑时拒绝覆盖，不执行脚本。", ["path": string, "expected_hash": string, "edits": string], ["path", "expected_hash", "edits"])]
     }
     func file(_ path: String, taskID: String) throws -> (AgentFiles, URL) {
-        guard let store, let task = store.task(taskID), let workspace = task.workspace else { throw PetError("请先选择项目文件夹") }
-        let files = try AgentFiles(workspace: workspace), url = try files.literalURL(path)
+        guard let store, let task = store.task(taskID) else { throw PetError("请先选择项目文件夹") }
+        let (files,url) = try AgentWorkspaceScope.location(task,path:path,literal:true)
         guard Self.supports(url.path), !AgentFiles.sensitive(files.relative(url)) else { throw PetError("请选择项目中的DOCX、XLSX或PPTX文件") }
         let privateRoot = store.directory.deletingLastPathComponent().resolvingSymlinksInPath().path
         let value = url.path.lowercased(), protected = [privateRoot.lowercased(), Bundle.main.bundleURL.resolvingSymlinksInPath().path.lowercased()]
@@ -38,15 +38,15 @@ struct AgentOfficeEditError: LocalizedError {
     }
     func task(_ id: String, root: URL, agentWrite: Bool = false, manualWrite: Bool = false, allowCapture: Bool = false) throws -> AgentTaskRecord {
         guard let store, let task = store.task(id), task.kind != "hook", task.kind != "wiki",
-              let workspace = task.workspace, try AgentFiles(workspace: workspace).root == root else { throw PetError("任务项目已变化，请先保留编辑内容") }
+              try AgentWorkspaceScope.roots(task).contains(where:{$0.root == root}) else { throw PetError("任务项目已变化，请先保留编辑内容") }
         if (agentWrite || manualWrite) && task.archived { throw PetError("任务已归档，请先取消归档再保存") }
         if agentWrite {
             guard ![.ask, .plan].contains(task.mode), try !store.agents.limits(task, store: store).readOnly, task.queuedCount == 0 else { throw PetError("当前任务只读或要求已变化，办公文件未保存") }
         }
         if manualWrite {
             let otherWorking = store.tasks.contains { record in
-                guard record.id != id, [.running, .waiting].contains(record.status), let workspace = record.workspace else { return false }
-                return AgentWorktreeRetention.within(workspace, root.path) || AgentWorktreeRetention.within(root.path, workspace)
+                guard record.id != id, [.running, .waiting].contains(record.status) else { return false }
+                return record.workspacePaths.contains{AgentWorktreeRetention.within($0,root.path) || AgentWorktreeRetention.within(root.path,$0)}
             }
             guard task.status != .running, task.status != .waiting, task.pendingFileCapture == nil || allowCapture, task.queuedCount == 0, !otherWorking else { throw PetError("请先停止此项目中的任务并处理待确认操作，再编辑办公文件") }
         }
@@ -71,6 +71,7 @@ struct AgentOfficeEditError: LocalizedError {
         try await window.open(); return window
     }
     func changed(_ taskID: String) { for window in windows.values { window.updateAvailability() } }
+    func unsavedReason(task:AgentTaskRecord) -> String? { task.workspacePaths.compactMap{unsavedReason(workspace:$0)}.first }
     func unsavedReason(workspace: String?) -> String? {
         guard let workspace, let files = try? AgentFiles(workspace: workspace) else { return nil }
         let related = windows.values.filter { AgentWorktreeRetention.within($0.files.root.path, files.root.path) || AgentWorktreeRetention.within(files.root.path, $0.files.root.path) }

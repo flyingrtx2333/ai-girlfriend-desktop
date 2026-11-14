@@ -101,8 +101,13 @@ struct AgentLocalRuleItem: Identifiable {
         }
         return result
     }
+    func catalog(task:AgentTaskRecord) throws -> [AgentLocalRuleItem] {
+        var seen = Set<String>(), values:[AgentLocalRuleItem] = []
+        for context in try AgentWorkspaceScope.contexts(task) { values += try catalog(workspace:context.workspace,directories:context.ruleDirectories ?? []).filter{seen.insert($0.id).inserted} }
+        guard values.count <= 256 else { throw PetError("当前范围最多支持256项用户和项目规则") }; return values
+    }
     func current(_ id: String, task: AgentTaskRecord, enabledOnly: Bool = true) throws -> AgentLocalRuleItem {
-        guard let value = try catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).first(where: { $0.id == id }), !enabledOnly || value.enabled else { throw PetError("规则已停用、移除或不属于当前任务，请刷新规则") }
+        guard let value = try catalog(task:task).first(where: { $0.id == id }), !enabledOnly || value.enabled else { throw PetError("规则已停用、移除或不属于当前任务，请刷新规则") }
         return value
     }
     private func unchanged(_ item: AgentLocalRuleItem, task: AgentTaskRecord) throws -> AgentLocalRuleItem {
@@ -148,7 +153,7 @@ struct AgentLocalRuleItem: Identifiable {
         return destination as URL?
     }
     private func automatic(_ definition: AgentRuleDefinition?) -> Bool { definition == nil || definition?.trigger == .always || definition?.trigger == .decision }
-    private func changed(_ item: AgentLocalRuleItem, task: AgentTaskRecord, automatic: Bool) { onChange?(item.id, item.project ? task.workspace : nil, automatic) }
+    private func changed(_ item: AgentLocalRuleItem, task: AgentTaskRecord, automatic: Bool) { onChange?(item.id, item.project ? item.owner.path : nil, automatic) }
 
     func ruleInput(_ text: String, task: AgentTaskRecord) throws -> AgentLocalRuleReference? {
         let parts = text.split(whereSeparator: \.isWhitespace); guard let first = parts.first else { return nil }
@@ -158,9 +163,10 @@ struct AgentLocalRuleItem: Identifiable {
         else { return nil }
         guard name.contains("/") else { return nil }
         try requireTask(task)
-        guard let value = try catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []).first(where: { $0.invocation == name && $0.enabled }) else { throw PetError("未找到已启用的规则，请在规则列表中选择") }
+        let matches = try catalog(task:task).filter{$0.invocation == name && $0.enabled}
+        guard matches.count == 1, let value = matches.first else { throw PetError("规则未找到或多个源目录有同名规则，请按规则编号选择") }
         guard value.definition != nil else { throw PetError(value.error ?? "规则格式无效") }
-        try requireCapacity(task, id: value.id); return AgentLocalRuleReference(id: value.id, workspace: task.workspace)
+        try requireCapacity(task, id: value.id); return AgentLocalRuleReference(id: value.id, workspace: value.project && task.workspaceScope != nil ? value.owner.path : task.workspace)
     }
     private func requireTask(_ task: AgentTaskRecord) throws {
         guard !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在普通任务中使用规则") }
@@ -169,7 +175,7 @@ struct AgentLocalRuleItem: Identifiable {
         guard (task.activeLocalRules?.count ?? 0) < 256 || task.activeLocalRules?.contains(where: { $0.id == id }) == true else { throw PetError("当前任务已载入256项本地规则，请使用新任务") }
     }
     func activate(_ reference: AgentLocalRuleReference, store: AgentStore, taskID: String) throws {
-        guard let task = store.task(taskID), task.workspace == reference.workspace else { throw PetError("规则不属于当前任务范围") }
+        guard let task = store.task(taskID), task.workspace == reference.workspace || reference.workspace.map(task.workspacePaths.contains) == true else { throw PetError("规则不属于当前任务范围") }
         try requireTask(task); try requireCapacity(task, id: reference.id)
         let value = try current(reference.id, task: task)
         guard value.definition != nil else { throw PetError(value.error ?? "规则格式无效") }
@@ -177,10 +183,10 @@ struct AgentLocalRuleItem: Identifiable {
         if let error = store.writeError { throw PetError("规则状态未保存：" + error) }
     }
     func accessRules(_ path: String, store: AgentStore, taskID: String) throws {
-        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", let workspace = task.workspace else { return }
-        let files = try AgentFiles(workspace: workspace), url = try files.resolve(path)
+        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", task.workspace != nil else { return }
+        let (files,url) = try AgentWorkspaceScope.location(task,path:path), workspace = task.workspaceScope == nil ? task.workspace! : files.root.path
         let parts = files.relative(url.deletingLastPathComponent()).split(separator: "/").map(String.init)
-        var directories = (task.ruleDirectories ?? []).filter { $0.workspace == workspace }, prefix = ""
+        var directories = (task.ruleDirectories ?? []).filter { task.workspacePaths.contains($0.workspace) }, prefix = ""
         for part in parts where part != "." {
             prefix += (prefix.isEmpty ? "" : "/") + part
             let value = AgentRuleDirectory(workspace: workspace, path: prefix)
@@ -196,7 +202,7 @@ struct AgentLocalRuleItem: Identifiable {
             guard url.path.hasPrefix(base.path + "/") else { continue }
             let relative = String(url.path.dropFirst(base.path.count + 1))
             if try AgentRuleDocument.matches(definition.patterns, path: relative) {
-                let reference = AgentLocalRuleReference(id: value.id, workspace: workspace)
+                let reference = AgentLocalRuleReference(id: value.id, workspace: value.project ? workspace : task.workspace)
                 if current.activeLocalRules?.contains(reference) != true { try activate(reference, store: store, taskID: taskID) }
             }
         }
@@ -205,9 +211,9 @@ struct AgentLocalRuleItem: Identifiable {
     func context(_ task: AgentTaskRecord) throws -> (text: String, plugins: [String], local: [String]) {
         guard !task.isProjectDocumentation, task.kind != "hook" else { return ("", [], []) }
         let packaged = try plugins.ruleContextEntries(task); var entries = packaged.entries, local: [String] = []
-        for item in try catalog(workspace: task.workspace, directories: task.ruleDirectories ?? []) where item.enabled {
+        for item in try catalog(task:task) where item.enabled {
             guard let definition = item.definition else { throw PetError("规则无法载入：\(item.source.path) · \(item.error ?? "格式无效")。请在扩展的规则中修复或停用。") }
-            let loaded = definition.trigger == .always || task.activeLocalRules?.contains(AgentLocalRuleReference(id: item.id, workspace: task.workspace)) == true
+            let loaded = definition.trigger == .always || task.activeLocalRules?.contains(AgentLocalRuleReference(id: item.id, workspace: item.project && task.workspaceScope != nil ? item.owner.path : task.workspace)) == true
             if loaded || definition.trigger == .decision {
                 entries.append(AgentRuleContextEntry(id: item.id, name: item.invocation, sha256: item.sha256, definition: definition, loaded: loaded)); local.append(item.id)
             }

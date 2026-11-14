@@ -78,6 +78,16 @@ struct AgentInstructionGrant: Codable, Equatable { var workspace: String, path: 
         }
     }
     func report(_ task: AgentTaskRecord) -> Report {
+        if task.workspaceScope != nil {
+            var combined = Report(), seen = Set<String>()
+            do {
+                for context in try AgentWorkspaceScope.contexts(task) {
+                    let part = report(context); combined.sources += part.sources.filter{seen.insert($0.path).inserted}; combined.issues += part.issues
+                }
+                guard combined.sources.reduce(0,{$0+$1.content.utf8.count}) <= 262_144 else { throw PetError("有效指令和引用合计超过256 KB，请精简指令") }
+            } catch { combined.issues.append(Issue(path:task.workspace ?? "",message:error.localizedDescription)); combined.sources = [] }
+            return combined
+        }
         var report = Report(), visited = Set<String>(), total = 0
         let workspace = task.workspace.flatMap { try? AgentFiles(workspace: $0).root }
         let grants = Set((task.instructionGrants ?? []).filter { $0.workspace == task.workspace }.map(\.path))
@@ -141,9 +151,9 @@ struct AgentInstructionGrant: Codable, Equatable { var workspace: String, path: 
         return value.text
     }
     @discardableResult func access(_ path: String, store: AgentStore, taskID: String) throws -> Bool {
-        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", let workspace = task.workspace else { return false }
-        let files = try AgentFiles(workspace: workspace), file = try files.resolve(path)
-        var entries = (task.instructionDirectories ?? []).filter { $0.workspace == workspace }, prefix = ""
+        guard let task = store.task(taskID), !task.isProjectDocumentation, task.kind != "hook", task.workspace != nil else { return false }
+        let (files,file) = try AgentWorkspaceScope.location(task,path:path), workspace = task.workspaceScope == nil ? task.workspace! : files.root.path
+        var entries = (task.instructionDirectories ?? []).filter { task.workspacePaths.contains($0.workspace) }, prefix = ""
         for part in files.relative(file.deletingLastPathComponent()).split(separator: "/") where part != "." {
             prefix += (prefix.isEmpty ? "" : "/") + part
             let entry = AgentRuleDirectory(workspace: workspace, path: prefix); if !entries.contains(entry) { entries.append(entry) }

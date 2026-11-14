@@ -26,7 +26,7 @@ struct AgentTaskView: Codable, Equatable {
     var workspace: String?
     var activity = AgentTaskActivityWindow.all
     func includes(_ task: AgentTaskRecord, now: Date = Date(), calendar: Calendar = .current) -> Bool {
-        if grouping == .workspace, let workspace, (task.workspace ?? "") != workspace { return false }
+        if grouping == .workspace, let workspace, (task.organizationWorkspace ?? "") != workspace { return false }
         return activity.cutoff(now: now, calendar: calendar).map { (task.activityAt ?? task.updated) >= $0 } ?? true
     }
 }
@@ -36,15 +36,22 @@ struct AgentCustomTaskGroup: Codable, Identifiable {
     var taskIDs: [String] = []
     var created = Date()
 }
-struct AgentDirectoryEntry: Codable {
+struct AgentDirectoryEntry: Codable, Equatable {
     var path: String
     var mode: AgentWorkMode
     var name: String?
+    var icon: AgentWorkspaceIcon?
+    var color: AgentWorkspaceColor?
+    var folders: [String]?
+    var primaryFolder: String?
     var pinned = false
     var created = Date()
     var archiveID: String?
     var archivedAt: Date?
     var title: String { name ?? URL(fileURLWithPath: path).lastPathComponent }
+    var sourceFolders: [String] { folders ?? [path] }
+    var primary: String { primaryFolder ?? path }
+    var scope: AgentWorkspaceScope? { sourceFolders == [path] && primary == path ? nil : .init(group:path,folders:sourceFolders,primary:primary) }
 }
 
 @MainActor final class AgentOrganization {
@@ -122,6 +129,8 @@ struct AgentDirectoryEntry: Codable {
         guard data.count <= 1_000_000 else { throw PetError("任务组织记录过大") }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let files = try AgentFiles(workspace: file.deletingLastPathComponent().path)
+        let entry = try files.entryMetadata(file)
+        guard entry.kind == "missing" || entry.kind == "file" && (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError("任务组织记录只读，未保存修改") }
         do { try files.writeData(data, to: file, permissions: 0o600, expectedTarget: openedSignature) }
         catch { throw PetError("任务组织记录未保存，请重新打开应用后重试：" + error.localizedDescription) }
         openedSignature = try files.entryMetadata(file).signature
@@ -150,7 +159,7 @@ struct AgentDirectoryEntry: Codable {
         var values = document.directories.filter { $0.mode == mode && $0.archiveID.map(deletedArchives.contains) != true }
         var activity: [String: Date] = [:], created: [String: Date] = [:]
         for task in tasks where task.organizationMode == mode && (includingArchived || !task.archived) {
-            guard let path = task.workspace else { continue }
+            guard let path = task.organizationWorkspace else { continue }
             activity[path] = max(activity[path] ?? task.updated, task.updated)
             created[path] = min(created[path] ?? task.created, task.created)
         }
@@ -204,6 +213,18 @@ struct AgentDirectoryEntry: Codable {
     func name(_ path: String?, mode: AgentWorkMode) -> String? {
         guard let path else { return nil }
         return document.directories.first(where: { $0.path == path && $0.mode == mode })?.title ?? URL(fileURLWithPath: path).lastPathComponent
+    }
+    func entry(_ path:String, mode:AgentWorkMode, tasks:[AgentTaskRecord]) -> AgentDirectoryEntry? { directories(mode,tasks:tasks).first{$0.path == path} }
+    func editWorkspace(_ original:AgentDirectoryEntry, name:String, icon:AgentWorkspaceIcon, color:AgentWorkspaceColor, folders:[String], primary:String, tasks:[AgentTaskRecord]) throws {
+        guard entry(original.path,mode:original.mode,tasks:tasks) == original else { throw PetError("工作区已变化，请重新打开后编辑") }
+        let name = name.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !name.isEmpty, name.count <= 80, !name.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains) else { throw PetError("请输入不超过80字的名称") }
+        let paths = try AgentWorkspaceScope.validateFolders(folders,primary:primary), canonicalPrimary = try AgentFiles(workspace:primary).root.path
+        try change(original.path,mode:original.mode,tasks:tasks) { value in
+            value.name = name; value.icon = icon; value.color = color
+            value.folders = paths == [value.path] ? nil : paths
+            value.primaryFolder = canonicalPrimary == value.path ? nil : canonicalPrimary
+        }
     }
     func rename(_ path: String, mode: AgentWorkMode, name: String, tasks: [AgentTaskRecord]) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)

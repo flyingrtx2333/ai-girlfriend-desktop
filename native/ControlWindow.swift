@@ -170,6 +170,7 @@ final class FormDocumentView: NSView {
     private var dataImportView: AgentDataImportView?
     private var taskSwitcher: AgentTaskSwitcher?
     private var nameEditor: AgentNameEditor?
+    private var workspaceEditor: AgentWorkspaceEditor?
     private var archivedTasksView: AgentArchivedTasksView?
     private var generalSettingsSave: NSButton?
     private var generalSettingsPanel: AgentGeneralSettingsView?
@@ -573,7 +574,8 @@ final class FormDocumentView: NSView {
         taskSidebar.onNew = { [weak self] in self?.newAgentTask() }
         taskSidebar.onNewWorkspace = { [weak self] in self?.chooseProjectDirectory() }
         taskSidebar.onNewInWorkspace = { [weak self] path, mode in
-            guard let self, let tasks = self.companion?.agentStore else { return }; self.saveAgentDraft(); self.selectAgentTask(tasks.create(workspace: path, workMode: mode))
+            guard let self, let tasks = self.companion?.agentStore, self.saveAgentDraft() else { return }
+            do { self.selectAgentTask(try tasks.createWorkspaceTask(path,mode:mode)) } catch { self.setStatus(error.localizedDescription,error:true) }
         }
         taskSidebar.onAction = { [weak self] id, action in self?.agentTaskAction(id, action: action) }
         taskSidebar.onBulkArchive = { [weak self] ids, archived in self?.archiveTasks(ids, archived: archived) == true }
@@ -756,7 +758,7 @@ final class FormDocumentView: NSView {
         let keepSearchHitVisible = isMessageSearchVisible
         let configuring = selectedTab == "settings", chatting = selectedTab == "chat", width = window?.contentView?.bounds.width ?? 1200
         terminalPanel?.selectTask(chatting ? task : nil)
-        terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+        terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
         updateTerminalDock()
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty || task.skillEvolutionJob != nil
@@ -799,7 +801,8 @@ final class FormDocumentView: NSView {
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
-        emptyProject.title = companion?.agentStore?.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
+        emptyProject.title = companion?.agentStore?.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
+        if let entry = companion?.agentStore?.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:companion?.agentStore?.tasks ?? []) { emptyProject.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); emptyProject.contentTintColor = (entry.color ?? .forest).nsColor } else { emptyProject.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); emptyProject.contentTintColor = AgentWorkbenchTheme.secondaryText }
         composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
         let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
         projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
@@ -869,7 +872,7 @@ final class FormDocumentView: NSView {
         value.sideChats = store.sideTasks.children(of: task.id) + store.tasks.filter { $0.parentID == task.id && $0.branchMessageID != nil && $0.sideTask == nil && !$0.archived }
         value.terminals = terminalPanel?.monitorEntries(taskID: task.id) ?? []
         value.pages = store.browser.sessions[task.id]?.monitorEntries ?? []
-        if presentation.inputEnvironment, let workspace = task.workspace { value.environment = [store.organization.name(workspace, mode: task.organizationMode), workspace].compactMap { $0 } }
+        if presentation.inputEnvironment, let workspace = task.workspace { value.environment = [store.organization.name(task.organizationWorkspace, mode: task.organizationMode), workspace].compactMap { $0 } }
         value.canAnalyze = companion.agentRuntime?.isBusy(task.id) == false && !task.archived && task.kind != "hook" && task.pendingCalls.isEmpty && task.status != .waiting && task.messages.contains(where: \.isHumanInput)
         value.analysis = companion.agentRuntime?.analysisTitle(task.id); value.analysisError = companion.agentRuntime?.analysisError(task.id, recap: true)
         if let service = companion.agentRuntime?.skillEvolution {
@@ -1867,6 +1870,7 @@ final class FormDocumentView: NSView {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if windowCloseApproved { return true }
         if let editor = nameEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
+        if let editor = workspaceEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
         guard closeWindowTask == nil else { return false }
         guard generalSettingsPanel?.prepareToClose() != false, canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
@@ -1921,6 +1925,7 @@ final class FormDocumentView: NSView {
         taskFind.reset()
         taskSwitcher?.cancel()
         nameEditor?.cancel()
+        workspaceEditor?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
         if let manager = composer.layoutManager { manager.textStorage?.removeLayoutManager(manager) }
         composer.delegate = nil; windowDraft = nil
@@ -2226,8 +2231,12 @@ final class FormDocumentView: NSView {
     @objc func newAgentTask() {
         guard let tasks = companion?.agentStore, saveAgentDraft(), canLeaveMainPage() else { return }
         let previous = currentAgentTask
-        let id = tasks.create(workspace: previous?.archived == true ? nil : previous?.workspace, mode: .agent, workMode: previous?.organizationMode)
-        selectAgentTask(id)
+        do {
+            let id:String
+            if let previous, !previous.archived, let group = previous.organizationWorkspace { id = try tasks.createWorkspaceTask(group,mode:previous.organizationMode) }
+            else { id = tasks.create(mode:.agent,workMode:previous?.organizationMode) }
+            selectAgentTask(id)
+        } catch { setStatus(error.localizedDescription,error:true) }
     }
     private func editName(title: String, label: String, value: String, save: @escaping (String) throws -> Void) {
         guard let window, nameEditor == nil, window.attachedSheet == nil else { return }
@@ -2242,12 +2251,22 @@ final class FormDocumentView: NSView {
                 finishArchive(mode); return
             }
             if action == "pin" { try tasks.organization.togglePinned(path, mode: mode, tasks: tasks.tasks) }
+            else if action == "open" {
+                guard let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { throw PetError("工作区已变化，请重新选择") }
+                let folder = try AgentFiles(workspace:entry.primary).root
+                guard NSWorkspace.shared.open(folder) else { throw PetError("主文件夹未能打开") }; return
+            }
             else if action == "rename" {
+                guard let window, window.attachedSheet == nil, workspaceEditor == nil, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
                 let revision = tasks.organization.revision
-                editName(title: "重命名" + mode.directoryTitle, label: mode.directoryTitle + "名称", value: tasks.organization.name(path, mode: mode) ?? "") { name in
+                workspaceEditor = AgentWorkspaceEditor(entry:entry,save:{ name,icon,color,folders,primary in
                     guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
-                    try tasks.organization.rename(path, mode: mode, name: name, tasks: tasks.tasks)
-                }; return
+                    try tasks.organization.editWorkspace(entry,name:name,icon:icon,color:color,folders:folders,primary:primary,tasks:tasks.tasks)
+                },archive:{ [weak self] in
+                    guard tasks.organization.revision == revision else { throw PetError("工作区已变化，请重新打开后重试") }
+                    try tasks.setWorkspaceArchived(path,mode:mode,archived:true); self?.finishArchive(mode)
+                },onClose:{ [weak self] in self?.workspaceEditor = nil; self?.renderAgentMessages() })
+                workspaceEditor?.begin(in:window); return
             }
             renderAgentMessages()
         } catch { setStatus(error.localizedDescription, error: true) }
@@ -2463,46 +2482,70 @@ final class FormDocumentView: NSView {
         }
     }
     @objc func chooseProject() {
-        guard let task = currentAgentTask else { return }
-        guard task.organizationMode == .general else { chooseProjectDirectory(); return }
+        guard let task = currentAgentTask, let tasks = companion?.agentStore else { return }
         let menu = NSMenu(); menu.autoenablesItems = false
-        let choose = NSMenuItem(title: "选择文件夹…", action: #selector(chooseProjectDirectory), keyEquivalent: ""); choose.target = self; menu.addItem(choose)
-        let none = NSMenuItem(title: "不关联文件夹", action: #selector(clearGeneralDirectory), keyEquivalent: ""); none.target = self; none.isEnabled = task.workspace != nil && ![.running, .waiting].contains(task.status) && task.automation == nil; menu.addItem(none)
+        let choose = NSMenuItem(title:"新建" + task.organizationMode.directoryTitle + "…",action:#selector(chooseProjectDirectory),keyEquivalent:""); choose.target = self; menu.addItem(choose)
+        let entries = tasks.organization.directories(task.organizationMode,tasks:tasks.tasks)
+        if !entries.isEmpty { menu.addItem(.separator()) }
+        for entry in entries {
+            let item = NSMenuItem(title:entry.title,action:#selector(selectWorkspaceEntry(_:)),keyEquivalent:""); item.target = self; item.representedObject = [entry.path,entry.mode.rawValue]
+            item.state = task.organizationWorkspace == entry.path ? .on : .off; item.toolTip = entry.sourceFolders.joined(separator:"\n")
+            item.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); menu.addItem(item)
+        }
+        if task.organizationMode == .general {
+            menu.addItem(.separator()); let none = NSMenuItem(title:"不关联文件夹",action:#selector(clearGeneralDirectory),keyEquivalent:""); none.target = self; none.isEnabled = task.workspace != nil && ![.running,.waiting].contains(task.status) && task.automation == nil; menu.addItem(none)
+        }
         let anchor = emptyProject.isHiddenOrHasHiddenAncestor ? projectButton : emptyProject
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
+        menu.popUp(positioning:nil,at:NSPoint(x:0,y:anchor.bounds.height+4),in:anchor)
+    }
+    @objc private func selectWorkspaceEntry(_ sender:NSMenuItem) {
+        guard let values = sender.representedObject as? [String], values.count == 2, let mode = AgentWorkMode(rawValue:values[1]), let task = currentAgentTask, mode == task.organizationMode, let tasks = companion?.agentStore,
+              let entry = tasks.organization.entry(values[0],mode:mode,tasks:tasks.tasks) else { return }
+        do { try applyWorkspaceSelection(entry,original:task) } catch { setStatus(error.localizedDescription,error:true) }
+    }
+    private func applyWorkspaceSelection(_ entry:AgentDirectoryEntry, original task:AgentTaskRecord) throws {
+        guard let tasks = companion?.agentStore, agentTaskID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.workspaceScope == task.workspaceScope,
+              current.organizationMode == task.organizationMode, current.automation == nil, current.agent?.ownerID == nil, !current.archived, !current.isProjectDocumentation, current.kind != "hook",
+              current.workspace == nil || ![.running,.waiting].contains(current.status), saveAgentDraft() else { throw PetError("原任务已变化，请重新选择工作区") }
+        let folders = try AgentWorkspaceScope.validateFolders(entry.sourceFolders,primary:entry.primary)
+        guard folders == entry.sourceFolders else { throw PetError("源文件夹指向已变化，请重新编辑工作区") }
+        let changed = task.workspace != entry.primary || task.workspaceScope != entry.scope
+        if task.workspace == nil {
+            companion?.agentRuntime?.cancel(task.id)
+            tasks.update(task.id) { $0.workspace = entry.primary; $0.workspaceScope = entry.scope; $0.gitDirectory = nil; $0.agent?.workspace = entry.primary }
+            if !task.messages.isEmpty { companion?.agentRuntime?.submit("已选择项目：" + entry.primary + "。继续原任务。",taskID:task.id) }
+            renderAgentMessages()
+        } else if changed && (!task.messages.isEmpty || task.worktreeOrigin != nil) {
+            let id = try tasks.createWorkspaceTask(entry.path,mode:task.organizationMode,taskMode:task.mode)
+            do { try AgentAttachments.copyDraft(store:tasks,sourceID:task.id,targetID:id) }
+            catch { selectAgentTask(task.id); throw error }
+            tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = entry.primary; $0.team = task.team }
+            selectAgentTask(id)
+        } else if changed {
+            tasks.update(task.id) { $0.workspace = entry.primary; $0.workspaceScope = entry.scope; $0.gitDirectory = nil; $0.agent?.workspace = entry.primary }; renderAgentMessages()
+        }
     }
     @objc private func clearGeneralDirectory() {
         guard let tasks = companion?.agentStore, let task = currentAgentTask, task.organizationMode == .general, task.workspace != nil, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), ![.running, .waiting].contains(task.status) else { return }
         saveAgentDraft()
         if !task.messages.isEmpty || task.worktreeOrigin != nil {
-            let id = tasks.create(mode: task.mode, workMode: .general)
-            do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
-            catch { selectAgentTask(task.id); setStatus(error.localizedDescription, error: true); return }
+            let id = tasks.create(mode:task.mode,workMode:.general)
+            do { try AgentAttachments.copyDraft(store:tasks,sourceID:task.id,targetID:id) }
+            catch { selectAgentTask(task.id); setStatus(error.localizedDescription,error:true); return }
             tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = nil; $0.team = task.team }; selectAgentTask(id)
-        } else { tasks.update(task.id) { $0.workspace = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }; renderAgentMessages() }
+        } else { tasks.update(task.id) { $0.workspace = nil; $0.workspaceScope = nil; $0.gitDirectory = nil; $0.agent?.workspace = nil }; renderAgentMessages() }
     }
     @objc private func chooseProjectDirectory() {
-        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !["hook", "wiki"].contains(task.kind ?? ""), task.workspace == nil || (task.status != .running && task.status != .waiting) else { return }
+        guard let tasks = companion?.agentStore, let task = currentAgentTask, task.automation == nil, task.agent?.ownerID == nil, !task.archived, !task.isProjectDocumentation, task.kind != "hook", task.workspace == nil || ![.running,.waiting].contains(task.status), let window else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false; panel.prompt = "选择" + task.organizationMode.directoryTitle
-        if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath: path) }
-        guard let window else { return }
-        panel.beginSheetModal(for: window) { [weak self] response in
+        if let path = task.workspace { panel.directoryURL = URL(fileURLWithPath:path) }
+        panel.beginSheetModal(for:window) { [weak self] response in
             guard response == .OK, let url = panel.url, let self else { return }
-            guard agentTaskID == task.id, let current = tasks.task(task.id), current.workspace == task.workspace, current.organizationMode == task.organizationMode, current.agent?.ownerID == task.agent?.ownerID, current.workspace == nil || (current.status != .running && current.status != .waiting) else { self.setStatus("原任务已变化，请重新选择目录", error: true); return }
-            do { try tasks.organization.register(url.path, mode: task.organizationMode) }
-            catch { self.setStatus(error.localizedDescription, error: true); return }
-            if task.workspace == nil {
-                self.companion?.agentRuntime?.cancel(task.id)
-                tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path; $0.gitDirectory = nil; $0.agent?.workspace = $0.workspace }
-                if !task.messages.isEmpty { self.companion?.agentRuntime?.submit("已选择项目：" + url.resolvingSymlinksInPath().path + "。继续原任务。", taskID: task.id) }
-                self.renderAgentMessages()
-            } else if (!task.messages.isEmpty || task.worktreeOrigin != nil) && task.workspace != url.path {
-                self.saveAgentDraft(); let id = tasks.create(workspace: url.resolvingSymlinksInPath().path, mode: task.mode, workMode: task.organizationMode)
-                do { try AgentAttachments.copyDraft(store: tasks, sourceID: task.id, targetID: id) }
-                catch { self.selectAgentTask(task.id); self.setStatus(error.localizedDescription, error: true); return }
-                tasks.update(id) { $0.draft = self.composer.string; $0.permission = task.permission; $0.model = task.model; $0.modelOverride = task.modelOverride; $0.agent = task.agent; $0.agent?.workspace = $0.workspace; $0.team = task.team }
-                self.selectAgentTask(id)
-            } else { tasks.update(task.id) { $0.workspace = url.resolvingSymlinksInPath().path; $0.gitDirectory = nil; $0.agent?.workspace = $0.workspace }; self.renderAgentMessages() }
+            do {
+                try tasks.organization.register(url.path,mode:task.organizationMode)
+                guard let entry = tasks.organization.entry(url.resolvingSymlinksInPath().path,mode:task.organizationMode,tasks:tasks.tasks) else { throw PetError("工作区未登记") }
+                try applyWorkspaceSelection(entry,original:task)
+            } catch { setStatus(error.localizedDescription,error:true) }
         }
     }
     @objc func agentOptionsChanged() {
@@ -2748,7 +2791,7 @@ final class FormDocumentView: NSView {
             Task { @MainActor [weak self] in do { _ = try await store.offices.show(path, taskID: id, location: location) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
         do {
-            let files = try AgentFiles(workspace: task.workspace), file = try files.resolve(path)
+            let (files,file) = try AgentWorkspaceScope.location(task,path:path)
             guard !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能打开受保护的文件") }
             let key = AgentTaskWorkspace.Root.document(file.path)
             let existing = taskWorkspace.rootController(key) as? AgentRecordWindow ?? (taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow } + artifactDocuments).first { $0.belongsToTasks([id]) && $0.workspaceDocumentURL?.path == file.path }
@@ -2846,7 +2889,7 @@ final class FormDocumentView: NSView {
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,
               task.agent?.ownerID == nil, task.automation == nil else { throw PetError("此任务不能接收选文") }
-        let files = try AgentFiles(workspace: task.workspace), selectedFiles = try AgentFiles(workspace: selection.workspace)
+        let files = try AgentWorkspaceScope.files(task,path:selection.file.path), selectedFiles = try AgentFiles(workspace:selection.workspace)
         guard files.root == selectedFiles.root, selection.text.utf8.count <= 16_384, !selection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError("文档所属工作区已改变，或选文超过 16KB") }
         let safe = try files.resolve(selection.file.path)
         guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能加入受保护文件的内容") }
@@ -2999,7 +3042,8 @@ final class FormDocumentView: NSView {
         let sidebarSelection = task.sideTask.flatMap { side in tasks.tasks.contains { $0.id == side.parentID && !$0.archived } ? side.parentID : nil } ?? task.id
         taskSidebar.refresh(listing.filter { !hidden.contains($0.id) }, selected: sidebarSelection, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
         if selectedTab == "chat" { pageTitle.stringValue = task.title }
-        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.workspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
+        projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
+        if let entry = tasks.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:tasks.tasks) { projectButton.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); projectButton.contentTintColor = (entry.color ?? .forest).nsColor } else { projectButton.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); projectButton.contentTintColor = AgentWorkbenchTheme.secondaryText }
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
         permissionPopup.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: task.permission) ?? 1)
         let running = companion?.agentRuntime?.isRunning(task.id) == true
@@ -3175,7 +3219,7 @@ final class FormDocumentView: NSView {
             if let row = messageRows[message.id] {
                 let eligible = message.isReply, hash = AgentFiles.hash(Data(message.content.utf8))
                 row.setDuration(eligible && !streaming ? display.durationFormat.text(message.duration) : nil)
-                let canBranch = eligible && !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.workspace, mode: task.organizationMode) == nil
+                let canBranch = eligible && !running && task.pendingFileCapture == nil && task.pendingFileRollback == nil && !task.isProjectDocumentation && task.kind != "hook" && tasks.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
                 row.setReplyActions(binding: eligible ? owner + ":" + message.id + ":" + hash : nil, feedback: tasks.organization.replyFeedback(taskID: owner, message: message), canFeedback: eligible && !streaming, canBranch: canBranch,
                     copy: { [weak self] in self?.replyAction("copy", taskID: owner, messageID: message.id, hash: hash) ?? false },
                     mark: { [weak self] value in _ = self?.replyAction(value, taskID: owner, messageID: message.id, hash: hash) },
@@ -3825,7 +3869,7 @@ extension ControlWindow {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     func checkNameEditor(_ kind: String, id: String?, mode: AgentWorkMode = .coding) {
-        guard CommandLine.arguments.contains("--name-editor-check") else { return }
+        guard ["--name-editor-check","--workspace-editor-check"].contains(where:CommandLine.arguments.contains) else { return }
         switch kind {
         case "task": if let id { agentTaskAction(id, action: "rename") }
         case "group": customTaskGroup(id, mode: mode, action: id == nil ? "new" : "rename")
@@ -3846,7 +3890,8 @@ extension ControlWindow {
         if CommandLine.arguments.contains("--manual-ui") {
             value["leftSidebar"] = ["requested": sidebarRequested, "visible": !workbenchSidebar.isHidden, "mainLeading": sidebarWidth?.constant ?? 0, "navigationLeading": navigationLeading?.constant ?? 0]
             value["taskSwitcher"] = taskSwitcher?.checkState() ?? ["visible": false]
-            value["nameEditor"] = nameEditor?.checkState() ?? ["visible": false]
+            value["nameEditor"] = workspaceEditor?.checkState() ?? nameEditor?.checkState() ?? ["visible": false]
+            value["workspaceEditor"] = workspaceEditor?.checkState() ?? ["visible":false]
             value["unsavedConfirmation"] = AgentUnsavedChanges.checkState()
             value["taskFind"] = taskFind.checkState()
             value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]

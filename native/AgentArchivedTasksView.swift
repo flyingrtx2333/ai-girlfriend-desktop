@@ -5,7 +5,7 @@ import AppKit
         case workspace(AgentDirectoryEntry, Int), task(AgentTaskRecord)
         var id: String { switch self { case .workspace(let entry, _): return entry.mode.rawValue + "\n" + entry.path; case .task(let task): return task.id } }
         var title: String { switch self { case .workspace(let entry, _): return entry.title; case .task(let task): return task.title } }
-        var path: String? { switch self { case .workspace(let entry, _): return entry.path; case .task(let task): return task.workspace } }
+        var path: String? { switch self { case .workspace(let entry, _): return entry.path; case .task(let task): return task.organizationWorkspace } }
         var mode: AgentWorkMode { switch self { case .workspace(let entry, _): return entry.mode; case .task(let task): return task.organizationMode } }
     }
     private let store: AgentStore, tabs = NSSegmentedControl(labels: ["工作区", "任务"], trackingMode: .selectOne, target: nil, action: nil)
@@ -55,9 +55,9 @@ import AppKit
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if tabs.selectedSegment == 0 {
             rows = AgentWorkMode.allCases.flatMap { mode in
-                store.organization.directories(mode, tasks: store.tasks, includingArchived: true).filter { $0.archiveID != nil }.map { entry in Item.workspace(entry, store.tasks.filter { $0.archived && $0.workspace == entry.path && $0.organizationMode == mode }.count) }
+                store.organization.directories(mode, tasks: store.tasks, includingArchived: true).filter { $0.archiveID != nil }.map { entry in Item.workspace(entry, store.tasks.filter { $0.archived && $0.organizationWorkspace == entry.path && $0.organizationMode == mode }.count) }
             }
-        } else { rows = store.tasks.filter { $0.archived && (projectPath == nil || $0.workspace == projectPath) }.map(Item.task) }
+        } else { rows = store.tasks.filter { $0.archived && (projectPath == nil || $0.organizationWorkspace == projectPath) }.map(Item.task) }
         rows = rows.filter { query.isEmpty || ($0.title + "\n" + ($0.path ?? "")).localizedCaseInsensitiveContains(query) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         table.reloadData(); table.deselectAll(nil); if let selection, let row = rows.firstIndex(where: { $0.id == selection }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
         state.textColor = operationIssue == nil ? AgentWorkbenchTheme.secondaryText : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"); updateAction()
