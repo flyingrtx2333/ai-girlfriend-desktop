@@ -8,6 +8,8 @@ import AppKit
         try Data("MEMORY_INSTRUCTIONS_REMAIN_PUBLIC\n".utf8).write(to: workspace.appendingPathComponent("AGENTS.md"))
         let tasks = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: store.keychain, hookKeychain: store.keychain)
         let id = tasks.create(title: "记忆开关检查", workspace: workspace.path)
+        let git = try AgentGit(store: tasks, taskID: id, directory: AgentGit.metadata(workspace: workspace.path, creating: true))
+        _ = try await git.initialize()
         tasks.update(id) { $0.toolGroups = ["knowledge"]; $0.draft = "MEMORY_TASK_DRAFT_PUBLIC" }
         guard let task = tasks.task(id) else { throw PetError("缺少记忆检查任务") }
         for (scope, content) in [(AgentMemoryScope.global, "GLOBAL_MEMORY_PUBLIC_841"), (.project, "PROJECT_MEMORY_PUBLIC_692")] {
