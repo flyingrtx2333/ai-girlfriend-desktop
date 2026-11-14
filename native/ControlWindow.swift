@@ -878,6 +878,7 @@ final class FormDocumentView: NSView {
         value.analysis = companion.agentRuntime?.analysisTitle(task.id); value.analysisError = companion.agentRuntime?.analysisError(task.id, recap: true)
         if let service = companion.agentRuntime?.skillEvolution {
             value.skillSuggestions = service.items(task).filter { $0.state != .dismissed }; value.skillSource = AgentSkillEvolution.source(task)
+            value.skillTargetTitles = service.targetTitles(task,targets:value.skillSuggestions.compactMap(\.target))
             value.skillGenerating = service.isGenerating(task.id); value.skillError = service.error(task)
             value.skillAnalyzed = AgentSkillEvolution.reply(task)?.skillEvolution?.source == value.skillSource && value.skillSource != nil
             value.canGenerateSkills = companion.generalSettings.settings.skillEvolutionSuggestions && value.skillSource != nil && companion.agentRuntime?.isBusy(task.id) == false && task.modelReceipts?.contains(where: { $0.purpose == "conversation" && $0.completed && $0.messageID == AgentSkillEvolution.reply(task)?.id }) == true
@@ -2378,14 +2379,22 @@ final class FormDocumentView: NSView {
     internal func reviewSkillDraft(taskID:String) throws {
         guard agentTaskID == taskID, let store = companion?.agentStore, companion?.agentRuntime?.isBusy(taskID) == false else { throw PetError("请在原任务等待草稿生成完成") }
         let page = try AgentSkillDraftReviewPage(store:store,taskID:taskID)
-        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }; settingsPageHost.selectPage("skills")
-        guard let parent = settingsPageHost.currentController else { throw PetError("技能设置页不可用") }
+        let parent = try skillSettingsManager(taskID:taskID,itemID:store.task(taskID)?.skillEvolutionJob?.target?.id)
         page.onApplied = { [weak self] in guard let self else { return }; show(tab:"chat"); renderAgentMessages() }; parent.presentSettingsChild(page)
     }
     private func openSavedSkill(taskID:String) throws {
         guard agentTaskID == taskID, let store = companion?.agentStore, let id = store.task(taskID)?.skillDraft?.savedID else { throw PetError("技能尚未保存") }
-        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }; settingsPageHost.selectPage("skills")
-        guard let manager = settingsPageHost.currentController as? AgentExtensionWindow else { throw PetError("技能设置页不可用") }; manager.selectItem(id)
+        _ = try skillSettingsManager(taskID:taskID,itemID:id)
+    }
+    private func skillSettingsManager(taskID:String, itemID:String?) throws -> AgentExtensionWindow {
+        guard agentTaskID == taskID, let store = companion?.agentStore, let task = store.task(taskID) else { throw PetError("请在原任务打开 Skill") }
+        let item = try itemID.map { try store.extensions.item($0,task:task) }
+        let workspace = try item.flatMap { try AgentSkillDrafts.projectWorkspace($0,task:task) } ?? task.workspace
+        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }
+        if task.workspaceScope != nil, let workspace { settingsSourceFolders[taskID] = workspace; updateSettingsSections() }
+        settingsPageHost.selectPage("skills")
+        guard let manager = settingsPageHost.currentController as? AgentExtensionWindow else { throw PetError("技能设置页不可用") }
+        if let itemID { manager.selectItem(itemID) }; return manager
     }
     func configureAutomationDraft(_ id: String, taskID: String) throws {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
@@ -3169,10 +3178,11 @@ final class FormDocumentView: NSView {
             if let job = task.skillEvolutionJob {
                 var issue: String?, ready = false
                 if task.skillDraft?.savedAt == nil, task.status != .running {
-                    do { _ = try AgentSkillDrafts.job(task,store:tasks); if let draft = task.skillDraft { _ = try AgentSkillDrafts.proposed(draft,job:job,store:tasks); ready = true } }
+                    do { _ = try AgentSkillDrafts.job(task,store:tasks); if let draft = task.skillDraft { _ = try AgentSkillDrafts.proposed(draft,job:job,store:tasks,task:task); ready = true } }
                     catch { issue = error.localizedDescription }
                 }
-                let row = AgentSkillJobRow(task:task,ready:ready,issue:issue)
+                let targetTitle = job.target.flatMap { companion?.agentRuntime?.skillEvolution.targetTitles(task,targets:[$0])[$0.id] }
+                let row = AgentSkillJobRow(task:task,ready:ready,issue:issue,targetTitle:targetTitle)
                 let plan = AgentSkillDrafts.planSource(task)
                 row.onConfirm = { [weak self] in guard let source = plan else { return }; do { try self?.confirmSkillPlan(taskID:task.id,source:source) } catch { self?.setStatus(error.localizedDescription,error:true) } }
                 row.onReview = { [weak self] in do { try self?.reviewSkillDraft(taskID:task.id) } catch { self?.setStatus(error.localizedDescription,error:true) } }

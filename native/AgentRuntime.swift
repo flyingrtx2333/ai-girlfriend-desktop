@@ -1001,7 +1001,7 @@ import Foundation
     }
     private func completeResponse(_ id: String, run: Run, content: String, trigger: String, key: String, session: String) async throws -> Bool {
         if let task = store.task(id), let job = task.skillEvolutionJob, job.approvedPlan != nil {
-            guard let draft = task.skillDraft else { throw PetError("尚未生成 Skill 草稿，请继续生成并核对") }; _ = try AgentSkillDrafts.proposed(draft,job:job,store:store)
+            guard let draft = task.skillDraft else { throw PetError("尚未生成 Skill 草稿，请继续生成并核对") }; _ = try AgentSkillDrafts.proposed(draft,job:job,store:store,task:task)
         }
         let stop = try await hook(.stop, id: id, trigger: trigger, fields: ["stop_hook_active": (store.task(id)?.hookStopBlocks ?? 0) > 0, "last_assistant_message": content], secret: key)
         try Task.checkCancellation(); guard active[id]?.token == run.token else { throw CancellationError() }

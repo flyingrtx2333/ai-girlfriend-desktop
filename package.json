@@ -141,7 +141,8 @@
     "native:check-workspace-editor": "node scripts/check-native-workspace-editor.mjs",
     "native:check-workspace-extensions": "node scripts/check-native-workspace-extensions.mjs",
     "native:check-workspace-capabilities": "node scripts/check-native-workspace-capabilities.mjs",
-    "native:check-workspace-roles": "node scripts/check-native-workspace-roles.mjs"
+    "native:check-workspace-roles": "node scripts/check-native-workspace-roles.mjs",
+    "native:check-workspace-skill-evolution": "node scripts/check-native-workspace-skill-evolution.mjs"
   },
   "dependencies": {
     "@betteroffice/docx": "0.5.1",

@@ -20,7 +20,7 @@ import AppKit
     private let adopt = NSButton(title:"创建改进任务",target:nil,action:nil), dismiss = NSButton(title:"忽略",target:nil,action:nil), all = NSButton(checkboxWithTitle:"全选",target:nil,action:nil)
     var onSelection: ((Set<String>)->Void)?
     var onCurate: ((Set<String>,Bool)->Void)?, onOpen: ((String)->Void)?, onSource:(()->Void)?, onRetry:(()->Void)?
-    init(items:[AgentSkillEvolutionSuggestion], selected:Set<String>, generating:Bool, issue:String?, analyzed:Bool, canGenerate:Bool) {
+    init(items:[AgentSkillEvolutionSuggestion], selected:Set<String>, generating:Bool, issue:String?, analyzed:Bool, canGenerate:Bool, targetTitles:[String:String] = [:]) {
         self.items = items; self.selected = selected.intersection(items.filter{$0.state == .pending}.map(\.id)); super.init(frame:.zero)
         orientation = .vertical; alignment = .leading; spacing = 10; identifier = .init("skill-evolution-suggestions")
         for (index,item) in items.enumerated() {
@@ -28,9 +28,9 @@ import AppKit
                 let check = NSButton(checkboxWithTitle:item.title,target:self,action:#selector(selectSuggestion(_:))); check.font = .systemFont(ofSize:12,weight:.medium); check.lineBreakMode = .byTruncatingTail
                 check.tag = index; check.toolTip = item.goal; check.setAccessibilityLabel("选择 Skill 建议：" + item.title); check.identifier = .init("skill-suggestion-" + item.id); checks[item.id] = check
                 let reason = NSTextField(wrappingLabelWithString:item.reason); reason.font = .systemFont(ofSize:11); reason.textColor = AgentWorkbenchTheme.secondaryText
-                let target = NSTextField(labelWithString:item.target.map { "改进 · " + $0.name } ?? "创建 Skill"); target.font = .systemFont(ofSize:11); target.textColor = AgentWorkbenchTheme.secondaryText
+                let target = NSTextField(wrappingLabelWithString:item.target.map { "改进 · " + (targetTitles[$0.id] ?? $0.name) } ?? "创建 Skill"); target.font = .systemFont(ofSize:11); target.textColor = AgentWorkbenchTheme.secondaryText
                 let row = NSStackView(views:[check,reason,target]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 5; addArrangedSubview(row); row.widthAnchor.constraint(equalTo:widthAnchor).isActive = true
-                check.widthAnchor.constraint(lessThanOrEqualTo:row.widthAnchor).isActive = true; reason.widthAnchor.constraint(equalTo:row.widthAnchor).isActive = true
+                check.widthAnchor.constraint(lessThanOrEqualTo:row.widthAnchor).isActive = true; reason.widthAnchor.constraint(equalTo:row.widthAnchor).isActive = true; target.widthAnchor.constraint(equalTo:row.widthAnchor).isActive = true
             } else if item.state == .adopted, let id = item.taskID {
                 let open = NSButton(title:"查看任务 · " + item.title,target:self,action:#selector(openTask(_:))); open.font = .systemFont(ofSize:11); open.isBordered = false; open.tag = index; open.toolTip = id; open.lineBreakMode = .byTruncatingTail; addArrangedSubview(open); open.widthAnchor.constraint(lessThanOrEqualTo:widthAnchor).isActive = true
             }
@@ -62,9 +62,9 @@ import AppKit
 
 @MainActor final class AgentSkillJobRow: NSStackView {
     var onConfirm:(()->Void)?, onReview:(()->Void)?, onOpen:(()->Void)?, onSource:(()->Void)?
-    init(task:AgentTaskRecord, ready:Bool, issue:String?) {
+    init(task:AgentTaskRecord, ready:Bool, issue:String?, targetTitle:String? = nil) {
         super.init(frame:.zero); orientation = .vertical; alignment = .leading; spacing = 9; identifier = .init("skill-evolution-job")
-        let title = NSTextField(labelWithString:task.skillEvolutionJob?.target.map { "Skill · " + $0.name } ?? "创建 Skill"); title.font = .systemFont(ofSize:14,weight:.semibold)
+        let title = NSTextField(labelWithString:task.skillEvolutionJob?.target.map { "Skill · " + (targetTitle ?? $0.name) } ?? "创建 Skill"); title.font = .systemFont(ofSize:14,weight:.semibold); title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow,for:.horizontal); title.toolTip = targetTitle
         let source = NSButton(title:"来源任务",target:self,action:#selector(openSource)); source.isBordered = false; source.font = .systemFont(ofSize:11); source.toolTip = task.skillEvolutionJob?.sourceTitle
         let header = NSStackView(views:[title,NSView(),source]); header.spacing = 8; addArrangedSubview(header); header.widthAnchor.constraint(equalTo:widthAnchor).isActive = true
         let state: String
@@ -88,22 +88,36 @@ import AppKit
 @MainActor final class AgentSkillDraftReviewPage: AgentSettingsReviewPage, NSTextFieldDelegate {
     private let store:AgentStore, taskID:String, draft:AgentSkillDraft, job:AgentSkillEvolutionJob, revision:String
     private let name: NSTextField, scope: NSPopUpButton
-    private var initialName = "", initialProject = false, applied = false
+    private var initialName = "", initialDestination:String?, applied = false
+    private var selectedWorkspace:String? { scope.indexOfSelectedItem > 0 ? scope.selectedItem?.representedObject as? String : nil }
     init(store:AgentStore, taskID:String) throws {
         guard let task = store.task(taskID), let draft = task.skillDraft, draft.savedAt == nil else { throw PetError("没有可审阅的 Skill 草稿") }
         self.store = store; self.taskID = taskID; self.draft = draft
         let job = try AgentSkillDrafts.job(task,store:store), revision = AgentSkillDrafts.revision(draft); self.job = job; self.revision = revision
         let name = NSTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope
-        let resources = try AgentSkillDrafts.proposed(draft,job:job,store:store), document = try AgentExtensionDocument(String(decoding:resources["SKILL.md"]!,as:UTF8.self))
+        let resources = try AgentSkillDrafts.proposed(draft,job:job,store:store,task:task), document = try AgentExtensionDocument(String(decoding:resources["SKILL.md"]!,as:UTF8.self))
         let initialName = job.target?.name ?? document.metadata["name"] ?? ""; self.initialName = initialName; name.stringValue = initialName; name.setAccessibilityLabel("Skill 名称"); name.identifier = .init("skill-review-name"); name.isEditable = job.target == nil
-        scope.addItems(withTitles:["用户","项目"]); scope.setAccessibilityLabel("Skill 保存范围"); scope.identifier = .init("skill-review-scope"); scope.item(at:1)?.isEnabled = task.workspace != nil
-        let initialProject = job.target.map { (try? store.extensions.item($0.id,workspace:task.workspace).scope) == "项目" } ?? (task.workspace != nil); self.initialProject = initialProject; scope.selectItem(at:initialProject ? 1 : 0); scope.isEnabled = job.target == nil
+        scope.addItem(withTitle:"用户"); scope.setAccessibilityLabel("Skill 保存范围"); scope.identifier = .init("skill-review-scope")
+        if task.workspaceScope != nil {
+            for root in try AgentWorkspaceScope.roots(task) {
+                let path = root.root.path, name = root.root.lastPathComponent
+                let duplicate = task.workspacePaths.filter{URL(fileURLWithPath:$0).lastPathComponent == name}.count > 1
+                let label = duplicate ? "\(name)（来源\((task.workspacePaths.firstIndex(of:path) ?? 0) + 1)）" : name
+                scope.addItem(withTitle:"项目 · " + label + (path == task.workspace ? " · 主要" : "")); scope.lastItem?.representedObject = path; scope.lastItem?.toolTip = path
+            }
+        } else { scope.addItem(withTitle:"项目"); scope.lastItem?.representedObject = try task.workspace.map { try AgentFiles(workspace:$0).root.path }; scope.lastItem?.isEnabled = task.workspace != nil }
+        let destination:String?
+        if let target = job.target { destination = try AgentSkillDrafts.projectWorkspace(store.extensions.item(target.id,task:task),task:task) }
+        else { destination = try task.workspace.map { try AgentFiles(workspace:$0).root.path } }
+        self.initialDestination = destination
+        if let destination, let item = scope.itemArray.first(where:{$0.representedObject as? String == destination}) { scope.select(item) } else { scope.selectItem(at:0) }
+        scope.isEnabled = job.target == nil; scope.setContentCompressionResistancePriority(.defaultLow,for:.horizontal); scope.cell?.lineBreakMode = .byTruncatingTail
         let rows = [AgentSettingsStyle.formRow("名称",name,trailing:false),AgentSettingsStyle.formRow("保存范围",scope,trailing:false)]
-        let sections = Self.previewSections(resources,original:try AgentSkillDrafts.base(job,store:store))
+        let sections = Self.previewSections(resources,original:try AgentSkillDrafts.base(job,store:store,task:task))
         super.init(title:"审阅 Skill",metadata:job.sourceTitle,notice:"",sections:sections,applyTitle:job.target == nil ? "创建 Skill" : "应用改进",controls:rows)
         name.delegate = self; scope.target = self; scope.action = #selector(scopeChanged)
         onApply = { [weak self] in
-            guard let self else { throw CancellationError() }; _ = try AgentSkillDrafts.apply(taskID:taskID,draftID:draft.id,revision:revision,name:name.stringValue,project:scope.indexOfSelectedItem == 1,store:store); self.applied = true
+            guard let self else { throw CancellationError() }; _ = try AgentSkillDrafts.apply(taskID:taskID,draftID:draft.id,revision:revision,name:name.stringValue,project:scope.indexOfSelectedItem > 0,store:store,workspace:selectedWorkspace); self.applied = true
         }; refreshPreview()
     }
     required init?(coder:NSCoder) { fatalError("init(coder:) is not supported") }
@@ -111,7 +125,8 @@ import AppKit
     @objc private func scopeChanged() { refreshPreview() }
     private func refreshPreview() {
         do {
-            let values = try AgentSkillDrafts.proposed(draft,job:job,store:store,name:name.stringValue), original = try AgentSkillDrafts.base(job,store:store)
+            guard let task = store.task(taskID) else { throw PetError("原任务已不存在") }
+            let values = try AgentSkillDrafts.proposed(draft,job:job,store:store,name:name.stringValue,task:task), original = try AgentSkillDrafts.base(job,store:store,task:task)
             updateSections(Self.previewSections(values,original:original))
         } catch { updateSections([("无法审阅",error.localizedDescription)]) }
     }
@@ -125,6 +140,6 @@ import AppKit
     }
     override func windowShouldClose(_ sender:NSWindow) -> Bool {
         guard super.windowShouldClose(sender) else { return false }
-        if !applied, name.stringValue != initialName || (scope.indexOfSelectedItem == 1) != initialProject { return AgentUnsavedChanges.discard("放弃未应用的名称与保存范围？") }; return true
+        if !applied, name.stringValue != initialName || selectedWorkspace != initialDestination { return AgentUnsavedChanges.discard("放弃未应用的名称与保存范围？") }; return true
     }
 }

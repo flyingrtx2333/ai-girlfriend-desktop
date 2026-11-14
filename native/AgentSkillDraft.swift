@@ -5,7 +5,12 @@ import Foundation
     static let tools = readTools.union(["draft_skill"])
     static func revision(_ draft:AgentSkillDraft) -> String { AgentExtensions.digest(draft.files.mapValues { Data($0.utf8) }) }
     static func currentTarget(_ target:AgentSkillEvolutionTarget, workspace:String?, store:AgentStore) throws -> (item:AgentExtensionItem, files:[String:Data]) {
-        let item = try store.extensions.item(target.id,workspace:workspace)
+        try checkedTarget(target,item:store.extensions.item(target.id,workspace:workspace))
+    }
+    static func currentTarget(_ target:AgentSkillEvolutionTarget, task:AgentTaskRecord, store:AgentStore) throws -> (item:AgentExtensionItem, files:[String:Data]) {
+        try checkedTarget(target,item:store.extensions.item(target.id,task:task))
+    }
+    private static func checkedTarget(_ target:AgentSkillEvolutionTarget, item:AgentExtensionItem) throws -> (item:AgentExtensionItem, files:[String:Data]) {
         guard item.kind == .skill, item.managed, item.pluginName == nil, item.name == target.name, item.sha256 == target.documentHash else { throw PetError("目标 Skill 已变化、停用或不可编辑，请重新生成建议") }
         let resources = try AgentExtensions.resourceData(AgentFiles(workspace:item.root.path))
         guard AgentExtensions.digest(resources) == target.bundleHash else { throw PetError("目标 Skill 的资源已变化，请重新生成建议") }; return (item,resources)
@@ -13,11 +18,25 @@ import Foundation
     static func job(_ task:AgentTaskRecord, store:AgentStore) throws -> AgentSkillEvolutionJob {
         guard task.kind == AgentSkillEvolution.kind, let job = task.skillEvolutionJob, !task.archived, task.workspace == job.workspace,
               task.agent == nil, task.team == nil, task.automation == nil, UUID(uuidString:job.sourceTaskID) != nil, UUID(uuidString:job.suggestionID) != nil else { throw PetError("Skill 改进任务的范围已变化，请从原建议重新创建") }
-        guard let source = store.task(job.sourceTaskID)?.messages.first(where: { $0.id == job.sourceMessageID && $0.isReply }),
+        guard let parent = store.task(job.sourceTaskID), let source = parent.messages.first(where: { $0.id == job.sourceMessageID && $0.isReply }),
               ([source.skillEvolution].compactMap { $0 } + (source.skillEvolutionHistory ?? [])).contains(where: { set in
                   set.source == job.sourceHash && set.items.contains { $0.id == job.suggestionID && $0.taskID == task.id && $0.state == .adopted }
               }) else { throw PetError("原建议已不可用，请从原任务重新生成") }
-        if let target = job.target { _ = try currentTarget(target,workspace:task.workspace,store:store) }; return job
+        if task.workspaceScope != nil || job.sourceHash.hasPrefix(AgentSkillEvolution.workspaceSourcePrefix) {
+            _ = try AgentWorkspaceScope.roots(task)
+            guard task.workspaceScope != nil, task.workspaceScope == parent.workspaceScope, task.workspace == parent.workspace else { throw PetError("Skill 改进任务的源文件夹范围已变化，请从原任务重新创建") }
+        }
+        if let target = job.target { _ = try currentTarget(target,task:task,store:store) }; return job
+    }
+    static func projectWorkspace(_ item:AgentExtensionItem, task:AgentTaskRecord) throws -> String? {
+        guard item.scope == "项目" || item.scope.hasPrefix("项目 · ") else { return nil }
+        guard let path = try AgentWorkspaceScope.roots(task).map(\.root.path).first(where:{ item.file.path.hasPrefix($0 + "/") }) else { throw PetError("Skill 来源不属于当前任务的源文件夹") }
+        return path
+    }
+    private static func destination(_ requested:String?, task:AgentTaskRecord) throws -> String {
+        guard let primary = task.workspace else { throw PetError("项目 Skill 需要原任务的项目文件夹") }
+        let path = try AgentFiles(workspace:requested ?? primary).root.path
+        guard try AgentWorkspaceScope.roots(task).contains(where:{$0.root.path == path}) else { throw PetError("Skill 保存目录不属于当前任务的源文件夹") }; return path
     }
     static func check(_ call:AgentToolCall, task:AgentTaskRecord, store:AgentStore) throws {
         guard task.kind == AgentSkillEvolution.kind || task.skillEvolutionJob != nil else { return }
@@ -47,11 +66,17 @@ import Foundation
             !path.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains) && parts.allSatisfy { !$0.isEmpty && !$0.hasPrefix(".") && $0 != "node_modules" && $0 != "__pycache__" } &&
             (path.lowercased() != "skill.md" || path == "SKILL.md")
     }
-    static func base(_ job:AgentSkillEvolutionJob, store:AgentStore) throws -> [String:Data] { try job.target.map { try currentTarget($0,workspace:job.workspace,store:store).files } ?? [:] }
+    static func base(_ job:AgentSkillEvolutionJob, store:AgentStore, task:AgentTaskRecord? = nil) throws -> [String:Data] {
+        if let task {
+            guard task.workspace == job.workspace, task.skillEvolutionJob?.suggestionID == job.suggestionID else { throw PetError("Skill 草稿与任务来源不匹配") }
+            return try job.target.map { try currentTarget($0,task:task,store:store).files } ?? [:]
+        }
+        return try job.target.map { try currentTarget($0,workspace:job.workspace,store:store).files } ?? [:]
+    }
     static func read(_ call:AgentToolCall, task:AgentTaskRecord, store:AgentStore) throws -> AgentToolResult {
         let job = try job(task,store:store), args = call.object
         guard Set(args.keys).isSubset(of:["path","offset","limit","draft"]), args["path"] == nil || args["path"] is String, args["draft"] == nil || args["draft"] is Bool else { throw PetError("Skill 来源读取参数无效") }
-        let staged = args["draft"] as? Bool == true, resources = staged ? (task.skillDraft?.files ?? [:]).mapValues { Data($0.utf8) } : try base(job,store:store)
+        let staged = args["draft"] as? Bool == true, resources = staged ? (task.skillDraft?.files ?? [:]).mapValues { Data($0.utf8) } : try base(job,store:store,task:task)
         let path = args["path"] as? String ?? "."
         if path == "." {
             let object: [String:Any] = ["goal":job.goal,"source_task":job.sourceTitle,"experience":job.brief,"target":job.target?.name ?? "创建新 Skill","draft":staged,"files":resources.keys.sorted()]
@@ -70,8 +95,8 @@ import Foundation
         var draft = task.skillDraft ?? .init(); guard draft.savedAt == nil else { throw PetError("此草稿已应用，请从新建议继续改进") }
         if draft.baseVersion == nil { draft.baseVersion = job.target?.bundleHash }
         let payload = AgentFiles.hash(try JSONSerialization.data(withJSONObject:args,options:[.sortedKeys]))
-        if let saved = draft.calls[call.id] { guard saved == payload else { throw PetError("此调用已保存另一项改动") }; return try receipt(draft,path:path,job:job,store:store) }
-        let original = try base(job,store:store), current = draft.files[path].map { Data($0.utf8) } ?? original[path]
+        if let saved = draft.calls[call.id] { guard saved == payload else { throw PetError("此调用已保存另一项改动") }; return try receipt(draft,path:path,job:job,store:store,task:task) }
+        let original = try base(job,store:store,task:task), current = draft.files[path].map { Data($0.utf8) } ?? original[path]
         guard current == nil || String(data:current!,encoding:.utf8) != nil else { throw PetError("二进制资源不能由文字草稿覆盖") }
         let expected = args["expected_hash"] as? String
         guard current == nil ? expected == nil || expected == "missing" : expected == AgentFiles.hash(current!) else { throw PetError("先读取当前文件，并传入相同 expected_hash") }
@@ -89,25 +114,25 @@ import Foundation
         var resources = original; for (path,text) in draft.files { resources[path] = Data(text.utf8) }; try validateResources(resources)
         let expectedTask = try store.recordVersion(taskID); task.skillDraft = draft
         _ = try store.commitTaskRecord(task,expectedHash:expectedTask,transaction:transaction(store,"draft"),label:"Skill 草稿")
-        return try receipt(draft,path:path,job:job,store:store)
+        return try receipt(draft,path:path,job:job,store:store,task:task)
     }
-    private static func receipt(_ draft:AgentSkillDraft, path:String, job:AgentSkillEvolutionJob, store:AgentStore) throws -> AgentToolResult {
-        let ready = (try? proposed(draft,job:job,store:store)) != nil
+    private static func receipt(_ draft:AgentSkillDraft, path:String, job:AgentSkillEvolutionJob, store:AgentStore, task:AgentTaskRecord) throws -> AgentToolResult {
+        let ready = (try? proposed(draft,job:job,store:store,task:task)) != nil
         let object: [String:Any] = ["draft_id":draft.id,"path":path,"sha256":AgentFiles.hash(Data((draft.files[path] ?? "").utf8)),"files":draft.files.keys.sorted(),"ready_for_review":ready,"applied":false,"next_action":"继续生成所需资源；完成后请用户在本会话选择审阅技能。草稿未创建或修改已安装 Skill。"]
         return .init(text:String(decoding:try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]),as:UTF8.self))
     }
-    static func proposed(_ draft:AgentSkillDraft, job:AgentSkillEvolutionJob, store:AgentStore, name:String? = nil) throws -> [String:Data] {
+    static func proposed(_ draft:AgentSkillDraft, job:AgentSkillEvolutionJob, store:AgentStore, name:String? = nil, task:AgentTaskRecord? = nil) throws -> [String:Data] {
         guard !draft.files.isEmpty, draft.files.count <= 32, draft.files.keys.allSatisfy(validPath), draft.baseVersion == job.target?.bundleHash,
               draft.files.allSatisfy({ !$0.value.contains("\0") && $0.value.utf8.count <= ($0.key == "SKILL.md" ? 65_536 : 256_000) }),
               draft.files.values.reduce(0,{$0 + $1.utf8.count}) <= 1_000_000,
               Set(draft.files.keys.map { $0.precomposedStringWithCanonicalMapping.lowercased() }).count == draft.files.count else { throw PetError("Skill 草稿文件或来源版本无效") }
-        var resources = try base(job,store:store); for (path,text) in draft.files { resources[path] = Data(text.utf8) }
+        var resources = try base(job,store:store,task:task); for (path,text) in draft.files { resources[path] = Data(text.utf8) }
         guard let data = resources["SKILL.md"], let text = String(data:data,encoding:.utf8) else { throw PetError("Skill 草稿缺少 SKILL.md") }
         let document = try AgentExtensionDocument(text), chosen = name ?? job.target?.name ?? document.metadata["name"] ?? ""
         guard AgentExtensions.validName(chosen), !chosen.contains(":"), chosen.count <= 64 else { throw PetError("Skill 名称使用64字以内的文字、数字、连字符或下划线") }
         if let target = job.target {
             guard chosen == target.name else { throw PetError("改进现有 Skill 时保留原名称") }
-            let previous = try AgentExtensionDocument(String(decoding:base(job,store:store)["SKILL.md"]!,as:UTF8.self))
+            let previous = try AgentExtensionDocument(String(decoding:base(job,store:store,task:task)["SKILL.md"]!,as:UTF8.self))
             let protected: (String)->Bool = { !["name","description"].contains($0) }
             guard previous.metadata.filter({protected($0.key)}) == document.metadata.filter({protected($0.key)}) else { throw PetError("Skill 改进不能改变原权限与触发配置") }
         }
@@ -133,16 +158,26 @@ import Foundation
         } else { lines = ["---","name: " + value,"---",""] + lines }
         return lines.joined(separator:"\n")
     }
-    static func apply(taskID:String, draftID:String, revision:String, name:String, project:Bool, store:AgentStore) throws -> String {
+    static func apply(taskID:String, draftID:String, revision:String, name:String, project:Bool, store:AgentStore, workspace:String? = nil) throws -> String {
         guard var task = store.task(taskID), let draft = task.skillDraft, draft.id == draftID, self.revision(draft) == revision, draft.savedAt == nil, task.status != .running, task.pendingCalls.isEmpty, task.queuedCount == 0 else { throw PetError("Skill 草稿已变化或仍在生成，请重新审阅") }
         let job = try job(task,store:store); guard job.approvedPlan != nil else { throw PetError("请先确认 Skill 方案") }
-        let proposed = try proposed(draft,job:job,store:store,name:name), original = try base(job,store:store)
+        let proposed = try proposed(draft,job:job,store:store,name:name,task:task), original = try base(job,store:store,task:task)
+        guard project || workspace == nil else { throw PetError("用户 Skill 不能指定项目保存目录") }
+        let selectedWorkspace: String?
+        if project, job.target == nil || workspace != nil { selectedWorkspace = try destination(workspace,task:task) } else { selectedWorkspace = nil }
+        func existingNames() throws -> [AgentExtensionItem] {
+            if !project, task.workspaceScope != nil { return try store.extensions.catalog(task:task) }
+            return try store.extensions.catalog(workspace:project ? selectedWorkspace : task.workspace)
+        }
         let files: AgentFiles, prefix:String
-        if let target = job.target { files = try AgentFiles(workspace:currentTarget(target,workspace:task.workspace,store:store).item.root.path); prefix = "" }
+        if let target = job.target {
+            let item = try currentTarget(target,task:task,store:store).item
+            if workspace != nil { guard try projectWorkspace(item,task:task) == selectedWorkspace else { throw PetError("已有 Skill 只能应用到原来源目录") } }
+            files = try AgentFiles(workspace:item.root.path); prefix = ""
+        }
         else {
-            guard !project || task.workspace != nil else { throw PetError("项目 Skill 需要原任务的项目文件夹") }
-            guard try !store.extensions.catalog(workspace:task.workspace).contains(where:{$0.kind == .skill && $0.name.lowercased() == name.lowercased()}) else { throw PetError("同名 Skill 已存在，请更改名称") }
-            files = try AgentFiles(workspace:project ? task.workspace : store.extensions.profile.path); prefix = (project ? ".bluefatfish/skills/" : "extensions/skills/") + name + "/"
+            guard try !existingNames().contains(where:{$0.kind == .skill && $0.name.lowercased() == name.lowercased()}) else { throw PetError("同名 Skill 已存在，请更改名称") }
+            files = try AgentFiles(workspace:project ? selectedWorkspace : store.extensions.profile.path); prefix = (project ? ".bluefatfish/skills/" : "extensions/skills/") + name + "/"
             guard try files.entryMetadata(files.literalURL(String(prefix.dropLast()))).kind == "missing" else { throw PetError("同名目录已存在，请更改名称") }
         }
         var writes: [AgentKnowledgeFileWrite] = []
@@ -156,7 +191,7 @@ import Foundation
         task.skillEvolutionJob?.target = .init(id:id,name:name,documentHash:AgentFiles.hash(proposed["SKILL.md"]!),bundleHash:bundleHash)
         _ = try store.commitTaskRecord(task,expectedHash:expected,transaction:transaction(store,"apply"),label:"应用 Skill 改进",additionalWrites:writes) {
             _ = try self.job(originalTask,store:store)
-            if job.target == nil { guard try !store.extensions.catalog(workspace:task.workspace).contains(where:{$0.kind == .skill && $0.name.lowercased() == name.lowercased()}) else { throw PetError("同名 Skill 在审阅后出现，未覆盖") } }
+            if job.target == nil { guard try !existingNames().contains(where:{$0.kind == .skill && $0.name.lowercased() == name.lowercased()}) else { throw PetError("同名 Skill 在审阅后出现，未覆盖") } }
         }
         return id
     }

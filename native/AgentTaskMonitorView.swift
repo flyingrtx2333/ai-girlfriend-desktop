@@ -15,6 +15,7 @@ struct AgentMonitorContent {
     var analysis: String?, analysisError: String?
     var previewTitle: String?, previewVisible = false
     var skillSuggestions: [AgentSkillEvolutionSuggestion] = []
+    var skillTargetTitles: [String:String] = [:]
     var skillSource: String?, skillError: String?
     var skillGenerating = false, skillAnalyzed = false, canGenerateSkills = false
     func name(_ event: AgentEvent) -> String { event.toolCallID.flatMap { toolNames[$0] } ?? event.title }
@@ -29,7 +30,7 @@ struct AgentMonitorContent {
     var signature: String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let t = task, preferences = (try? encoder.encode(settings)).map(AgentFiles.hash) ?? ""
-        let skills = [(try? encoder.encode(skillSuggestions)).map(AgentFiles.hash) ?? "", skillSource ?? "", skillError ?? "", String(skillGenerating), String(skillAnalyzed), String(canGenerateSkills)].joined(separator: "|")
+        let skills = [(try? encoder.encode(skillSuggestions)).map(AgentFiles.hash) ?? "", (try? encoder.encode(skillTargetTitles)).map(AgentFiles.hash) ?? "", skillSource ?? "", skillError ?? "", String(skillGenerating), String(skillAnalyzed), String(canGenerateSkills)].joined(separator: "|")
         return [t.id, preferences, skills, t.status.rawValue, String(t.goalAccepted ?? false), t.messages.first(where: \.isHumanInput)?.content ?? "", t.recap?.text ?? "", t.recap?.created.description ?? "", t.recap?.model ?? "", t.recap?.throughMessageID ?? "", t.messages.last?.id ?? "", t.plan.map { $0.id + $0.title + $0.status }.joined(), t.artifacts.joined(), missingArtifacts.sorted().joined(), sources.joined(), (t.canvases ?? []).map { $0.id + $0.hash }.joined(), t.changes.map { $0.id + ($0.restoredAt?.description ?? "") }.joined(), t.events.map { $0.id + $0.title + $0.status + String($0.duration ?? -1) }.joined(), (t.activeSkills ?? []).map { $0.id }.joined(), (children + sideChats).map { $0.id + $0.title + $0.statusTitle + String($0.sideTask?.retained ?? false) }.joined(), terminals.map { $0.id + $0.title + $0.detail }.joined(), pages.map { $0.id + $0.title + $0.detail }.joined(), environment.joined(), String(showChanges), String(canAnalyze), String(canAddSources), analysis ?? "", analysisError ?? "", previewTitle ?? "", String(previewVisible)].joined(separator: "|")
     }
 }
@@ -167,7 +168,7 @@ struct AgentMonitorContent {
             var rows: [NSView] = skills + events(value.capabilities)
             if !value.skillSuggestions.isEmpty || value.skillGenerating || value.skillAnalyzed || value.skillError != nil || value.canGenerateSkills {
                 let key = task.id + ":" + (value.skillSource ?? ""), token = generation
-                let suggestions = AgentSkillSuggestionsView(items:value.skillSuggestions,selected:skillSelections[key] ?? [],generating:value.skillGenerating,issue:value.skillError,analyzed:value.skillAnalyzed,canGenerate:value.canGenerateSkills)
+                let suggestions = AgentSkillSuggestionsView(items:value.skillSuggestions,selected:skillSelections[key] ?? [],generating:value.skillGenerating,issue:value.skillError,analyzed:value.skillAnalyzed,canGenerate:value.canGenerateSkills,targetTitles:value.skillTargetTitles)
                 suggestions.onSelection = { [weak self] ids in guard let self, boundTaskID == task.id, generation == token else { return }; skillSelections[key] = ids }
                 suggestions.onCurate = { [weak self] ids,adopt in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillCurate?(ids,value.skillSource ?? "",adopt) }
                 suggestions.onOpen = { [weak self] id in guard let self, boundTaskID == task.id, generation == token else { return }; onSkillTask?(id) }
