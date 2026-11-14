@@ -87,7 +87,9 @@ import Darwin
             checks["rejectedLinksLeaveTargetOriginal"] = try Data(contentsOf: target) == Data(legacyText.utf8)
             func configured(_ workspace: String) throws -> AgentMCPServer {
                 var server = tasks.mcp.availableServers(workspace: workspace).first { $0.plugin != nil }!
-                var value = try JSONSerialization.jsonObject(with: Data(tasks.mcp.document(server).utf8)) as! [String: Any]; value["env"] = ["RESOURCE_PATH": URL(fileURLWithPath: workspace).appendingPathComponent("source.txt").path]
+                var value = try JSONSerialization.jsonObject(with: Data(tasks.mcp.document(server).utf8)) as! [String: Any]
+                let source = URL(fileURLWithPath: workspace).appendingPathComponent("source.txt").path
+                value["env"] = [String: String](); value["args"] = server.args + [source]
                 server = try tasks.mcp.save(String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self), id: server.id, expectedRevision: server.revision, workspace: workspace); try tasks.mcp.setEnabled(server.id, true, workspace: workspace); return try tasks.mcp.server(server.id, workspace: workspace)
             }
             func start(_ team: AgentTeam, _ workspace: String) throws -> String {

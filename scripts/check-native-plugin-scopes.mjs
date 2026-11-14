@@ -25,7 +25,7 @@ const rl=readline.createInterface({input:process.stdin});
 rl.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}if(m.id===undefined)return;let result={};
 if(m.method==='initialize')result={protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'actual-version-source',version:'1.0.0'}};
 else if(m.method==='tools/list')result={tools:[{name:'read_source',description:'Read the actual public source hash and installed version',inputSchema:{type:'object',properties:{},additionalProperties:false}}]};
-else if(m.method==='tools/call'){const bytes=fs.readFileSync(process.env.RESOURCE_PATH),version=JSON.parse(fs.readFileSync(new URL('./skills/source/resources/version.json',import.meta.url),'utf8'));result={content:[{type:'text',text:JSON.stringify({sourceSha256:crypto.createHash('sha256').update(bytes).digest('hex'),version:version.value,pid:process.pid})}]};}
+else if(m.method==='tools/call'){const bytes=fs.readFileSync(process.argv[2] || process.env.RESOURCE_PATH),version=JSON.parse(fs.readFileSync(new URL('./skills/source/resources/version.json',import.meta.url),'utf8'));result={content:[{type:'text',text:JSON.stringify({sourceSha256:crypto.createHash('sha256').update(bytes).digest('hex'),version:version.value,pid:process.pid})}]};}
 process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');});
 '''
 for version in [1,2]:
