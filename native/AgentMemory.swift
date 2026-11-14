@@ -6,8 +6,31 @@ enum AgentMemoryScope: String, CaseIterable {
     var isInstructions: Bool { [.instructions, .userInstructions, .localInstructions].contains(self) }
 }
 struct AgentMemorySnapshot { var content: String; var hash: String; var location: String }
+struct AgentMemoryProjectSource: Equatable {
+    let taskID: String, workspace: String, title: String
+}
 
 @MainActor enum AgentMemory {
+    static func projects(store: AgentStore, preferredTaskID: String) -> [AgentMemoryProjectSource] {
+        var sources: [String: AgentMemoryProjectSource] = [:]
+        let tasks = store.tasks.sorted {
+            if ($0.id == preferredTaskID) != ($1.id == preferredTaskID) { return $0.id == preferredTaskID }
+            if $0.archived != $1.archived { return !$0.archived }
+            return $0.id < $1.id
+        }
+        for task in tasks {
+            for path in task.workspacePaths where path.hasPrefix("/") && path != "/" && !path.contains("\0") && path.utf8.count < 8192 {
+                let key = (try? AgentFiles(workspace: path).root.path) ?? URL(fileURLWithPath: path).standardizedFileURL.path
+                guard sources[key] == nil else { continue }
+                let title = store.organization.name(path, mode: task.organizationMode) ?? URL(fileURLWithPath: path).lastPathComponent
+                sources[key] = AgentMemoryProjectSource(taskID: task.id, workspace: path, title: title)
+            }
+        }
+        return sources.values.sorted {
+            let order = $0.title.localizedStandardCompare($1.title)
+            return order == .orderedSame ? $0.workspace < $1.workspace : order == .orderedAscending
+        }
+    }
     static func agentSettings(store: AgentStore) throws -> AgentGeneralSettings.Settings {
         let service = AgentGeneralSettings(directory: store.directory.deletingLastPathComponent())
         if let error = service.error { throw PetError(error) }

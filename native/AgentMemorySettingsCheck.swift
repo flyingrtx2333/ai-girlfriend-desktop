@@ -80,6 +80,46 @@ import AppKit
         checks["memoryCardOpensExistingEditorAtRequestedScope"] = child is AgentRecordWindow && child?.pageContentView.map { containsText($0, "PROJECT_MEMORY_PUBLIC_692") } == true
         child?.window?.close(); page.window?.close()
         checks["memoryPreferencesPreserveProjectSourceAndTaskDraft"] = try AgentMemory.snapshot(.project, store: tasks, taskID: id).content == "PROJECT_MEMORY_PUBLIC_692" && tasks.task(id)?.draft == "MEMORY_TASK_DRAFT_PUBLIC"
+        let second = output.appendingPathComponent("memory-second-project"), secondary = output.appendingPathComponent("memory-secondary-source"), unavailable = output.appendingPathComponent("memory-unavailable-project")
+        for url in [second, secondary, unavailable] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let peerID = tasks.create(title: "其他项目原任务", workspace: second.path)
+        tasks.update(peerID) { $0.draft = "PEER_DRAFT_PUBLIC_385" }
+        let duplicateID = tasks.create(title: "同目录已归档任务", workspace: second.path)
+        tasks.update(duplicateID) { $0.archived = true }
+        let multiID = tasks.create(title: "多源文件夹任务", workspace: second.path)
+        tasks.update(multiID) { $0.workspaceScope = AgentWorkspaceScope(group: output.appendingPathComponent("memory-source-group").path, folders: [second.path, secondary.path], primary: second.path) }
+        let missingID = tasks.create(title: "暂不可用项目", workspace: unavailable.path)
+        try FileManager.default.moveItem(at: unavailable, to: unavailable.appendingPathExtension("offline"))
+        let peerInitial = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID)
+        _ = try AgentMemory.save(.project, content: "PEER_MEMORY_PUBLIC_347", expectedHash: peerInitial.hash, store: tasks, taskID: peerID)
+        let secondaryInitial = try AgentMemory.snapshot(.project, store: tasks, taskID: multiID, workspace: secondary.path)
+        _ = try AgentMemory.save(.project, content: "SECONDARY_MEMORY_PUBLIC_529", expectedHash: secondaryInitial.hash, store: tasks, taskID: multiID, workspace: secondary.path)
+        let selection = tasks.selectedID, originalTasks = [id, peerID, duplicateID, multiID, missingID, noWorkspace].compactMap { tasks.task($0) }
+        let sources = AgentMemory.projects(store: tasks, preferredTaskID: noWorkspace)
+        checks["memoryProjectInventoryDeduplicatesSharedDirectories"] = sources.filter { $0.workspace == second.path }.count == 1
+        checks["memoryProjectInventoryIncludesSecondarySourceFolders"] = sources.contains { $0.workspace == secondary.path && $0.taskID == multiID }
+        checks["memoryProjectInventoryRetainsUnavailableDirectories"] = sources.contains { $0.workspace == unavailable.path && $0.taskID == missingID }
+        checks["memoryProjectInventoryPrefersCurrentTaskAsOwner"] = AgentMemory.projects(store: tasks, preferredTaskID: peerID).first { $0.workspace == second.path }?.taskID == peerID
+        checks["memoryProjectInventoryKeepsUnrelatedFoldersOutsideScope"] = !sources.contains { $0.workspace == output.path }
+        let projectPage = AgentMemorySettingsPage(store: tasks, taskID: noWorkspace, workspace: nil, service: service)
+        guard let projectRoot = projectPage.pageContentView else { throw PetError("缺少跨项目记忆页") }
+        let buttonID = { (path: String) in "memory-project-" + AgentFiles.hash(Data(path.utf8)) }
+        checks["noWorkspaceMemoryPageListsExistingProjects"] = find(projectRoot, id: "settings-card-memory-projects") != nil && (find(projectRoot, id: buttonID(second.path)) as? NSButton)?.isEnabled == true
+        checks["unavailableMemoryProjectDoesNotBlockOtherProjects"] = (find(projectRoot, id: buttonID(unavailable.path)) as? NSButton)?.isEnabled == false && (find(projectRoot, id: buttonID(secondary.path)) as? NSButton)?.isEnabled == true
+        var projectChild: AgentSettingsPageController?
+        projectPage.onSettingsPush = { projectChild = $0 }
+        (find(projectRoot, id: buttonID(secondary.path)) as? NSButton)?.performClick(nil)
+        checks["otherProjectMemoryOpensOriginalScopedEditor"] = projectChild is AgentRecordWindow && projectChild?.pageContentView.map { containsText($0, "SECONDARY_MEMORY_PUBLIC_529") } == true
+        checks["otherProjectMemoryEditorNamesItsProject"] = projectChild?.window?.title.contains(secondary.lastPathComponent) == true
+        projectChild?.window?.close(); projectPage.window?.close()
+        do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID, workspace: secondary.path); checks["crossProjectInventoryDoesNotExpandOwnerScope"] = false }
+        catch { checks["crossProjectInventoryDoesNotExpandOwnerScope"] = error.localizedDescription.contains("不属于当前任务") }
+        let reloaded = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: store.keychain, hookKeychain: store.keychain)
+        checks["memoryProjectInventorySurvivesStoreReload"] = AgentMemory.projects(store: reloaded, preferredTaskID: noWorkspace) == sources
+        checks["memoryProjectManagementDoesNotSelectAnotherTask"] = tasks.selectedID == selection
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        checks["memoryProjectManagementPreservesAllOriginalTaskRecords"] = try originalTasks.allSatisfy { task in try encoder.encode(tasks.task(task.id)) == encoder.encode(Optional(task)) }
+        checks["memoryProjectManagementPreservesEachSourceMemory"] = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID).content == "PEER_MEMORY_PUBLIC_347" && AgentMemory.snapshot(.project, store: tasks, taskID: multiID, workspace: secondary.path).content == "SECONDARY_MEMORY_PUBLIC_529" && AgentMemory.snapshot(.project, store: tasks, taskID: id).content == "PROJECT_MEMORY_PUBLIC_692"
         checks["memorySettingsChecksDoNotRequestModels"] = modelAttempts == 0
         return checks
     }
