@@ -6,30 +6,35 @@ import AppKit
     private var finished = false
     var onLoad: ((String) -> Void)?
 
-    init(source: URL) throws {
+    convenience init(source: URL) throws {
         let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
         guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= 64_000 else { throw PetError("配置文件需小于 64KB") }
         let data = try Data(contentsOf: source)
+        try self.init(data: data, label: source.lastPathComponent, path: source.path)
+    }
+    convenience init(document: String) throws { try self.init(data: Data(document.utf8), label: "粘贴的 JSON", path: nil) }
+    private init(data: Data, label: String, path: String?) throws {
         guard data.count <= 64_000 else { throw PetError("配置文件需小于 64KB") }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PetError("不是 JSON 对象") }
         if let raw = object["mcpServers"] {
             guard let servers = raw as? [String: [String: Any]] else { throw PetError("mcpServers 须为连接器对象") }
-            guard !servers.isEmpty else { throw PetError("mcpServers 为空") }
+            guard !servers.isEmpty, servers.count <= 64 else { throw PetError("mcpServers 需包含 1 至 64 个连接器") }
             definitions = try servers.keys.sorted().map { name in
                 var value = servers[name]!; value["name"] = name
-                if value["url"] != nil { value["type"] = "http"; value["bearerToken"] = value["bearerToken"] ?? "" }
-                else { value["type"] = "stdio"; value["args"] = value["args"] ?? []; value["env"] = value["env"] ?? [:] }
-                if let command = value["command"] as? String, !command.hasPrefix("/"), !command.contains("/") {
-                    value["command"] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map { $0 + "/" + command }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? command
+                if value["url"] != nil { value["type"] = value["type"] ?? "http"; value["bearerToken"] = value["bearerToken"] ?? "" }
+                else { value["type"] = value["type"] ?? "stdio"; value["args"] = value["args"] ?? []; value["env"] = value["env"] ?? [:] }
+                if let raw = value.removeValue(forKey: "timeout") {
+                    guard value["timeoutSeconds"] == nil, let ms = raw as? Double, CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(), ms.isFinite else { throw PetError("timeout 需为毫秒数，不能与 timeoutSeconds 同时填写") }; value["timeoutSeconds"] = ms / 1000
                 }
+                if let command = value["command"] as? String { value["command"] = AgentMCP.configurationCommand(command) }
                 return Definition(name: name, document: String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
             }
-        } else { definitions = [Definition(name: object["name"] as? String ?? source.lastPathComponent, document: String(decoding: data, as: UTF8.self))] }
+        } else { definitions = [Definition(name: object["name"] as? String ?? label, document: String(decoding: data, as: UTF8.self))] }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "导入 MCP 连接器"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window)
         let heading = NSTextField(labelWithString: "导入 MCP 连接器"); heading.font = .systemFont(ofSize: 18, weight: .semibold)
-        let sourceName = NSTextField(labelWithString: source.lastPathComponent); sourceName.font = .systemFont(ofSize: 12); sourceName.textColor = AgentWorkbenchTheme.secondaryText; sourceName.lineBreakMode = .byTruncatingMiddle; sourceName.toolTip = source.path
+        let sourceName = NSTextField(labelWithString: label); sourceName.font = .systemFont(ofSize: 12); sourceName.textColor = AgentWorkbenchTheme.secondaryText; sourceName.lineBreakMode = .byTruncatingMiddle; sourceName.toolTip = path
         list.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("import"))); list.headerView = nil; list.rowHeight = 36; list.delegate = self; list.dataSource = self; list.setAccessibilityLabel("待导入 MCP 连接器")
         let index = NSScrollView(); index.documentView = list; index.hasVerticalScroller = true
         preview.isEditable = false; preview.isSelectable = true; preview.isRichText = false; preview.font = .monospacedSystemFont(ofSize: 12, weight: .regular)

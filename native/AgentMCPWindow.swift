@@ -4,7 +4,11 @@ import UniformTypeIdentifiers
 @MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTabViewDelegate, NSWindowDelegate {
     private struct CatalogRow { let heading: String?; let server: AgentMCPServer? }
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
-    private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = NSTextView()
+    private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = AgentMCPToolCatalog()
+    private let configurationKind = NSSegmentedControl(labels: ["表单", "JSON"], trackingMode: .selectOne, target: nil, action: nil)
+    private let configurationHost = NSView(), jsonScroll = NSScrollView(), loadJSON = NSButton(title: "载入 JSON", target: nil, action: nil)
+    private var form: AgentMCPConfigForm?
+    private var displayedConfiguration = 0
     private let tabs = NSTabView()
     private let detailKinds = NSSegmentedControl(labels: ["配置", "工具"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), listState = AgentSettingsStatusField("连接器列表状态"), empty = NSTextField(labelWithString: "暂无连接器")
@@ -50,12 +54,15 @@ import UniformTypeIdentifiers
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
         editor.textContainerInset = NSSize(width: 16, height: 16); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.setAccessibilityLabel("MCP 配置 JSON")
-        let configScroll = NSScrollView(); configScroll.documentView = editor; configScroll.hasVerticalScroller = true; configScroll.identifier = .init("form-input")
-        tools.isEditable = false; tools.isRichText = false; tools.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        tools.textContainerInset = NSSize(width: 16, height: 16); tools.isVerticallyResizable = true; tools.autoresizingMask = [.width]; tools.textContainer?.widthTracksTextView = true; tools.setAccessibilityLabel("MCP 实际工具目录")
-        let toolScroll = NSScrollView(); toolScroll.documentView = tools; toolScroll.hasVerticalScroller = true; toolScroll.identifier = .init("form-input")
+        jsonScroll.documentView = editor; jsonScroll.hasVerticalScroller = true; jsonScroll.identifier = .init("form-input")
+        configurationKind.selectedSegment = 0; configurationKind.setAccessibilityLabel("MCP 配置方式"); configurationKind.target = self; configurationKind.action = #selector(changeConfiguration)
+        loadJSON.target = self; loadJSON.action = #selector(reviewPastedJSON); loadJSON.isHidden = true
+        let configHeader = NSStackView(views: [configurationKind, NSView(), loadJSON]); configHeader.spacing = 8
+        let config = NSStackView(views: [configHeader, configurationHost]); config.orientation = .vertical; config.alignment = .leading; config.spacing = 10
+        for child in [configHeader, configurationHost] { child.widthAnchor.constraint(equalTo: config.widthAnchor).isActive = true }; configHeader.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        attachConfiguration(jsonScroll)
         tabs.tabViewType = .noTabsNoBorder; tabs.setAccessibilityLabel("连接器详情标签"); tabs.delegate = self
-        for (label, view) in [("配置", configScroll), ("工具", toolScroll)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
+        for (label, view) in [("配置", config as NSView), ("工具", tools as NSView)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
         detailKinds.selectedSegment = 0; detailKinds.target = self; detailKinds.action = #selector(changeDetails); detailKinds.setAccessibilityLabel("连接器详情类型")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (save, #selector(saveConfig)), (remove, #selector(removeConfig))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
@@ -76,7 +83,7 @@ import UniformTypeIdentifiers
             if self.dirty { self.dirty = false; self.reload(self.selected?.id) }
             return true
         }
-        page.onAppear = { [weak self] in guard let self else { return }; self.editorWindow?.makeFirstResponder(self.tabs.selectedTabViewItem?.identifier as? String == "工具" ? self.tools : self.editor) }
+        page.onAppear = { [weak self] in self?.focusDetail() }
         detailPage = page
         service.onChange = { [weak self] in self?.refreshCatalog() }
         reload()
@@ -94,10 +101,46 @@ import UniformTypeIdentifiers
         else { presentSettingsChild(detailPage) }
     }
     @objc private func filterCatalog() { rebuildRows() }
+    private func attachConfiguration(_ view: NSView) {
+        configurationHost.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: configurationHost.leadingAnchor), view.trailingAnchor.constraint(equalTo: configurationHost.trailingAnchor), view.topAnchor.constraint(equalTo: configurationHost.topAnchor), view.bottomAnchor.constraint(equalTo: configurationHost.bottomAnchor)])
+    }
+    private func installForm() throws {
+        let next = try AgentMCPConfigForm(document: editor.string, pluginLocked: selected?.plugin != nil)
+        form?.view.removeFromSuperview(); form = next; attachConfiguration(next.view)
+        next.onChange = { [weak self, weak next] in
+            guard let self, let next else { return }; self.dirty = true
+            do { self.editor.string = try next.document(); self.refreshState(); self.state.stringValue = "未保存" }
+            catch { self.refreshState(); self.state.stringValue = error.localizedDescription }
+        }
+    }
+    private func applyConfigurationKind() {
+        let json = configurationKind.selectedSegment == 1; jsonScroll.isHidden = !json; form?.view.isHidden = json; loadJSON.isHidden = !json
+        displayedConfiguration = configurationKind.selectedSegment
+    }
+    private func prepareConfiguration() {
+        do { try installForm() } catch { form?.view.removeFromSuperview(); form = nil; configurationKind.selectedSegment = 1 }
+        applyConfigurationKind()
+    }
+    private func focusDetail() {
+        let target: NSView = tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : configurationKind.selectedSegment == 0 ? form?.firstInput ?? editor : editor
+        editorWindow?.makeFirstResponder(target)
+    }
+    @objc private func changeConfiguration() {
+        guard configurationKind.selectedSegment != displayedConfiguration else { return }
+        do {
+            if configurationKind.selectedSegment == 0 { try installForm() }
+            else if let form { editor.string = try form.document() }
+            applyConfigurationKind(); focusDetail()
+        } catch { configurationKind.selectedSegment = displayedConfiguration; state.stringValue = error.localizedDescription }
+    }
+    @objc private func reviewPastedJSON() {
+        do { try reviewImport(document: editor.string) } catch { state.stringValue = error.localizedDescription }
+    }
     @objc private func changeDetails() { tabs.selectTabViewItem(at: detailKinds.selectedSegment) }
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         detailKinds.selectedSegment = tabViewItem.map { tabs.indexOfTabViewItem($0) } ?? 0
-        if editingPage?.isPageVisible == true { editorWindow?.makeFirstResponder(tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : editor) }
+        if editingPage?.isPageVisible == true { focusDetail() }
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
@@ -147,7 +190,11 @@ import UniformTypeIdentifiers
     }
     private func refreshCatalog() {
         let id = selected?.id; items = service.availableServers(workspace: workspace); rebuildRows(); select(id); listState.stringValue = service.loadError ?? ""
-        if !dirty, !creating { selected = items.first { $0.id == id }; if selected == nil { editor.string = ""; tools.string = "" } }
+        if !dirty, !creating {
+            let current = items.first { $0.id == id }
+            if let current, current.revision != selected?.revision { open(current) }
+            else { selected = current; if current == nil { editor.string = ""; tools.string = "" } }
+        }
         refreshState()
     }
     private func reload(_ id: String? = nil) {
@@ -155,28 +202,27 @@ import UniformTypeIdentifiers
         select(next?.id); if let next { open(next) } else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
     }
     private func open(_ server: AgentMCPServer) {
-        do { editor.string = try service.document(server); selected = server; creating = false; dirty = false; tools.string = ""; editor.undoManager?.removeAllActions(); showTools(); refreshState() }
+        do { editor.string = try service.document(server); selected = server; creating = false; dirty = false; prepareConfiguration(); tools.string = ""; editor.undoManager?.removeAllActions(); showTools(); refreshState() }
         catch { state.stringValue = error.localizedDescription }
     }
     private func showTools() {
         guard let selected, let token = service.token(selected.id, owner: sessionOwner) else { tools.string = ""; return }
         do {
-            var offset = 0, rows: [[String: Any]] = []
-            repeat { let page = try service.catalog(selected.id, owner: sessionOwner, token: token, offset: offset); rows += page["tools"] as? [[String: Any]] ?? []; offset = page["next_offset"] as? Int ?? -1 } while offset >= 0
-            tools.string = String(decoding: try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+            tools.string = String(decoding: try service.toolCatalogForSettings(selected.id, owner: sessionOwner, token: token), as: UTF8.self)
         } catch { tools.string = error.localizedDescription }
     }
     private func refreshState() {
         let current = items.first { $0.id == selected?.id }
         let connected = selected.map { service.connected($0.id, owner: sessionOwner) } ?? false
         editor.isEditable = (creating || selected != nil) && job == nil
+        form?.setEnabled(editor.isEditable, pluginLocked: selected?.plugin != nil); configurationKind.isEnabled = job == nil; loadJSON.isEnabled = job == nil
         enabled.isEnabled = current != nil && current?.configured != false && current?.pluginEnabled != false && !dirty && job == nil; enabled.state = current?.enabled == true ? .on : .off
         connect.isEnabled = current?.enabled == true && !dirty && job == nil && !connected
         disconnect.isEnabled = selected != nil && (connected || job != nil)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
         add.isEnabled = job == nil; importButton.isEnabled = job == nil
         let draftType = (dirty || creating) && editor.string.utf8.count <= 64_000 ? ((try? JSONSerialization.jsonObject(with: Data(editor.string.utf8))) as? [String: Any])?["type"] as? String : nil
-        let type = dirty || creating ? draftType : selected?.type
+        let type = configurationKind.selectedSegment == 0 ? form?.type : dirty || creating ? draftType : selected?.type
         access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (type == "http" ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
@@ -188,11 +234,16 @@ import UniformTypeIdentifiers
     }
     private func loadDraft(_ document: String) {
         selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; editor.string = document
+        configurationKind.selectedSegment = 0; prepareConfiguration()
         editor.undoManager?.removeAllActions(); tabs.selectTabViewItem(at: 0); editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
-        refreshState(); state.stringValue = "待保存"; showDetail(); editorWindow?.makeFirstResponder(editor)
+        refreshState(); state.stringValue = "待保存"; showDetail(); focusDetail()
     }
     @objc private func saveConfig() {
-        do { let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存" }
+        do {
+            if configurationKind.selectedSegment == 0, let form { editor.string = try form.document() }
+            if let object = try? JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as? [String: Any], object["mcpServers"] != nil { try reviewImport(document: editor.string); return }
+            let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存"
+        }
         catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue }
     }
     @objc private func toggleEnabled() {
@@ -204,7 +255,7 @@ import UniformTypeIdentifiers
         job = Task { [weak self] in
             guard let self else { return }; defer { self.job = nil; self.refreshState() }
             do { _ = try await self.service.connect(selected.id, revision: selected.revision, owner: self.sessionOwner, workspace: self.workspace); self.showTools() }
-            catch { self.state.stringValue = error.localizedDescription; self.state.toolTip = self.state.stringValue }
+            catch { self.state.stringValue = error.localizedDescription; self.listState.stringValue = error.localizedDescription }
         }; refreshState()
     }
     @objc private func stop() { job?.cancel(); if let selected { service.disconnect(owner: sessionOwner, serverID: selected.id) }; tools.string = ""; refreshState() }
@@ -220,12 +271,19 @@ import UniformTypeIdentifiers
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
             do { try self.reviewImport(url) }
-            catch { self.state.stringValue = error.localizedDescription; self.state.toolTip = self.state.stringValue }
+            catch { self.state.stringValue = error.localizedDescription; self.listState.stringValue = error.localizedDescription }
         }
     }
     func reviewImport(_ url: URL) throws {
         guard job == nil else { throw PetError("请先等待连接操作完成") }
         let page = try AgentMCPImportPage(source: url)
+        presentImport(page)
+    }
+    func reviewImport(document: String) throws {
+        guard job == nil else { throw PetError("请先等待连接操作完成") }
+        presentImport(try AgentMCPImportPage(document: document))
+    }
+    private func presentImport(_ page: AgentMCPImportPage) {
         page.onLoad = { [weak self] document in self?.loadDraft(document) }
         if let editingPage { editingPage.presentSettingsChild(page) } else { presentSettingsChild(page) }
     }

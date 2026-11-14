@@ -78,8 +78,9 @@ import AppKit
             let add = try control(NSPopUpButton.self, "新建 MCP 连接器", mcp)
             guard let item = add.menu?.items.first(where: { ($0.representedObject as? String) == "stdio" }), let action = item.action else { throw PetError("缺少本机连接器草稿入口") }
             NSApp.sendAction(action, to: item.target, from: item)
-            let editor = try control(NSTextView.self, "MCP 配置 JSON", mcp), draft = editor.string, config = tasks.extensions.profile.appendingPathComponent("extensions/mcp.json"), originalConfig = try Data(contentsOf: config)
-            checks["reversedLegacyButtonsContinuePreservesMCPDraft"] = try !choose("继续编辑", { pane.leave() }) && pane.currentController === mcp && editor.string == draft && Data(contentsOf: config) == originalConfig
+            guard let detail = pane.currentController, detail !== mcp else { throw PetError("未进入连接器表单子页") }
+            let mcpName = try control(NSTextField.self, "MCP 名称", detail), draft = mcpName.stringValue, config = tasks.extensions.profile.appendingPathComponent("extensions/mcp.json"), originalConfig = try Data(contentsOf: config)
+            checks["reversedLegacyButtonsContinuePreservesMCPDraft"] = try !choose("继续编辑", { pane.leave() }) && pane.currentController === detail && mcpName.stringValue == draft && Data(contentsOf: config) == originalConfig
             checks["reversedLegacyButtonsDiscardLeavesWithoutSaving"] = try choose("放弃", { pane.leave() }) && pane.currentController == nil && Data(contentsOf: config) == originalConfig
             let rules = AgentRuleWindow(store: tasks, taskID: id)
             try show(rules, "rules"); try button("新建规则", rules).performClick(nil)

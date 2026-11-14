@@ -87,9 +87,7 @@ extension AgentPluginInstallation {
         value["name"] = item.metadata.name + ":" + definition.key; value["timeoutSeconds"] = (value.removeValue(forKey: "timeout") as? Double ?? 60_000) / 1000
         value.removeValue(forKey: "description"); value.removeValue(forKey: "disabled")
         for field in ["command", "url", "cwd"] { if let text = value[field] as? String { value[field] = expand(text) } }
-        if let command = value["command"] as? String, !command.hasPrefix("/"), !command.contains("/") {
-            value["command"] = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map { $0 + "/" + command }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? command
-        }
+        if let command = value["command"] as? String { value["command"] = AgentMCP.configurationCommand(command) }
         if let args = value["args"] as? [String] { value["args"] = args.map { expand($0) } }
         for field in ["env", "headers"] { if let variables = value[field] as? [String: String] { value[field] = variables.mapValues { expand($0, credential: true) } } }
         return value

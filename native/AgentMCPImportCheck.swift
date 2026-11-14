@@ -15,6 +15,10 @@ import AppKit
         guard let view else { return "" }; return (view as? NSTextField)?.stringValue ?? (view as? NSTextView)?.string ?? view.subviews.map { text($0) }.joined(separator: "\n")
     }
     private static func encode(_ object: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self) }
+    private static func selectJSON(page: AgentSettingsPageController) throws {
+        let kinds = try control(NSSegmentedControl.self, "MCP 配置方式", page: page)
+        if kinds.selectedSegment != 1 { kinds.selectedSegment = 1; NSApp.sendAction(kinds.action!, to: kinds.target, from: kinds) }
+    }
     static func prepareCardsUI(_ output: URL, tasks: AgentStore) async throws {
         let source = output.appendingPathComponent("MCP public plugin"), metadata = source.appendingPathComponent(".qoder-plugin")
         try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
@@ -67,6 +71,8 @@ import AppKit
             details.selectTabViewItem(at: 1); detail.close()
             checks["mcpDetailReturnsToItsOriginalKeyboardList-" + type] = pane.currentController === manager && host.firstResponder === catalog && kinds.selectedSegment == 1
             NSApp.sendAction(item.action!, to: item.target, from: item)
+            checks["mcpNewDraftOpensStructuredForm-" + type] = try control(NSSegmentedControl.self, "MCP 配置方式", page: detail).selectedSegment == 0 && !control(NSScrollView.self, "MCP 配置表单", page: detail).isHiddenOrHasHiddenAncestor
+            try selectJSON(page: detail)
             let draft = try JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as! [String: Any]
             checks["mcpNewDraftWithoutModal-" + type] = try pane.currentController === detail && host.attachedSheet == nil && draft["type"] as? String == type && editor.isEditable && Data(contentsOf: configuration) == before && host.firstResponder === editor
             checks["mcpNewDraftRevealsEditorFromTools-" + type] = details.selectedTabViewItem?.identifier as? String == "配置" && editor.window === host && !editor.isHiddenOrHasHiddenAncestor
@@ -77,7 +83,7 @@ import AppKit
             checks["mcpNewDraftSavesThroughOriginalService-" + type] = service.availableServers(workspace: workspace).contains { $0.name == "页内新建-" + type && $0.type == type }
         }
         details.selectTabViewItem(at: 1)
-        let tools = try control(NSTextView.self, "MCP 实际工具目录", page: detail)
+        let tools = try control(AgentMCPToolCatalog.self, "MCP 实际工具目录", page: detail)
         let parentText = editor.string, beforeCancel = try Data(contentsOf: configuration)
         try manager.reviewImport(sources[0])
         guard let cancelled = pane.currentController as? AgentMCPImportPage else { throw PetError("MCP 导入未进入子页面") }
@@ -103,7 +109,8 @@ import AppKit
             let name = ["A 公开本机", "B 公开 HTTP", "C 路径补全", "Z 待修正"][index]
             checks["mcpImportFullPreview-\(index)"] = definition["name"] as? String == name && (index == 0 ? document.contains("settings-import-started.pid") : index == 1 ? document.contains("https://example.com/mcp") : index == 2 ? (definition["command"] as? String)?.hasPrefix("/") == true && definition["args"] as? [String] == [] && (definition["env"] as? [String: String])?.isEmpty == true : document.contains("保留待修正字段"))
             try press("载入草稿", page: page)
-            checks["mcpImportLoadDoesNotSave-\(index)"] = try pane.currentController === detail && editor.string == document && Data(contentsOf: configuration) == before && host.firstResponder === editor
+            checks["mcpImportLoadDoesNotSave-\(index)"] = try pane.currentController === detail && editor.string == document && Data(contentsOf: configuration) == before
+            try selectJSON(page: detail)
             checks["mcpImportLoadRevealsEditorFromTools-\(index)"] = details.selectedTabViewItem?.identifier as? String == "配置" && editor.window === host && !editor.isHiddenOrHasHiddenAncestor
             try press("保存", page: detail)
             if index == 3 {

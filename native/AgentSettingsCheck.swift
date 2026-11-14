@@ -44,7 +44,7 @@ import Darwin
           if (!Object.hasOwn(request, 'id')) return;
           let result = {};
           if (request.method === 'initialize') result = {protocolVersion: request.params.protocolVersion, capabilities: {tools: {}}, serverInfo: {name: 'settings-local-echo', version: '1.0.0'}};
-          if (request.method === 'tools/list') result = {tools: [{name: 'echo', description: 'Read a public value', inputSchema: {type: 'object', properties: {value: {type: 'string'}}}}]};
+          if (request.method === 'tools/list') result = {tools: [{name: 'echo', description: 'Read a public value', inputSchema: {type: 'object', properties: {value: {type: 'string'}}}}, {name: 'public_details', description: '完整公开说明。'.repeat(400), inputSchema: {type: 'object', properties: {}}}]};
           if (request.method === 'tools/call') result = {content: [{type: 'text', text: String(request.params.arguments?.value ?? '')}]};
           process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: request.id, result}) + '\n');
         });
@@ -142,6 +142,7 @@ import Darwin
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
+            checks.merge(try await AgentMCPFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentManagementReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }

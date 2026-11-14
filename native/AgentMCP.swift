@@ -111,7 +111,7 @@ struct AgentMCPServer: Codable, Identifiable {
         guard let server = availableServers(workspace: workspace).first(where: { $0.id == id }) else { throw PetError("MCP 连接器不存在或已移除") }
         guard server.configured != false else { throw PetError("请先在 MCP 管理器中保存插件连接器配置") }
         guard server.pluginEnabled != false, server.enabled else { throw PetError("MCP 连接器或所属插件已停用") }
-        guard server.timeoutSeconds.isFinite, (5...600).contains(server.timeoutSeconds), server.environmentKeys.count <= 64, (server.headerKeys ?? []).count <= 64 else { throw PetError("MCP 配置无效，请重新保存") }
+        guard server.timeoutSeconds.isFinite, (1...600).contains(server.timeoutSeconds), server.environmentKeys.count <= 64, (server.headerKeys ?? []).count <= 64 else { throw PetError("MCP 配置无效，请重新保存") }
         if server.type == "stdio" {
             guard let command = server.command, command.hasPrefix("/"), !command.contains("\0"), server.args.count <= 100, server.args.allSatisfy({ !$0.contains("\0") }) else { throw PetError("本机 MCP 程序配置无效") }
         } else {
@@ -119,6 +119,10 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         if let revision, revision != server.revision { throw PetError("连接器配置已变化，请重新读取并批准") }
         return server
+    }
+    static func configurationCommand(_ command: String) -> String {
+        guard !command.isEmpty, !command.contains("/"), !command.contains("\0") else { return command }
+        return ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map { $0 + "/" + command }.first { FileManager.default.isExecutableFile(atPath: $0) } ?? command
     }
     static func validateHeaders(_ headers: [String: String]) throws {
         let forbidden: Set<String> = ["host", "content-length", "connection", "transfer-encoding", "upgrade", "content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]
@@ -156,8 +160,9 @@ struct AgentMCPServer: Codable, Identifiable {
             for field in ["command", "url", "cwd"] { if let text = value[field] as? String, text.contains("${") { throw PetError("请填写 \(field) 中的变量") } }
             guard !(value["args"] as? [String] ?? []).contains(where: { $0.contains("${") }) else { throw PetError("请填写 args 中的变量") }
         }
+        if let raw = value["timeoutSeconds"] { guard raw is Double, CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID() else { throw PetError("timeoutSeconds 必须是秒数") } }
         let timeout = value["timeoutSeconds"] as? Double ?? 60
-        guard timeout.isFinite, (5...600).contains(timeout) else { throw PetError("超时范围为 5 至 600 秒") }
+        guard timeout.isFinite, (1...600).contains(timeout) else { throw PetError("超时范围为 1 至 600 秒") }
         var server = AgentMCPServer(name: name, type: type); server.id = old?.id ?? server.id; server.plugin = old?.plugin
         server.enabled = savedServers.first(where: { $0.id == old?.id })?.enabled ?? (old?.plugin == nil); server.timeoutSeconds = timeout
         var secrets: [String: String] = [:], previous: [String: String]?
@@ -335,6 +340,10 @@ struct AgentMCPServer: Codable, Identifiable {
                   let (_, current) = try? self.session(server.id, owner: owner, token: token) else { return false }
             return current === session
         }
+    }
+    func toolCatalogForSettings(_ id: String, owner: String, token: String) throws -> Data {
+        let (_, session) = try session(id, owner: owner, token: token)
+        return session.catalog
     }
     func catalog(_ id: String, owner: String, token: String, offset: Int, query: String = "", permitted: ((String) -> Bool)? = nil) throws -> [String: Any] {
         let (_, session) = try session(id, owner: owner, token: token)
