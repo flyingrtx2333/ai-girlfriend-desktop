@@ -145,17 +145,29 @@ import Darwin
             checks["persistedRoleAndCrossSourceTeamReopenWithExactProvenance"] = try reused.task(teamTask)?.workspaceScope == scope && reused.teams.team(mixedTeam.id, store: reused, task: reused.task(teamTask)!).roleSources == mixedTeam.roleSources && reused.agents.currentProfile(alphaRole, task: reused.task(member)!).pluginSource == alphaRole.pluginSource
             for (key, value) in control.checkExecutorSelection(taskID: id, agentID: alphaRole.id, teamID: mixedTeam.id) { checks[key] = value }
             guard let host = control.window, control.showSettingsCategory("agents"), let picker = find(NSPopUpButton.self, host.contentView, { $0.identifier?.rawValue == "settings-source-folder" }), let chosen = picker.itemArray.first(where: { $0.representedObject as? String == alpha }), let choose = picker.action else { throw PetError("缺少实际多源设置入口") }
+            func narrow(_ name: String, _ controls: [NSView]) async {
+                let frame = host.frame
+                host.setFrame(NSRect(origin: frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+                await wait(0.1); host.contentView?.layoutSubtreeIfNeeded()
+                let bounds = host.contentView?.bounds ?? .zero
+                let rectangles = controls.map { $0.convert($0.bounds, to: host.contentView) }
+                checks[name] = abs(host.frame.width - 780) < 0.5 && rectangles.allSatisfy { $0.width >= 60 && $0.minX >= 0 && $0.maxX <= bounds.maxX + 1 }
+                report[name + "Geometry"] = ["windowWidth": host.frame.width, "contentWidth": bounds.width, "controls": rectangles.map(NSStringFromRect)]
+                host.setFrame(frame, display: true); await wait(0.05)
+            }
             picker.select(chosen); NSApp.sendAction(choose, to: picker.target, from: picker)
             guard let manager = control.settingsControllerForCheck as? AgentProfileWindow else { throw PetError("角色设置页未打开") }
             manager.selectProfile(ids["mixedRole"]!)
             guard let skillMenu = find(NSPopUpButton.self, manager.pageContentView, { $0.accessibilityLabel() == "Agent Skills" }), let mcpMenu = find(NSPopUpButton.self, manager.pageContentView, { $0.accessibilityLabel() == "Agent MCP" }) else { throw PetError("缺少角色能力选择") }
             let skillRows = skillMenu.itemArray, mcpRows = mcpMenu.itemArray
+            await narrow("actualRoleEditorFits780PointWindowWithBothSourceChoices", [skillMenu, mcpMenu])
             checks["actualRoleEditorShowsBothSourceSkillsWithReadableLabels"] = skillRows.contains { $0.representedObject as? String == ids["alphaSkill"] && $0.title.contains("Alpha workspace") } && skillRows.contains { $0.representedObject as? String == ids["betaSkill"] && $0.title.contains("Beta source") }
             checks["actualRoleEditorShowsBothSourceConnectorsWithoutOutsideConnector"] = mcpRows.contains { $0.representedObject as? String == ids["alphaServer"] && $0.title.contains("Alpha workspace") } && mcpRows.contains { $0.representedObject as? String == ids["betaServer"] && $0.title.contains("Beta source") } && !mcpRows.contains { $0.representedObject as? String == ids["outsideRoleServer"] }
             guard let addRule = mcpMenu.itemArray.first(where: { $0.title == "添加工具规则…" }), let action = addRule.action else { throw PetError("缺少实际 MCP 规则入口") }
             NSApp.sendAction(action, to: addRule.target, from: addRule)
             guard let ruleServer = find(NSPopUpButton.self, host.contentView, { $0.accessibilityLabel() == "MCP 连接器" && !$0.isHiddenOrHasHiddenAncestor }), let toolName = find(NSTextField.self, host.contentView, { $0.accessibilityLabel() == "MCP 工具名" }), let rulePermission = find(NSPopUpButton.self, host.contentView, { $0.accessibilityLabel() == "MCP 工具权限" }), let apply = find(NSButton.self, host.contentView, { $0.title == "应用" && !$0.isHiddenOrHasHiddenAncestor }), let betaIndex = ruleServer.itemArray.firstIndex(where: { $0.title.contains("Beta source") }) else { throw PetError("缺少区分来源的 MCP 规则表单") }
             checks["actualRuleFormDisambiguatesSameNamedSourceConnectors"] = ruleServer.numberOfItems == 2 && Set(ruleServer.itemArray.map(\.title)).count == 2 && ruleServer.itemArray.contains { $0.title.contains("Alpha workspace") }
+            await narrow("actualSourceRuleFormFits780PointWindow", [ruleServer, toolName])
             ruleServer.selectItem(at: betaIndex); toolName.stringValue = "inspect_source"; rulePermission.selectItem(at: AgentToolPermission.allCases.firstIndex(of: .deny)!); apply.performClick(nil)
             guard let save = find(NSButton.self, manager.pageContentView, { $0.title == "保存" && $0.isEnabled }) else { throw PetError("角色规则未进入原草稿") }; save.performClick(nil)
             let savedRole = try tasks.agents.profile(ids["mixedRole"]!, task: original), savedRules = savedRole.mcpToolPermissions ?? []
@@ -164,6 +176,7 @@ import Darwin
             checks["savedSourceRuleTightensExistingRoleWithoutAffectingOtherSource"] = try tasks.agents.permission(deniedBeta, task: tasks.task(roleTask)!, store: tasks) == .deny && tasks.agents.permission(allowedAlpha, task: tasks.task(roleTask)!, store: tasks) != .deny && refused { try tasks.agents.check(deniedBeta, task: tasks.task(roleTask)!, store: tasks) }
             guard control.showSettingsCategory("teams"), let teamPage = control.settingsControllerForCheck as? AgentTeamWindow, let leaders = find(NSPopUpButton.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队负责人" }), let membersMenu = find(NSPopUpButton.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队成员" }), let body = find(NSTextView.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队协作指令" }) else { throw PetError("多源团队设置未打开") }
             checks["actualTeamEditorOffersRolesFromEveryFrozenSource"] = leaders.itemArray.contains { $0.representedObject as? String == alphaRole.id && $0.title.contains("Alpha workspace") } && membersMenu.itemArray.contains { $0.representedObject as? String == betaRole.id && $0.title.contains("Beta source") } && !leaders.itemArray.contains { $0.representedObject as? String == ids["outside-reader"] }
+            await narrow("actualTeamEditorFits780PointWindowWithFullSourceMenuTitles", [leaders, membersMenu])
             body.string += "\nPUBLIC_TEAM_REVIEWED\n"; teamPage.textDidChange(Notification(name: NSText.didChangeNotification, object: body))
             guard let teamSave = find(NSButton.self, teamPage.pageContentView, { $0.title == "保存" && $0.isEnabled }) else { throw PetError("团队保存不可用") }; teamSave.performClick(nil)
             let savedTeam = try tasks.teams.team(mixedTeam.id, store: tasks, task: original)

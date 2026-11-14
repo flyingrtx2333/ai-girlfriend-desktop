@@ -25,7 +25,8 @@ import AppKit
         let add = NSButton(title: "新建", target: self, action: #selector(create)), template = NSButton(title: "审阅模板", target: self, action: #selector(createTemplate))
         let actions = NSStackView(views: [add, template]); actions.spacing = 8
         name.placeholderString = "名称"; purpose.placeholderString = "职责"
-        for (field, label) in [(name, "团队名称"), (purpose, "团队职责")] { field.delegate = self; field.setAccessibilityLabel(label); field.font = .systemFont(ofSize: 13) }
+        for (field, label) in [(name, "团队名称"), (purpose, "团队职责")] { field.delegate = self; field.setAccessibilityLabel(label); field.font = .systemFont(ofSize: 13); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for popup in [leader, members] { popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); popup.cell?.lineBreakMode = .byTruncatingTail }
         leader.target = self; leader.action = #selector(leaderChanged); leader.setAccessibilityLabel("团队负责人"); members.setAccessibilityLabel("团队成员")
         enabled.target = self; enabled.action = #selector(changed)
         let manage = NSButton(title: "管理 Agent", target: self, action: #selector(manageAgents))

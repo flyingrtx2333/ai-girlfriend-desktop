@@ -84,7 +84,7 @@ import AppKit
             let repeated = duplicate && servers.filter { AgentMCPSelection.title($0) == title }.count > 1
             server.addItem(withTitle: repeated ? AgentMCPSelection.selectionTitle(item) : title); server.lastItem?.toolTip = AgentMCPSelection.selectionTitle(item)
         }
-        server.setAccessibilityLabel("MCP 连接器")
+        server.setAccessibilityLabel("MCP 连接器"); server.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); server.cell?.lineBreakMode = .byTruncatingTail
         tool.placeholderString = "实际工具名"; tool.setAccessibilityLabel("MCP 工具名")
         permission.addItems(withTitles: AgentToolPermission.allCases.map(\.title)); permission.selectItem(at: AgentToolPermission.allCases.firstIndex(of: .ask)!); permission.setAccessibilityLabel("MCP 工具权限")
         super.init(title: "MCP 工具权限", rows: [[NSTextField(labelWithString: "连接器"), server], [NSTextField(labelWithString: "工具"), tool], [NSTextField(labelWithString: "权限"), permission]], submitTitle: "应用")

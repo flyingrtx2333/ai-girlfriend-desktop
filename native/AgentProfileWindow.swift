@@ -29,7 +29,7 @@ import UniformTypeIdentifiers
         let template = NSButton(title: "模板", target: self, action: #selector(chooseTemplate))
         let listActions = NSStackView(views: [add, template, importButton]); listActions.spacing = 6
         name.placeholderString = "名称"; purpose.placeholderString = "职责"; model.placeholderString = "跟随当前模型"
-        for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] { field.delegate = self; field.font = .systemFont(ofSize: 13); field.setAccessibilityLabel(label) }
+        for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] { field.delegate = self; field.font = .systemFont(ofSize: 13); field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         permission.addItems(withTitles: AgentPermissionMode.allCases.map(\.title)); permission.target = self; permission.action = #selector(changed)
         permission.setAccessibilityLabel("Agent 审批方式")
         tools.setAccessibilityLabel("Agent 工具权限"); skills.setAccessibilityLabel("Agent Skills"); mcp.setAccessibilityLabel("Agent MCP")
@@ -39,7 +39,7 @@ import UniformTypeIdentifiers
         grid.columnSpacing = 12; grid.rowSpacing = 10; grid.column(at: 0).width = 52; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill
         let execution = NSStackView(views: [permission, tools, NSView()]); execution.spacing = 10
         let extensions = NSStackView(views: [skills, mcp, NSView()]); extensions.spacing = 10
-        let limits = NSStackView(views: [readOnly, network, NSView(), enabled]); limits.spacing = 10
+        let limits = NSStackView(views: [readOnly, network, enabled]); limits.orientation = .vertical; limits.alignment = .leading; limits.spacing = 8
         let options = NSStackView(views: [execution, extensions, limits]); options.orientation = .vertical; options.alignment = .leading; options.spacing = 10
         for row in [execution, extensions, limits] { row.widthAnchor.constraint(equalTo: options.widthAnchor).isActive = true }
         instructions.isRichText = false; instructions.allowsUndo = true; instructions.delegate = self; instructions.font = .systemFont(ofSize: 13); instructions.textContainerInset = NSSize(width: 12, height: 12)
