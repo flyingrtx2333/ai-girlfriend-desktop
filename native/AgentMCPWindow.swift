@@ -1,87 +1,157 @@
 import AppKit
 import UniformTypeIdentifiers
 
-@MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
+@MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTabViewDelegate, NSWindowDelegate {
+    private struct CatalogRow { let heading: String?; let server: AgentMCPServer? }
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
-    private let table = NSTableView(), editor = NSTextView(), tools = NSTextView()
+    private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = NSTextView()
     private let tabs = NSTabView()
+    private let detailKinds = NSSegmentedControl(labels: ["配置", "工具"], trackingMode: .selectOne, target: nil, action: nil)
+    private let search = NSSearchField(), listState = AgentSettingsStatusField("连接器列表状态"), empty = NSTextField(labelWithString: "暂无连接器")
+    private var catalogRows: [CatalogRow] = [], detailPage: AgentMCPDetailPage?, requestedDetail = false
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let connect = NSButton(title: "连接", target: nil, action: nil), disconnect = NSButton(title: "断开", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
-    private let state = NSTextField(labelWithString: ""), access = NSTextField(labelWithString: "")
+    private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
     private var items: [AgentMCPServer] = []
     var onBrowseContent: ((String?) -> Void)? { didSet { browse.isHidden = onBrowseContent == nil } }
     private let browse = NSButton(title: "资料与提示词", target: nil, action: nil)
+    override var minimumSettingsContentHeight: CGFloat { 220 }
+    private var editingPage: AgentMCPDetailPage? { detailPage.flatMap { $0.settingsHostWindow != nil || $0.window?.isVisible == true ? $0 : nil } }
+    private var editorWindow: NSWindow? { editingPage?.presentingWindow ?? presentingWindow }
     init(service: AgentMCP, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "MCP 连接器" + (workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""); window.minSize = NSSize(width: 740, height: 520); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        let content = NSView(); window.contentView = content
+        let content = AgentThemeView(); window.contentView = content
         add.addItem(withTitle: "新建"); add.setAccessibilityLabel("新建 MCP 连接器")
         for (title, type) in [("本机程序", "stdio"), ("HTTP", "http")] {
             let item = NSMenuItem(title: title, action: #selector(create(_:)), keyEquivalent: ""); item.target = self; item.representedObject = type; add.menu?.addItem(item)
         }
         importButton.target = self; importButton.action = #selector(importJSON)
-        let actions = NSStackView(views: [add, importButton, NSView()]); actions.spacing = 8
+        search.placeholderString = "搜索连接器"; search.setAccessibilityLabel("搜索连接器"); search.target = self; search.action = #selector(filterCatalog); search.sendsSearchStringImmediately = true
+        let actions = NSStackView(views: [search, NSView(), add, importButton]); actions.spacing = 8
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("mcp"))); table.headerView = nil
-        table.rowHeight = 46; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 连接器列表")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 连接器列表")
+        table.target = self; table.action = #selector(openSelectedServer); table.doubleAction = #selector(openSelectedServer)
+        table.onOpen = { [weak self] in self?.openSelectedServer() }
+        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.drawsBackground = false; list.identifier = .init("form-input")
+        empty.font = .systemFont(ofSize: 13); empty.textColor = AgentWorkbenchTheme.secondaryText
+        let index = NSStackView(views: [actions, listState, list]); index.orientation = .vertical; index.alignment = .leading; index.spacing = 12
+        content.addSubview(index); index.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(empty); empty.translatesAutoresizingMaskIntoConstraints = false
+        for view in [actions, listState, list] { view.widthAnchor.constraint(equalTo: index.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([index.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), index.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), index.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), index.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), actions.heightAnchor.constraint(equalToConstant: 28), search.widthAnchor.constraint(lessThanOrEqualToConstant: 260), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 140), list.heightAnchor.constraint(greaterThanOrEqualToConstant: 100), empty.centerXAnchor.constraint(equalTo: list.centerXAnchor), empty.centerYAnchor.constraint(equalTo: list.centerYAnchor)])
+
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
-        editor.textContainerInset = NSSize(width: 12, height: 12); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.setAccessibilityLabel("MCP 配置 JSON")
-        let configScroll = NSScrollView(); configScroll.documentView = editor; configScroll.hasVerticalScroller = true
+        editor.textContainerInset = NSSize(width: 16, height: 16); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.setAccessibilityLabel("MCP 配置 JSON")
+        let configScroll = NSScrollView(); configScroll.documentView = editor; configScroll.hasVerticalScroller = true; configScroll.identifier = .init("form-input")
         tools.isEditable = false; tools.isRichText = false; tools.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        tools.textContainerInset = NSSize(width: 12, height: 12); tools.isVerticallyResizable = true; tools.autoresizingMask = [.width]; tools.textContainer?.widthTracksTextView = true; tools.setAccessibilityLabel("MCP 实际工具目录")
-        let toolScroll = NSScrollView(); toolScroll.documentView = tools; toolScroll.hasVerticalScroller = true
-        tabs.tabViewType = .topTabsBezelBorder; tabs.setAccessibilityLabel("连接器详情标签")
+        tools.textContainerInset = NSSize(width: 16, height: 16); tools.isVerticallyResizable = true; tools.autoresizingMask = [.width]; tools.textContainer?.widthTracksTextView = true; tools.setAccessibilityLabel("MCP 实际工具目录")
+        let toolScroll = NSScrollView(); toolScroll.documentView = tools; toolScroll.hasVerticalScroller = true; toolScroll.identifier = .init("form-input")
+        tabs.tabViewType = .noTabsNoBorder; tabs.setAccessibilityLabel("连接器详情标签"); tabs.delegate = self
         for (label, view) in [("配置", configScroll), ("工具", toolScroll)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
+        detailKinds.selectedSegment = 0; detailKinds.target = self; detailKinds.action = #selector(changeDetails); detailKinds.setAccessibilityLabel("连接器详情类型")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (save, #selector(saveConfig)), (remove, #selector(removeConfig))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
-        let header = NSStackView(views: [enabled, state, NSView(), disconnect, connect]); header.spacing = 10
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
+        let header = NSStackView(views: [enabled, NSView(), disconnect, connect, save]); header.spacing = 8
         browse.target = self; browse.action = #selector(browseContent); browse.isHidden = true
-        let footer = NSStackView(views: [access, NSView(), browse, remove, save]); footer.spacing = 10
-        for label in [state, access] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
-        for view in [list, actions, tabs, header, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), list.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), list.widthAnchor.constraint(equalToConstant: 210), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -10),
-            actions.leadingAnchor.constraint(equalTo: list.leadingAnchor), actions.trailingAnchor.constraint(equalTo: list.trailingAnchor), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), actions.heightAnchor.constraint(equalToConstant: 28),
-            header.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: list.topAnchor), header.heightAnchor.constraint(equalToConstant: 28),
-            tabs.leadingAnchor.constraint(equalTo: header.leadingAnchor), tabs.trailingAnchor.constraint(equalTo: header.trailingAnchor), tabs.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10), tabs.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
-            footer.leadingAnchor.constraint(equalTo: tabs.leadingAnchor), footer.trailingAnchor.constraint(equalTo: tabs.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28)
-        ])
+        let navigation = NSStackView(views: [detailKinds, NSView(), browse, remove]); navigation.spacing = 8
+        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-mcp-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+        card.addSubview(tabs); tabs.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([tabs.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), tabs.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), tabs.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), tabs.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)])
+        let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, card, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        detail.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for view in [header, state, navigation, card, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor, constant: 14), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor, constant: -14), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -14), header.heightAnchor.constraint(equalToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
+        let page = AgentMCPDetailPage(content: detail)
+        page.onCanLeave = { [weak self] in
+            guard let self, self.canLeave() else { return false }
+            if self.dirty { self.dirty = false; self.reload(self.selected?.id) }
+            return true
+        }
+        page.onAppear = { [weak self] in guard let self else { return }; self.editorWindow?.makeFirstResponder(self.tabs.selectedTabViewItem?.identifier as? String == "工具" ? self.tools : self.editor) }
+        detailPage = page
         service.onChange = { [weak self] in self?.refreshCatalog() }
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : editor) }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); service.onChange = { [weak self] in self?.refreshCatalog() }
+        if requestedDetail { requestedDetail = false; showDetail() }
+        else { refreshCatalog(); presentingWindow?.makeFirstResponder(table) }
+    }
+    override func canLeaveSettings() -> Bool { editingPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
+    private func showDetail() {
+        guard let detailPage else { return }
+        if editingPage != nil { detailPage.settingsDidAppear() }
+        else { presentSettingsChild(detailPage) }
+    }
+    @objc private func filterCatalog() { rebuildRows() }
+    @objc private func changeDetails() { tabs.selectTabViewItem(at: detailKinds.selectedSegment) }
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        detailKinds.selectedSegment = tabViewItem.map { tabs.indexOfTabViewItem($0) } ?? 0
+        if editingPage?.isPageVisible == true { editorWindow?.makeFirstResponder(tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : editor) }
+    }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 80 }
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { catalogRows[row].server == nil }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { catalogRows[row].server != nil }
+    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { catalogRows[row].server == nil ? NSTableRowView() : AgentMCPSettingsRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard items.indices.contains(row) else { return nil }
-        let server = items[row], suffix = server.pluginEnabled == false ? " · 插件已停用" : server.configured == false ? " · 待配置" : server.enabled ? "" : " · 已停用"
-        let name = NSTextField(labelWithString: server.name + suffix)
-        name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · 插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
-        let stack = NSStackView(views: [name, type]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; return stack
+        guard catalogRows.indices.contains(row) else { return nil }
+        guard let server = catalogRows[row].server else {
+            let label = NSTextField(labelWithString: catalogRows[row].heading ?? ""); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; return label
+        }
+        let name = NSTextField(labelWithString: server.name); name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingTail
+        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
+        let labels = NSStackView(views: [name, type]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 6
+        let status = NSTextField(labelWithString: service.status(server.id, owner: sessionOwner, workspace: workspace)); status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail; status.toolTip = status.stringValue
+        let toggle = NSSwitch(); toggle.target = self; toggle.action = #selector(toggleListedServer(_:)); toggle.identifier = .init(server.id); toggle.state = server.enabled ? .on : .off; toggle.isEnabled = server.configured != false && server.pluginEnabled != false && job == nil; toggle.setAccessibilityLabel("启用连接器 " + server.name)
+        let open = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)!, target: self, action: #selector(openListedServer(_:))); open.isBordered = false; open.identifier = .init(server.id); open.setAccessibilityLabel("配置连接器 " + server.name)
+        let icon = NSImageView(image: NSImage(systemSymbolName: "point.3.connected.trianglepath.dotted", accessibilityDescription: nil)!); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
+        let stack = NSStackView(views: [icon, labels, NSView(), status, toggle, open]); stack.spacing = 12; stack.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 12, right: 14)
+        icon.widthAnchor.constraint(equalToConstant: 22).isActive = true; open.widthAnchor.constraint(equalToConstant: 20).isActive = true; status.widthAnchor.constraint(lessThanOrEqualToConstant: 120).isActive = true
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        stack.toolTip = server.name + " · " + type.stringValue + " · " + status.stringValue; return stack
     }
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        guard items.indices.contains(table.selectedRow) else { return }
-        if !canLeave() { select(selected?.id); return }; open(items[table.selectedRow])
+    @objc private func openSelectedServer() {
+        guard catalogRows.indices.contains(table.selectedRow), let server = catalogRows[table.selectedRow].server else { return }; selectServer(server.id)
     }
-    func selectServer(_ id: String) { guard canLeave() else { return }; reload(id) }
-    private func select(_ id: String?) { table.delegate = nil; if let row = items.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }
+    @objc private func openListedServer(_ sender: NSButton) { if let id = sender.identifier?.rawValue { selectServer(id) } }
+    @objc private func toggleListedServer(_ sender: NSSwitch) {
+        guard job == nil, !dirty, let id = sender.identifier?.rawValue else { rebuildRows(); return }
+        do { try service.setEnabled(id, sender.state == .on, workspace: workspace); refreshCatalog() }
+        catch { listState.stringValue = error.localizedDescription; rebuildRows() }
+    }
+    func selectServer(_ id: String) {
+        guard canLeave() else { return }; reload(id); requestedDetail = true
+        if settingsHostWindow != nil || window?.isVisible == true { requestedDetail = false; showDetail() }
+    }
+    private func select(_ id: String?) { table.delegate = nil; if let id, let row = catalogRows.firstIndex(where: { $0.server?.id == id }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { table.deselectAll(nil) }; table.delegate = self }
+    private func rebuildRows() {
+        let query = search.stringValue, filtered = items.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.type.localizedCaseInsensitiveContains(query) }
+        catalogRows = []
+        for (title, servers) in [("由插件提供", filtered.filter { $0.plugin != nil }), ("自定义连接器", filtered.filter { $0.plugin == nil })] where !servers.isEmpty {
+            catalogRows.append(CatalogRow(heading: title + " " + String(servers.count), server: nil)); catalogRows += servers.map { CatalogRow(heading: nil, server: $0) }
+        }
+        table.delegate = nil; table.reloadData(); table.delegate = self; select(selected?.id)
+        empty.stringValue = query.isEmpty ? "暂无连接器" : "没有匹配的连接器"; empty.isHidden = !filtered.isEmpty
+    }
     private func refreshCatalog() {
-        let id = selected?.id; items = service.availableServers(workspace: workspace); table.delegate = nil; table.reloadData(); table.delegate = self; select(id)
+        let id = selected?.id; items = service.availableServers(workspace: workspace); rebuildRows(); select(id); listState.stringValue = service.loadError ?? ""
         if !dirty, !creating { selected = items.first { $0.id == id }; if selected == nil { editor.string = ""; tools.string = "" } }
         refreshState()
     }
     private func reload(_ id: String? = nil) {
-        items = service.availableServers(workspace: workspace); table.delegate = nil; table.reloadData(); table.delegate = self; let next = items.first { $0.id == (id ?? selected?.id) } ?? items.first
+        items = service.availableServers(workspace: workspace); rebuildRows(); let next = items.first { $0.id == (id ?? selected?.id) } ?? items.first
         select(next?.id); if let next { open(next) } else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
     }
     private func open(_ server: AgentMCPServer) {
@@ -119,7 +189,7 @@ import UniformTypeIdentifiers
     private func loadDraft(_ document: String) {
         selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; editor.string = document
         editor.undoManager?.removeAllActions(); tabs.selectTabViewItem(at: 0); editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
-        refreshState(); state.stringValue = "待保存"; presentingWindow?.makeFirstResponder(editor)
+        refreshState(); state.stringValue = "待保存"; showDetail(); editorWindow?.makeFirstResponder(editor)
     }
     @objc private func saveConfig() {
         do { let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存" }
@@ -145,7 +215,7 @@ import UniformTypeIdentifiers
         do { try service.remove(selected.id, revision: selected.revision); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func importJSON() {
-        guard job == nil, let window = presentingWindow, window.attachedSheet == nil, canLeave() else { return }
+        guard job == nil, let window = editorWindow, window.attachedSheet == nil, canLeave() else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
@@ -157,7 +227,7 @@ import UniformTypeIdentifiers
         guard job == nil else { throw PetError("请先等待连接操作完成") }
         let page = try AgentMCPImportPage(source: url)
         page.onLoad = { [weak self] document in self?.loadDraft(document) }
-        presentSettingsChild(page)
+        if let editingPage { editingPage.presentSettingsChild(page) } else { presentSettingsChild(page) }
     }
     private func canLeave() -> Bool {
         guard !dirty else { return AgentUnsavedChanges.discard("放弃未保存的配置？", discardTitle: "放弃") }
@@ -166,10 +236,44 @@ import UniformTypeIdentifiers
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeave() }
     private func closeConnection() { job?.cancel(); service.disconnect(owner: sessionOwner); service.onChange = nil }
     override func settingsWillLeave() { closeConnection() }
-    func windowWillClose(_ notification: Notification) { closeConnection() }
+    func windowWillClose(_ notification: Notification) { closeConnection(); if detailPage?.settingsHostWindow == nil { detailPage?.window?.close() } }
     func connectForSettingsCheck() async throws -> Int32? {
         guard CommandLine.arguments.contains("--settings-pages-check"), let selected else { throw PetError("仅用于设置页检查") }
+        showDetail()
         _ = try await service.connect(selected.id, revision: selected.revision, owner: sessionOwner, workspace: workspace)
         showTools(); return await service.processID(selected.id, owner: sessionOwner)
     }
+}
+
+@MainActor private final class AgentMCPDetailPage: AgentSettingsPageController, NSWindowDelegate {
+    var onCanLeave: (() -> Bool)?, onAppear: (() -> Void)?
+    override var minimumSettingsContentHeight: CGFloat { 220 }
+    init(content: NSView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "连接器配置"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
+        super.init(window: window); window.contentView = content; window.delegate = self
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { onCanLeave?() ?? true }
+    func windowDidBecomeKey(_ notification: Notification) { onAppear?() }
+}
+
+@MainActor private final class AgentMCPSettingsTable: NSTableView {
+    var onOpen: (() -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if [36, 76, 124].contains(event.keyCode), event.modifierFlags.intersection([.command, .control, .option]).isEmpty { onOpen?(); return }
+        super.keyDown(with: event)
+    }
+}
+
+@MainActor private final class AgentMCPSettingsRow: NSTableRowView {
+    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
+    override func drawBackground(in dirtyRect: NSRect) { drawCard(AgentWorkbenchTheme.surface) }
+    override func drawSelection(in dirtyRect: NSRect) { drawCard(AgentWorkbenchTheme.selection) }
+    private func drawCard(_ color: NSColor) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 4), xRadius: 12, yRadius: 12)
+        AgentThemeContext.resolve(color, in: self).setFill(); path.fill()
+        AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke()
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }

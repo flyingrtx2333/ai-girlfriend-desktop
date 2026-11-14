@@ -224,8 +224,9 @@ struct AgentMCPServer: Codable, Identifiable {
     private func persist(_ servers: [AgentMCPServer]) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(servers); guard data.count <= 256_000 else { throw PetError("MCP 配置总量超过256KB") }
-        let files = try AgentFiles(workspace: profile.path); try files.writeData(data, to: files.resolve("extensions/mcp.json"))
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: profile.appendingPathComponent("extensions/mcp.json").path)
+        let files = try AgentFiles(workspace: profile.path)
+        let write = try AgentKnowledgeFileWrite(files: files, path: try files.literalURL("extensions/mcp.json").path, data: data, permissions: 0o600, label: "MCP 配置")
+        try write.requireCurrent(); try files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
     }
     private func account(_ server: AgentMCPServer) -> String { "mcp-" + server.id + "-" + (server.credentialRevision ?? server.revision) }
     private func credentials(_ server: AgentMCPServer) throws -> [String: String] {

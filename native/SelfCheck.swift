@@ -115,6 +115,7 @@ import WebKit
                 }
                 if CommandLine.arguments.contains("--plugin-review-fixtures") { _ = try AgentPluginReviewCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-import-fixtures") { _ = try AgentMCPImportCheck.prepareSources(output) }
+                if CommandLine.arguments.contains("--mcp-cards-fixtures") { try await AgentMCPImportCheck.prepareCardsUI(output, tasks: tasks) }
                 if CommandLine.arguments.contains("--management-review-fixtures") {
                     guard let workspace = tasks.selected?.workspace else { throw PetError("缺少设置审阅项目") }
                     try AgentManagementReviewCheck.prepareFixtures(output, tasks: tasks, workspace: workspace)

@@ -112,6 +112,20 @@ import Darwin
                 if key == "mcp" {
                     childPID = try await mcp.connectForSettingsCheck()
                     checks["localMCPConnectsFromHostedManager"] = childPID.map { kill($0, 0) == 0 } == true
+                    do {
+                        let configuration = tasks.mcp.profile.appendingPathComponent("extensions/mcp.json"), before = try Data(contentsOf: configuration)
+                        guard let current = tasks.mcp.servers.first(where: { $0.name == "设置连接器" }) else { throw PetError("缺少只读保存检查的原连接器") }
+                        let document = try tasks.mcp.document(current), mode = (try FileManager.default.attributesOfItem(atPath: configuration.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
+                        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: configuration.path)
+                        defer { try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: configuration.path) }
+                        func denied(_ action: () throws -> Void) -> Bool { do { try action(); return false } catch { return error.localizedDescription.contains("只读") } }
+                        checks["readOnlyMCPMetadataRejectsSave"] = denied { _ = try tasks.mcp.save(document, id: current.id, expectedRevision: current.revision) }
+                        checks["readOnlyMCPMetadataRejectsEnableChanges"] = denied { try tasks.mcp.setEnabled(current.id, false) }
+                        checks["readOnlyMCPMetadataRejectsRemoval"] = denied { try tasks.mcp.remove(current.id, revision: current.revision) }
+                        checks["readOnlyMCPWritesPreserveConfigModeRevisionAndLiveSession"] = try Data(contentsOf: configuration) == before && (FileManager.default.attributesOfItem(atPath: configuration.path)[.posixPermissions] as? NSNumber)?.intValue == 0o400 && tasks.mcp.server(current.id).revision == current.revision && childPID.map { kill($0, 0) == 0 } == true
+                    }
+                    pane.currentController?.close()
+                    checks["returningFromMCPDetailKeepsTheOwnedConnectionAndActualStatus"] = pane.currentController === mcp && childPID.map { kill($0, 0) == 0 } == true && mcp.pageContentView.map { text($0).contains("已连接") } == true
                 }
                 guard pane.leave() else { throw PetError("设置页未退出：" + key) }
                 if key == "mcp", let childPID {
@@ -124,7 +138,7 @@ import Darwin
             checks["hostingDoesNotCreateVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visible
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
-            guard checks.count == 15 else { throw PetError("设置页面基础检查缺失") }
+            guard checks.count == 20 else { throw PetError("设置页面基础检查缺失") }
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
