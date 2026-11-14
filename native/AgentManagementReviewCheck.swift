@@ -98,10 +98,16 @@ import AppKit
         let editor = try control(NSTextView.self, "Hooks JSON 配置", page: configuration), feedback = try control(NSTextField.self, "Hooks 配置保存状态", page: configuration)
         let originalConfig = editor.string
         checks["hookConfigHostedAndEditorFocused"] = configuration.presentingWindow === host && configuration.window?.isVisible == false && host.firstResponder === editor && host.attachedSheet == nil
+        checks["hookConfigIdentifiesGlobalScopeInsideEditor"] = try control(NSTextField.self, "当前 Hooks 配置", page: configuration).stringValue == "全局 Hooks"
         checks["hookConfigEmptyFeedbackCollapses"] = feedback.isHidden
         editor.string = "{ invalid public configuration"; try press("保存", page: configuration)
         checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == "{ invalid public configuration" && !feedback.stringValue.isEmpty && bytes(source) == configBefore && bytes(authorization) == grantsBefore
         editor.string = originalConfig + String(repeating: "\n", count: 200)
+        let sourceMode = try FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as! NSNumber
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: source.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: sourceMode], ofItemAtPath: source.path) }
+        try press("保存", page: configuration)
+        checks["hookConfigReadOnlySaveKeepsDraftSourceModeAndGrant"] = try pane.currentController === configuration && editor.string.hasSuffix(String(repeating: "\n", count: 200)) && feedback.stringValue.contains("只读") && bytes(source) == configBefore && FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as? Int == 0o400 && bytes(authorization) == grantsBefore
         for (label, size) in [("normal", NSSize(width: 800, height: 540)), ("narrow", NSSize(width: 420, height: 360))] {
             host.setContentSize(size); pane.layoutSubtreeIfNeeded(); editor.layoutManager?.ensureLayout(for: editor.textContainer!)
             guard let scroll = editor.enclosingScrollView, let save = find(NSButton.self, in: configuration.pageContentView, matching: { $0.title == "保存" }), let page = configuration.pageContentView else { throw PetError("缺少 Hooks 配置编辑区域") }
@@ -111,8 +117,32 @@ import AppKit
             checks["hookConfigErrorWrapsWithoutClipping-" + label] = !feedback.isHidden && feedback.isSelectable && !feedback.usesSingleLineMode && feedback.maximumNumberOfLines == 0 && page.visibleRect.contains(feedbackFrame) && feedbackFrame.height >= feedback.intrinsicContentSize.height - 1
             measurements["hookConfig-" + label] = ["editorViewport": [viewport.width, viewport.height], "saveVisible": page.visibleRect.contains(buttonFrame), "feedbackHeight": feedbackFrame.height]
         }
+        try FileManager.default.setAttributes([.posixPermissions: sourceMode], ofItemAtPath: source.path)
         host.setContentSize(NSSize(width: 800, height: 540)); editor.string = originalConfig; try press("保存", page: configuration)
         checks["hookConfigValidRetryReturnsToListAndPreservesDefinition"] = try pane.currentController === manager && service.document(project: false, workspace: workspace).0 == originalConfig && bytes(authorization) == grantsBefore
+        func refusesReadOnly(_ file: URL, operation: () throws -> Void) throws -> Bool {
+            let before = try Data(contentsOf: file), grants = try bytes(authorization), mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as! NSNumber
+            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
+            defer { try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path) }
+            do { try operation(); return false }
+            catch { return try error.localizedDescription.contains("只读") && Data(contentsOf: file) == before && FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int == 0o400 && bytes(authorization) == grants }
+        }
+        let projectDocument = try service.document(project: true, workspace: workspace)
+        try service.save(projectDocument.0, project: true, workspace: workspace, expectedHash: projectDocument.1)
+        let projectFile = try service.file(project: true, workspace: workspace), projectSaved = try service.document(project: true, workspace: workspace)
+        checks["hookProjectConfigRefusesReadOnlySource"] = try refusesReadOnly(projectFile) { try service.save(projectSaved.0, project: true, workspace: workspace, expectedHash: projectSaved.1) }
+        guard let reference = try tasks.extensions.plugins.hookReferences().first(where: { $0.name == "review-inline" }) else { throw PetError("缺少公开插件 Hooks 配置") }
+        let pluginDocument = try service.pluginDocument(reference)
+        try service.savePluginDocument(pluginDocument.text, reference: reference, original: pluginDocument.original, expectedHash: pluginDocument.hash)
+        let pluginFile = try tasks.extensions.plugins.hookConfiguration(reference).file, pluginSaved = try service.pluginDocument(reference)
+        checks["hookPluginConfigRefusesReadOnlySource"] = try refusesReadOnly(pluginFile) { try service.savePluginDocument(pluginSaved.text, reference: reference, original: pluginSaved.original, expectedHash: pluginSaved.hash) }
+        try service.save(projectSaved.0, project: true, workspace: workspace, expectedHash: projectSaved.1)
+        try service.savePluginDocument(pluginSaved.text, reference: reference, original: pluginSaved.original, expectedHash: pluginSaved.hash)
+        checks["hookProjectAndPluginConfigRetryAfterRestoringPermissions"] = try service.document(project: true, workspace: workspace).0 == projectSaved.0 && service.pluginDocument(reference).text == pluginSaved.text
+        let sourceBeforeGrantFailure = try bytes(source), currentDocument = try service.document(project: false, workspace: workspace), currentHook = try hook(names[0]), wasEnabled = service.enabled(currentHook)
+        checks["hookReadOnlyGrantRejectsConfigSave"] = try refusesReadOnly(authorization) { try service.save(currentDocument.0, project: false, workspace: workspace, expectedHash: currentDocument.1) }
+        checks["hookReadOnlyGrantRejectsEnableChange"] = try refusesReadOnly(authorization) { try service.setEnabled(currentHook, !wasEnabled, workspace: workspace) }
+        checks["hookReadOnlyGrantKeepsSourceRuntimeAndCatalogUsable"] = try bytes(source) == sourceBeforeGrantFailure && service.enabled(currentHook) == wasEnabled && service.catalog(workspace: workspace).contains(where: { $0.id == currentHook.id })
         let teams = AgentTeamWindow(store: tasks, workspace: workspace)
         guard pane.show(category: "teams", identity: "inline-team-template", scope: "设置项目", make: { _ in teams }) else { throw PetError("无法进入团队模板") }
         let originalAgents = try tasks.agents.document(), originalTeams = try tasks.teams.document(), previousName = try control(NSTextField.self, "团队名称", page: teams).stringValue

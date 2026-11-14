@@ -103,13 +103,16 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         guard current.1 == expectedHash else { throw PetError("配置已变化，请重新打开后编辑") }
         _ = try parse(Data(text.utf8), file: target, scope: project ? "项目" : "全局", workspace: project ? workspace : nil)
         let files = try AgentFiles(workspace: project ? workspace : profile.path)
-        try commitConfiguration(Data(text.utf8), target: target) { data in try files.writeData(data, to: files.resolve(project ? ".bluefatfish/hooks.json" : "extensions/hooks.json"), permissions: 0o600) }
+        try commitConfiguration(Data(text.utf8), target: target, files: files)
     }
-    func commitConfiguration(_ data: Data, target: URL, write: (Data) throws -> Void) throws {
+    func commitConfiguration(_ data: Data, target: URL, files: AgentFiles) throws {
+        let write = try AgentKnowledgeFileWrite(files: files, path: target.path, data: data, permissions: 0o600, label: "Hooks 配置")
+        try write.requireCurrent()
         let changed = try credentials.save(data, file: target) { data, changed in
             let previous = settings
             for id in changed where settings[id] != nil { settings[id]?.enabled = false }
-            do { try persistSettings(); try write(data) }
+            do { try persistSettings() } catch { settings = previous; throw error }
+            do { try write.requireCurrent(); try files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature) }
             catch { settings = previous; do { try persistSettings() } catch { loadError = "Hook 授权保存失败，请修复文件权限后重启" }; throw error }
         }
         for id in changed {
@@ -261,7 +264,9 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     }
     private func persistSettings() throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let files = try AgentFiles(workspace: profile.path); try files.writeData(encoder.encode(settings), to: files.resolve("extensions/hook-settings.json"), permissions: 0o600)
+        let files = try AgentFiles(workspace: profile.path), data = try encoder.encode(settings)
+        let write = try AgentKnowledgeFileWrite(files: files, path: try files.literalURL("extensions/hook-settings.json").path, data: data, permissions: 0o600, label: "Hooks 授权")
+        try write.requireCurrent(); try files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
     }
     func clearCredentials(_ item: AgentHookDefinition, workspace: String?) throws { try setEnabled(item, false, workspace: workspace); try credentials.clear(item) }
     private func matches(_ pattern: String, _ value: String, name: String) throws -> Bool {

@@ -327,7 +327,8 @@ private extension AgentHookEvent {
         card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
         let button = NSButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
-        let actions = NSStackView(views: [NSView(), button]); actions.spacing = 8
+        let scope = NSTextField(labelWithString: title); scope.font = .systemFont(ofSize: 13, weight: .medium); scope.lineBreakMode = .byTruncatingMiddle; scope.toolTip = title; scope.setAccessibilityLabel("当前 Hooks 配置"); scope.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actions = NSStackView(views: [scope, NSView(), button]); actions.spacing = 8
         let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [actions, state, card] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
