@@ -10,6 +10,7 @@ import AppKit
     private var states: [String: NSTextField] = [:], buttons: [NSButton] = []
     private var saveFailed = false
     private weak var lastOpened: NSButton?
+    override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
 
     init(store: AgentStore, taskID: String, workspace: String?, service: AgentGeneralSettings) {

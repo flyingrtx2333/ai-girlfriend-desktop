@@ -480,6 +480,25 @@ final class FormDocumentView: NSView {
                 }
             }
         }
+        if showSettingsCategory("memory"), let overview = settingsPageHost.currentController as? AgentMemorySettingsPage {
+            func narrowMemoryWindow() async {
+                window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+                window.contentView?.layoutSubtreeIfNeeded(); try? await Task.sleep(nanoseconds: 100_000_000)
+                window.contentView?.layoutSubtreeIfNeeded()
+            }
+            func findMemoryButton(_ view: NSView) -> NSButton? {
+                if let button = view as? NSButton, button.identifier?.rawValue == "memory-manage-global" { return button }
+                return view.subviews.lazy.compactMap(findMemoryButton).first
+            }
+            await narrowMemoryWindow()
+            checks["memoryOverviewRetains780By540Window"] = window.frame.size == NSSize(width: 780, height: 540) && overview.isPageVisible
+            if let button = overview.pageContentView.flatMap(findMemoryButton) {
+                button.performClick(nil); await narrowMemoryWindow()
+                checks["memoryEditorRetains780By540Window"] = window.frame.size == NSSize(width: 780, height: 540) && settingsPageHost.currentController is AgentRecordWindow && window.firstResponder is NSTextView
+                settingsPageHost.currentController?.close(); window.contentView?.layoutSubtreeIfNeeded()
+                checks["memoryEditorReturnsToOriginalCardAt780By540"] = window.frame.size == NSSize(width: 780, height: 540) && settingsPageHost.currentController === overview && window.firstResponder === button
+            }
+        }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
         checks["settingsDoNotReserveHiddenInspectorWidth"] = frames.values.allSatisfy { $0["inspectorWidth"] == 0 }

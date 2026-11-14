@@ -52,6 +52,7 @@ import UniformTypeIdentifiers
     var onWorkspaceChange: (() -> Void)?
     var onWindowClose: (() -> Void)?
     var workspaceHasUnsavedChanges: Bool { dirty }
+    override var minimumSettingsContentHeight: CGFloat { sections.selectedSegment == 5 ? 220 : super.minimumSettingsContentHeight }
     var workspaceDocumentURL: URL? { documentOnly ? openedFile ?? selection.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil } : nil }
     private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
     private var wideNavigation: [NSLayoutConstraint] = [], compactNavigation: [NSLayoutConstraint] = [], navigationWidth: NSLayoutConstraint!, navigationHeight: NSLayoutConstraint!, documentLeading: NSLayoutConstraint!, documentTop: NSLayoutConstraint!
