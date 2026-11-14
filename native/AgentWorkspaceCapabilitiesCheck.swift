@@ -118,6 +118,13 @@ import Darwin
             checks["allSourcesExposeDistinctSameNamedSkillsAndCommands"] = local.count == 4 && Set(local.map(\.id)).count == 4 && local.contains { $0.scope.contains("Alpha workspace") } && local.contains { $0.scope.contains("Beta source") }
             checks["globalExtensionsDeduplicateAcrossSources"] = catalog.filter { $0.name == "public-global" }.count == 1 && catalog.filter { $0.name == "public-short" }.count == 1
             checks["packagedExtensionsFromBothSourcesRemainDistinct"] = catalog.filter { $0.pluginName == ids["alphaCapabilitiesPlugin"] }.count == 2 && catalog.filter { $0.pluginName == ids["betaCapabilitiesPlugin"] }.count == 2
+            let picker = AgentExtensionPicker()
+            picker.setEntries(tasks.slashMenu.entries(catalog, task: original, idle: true, canChangeMode: false), service: tasks.slashMenu, presentation: .expanded, query: "source-probe", reset: true)
+            let paintedSources = picker.entries.indices.compactMap { row -> String? in
+                guard let view = picker.tableView(NSTableView(), viewFor: nil, row: row) as? NSStackView else { return nil }
+                return view.arrangedSubviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "slash-entry-source" && !$0.isHidden }?.stringValue
+            }
+            checks["actualSlashRowsDisplayBothSourcesForSameNamedItems"] = paintedSources.count == 4 && paintedSources.contains { $0.contains("Alpha workspace") } && paintedSources.contains { $0.contains("Beta source") }
             let listed = try await tools.execute(call("list_skills", ["query": "source-probe"]))
             checks["actualSkillDirectoryListsBothFrozenSourceIDs"] = listed.text.contains(ids["alphaSkill"]!) && listed.text.contains(ids["betaSkill"]!)
             for key in ["alphaCommand", "betaCommand"] {

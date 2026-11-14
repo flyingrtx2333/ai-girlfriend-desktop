@@ -383,7 +383,12 @@ import UniformTypeIdentifiers
         let title = NSTextField(labelWithString: entry.title); title.font = .systemFont(ofSize: 12, weight: .medium); title.widthAnchor.constraint(lessThanOrEqualToConstant: 210).isActive = true
         let description = NSTextField(labelWithString: entry.detail); description.font = .systemFont(ofSize: 11); description.textColor = AgentWorkbenchTheme.secondaryText; description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for field in [title, description] { field.lineBreakMode = .byTruncatingTail; field.maximumNumberOfLines = 1 }
-        let stack = NSStackView(views: [image, title, description, NSView()]); stack.spacing = 7; stack.toolTip = entry.scope + "\n" + entry.detail; stack.setAccessibilityLabel(entry.kindTitle + " " + entry.title + "，" + entry.scope + "，" + entry.detail); return stack
+        let source = NSTextField(labelWithString: entry.scope); source.identifier = NSUserInterfaceItemIdentifier("slash-entry-source")
+        source.font = .systemFont(ofSize: 11); source.textColor = AgentWorkbenchTheme.secondaryText; source.alignment = .right
+        source.lineBreakMode = .byTruncatingMiddle; source.maximumNumberOfLines = 1; source.widthAnchor.constraint(lessThanOrEqualToConstant: 220).isActive = true
+        source.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal); source.setAccessibilityLabel("来源：" + entry.scope)
+        switch entry { case .builtin, .mode: source.isHidden = true; default: break }
+        let stack = NSStackView(views: [image, title, description, NSView(), source]); stack.spacing = 7; stack.toolTip = entry.scope + "\n" + entry.detail; stack.setAccessibilityLabel(entry.kindTitle + " " + entry.title + "，" + entry.scope + "，" + entry.detail); return stack
     }
     func layoutReadback() -> [String: Any] {
         guard isViewLoaded else { return ["loaded": false] }
