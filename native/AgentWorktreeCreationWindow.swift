@@ -165,6 +165,7 @@ import AppKit
         update(targetID) {
             $0.draft = source.draft; $0.permission = source.permission; $0.mode = source.mode
             $0.model = source.model; $0.modelOverride = source.modelOverride; $0.toolGroups = source.toolGroups
+            $0.inheritedLimits = source.inheritedLimits
             $0.agent = source.agent; $0.agent?.workspace = target.workspace; $0.team = source.team
         }
         if let error = writeError { throw PetError("新任务草稿未保存，原草稿仍保留：" + error) }

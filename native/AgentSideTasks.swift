@@ -70,7 +70,7 @@ import Darwin
     }
     func bindToSession(_ task: inout AgentTaskRecord) throws { _ = try ownSession(); task.sideTask?.sessionID = Self.sessionID }
     static func supported(_ task: AgentTaskRecord) -> Bool {
-        !task.archived && !task.isProjectDocumentation && !["hook", "voice"].contains(task.kind ?? "") && task.automation == nil && task.agent?.ownerID == nil && task.sideTask == nil && task.pendingFileRollback == nil
+        !task.archived && task.worktreeSetup == nil && !task.isProjectDocumentation && !["hook", "voice"].contains(task.kind ?? "") && task.automation == nil && task.agent?.ownerID == nil && task.sideTask == nil && task.pendingFileRollback == nil
     }
     @discardableResult func create(parentID: String) throws -> String {
         guard let store, !cleaning, !ending, !store.deletions.working, let parent = store.task(parentID), Self.supported(parent), store.organization.archiveID(parent.organizationWorkspace, mode: parent.organizationMode) == nil else { throw PetError("此任务暂时不能新建侧任务") }

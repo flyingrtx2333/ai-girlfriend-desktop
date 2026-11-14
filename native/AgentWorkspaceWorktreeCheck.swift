@@ -80,6 +80,9 @@ import AppKit
             checks["bothSelectedCommitsAndUnstagedVersionsActuallyCarried"] = carried
             try tasks.copyEnvironmentDraft(sourceID: id, targetID: created.taskID)
             checks["draftAndTaskPermissionCopiedWithoutChangingOriginal"] = tasks.task(created.taskID)?.draft == tasks.task(id)?.draft && tasks.task(created.taskID)?.permission == tasks.task(id)?.permission
+            let localID = tasks.create(workspace: beta.path, mode: child.mode, workspaceScope: AgentWorkspaceScope(group: beta.path, folders: roots.map(\.path), primary: beta.path))
+            try tasks.copyEnvironmentDraft(sourceID: created.taskID, targetID: localID)
+            checks["returningToLocalRetainsLimitsAndAllSources"] = try encoder.encode(tasks.task(localID)?.inheritedLimits) == encoder.encode(child.inheritedLimits) && tasks.task(localID)?.workspacePaths == roots.map(\.path) && tasks.task(localID)?.workspace == beta.path && tasks.task(localID)?.worktreeOrigins == nil
             let tools = AgentTools(store: tasks, taskID: created.taskID)
             for root in childRoots {
                 let value = try String(decoding: JSONSerialization.data(withJSONObject: ["path": root.appendingPathComponent("native-created.txt").path, "content": "isolated write\n"]), as: UTF8.self)
@@ -131,6 +134,9 @@ import AppKit
             try FileManager.default.removeItem(at: hook)
             guard let partialID = helper.lastCreatedWorktreeTaskID, let partial = tasks.task(partialID) else { throw PetError("未保留部分创建的任务") }
             let partialTasks = tasks.tasks.filter { $0.parentID == id && $0.worktreeSetup != nil }
+            let beforeForkCount = tasks.tasks.count
+            do { _ = try tasks.sideTasks.create(parentID: partialID); checks["pendingTaskCannotForkAroundIncompleteSetup"] = false }
+            catch { checks["pendingTaskCannotForkAroundIncompleteSetup"] = tasks.tasks.count == beforeForkCount }
             checks["pendingTaskDoesNotSubmitOrAnalyzeOrStartModel"] = !runtime.submit("不得发出请求", taskID: partialID) && !runtime.analyze(partialID, recap: true) && requests == 0
             runtime.start(partialID); checks["pendingTaskDirectResumeMakesNoModelRequest"] = !runtime.isBusy(partialID) && requests == 0
             do { _ = try await AgentTools(store: tasks, taskID: partialID).execute(AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: #"{"path":"public.txt"}"#)); checks["pendingTaskCannotExecuteModelTools"] = false } catch { checks["pendingTaskCannotExecuteModelTools"] = true }
