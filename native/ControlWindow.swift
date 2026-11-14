@@ -822,7 +822,7 @@ final class FormDocumentView: NSView {
         } else { taskContext.title = ""; taskContext.imagePosition = .imageOnly; taskContext.toolTip = "查看上下文估算与任务回顾" }
         taskContext.setAccessibilityLabel("上下文" + (taskContext.title.isEmpty ? "" : " " + taskContext.title))
         workbenchLower.isHidden = resumeButton.isHidden && modelCaption.isHidden
-        let hasMCP = companion?.agentStore?.mcp.availableServers(workspace: task.workspace).contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
+        let hasMCP = (try? companion?.agentStore?.mcp.availableServers(task: task))?.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
         taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
         let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
         let available = width - sidebarWidth.constant - target - columnInset * 2 - 22

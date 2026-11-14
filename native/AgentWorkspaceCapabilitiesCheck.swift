@@ -114,6 +114,16 @@ import Darwin
             let original = tasks.task(id)!, scope = original.workspaceScope!, tools = AgentTools(store: tasks, taskID: id)
             let otherFiles = try Dictionary(uniqueKeysWithValues: tasks.tasks.filter { $0.id != id }.map { record in (record.id, try Data(contentsOf: tasks.directory.appendingPathComponent(record.id + ".json"))) })
             checks["independentProfileAndFrozenSources"] = usesAgent && tasks.extensions.sharedHome?.resolvingSymlinksInPath() == output.appendingPathComponent("shared-home").resolvingSymlinksInPath() && scope.primary == beta && scope.folders == [alpha, beta]
+            try tasks.mcp.setEnabled(ids["betaServer"]!, false, workspace: beta)
+            try tasks.mcp.setEnabled(ids["globalServer"]!, false)
+            control.showAgentTask(id); control.show(tab: "chat"); await wait(0.05)
+            func mcpEntry(_ view: NSView?) -> NSButton? {
+                guard let view else { return nil }; if let button = view as? NSButton, button.toolTip == "MCP 资料与提示词" { return button }
+                for child in view.subviews { if let button = mcpEntry(child) { return button } }; return nil
+            }
+            checks["secondaryOnlyConnectorRemainsVisibleInComposer"] = !tasks.mcp.availableServers(workspace: beta).contains(where: \.enabled) && mcpEntry(control.window?.contentView)?.isHiddenOrHasHiddenAncestor == false && mcpEntry(control.window?.contentView)?.isEnabled == true
+            try tasks.mcp.setEnabled(ids["globalServer"]!, true)
+            try tasks.mcp.setEnabled(ids["betaServer"]!, true, workspace: beta)
             let catalog = try tasks.extensions.catalog(task: original), local = catalog.filter { $0.name == "source-probe" }
             checks["allSourcesExposeDistinctSameNamedSkillsAndCommands"] = local.count == 4 && Set(local.map(\.id)).count == 4 && local.contains { $0.scope.contains("Alpha workspace") } && local.contains { $0.scope.contains("Beta source") }
             checks["globalExtensionsDeduplicateAcrossSources"] = catalog.filter { $0.name == "public-global" }.count == 1 && catalog.filter { $0.name == "public-short" }.count == 1
