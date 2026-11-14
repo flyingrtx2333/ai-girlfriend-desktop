@@ -215,6 +215,22 @@ enum AgentRunningInput: String, Codable, CaseIterable {
         conversationBack.isHidden = direct; thinkingBack.isHidden = thinking
         if thinking { showThinking(focus: false) } else { showConversation(direct, focus: false) }
     }
+    func revealSearchTarget(_ target: NSView, query: String) -> NSView {
+        let title = target.identifier?.rawValue
+        if title == AgentSettingsStyle.searchRowPrefix + "思考状态" || target.isDescendant(of: thinkingPage) {
+            showThinking(focus: false); thinkingBack.isHidden = false; return thinkingPanel ?? thinkingPage
+        }
+        if title == AgentSettingsStyle.searchRowPrefix + "对话显示" || target.isDescendant(of: conversationPage) {
+            showConversation(true, focus: false); conversationBack.isHidden = false
+            return target.isDescendant(of: conversationPage) ? target : conversationPage
+        }
+        if self.isDescendant(of: target) {
+            matchSearch(query); conversationBack.isHidden = false; thinkingBack.isHidden = false
+            if thinkingVisible { return thinkingPanel ?? thinkingPage }
+            if conversationVisible { return conversationPage }
+        } else { showConversation(false, focus: false) }
+        return target
+    }
     func showConversation(_ visible: Bool, focus: Bool = true) {
         conversationVisible = visible; thinkingVisible = false; thinkingPage.isHidden = true; overview.isHidden = visible; conversationPage.isHidden = !visible; onPage?(visible ? "对话显示" : "常规")
         if focus { window?.makeFirstResponder(visible ? readingStart : conversationButton); enclosingScrollView?.contentView.scroll(to: .zero) }

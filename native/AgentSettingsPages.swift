@@ -76,6 +76,7 @@ import AppKit
 }
 
 @MainActor enum AgentSettingsStyle {
+    static let searchRowPrefix = "settings-search-row:"
     static func field(_ field: NSTextField) {
         field.font = .systemFont(ofSize: 13); field.controlSize = .large
         if field.isBezeled { field.bezelStyle = .roundedBezel; field.backgroundColor = .textBackgroundColor }
@@ -90,6 +91,7 @@ import AppKit
         if !trailing { label.widthAnchor.constraint(equalToConstant: 88).isActive = true }
         let views: [NSView] = title.isEmpty ? [control] : trailing ? [label, NSView(), control] : [label, control]
         let row = NSStackView(views: views); row.alignment = .centerY; row.spacing = 12; row.translatesAutoresizingMaskIntoConstraints = false
+        if !title.isEmpty { row.identifier = .init(searchRowPrefix + title) }
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
         return row
     }

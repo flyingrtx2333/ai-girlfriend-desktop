@@ -99,7 +99,13 @@ final class FormDocumentView: NSView {
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
-    private var settingGroups: [(category: String, title: String, keywords: String, view: NSView)] = []
+    private var settingGroups: [(category: String, title: String, keywords: String, view: NSView, key: String?)] = []
+    private struct SettingsSearchResult {
+        let category: String, title: String, section: String, key: String?
+        let target: NSView
+    }
+    private var settingsResults: [SettingsSearchResult] = []
+    private var settingsGroupLabels: [(String, NSTextField)] = []
     private var titleLeading: NSLayoutConstraint!
     private let composer = ComposerView(), history = AgentConversationHistory(), messageColumn = NSStackView()
     private var messageRows: [String: ChatMessageRow] = [:], renderedIDs: [String] = []
@@ -1184,9 +1190,21 @@ final class FormDocumentView: NSView {
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); return true
     }
-    @objc private func openManagedSettingsResult(_ sender: NSButton) {
-        guard settingsCategories.indices.contains(sender.tag), showSettingsCategory(settingsCategories[sender.tag].0), let key = sender.identifier?.rawValue else { return }
-        settingsPageHost.selectPage(key)
+    @objc private func openSettingsSearchResult(_ sender: NSButton) {
+        guard sender.isDescendant(of: settingsForm), settingsResults.indices.contains(sender.tag) else { return }
+        let result = settingsResults[sender.tag], query = settingsSearch.stringValue.lowercased()
+        guard showSettingsCategory(result.category) else { return }
+        if let key = result.key { settingsPageHost.selectPage(key); return }
+        let target = result.category == "general" ? generalSettingsPanel?.revealSearchTarget(result.target, query: query) ?? result.target : result.target
+        window?.contentView?.layoutSubtreeIfNeeded()
+        let bounds = target.bounds, height = min(44, bounds.height)
+        target.scrollToVisible(NSRect(x: bounds.minX, y: target.isFlipped ? bounds.minY : bounds.maxY - height, width: bounds.width, height: height))
+        func input(_ view: NSView) -> NSView? {
+            if !view.isHiddenOrHasHiddenAncestor, let control = view as? NSControl, control.isEnabled,
+               !(control is NSTextField) || (control as? NSTextField)?.isEditable == true { return control }
+            for child in view.subviews { if let found = input(child) { return found } }; return nil
+        }
+        if let input = input(target) { window?.makeFirstResponder(input) }
     }
     private func makeSettingsManager(_ key: String, taskID: String?, workspace: String?, selection: String? = nil) -> AgentSettingsPageController? {
         guard let store = companion?.agentStore else { return nil }
@@ -1246,6 +1264,9 @@ final class FormDocumentView: NSView {
         default: return nil
         }
     }
+    private func settingsNavigationGroup(_ category: String) -> String {
+        ["extensions", "agents", "teams", "hooks", "computer"].contains(category) ? "集成" : category == "worktrees" ? "编码" : ["experiments", "archived"].contains(category) ? "其他" : "个人"
+    }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
         settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200)
@@ -1257,12 +1278,13 @@ final class FormDocumentView: NSView {
         back.contentTintColor = AgentWorkbenchTheme.secondaryText
         settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
         var previousGroup = ""
-        let navigation = stack([], vertical: true, spacing: 0)
+        let navigation = stack([], vertical: true, spacing: 0); navigation.detachesHiddenViews = true
         for (index, item) in settingsCategories.enumerated() {
-            let group = ["extensions", "agents", "teams", "hooks", "computer"].contains(item.0) ? "集成" : item.0 == "worktrees" ? "编码" : ["experiments", "archived"].contains(item.0) ? "其他" : "个人"
+            let group = settingsNavigationGroup(item.0)
             if group != previousGroup {
                 if let previous = navigation.arrangedSubviews.last { navigation.setCustomSpacing(12, after: previous) }
                 let label = NSTextField(labelWithString: group); label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText
+                settingsGroupLabels.append((group, label))
                 navigation.addArrangedSubview(label); navigation.setCustomSpacing(4, after: label); previousGroup = group
             }
             let button = NSButton(title: item.1, target: self, action: #selector(selectSettingsCategory(_:)))
@@ -1282,17 +1304,70 @@ final class FormDocumentView: NSView {
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
+    private func settingsSearchMatches(_ query: String) -> [SettingsSearchResult] {
+        func rows(_ view: NSView) -> [(String, NSView)] {
+            var result: [(String, NSView)] = []
+            if let id = view.identifier?.rawValue, id.hasPrefix(AgentSettingsStyle.searchRowPrefix) {
+                result.append((String(id.dropFirst(AgentSettingsStyle.searchRowPrefix.count)), view))
+            }
+            return result + view.subviews.flatMap(rows)
+        }
+        func identifiers(_ view: NSView) -> String { (view.identifier?.rawValue ?? "") + " " + view.subviews.map(identifiers).joined(separator: " ") }
+        var result: [SettingsSearchResult] = []
+        for group in settingGroups {
+            let direct = group.key == nil ? rows(group.view).filter { ($0.0 + " " + identifiers($0.1)).lowercased().contains(query) } : []
+            if !direct.isEmpty {
+                result += direct.map { SettingsSearchResult(category: group.category, title: $0.0, section: group.title, key: nil, target: $0.1) }
+            } else if (group.title + " " + group.keywords).lowercased().contains(query) {
+                result.append(SettingsSearchResult(category: group.category, title: group.title, section: group.title, key: group.key, target: group.view))
+            }
+        }
+        return result
+    }
+    private func showSettingsSearchResults() {
+        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 14
+        for (index, result) in settingsResults.enumerated() {
+            if index > 0 { let line = AgentWorkbenchTheme.rule(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+            let title = NSTextField(labelWithString: result.title); title.font = .systemFont(ofSize: 13, weight: .medium)
+            let category = settingsCategories.first { $0.0 == result.category }?.1 ?? result.category
+            let path = NSTextField(labelWithString: category + (result.section == category ? "" : " · " + result.section)); path.font = .systemFont(ofSize: 11); path.textColor = AgentWorkbenchTheme.secondaryText
+            let labels = NSStackView(views: [title, path]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
+            labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let open = NSButton(title: "打开", target: self, action: #selector(openSettingsSearchResult(_:))); open.tag = index; open.bezelStyle = .rounded; open.controlSize = .large
+            open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.imagePosition = .imageTrailing
+            open.identifier = .init(result.key ?? "settings-result-\(result.category)-\(index)"); open.setAccessibilityLabel("打开设置：" + category + " · " + result.title)
+            open.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
+            let row = NSStackView(views: [labels, NSView(), open]); row.spacing = 16; row.alignment = .centerY; row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+            body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        }
+        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+        card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 16), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)])
+        settingsForm.addArrangedSubview(card); card.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
+    }
     private func updateSettingsSections() {
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
         settingsHeading.stringValue = query.isEmpty ? selected.1 : "搜索结果"
         pageTitle.stringValue = settingsHeading.stringValue
+        settingsResults = query.isEmpty ? [] : settingsSearchMatches(query)
+        let categories = Set(settingsResults.map(\.category)), groups = Set(categories.map(settingsNavigationGroup))
         for (index, button) in categoryButtons.enumerated() {
+            button.isHidden = !query.isEmpty && !categories.contains(settingsCategories[index].0)
             let active = query.isEmpty && settingsCategories[index].0 == settingsCategory
             button.state = active ? .on : .off; AgentWorkbenchTheme.color(button.layer, active ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         }
-        let matches = settingGroups.filter { query.isEmpty ? $0.category == settingsCategory : ($0.title + " " + $0.keywords).lowercased().contains(query) }
+        for (group, label) in settingsGroupLabels { label.isHidden = !query.isEmpty && !groups.contains(group) }
+        if !query.isEmpty {
+            settingsPageHost.isHidden = true; settingsScroll.isHidden = false
+            generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
+            settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
+            if settingsResults.isEmpty { settingsForm.addArrangedSubview(noSettings) } else { showSettingsSearchResults() }
+            settingsScroll.contentView.scroll(to: .zero); settingsScroll.reflectScrolledClipView(settingsScroll.contentView)
+            return
+        }
+        let matches = settingGroups.filter { $0.category == settingsCategory }
         let managed = query.isEmpty && managedSettings.contains(settingsCategory)
         settingsFooter?.isHidden = managed
         settingsPageHost.isHidden = !managed; settingsScroll.isHidden = managed
@@ -1404,7 +1479,7 @@ final class FormDocumentView: NSView {
         document.addSubview(settingsForm); pin(settingsForm, to: document, inset: 4); settingsScroll.documentView = document
         document.widthAnchor.constraint(equalTo: settingsScroll.contentView.widthAnchor).isActive = true
         var body: NSStackView!
-        func group(_ category: String, _ title: String, _ keywords: String) {
+        func group(_ category: String, _ title: String, _ keywords: String, key: String? = nil) {
             let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
             let framed = category != "general"
             let card = AgentThemeView(fill: framed ? .textBackgroundColor : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
@@ -1413,7 +1488,7 @@ final class FormDocumentView: NSView {
             card.addSubview(body); pin(body, to: card)
             let section = stack([heading, card], vertical: true, spacing: 9)
             card.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-            settingGroups.append((category, title, keywords, section))
+            settingGroups.append((category, title, keywords, section, key))
         }
         func row(_ text: String, _ control: NSView, trailing: Bool = false) {
             if !body.arrangedSubviews.isEmpty {
@@ -1541,9 +1616,8 @@ final class FormDocumentView: NSView {
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
             ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {
-            guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
-            group(category, title, keywords)
-            let button = NSButton(title: title, target: self, action: #selector(openManagedSettingsResult(_:))); button.tag = index; button.identifier = NSUserInterfaceItemIdentifier(key); row("", button)
+            guard settingsCategories.contains(where: { $0.0 == category }) else { continue }
+            group(category, title, keywords, key: key)
         }
         if let store = companion?.agentStore {
             group("attention", "需要我", "需要我 待办 问题 审批 结果 已处理 来源 通知")
@@ -1774,7 +1848,8 @@ final class FormDocumentView: NSView {
         } catch { modelStatus.stringValue = error.localizedDescription; modelStatus.textColor = .systemRed }
     }
     @objc private func saveSettings() {
-        guard let companion else { return }
+        guard selectedTab == "settings", settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              generalSettingsSave?.isHidden == false, let companion else { return }
         do {
             var p = try chatPreferences()
             p.voiceEnabled = voiceEnabled.state == .on
@@ -2077,10 +2152,26 @@ final class FormDocumentView: NSView {
         guard showSettingsCategory("model") else { throw PetError("无法进入设置搜索验收") }
         for query in ["连接器", "规则", "团队", "Hooks", "技能", "自定义命令", "mCp", "AGENTS"] {
             search(query)
-            checks["managedSearchHasNoUnrelatedSave-" + query] = settingGroups.contains { $0.view.superview === settingsForm } && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
+            checks["managedSearchHasNoUnrelatedSave-" + query] = !settingsResults.isEmpty && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
         }
+        search("mCp")
+        checks["settingsSearchFiltersSidebarToMatchingCategory"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["extensions"]
+        checks["settingsSearchFiltersSidebarGroupHeadings"] = settingsGroupLabels.filter { !$0.1.isHidden }.map(\.0) == ["集成"]
         search("Token")
-        checks["editableSettingsSearchKeepsItsOwnSave"] = generalSettingsSave?.isHidden == false && settingsFooter?.isHidden == false
+        checks["regularSettingsSearchShowsNavigationWithoutEditableFieldsOrSave"] = settingsResults.contains { $0.category == "model" } && find(NSTextField.self, in: settingsForm, matching: { $0.isEditable }) == nil && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
+        let endpointBefore = endpoint.stringValue, savedEndpoint = companion?.store.preferences.endpoint
+        endpoint.stringValue = "https://example.invalid/unindexed-public-input-a7k2"; search("unindexed-public-input-a7k2")
+        checks["settingsSearchIndexesLabelsInsteadOfEnteredValues"] = settingsResults.isEmpty
+        saveSettings()
+        checks["settingsSearchSaveCommandCannotPersistHiddenModelDraft"] = companion?.store.preferences.endpoint == savedEndpoint
+        endpoint.stringValue = endpointBefore
+        search("内容宽度")
+        guard let widthIndex = settingsResults.firstIndex(where: { $0.category == "appearance" && $0.title == "内容宽度" }),
+              let widthButton = find(NSButton.self, in: settingsForm, matching: { $0.tag == widthIndex && $0.action == #selector(openSettingsSearchResult(_:)) }) else { throw PetError("未找到内容宽度的单项搜索入口") }
+        let widthTarget = settingsResults[widthIndex].target
+        openSettingsSearchResult(widthButton)
+        checks["regularSearchOpensRequestedCategoryAndRevealsActualRow"] = settingsCategory == "appearance" && settingsSearch.stringValue.isEmpty && !widthTarget.isHiddenOrHasHiddenAncestor && widthTarget.window === window && widthTarget.visibleRect.height >= min(28, widthTarget.bounds.height)
+        checks["openingSearchResultRestoresFullSettingsNavigation"] = categoryButtons.allSatisfy { !$0.isHidden } && settingsGroupLabels.allSatisfy { !$0.1.isHidden }
         search("不存在的导航验收-a7k2")
         checks["emptySettingsSearchKeepsSaveHidden"] = noSettings.superview === settingsForm && generalSettingsSave?.isHidden == true
         search("")
@@ -2099,16 +2190,16 @@ final class FormDocumentView: NSView {
         }
         let result = try rulesResult()
         checks["searchTemporarilyHidesEditorWithoutDiscardingIt"] = settingsPageHost.isHidden && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
-        checks["cancelSearchResultNavigationRevealsSameEditor"] = try !choose("继续编辑", { openManagedSettingsResult(result); return settingsCategory == "memory" }) && settingsSearch.stringValue.isEmpty && !settingsPageHost.isHidden && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
+        checks["cancelSearchResultNavigationRevealsSameEditor"] = try !choose("继续编辑", { openSettingsSearchResult(result); return settingsCategory == "memory" }) && settingsSearch.stringValue.isEmpty && !settingsPageHost.isHidden && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
         checks["cancelSearchNavigationRestoresActualEditorFocus"] = name.currentEditor().map { window.firstResponder === $0 } == true
         _ = try rulesResult()
         checks["cancelMainPageNavigationRevealsSameEditor"] = try !choose("继续编辑", { returnToChat(); return selectedTab == "chat" }) && selectedTab == "settings" && settingsSearch.stringValue.isEmpty && !settingsPageHost.isHidden && settingsPageHost.currentController === detail
         _ = try rulesResult()
-        guard let appearance = settingsCategories.firstIndex(where: { $0.0 == "appearance" }) else { throw PetError("缺少外观分类") }
-        checks["cancelCategoryNavigationRevealsSameEditor"] = try !choose("继续编辑", { selectSettingsCategory(categoryButtons[appearance]); return settingsCategory == "appearance" }) && settingsCategory == "extensions" && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController === detail && !settingsPageHost.isHidden
+        guard let memory = settingsCategories.firstIndex(where: { $0.0 == "memory" }) else { throw PetError("缺少记忆与规则分类") }
+        checks["cancelCategoryNavigationRevealsSameEditor"] = try !choose("继续编辑", { selectSettingsCategory(categoryButtons[memory]); return settingsCategory == "memory" }) && settingsCategory == "extensions" && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController === detail && !settingsPageHost.isHidden
         checks["allCancelledNavigationPreservesStoredConnectorAndDraft"] = try Data(contentsOf: file) == before && name.stringValue == "设置搜索未保存草稿 🧭"
         let accepted = try rulesResult()
-        checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openManagedSettingsResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
+        checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openSettingsSearchResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
         checks["discardSearchDraftDoesNotSaveConnectorChanges"] = try Data(contentsOf: file) == before
         returnToChat()
         checks["settingsSearchNavigationPreservesOriginalTaskAndInput"] = selectedTab == "chat" && agentTaskID == id && composer.string == draft && tasks.task(id)?.draft == task.draft
@@ -2136,9 +2227,9 @@ final class FormDocumentView: NSView {
         checks["voiceGroups"] = titles() == ["MiniMax", "唤醒与聆听"] && pageTitle.stringValue == "语音"
         let generation = modelCheckGeneration
         settingsSearch.stringValue = "停顿"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
-        checks["searchFindsListening"] = titles() == ["唤醒与聆听"]
+        checks["searchFindsListening"] = settingsResults.contains { $0.category == "voice" && $0.section == "唤醒与聆听" }
         settingsSearch.stringValue = "Token"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
-        checks["searchAcrossCategories"] = titles() == ["服务", "能力与预算", "MiniMax"] && pageTitle.stringValue == "搜索结果"
+        checks["searchAcrossCategories"] = Set(settingsResults.map(\.section)) == Set(["服务", "能力与预算", "MiniMax"]) && pageTitle.stringValue == "搜索结果"
         checks["searchKeepsConnectionStatus"] = modelCheckGeneration == generation
         settingsSearch.stringValue = "不存在的设置"; updateSettingsSections()
         checks["emptySearch"] = titles().isEmpty && noSettings.superview === settingsForm
@@ -3933,11 +4024,11 @@ extension ControlWindow {
         guard CommandLine.arguments.contains("--mode-presentation-check") else { return [:] }
         let query = settingsSearch.stringValue, category = settingsCategory
         defer { settingsSearch.stringValue = query; settingsCategory = category; updateSettingsSections() }
-        let groups = settingGroups.filter { $0.category == "modes" }.map(\.view)
         var checks: [String: Bool] = [:]
         for (text, key) in [("项目选择入口", "projectEntry"), ("运行环境", "environment"), ("变更审阅", "changeReview")] {
             settingsSearch.stringValue = text; updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
-            checks["search-" + key + "ShowsBothModeFormsWithoutExtraSave"] = groups.count == 2 && groups.allSatisfy { $0.superview === settingsForm && !$0.isHiddenOrHasHiddenAncestor } && settingsHeading.stringValue == "搜索结果" && generalSettingsSave?.isHidden == true
+            let results = settingsResults.filter { $0.category == "modes" }
+            checks["search-" + key + "OffersBothModeTargetsWithoutExtraSave"] = results.count == 2 && Set(results.map(\.section)).count == 2 && results.allSatisfy { $0.target.identifier?.rawValue.hasPrefix(AgentSettingsStyle.searchRowPrefix) == true } && settingsHeading.stringValue == "搜索结果" && generalSettingsSave?.isHidden == true
         }
         settingsSearch.stringValue = "不存在的设置-a7k2m9v4"; updateSettingsSections()
         checks["emptySettingsSearchHasNoSaveAction"] = noSettings.superview === settingsForm && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
