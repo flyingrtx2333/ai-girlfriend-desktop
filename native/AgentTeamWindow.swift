@@ -30,25 +30,25 @@ import AppKit
         leader.target = self; leader.action = #selector(leaderChanged); leader.setAccessibilityLabel("团队负责人"); members.setAccessibilityLabel("团队成员")
         enabled.target = self; enabled.action = #selector(changed)
         let manage = NSButton(title: "管理 Agent", target: self, action: #selector(manageAgents))
-        let options = NSStackView(views: [enabled, NSView(), manage]); options.spacing = 8
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "职责"), purpose], [NSTextField(labelWithString: "负责人"), leader], [NSTextField(labelWithString: "成员"), members]])
-        grid.columnSpacing = 12; grid.rowSpacing = 10; grid.column(at: 0).width = 52; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill
         instructions.isRichText = false; instructions.allowsUndo = true; instructions.delegate = self; instructions.font = .systemFont(ofSize: 13); instructions.textContainerInset = NSSize(width: 12, height: 12); instructions.isVerticallyResizable = true; instructions.autoresizingMask = [.width]; instructions.textContainer?.widthTracksTextView = true
         instructions.isAutomaticQuoteSubstitutionEnabled = false; instructions.isAutomaticTextReplacementEnabled = false; instructions.setAccessibilityLabel("团队协作指令")
         let editor = NSScrollView(); editor.documentView = instructions; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder
-        let label = NSTextField(labelWithString: "协作指令"); label.font = .systemFont(ofSize: 12, weight: .medium)
+        editor.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        let form = AgentSettingsStyle.form([
+            AgentSettingsStyle.section("团队信息", id: "team-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.labeledField("职责", purpose), AgentSettingsStyle.formRow("", enabled, trailing: true)]),
+            AgentSettingsStyle.section("协作指令", id: "team-instructions", rows: [editor]),
+            AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), AgentSettingsStyle.formRow("额外成员", members, trailing: true), AgentSettingsStyle.formRow("", manage, trailing: true)])
+        ], label: "团队配置")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         save.target = self; save.action = #selector(saveTeam); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; use.target = self; use.action = #selector(useTeam)
+        AgentSettingsStyle.primaryAction(save)
         let footer = NSStackView(views: [state, NSView(), use, save]); footer.spacing = 10
-        for view in [list, actions, grid, options, label, editor, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [list, actions, form, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), list.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -10),
-            actions.leadingAnchor.constraint(equalTo: list.leadingAnchor), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            grid.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), grid.topAnchor.constraint(equalTo: list.topAnchor), grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            options.leadingAnchor.constraint(equalTo: grid.leadingAnchor), options.trailingAnchor.constraint(equalTo: grid.trailingAnchor), options.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
-            label.leadingAnchor.constraint(equalTo: grid.leadingAnchor), label.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 14),
-            editor.leadingAnchor.constraint(equalTo: grid.leadingAnchor), editor.trailingAnchor.constraint(equalTo: grid.trailingAnchor), editor.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8), editor.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
-            footer.leadingAnchor.constraint(equalTo: grid.leadingAnchor), footer.trailingAnchor.constraint(equalTo: grid.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28)
+            actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), actions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), actions.heightAnchor.constraint(equalToConstant: 28),
+            list.leadingAnchor.constraint(equalTo: actions.leadingAnchor), list.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            footer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), footer.topAnchor.constraint(equalTo: actions.topAnchor), footer.heightAnchor.constraint(equalToConstant: 28),
+            form.leadingAnchor.constraint(equalTo: footer.leadingAnchor), form.trailingAnchor.constraint(equalTo: footer.trailingAnchor), form.topAnchor.constraint(equalTo: footer.bottomAnchor, constant: 18), form.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

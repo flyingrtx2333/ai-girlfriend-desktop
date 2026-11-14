@@ -155,11 +155,27 @@ import Darwin
                 report[name + "Geometry"] = ["windowWidth": host.frame.width, "contentWidth": bounds.width, "controls": rectangles.map(NSStringFromRect)]
                 host.setFrame(frame, display: true); await wait(0.05)
             }
+            func verifyCardForm(_ prefix: String, page: AgentSettingsPageController, label: String, sections: [String]) throws {
+                guard let root = page.pageContentView, let form = find(NSScrollView.self, root, { $0.accessibilityLabel() == label }), let document = form.documentView,
+                      let save = find(NSButton.self, root, { $0.title == "保存" }) else { throw PetError("缺少实际分组配置页面") }
+                root.layoutSubtreeIfNeeded()
+                let cards = sections.compactMap { key in find(AgentThemeView.self, document, { $0.identifier?.rawValue == "settings-card-" + key }) }
+                checks[prefix + "ActualGroupsUseDistinctCardSurfaces"] = cards.count == sections.count && cards.allSatisfy { $0.layer?.cornerRadius == 12 && $0.layer?.borderWidth == 1 && !$0.hasAmbiguousLayout }
+                let rectangles = cards.map { $0.convert($0.bounds, to: document) }
+                checks[prefix + "ActualCardsFitTheirOwnScrollableForm"] = document.isFlipped && form.hasVerticalScroller && document.bounds.height > form.documentVisibleRect.height && rectangles.allSatisfy { $0.minX >= 0 && $0.maxX <= document.bounds.maxX + 1 && $0.width >= 200 && $0.height >= 28 }
+                let original = form.contentView.bounds.origin, saveFrame = save.convert(save.bounds, to: root), enabled = save.isEnabled
+                form.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.maxY - form.documentVisibleRect.height))); form.reflectScrolledClipView(form.contentView)
+                let visible = form.documentVisibleRect
+                checks[prefix + "LastGroupIsReachableWithoutMovingSaveAction"] = rectangles.last.map { $0.minY >= visible.minY - 1 && $0.maxY <= visible.maxY + 1 } == true && save.convert(save.bounds, to: root) == saveFrame
+                checks[prefix + "TopSaveRetainsNativeShortcutAndState"] = save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command && save.isEnabled == enabled && saveFrame.minY >= form.frame.maxY && save.bezelColor != nil
+                form.contentView.scroll(to: original); form.reflectScrolledClipView(form.contentView)
+            }
             picker.select(chosen); NSApp.sendAction(choose, to: picker.target, from: picker)
             guard let manager = control.settingsControllerForCheck as? AgentProfileWindow else { throw PetError("角色设置页未打开") }
             manager.selectProfile(ids["mixedRole"]!)
             guard let skillMenu = find(NSPopUpButton.self, manager.pageContentView, { $0.accessibilityLabel() == "Agent Skills" }), let mcpMenu = find(NSPopUpButton.self, manager.pageContentView, { $0.accessibilityLabel() == "Agent MCP" }) else { throw PetError("缺少角色能力选择") }
             let skillRows = skillMenu.itemArray, mcpRows = mcpMenu.itemArray
+            try verifyCardForm("role", page: manager, label: "智能体配置", sections: ["agent-basic", "agent-execution", "agent-instructions", "agent-capabilities"])
             await verifyNarrowLayout("actualRoleEditorFits780PointWindowWithBothSourceChoices", [skillMenu, mcpMenu])
             checks["actualRoleEditorShowsBothSourceSkillsWithReadableLabels"] = skillRows.contains { $0.representedObject as? String == ids["alphaSkill"] && $0.title.contains("Alpha workspace") } && skillRows.contains { $0.representedObject as? String == ids["betaSkill"] && $0.title.contains("Beta source") }
             checks["actualRoleEditorShowsBothSourceConnectorsWithoutOutsideConnector"] = mcpRows.contains { $0.representedObject as? String == ids["alphaServer"] && $0.title.contains("Alpha workspace") } && mcpRows.contains { $0.representedObject as? String == ids["betaServer"] && $0.title.contains("Beta source") } && !mcpRows.contains { $0.representedObject as? String == ids["outsideRoleServer"] }
@@ -176,6 +192,7 @@ import Darwin
             checks["savedSourceRuleTightensExistingRoleWithoutAffectingOtherSource"] = try tasks.agents.permission(deniedBeta, task: tasks.task(roleTask)!, store: tasks) == .deny && tasks.agents.permission(allowedAlpha, task: tasks.task(roleTask)!, store: tasks) != .deny && refused { try tasks.agents.check(deniedBeta, task: tasks.task(roleTask)!, store: tasks) }
             guard control.showSettingsCategory("teams"), let teamPage = control.settingsControllerForCheck as? AgentTeamWindow, let leaders = find(NSPopUpButton.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队负责人" }), let membersMenu = find(NSPopUpButton.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队成员" }), let body = find(NSTextView.self, teamPage.pageContentView, { $0.accessibilityLabel() == "团队协作指令" }) else { throw PetError("多源团队设置未打开") }
             checks["actualTeamEditorOffersRolesFromEveryFrozenSource"] = leaders.itemArray.contains { $0.representedObject as? String == alphaRole.id && $0.title.contains("Alpha workspace") } && membersMenu.itemArray.contains { $0.representedObject as? String == betaRole.id && $0.title.contains("Beta source") } && !leaders.itemArray.contains { $0.representedObject as? String == ids["outside-reader"] }
+            try verifyCardForm("team", page: teamPage, label: "团队配置", sections: ["team-basic", "team-instructions", "team-members"])
             await verifyNarrowLayout("actualTeamEditorFits780PointWindowWithFullSourceMenuTitles", [leaders, membersMenu])
             body.string += "\nPUBLIC_TEAM_REVIEWED\n"; teamPage.textDidChange(Notification(name: NSText.didChangeNotification, object: body))
             guard let teamSave = find(NSButton.self, teamPage.pageContentView, { $0.title == "保存" && $0.isEnabled }) else { throw PetError("团队保存不可用") }; teamSave.performClick(nil)

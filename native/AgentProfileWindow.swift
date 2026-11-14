@@ -35,31 +35,29 @@ import UniformTypeIdentifiers
         tools.setAccessibilityLabel("Agent 工具权限"); skills.setAccessibilityLabel("Agent Skills"); mcp.setAccessibilityLabel("Agent MCP")
         mcp.toolTip = "只列出实际配置的连接器。MCP 在项目隔离外运行，需关闭只读项目并允许外部连接；建立连接须确认，调用按工具规则和所属任务权限处理。"
         for button in [readOnly, network, enabled] { button.target = self; button.action = #selector(changed) }
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "职责"), purpose], [NSTextField(labelWithString: "模型"), model]])
-        grid.columnSpacing = 12; grid.rowSpacing = 10; grid.column(at: 0).width = 52; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill
-        let execution = NSStackView(views: [permission, tools, NSView()]); execution.spacing = 10
-        let extensions = NSStackView(views: [skills, mcp, NSView()]); extensions.spacing = 10
-        let limits = NSStackView(views: [readOnly, network, enabled]); limits.orientation = .vertical; limits.alignment = .leading; limits.spacing = 8
-        let options = NSStackView(views: [execution, extensions, limits]); options.orientation = .vertical; options.alignment = .leading; options.spacing = 10
-        for row in [execution, extensions, limits] { row.widthAnchor.constraint(equalTo: options.widthAnchor).isActive = true }
+        for popup in [permission, tools, skills, mcp] { popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); popup.cell?.lineBreakMode = .byTruncatingTail }
         instructions.isRichText = false; instructions.allowsUndo = true; instructions.delegate = self; instructions.font = .systemFont(ofSize: 13); instructions.textContainerInset = NSSize(width: 12, height: 12)
         instructions.isVerticallyResizable = true; instructions.autoresizingMask = [.width]; instructions.textContainer?.widthTracksTextView = true
         instructions.isAutomaticQuoteSubstitutionEnabled = false; instructions.isAutomaticTextReplacementEnabled = false; instructions.setAccessibilityLabel("Agent 指令")
         let editor = NSScrollView(); editor.documentView = instructions; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder
-        let label = NSTextField(labelWithString: "指令"); label.font = .systemFont(ofSize: 12, weight: .medium)
+        editor.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        let form = AgentSettingsStyle.form([
+            AgentSettingsStyle.section("基本信息", id: "agent-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.labeledField("职责", purpose), AgentSettingsStyle.formRow("", enabled, trailing: true)]),
+            AgentSettingsStyle.section("执行配置", id: "agent-execution", rows: [AgentSettingsStyle.labeledField("模型", model), AgentSettingsStyle.formRow("审批方式", permission, trailing: true), AgentSettingsStyle.formRow("", readOnly, trailing: true), AgentSettingsStyle.formRow("", network, trailing: true)]),
+            AgentSettingsStyle.section("工作指令", id: "agent-instructions", rows: [editor]),
+            AgentSettingsStyle.section("可选能力", id: "agent-capabilities", rows: [AgentSettingsStyle.formRow("Skills", skills, trailing: true), AgentSettingsStyle.formRow("MCP", mcp, trailing: true), AgentSettingsStyle.formRow("工具权限", tools, trailing: true)])
+        ], label: "智能体配置")
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         save.target = self; save.action = #selector(saveProfile); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
+        AgentSettingsStyle.primaryAction(save)
         use.target = self; use.action = #selector(useProfile)
         let footer = NSStackView(views: [state, NSView(), use, save]); footer.spacing = 10
-        for view in [list, listActions, grid, options, label, editor, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [list, listActions, form, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            list.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), list.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: listActions.topAnchor, constant: -10),
-            listActions.leadingAnchor.constraint(equalTo: list.leadingAnchor), listActions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            grid.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), grid.topAnchor.constraint(equalTo: list.topAnchor), grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            options.leadingAnchor.constraint(equalTo: grid.leadingAnchor), options.trailingAnchor.constraint(equalTo: grid.trailingAnchor), options.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
-            label.leadingAnchor.constraint(equalTo: grid.leadingAnchor), label.topAnchor.constraint(equalTo: options.bottomAnchor, constant: 14),
-            editor.leadingAnchor.constraint(equalTo: grid.leadingAnchor), editor.trailingAnchor.constraint(equalTo: grid.trailingAnchor), editor.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8), editor.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
-            footer.leadingAnchor.constraint(equalTo: grid.leadingAnchor), footer.trailingAnchor.constraint(equalTo: grid.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28)
+            listActions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), listActions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), listActions.heightAnchor.constraint(equalToConstant: 28),
+            list.leadingAnchor.constraint(equalTo: listActions.leadingAnchor), list.topAnchor.constraint(equalTo: listActions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            footer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), footer.topAnchor.constraint(equalTo: listActions.topAnchor), footer.heightAnchor.constraint(equalToConstant: 28),
+            form.leadingAnchor.constraint(equalTo: footer.leadingAnchor), form.trailingAnchor.constraint(equalTo: footer.trailingAnchor), form.topAnchor.constraint(equalTo: footer.bottomAnchor, constant: 18), form.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)
         ])
         reload()
     }
