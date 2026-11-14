@@ -79,7 +79,7 @@ import Foundation
             let project = try? AgentPlugins.scope(name).workspace
             let extensionRoot = (try? self.store.extensions.plugins.folder(name).appendingPathComponent("payload").path).map { $0 + "/" }
             for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" {
-                if let project, !task.workspacePaths.contains(project) { continue }
+                if let project, !task.includesWorkspaceRoot(project) { continue }
                 let references = (task.activeSkills ?? []) + (task.messages.last(where: \.isHumanInput)?.extensionReferences ?? []) + (task.queuedMessages ?? []).flatMap { $0.extensionReferences ?? [] }
                 let introducesRules = item?.enabled == true && item?.rules.isEmpty == false && self.store.extensions.plugins.isEffective(name, workspace: task.workspace)
                 if project != nil || introducesRules || task.rulePlugins?.contains(name) == true || task.activeRules?.contains(where: { $0.name == name }) == true || references.contains(where: { reference in reference.pluginName == name || extensionRoot.map { reference.source.hasPrefix($0) } == true }) { self.cancel(task.id) }
@@ -87,13 +87,13 @@ import Foundation
         }
         store.rules.onChange = { [weak self] id, workspace, automatic in
             guard let self else { return }
-            for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" && (workspace == nil || workspace.map(task.workspacePaths.contains) == true) {
+            for task in self.store.tasks where !task.isProjectDocumentation && task.kind != "hook" && (workspace == nil || workspace.map(task.includesWorkspaceRoot) == true) {
                 if automatic || task.localRuleIDs?.contains(id) == true || task.activeLocalRules?.contains(where: { $0.id == id && ($0.workspace == task.workspace || $0.workspace.map(task.workspacePaths.contains) == true) }) == true { self.cancel(task.id) }
             }
         }
         store.instructions.onChange = { [weak self] id, workspace in
             guard let self else { return }
-            for task in self.store.tasks where (id == nil || id == task.id) && (workspace == nil || workspace == task.workspace) { self.cancel(task.id) }
+            for task in self.store.tasks where (id == nil || id == task.id) && (workspace == nil || workspace.map(task.includesWorkspaceRoot) == true) { self.cancel(task.id) }
         }
         store.teams.onChange = { [weak self] teamID in
             guard let self else { return }

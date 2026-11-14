@@ -56,6 +56,15 @@ import Darwin
             let sourceA = URL(fileURLWithPath:alpha).appendingPathComponent("notes/public.txt"), sourceB = URL(fileURLWithPath:beta).appendingPathComponent("notes/public.txt"), beforeA = try Data(contentsOf:sourceA), beforeB = try Data(contentsOf:sourceB)
             let entry = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)!
             checks["legacyWorkspaceHasOneDefaultSourceAndNoTaskMigration"] = entry.sourceFolders == [alpha] && entry.primary == alpha && entry.scope == nil && original.workspaceScope == nil
+            let alias = output.appendingPathComponent("Alpha linked workspace"); try FileManager.default.createSymbolicLink(at:alias,withDestinationURL:URL(fileURLWithPath:alpha))
+            let linkedID = tasks.create(title:"旧路径链接实际读写",workspace:alias.path), linkedTools = AgentTools(store:tasks,taskID:linkedID)
+            let linkedMessage = AgentMessage(role:"user",content:"原生路径链接验收；写入公开文件后撤回，不请求模型。")
+            tasks.update(linkedID) { $0.messages = [linkedMessage]; $0.status = .completed; $0.permission = .automatic }
+            let linkedRead = try await linkedTools.execute(call("read_file",["path":"README.md"]))
+            let linkedWrite = try await linkedTools.execute(call("write_file",["path":"generated/linked-check.txt","content":"LINKED_PUBLIC_WRITE_3847\n"]))
+            checks["legacyLinkedWorkspaceCanReadAndCreateNestedFiles"] = try linkedRead.text.contains("ALPHA_PUBLIC_7319") && !linkedWrite.failed && Data(contentsOf:URL(fileURLWithPath:alpha).appendingPathComponent("generated/linked-check.txt")) == Data("LINKED_PUBLIC_WRITE_3847\n".utf8)
+            try AgentRoundRollback.apply(AgentRoundRollback.review(taskID:linkedID,from:linkedMessage.id,store:tasks),store:tasks)
+            checks["legacyLinkedWorkspaceKeepsActualRollbackAndOriginalAlias"] = tasks.task(linkedID)?.workspace == alias.path && tasks.task(linkedID)?.workspaceScope == nil && !FileManager.default.fileExists(atPath:alias.appendingPathComponent("generated/linked-check.txt").path)
             for (name,paths,main) in [("empty",[String](),alpha),("duplicate",[alpha,alpha],alpha),("missing-main",[alpha,beta],outside),("nested",[alpha,alpha + "/notes"],alpha),("filesystem-root",["/"],"/")] { checks["invalidSourcesRejected-" + name] = refused { _ = try AgentWorkspaceScope.validateFolders(paths,primary:main) } }
             try tasks.organization.editWorkspace(entry,name:"公开双目录工作区",icon:.cup,color:.blue,folders:[alpha,beta],primary:beta,tasks:tasks.tasks)
             let configured = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)!, id = try tasks.createWorkspaceTask(alpha,mode:.coding,title:"双目录实际工具检查"), tools = AgentTools(store:tasks,taskID:id)
@@ -97,6 +106,31 @@ import Darwin
             let readOnly = try await tools.execute(call("run_command",["command":"printf blocked > " + AgentGit.quote(sourceA.path),"timeout_seconds":10]))
             checks["actualReadOnlyTerminalCannotWriteSecondary"] = try readOnly.failed && Data(contentsOf:sourceA) == beforeA
             tasks.update(id) { $0.mode = .agent }
+            let processID = try tasks.createWorkspaceTask(alpha,mode:.coding,title:"第二源目录配置变更实际取消")
+            tasks.update(processID) { $0.messages = [.init(role:"user",content:"原生公开等待进程，用于规则变更取消验收；不请求模型。")]; $0.permission = .automatic }
+            func heldProcess(_ taskID:String) async throws -> [pid_t] {
+                let pidFile = URL(fileURLWithPath:alpha).appendingPathComponent("workspace-check-" + taskID + ".pid")
+                let command = "/bin/sleep 30 & printf '%s %s\\n' \"$$\" \"$!\" > " + AgentGit.quote(pidFile.path) + "; wait"
+                let pending = try call("run_command",["command":command,"timeout_seconds":35,"network":false])
+                tasks.update(taskID) { $0.pendingCalls = [pending] }; runtime.start(taskID)
+                for _ in 0..<250 {
+                    if let raw = try? String(contentsOf:pidFile,encoding:.utf8), raw.split(whereSeparator:{$0.isWhitespace}).count == 2, runtime.isRunning(taskID) {
+                        let pids = raw.split(whereSeparator:{$0.isWhitespace}).compactMap{Int32($0)}
+                        if pids.count == 2, pids.allSatisfy({kill($0,0) == 0}) { return pids }
+                    }
+                    await wait(0.02)
+                }
+                throw PetError("公开等待进程尚未启动")
+            }
+            let linkedPIDs = try await heldProcess(linkedID), scopedPIDs = try await heldProcess(processID), allPIDs = linkedPIDs + scopedPIDs
+            checks["linkedAndSecondarySourceTasksOwnActualProcesses"] = allPIDs.count == 4 && allPIDs.allSatisfy{kill($0,0) == 0}
+            try tasks.extensions.plugins.setEnabled(tasks.extensions.plugins.installation(ids["alphaPlugin"]!),false)
+            for _ in 0..<250 {
+                if !runtime.isRunning(linkedID), !runtime.isRunning(processID), allPIDs.allSatisfy({kill($0,0) != 0}) { break }
+                await wait(0.02)
+            }
+            checks["sourcePluginChangeCancelsLinkedAndSecondaryActualProcesses"] = !runtime.isRunning(linkedID) && !runtime.isRunning(processID) && allPIDs.allSatisfy{kill($0,0) != 0}
+            try tasks.extensions.plugins.setEnabled(tasks.extensions.plugins.installation(ids["alphaPlugin"]!),true)
             let fork = tasks.fork(id)
             checks["branchKeepsFrozenFolderSetAndGroup"] = fork.flatMap(tasks.task)?.workspaceScope == tasks.task(id)?.workspaceScope && fork.flatMap(tasks.task)?.organizationWorkspace == alpha
             let scoped = tasks.task(id)!.workspaceScope!, privateMarker = store.directory.appendingPathComponent("private-public-marker.txt"); try Data("PRIVATE_APP_FIXTURE_5718".utf8).write(to:privateMarker)

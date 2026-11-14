@@ -25,6 +25,10 @@ struct AgentWorkspaceScope: Codable, Equatable, Sendable {
         try location(task,path:path,literal:literal).0
     }
     static func location(_ task:AgentTaskRecord, path:String = ".", literal:Bool = false) throws -> (AgentFiles,URL) {
+        if task.workspaceScope == nil {
+            let files = try AgentFiles(workspace:task.workspace)
+            return (files,try literal ? files.literalURL(path) : files.resolve(path))
+        }
         guard let primary = task.workspace else { throw PetError("请先选择项目文件夹") }
         guard !path.contains("\0"), path.utf8.count < 8192 else { throw PetError("文件路径无效") }
         let raw = (path.hasPrefix("/") ? URL(fileURLWithPath:path) : URL(fileURLWithPath:primary).appendingPathComponent(path.isEmpty ? "." : path)).standardizedFileURL
@@ -49,6 +53,9 @@ struct AgentWorkspaceScope: Codable, Equatable, Sendable {
 extension AgentTaskRecord {
     var organizationWorkspace: String? { workspaceScope?.group ?? workspace }
     var workspacePaths:[String] { workspaceScope?.folders ?? workspace.map{[$0]} ?? [] }
+    func includesWorkspaceRoot(_ path:String) -> Bool {
+        workspacePaths.contains { $0 == path || (try? AgentFiles(workspace:$0).root.path) == path }
+    }
 }
 
 enum AgentWorkspaceIcon: String, Codable, CaseIterable {
