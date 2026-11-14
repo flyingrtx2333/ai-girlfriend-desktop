@@ -175,6 +175,10 @@ import Darwin
                 host.setFrame(NSRect(origin: frame.origin, size: NSSize(width: 780, height: 540)), display: true); root.layoutSubtreeIfNeeded()
                 let statusRect = status.convert(status.bounds, to: root), formRect = form.convert(form.bounds, to: root)
                 checks[prefix + "NarrowStatusWrapsWithoutOverlappingFormOrChangingSaveState"] = !status.isHidden && status.bounds.height >= 36 && status.maximumNumberOfLines == 0 && status.lineBreakMode == .byWordWrapping && statusRect.minY >= formRect.maxY && save.isEnabled == enabled
+                checks[prefix + "StatusPublishesTheFullAccessibleMessage"] = status.accessibilityValue() == status.stringValue
+                form.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.maxY - form.documentVisibleRect.height))); form.reflectScrolledClipView(form.contentView)
+                let hostScroll = root.enclosingScrollView, visibleSave = save.visibleRect
+                checks[prefix + "NarrowCardScrollingKeepsActionsInsideVisibleHost"] = visibleSave.width >= save.bounds.width - 1 && visibleSave.height >= save.bounds.height - 1 && hostScroll.map { ($0.documentView?.bounds.height ?? 0) <= $0.documentVisibleRect.height + 1 } == true
                 status.stringValue = previous; host.setFrame(frame, display: true); root.layoutSubtreeIfNeeded()
                 checks[prefix + "EmptyStatusCollapsesAndFullTextRemainsCopyable"] = status.isHidden == previous.isEmpty && status.isSelectable
             }

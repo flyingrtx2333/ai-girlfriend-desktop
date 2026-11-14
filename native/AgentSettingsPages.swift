@@ -10,6 +10,7 @@ import AppKit
     var presentingWindow: NSWindow? { settingsHostWindow ?? window }
     var pageContentView: NSView? { embeddedContent ?? window?.contentView }
     var isPageVisible: Bool { pageContentView?.window?.isVisible == true && pageContentView?.isHiddenOrHasHiddenAncestor != true }
+    var minimumSettingsContentHeight: CGFloat { max(360, (window?.minSize.height ?? 420) - 22) }
 
     func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         guard let content = embeddedContent ?? window?.contentView else { return nil }
@@ -299,7 +300,7 @@ import AppKit
         entries.last?.view.removeFromSuperview()
         controller.onSettingsPush = { [weak self] child in self?.push(child) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
-        content.heightAnchor.constraint(greaterThanOrEqualToConstant: max(360, (controller.window?.minSize.height ?? 420) - 22)).isActive = true
+        content.heightAnchor.constraint(greaterThanOrEqualToConstant: controller.minimumSettingsContentHeight).isActive = true
         entries.append(Entry(controller: controller, view: content, title: controller.window?.title ?? "设置"))
         displayCurrent()
     }

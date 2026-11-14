@@ -14,6 +14,7 @@ import AppKit
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
     private var reviewPage: AgentSettingsReviewPage?
+    override var minimumSettingsContentHeight: CGFloat { 220 }
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil, taskID: String? = nil) {
         self.store = store; self.workspace = workspace; self.taskID = taskID; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -48,7 +49,7 @@ import AppKit
         NSLayoutConstraint.activate([
             actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), actions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), actions.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: actions.leadingAnchor), list.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: actions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 180)
+            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: actions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
