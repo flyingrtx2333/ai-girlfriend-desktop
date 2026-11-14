@@ -167,7 +167,10 @@ import UniformTypeIdentifiers
         do {
             let (text, _) = try store.extensions.document(item)
             selected = item; openedHash = AgentFiles.hash(Data(text.utf8)); editor.string = text; editor.isEditable = item.managed
-            availableInTask = (try? store.extensions.item(item.id, workspace: store.task(taskID)?.workspace, enabled: false).file) == item.file
+            availableInTask = store.task(taskID).map { task in
+                guard (try? store.extensions.item(item.id, task: task, enabled: false).file) == item.file else { return false }
+                return item.kind != .skill || (try? store.agents.checkSkill(item.id, task: task)) != nil
+            } ?? false
             editor.undoManager?.removeAllActions(); dirty = false
             location.stringValue = item.scope + " · /" + item.invocation; location.toolTip = item.file.path
             enabled.state = item.enabled ? .on : .off; updateControls()
@@ -178,7 +181,7 @@ import UniformTypeIdentifiers
         kinds.isEnabled = idle; search.isEnabled = idle; table.isEnabled = idle; add.isEnabled = idle; importButton.isEnabled = idle
         enabled.isEnabled = idle && selected != nil && selected?.pluginName == nil
         use.isEnabled = idle && selected?.enabled == true && onInsert != nil && availableInTask
-        use.toolTip = availableInTask ? nil : "请在此源文件夹的任务中使用"
+        use.toolTip = availableInTask ? nil : "此扩展超出当前任务的可用范围"
         remove.isEnabled = idle && managed; save.isEnabled = idle && managed && dirty; reveal.isEnabled = idle && selected != nil
         editor.isEditable = idle && managed
     }

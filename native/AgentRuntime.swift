@@ -401,7 +401,7 @@ import Foundation
         if task.workspaceScope != nil { _ = try AgentWorkspaceScope.roots(task) }
         try AgentMCPSelection.validate(task,store:store)
         var definitions = AgentTools.definitions(mode: task.mode, kind: task.kind, groups: task.isProjectDocumentation ? nil : task.toolGroups ?? [])
-        if !task.isProjectDocumentation, task.skillEvolutionJob == nil, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6, workspace: task.workspace) }
+        if !task.isProjectDocumentation, task.skillEvolutionJob == nil, task.toolGroups?.contains("mcp") == true { definitions += try store.mcp.modelDefinitions(owner: task.id, mode: task.mode, maximum: preferences.contextLimit <= 8192 ? 2 : 6, task: task) }
         if task.skillEvolutionJob != nil { definitions.removeAll { let name = ($0["function"] as? [String:Any])?["name"] as? String ?? ""; return !AgentSkillDrafts.tools.contains(name) || name == "draft_skill" && task.skillEvolutionJob?.approvedPlan == nil } }
         if task.kind == AgentKnowledgeCards.kind, let phase = try store.knowledgeCards.stage(task) {
             definitions = definitions.filter { ($0["function"] as? [String: Any])?["name"] as? String == phase.tool }
@@ -606,13 +606,13 @@ import Foundation
     private func hookTool(_ call: AgentToolCall, id: String) throws -> (String, [String: Any]) {
         // Invalid or stale names still need a tool error in the conversation.
         // Execution performs strict routing inside its per-call error handler.
-        let routed = (try? store.mcp.routedCall(call, owner: id, workspace: store.task(id)?.workspace)) ?? call
+        let routed = (try? store.mcp.routedCall(call, owner: id, task: store.task(id))) ?? call
         let aliases = ["run_command": "Bash", "write_file": "Write", "edit_file": "Edit", "read_file": "Read", "list_directory": "Glob", "search_files": "Grep"]
         var name = aliases[call.name] ?? call.name, input = call.object
         var fields: [String: Any] = ["tool_use_id": call.id, "original_request_name": call.name]
         if routed.name == "call_mcp_tool" {
             let serverID = routed.object["server_id"] as? String ?? "", tool = routed.object["tool"] as? String ?? ""
-            let server = store.mcp.availableServers(workspace: store.task(id)?.workspace).first { $0.id == serverID }
+            let server = store.task(id).flatMap { try? store.mcp.server(serverID, task: $0) }
             name = "mcp__" + (server?.name ?? serverID) + "__" + tool
             input = routed.object["arguments"] as? [String: Any] ?? [:]
             fields["mcp_context"] = ["server_id": serverID, "server_name": server?.name ?? serverID, "tool_name": tool]
@@ -700,7 +700,7 @@ import Foundation
         try AgentMCPSelection.validate(task,store:store)
         let skills = (task.isProjectDocumentation || task.isKnowledgeEditing) ? "" : try store.extensions.context(store: store, task: task)
         context += skills
-        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id, workspace: task.workspace) }
+        if !task.isProjectDocumentation, task.toolGroups?.contains("mcp") == true { context += store.mcp.context(owner: task.id, task: task) }
         if !task.isProjectDocumentation, task.agent == nil { context += "\n\n[角色设定]\n" + String(preferences().persona.prefix(4000)) }
         if let binding = task.agent {
             context += "\n\n[自定义 Agent：\(binding.profile.name)]\n" + binding.profile.instructions
@@ -945,7 +945,7 @@ import Foundation
                     self.notifyChange(id)
                 }
                 try Task.checkCancellation(); guard active[id]?.token == run.token else { return }
-                turn.calls = turn.calls.map { store.mcp.decorate($0, owner: id, workspace: store.task(id)?.workspace) }
+                turn.calls = turn.calls.map { store.mcp.decorate($0, owner: id, task: store.task(id)) }
                 let priorIDs = Set(task.messages.flatMap { ($0.toolCalls ?? []).map(\.id) })
                 let deliveredImages = visuals.isEmpty ? Set<AgentVisualPart>() : Set(AgentAttachmentVisuals.references(context, maximum: AgentAttachmentVisuals.maximumImages(p)).values.flatMap { $0 })
                 guard turn.calls.allSatisfy({ !priorIDs.contains($0.id) }) else { throw PetError("模型重复使用了工具调用编号，请继续任务重试") }

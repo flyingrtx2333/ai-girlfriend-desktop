@@ -13,6 +13,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
 
 @MainActor final class AgentMCPContentWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String, sessionOwner: String, workspace: String?
+    private let workspaceScope: AgentWorkspaceScope?
     private let insert: (String, [String]) throws -> Void
     private let servers = NSPopUpButton(), kinds = NSSegmentedControl(labels: ["资源", "URI 模板", "提示词"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = NSTableView(), viewer = NSTextView(), uri = NSTextField()
@@ -40,6 +41,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private var kind: String { ["resources", "templates", "prompts"][max(0, kinds.selectedSegment)] }
     init(store: AgentStore, taskID: String, serverID: String? = nil, onInsert: @escaping (String, [String]) throws -> Void) {
         self.store = store; self.taskID = taskID; self.insert = onInsert; workspace = store.task(taskID)?.workspace
+        workspaceScope = store.task(taskID)?.workspaceScope
         sessionOwner = taskID + "/context-" + UUID().uuidString
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1020, height: 690), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "MCP 资料 · " + (store.task(taskID)?.title ?? "任务"); window.minSize = NSSize(width: 760, height: 540); window.center(); window.isReleasedWhenClosed = false
@@ -91,7 +93,11 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private func populateServers() {
         let previous = serverID, allowed = store.task(taskID)?.agent?.mcpServers
         servers.removeAllItems()
-        for server in store.mcp.availableServers(workspace: workspace) where server.enabled && (allowed?.contains(server.id) ?? true) { servers.addItem(withTitle: server.name); servers.lastItem?.representedObject = server.id }
+        guard let task = try? currentTask(), let available = try? store.mcp.availableServers(task: task) else { return }
+        for server in available where server.enabled && (allowed?.contains(server.id) ?? true) {
+            servers.addItem(withTitle: workspaceScope == nil ? server.name : AgentMCPSelection.title(server)); servers.lastItem?.representedObject = server.id
+            servers.lastItem?.toolTip = AgentMCPSelection.sourceWorkspace(server) ?? workspace
+        }
         if let previous, let item = servers.itemArray.first(where: { $0.representedObject as? String == previous }) { servers.select(item) }
     }
     func selectRequestedServer(_ id: String) {
@@ -100,10 +106,15 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         guard let item = servers.itemArray.first(where: { $0.representedObject as? String == id }) else { state.stringValue = "此任务没有该连接器的访问权限。"; return }
         servers.select(item); changeServer()
     }
+    private func currentTask() throws -> AgentTaskRecord {
+        guard let task = store.task(taskID), !task.archived, task.kind != "wiki", task.kind != "hook", task.workspace == workspace, task.workspaceScope == workspaceScope else { throw PetError("任务或项目已改变，请重新打开 MCP 资料") }
+        return task
+    }
+    private func currentServer(_ id: String) throws -> AgentMCPServer { try store.mcp.server(id, task: currentTask()) }
     private func taskScope(_ serverID: String, operation: String = "connect_mcp") throws -> AgentTaskRecord {
-        guard let task = store.task(taskID), !task.archived, task.kind != "wiki", task.kind != "hook", task.workspace == workspace else { throw PetError("任务或项目已改变，请重新打开 MCP 资料") }
+        let task = try currentTask()
         guard [.agent, .goal].contains(task.mode) else { throw PetError("请先切换到 Agent 或目标模式") }
-        _ = try store.mcp.server(serverID, workspace: task.workspace)
+        _ = try store.mcp.server(serverID, task: task)
         let call = AgentToolCall(id: "mcp-context", name: operation, arguments: String(decoding: try JSONSerialization.data(withJSONObject: ["server_id": serverID]), as: UTF8.self))
         try store.agents.check(call, task: task, store: store); return task
     }
@@ -125,8 +136,8 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     @objc private func start() {
         guard job == nil, let id = serverID else { return }
         launch {
-            let task = try self.taskScope(id), server = try self.store.mcp.server(id, workspace: self.workspace)
-            _ = try await self.store.mcp.connect(id, revision: server.revision, owner: self.sessionOwner, workspace: task.workspace)
+            let task = try self.taskScope(id), server = try self.currentServer(id)
+            _ = try await self.store.mcp.connect(id, revision: server.revision, owner: self.sessionOwner, workspace: self.store.mcp.workspaceForServer(id, task: task))
             try await self.fetchList(refresh: false, append: false)
         }
     }
@@ -194,7 +205,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard rows.indices.contains(table.selectedRow) else { clearSelection(); refreshState(); return }
         let item = rows[table.selectedRow]; clearSelection(); selected = item; title.stringValue = item["title"] as? String ?? item["name"] as? String ?? ""
-        if let id = serverID, let server = try? store.mcp.server(id, workspace: workspace) { selectedFormKey = id + "\n" + server.revision + "\n" + kind + "\n" + (item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "") }
+        if let id = serverID, let server = try? currentServer(id) { selectedFormKey = id + "\n" + server.revision + "\n" + kind + "\n" + (item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "") }
         uri.stringValue = item["uri"] as? String ?? item["uriTemplate"] as? String ?? ""; uri.isHidden = kind == "prompts"; uri.isEditable = kind == "templates"; uri.toolTip = uri.stringValue
         viewer.string = item["description"] as? String ?? ""
         let parameters = item["arguments"] as? [[String: Any]] ?? []
@@ -261,7 +272,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         add.title = kind == "prompts" ? "加入草稿" : "加入附件"; add.isEnabled = !busy && !inserted && scopeError == nil && preview.map(store.mcp.previewCurrent) == true
         track.isHidden = preview?.kind != "resources"; track.isEnabled = !busy && scopeError == nil && preview.map(store.mcp.supportsSubscription) == true; track.state = preview.map(store.mcp.subscribed) == true ? .on : .off
         servers.toolTip = servers.titleOfSelectedItem
-        if let server = id.flatMap({ try? store.mcp.server($0, workspace: workspace) }) { destination.stringValue = server.destination; destination.toolTip = server.destination }
+        if let server = id.flatMap({ try? currentServer($0) }) { destination.stringValue = server.destination; destination.toolTip = server.destination }
         else { destination.stringValue = "" }
         if let scopeError { state.stringValue = scopeError }
         else if connected, !catalog.isEmpty, !catalogCurrent { state.stringValue = "目录已更新，请刷新" }
@@ -303,7 +314,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         if let observer { store.mcp.removeContentObserver(observer); self.observer = nil }; store.mcp.disconnect(owner: sessionOwner)
     }
     func workspaceReadback() -> [String: Any] {
-        guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--mcp-content-check"), let content = pageContentView else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || ["--mcp-content-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), let content = pageContentView else { return [:] }
         func rect(_ view: NSView) -> [String: Double] { let r = view.convert(view.bounds, to: content); return ["x": r.minX, "y": r.minY, "width": r.width, "height": r.height] }
         func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
         let focused = presentingWindow?.firstResponder
@@ -314,7 +325,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "previewVisibleHeight": previewVisibleHeight, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
     }
     func checkAction(_ action: String, kind index: Int? = nil, query: String? = nil, row: Int? = nil, values: [String: String]? = nil, resourceURI: String? = nil) {
-        guard CommandLine.arguments.contains("--mcp-content-check"), !CommandLine.arguments.contains("--live-agent") else { return }
+        guard ["--mcp-content-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return }
         if let index { kinds.selectedSegment = index; changeKind() }
         if let query { search.stringValue = query; loadList() }
         if let row, rows.indices.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }

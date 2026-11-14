@@ -28,6 +28,31 @@ struct AgentMCPServer: Codable, Identifiable {
         guard let plugins else { return savedServers.filter { $0.plugin == nil } }
         return (try? plugins.mcpServers(saved: savedServers, workspace: workspace, onlyScope: onlyScope)) ?? savedServers.filter { $0.plugin == nil }
     }
+    func availableServers(task: AgentTaskRecord) throws -> [AgentMCPServer] {
+        guard task.workspaceScope != nil else { return availableServers(workspace: task.workspace) }
+        var result: [AgentMCPServer] = [], seen: [String: AgentMCPServer] = [:]
+        for context in try AgentWorkspaceScope.contexts(task) {
+            for server in availableServers(workspace: context.workspace) {
+                if let prior = seen[server.id] {
+                    guard prior.plugin == server.plugin else { throw PetError("连接器编号对应多个来源，请重新审阅配置") }
+                    continue
+                }
+                seen[server.id] = server; result.append(server)
+            }
+        }
+        return result
+    }
+    func workspaceForServer(_ id: String, task: AgentTaskRecord) throws -> String? {
+        guard let candidate = try availableServers(task: task).first(where: { $0.id == id }) else { throw PetError("此连接器不属于当前任务的源文件夹，请重新选择") }
+        if let project = AgentMCPSelection.sourceWorkspace(candidate) {
+            guard task.includesWorkspaceRoot(project) else { throw PetError("连接器来源超出当前任务范围") }
+            return task.workspaceScope == nil ? task.workspace : project
+        }
+        return task.workspace
+    }
+    func server(_ id: String, revision: String? = nil, task: AgentTaskRecord) throws -> AgentMCPServer {
+        try server(id, revision: revision, workspace: workspaceForServer(id, task: task))
+    }
     var onChange: (() -> Void)?
     private var contentObservers: [UUID: () -> Void] = [:]
     func observeContent(_ action: @escaping () -> Void) -> UUID { let id = UUID(); contentObservers[id] = action; return id }
@@ -484,16 +509,19 @@ struct AgentMCPServer: Codable, Identifiable {
     }
     func subscribed(_ preview: AgentMCPContentPreview) -> Bool { preview.uri.map { sessions[key(preview.owner, preview.server.id)]?.subscriptions.contains($0) == true } ?? false }
     func supportsSubscription(_ preview: AgentMCPContentPreview) -> Bool { (sessions[key(preview.owner, preview.server.id)]?.capabilities["resources"] as? [String: Any])?["subscribe"] as? Bool == true }
-    func summary(owner: String, allowedServers: Set<String>? = nil, workspace: String? = nil) throws -> String {
+    func summary(owner: String, allowedServers: Set<String>? = nil, workspace: String? = nil, task: AgentTaskRecord? = nil) throws -> String {
         if let loadError { throw PetError(loadError) }
-        let rows: [[String: Any]] = availableServers(workspace: workspace).filter { allowedServers?.contains($0.id) ?? true }.map { server in
+        let all = try task.map { try availableServers(task: $0) } ?? availableServers(workspace: workspace)
+        let rows: [[String: Any]] = all.filter { allowedServers?.contains($0.id) ?? true }.map { server in
             var value: [String: Any] = ["id": server.id, "name": server.name, "type": server.type, "enabled": server.enabled, "configured": server.configured != false, "configuration": server.revision, "destination": server.destination, "connection": token(server.id, owner: owner) as Any? ?? NSNull()]
+            if let task { value["workspace"] = AgentMCPSelection.sourceWorkspace(server) ?? task.workspace }
             if let plugin = server.plugin { value["plugin"] = (try? AgentPlugins.scope(plugin.name).name) ?? "插件"; value["scope"] = (try? AgentPlugins.scope(plugin.name).workspace) == nil ? "user" : "project" }; return value
         }
         return String(decoding: try JSONSerialization.data(withJSONObject: ["servers": rows], options: [.sortedKeys]), as: UTF8.self)
     }
-    func context(owner: String, workspace: String? = nil) -> String {
-        let rows = availableServers(workspace: workspace).compactMap { server -> [String: Any]? in
+    func context(owner: String, workspace: String? = nil, task: AgentTaskRecord? = nil) -> String {
+        let all = task.map { (try? availableServers(task: $0)) ?? [] } ?? availableServers(workspace: workspace)
+        let rows = all.compactMap { server -> [String: Any]? in
             guard let session = sessions[key(owner, server.id)], session.connected else { return nil }
             return ["server_id": server.id, "name": server.name, "connection": session.token, "schemas_read": Array(session.schemaOrder.suffix(6))]
         }
@@ -512,10 +540,11 @@ struct AgentMCPServer: Codable, Identifiable {
     // Deliver the server's actual parameter schema to the model API. Wrapping
     // arbitrary arguments in another JSON object encourages double escaping
     // and consumes scarce context with copied session identifiers.
-    func modelDefinitions(owner: String, mode: AgentMode, maximum: Int = 6, workspace: String? = nil) throws -> [[String: Any]] {
+    func modelDefinitions(owner: String, mode: AgentMode, maximum: Int = 6, workspace: String? = nil, task: AgentTaskRecord? = nil) throws -> [[String: Any]] {
         guard [.agent, .goal].contains(mode) else { return [] }
         var definitions: [[String: Any]] = []
-        for server in availableServers(workspace: workspace) where server.enabled {
+        let all = try task.map { try availableServers(task: $0) } ?? availableServers(workspace: workspace)
+        for server in all where server.enabled {
             guard let session = sessions[key(owner, server.id)], session.connected, session.revision == server.revision else { continue }
             let tools = try JSONSerialization.jsonObject(with: session.catalog) as? [[String: Any]] ?? []
             for name in session.schemaOrder.suffix(6) {
@@ -525,9 +554,10 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         return Array(definitions.suffix(max(1, min(12, maximum))))
     }
-    func routedCall(_ call: AgentToolCall, owner: String, workspace: String? = nil) throws -> AgentToolCall? {
+    func routedCall(_ call: AgentToolCall, owner: String, workspace: String? = nil, task: AgentTaskRecord? = nil) throws -> AgentToolCall? {
         guard Self.isModelToolName(call.name) else { return nil }
-        for server in availableServers(workspace: workspace) where server.enabled {
+        let all = try task.map { try availableServers(task: $0) } ?? availableServers(workspace: workspace)
+        for server in all where server.enabled {
             guard let session = sessions[key(owner, server.id)], session.connected, session.revision == server.revision else { continue }
             for name in session.schemaNames where modelName(serverID: server.id, token: session.token, tool: name) == call.name {
                 let object: [String: Any] = ["server_id": server.id, "connection": session.token, "tool": name, "arguments": call.object]
@@ -536,10 +566,11 @@ struct AgentMCPServer: Codable, Identifiable {
         }
         throw PetError("MCP 工具名或连接无效；用 list_mcp_servers 核对连接，再用 list_mcp_tools(query=工具原名) 获取实际 model_tool。不要拼接名称或重放旧操作")
     }
-    func decorate(_ call: AgentToolCall, owner: String, workspace: String? = nil) -> AgentToolCall {
-        var result = call; result.displayName = (try? routedCall(call, owner: owner, workspace: workspace))?.displayName
+    func decorate(_ call: AgentToolCall, owner: String, workspace: String? = nil, task: AgentTaskRecord? = nil) -> AgentToolCall {
+        var result = call; result.displayName = (try? routedCall(call, owner: owner, workspace: workspace, task: task))?.displayName
         if let title = ["list_mcp_servers": "连接器目录", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "list_mcp_resources": "MCP 资料目录", "read_mcp_resource": "读取 MCP 资料", "disconnect_mcp": "断开 MCP"][call.name] {
-            let name = availableServers(workspace: workspace).first { $0.id == call.object["server_id"] as? String }?.name
+            let all = task.map { (try? availableServers(task: $0)) ?? [] } ?? availableServers(workspace: workspace)
+            let name = all.first { $0.id == call.object["server_id"] as? String }?.name
             result.displayName = title + (name.map { " · " + $0 } ?? "")
         }
         return result

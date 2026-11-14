@@ -91,7 +91,7 @@ enum AgentSlashEntry {
     func recordMode(_ value: AgentMode) { record("mode." + value.rawValue) }
     func entries(_ items: [AgentExtensionItem], task: AgentTaskRecord, idle: Bool, canChangeMode: Bool, connectors: [AgentMCPServer] = []) -> [AgentSlashEntry] {
         guard !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { return [] }
-        let enabled = items.filter(\.enabled)
+        let enabled = items.filter { $0.enabled && ($0.kind != .skill || task.agent == nil || task.agent!.skills.contains($0.id)) }
         var result: [AgentSlashEntry] = canChangeMode && ![.running, .waiting].contains(task.status) && task.automation == nil && task.agent?.ownerID == nil ? [.mode(.goal), .mode(.plan)] : []
         if idle, !task.messages.isEmpty { result.append(.builtin(.compact)) }
         if [.agent, .goal].contains(task.mode) {

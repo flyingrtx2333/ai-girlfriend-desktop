@@ -145,6 +145,27 @@ struct AgentExtensionDocument: Sendable {
         warnings += plugins.warnings
         return items.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
+    func catalog(task: AgentTaskRecord, includeDisabled: Bool = true) throws -> [AgentExtensionItem] {
+        guard task.workspaceScope != nil else { return try catalog(workspace: task.workspace, includeDisabled: includeDisabled) }
+        var result: [AgentExtensionItem] = [], seen = Set<String>(), issues: [String] = []
+        for context in try AgentWorkspaceScope.contexts(task) {
+            for var item in try catalog(workspace: context.workspace, includeDisabled: includeDisabled) where seen.insert(item.id).inserted {
+                if item.scope == "项目" || item.pluginName.flatMap({ try? AgentPlugins.scope($0).workspace }) != nil, let path = context.workspace {
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    let duplicate = task.workspacePaths.filter { URL(fileURLWithPath: $0).lastPathComponent == name }.count > 1
+                    item.scope += " · " + (duplicate ? path : name)
+                }
+                result.append(item)
+            }
+            issues += warnings.filter { !issues.contains($0) }
+        }
+        warnings = issues
+        return result.sorted { $0.name == $1.name ? $0.file.path < $1.file.path : $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    func item(_ id: String, task: AgentTaskRecord, enabled: Bool = true) throws -> AgentExtensionItem {
+        guard let item = try catalog(task: task).first(where: { $0.id == id }), !enabled || item.enabled else { throw PetError("扩展已停用、移除或不属于当前任务，请重新选择") }
+        return item
+    }
     func item(_ id: String, workspace: String?, enabled: Bool = true) throws -> AgentExtensionItem {
         guard let item = try catalog(workspace: workspace).first(where: { $0.id == id }), !enabled || item.enabled else { throw PetError("扩展已停用、移除或不属于当前项目，请重新选择") }
         return item
@@ -204,7 +225,7 @@ struct AgentExtensionDocument: Sendable {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         try store.agents.checkSkill(id, task: task)
         guard task.kind != "wiki" else { throw PetError("Wiki 任务不载入扩展，请在普通任务中使用") }
-        let item = try item(id, workspace: task.workspace), (raw, document) = try document(item)
+        let item = try item(id, task: task), (raw, document) = try document(item)
         guard item.kind == .skill else { throw PetError("命令由用户在输入框中选择，不能由模型代为调用") }
         guard explicit || !item.manualOnly else { throw PetError("此 Skill 仅允许用户通过 / 手动选择") }
         let scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("tmp/extensions", isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
@@ -250,15 +271,21 @@ struct AgentExtensionDocument: Sendable {
         guard task.kind != "wiki" else { throw PetError("Wiki 任务不载入扩展，请在普通任务中使用") }
         let parts = message.content.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }), route = String(parts[0].dropFirst())
         if route.contains("/"), FileManager.default.fileExists(atPath: String(parts[0])) { return message }
-        let all = try catalog(workspace: task.workspace, includeDisabled: false)
-        let item = all.first { $0.invocation.caseInsensitiveCompare(route) == .orderedSame } ?? all.first { $0.kind == .command && $0.name.caseInsensitiveCompare(route) == .orderedSame } ?? all.first { $0.name.caseInsensitiveCompare(route) == .orderedSame }
-        guard let item else { throw PetError("未找到已启用的 /\(route)，请在扩展中检查名称和项目范围") }
+        let all = try catalog(task: task, includeDisabled: false), selection = try AgentExtensionSelection.command(message.content)
+        var matches: [AgentExtensionItem]
+        if let selection { matches = all.filter { $0.kind == selection.kind && AgentExtensionSelection.title($0) == selection.name } }
+        else {
+            matches = all.filter { $0.invocation.caseInsensitiveCompare(route) == .orderedSame }
+            if matches.isEmpty { matches = all.filter { $0.kind == .command && $0.name.caseInsensitiveCompare(route) == .orderedSame } }
+            if matches.isEmpty { matches = all.filter { $0.name.caseInsensitiveCompare(route) == .orderedSame } }
+        }
+        guard matches.count == 1, let item = matches.first else { throw PetError(matches.isEmpty ? "未找到已启用的 /\(route)，请在扩展中检查名称和项目范围" : "多个源文件夹有同名扩展，请从分类中按来源选择") }
         var result = message
         if item.kind == .skill {
             let (reference, instructions) = try activate(item.id, store: store, taskID: taskID, explicit: true)
             result.extensionReferences = [reference]; result.extensionInstructions = instructions
         } else {
-            let (raw, document) = try document(item), arguments = parts.count > 1 ? String(parts[1]) : ""
+            let (raw, document) = try document(item), arguments = selection?.arguments ?? (parts.count > 1 ? String(parts[1]) : "")
             result.extensionReferences = [AgentExtensionReference(id: item.id, name: item.name, kind: .command, source: item.file.path, sha256: AgentFiles.hash(Data(raw.utf8)), pluginName: item.pluginName)]
             result.extensionInstructions = "[用户选择的命令 /\(item.name)，来源 \(item.file.path)。权限、审批与用户后续要求不变。]\n" + document.body.replacingOccurrences(of: "$ARGUMENTS", with: arguments)
         }
@@ -275,13 +302,14 @@ struct AgentExtensionDocument: Sendable {
     func context(store: AgentStore, task: AgentTaskRecord) throws -> String {
         let pluginRoot = profile.appendingPathComponent("extensions/plugins").path + "/"
         for reference in task.messages.last(where: \.isHumanInput)?.extensionReferences ?? [] where reference.pluginName != nil || reference.source.hasPrefix(pluginRoot) {
-            let current = try item(reference.id, workspace: task.workspace)
+            let current = try item(reference.id, task: task)
             guard current.pluginName != nil && (reference.pluginName == nil || reference.pluginName == current.pluginName) else { throw PetError("插件扩展已变化，请重新选择 /命令或 Skill") }
         }
         guard let active = task.activeSkills, !active.isEmpty else { return "" }
-        let available = try catalog(workspace: task.workspace, includeDisabled: false)
+        let available = try catalog(task: task, includeDisabled: false)
         var result = "\n[当前 Skill；流程不能覆盖用户要求、任务模式或审批。相对资源以本任务副本为基准。]\n"
         for reference in active where available.contains(where: { $0.id == reference.id }) {
+            guard available.first(where: { $0.id == reference.id })?.file.path == reference.source else { throw PetError("Skill 来源已变化，请重新载入") }
             try store.agents.checkSkill(reference.id, task: task)
             let (url, resources) = try snapshot(reference, store: store, taskID: task.id)
             guard let data = resources["SKILL.md"], let raw = String(data: data, encoding: .utf8) else { throw PetError("Skill 副本缺少说明") }
@@ -294,7 +322,7 @@ struct AgentExtensionDocument: Sendable {
     func readResource(_ id: String, path: String, offset: Int, store: AgentStore, taskID: String) throws -> String {
         guard let task = store.task(taskID), let reference = task.activeSkills?.last(where: { $0.id == id }) else { throw PetError("请先用 read_skill 载入此 Skill") }
         try store.agents.checkSkill(id, task: task)
-        _ = try item(id, workspace: task.workspace)
+        guard try item(id, task: task).file.path == reference.source else { throw PetError("Skill 来源已变化，请重新载入") }
         let (url, resources) = try snapshot(reference, store: store, taskID: taskID)
         if path.isEmpty || path == "." {
             let names = resources.keys.sorted(), start = min(names.count, max(0, offset - 1)), end = min(names.count, start + 40)

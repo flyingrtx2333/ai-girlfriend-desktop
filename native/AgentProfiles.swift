@@ -242,7 +242,7 @@ struct AgentProfileAssignment: Codable {
         var allowed = Set(native.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
         for value in values {
             guard let name = (value["function"] as? [String: Any])?["name"] as? String, AgentMCP.isModelToolName(name),
-                  let call = try? store.mcp.routedCall(AgentToolCall(id: "schema", name: name, arguments: "{}"), owner: task.id, workspace: task.workspace) else { continue }
+                  let call = try? store.mcp.routedCall(AgentToolCall(id: "schema", name: name, arguments: "{}"), owner: task.id, task: task) else { continue }
             if (try? check(call, task: task, store: store)) != nil { allowed.insert(name) }
         }
         return try values.filter { value in

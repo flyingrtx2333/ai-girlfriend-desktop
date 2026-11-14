@@ -28,7 +28,7 @@ import Foundation
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
     func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }; store.browser.stop(taskID); store.canvases.stop(taskID); store.offices.stop(taskID); store.desktop.disconnect(taskID); store.mcp.disconnect(owner: taskID) }
     func gitDirectory(for call: AgentToolCall) throws -> String? {
-        if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call, task: task, store: store) }
+        if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID, task: task) ?? call, task: task, store: store) }
         if (["index_project", "search_project"] + AgentKnowledgeCards.tools).contains(call.name), let task = store.task(taskID) {
             let index = try AgentProjectIndex(workspace: task.workspace, storage: store.directory)
             if !FileManager.default.fileExists(atPath: index.files.root.appendingPathComponent(".git").path) { return nil }
@@ -86,7 +86,7 @@ import Foundation
             tool("draft_automation", "用户要求定时工作时，起草本机自动化，不创建、启用或运行计划。prompt写清输入、范围、约束、核对与输出。schedule必填frequency与IANA time_zone；once需含时区ISO8601的at；daily需hour/minute；weekly另需weekdays(日=1至六=7)；interval需interval_minutes，可选at。循环可选expires_at，字段不能混用。项目沿用本任务，未选项目可在表单补充。output可选independent/merged。生成后请用户在会话卡片继续配置并明确保存、选择是否启用。", ["name": string, "prompt": string, "schedule": automationSchedule, "output": ["type": "string", "enum": AgentAutomationOutput.allCases.map(\.rawValue)]], ["name", "prompt", "schedule"]),
             tool("list_agents", "列出当前设备已启用且可委派的 Agent/团队、职责、工具及选定扩展；团队任务只列本次成员。不创建任务或调用模型。", [:], []),
             tool("delegate_task", "将明确子任务交给 list_agents 返回的角色：agent_id 或 team_id 只选一个，另附简短 prompt。成员已有职责指令，只补充必要资料与交付要求，不复制会话或重复大段配置；每轮只委派一项。等待实际完成后返回结果与 child_task_id，成员审批和提问也出现在负责人面板。停止主任务会停止子任务。分派成功不代表完成。", ["agent_id": string, "team_id": string, "prompt": string], ["prompt"]),
-            tool("list_skills", "按 query 搜索已启用的全局与当前项目 Skills，返回名称、描述、来源和 id。可自动选用适合本任务的流程；offset 从 0 开始分页，不含仅用户手动调用的 Skill。", ["query": string, "offset": integer], []),
+            tool("list_skills", "按 query 搜索已启用的全局与此任务源文件夹 Skills，返回名称、描述、来源和 id。可自动选用适合本任务的流程；offset 从 0 开始分页，不含仅用户手动调用的 Skill。", ["query": string, "offset": integer], []),
             tool("read_skill", "载入适合当前任务的 Skill 说明与资源副本；id 来自 list_skills。流程不改变权限，运行脚本仍用 run_command 并遵循审批。说明跨上下文整理保留。", ["id": string], ["id"]),
             tool("read_skill_resource", "只读当前任务已载入 Skill 的资源。path=. 分页列出文件；指定相对文件路径可读取 UTF-8 文字。offset 从 1 开始，其他任务及外部路径不可读。", ["id": string, "path": string, "offset": integer], ["id", "path"]),
             tool("list_rules", "分页列出已启用、可由模型判断的用户、项目和插件规则名称、描述及id。先按描述判断与任务是否有关，相关时再用read_rule；手动规则须由用户选择，不会自动列出正文。", ["offset": integer], []),
@@ -167,8 +167,8 @@ import Foundation
         return tools
     }
     func approvalReason(for call: AgentToolCall, gitDirectory: String? = nil) throws -> String? {
-        let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
         guard var task = store.task(taskID) else { throw PetError("任务不存在") }
+        let call = try store.mcp.routedCall(call, owner: taskID, task: task) ?? call
         task.permission = try store.agents.executionPermission(task, store: store)
         try AgentSkillDrafts.check(call,task:task,store:store)
         if AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name) { try AgentMCPSelection.validate(task,store:store) }
@@ -302,7 +302,7 @@ import Foundation
         try Task.checkCancellation()
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }; try AgentSkillDrafts.check(call,task:task,store:store)
         if AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name) { try AgentMCPSelection.validate(task,store:store) }
-        let call = try store.mcp.routedCall(call, owner: taskID, workspace: store.task(taskID)?.workspace) ?? call
+        let call = try store.mcp.routedCall(call, owner: taskID, task: task) ?? call
         if call.name == "run_command", let task = store.task(taskID), try store.agents.limits(task, store: store).readOnly {
             return try await executeCore(call, gitDirectory: gitDirectory)
         }
@@ -381,9 +381,10 @@ import Foundation
         case "list_agents":
             try store.teams.check(task, store: store)
             let team = try store.teams.binding(task, store: store)
-            let skills = (try? store.extensions.catalog(workspace: task.workspace, includeDisabled: false)) ?? []
+            let skills = (try? store.extensions.catalog(task: task, includeDisabled: false)) ?? []
+            let mcpServers = (try? store.mcp.availableServers(task: task)) ?? []
             let values = try store.agents.list(enabledOnly: true, workspace: task.workspace).filter { team == nil || team!.memberIDs.contains($0.id) && $0.id != task.agent?.profile.id }.map { value -> [String: Any] in
-                return ["id": value.id, "name": value.name, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": store.mcp.availableServers(workspace: task.workspace).first(where: { $0.id == id })?.name ?? "不可用"] }]
+                return ["id": value.id, "name": value.name, "description": value.description, "model": value.model.isEmpty ? "跟随当前任务" : value.model, "read_only": value.readOnly, "network": value.network, "tools": value.availableTools.sorted(), "skills": (value.skills ?? []).map { id in ["id": id, "name": skills.first(where: { $0.id == id })?.name ?? "不可用"] }, "mcp_servers": (value.mcpServers ?? []).map { id in ["id": id, "name": mcpServers.first(where: { $0.id == id })?.name ?? "不可用"] }]
             }
             let teams: [[String: Any]] = try team == nil ? store.teams.list().compactMap { value in
                 guard (try? store.teams.team(value.id, store: store, workspace: task.workspace)) != nil else { return nil }
@@ -396,7 +397,7 @@ import Foundation
         case "list_skills":
             let query = (args["query"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard query.count <= 300 else { throw PetError("Skill 查询不超过 300 字") }
-            let all = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false).filter { $0.kind == .skill && (task.agent == nil ? !$0.manualOnly : task.agent!.skills.contains($0.id)) }
+            let all = try store.extensions.catalog(task: task, includeDisabled: false).filter { $0.kind == .skill && (task.agent == nil ? !$0.manualOnly : task.agent!.skills.contains($0.id)) }
             let matched = all.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query) }
             let offset = min(matched.count, max(0, args["offset"] as? Int ?? 0)), page = matched.dropFirst(offset).prefix(12)
             let result: [String: Any] = ["total": matched.count, "offset": offset, "next_offset": offset + page.count < matched.count ? offset + page.count : NSNull(), "skills": page.map { ["id": $0.id, "name": $0.name, "description": $0.description, "scope": $0.scope, "source": $0.file.path] }, "warnings": store.extensions.warnings]

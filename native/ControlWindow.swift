@@ -3410,9 +3410,10 @@ final class FormDocumentView: NSView {
     @objc func showAgentExtensions() { showSettingsCategory("extensions") }
     private func insertExtension(_ item: AgentExtensionItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook" else { throw PetError("原任务已归档或为独立校验任务") }
-        let current = try store.extensions.item(item.id, workspace: task.workspace)
+        let current = try store.extensions.item(item.id, task: task)
         guard current.file == item.file, current.sha256 == item.sha256 else { throw PetError("扩展来源已变化，请刷新后重新选择") }
-        try insertSlashInvocation(current.invocation, taskID: taskID)
+        if current.kind == .skill { try store.agents.checkSkill(current.id, task: task) }
+        try insertSlashInvocation(task.workspaceScope == nil ? current.invocation : AgentExtensionSelection.invocation(current), taskID: taskID)
     }
     private func insertSlashInvocation(_ invocation: String, taskID: String) throws {
         guard saveAgentDraft() else { throw PetError("原任务草稿未保存，请重试") }; dismissExtensionCandidates()
@@ -3420,7 +3421,7 @@ final class FormDocumentView: NSView {
         guard displayedTask == taskID else { throw PetError("原任务未打开，未添加指令") }
         let previous = composer.string
         if previous.hasPrefix("/"), let first = previous.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first {
-            let tail = try AgentMCPSelection.command(previous)?.arguments ?? String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let tail = try AgentMCPSelection.command(previous)?.arguments ?? AgentExtensionSelection.command(previous)?.arguments ?? String(previous.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
             composer.string = "/" + invocation + " " + tail
         } else { composer.string = "/" + invocation + " " + previous }
         composer.setSelectedRange(NSRange(location: (composer.string as NSString).length, length: 0)); composer.didChangeText()
@@ -3479,7 +3480,7 @@ final class FormDocumentView: NSView {
         do {
             let query = String(composer.string.dropFirst())
             guard !query.contains("/") else { dismissExtensionCandidates(); return }
-            let items = try store.extensions.catalog(workspace: task.workspace, includeDisabled: false)
+            let items = try store.extensions.catalog(task: task, includeDisabled: false)
             let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled, connectors:AgentMCPSelection.candidates(task:task,store:store))
             guard !entries.isEmpty else { dismissExtensionCandidates(); return }
             let opening = extensionPickerTask != task.id || !extensionPanel.isVisible
@@ -3882,7 +3883,7 @@ extension ControlWindow {
         return ["category": settingsCategory, "page": settingsPageHost.selectedPageKey ?? "", "source": agentTaskID.flatMap { settingsSourceFolders[$0] } ?? currentAgentTask?.workspace ?? "", "folders": currentAgentTask?.workspacePaths ?? [], "primary": currentAgentTask?.workspace ?? "", "taskID": agentTaskID ?? "", "draft": composer.string, "controller": settingsPageHost.currentController.map { String(describing: type(of: $0)) } ?? ""]
     }
     var settingsControllerForCheck: AgentSettingsPageController? {
-        guard CommandLine.arguments.contains("--workspace-extensions-check"), companion?.checkDirectory != nil else { return nil }
+        guard ["--workspace-extensions-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), companion?.checkDirectory != nil else { return nil }
         return settingsPageHost.currentController
     }
     func switchWorkMode(_ mode: AgentWorkMode) {
