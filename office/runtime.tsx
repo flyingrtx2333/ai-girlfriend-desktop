@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import * as fonts from '@betteroffice/fonts';
 import { configureDefaultFonts } from '@betteroffice/docx/layout';
 import { sheetLocale, slidesLocale } from './locales';
+import { createOfficeView, type OfficeView } from './view-state';
 import './style.css';
 
 configureDefaultFonts({ fonts });
@@ -13,6 +14,7 @@ let generation = 0, currentFormat = '', ready = false, dirty = false;
 let readOnly = true, operationBusy = 0, lockGeneration = 0, fatal: Error | null = null;
 const pendingOperations = new Set<(error: Error) => void>();
 let pendingReady: { resolve: () => void; reject: (error: Error) => void } | null = null;
+let workspaceView: ReturnType<typeof createOfficeView> | null = null;
 function updateInteraction() { rootElement.inert = !ready || readOnly || operationBusy > 0; }
 async function perform<T>(operation: () => Promise<T>): Promise<T> {
   if (fatal) throw fatal;
@@ -111,7 +113,7 @@ function LoadedEditor({ Component, properties, format, token }: { Component: Rea
 function becameReady(value: any) {
   if (fatal) return;
   editor = value; if (ready) return;
-  ready = true; dirty = false; revision = 0; updateInteraction();
+  ready = true; dirty = false; revision = 0; workspaceView?.ready(); updateInteraction();
   notify('ready', { format: currentFormat }); pendingReady?.resolve(); pendingReady = null;
 }
 class EditorBoundary extends React.Component<{ children: React.ReactNode }, { message: string }> {
@@ -124,25 +126,31 @@ async function load(url: string, name: string, locked: boolean) {
   const token = ++generation, format = name.split('.').pop()?.toLowerCase() ?? '';
   if (!['docx', 'xlsx', 'pptx'].includes(format)) throw new Error('不支持此办公文件格式');
   pendingReady?.reject(new Error('文档已切换')); pendingReady = null; rejectOperations(new Error('文档已切换'));
+  workspaceView?.dispose(); workspaceView = null;
   ready = false; dirty = false; readOnly = locked; operationBusy = 0; lockGeneration += 1; fatal = null; editor = null; exported = null; currentFormat = format; updateInteraction(); root.render(null);
   const response = await fetch(url, { cache: 'no-store' });
   if (!response.ok) throw new Error('文档读取失败');
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length > 500 * 1024 * 1024 || bytes[0] !== 80 || bytes[1] !== 75) throw new Error('文档格式无效或超过500MiB');
-  let Component: any, properties: any;
+  let Component: any, properties: any, defineViewPlugin: any;
   const shared = { downloadOnSave: false, onDocumentChange: changed, onError: failure, onSaveRequest: () => { notify('save-request'); return false; }, loadingIndicator: <div className="office-loading" role="status">正在打开…</div>, style: { height: '100%', minHeight: 0, width: '100%' } };
   if (format === 'docx') {
     const [module, locale] = await Promise.all([import('@betteroffice/docx-react'), import('@betteroffice/docx-i18n/zh-CN')]);
     await import('@betteroffice/docx-react/styles.css');
     Component = module.DocxEditor; properties = { ...shared, documentBuffer: bytes, documentName: name, documentNameEditable: false, i18n: locale.default, showFileOpen: false, showHelpMenu: false, colorMode: 'system' };
+    properties.onSelectionChange = () => { if (token === generation && ready) notify('view-change'); };
   } else if (format === 'xlsx') {
     const [module, locale] = await Promise.all([import('@betteroffice/xlsx-react'), import('@betteroffice/xlsx-i18n/zh-CN')]);
     Component = module.XlsxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: sheetLocale(locale.default) };
+    defineViewPlugin = module.defineXlsxPlugin;
   } else {
     const [module, locale, faces] = await Promise.all([import('@betteroffice/pptx-react'), import('@betteroffice/pptx-i18n/zh-CN'), presentationFonts()]);
     Component = module.PptxEditor; properties = { ...shared, file: bytes, fileName: name, i18n: slidesLocale(locale.default), fonts: faces };
+    defineViewPlugin = module.definePptxPlugin;
   }
   if (token !== generation) throw new Error('文档已切换');
+  workspaceView = createOfficeView(format, rootElement, () => editor, () => { if (token === generation && ready) notify('view-change'); }, defineViewPlugin);
+  if (workspaceView.plugin) properties.plugins = [workspaceView.plugin];
   const loaded = new Promise<void>((resolve, reject) => { pendingReady = { resolve, reject }; });
   root.render(<EditorBoundary key={token}><LoadedEditor Component={Component} properties={properties} format={format} token={token} /></EditorBoundary>);
   const deadline = setTimeout(() => { if (token === generation && !ready) failure(new Error('办公文档未在45秒内打开')); }, 45_000);
@@ -159,7 +167,9 @@ async function beginExport() {
     exported = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     if (exported.length > 500 * 1024 * 1024) { exported = null; throw new Error('文档超过500MiB'); }
     exportedRevision = revision;
-    return { bytes: exported.length, revision: exportedRevision };
+    const captured = await captureView();
+    if (captured.revision !== exportedRevision) throw new Error('导出期间办公内容已变化，请重试');
+    return { bytes: exported.length, revision: exportedRevision, view: captured.view };
   } finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
 }
 function exportChunk(offset: number, length: number) {
@@ -198,6 +208,25 @@ async function verifyClean() {
   else await perform(() => editor.version());
   return { dirty, ready, revision };
 }
+async function captureView() {
+  if (!ready || !workspaceView) throw new Error('办公文件尚未打开');
+  const before = revision, view = await perform(() => workspaceView!.capture());
+  if (revision !== before) throw new Error('读取位置期间办公内容已变化，请重试');
+  return { revision, view };
+}
+async function restoreView(view: OfficeView, focus = false) {
+  if (!ready || !workspaceView) throw new Error('办公文件尚未打开');
+  operationBusy += 1; updateInteraction();
+  try { await perform(() => workspaceView!.restore(view)); }
+  finally { operationBusy = Math.max(0, operationBusy - 1); updateInteraction(); }
+  if (focus) { editor.focus(); await workspaceView.applyScroll(view); }
+  return await captureView();
+}
+async function selectionInfo() {
+  if (!ready || !editor || currentFormat !== 'docx') return null;
+  return await perform(() => editor.readSelectionInfo());
+}
+async function focusEditor() { if (ready && !operationBusy && workspaceView) await workspaceView.focus(); }
 async function inspectContent(request: any = {}) {
   if (!ready || !editor) throw new Error('文档尚未打开');
   const offset = Math.max(0, Math.min(100_000, Number.isSafeInteger(request.offset) ? request.offset : 0));
@@ -235,5 +264,5 @@ async function inspectContent(request: any = {}) {
   return { version: result.version, slides: result.slides.map((s: any) => ({ id: s.id, title: s.title, hidden: s.hidden })), stories: result.stories.slice(offset, offset + limit).map((s: any) => ({ id: s.storyId, slideId: s.slideId, shapeId: s.shapeId, ...text(s.text) })), total: result.stories.length, offset, next_offset: offset + limit < result.stories.length ? offset + limit : null };
 }
 async function inspect(request: any = {}) { return await perform(() => inspectContent(request)); }
-(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, setInteractionLocked, state: () => ({ ready, dirty, format: currentFormat, revision, readOnly }), close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
+(window as any).BlueFatFishOffice = { load, beginExport, exportChunk, finishExport, read, inspect, edit, verifyClean, captureView, restoreView, selectionInfo, focusEditor, setInteractionLocked, state: () => ({ ready, dirty, format: currentFormat, revision, readOnly }), close: () => { generation += 1; lockGeneration += 1; pendingReady?.reject(new Error('文档已关闭')); pendingReady = null; rejectOperations(new Error('文档已关闭')); workspaceView?.dispose(); workspaceView = null; ready = false; editor = null; exported = null; updateInteraction(); root.render(null); } };
 notify('shell-ready');

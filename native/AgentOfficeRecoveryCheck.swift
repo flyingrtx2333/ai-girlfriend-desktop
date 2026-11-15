@@ -5,6 +5,7 @@ import AppKit
         var taskID: String, windowID: String
         var paths: [String: String], hashes: [String: String], tabs: [String: String]
         var reviewer = "审阅人：恢复草稿二"
+        var views: [String: String]? = nil
     }
     func runOfficeRecoveryCheck(_ output: URL, interactive: Bool = false) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
@@ -21,6 +22,30 @@ import AppKit
                 (value["paragraphs"] as? [[String: Any]])?.contains { $0["text"] as? String == marker } == true ||
                 (value["stories"] as? [[String: Any]])?.contains { $0["text"] as? String == marker } == true ||
                 (value["cells"] as? [[String: Any]])?.contains { ($0["value"] as? [String: Any])?["value"] as? String == marker } == true
+            }
+            func viewText(_ value: [String: Any]) throws -> String { String(data: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)! }
+            func comparableView(_ text: String) throws -> String {
+                var value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+                if value["format"] as? String == "docx", var selection = value["selection"] as? [String: Any] {
+                    for key in ["anchor", "focus"] { if var point = selection[key] as? [String: Any] { for field in ["paragraphID", "storyKind", "itemID"] { point.removeValue(forKey: field) }; selection[key] = point } }
+                    value["selection"] = selection
+                }
+                return try viewText(value)
+            }
+            func selectPosition(_ editor: AgentOfficeWindow, key: String) async throws -> [String: Any] {
+                var value = try await editor.checkWorkspaceView(); value["scroll"] = []
+                switch key {
+                case "docx", "missing":
+                    let point: [String: Any] = ["part": "/word/document.xml", "ordinal": 1, "paragraphID": NSNull(), "storyKind": NSNull(), "itemID": NSNull()]
+                    var anchor = point, focus = point; anchor["offset"] = 4; focus["offset"] = 9
+                    value["selection"] = ["anchor": anchor, "focus": focus]
+                case "xlsx":
+                    value["zoom"] = 1.25
+                    value["selection"] = ["sheetIndex": 1, "sheetName": "审阅", "cells": ["anchor": ["row": 12, "col": 5], "focus": ["row": 10, "col": 3]]]
+                default:
+                    value["selection"] = ["slide": 2, "part": NSNull(), "target": ["kind": "text", "shapePath": [1], "sourceID": 0, "storyIndex": 0, "anchor": 3, "focus": 8]]
+                }
+                return try await editor.checkWorkspaceView(value)
             }
             func edit(_ editor: AgentOfficeWindow, from old: String, to text: String) async throws {
                 let actual = try await observed(editor); guard let version = actual["version"] as? String else { throw PetError("办公文档实际版本不可读") }
@@ -70,7 +95,7 @@ import AppKit
                 tasks.update(id) { $0.artifacts = keys.compactMap { paths[$0] }; $0.draft = "保留办公任务输入 PUBLIC_OFFICE_417" }
                 control.showAgentTask(id); control.show(tab: "chat")
                 guard let window = control.workspaceSession?.id else { throw PetError("办公工作区恢复未启用") }
-                var tabs: [String: String] = [:]
+                var tabs: [String: String] = [:], views: [String: String] = [:]
                 for key in keys {
                     let editor = try await tasks.offices.show(paths[key]!, taskID: id)
                     guard let tab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == id })?.tabs.first(where: { $0.root == "document:" + editor.file.path }) else { throw PetError("办公标签没有持久编号") }; tabs[key] = tab.id
@@ -81,6 +106,27 @@ import AppKit
                     checks[key + "RepeatedDirtyEditAutomaticallyUpdatesFullExport"] = two.saved.value.asset?.hash != one.saved.value.asset?.hash
                     checks[key + "AutosaveRetainsOriginalSourceVersion"] = try AgentOfficeWindow.recoveryState(two.saved.value).openedHash == hashes[key]
                     checks[key + "PrivateExportAndMetadataUse600"] = try [two.asset!, store.directory.appendingPathComponent("workspace-recovery/" + window + "/pages/" + tab.id + ".json")].allSatisfy { (try FileManager.default.attributesOfItem(atPath: $0.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 }
+                    let positioned = try await selectPosition(editor, key: key)
+                    guard await flushWorkspaceWindows(), let positionedPage = try journal.loadPage(windowID: window, pageID: tab.id, taskID: id) else { throw PetError("办公位置未持久保存") }
+                    let stored = try AgentOfficeWindow.recoveryState(positionedPage.saved.value)
+                    views[key] = stored.view
+                    let bodyRevision = try AgentOfficeWindow.recoveryState(two.saved.value).editorRevision
+                    checks[key + "MovingSelectionKeepsExactBodyAssetAndRevision"] = positionedPage.saved.value.asset == two.saved.value.asset && stored.editorRevision == bodyRevision
+                    checks[key + "ActualSelectionIsWrittenWithItsBody"] = try stored.view == viewText(positioned)
+                    if key == "docx" {
+                        let readback = await editor.workspaceReadback()
+                        checks["wordSelectionReadThroughSDKMatchesKnownOriginalText"] = (readback["selectionInfo"] as? [String: Any])?["selectedText"] as? String == "恢复草稿二"
+                        var legacy = stored; legacy.view = nil
+                        var legacyPage = positionedPage.saved.value; legacyPage.state = try JSONEncoder().encode(legacy)
+                        checks["oldOfficeStateWithoutViewStillDecodes"] = try AgentOfficeWindow.recoveryState(legacyPage).view == nil
+                        for (name, change) in [("futureViewVersion", ["version": 2] as [String: Any]), ("unknownViewField", ["future": true]), ("wrongViewFormat", ["format": "xlsx"])] {
+                            var altered = positioned; for (key, value) in change { altered[key] = value }
+                            var future = stored; future.view = try viewText(altered)
+                            var futurePage = positionedPage.saved.value; futurePage.state = try JSONEncoder().encode(future)
+                            do { _ = try AgentOfficeWindow.recoveryState(futurePage); checks[name + "RejectedWithoutDowngradingDraft"] = false }
+                            catch { checks[name + "RejectedWithoutDowngradingDraft"] = true }
+                        }
+                    }
                     try await copy(two, name: key == "missing" ? "missing.docx" : "sample." + key)
                     guard await flushWorkspaceWindows() else { throw PetError("办公恢复附件未完成") }
                     if key == "xlsx" {
@@ -90,7 +136,7 @@ import AppKit
                         guard await flushWorkspaceWindows() else { throw PetError("只读拒绝后恢复记录未保存") }
                     }
                 }
-                fixture = .init(taskID: id, windowID: window, paths: paths, hashes: hashes, tabs: tabs)
+                fixture = .init(taskID: id, windowID: window, paths: paths, hashes: hashes, tabs: tabs, views: views)
                 _ = try await tasks.offices.show(paths["docx"]!, taskID: id)
                 checks["autosaveDoesNotWriteOriginalOfficeFiles"] = try keys.allSatisfy { try files.fileHash(URL(fileURLWithPath: paths[$0]!)) == hashes[$0] }
                 checks["allFourActualEditorsCanHotExitFromTheirPrivateExports"] = await flushWorkspaceWindows() && control.workspaceSession?.preservedEditors.count == 4
@@ -104,11 +150,26 @@ import AppKit
                     coldLabels.contains("• " + URL(fileURLWithPath: fixture.paths[key]!).lastPathComponent) && control.taskWorkspace.recoveryController(taskID: fixture.taskID, root: .document(fixture.paths[key]!)) == nil
                 }
                 report["initialColdTabLabels"] = coldLabels
+                if !interactive {
+                    let legacy = try journal.loadPage(windowID: fixture.windowID, pageID: fixture.tabs["missing"]!, taskID: fixture.taskID)!
+                    checks["oldOfficePageWithoutViewIsReadBeforeMaterialization"] = try AgentOfficeWindow.recoveryState(legacy.saved.value).view == nil
+                }
                 for key in keys {
                     control.taskWorkspace.checkSelect(.document(fixture.paths[key]!))
                     guard await flushWorkspaceWindows(), let editor = control.taskWorkspace.currentController as? AgentOfficeWindow else { throw PetError("办公草稿标签未恢复：" + key) }
                     checks[key + "CompleteOfficeDraftRestoresThroughActualEditor"] = try await contains(observed(editor), fixture.reviewer) && editor.dirty && editor.openedHash == fixture.hashes[key]
                     let loaded = try journal.loadPage(windowID: fixture.windowID, pageID: fixture.tabs[key]!, taskID: fixture.taskID)!
+                    let actualView = try await editor.checkWorkspaceView()
+                    report[key + "RestoredView"] = actualView
+                    if interactive || key != "missing" {
+                        guard let expected = fixture.views?[key] else { throw PetError("缺少办公位置验收基线") }
+                        checks[key + "SelectionSheetSlideZoomAndScrollRestoreInActualEditor"] = try comparableView(viewText(actualView)) == comparableView(expected)
+                    }
+                    else { checks["oldOfficePageRetainsFullBodyAndGainsCurrentView"] = try AgentOfficeWindow.recoveryState(loaded.saved.value).view != nil }
+                    if key == "docx" {
+                        let readback = await editor.workspaceReadback()
+                        checks["reopenedWordSelectionStillNamesExactText"] = (readback["selectionInfo"] as? [String: Any])?["selectedText"] as? String == "恢复草稿二"
+                    }
                     try await copy(loaded, name: key == "missing" ? "missing.docx" : "sample." + key)
                     if !interactive, key != "pptx" {
                         let files = editor.files, before = try files.entryMetadata(editor.file), beforeHash = before.kind == "file" ? try files.fileHash(editor.file) : nil, changes = tasks.task(fixture.taskID)?.changes.count

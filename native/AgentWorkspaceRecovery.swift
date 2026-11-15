@@ -201,7 +201,7 @@ struct AgentWorkspaceRecovery: Sendable {
     }
     @discardableResult func savePage(_ value: Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> Saved<Page> {
         try validate(value)
-        guard value.asset == nil else { throw PetError("恢复附件必须由保存入口生成") }
+        guard value.asset == nil || (asset == nil && value.kind == "office") else { throw PetError("恢复附件必须由保存入口生成") }
         _ = try encoded(value)
         return try locked(windowID) { files in
             let path = try pagePath(windowID, pageID), url = try literal(files, path + ".json")
@@ -211,6 +211,17 @@ struct AgentWorkspaceRecovery: Sendable {
             let previous = try before.map(decodePage)
             if let previous { guard previous.taskID == value.taskID, previous.kind == value.kind else { throw PetError("恢复草稿所属任务或编辑器已变化") } }
             var saved = value
+            if let retained = value.asset {
+                guard value.dirty, previous?.dirty == true, previous?.asset == retained,
+                      var oldState = try previous.map({ try JSONSerialization.jsonObject(with: $0.state) as? [String: Any] }) ?? nil,
+                      var newState = try JSONSerialization.jsonObject(with: value.state) as? [String: Any] else { throw PetError("办公恢复附件已变化，原草稿已保留") }
+                oldState.removeValue(forKey: "view"); newState.removeValue(forKey: "view")
+                guard NSDictionary(dictionary: oldState).isEqual(to: newState) else { throw PetError("位置更新不能替换办公正文或来源") }
+                let retainedURL = try literal(files, path + ".\(retained.slot).data"), metadata = try files.entryMetadata(retainedURL)
+                guard metadata.kind == "file", metadata.permissions == 0o600,
+                      try files.fileHash(retainedURL, maximum: AgentOffice.maximum) == retained.hash,
+                      try files.entryMetadata(retainedURL).signature == metadata.signature else { throw PetError("办公恢复正文不可用，原记录已保留") }
+            }
             // Write the inactive asset first. The previous JSON continues to
             // reference its intact slot if copying or the final write fails.
             if let asset {

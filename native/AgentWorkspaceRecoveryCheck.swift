@@ -47,6 +47,39 @@ import AppKit
             catch { checks["editorKindCannotReplaceAnotherDraft"] = try files.readData(pageURL) == activeBefore }
             do { _ = try journal.loadPage(windowID: windowID, pageID: pageID, taskID: UUID().uuidString); checks["draftOwnershipRejectsAnotherTask"] = false }
             catch { checks["draftOwnershipRejectsAnotherTask"] = true }
+            let officeID = UUID().uuidString, officeURL = try files.resolve("workspace-recovery/" + windowID + "/pages/" + officeID + ".json")
+            let officeState = Data(#"{"file":"/public/sample.docx","editorRevision":2,"view":"first-position"}"#.utf8)
+            var officePage = AgentWorkspaceRecovery.Page(taskID: owner, kind: "office", state: officeState, dirty: true, asset: nil)
+            let officeSaved = try journal.savePage(officePage, asset: firstAsset, windowID: windowID, pageID: officeID, expected: nil)
+            let officeResource = try journal.loadPage(windowID: windowID, pageID: officeID, taskID: owner)!.asset!
+            officePage = officeSaved.value
+            officePage.state = Data(#"{"file":"/public/sample.docx","editorRevision":2,"view":"later-position"}"#.utf8)
+            let moved = try journal.savePage(officePage, asset: nil, windowID: windowID, pageID: officeID, expected: officeSaved.hash)
+            let movedBytes = try files.readData(officeURL)
+            checks["officePositionUpdateKeepsExactAssetAndDoesNotCopyAnotherSlot"] = try moved.value.asset == officeSaved.value.asset && Data(contentsOf: officeResource) == firstBytes && !FileManager.default.fileExists(atPath: officeResource.deletingLastPathComponent().appendingPathComponent(officeID + ".1.data").path)
+            var unrelatedBody = officePage
+            unrelatedBody.state = Data(#"{"file":"/public/another.docx","editorRevision":2,"view":"later-position"}"#.utf8)
+            do { _ = try journal.savePage(unrelatedBody, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["positionOnlyUpdateCannotReassignSavedBodyToAnotherFile"] = false }
+            catch { checks["positionOnlyUpdateCannotReassignSavedBodyToAnotherFile"] = try files.readData(officeURL) == movedBytes }
+            unrelatedBody.state = Data(#"{"file":"/public/sample.docx","editorRevision":3,"view":"later-position"}"#.utf8)
+            do { _ = try journal.savePage(unrelatedBody, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["positionOnlyUpdateCannotClaimDifferentBodyRevision"] = false }
+            catch { checks["positionOnlyUpdateCannotClaimDifferentBodyRevision"] = try files.readData(officeURL) == movedBytes }
+            unrelatedBody = officePage; unrelatedBody.asset?.slot = 1
+            do { _ = try journal.savePage(unrelatedBody, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["positionOnlyUpdateCannotChooseAnotherAssetSlot"] = false }
+            catch { checks["positionOnlyUpdateCannotChooseAnotherAssetSlot"] = try files.readData(officeURL) == movedBytes }
+            unrelatedBody = officePage; unrelatedBody.dirty = false
+            do { _ = try journal.savePage(unrelatedBody, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["cleanPositionCannotRetainDirtyBodyPointer"] = false }
+            catch { checks["cleanPositionCannotRetainDirtyBodyPointer"] = try files.readData(officeURL) == movedBytes }
+            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: officeResource.path)
+            do { _ = try journal.savePage(officePage, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["readonlyBodyRejectsPositionCheckpointWithoutChangingMetadata"] = false }
+            catch { checks["readonlyBodyRejectsPositionCheckpointWithoutChangingMetadata"] = try files.readData(officeURL) == movedBytes }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: officeResource.path)
+            try files.writeData(Data("DAMAGED_OFFICE_BODY_PUBLIC_735".utf8), to: officeResource, permissions: 0o600)
+            do { _ = try journal.savePage(officePage, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash); checks["damagedBodyCannotBecomeValidThroughPositionCheckpoint"] = false }
+            catch { checks["damagedBodyCannotBecomeValidThroughPositionCheckpoint"] = try files.readData(officeURL) == movedBytes }
+            try files.writeData(firstBytes, to: officeResource, permissions: 0o600)
+            let retry = try journal.savePage(officePage, asset: nil, windowID: windowID, pageID: officeID, expected: moved.hash)
+            checks["samePositionRetriesAfterOriginalBodyRestores"] = try journal.loadPage(windowID: windowID, pageID: officeID, taskID: owner)?.saved.hash == retry.hash && Data(contentsOf: officeResource) == firstBytes
             let layoutBefore = try files.readData(layoutURL)
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: layoutURL.path)
             do { _ = try journal.saveWindow(window, expected: savedWindow.hash); checks["readOnlyLayoutPreservesItsBytesAndPermissions"] = false }

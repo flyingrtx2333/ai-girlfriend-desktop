@@ -46,6 +46,14 @@ for (const stage of ['seed', 'reopen']) {
   if (!independent.success) throw Error('完整 Office 文件独立读取失败');
   if (stage === 'seed') {
     const fixture = JSON.parse(await readFile(path.join(output, 'office-recovery-fixture.json'), 'utf8'));
+    const legacyPath = path.join(output, 'profile/workspace-recovery', fixture.windowID, 'pages', fixture.tabs.missing + '.json');
+    const beforeLegacy = await readFile(legacyPath), legacy = JSON.parse(beforeLegacy), state = JSON.parse(Buffer.from(legacy.state, 'base64'));
+    if (typeof state.view !== 'string' || JSON.parse(state.view).format !== 'docx') throw Error('Missing real Office view before legacy migration check');
+    await writeFile(path.join(output, 'legacy-office-before.json'), beforeLegacy);
+    delete state.view;
+    legacy.state = Buffer.from(JSON.stringify(state)).toString('base64');
+    await writeFile(legacyPath, JSON.stringify(legacy) + '\n');
+    await writeFile(path.join(output, 'legacy-office-input.json'), await readFile(legacyPath));
     command(python, ['-c', 'from docx import Document; import sys; d=Document(sys.argv[1]); next(p for p in d.paragraphs if p.text=="审阅人：待填写").text="审阅人：外部编辑"; d.save(sys.argv[2])', path.join(output, 'originals/sample.docx'), fixture.paths.docx]);
     await rename(fixture.paths.missing, path.join(path.dirname(fixture.paths.missing), 'moved-original.docx'));
     await writeFile(path.join(output, 'external-source-changes.json'), JSON.stringify({ changedWord: hash(await readFile(fixture.paths.docx)), readOnlySpreadsheet: hash(await readFile(fixture.paths.xlsx)), movedOriginal: hash(await readFile(path.join(path.dirname(fixture.paths.missing), 'moved-original.docx'))) }, null, 2) + '\n');
