@@ -251,7 +251,7 @@ import AppKit
         guard !closing else { return }; closing = true
         Task { @MainActor [weak self] in
             guard let self else { return }; defer { closing = false }
-            if stacks[id]?[root]?.isEmpty != false, !AgentUnsavedChanges.discard("关闭尚未恢复的标签页？", detail: root.title) { return }
+            if stacks[id]?[root]?.isEmpty != false, !AgentUnsavedChanges.discard("关闭尚未恢复的标签页？", detail: presentation(task: id, root: root).title) { return }
             for entry in (stacks[id]?[root] ?? []).reversed() { guard await entry.controller.prepareForWorkspaceClose() else { return } }
             removeRoot(taskID: id, root: root)
         }
