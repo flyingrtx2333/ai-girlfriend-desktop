@@ -1162,7 +1162,13 @@ final class FormDocumentView: NSView {
         if agentTaskID != taskID { selectAgentTask(taskID) }
         guard agentTaskID == taskID, saveAgentDraft() else { return }
         if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
-        guard taskWorkspace.show(taskID: taskID, root: .mcpContent, make: { AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
+        guard taskWorkspace.show(taskID: taskID, root: .mcpContent, make: { self.preparedMCPContent(store: store, taskID: taskID, serverID: serverID) }) else { return }
+        if let serverID { (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.selectRequestedServer(serverID) }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+        (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.settingsDidAppear()
+    }
+    private func preparedMCPContent(store: AgentStore, taskID: String, serverID: String? = nil) -> AgentMCPContentWindow {
+        AgentMCPContentWindow(store: store, taskID: taskID, serverID: serverID) { [weak self] text, ids in
             guard let self, companion?.persistTaskDrafts(taskID) != false else { throw PetError("请先保存此任务的草稿") }
             guard let previous = store.task(taskID), !previous.archived, !["wiki", "hook"].contains(previous.kind ?? "") else { throw PetError("任务已关闭，未加入草稿") }
             let visible = agentTaskID == taskID && self.displayedTask == taskID
@@ -1174,10 +1180,7 @@ final class FormDocumentView: NSView {
             do { try store.save(taskID) }
             catch { store.update(taskID, persist: false) { $0.draft = previous.draft; $0.draftAttachmentIDs = previous.draftAttachmentIDs }; throw error }
             if visible { self.composer.string = combined; self.composer.didChangeText() }; self.renderMessages()
-        } }) else { return }
-        if let serverID { (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.selectRequestedServer(serverID) }
-        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
-        (taskWorkspace.rootController(.mcpContent) as? AgentMCPContentWindow)?.settingsDidAppear()
+        }
     }
     @objc private func openTaskModelSettings() { saveAgentDraft(); showSettingsCategory("model") }
     @objc private func toggleWorkbenchVoice() { if companion?.store.preferences.wakeEnabled == true { companion?.stopRecording() } else { companion?.listenNow() } }
@@ -3156,6 +3159,14 @@ final class FormDocumentView: NSView {
                 if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
                 throw error
             }
+        } else if let page = loaded?.saved.value, page.kind == "mcp-content" {
+            guard root == .mcpContent else { throw PetError("恢复的 MCP 参数与标签不匹配") }
+            let editor = preparedMCPContent(store: store, taskID: id)
+            do {
+                try editor.restoreWorkspaceRecovery(page)
+                guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开恢复参数") }
+            } catch { editor.endSettingsHosting(); throw error }
+            editor.window?.orderOut(nil)
         } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
             switch root {

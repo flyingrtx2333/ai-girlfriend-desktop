@@ -68,6 +68,9 @@ import AppKit
                     } else if let canvas = controller as? AgentCanvasWindow {
                         let page = try canvas.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let mcp = controller as? AgentMCPContentWindow {
+                        let page = try mcp.captureWorkspaceRecovery()
+                        if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
                     }
                 }
                 let journal = journal
@@ -81,6 +84,7 @@ import AppKit
                     if let record = controller as? AgentRecordWindow, record.canPreserveForQuit { return ObjectIdentifier(record) }
                     if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit { return ObjectIdentifier(office) }
                     if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit { return ObjectIdentifier(canvas) }
+                    if let mcp = controller as? AgentMCPContentWindow, mcp.canPreserveForQuit { return ObjectIdentifier(mcp) }
                     return nil
                 })
             }
@@ -138,7 +142,7 @@ import AppKit
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

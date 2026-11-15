@@ -30,13 +30,15 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private var loadingList = false, pendingSearch = false
     private let main = NSStackView(), listColumn = NSStackView(), detailViewport = NSScrollView()
     private var wideLayout: [NSLayoutConstraint] = [], narrowLayout: [NSLayoutConstraint] = [], narrow: Bool?
-    private struct FormDraft { let fields: [String: String]; let uri: String? }
+    struct FormDraft: Codable { let fields: [String: String]; let uri: String? }
     private var formDrafts: [String: FormDraft] = [:], selectedFormKey: String?
+    private var restoredSelection: [String: Any]?
     var onWorkspaceChange: (() -> Void)?
     var hasPendingOperation: Bool { job != nil }
     var workspaceHasUnsavedChanges: Bool {
         !closed && (!formDrafts.isEmpty || (!inserted && fields.values.contains { !$0.string.isEmpty }))
     }
+    var canPreserveForQuit: Bool { !closed && !hasPendingOperation && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     private var serverID: String? { servers.selectedItem?.representedObject as? String }
     private var kind: String { ["resources", "templates", "prompts"][max(0, kinds.selectedSegment)] }
     init(store: AgentStore, taskID: String, serverID: String? = nil, onInsert: @escaping (String, [String]) throws -> Void) {
@@ -90,6 +92,69 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         observer = store.mcp.observeContent { [weak self] in self?.refreshState() }; clearSelection(); state.stringValue = "未连接"; refreshState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    struct RecoveryState: Codable {
+        var version = 1
+        var taskID: String
+        var serverID: String?
+        var serverRevision: String?
+        var kind: String
+        var query: String
+        var selected: Data?
+        var drafts: [String: FormDraft]
+        var dirty: Bool
+    }
+    static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
+        guard page.kind == "mcp-content", page.asset == nil,
+              let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+              Set(object.keys).isSubset(of: ["version", "taskID", "serverID", "serverRevision", "kind", "query", "selected", "drafts", "dirty"]),
+              let drafts = object["drafts"] as? [String: [String: Any]],
+              drafts.values.allSatisfy({ Set($0.keys).isSubset(of: ["fields", "uri"]) }) else { throw PetError("MCP 参数恢复格式不受支持，原草稿已保留") }
+        let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
+        guard value.version == 1, value.taskID == page.taskID, ["resources", "templates", "prompts"].contains(value.kind),
+              value.dirty == page.dirty, value.dirty == !value.drafts.isEmpty,
+              (value.serverID == nil) == (value.serverRevision == nil), value.serverID != nil || value.selected == nil else { throw PetError("MCP 参数恢复版本或归属无效，原草稿已保留") }
+        if let selected = value.selected {
+            guard let item = try JSONSerialization.jsonObject(with: selected) as? [String: Any],
+                  selectionIdentity(item, kind: value.kind) != nil else { throw PetError("MCP 资料恢复对象无效，原草稿已保留") }
+        }
+        return value
+    }
+    private static func selectionIdentity(_ item: [String: Any], kind: String) -> String? {
+        let value = item[kind == "resources" ? "uri" : kind == "templates" ? "uriTemplate" : "name"] as? String
+        return value.flatMap { $0.isEmpty ? nil : $0 }
+    }
+    private func formKey(_ item: [String: Any], server: AgentMCPServer) -> String? {
+        Self.selectionIdentity(item, kind: kind).map { server.id + "\n" + server.revision + "\n" + kind + "\n" + $0 }
+    }
+    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
+        guard !closed, !hasPendingOperation else { throw PetError("请先完成或取消 MCP 资料操作") }
+        _ = try currentTask(); retainForm()
+        let server = try serverID.map(currentServer)
+        if let selected, let server, selectedFormKey != formKey(selected, server: server) { throw PetError("连接器版本已变化，原参数已保留，请重新检查") }
+        let selectedData = try selected.map { try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }
+        let value = RecoveryState(taskID: taskID, serverID: serverID, serverRevision: server?.revision, kind: kind,
+            query: search.stringValue, selected: selectedData, drafts: formDrafts, dirty: !formDrafts.isEmpty)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "mcp-content", state: try encoder.encode(value), dirty: value.dirty, asset: nil)
+        _ = try Self.recoveryState(page); return page
+    }
+    func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
+        let value = try Self.recoveryState(page)
+        guard value.taskID == taskID, !hasPendingOperation else { throw PetError("MCP 参数所属任务已变化") }
+        _ = try currentTask()
+        if let id = value.serverID {
+            guard let item = servers.itemArray.first(where: { $0.representedObject as? String == id }),
+                  try currentServer(id).revision == value.serverRevision else { throw PetError("原连接器已改变或不可用，原参数已保留") }
+            servers.select(item)
+        } else { servers.select(nil) }
+        kinds.selectedSegment = ["resources", "templates", "prompts"].firstIndex(of: value.kind)!
+        search.stringValue = value.query; clearSelection(); formDrafts = value.drafts
+        if let data = value.selected, let item = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            restoredSelection = item; showSelection(item)
+        }
+        // Restoring a form never opens a connector or reuses a live preview.
+        refreshState(); if restoredSelection != nil { state.stringValue = "参数已恢复，连接后核对原资料。" }
+    }
     private func populateServers() {
         let previous = serverID, allowed = store.task(taskID)?.agent?.mcpServers
         servers.removeAllItems()
@@ -131,8 +196,8 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         else { formDrafts[key] = nil }
     }
     private func resetList() { rows = []; nextOffset = nil; catalog = ""; table.reloadData(); clearSelection() }
-    @objc private func changeServer() { resetList(); refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
-    @objc private func changeKind() { search.stringValue = ""; resetList(); refreshState(); loadList() }
+    @objc private func changeServer() { restoredSelection = nil; resetList(); refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
+    @objc private func changeKind() { restoredSelection = nil; search.stringValue = ""; resetList(); refreshState(); loadList() }
     @objc private func start() {
         guard job == nil, let id = serverID else { return }
         launch {
@@ -157,9 +222,17 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         try Task.checkCancellation(); guard !closed, search.stringValue == query else { return }
         let values = result["items"] as? [[String: Any]] ?? []
         rows = append ? rows + values : values; nextOffset = result["next_offset"] as? Int; catalog = result["catalog"] as? String ?? ""
+        let restore = restoredSelection
         clearSelection(); table.reloadData()
         state.stringValue = result["supported"] as? Bool == false ? "连接器未提供此类内容" : rows.isEmpty ? "没有匹配内容" : ""
-        if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        if let restore {
+            if let index = rows.firstIndex(where: { Self.selectionIdentity($0, kind: kind) == Self.selectionIdentity(restore, kind: kind) }) {
+                restoredSelection = nil; table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); showSelection(rows[index])
+            } else {
+                table.deselectAll(nil); restoredSelection = restore; showSelection(restore)
+                state.stringValue = "原资料暂不在当前目录，参数已保留。"
+            }
+        } else if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
     private func launch(revealPreview: Bool = false, _ action: @escaping () async throws -> Void) {
         guard job == nil else { return }; state.stringValue = "读取中…"
@@ -187,7 +260,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     }
     func controlTextDidChange(_ obj: Notification) {
         if obj.object as? NSSearchField === search {
-            clearSelection()
+            restoredSelection = nil; clearSelection()
             if job != nil { pendingSearch = true } else { loadList() }
         }
         else { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
@@ -204,8 +277,11 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard rows.indices.contains(table.selectedRow) else { clearSelection(); refreshState(); return }
-        let item = rows[table.selectedRow]; clearSelection(); selected = item; title.stringValue = item["title"] as? String ?? item["name"] as? String ?? ""
-        if let id = serverID, let server = try? currentServer(id) { selectedFormKey = id + "\n" + server.revision + "\n" + kind + "\n" + (item["uri"] as? String ?? item["uriTemplate"] as? String ?? item["name"] as? String ?? "") }
+        restoredSelection = nil; showSelection(rows[table.selectedRow])
+    }
+    private func showSelection(_ item: [String: Any]) {
+        clearSelection(); selected = item; title.stringValue = item["title"] as? String ?? item["name"] as? String ?? ""
+        if let id = serverID, let server = try? currentServer(id) { selectedFormKey = formKey(item, server: server) }
         uri.stringValue = item["uri"] as? String ?? item["uriTemplate"] as? String ?? ""; uri.isHidden = kind == "prompts"; uri.isEditable = kind == "templates"; uri.toolTip = uri.stringValue
         viewer.string = item["description"] as? String ?? ""
         let parameters = item["arguments"] as? [[String: Any]] ?? []
@@ -228,7 +304,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         argumentHeight.constant = min(164, CGFloat(parameters.count) * 64); argumentScroll.isHidden = parameters.isEmpty; refreshState()
     }
     @objc private func readContent() {
-        guard job == nil, let id = serverID, let selected, let connection = store.mcp.token(id, owner: sessionOwner) else { return }
+        guard job == nil, restoredSelection == nil, let id = serverID, let selected, let connection = store.mcp.token(id, owner: sessionOwner) else { return }
         let requestedKind = kind, requestedURI = uri.stringValue, currentCatalog = catalog, values = fields.mapValues(\.string)
         launch(revealPreview: true) {
             _ = try self.taskScope(id, operation: requestedKind == "prompts" ? "connect_mcp" : "read_mcp_resource")
@@ -268,7 +344,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         refresh.isEnabled = connected && !busy && scopeError == nil; more.isHidden = nextOffset == nil; more.isEnabled = !busy
         servers.isEnabled = !busy; kinds.isEnabled = !busy; table.isEnabled = !busy; search.isEnabled = connected && (!busy || loadingList); uri.isEnabled = !busy; for field in fields.values { field.isEditable = !busy }
         let catalogCurrent = id.flatMap { id in store.mcp.token(id, owner: sessionOwner).map { store.mcp.contentCatalogCurrent(id, owner: sessionOwner, connection: $0, catalog: catalog, kind: kind) } } ?? false
-        read.title = kind == "prompts" ? "预览" : "读取"; read.isEnabled = connected && selected != nil && !busy && scopeError == nil && catalogCurrent
+        read.title = kind == "prompts" ? "预览" : "读取"; read.isEnabled = connected && selected != nil && restoredSelection == nil && !busy && scopeError == nil && catalogCurrent
         add.title = kind == "prompts" ? "加入草稿" : "加入附件"; add.isEnabled = !busy && !inserted && scopeError == nil && preview.map(store.mcp.previewCurrent) == true
         track.isHidden = preview?.kind != "resources"; track.isEnabled = !busy && scopeError == nil && preview.map(store.mcp.supportsSubscription) == true; track.state = preview.map(store.mcp.subscribed) == true ? .on : .off
         servers.toolTip = servers.titleOfSelectedItem
@@ -314,7 +390,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         if let observer { store.mcp.removeContentObserver(observer); self.observer = nil }; store.mcp.disconnect(owner: sessionOwner)
     }
     func workspaceReadback() -> [String: Any] {
-        guard AgentTaskWorkspace.readbackEnabled || ["--mcp-content-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), let content = pageContentView else { return [:] }
+        guard AgentTaskWorkspace.readbackEnabled || ["--mcp-content-check", "--workspace-capabilities-check", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), let content = pageContentView else { return [:] }
         func rect(_ view: NSView) -> [String: Double] { let r = view.convert(view.bounds, to: content); return ["x": r.minX, "y": r.minY, "width": r.width, "height": r.height] }
         func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
         let focused = presentingWindow?.firstResponder
@@ -322,10 +398,10 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         let previewRect = viewer.enclosingScrollView.map { $0.convert($0.bounds, to: detailViewport.documentView) } ?? .zero
         let previewVisibleHeight = Double(max(0, previewRect.intersection(detailViewport.contentView.documentVisibleRect).height))
         let checks = ["pageActuallyVisible": isPageVisible, "serverPickerReadable": inside(servers) && servers.bounds.width >= 139, "catalogFitsPage": inside(listColumn), "detailViewportFitsPage": inside(detailViewport), "searchFitsPage": inside(search), "readButtonFitsPage": inside(read), "addButtonFitsPage": inside(add), "detailHasUsableHeight": detailViewport.bounds.height >= 80, "catalogHasUsableHeight": table.enclosingScrollView!.bounds.height >= 70]
-        return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "previewVisibleHeight": previewVisibleHeight, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
+        return ["taskID": taskID, "sessionOwner": sessionOwner, "serverID": serverID ?? "", "connected": serverID.map { store.mcp.connected($0, owner: sessionOwner) } ?? false, "closed": closed, "busy": hasPendingOperation, "unsaved": workspaceHasUnsavedChanges, "kind": kind, "narrow": narrow == true, "fields": fields.mapValues(\.string), "parametersEditable": fields.values.allSatisfy(\.isEditable), "focusInPage": focusInPage, "previewFocused": focused === viewer, "previewVisibleHeight": previewVisibleHeight, "uri": uri.stringValue, "previewText": viewer.string, "promptText": preview?.promptText ?? "", "inserted": inserted, "restoredSelectionPending": restoredSelection != nil, "readEnabled": read.isEnabled, "selectedName": selected?["name"] as? String ?? "", "formDraftCount": formDrafts.count, "rows": rows, "content": rect(content), "catalog": rect(listColumn), "detail": rect(detailViewport), "checks": checks]
     }
     func checkAction(_ action: String, kind index: Int? = nil, query: String? = nil, row: Int? = nil, values: [String: String]? = nil, resourceURI: String? = nil) {
-        guard ["--mcp-content-check", "--workspace-capabilities-check"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return }
+        guard ["--mcp-content-check", "--workspace-capabilities-check", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return }
         if let index { kinds.selectedSegment = index; changeKind() }
         if let query { search.stringValue = query; loadList() }
         if let row, rows.indices.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
