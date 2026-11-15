@@ -120,7 +120,9 @@ import AppKit
                     main.checkAction("connect"); try await idle(main)
                     checks["manualConnectValidatesAndRestoresSelectedPrompt"] = main.workspaceReadback()["restoredSelectionPending"] as? Bool == false && main.workspaceReadback()["selectedName"] as? String == "resource-prompt" && (main.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "2"
                     main.checkAction("read"); try await idle(main)
-                    checks["actualProtocolPreviewUsesRestoredArguments"] = (main.workspaceReadback()["promptText"] as? String)?.contains("Resource 2:") == true
+                    let protocolReadback = main.workspaceReadback()
+                    report["restoredProtocolReadback"] = protocolReadback
+                    checks["actualProtocolPreviewUsesRestoredArguments"] = (protocolReadback["previewText"] as? String)?.contains("Resource 2:") == true && (protocolReadback["promptText"] as? String)?.contains("demo://resource/dynamic/text/2") == true
                     try await select(main, kind: 1, key: "uriTemplate", contains: "/text/")
                     checks["otherKindRetainsExpandedTemplateURI"] = main.workspaceReadback()["uri"] as? String == "demo://resource/dynamic/text/3"
                     main.selectRequestedServer(fixture.serverB); main.checkAction("connect"); try await idle(main)
