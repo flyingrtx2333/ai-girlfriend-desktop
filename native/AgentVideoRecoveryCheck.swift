@@ -71,6 +71,10 @@ import AppKit
                     guard let page = try? saved(windowID, tab.id, id), let state = try? AgentRecordWindow.recoveryState(page.saved.value) else { return false }
                     return abs((state.video?.time ?? -1) - 1.65) < 0.01
                 }
+                if checks["seekEventAutosavesWithoutExplicitFlush"] == false {
+                    report["autosaveFailureActualPlayer"] = await first.videoPreviewReadback()
+                    report["autosaveFailureWorkspace"] = control.taskWorkspace.checkState()
+                }
                 let path = store.directory.appendingPathComponent("workspace-recovery/" + windowID + "/pages/" + tab.id + ".json"), original = try Data(contentsOf: path)
                 try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: path.path)
                 _ = await first.checkVideoWorkspace(time: 1.85)
