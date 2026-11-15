@@ -14,7 +14,7 @@ if (options.length > 1 || (options.length === 1 && !['--check', '--release'].inc
   throw new Error('默认构建独立验收包；--check 保留同样行为，--release 才构建并安装正式候选。');
 }
 const checkOnly = options[0] !== '--release';
-if (!checkOnly) signingIdentity();
+const localBuild = checkOnly || signingIdentity() === '-';
 await mkdir(path.join(root, 'build'), { recursive: true });
 const staging = await mkdtemp(path.join(root, 'build', 'native-staging-'));
 console.log(`构建目录：${staging}`);
@@ -143,5 +143,5 @@ if (checkOnly) {
   console.log(`独立验收应用：${output}`);
 } else {
   signNative(output);
-  console.log(JSON.stringify(await installNativeBuild(output), null, 2));
+  console.log(JSON.stringify(await installNativeBuild(output, undefined, { local: localBuild }), null, 2));
 }
