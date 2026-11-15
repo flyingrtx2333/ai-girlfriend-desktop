@@ -46,6 +46,9 @@ import AppKit
                 plain.window?.setFrame(NSRect(x: 180, y: 160, width: 780, height: 540), display: true)
                 let plainRange = (try expected("plainText") as NSString).range(of: "PUBLIC_PLAIN_CURSOR_518 中文😀")
                 try plain.checkTextViewport(selection: plainRange, y: 460)
+                plain.window?.makeFirstResponder(nil)
+                let rawChromeState = try await state(plain)
+                checks["windowChromeBeforeFirstAutosaveKeepsLastOriginalInputTarget"] = (plain.textViewportReadback["raw"] as? [String: Any])?["focused"] as? Bool == false && rawChromeState.textViewport?.focused == true
                 guard await flushWorkspaceWindows(), let window = control.workspaceSession?.id, let saved = try journal.loadWindow(window)?.value,
                       let plainTab = saved.floating.first(where: { $0.tab.root == "document:" + plainFile.path })?.tab.id else { throw PetError("原文位置没有保存") }
                 let path = store.directory.appendingPathComponent("workspace-recovery/" + window + "/pages/" + plainTab + ".json")
@@ -74,6 +77,10 @@ import AppKit
                 control.showTaskDocument(guide.path)
                 let block = try editor(first), blockValue = try expected("blockValue")
                 try block.checkTextViewport(preview: true, action: "begin", target: "PUBLIC_BLOCK_ORIGINAL_517", input: blockValue, selection: (blockValue as NSString).range(of: "中文😀"), y: 90)
+                control.window?.makeFirstResponder(nil)
+                let inlineChromeState = try await state(block)
+                checks["sidebarBeforeFirstAutosaveKeepsLastInlineInputTarget"] = !inlineReady(block) && inlineChromeState.markdownViewport?.editor?.viewport.focused == true
+                try block.checkTextViewport(preview: true, selection: (blockValue as NSString).range(of: "中文😀"), y: 90)
                 guard await flushWorkspaceWindows() else { throw PetError("段落编辑没有保存") }
                 await wait(0.7)
                 checks["autosaveNeverFinishesActiveBlockEditor"] = (try await state(block)).markdownViewport?.editor != nil && inlineReady(block)

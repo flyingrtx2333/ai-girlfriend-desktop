@@ -323,7 +323,10 @@ import AppKit
     }
     func rememberViewportFocus() {
         guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor, pendingViewRecovery == nil, !viewActivationScheduled else { return }
-        rememberedPreviewFocus = window?.firstResponder === text; rememberedEditorFocus = inlineEditor?.hasInputFocus == true
+        // Navigation controls can take focus before the page is captured.
+        // Keep the last content target until another content target is focused.
+        if inlineEditor?.hasInputFocus == true { rememberedPreviewFocus = false; rememberedEditorFocus = true }
+        else if window?.firstResponder === text { rememberedPreviewFocus = true; rememberedEditorFocus = false }
     }
     func activateRememberedView(force: Bool = false) {
         forceViewActivation = forceViewActivation || force
@@ -369,7 +372,7 @@ import AppKit
         pendingViewRecovery = nil; onViewportChange?()
     }
     @objc private func viewportChanged(_ notification: Notification) { viewChanged() }
-    private func viewChanged() { if !applyingViewRecovery, pendingViewRecovery == nil { onViewportChange?() } }
+    private func viewChanged() { if !applyingViewRecovery, pendingViewRecovery == nil { rememberViewportFocus(); onViewportChange?() } }
     func waitForDiagrams() async { await diagramTask?.value }
     func checkViewRecovery(action: String, target: String, input: String?, selection: NSRange?, y: Double?, cell: Bool) throws {
         guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }

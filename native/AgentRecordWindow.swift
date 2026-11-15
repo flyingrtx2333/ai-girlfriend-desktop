@@ -210,7 +210,7 @@ import UniformTypeIdentifiers
     func prepareWorkspaceNavigation() -> Bool {
         guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
-        if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = presentingWindow?.firstResponder === text }
+        if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
         do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     struct RecoveryState: Codable {
@@ -273,8 +273,8 @@ import UniformTypeIdentifiers
             if let pendingTextViewport, pendingTextViewport.matches(text) { viewport = pendingTextViewport }
             else {
                 pendingTextViewport = nil; var current = try AgentTextViewport(text)
-                if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = current.focused }
-                else { current.focused = rememberedTextFocus }
+                if isPageVisible, !viewer.isHidden, !textViewportScheduled, current.focused { rememberedTextFocus = true }
+                current.focused = rememberedTextFocus
                 viewport = current
             }
         } else { viewport = nil }
@@ -348,7 +348,7 @@ import UniformTypeIdentifiers
             applyingTextViewport = false; onWorkspaceChange?()
         }
     }
-    @objc private func textViewportChanged(_ notification: Notification) { if !applyingTextViewport, pendingTextViewport == nil { onWorkspaceChange?() } }
+    @objc private func textViewportChanged(_ notification: Notification) { if !applyingTextViewport, pendingTextViewport == nil { if presentingWindow?.firstResponder === text { rememberedTextFocus = true }; onWorkspaceChange?() } }
     private func retainVideoWindow(_ next: AgentVideoWindow) {
         videoWindow?.close(); videoWindow = next
         next.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
@@ -812,7 +812,7 @@ import UniformTypeIdentifiers
     }
     @objc private func switchDocumentMode(_ sender: Any? = nil) {
         guard let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
-        if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = presentingWindow?.firstResponder === text }
+        if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
         markdown.rememberViewportFocus()
         defer {
             scheduleTextViewport(activating: sender != nil && displayMode.selectedSegment == 1, forceFocus: sender != nil && displayMode.selectedSegment == 1)
@@ -987,7 +987,7 @@ import UniformTypeIdentifiers
             self.load = Task { @MainActor in do { _ = try await self.store.offices.create(file.path, taskID: self.taskID); self.refresh() } catch { self.state.stringValue = error.localizedDescription } }
         }
     }
-    func textDidChange(_ notification: Notification) { pendingTextViewport = nil; dirty = true; state.stringValue = "未保存"; onWorkspaceChange?() }
+    func textDidChange(_ notification: Notification) { pendingTextViewport = nil; if presentingWindow?.firstResponder === text { rememberedTextFocus = true }; dirty = true; state.stringValue = "未保存"; onWorkspaceChange?() }
     func undoManager(for view: NSTextView) -> UndoManager? { text.previewUndoManager }
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = viewer.isHidden || onAddSelection == nil; textViewportChanged(notification) }
     private func canLeave() -> Bool {
