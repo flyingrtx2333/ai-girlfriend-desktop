@@ -82,7 +82,7 @@ import AppKit
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
             } else {
                 fixture = try JSONDecoder().decode(BrowserRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
-                control.show(tab: "chat"); _ = await flushWorkspaceWindows()
+                control.show(tab: "chat"); restoreAdditionalWorkspaceWindows(); _ = await flushWorkspaceWindows()
                 if stage == "invalid" {
                     let raw = try Data(contentsOf: output.appendingPathComponent("future-browser-input.json"))
                     let path = store.directory.appendingPathComponent("workspace-recovery/" + fixture.windowID + "/pages/" + fixture.tabID + ".json")
@@ -93,6 +93,7 @@ import AppKit
                     checks["explicitlyClosedBrowsersDoNotResurrect"] = tasks.browser.sessions.isEmpty && taskControls.allSatisfy { !$0.taskWorkspace.recoveryLayouts.contains(where: { $0.tabs.contains(where: { $0.root == "browser" }) }) }
                     checks["submittedCaptureStaysInOriginalUnsentTask"] = tasks.task(fixture.taskID)?.messages.isEmpty == true && tasks.task(fixture.taskID)?.draft?.contains(fixture.note) == true && tasks.task(fixture.taskID)?.draftAttachmentIDs?.count == 1
                 } else {
+                    report["restoration"] = ["windowIDs": taskControls.compactMap { $0.workspaceSession?.id }, "browserTasks": Array(tasks.browser.sessions.keys), "mainHasAnnotation": tasks.browser.sessions[fixture.taskID]?.checkAnnotation != nil]
                     guard await flushWorkspaceWindows(), let browser = tasks.browser.sessions[fixture.taskID], let annotation = browser.checkAnnotation,
                           let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.otherWindowID }), let other = tasks.browser.sessions[fixture.otherID] else { throw PetError("两个任务窗口的浏览器或未添加标注没有恢复") }
                     checks["taskWindowIDsAndAnnotationChildRestore"] = control.workspaceSession?.id == fixture.windowID && child.agentTaskID == fixture.otherID && control.taskWorkspace.currentController === annotation
@@ -102,12 +103,17 @@ import AppKit
                     let stale = try JSONSerialization.jsonObject(with: Data(fixture.oldAction.utf8)) as! [String: Any]
                     checks["oldTabAndRevisionCannotAuthorizeRestoredPages"] = !browser.pages.contains { $0.id == stale["tab_id"] as? String }
                     do { _ = try await AgentTools(store: tasks, taskID: fixture.taskID).execute(.init(id: "old", name: "browser_action", arguments: fixture.oldAction)); checks["staleToolActionRejectedAfterRestart"] = false } catch { checks["staleToolActionRejectedAfterRestart"] = true }
-                    _ = try await browser.read(offset: 1, query: "网页说明", tabID: browser.pages[0].id)
+                    let fresh = try object(await browser.read(offset: 1, query: "网页说明", tabID: browser.pages[0].id))
                     let actual = try await inspect(browser); report["actualRestoredForm"] = actual
                     checks["realFormTextCheckboxAndChoiceRestore"] = actual["note"] as? String == text && actual["checked"] as? Bool == true && actual["choice"] as? String == "two"
                     checks["realScrollAndHistoryRestore"] = abs((actual["y"] as? Double ?? -1) - 900) < 2 && browser.web.canGoBack && browser.pages.count == 3
                     checks["passwordAndCookiesAreNotRestored"] = actual["password"] as? String == "" && actual["cookie"] as? String == ""
                     checks["restoredTaskWebsiteDataRemainsIsolated"] = browser.web.configuration.websiteDataStore !== other.web.configuration.websiteDataStore && !browser.web.configuration.websiteDataStore.isPersistent
+                    let history = try object(await browser.act(["action": "back", "tab_id": fresh["tab_id"]!, "revision": fresh["revision"]!]))
+                    checks["restoredBackButtonActuallyLoadsPreviousDocument"] = history["url"] as? String == fixture.base + "first/history" && browser.web.canGoForward
+                    _ = try await browser.act(["action": "forward", "tab_id": history["tab_id"]!, "revision": history["revision"]!])
+                    let returned = try await inspect(browser)
+                    checks["restoredForwardButtonKeepsActualFormAndScroll"] = returned["url"] as? String == fixture.base + "first/form" && returned["note"] as? String == text && returned["checked"] as? Bool == true && returned["choice"] as? String == "two" && abs((returned["y"] as? Double ?? -1) - 900) < 2
                     if !interactive {
                         await annotation.checkWorkspace(submit: true)
                         guard await flushWorkspaceWindows(), let attached = tasks.task(fixture.taskID)?.attachments?.last else { throw PetError("恢复的标注没有添加到原任务") }
