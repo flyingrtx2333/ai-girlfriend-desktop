@@ -2082,3 +2082,21 @@ Canvas 接入任务工作区的恢复存储，继续以任务记录中原有的 
 完整索引为 `evidence/agent/workspace-canvas-recovery-yn8evtmn/acceptance-index.json`。原生报告位于 `canvas-recovery-command-mggfsF`、`workspace-recovery-command-iuej0k`、`office-recovery-command-cHohMp`、`task-workspace-command-awZ32M` 和 `unsaved-changes-command-tRZw3n`。构建、资料、原始窗口及进程证明见本轮目录中的 `build-provenance-proof.json`、`runtime-ui/actual-quit-proof.json`、`runtime-ui/reopen-preservation-proof.json`、`cua-final-01-edit-quit`、`cua-final-02-reopen` 和 `process-and-protection-proof.json`。19 个已记录的编译、检查与窗口进程均核对退出；日常程序及防休眠进程保留，日常应用和 12 个正式保护项字节与权限一致，模型请求 0，日常入口未替换。
 
 实际重开还发现，尚未载入的 Canvas 标签暂时使用通用名称且没有未保存点，点击恢复后才显示正确名称与状态；这一项明确留待修复。完整范围继续包括该冷标签问题、Office 当前工作表／幻灯片／光标、浏览器与未添加标注、MCP 参数、编辑并重发、独立产物窗口、视频位置、明确关闭／放弃及更多来源／权限失败边界，以及日常发布。完整恢复 TODO 保持未勾选，历史 Wiki 首次无按键记录的跳转及其余完整清单也继续保留。
+
+## 2026-11-15 未载入标签的名称、未保存点与关闭对象
+
+沿用版本 1 的窗口标签标题及页面未保存状态，启动时读取有大小上限并校验归属的页面元数据，为尚未创建编辑器的标签恢复名称和未保存点；显示标记不读取或校验完整 Office 附件。画布旧布局仅保存通用标题时，从所属任务的实际画布记录取名。恢复失败保留原标签和未保存标记，重试仍按原加载校验处理。窗口保存与退出等待标签元数据读取结束，避免先保存空状态。关闭尚未恢复的标签时，公共确认框显示同一个实际对象名称。
+
+源码 `7b957d803b6223fb6fa05595656006c879828148` 及关闭确认补正 `44d966f8b992a7b9ddf8924b0b5af95b3df9ae50` 均已直接提交并推送 main。最终优化应用为 `evidence/agent/workspace-cold-tabs-2op3gs8a/final-02/小鲸标签恢复验收.app`，SHA-256 为 `e967065a391ff14db82ccf096bf01e571facf5ecaf75b08025b17e6486c85f6d`。376 份原生输入、7 份 MCP 输入、4 份图标资源、22 份辅助输入、9 份 Office 源与 140 份 Office 资源、4 份 Canvas 源与 3 份 Canvas 运行资源均核对；实际编译输入与冻结副本一致，辅助输入按清单核对。构建时源码干净，独立本地签名严格验证通过，无需个人证书或解锁钥匙串。首轮优化编译为补正关闭对象名称而明确停止，停止前后按拥有的进程编号核对，原记录保留；未将它记为编译超时或成功构建。
+
+同一最终程序通过恢复存储 28、Canvas 跨进程 40、Record 跨进程 26、Office 跨进程 32、任务工作区 132 项，共 258 项相关检查。检查覆盖冷标签实际名称／未保存点、尚未创建的 Office 编辑器、来源失联后保留脏标签，以及只有资源损坏而元数据仍有效时的未保存状态。Canvas 检查先保留完整种子布局，再仅将四个标题替换为旧版通用名称，保持版本 1、标签编号及所有其他布局字段；重开后名称由真实任务记录恢复。Canvas 两组产物各有 17 类独立读取，Office 三组产物各有 17 类独立文档核对，不将重复类别累加到 258 项。模型请求 0，未借用以前的模型额度。
+
+实际窗口先从完整种子资料正常启动及退出，原 18 份文件内容和权限完全一致，另正常新增历史和设置两份。随后只在独立验收目录将四个画布标题改成旧通用标题，再用同一程序启动；尚未载入的 D 画布在首次点击前已有实际名称和未保存点，干净的 B 画布没有未保存点。直接关闭 D 时，统一确认框显示“画布 · 公开画布 D”；选择继续编辑后按原关闭逻辑选中并载入该画布，实际源码可见。返回 A，窗口从 1200×774 缩至 780×540 后核对标签及工具区，再次正常退出。两轮共 11 次窗口调用、22 份原始记录、4 张原始图片，原始记录及图像摘要均核对。
+
+28 项独立窗口资料核对通过。四份原源码、四份历史版本、项目文件与两项完整任务始终保持；最终 20 份持久文件的权限一致，18 份字节一致，另外两份分别只含任务索引数组重排和明确恢复的四个标题／窗口尺寸变化。索引元数据、选中任务、标签编号／归属／顺序及页面正文均保持。13 个已记录的类型检查、编译、原生检查和窗口进程均核对退出。
+
+最终保护核对发现，日常应用的二进制及 Info.plist 与此前基线不同，原断言和 `daily-baseline-mismatch.json` 均保留，没有将 12 项全部不变报为通过。只读核查发现二者与另一次日常更新 `build/daily-update-AKFKyE/delivery-proof.json` 的版本 `3f14dfebf05ec51b66cc935dbec553efebf60175`、二进制摘要及运行进程 14670 一致，Info.plist 与该更新的 `production-info.json` 一致；旧版备份的两份文件与原保护基线完全一致。当前日常包另经只读严格验签通过。10 份正式资料的内容与权限全部保持；先前日常进程 42240 已由该更新替换，当前 14670 及原防休眠进程 1858 均保留。本轮标签验收没有修改或重新启动日常应用，没有请求解锁钥匙串。不能将日常包的旧编译输入数量和未签名摘要等继承字段用于本轮构建归属证明。
+
+完整索引为 `evidence/agent/workspace-cold-tabs-2op3gs8a/acceptance-index.json`；原生报告位于 `workspace-recovery-command-gsx6CI`、`canvas-recovery-command-pcFYzH`、`workspace-recovery-command-A5Hkf8`、`office-recovery-command-h9HWHT` 与 `task-workspace-command-IuZ559`。构建、旧版布局、窗口及资料证明为本轮目录中的 `build-provenance-proof.json`、`runtime-ui/legacy-layout-fixture.json`、`runtime-ui/ui-preservation-proof.json`、`cua-01-initial-quit`、`cua-02-legacy-reopen`、`process-and-protection-proof.json` 和 `daily-change-attribution.json`。
+
+冷标签缺口完成独立本地验收，尚未进入当前日常包。完整恢复继续包括 Office 工作表／幻灯片／光标、浏览器与未添加标注、MCP 参数、编辑并重发、独立产物窗口、视频位置、明确关闭／放弃及更多来源／权限失败边界。完整恢复项保持未勾选，整体清单仍为 75 项候选已勾选、32 项未勾选；各页面日常入口、真实模型业务流和其余完整复刻范围继续推进。
