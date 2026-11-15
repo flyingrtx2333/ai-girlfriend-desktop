@@ -70,6 +70,9 @@ final class PetWebView: WKWebView {
     var scheme: AssetScheme!
     var statusItem: NSStatusItem!
     lazy var control = ControlWindow(companion: self)
+    var workspaceRecoveryWindows: [AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>] = []
+    var workspaceRecoveryIssues: [String] = []
+    var workspaceRecoveryStarted = false
     var additionalTaskWindows: [ControlWindow] = []
     weak var focusedTaskControl: ControlWindow?
     var nextTaskWindowNumber = 2
@@ -88,7 +91,7 @@ final class PetWebView: WKWebView {
     let automationNotifications = AgentAutomationNotifications()
     var agentAnimationPhase = "idle"
     var usesSideTaskCheck: Bool { checkDirectory != nil && ["--side-task-check", "--side-task-reopen-check", "--side-task-session-check", "--side-task-session-observe", "--side-task-session-recover"].contains(where: CommandLine.arguments.contains) }
-    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--conversation-workspace-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-remote-page-check", "--workspace-skill-evolution-check", "--workspace-roles-check", "--workspace-capabilities-check", "--workspace-extensions-check", "--workspace-editor-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--general-settings-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
+    var usesAgent: Bool { checkDirectory == nil || usesSideTaskCheck || ["--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--conversation-workspace-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-remote-page-check", "--workspace-skill-evolution-check", "--workspace-roles-check", "--workspace-capabilities-check", "--workspace-extensions-check", "--workspace-editor-check", "--name-editor-check", "--unsaved-changes-check", "--operation-confirmation-check", "--wiki-lifecycle-check", "--wiki-lifecycle-fixtures", "--wiki-lifecycle-reopen", "--knowledge-review-check", "--knowledge-review-fixtures", "--knowledge-review-reopen", "--knowledge-page-check", "--automation-page-check", "--attention-page-check", "--settings-layout-check", "--sidebar-layout-check", "--mode-presentation-check", "--theme-styles-check", "--task-monitor-check", "--general-settings-check", "--file-icons-check", "--content-appearance-check", "--appearance-check", "--mcp-input-check", "--task-find-check", "--appshot-check", "--shortcut-check", "--conversation-creation-live-check", "--conversation-creation-preflight-check", "--automation-draft-check", "--agent-draft-check", "--plugin-team-check", "--plugin-scope-crash-check", "--plugin-scope-recovery-check", "--plugin-scope-check", "--plugin-update-check", "--plugin-update-crash-check", "--plugin-update-recovery-check", "--instruction-check", "--plugin-agent-live-check", "--rules-glob-retry-check", "--rules-glob-live-check", "--rules-live-check", "--local-rule-check", "--plugin-rule-check", "--plugin-hook-check", "--plugin-agent-check", "--file-open-check", "--attachment-drop-check", "--manual-ui", "--agent-check", "--agent-ui-check", "--context-check", "--git-check", "--index-check", "--wiki-ui-check", "--attachment-ui", "--live-attachments", "--live-visuals", "--browser-check", "--extension-check", "--mcp-check", "--mcp-content-check", "--hook-check", "--hook-service-check", "--hook-async-check", "--custom-agent-check", "--workbench-check", "--automation-check", "--task-model-check", "--worktree-creation-check", "--retention-check", "--file-change-check", "--desktop-check", "--canvas-check", "--office-check", "--organization-check", "--import-check", "--terminal-check", "--reply-policy-check", "--round-rollback-check", "--round-rollback-crash-check", "--round-rollback-recovery-check", "--edit-resend-check", "--knowledge-check", "--knowledge-cards-check", "--markdown-check", "--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check", "--video-preview-check"].contains(where: CommandLine.arguments.contains) }
     var selectedAgentBusy: Bool { agentStore?.selectedID.map { agentRuntime?.isRunning($0) == true } ?? false }
     var bubble: PetPanel?
     var bubbleLabel: NSTextField?
@@ -133,6 +136,7 @@ final class PetWebView: WKWebView {
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BlueFatFish", isDirectory: true)
         store = PreferencesStore(directory: directory, testing: checkDirectory != nil)
         super.init()
+        loadWorkspaceWindows()
         automationNotifications.allowsSystemDelivery = checkDirectory == nil || args.contains("--general-notifications-live-ui")
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -162,7 +166,12 @@ final class PetWebView: WKWebView {
         workspace.addObserver(self, selector: #selector(frontApplicationChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(powerChanged), name: .NSProcessInfoPowerStateDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        if checkDirectory == nil { ensureAgent(); _ = appShot; if !store.keychain.contains("chat") { control.show(tab: "settings") } }
+        if checkDirectory == nil {
+            ensureAgent(); _ = appShot
+            if !workspaceRecoveryWindows.isEmpty { control.show(tab: "chat") }
+            restoreAdditionalWorkspaceWindows()
+            if !store.keychain.contains("chat") { control.show(tab: "settings") }
+        }
         applicationLaunched = true; importOpenedFiles()
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -204,10 +213,13 @@ final class PetWebView: WKWebView {
         terminationPending = true
         Task { @MainActor in
             defer { self.terminationPending = false }
-            for window in self.taskControls { if !(await window.closeOwnedTaskPanels()) { return } }
+            guard await self.flushWorkspaceWindows() else { return }
+            for window in self.taskControls { if !(await window.prepareOwnedTaskPanels(preservingRecovery: true)) { return } }
             if tasks.offices.hasWindows, !(await tasks.offices.canQuit()) { return }
             if !(await tasks.canvases.canQuit()) { return }
             if !(await tasks.browser.canQuit()) { return }
+            guard await self.flushWorkspaceWindows() else { return }
+            for window in self.taskControls { window.finishOwnedTaskPanels() }
             self.closing = true; self.agentRuntime?.stopAll(); await tasks.sideTasks.endSession()
             await self.appShot.cancelAndWait()
             self.terminationReady = true; sender.terminate(nil)

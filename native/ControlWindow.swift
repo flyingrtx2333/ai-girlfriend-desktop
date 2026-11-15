@@ -209,6 +209,7 @@ final class FormDocumentView: NSView {
     private var appliedMonitorSettings: AgentTaskMonitor.Settings?
     private let terminalButton = AgentWorkbenchButton(), terminalSplit = AgentTerminalSplitView()
     private(set) var taskWorkspace = AgentTaskWorkspace()
+    private(set) var workspaceSession: AgentWorkspaceSession?
     private var taskDocumentOpenState: [String: Any] = [:]
     private var conversationTrailing: NSLayoutConstraint!, fullConversationTrailing: NSLayoutConstraint!
     private var headerActionsTrailing: NSLayoutConstraint!, fullHeaderActionsTrailing: NSLayoutConstraint!
@@ -227,9 +228,10 @@ final class FormDocumentView: NSView {
     private var taskNavigation: [String] = [], taskNavigationIndex = -1, navigatingTaskHistory = false
     private var lastInspectorTransitionDuration: TimeInterval = 0
 
-    init(companion: AppDelegate, taskID: String? = nil, windowNumber: Int = 1) {
+    init(companion: AppDelegate, taskID: String? = nil, windowNumber: Int = 1, recovery: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>? = nil) {
         self.companion = companion
-        taskWindowNumber = windowNumber; displayedTask = taskID
+        let recovered = recovery ?? (windowNumber == 1 ? companion.workspaceRecoveryWindows.first(where: { $0.value.number == 1 }) : nil)
+        taskWindowNumber = windowNumber; displayedTask = taskID ?? recovered?.value.taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: companion.usesAgent ? 1200 : 980, height: companion.usesAgent ? 774 : 700),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "蓝色大肥鱼"; window.minSize = NSSize(width: 780, height: 540)
@@ -288,6 +290,14 @@ final class FormDocumentView: NSView {
                 }
             }
             companion.screenCompanion.onChange = { [weak companion] state in for window in companion?.taskControls ?? [] { window.updateScreenStatus(state) } }
+        }
+        if companion.workspaceRecoveryEnabled {
+            workspaceSession = AgentWorkspaceSession(owner: self, profile: companion.store.directory, saved: recovered)
+            if let frame = recovered?.value.frame, let screen = window.screen ?? NSScreen.main {
+                let visible = screen.visibleFrame, width = max(780, min(frame.width, visible.width)), height = max(540, min(frame.height, visible.height))
+                window.setFrame(NSRect(x: max(visible.minX, min(frame.x, visible.maxX - width)), y: max(visible.minY, min(frame.y, visible.maxY - height)), width: width, height: height), display: false)
+            }
+            updateWorkbenchLayout(); workspaceSession?.changed()
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -1986,12 +1996,13 @@ final class FormDocumentView: NSView {
         clearButton.title = companion.undoMessages == nil ? "清空" : "撤销清空"
     }
     func windowDidResize(_ notification: Notification) {
+        workspaceSession?.changed()
         dismissExtensionCandidates()
         updateWorkbenchLayout(); companion?.updatePetWorkspaceOcclusion()
         let width = companion?.usesAgent == true ? history.contentView.bounds.width - 40 : (window?.contentView?.bounds.width ?? 980) - 272
         messageRows.values.forEach { $0.fit(width: width) }
     }
-    func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion() }
+    func windowDidMove(_ notification: Notification) { companion?.updatePetWorkspaceOcclusion(); workspaceSession?.changed() }
     func windowDidMiniaturize(_ notification: Notification) { monitorPanel?.orderOut(nil); companion?.updatePetWorkspaceOcclusion() }
     func windowDidDeminiaturize(_ notification: Notification) { updateWorkbenchLayout(); companion?.updatePetWorkspaceOcclusion() }
     func windowDidBecomeKey(_ notification: Notification) {
@@ -2020,16 +2031,16 @@ final class FormDocumentView: NSView {
     private func prepareWindowClose(_ sender: NSWindow) async -> Bool {
         if let id = sideTaskTabID, let task = companion?.agentStore?.task(id), let side = task.sideTask, !side.retained,
            companion?.taskControls.contains(where: { $0 !== self && $0.agentTaskID == id && $0.window != nil }) != true {
-            guard !closingSideTask, await closeOwnedTaskPanels() else { return false }
+            guard !closingSideTask, await prepareOwnedTaskPanels() else { return false }
             let unsafe = task.pendingFileRollback != nil || task.sideTask?.needsReview == true || task.gitTurn?.warning != nil || task.changeRounds?.contains { $0.warning != nil } == true
             let alert = AgentConfirmation(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
             alert.informativeText = unsafe ? "文件记录尚未完成，请保留任务以便检查和恢复。" : "这份侧任务及其子任务的对话、草稿、附件不会保留。项目文件保持当前状态。"
             if !unsafe { alert.addButton(withTitle: "关闭并移除").hasDestructiveAction = true }; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保留为任务")
             let answer = alert.runModal()
             if answer == (unsafe ? .alertSecondButtonReturn : .alertThirdButtonReturn) {
-                do { try companion?.agentStore?.sideTasks.keepAsTask(id); sideTaskTabID = nil; return true } catch { setStatus(error.localizedDescription, error: true); return false }
+                do { try companion?.agentStore?.sideTasks.keepAsTask(id); sideTaskTabID = nil; return await finishPreparedOwnedTaskPanels() } catch { setStatus(error.localizedDescription, error: true); return false }
             }
-            if !unsafe, answer == .alertFirstButtonReturn { closingSideTask = true; companion?.agentRuntime?.cancel(id); finishClosingSideTask() }
+            if !unsafe, answer == .alertFirstButtonReturn, await finishPreparedOwnedTaskPanels() { closingSideTask = true; companion?.agentRuntime?.cancel(id); finishClosingSideTask() }
             return false
         }
         if taskWindowNumber != 1 { guard await closeOwnedTaskPanels() else { return false }; return true }
@@ -2044,10 +2055,15 @@ final class FormDocumentView: NSView {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do { let issue = try await tasks.sideTasks.discard(id); closingSideTask = false; discardingSideTask = false; sideTaskTabID = nil; if let issue { companion?.inputControl.setStatus(issue, error: true) }; window?.close() }
-            catch { closingSideTask = false; discardingSideTask = false; setStatus(error.localizedDescription, error: true) }
+            catch {
+                closingSideTask = false; discardingSideTask = false
+                if let companion, companion.workspaceRecoveryEnabled { workspaceSession = AgentWorkspaceSession(owner: self, profile: companion.store.directory, saved: nil); workspaceSession?.changed() }
+                setStatus(error.localizedDescription, error: true)
+            }
         }
     }
     func windowWillClose(_ notification: Notification) {
+        workspaceSession?.stop()
         monitorPanel?.orderOut(nil); if let monitorPanel { window?.removeChildWindow(monitorPanel) }; monitorPanel = nil
         settingsPageHost.finish()
         knowledgePageHost.finish()
@@ -2072,11 +2088,20 @@ final class FormDocumentView: NSView {
         updateTerminalDock()
     }
     func closeOwnedTaskPanels() async -> Bool {
+        guard await prepareOwnedTaskPanels() else { return false }
+        return await finishPreparedOwnedTaskPanels()
+    }
+    private func finishPreparedOwnedTaskPanels() async -> Bool {
+        do { try await workspaceSession?.markClosed() }
+        catch { setStatus("窗口恢复状态未保存：" + error.localizedDescription, error: true); return false }
+        finishOwnedTaskPanels(); return true
+    }
+    func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave() else { return false }
-        guard await taskWorkspace.canFinish() else { return false }
+        guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedRecords ?? [] : []) else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         for record in Array(artifactDocuments) {
             guard record.canLeaveSettings() else { record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil); return false }
@@ -2084,9 +2109,12 @@ final class FormDocumentView: NSView {
         }
         let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
-        knowledgePageHost.finish()
-        taskWorkspace.finish()
         return true
+    }
+    func finishOwnedTaskPanels() { workspaceSession?.stop(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func flushWorkspaceRecovery() async -> Bool {
+        do { try await workspaceSession?.flush(); return true }
+        catch { setStatus("工作区恢复未保存：" + error.localizedDescription, error: true); return false }
     }
     func requireTaskDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
@@ -3080,8 +3108,8 @@ final class FormDocumentView: NSView {
             }
         } catch { setStatus(error.localizedDescription, error: true) }
     }
-    private func preparedRecord(store: AgentStore, taskID id: String, section: Int, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false) -> AgentRecordWindow {
-        let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly, taskHosted: taskHosted, documentOnly: documentOnly)
+    private func preparedRecord(store: AgentStore, taskID id: String, section: Int, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) -> AgentRecordWindow {
+        let record = AgentRecordWindow(store: store, taskID: id, section: section, wikiOnly: wikiOnly, taskHosted: taskHosted, documentOnly: documentOnly, memoryWorkspace: memoryWorkspace)
         record.onAddSelection = { [weak self] selection in
             guard let self else { throw PetError("任务窗口已关闭") }; try self.addDocumentSelection(selection, taskID: id)
         }
@@ -3095,6 +3123,33 @@ final class FormDocumentView: NSView {
         record.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
         if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
         return record
+    }
+    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, page: AgentWorkspaceRecovery.Page?) async throws {
+        guard agentTaskID == id, selectedTab == "chat", let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
+        if let page {
+            let value = try AgentRecordWindow.recoveryState(page)
+            switch root {
+            case .document: guard value.documentOnly else { throw PetError("恢复文件与标签页不符") }
+            case .records: guard !value.documentOnly else { throw PetError("恢复记录与标签页不符") }
+            default: throw PetError("此标签的恢复格式尚不支持，原记录已保留")
+            }
+            let editor = preparedRecord(store: store, taskID: id, section: value.section, taskHosted: true, documentOnly: value.documentOnly, memoryWorkspace: value.memoryWorkspace)
+            try editor.restoreWorkspaceRecovery(page)
+            guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开恢复内容") }
+            editor.window?.orderOut(nil)
+        } else {
+            taskWorkspace.permitRecovery(tab.id)
+            switch root {
+            case .document(let path):
+                if AgentOffice.supports(path) { _ = try await store.offices.show(path, taskID: id, location: .workspace) }
+                else { showTaskDocument(path) }
+            case .canvas(let canvas): _ = try await store.canvases.show(canvas, taskID: id, location: .workspace)
+            case .browser: _ = try store.browser.show(taskID: id, title: task.title)
+            default: taskWorkspace.onOpenRoot?(root)
+            }
+        }
+        guard taskWorkspace.recoveryController(taskID: id, root: root) != nil else { throw PetError("该标签的来源暂不可用，请重试") }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func presentOfficeWorkspace(_ editor: AgentOfficeWindow) throws {
         guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
     private let store: AgentStore, taskID: String
     private let taskHosted: Bool, documentOnly: Bool
     private let memoryWorkspace: String?
+    private var openedMemoryWorkspace: String?, recoveryBlockedReason: String?
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
     private let list = NSScrollView(), wikiTree = AgentWikiTree()
@@ -52,6 +53,7 @@ import UniformTypeIdentifiers
     var onWorkspaceChange: (() -> Void)?
     var onWindowClose: (() -> Void)?
     var workspaceHasUnsavedChanges: Bool { dirty }
+    var canPreserveForQuit: Bool { store.task(taskID).map { $0.sideTask?.retained != false } == true }
     override var minimumSettingsContentHeight: CGFloat { sections.selectedSegment == 5 ? 220 : super.minimumSettingsContentHeight }
     var workspaceDocumentURL: URL? { documentOnly ? openedFile ?? selection.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil } : nil }
     private let itemPicker = NSPopUpButton(), filesToggle = NSButton(), taskFileArea = NSView(), taskNavigation = NSView(), taskSecondaryActions = NSStackView()
@@ -107,6 +109,7 @@ import UniformTypeIdentifiers
             guard let self else { return }; self.text.string = value; self.text.undoManager?.removeAllActions()
             do { self.dirty = AgentFiles.hash(try self.fileData()) != self.openedHash; self.state.stringValue = self.dirty ? "未保存" : self.markdownFile?.lastPathComponent ?? "" }
             catch { self.dirty = true; self.state.stringValue = error.localizedDescription }
+            self.onWorkspaceChange?()
         }
         markdown.onEditError = { [weak self] message in self?.state.stringValue = message }
         AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding); encodingMenu.isHidden = true
@@ -197,10 +200,82 @@ import UniformTypeIdentifiers
         guard !saving else { state.stringValue = "正在保存…"; return false }
         do { try markdown.finishEditing(); video.pause(); videoWindow?.preview.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
+    struct RecoveryState: Codable {
+        var version = 1
+        var taskID: String
+        var documentOnly: Bool
+        var section: Int
+        var selection: String?
+        var file: String?
+        var memoryWorkspace: String?
+        var openedHash: String?
+        var text: String?
+        var encoding: String
+        var bom: Bool
+        var mode: Int
+        var dirty: Bool
+    }
+    static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
+        guard page.kind == "record", page.asset == nil,
+              let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+        let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
+        guard value.version == 1, value.taskID == page.taskID, (0...6).contains(value.section), [0, 1].contains(value.mode),
+              value.dirty == page.dirty, AgentTextEncoding(rawValue: value.encoding) != nil,
+              !value.dirty || (value.text != nil && value.openedHash?.count == 64),
+              value.file.map({ $0.hasPrefix("/") && !$0.contains("\0") }) ?? true else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
+        return value
+    }
+    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
+        guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
+        try markdown.finishEditing()
+        let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
+            file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
+            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty, asset: nil)
+        _ = try Self.recoveryState(page); return page
+    }
+    func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
+        let value = try Self.recoveryState(page)
+        guard value.taskID == taskID, value.documentOnly == documentOnly, let task = store.task(taskID) else { throw PetError("恢复草稿所属任务已变化") }
+        let format = AgentTextFormat(encoding: AgentTextEncoding(rawValue: value.encoding)!, bom: value.bom)
+        sections.selectedSegment = value.section; refreshCatalog(selecting: value.selection)
+        if !value.dirty {
+            if documentOnly, let file = value.file { _ = try openWorkspaceDocument(file) }
+            else if let selection = value.selection { selectItem(section: value.section, value: selection) }
+            if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }; return
+        }
+        guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
+        var issue: String?, currentHash: String?
+        if let path = value.file, [1, 6].contains(value.section) {
+            let file = URL(fileURLWithPath: path).standardizedFileURL
+            do {
+                let (files, current) = try AgentWorkspaceScope.location(task, path: path)
+                guard current == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("原文件位置或访问范围已变化") }
+                currentHash = try files.fileHash(file, maximum: 4_000_000)
+            } catch { issue = error.localizedDescription }
+            loadText(AgentTextFile(text: draft, format: format), data: Data(draft.utf8), file: file, task: task)
+            selection = path; openedFile = file
+            if !openedFiles.contains(path) { openedFiles.append(path) }
+            if documentOnly { window?.title = file.lastPathComponent }
+        } else if value.section == 5, let selection = value.selection, let scope = AgentMemoryScope(rawValue: selection), scope != .effectiveInstructions {
+            do { currentHash = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: value.memoryWorkspace).hash }
+            catch { issue = error.localizedDescription }
+            openedMemoryWorkspace = value.memoryWorkspace; text.string = draft; text.isEditable = issue == nil && !task.archived && ![.running, .waiting].contains(task.status)
+            save.isHidden = false; save.isEnabled = text.isEditable
+        } else { throw PetError("恢复草稿没有可写入的原始对象") }
+        openedHash = hash; dirty = true; recoveryBlockedReason = issue
+        if let issue { text.isEditable = false; save.isEnabled = false; compare.isHidden = true; state.stringValue = "草稿已恢复为只读：" + issue }
+        else { state.stringValue = currentHash == hash ? "已恢复未保存内容" : "文件已更改，草稿已恢复；保存前请比较" }
+        if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
+        text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
+    }
     @objc private func refresh() {
         refreshCatalog(selecting: nil)
     }
     private func refreshCatalog(selecting preferred: String?) {
+        defer { onWorkspaceChange?() }
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
         load?.cancel(); selection = nil; openedHash = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
@@ -525,9 +600,9 @@ import UniformTypeIdentifiers
         loadSelection(items[table.selectedRow].value)
     }
     private func loadSelection(_ value: String) {
-        defer { updateTaskItemPicker() }
+        defer { updateTaskItemPicker(); onWorkspaceChange?() }
         guard let task = store.task(taskID) else { return }
-        load?.cancel(); selection = value; openedHash = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
+        load?.cancel(); selection = value; openedHash = nil; recoveryBlockedReason = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true; open.title = "打开"
         do {
@@ -542,6 +617,7 @@ import UniformTypeIdentifiers
             }
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
                 let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: memoryWorkspace)
+                openedMemoryWorkspace = memory.workspace ?? memoryWorkspace ?? task.workspace
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
                 text.isEditable = scope != .effectiveInstructions && task.status != .running && (!scope.isInstructions || task.status != .waiting)
                 save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
@@ -641,6 +717,7 @@ import UniformTypeIdentifiers
     }
     @objc private func switchDocumentMode() {
         guard let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
+        defer { onWorkspaceChange?() }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; displayMode.selectedSegment = markdown.isHidden ? 1 : 0; return }
         let preview = displayMode.selectedSegment == 0
         markdown.isHidden = !preview; viewer.isHidden = preview
@@ -684,13 +761,14 @@ import UniformTypeIdentifiers
         catch { state.stringValue = error.localizedDescription }
     }
     @objc private func saveFile() {
+        if let recoveryBlockedReason { state.stringValue = recoveryBlockedReason; return }
         guard let path = selection, let task = store.task(taskID) else { return }
         guard !saving else { return }
         guard ![.running, .waiting].contains(task.status), !task.archived else { state.stringValue = "任务当前只读，草稿已保留"; return }
         do {
             try markdown.finishEditing()
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: path), let hash = openedHash {
-                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID, workspace: memoryWorkspace)
+                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID, workspace: openedMemoryWorkspace ?? memoryWorkspace)
                 openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
             }
             let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)
@@ -713,7 +791,7 @@ import UniformTypeIdentifiers
         let data = try format.encode(content)
         let args = try JSONSerialization.data(withJSONObject: ["path": path, "content": content, "expected_hash": expectedHash, "encoding": format.encoding.rawValue, "byte_order_mark": format.bom])
         saving = true; save.isEnabled = false; compare.isEnabled = false; state.stringValue = "正在保存…"
-        defer { saving = false; save.isEnabled = text.isEditable; compare.isEnabled = true }
+        defer { saving = false; save.isEnabled = text.isEditable; compare.isEnabled = true; onWorkspaceChange?() }
         _ = try await AgentTools(store: store, taskID: taskID).execute(AgentToolCall(id: UUID().uuidString, name: "write_file", arguments: String(decoding: args, as: UTF8.self)))
         openedHash = AgentFiles.hash(data); dirty = (try? fileData()) != data; state.stringValue = dirty ? "未保存" : "已保存"
     }
@@ -808,7 +886,7 @@ import UniformTypeIdentifiers
             self.load = Task { @MainActor in do { _ = try await self.store.offices.create(file.path, taskID: self.taskID); self.refresh() } catch { self.state.stringValue = error.localizedDescription } }
         }
     }
-    func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存" }
+    func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存"; onWorkspaceChange?() }
     func undoManager(for view: NSTextView) -> UndoManager? { text.previewUndoManager }
     func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = viewer.isHidden || onAddSelection == nil }
     private func canLeave() -> Bool {
@@ -876,6 +954,7 @@ import UniformTypeIdentifiers
         guard AgentTaskWorkspace.readbackEnabled else { return }
         if let value, text.isEditable { displayMode.selectedSegment = 1; switchDocumentMode(); text.string = value; textDidChange(Notification(name: NSText.didChangeNotification, object: text)) }
         if action == "save" { saveFile(); await load?.value }
+        else if action == "preview" || action == "source" { displayMode.selectedSegment = action == "preview" ? 0 : 1; switchDocumentMode() }
         else if action == "compare" { presentConflict() }
         else if action == "files" { toggleTaskFiles() }
     }

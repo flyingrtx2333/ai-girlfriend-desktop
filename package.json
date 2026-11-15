@@ -44,6 +44,7 @@
     "native:check-git-remote-page": "node scripts/check-native-git-remote-page.mjs",
     "native:check-task-workspace": "node scripts/check-native-task-workspace.mjs",
     "native:check-workspace-recovery": "node scripts/check-native-workspace-recovery.mjs",
+    "native:check-workspace-recovery-lifecycle": "node scripts/check-native-workspace-recovery.mjs --lifecycle",
     "native:check-conversation-workspace": "node scripts/check-native-task-workspace.mjs --conversation",
     "native:check-artifact-workspace": "node scripts/check-native-artifact-workspace.mjs",
     "native:check-artifact-opening": "node scripts/check-native-artifact-workspace.mjs --artifact-location",

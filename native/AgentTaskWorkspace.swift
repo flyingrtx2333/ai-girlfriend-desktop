@@ -25,15 +25,31 @@ import AppKit
         var key: String {
             switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id; case .rollback(let id): return "rollback:" + id; case .editResend(let id): return "edit-resend:" + id }
         }
+        init?(key: String) {
+            switch key {
+            case "review": self = .review; case "records": self = .records; case "context": self = .context; case "browser": self = .browser; case "mcp": self = .mcpContent
+            default:
+                guard let split = key.firstIndex(of: ":"), split < key.index(before: key.endIndex) else { return nil }
+                let value = String(key[key.index(after: split)...])
+                switch String(key[..<split]) {
+                case "document": guard value.hasPrefix("/") else { return nil }; self = .document(value)
+                case "canvas": self = .canvas(value); case "rollback": self = .rollback(value); case "edit-resend": self = .editResend(value)
+                default: return nil
+                }
+            }
+        }
     }
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
     private let back = NSButton(), expand = NSButton(), hide = NSButton(), add = NSButton()
     private let title = NSTextField(labelWithString: ""), body = NSView(), tabs = NSStackView(), tabScroll = NSScrollView(), breadcrumb = NSStackView()
     private var stacks: [String: [Root: [Entry]]] = [:], orders: [String: [Root]] = [:], selected: [String: Root] = [:]
+    private var recoveryTabs: [String: [Root: AgentWorkspaceRecovery.Tab]] = [:], recoveryRequested = Set<String>(), pendingRecovery = Set<String>(), permittedRecovery = Set<String>()
     private var opened = Set<String>(), expandedTasks = Set<String>(), tabSignature = "", headerFull: Bool?, closing = false
     private var breadcrumbHeight: NSLayoutConstraint!, tabViews: [(Root, AgentThemeView, NSButton, NSButton, NSLayoutConstraint, NSLayoutConstraint)] = []
     private(set) var taskID: String?
     var onLayoutChange: (() -> Void)?
+    var onRecoveryChange: (() -> Void)?
+    var onRestoreRoot: ((String, AgentWorkspaceRecovery.Tab) -> Void)?
     var onOpenRoot: ((Root) -> Void)?, onOpenDocument: (() -> Void)?, onOpenTerminal: (() -> Void)?
     var requested: Bool { taskID.map(opened.contains) == true }
     var expanded: Bool { taskID.map(expandedTasks.contains) == true }
@@ -41,7 +57,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -79,26 +95,64 @@ import AppKit
     }
     @discardableResult func selectTask(_ id: String) -> Bool {
         guard taskID != id else { return true }; guard prepareToNavigate() else { return false }
-        taskID = id; displayCurrent(); return true
+        taskID = id; displayCurrent(); onRecoveryChange?(); return true
     }
-    @discardableResult func show(taskID id: String, root: Root = .review, make: () -> AgentSettingsPageController) -> Bool {
+    @discardableResult func show(taskID id: String, root: Root = .review, recovering: Bool = false, make: () -> AgentSettingsPageController) -> Bool {
         guard selectTask(id), prepareToNavigate() else { return false }; selected[id] = root; opened.insert(id)
-        if stacks[id]?[root]?.isEmpty != false { orders[id, default: []].append(root); push(make(), taskID: id, root: root) }
+        if let tab = recoveryTabs[id]?[root], pendingRecovery.contains(tab.id), !recovering, permittedRecovery.remove(tab.id) == nil {
+            recoveryRequested.remove(tab.id); displayCurrent(); onLayoutChange?(); return false
+        }
+        if stacks[id]?[root]?.isEmpty != false {
+            if !orders[id, default: []].contains(root) { orders[id, default: []].append(root) }
+            if recoveryTabs[id]?[root] == nil { recoveryTabs[id, default: [:]][root] = .init(root: root.key, title: root.title) }
+            push(make(), taskID: id, root: root)
+        }
         else { displayCurrent() }
-        onLayoutChange?(); return true
+        onLayoutChange?(); onRecoveryChange?(); return true
+    }
+    var recoveryLayouts: [AgentWorkspaceRecovery.TaskLayout] {
+        orders.keys.sorted().map { id in
+            .init(taskID: id, tabs: (orders[id] ?? []).compactMap { recoveryTabs[id]?[$0] }, selected: selected[id]?.key, opened: opened.contains(id), expanded: expandedTasks.contains(id))
+        }
+    }
+    var recoveryEditors: [(String, AgentWorkspaceRecovery.Tab, AgentSettingsPageController)] {
+        orders.keys.sorted().flatMap { id in (orders[id] ?? []).compactMap { root in
+            guard let tab = recoveryTabs[id]?[root], let controller = stacks[id]?[root]?.first?.controller else { return nil }
+            return (id, tab, controller)
+        } }
+    }
+    func recoveryController(taskID: String, root: Root) -> AgentSettingsPageController? { stacks[taskID]?[root]?.first?.controller }
+    func permitRecovery(_ id: String) { permittedRecovery.insert(id) }
+    func retryRecovery(_ id: String) { recoveryRequested.remove(id); permittedRecovery.remove(id) }
+    func restoreLayouts(_ values: [AgentWorkspaceRecovery.TaskLayout]) throws {
+        guard orders.isEmpty else { throw PetError("当前工作区已有标签，无法替换恢复布局") }
+        var parsed: [(AgentWorkspaceRecovery.TaskLayout, [Root])] = []
+        for value in values {
+            let roots = value.tabs.compactMap { Root(key: $0.root) }
+            guard roots.count == value.tabs.count else { throw PetError("包含暂不支持的工作区标签，原布局已保留") }
+            parsed.append((value, roots))
+        }
+        for (value, roots) in parsed {
+            orders[value.taskID] = roots; recoveryTabs[value.taskID] = Dictionary(uniqueKeysWithValues: zip(roots, value.tabs))
+            pendingRecovery.formUnion(value.tabs.map(\.id))
+            selected[value.taskID] = value.selected.flatMap(Root.init(key:))
+            if value.opened { opened.insert(value.taskID) }; if value.expanded { expandedTasks.insert(value.taskID) }
+        }
+        displayCurrent(); onLayoutChange?()
     }
     func rootController(_ root: Root) -> AgentSettingsPageController? { taskID.flatMap { stacks[$0]?[root]?.first?.controller } }
     private func push(_ controller: AgentSettingsPageController, taskID id: String, root: Root) {
         if taskID == id, selectedRoot == root, !prepareToNavigate() { return }
         guard let window, window.attachedSheet == nil, let content = controller.settingsContent(in: window, styled: false) else { return }
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
-        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
+        if stacks[id]?[root]?.count == 1, let tab = recoveryTabs[id]?[root] { pendingRecovery.remove(tab.id) }
         if taskID == id, selectedRoot == root { displayCurrent() }
     }
     private func displayCurrent() {
@@ -110,6 +164,7 @@ import AppKit
             entry.controller.settingsDidAppear()
         }
         updateTabs(); updateHeader(full: headerFull ?? expanded); needsLayout = true; window?.recalculateKeyViewLoop()
+        if !isHidden, entries.isEmpty, let id = taskID, let tab = recoveryTabs[id]?[selectedRoot], recoveryRequested.insert(tab.id).inserted { onRestoreRoot?(id, tab) }
     }
     func setVisible(_ visible: Bool) {
         guard isHidden != !visible else { return }
@@ -161,7 +216,7 @@ import AppKit
     }
     @objc private func selectTab(_ sender: NSButton) {
         guard let id = taskID, let roots = orders[id], roots.indices.contains(sender.tag), prepareToNavigate() else { return }
-        selected[id] = roots[sender.tag]; displayCurrent(); onLayoutChange?()
+        selected[id] = roots[sender.tag]; if let tab = recoveryTabs[id]?[selectedRoot] { recoveryRequested.remove(tab.id) }; displayCurrent(); onLayoutChange?(); onRecoveryChange?()
     }
     @objc private func closeTab(_ sender: NSButton) {
         guard let id = taskID, let roots = orders[id], roots.indices.contains(sender.tag), prepareToNavigate() else { return }
@@ -172,15 +227,18 @@ import AppKit
         guard !closing else { return }; closing = true
         Task { @MainActor [weak self] in
             guard let self else { return }; defer { closing = false }
+            if stacks[id]?[root]?.isEmpty != false, !AgentUnsavedChanges.discard("关闭尚未恢复的标签页？", detail: root.title) { return }
             for entry in (stacks[id]?[root] ?? []).reversed() { guard await entry.controller.prepareForWorkspaceClose() else { return } }
             removeRoot(taskID: id, root: root)
         }
     }
     private func removeRoot(taskID id: String, root: Root, detaching: Bool = false) {
         let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { if detaching { $0.controller.detachSettingsHosting() } else { $0.controller.endSettingsHosting() } }; orders[id]?.removeAll { $0 == root }
+        if let tab = recoveryTabs[id]?.removeValue(forKey: root) { recoveryRequested.remove(tab.id); pendingRecovery.remove(tab.id); permittedRecovery.remove(tab.id) }
         if selected[id] == root { selected[id] = orders[id]?.last }
         if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
         if taskID == id { displayCurrent(); onLayoutChange?() }
+        onRecoveryChange?()
     }
     func detachBrowser(_ browser: AgentBrowserWindow) -> Bool {
         guard let id = taskID, rootController(.browser) === browser else { return false }
@@ -234,12 +292,15 @@ import AppKit
             if let editor = entry.controller as? AgentEditResendWindow, !editor.prepareWorkspaceNavigation() { return false }
         }; return true
     }
-    @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?() }
+    @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?(); onRecoveryChange?() }
     func hideForNavigation() { hideWorkspace() }
-    @objc private func toggleExpanded() { guard let taskID else { return }; if expandedTasks.contains(taskID) { expandedTasks.remove(taskID) } else { expandedTasks.insert(taskID) }; onLayoutChange?() }
-    func canFinish() async -> Bool {
+    @objc private func toggleExpanded() { guard let taskID else { return }; if expandedTasks.contains(taskID) { expandedTasks.remove(taskID) } else { expandedTasks.insert(taskID) }; onLayoutChange?(); onRecoveryChange?() }
+    func canFinish(preserving records: Set<ObjectIdentifier> = []) async -> Bool {
         guard !closing else { return false }; closing = true; defer { closing = false }
-        for controller in controllers.reversed() { if !(await controller.prepareForWorkspaceClose()) { return false } }; return true
+        for controller in controllers.reversed() {
+            if let record = controller as? AgentRecordWindow, record.canPreserveForQuit, records.contains(ObjectIdentifier(record)) { guard record.prepareWorkspaceNavigation() else { return false }; continue }
+            if !(await controller.prepareForWorkspaceClose()) { return false }
+        }; return true
     }
     func requireDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         guard !closing else { throw PetError("请先完成工作区关闭操作") }
@@ -257,10 +318,11 @@ import AppKit
         } } }
     }
     func finish(tasks ids: Set<String>? = nil) {
-        for id in ids ?? Set(stacks.keys) {
+        for id in ids ?? Set(orders.keys).union(stacks.keys) {
             for entries in (stacks.removeValue(forKey: id) ?? [:]).values { entries.reversed().forEach { $0.controller.endSettingsHosting() } }
             orders[id] = nil; selected[id] = nil; opened.remove(id); expandedTasks.remove(id)
-        }; displayCurrent(); onLayoutChange?()
+            recoveryTabs[id] = nil
+        }; displayCurrent(); onLayoutChange?(); onRecoveryChange?()
     }
     func checkBack() { if Self.readbackEnabled { goBack() } }
     func checkExpand() { if Self.readbackEnabled { toggleExpanded() } }

@@ -5,7 +5,7 @@ enum AgentMemoryScope: String, CaseIterable {
     var title: String { switch self { case .global: return "全局记忆"; case .project: return "项目记忆"; case .instructions: return "项目指令"; case .summary: return "任务摘要"; case .userInstructions: return "用户指令"; case .localInstructions: return "本机项目指令"; case .effectiveInstructions: return "有效指令" } }
     var isInstructions: Bool { [.instructions, .userInstructions, .localInstructions].contains(self) }
 }
-struct AgentMemorySnapshot { var content: String; var hash: String; var location: String }
+struct AgentMemorySnapshot { var content: String; var hash: String; var location: String; var workspace: String? = nil }
 struct AgentMemoryProjectSource: Equatable {
     let taskID: String, workspace: String, title: String
 }
@@ -65,7 +65,7 @@ struct AgentMemoryProjectSource: Equatable {
         let (files, url, maximum) = try file(scope, store: store, taskID: taskID, workspace: workspace)
         let data = FileManager.default.fileExists(atPath: url.path) ? try files.readData(url, maximum: maximum) : Data()
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("记忆文件不是 UTF-8 文本") }
-        return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: scope == .global ? "全局 memory.md" : files.relative(url))
+        return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: scope == .global ? "全局 memory.md" : files.relative(url), workspace: [.global, .userInstructions].contains(scope) ? nil : files.root.path)
     }
     static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String, workspace: String? = nil) throws -> AgentMemorySnapshot {
         guard scope != .effectiveInstructions else { throw PetError("请编辑原指令文件，有效指令只读") }
