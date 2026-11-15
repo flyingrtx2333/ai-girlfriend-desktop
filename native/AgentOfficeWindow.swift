@@ -13,12 +13,14 @@ import Darwin
     private let state = NSTextField(labelWithString: ""), content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private var web: WKWebView!, server: AgentOfficeHTTP?, base: URL?, snapshot: AgentOfficeSnapshot?
     private var ready = false, closed = false, conflict = false, lastReadOnly: Bool?
+    private var recoveredDirty = false, editorRevision = 0, recoveryBaseRevision = 0, lastExportedRevision = 0
     private var opening: Task<Void, Error>?, uiTask: Task<Void, Never>?, watchTask: Task<Void, Never>?
     private var shell: CheckedContinuation<Void, Error>?, shellTimeout: Task<Void, Never>?, watcher: DispatchSourceFileSystemObject?
     private var toolEpoch = UUID()
     var onClose: (() -> Void)?
     var onWorkspaceChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
+    var canPreserveForQuit: Bool { ready && !closed && !working && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     init(office: AgentOffice, store: AgentStore, taskID: String, files: AgentFiles, file: URL) {
         self.office = office; self.store = store; self.taskID = taskID; self.files = files; self.file = file
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1120, height: 800), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
@@ -46,23 +48,79 @@ import Darwin
     func updateAvailability() {
         guard !closed else { return }
         let locked = !manuallyWritable
-        save.isEnabled = ready && dirty && !locked && !working && !conflict
+        let metadata = try? files.entryMetadata(file), sourceWritable = metadata?.kind == "file" && (metadata?.permissions ?? 0) & 0o222 != 0
+        save.isEnabled = ready && dirty && !locked && !working && !conflict && sourceWritable
         saveCopy.isEnabled = ready && dirty && !locked && !working; reload.isEnabled = !working
         if ready, lastReadOnly != locked { lastReadOnly = locked; web.evaluateJavaScript("BlueFatFishOffice.setInteractionLocked(\(locked ? "true" : "false"))", in: nil, in: .page) { _ in } }
         if locked && !working && state.stringValue.isEmpty { state.stringValue = "只读" }
         else if !locked && state.stringValue == "只读" { state.stringValue = dirty ? "未保存" : "" }
+        if ready, dirty, !locked, !working, !sourceWritable { state.stringValue = metadata?.kind == "missing" ? "原文件已不存在，可另存为新文件" : "原文件只读或不可用，可另存为新文件"; state.toolTip = state.stringValue }
     }
-    func open() async throws {
+    struct RecoveryState: Codable, Equatable, Sendable {
+        var version = 1
+        var taskID: String, file: String, sourceRoot: String, openedHash: String, openedSignature: String
+        var openedPermissions: Int, editorRevision: Int, dirty: Bool
+    }
+    static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
+        guard page.kind == "office", let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+              Set(object.keys).isSubset(of: ["version", "taskID", "file", "sourceRoot", "openedHash", "openedSignature", "openedPermissions", "editorRevision", "dirty"]) else { throw PetError("办公恢复格式不受支持，原草稿已保留") }
+        let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
+        guard value.version == 1, value.taskID == page.taskID, value.dirty == page.dirty, value.editorRevision >= 0,
+              value.file.hasPrefix("/"), value.sourceRoot.hasPrefix("/"), !value.file.contains("\0"), !value.sourceRoot.contains("\0"),
+              value.file.utf8.count < 8192, value.sourceRoot.utf8.count < 8192,
+              URL(fileURLWithPath: value.file).standardizedFileURL.path == value.file,
+              URL(fileURLWithPath: value.sourceRoot).standardizedFileURL.path == value.sourceRoot,
+              value.sourceRoot == "/" || value.file.hasPrefix(value.sourceRoot + "/"), AgentOffice.supports(value.file),
+              value.openedHash.count == 64, value.openedHash.allSatisfy({ $0.isASCII && $0.isHexDigit && !$0.isUppercase }),
+              !value.openedSignature.isEmpty, value.openedSignature.utf8.count <= 16384, (0...0o7777).contains(value.openedPermissions) else { throw PetError("办公恢复记录版本或来源无效，原草稿已保留") }
+        return value
+    }
+    private func recoveryPage(revision: Int) throws -> AgentWorkspaceRecovery.Page {
+        let (logical, overflow) = recoveryBaseRevision.addingReportingOverflow(revision)
+        guard !overflow else { throw PetError("办公恢复版本无效，原草稿已保留") }
+        let value = RecoveryState(taskID: taskID, file: file.path, sourceRoot: files.root.path, openedHash: openedHash, openedSignature: openedSignature, openedPermissions: openedPermissions, editorRevision: logical, dirty: dirty)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return .init(taskID: taskID, kind: "office", state: try encoder.encode(value), dirty: dirty, asset: nil)
+    }
+    func persistWorkspaceRecovery(previous: AgentWorkspaceRecovery.Page?, write: (AgentWorkspaceRecovery.Page, URL?) async throws -> Void) async throws {
+        if let opening { try await opening.value }
+        guard !closed, ready, !working, uiTask == nil, presentingWindow?.attachedSheet == nil else { throw PetError("请先完成办公文件的当前操作，恢复草稿尚未保存") }
+        try await verifyClean()
+        let page = try recoveryPage(revision: editorRevision)
+        if let previous, previous.kind == page.kind, previous.state == page.state, previous.dirty == page.dirty, (dirty ? previous.asset != nil : previous.asset == nil) { return }
+        if !dirty { try await write(page, nil); return }
+        working = true; updateAvailability()
+        defer { working = false; updateAvailability() }
+        do {
+            let exported = try await exportFile()
+            // Keep the export alive until the private streamed copy finishes.
+            try await write(recoveryPage(revision: lastExportedRevision), exported)
+            await acknowledge(false)
+        } catch { await acknowledge(false); throw error }
+    }
+    private func applyEditorState(_ value: [String: Any]) {
+        let revision = value["revision"] as? Int, changed = revision.map { $0 >= 0 && $0 != editorRevision } == true
+        if let revision, revision >= 0 { editorRevision = revision }
+        dirty = recoveredDirty || (value["dirty"] ?? value["value"]) as? Bool == true
+        window?.isDocumentEdited = dirty
+        if changed { onWorkspaceChange?() }
+    }
+    func open(recovering loaded: AgentWorkspaceRecovery.LoadedPage? = nil) async throws {
         guard !closed else { throw PetError("办公窗口已关闭") }
         if settingsHostWindow == nil { showWindow(nil); window?.makeKeyAndOrderFront(nil) }
         if ready { return }; if let opening { try await opening.value; return }
         guard !dirty else { throw PetError("此窗口仍有未保存的编辑，请先保留内容或关闭窗口") }
+        let recovery = try loaded.map { try Self.recoveryState($0.saved.value) }
+        if let recovery { guard recovery.taskID == taskID, recovery.file == file.path, recovery.sourceRoot == files.root.path, (recovery.dirty ? loaded?.asset != nil && loaded?.saved.value.asset != nil : loaded?.saved.value.asset == nil) else { throw PetError("办公恢复附件或来源不匹配") } }
         let operation = Task { @MainActor [weak self] in
             guard let self else { throw CancellationError() }
             working = true; state.stringValue = "正在打开…"; updateAvailability()
-            defer { working = false; updateAvailability() }
+            defer { working = false; updateAvailability(); onWorkspaceChange?() }
             let files = self.files, file = self.file
-            let pinned = try await Task.detached(priority: .userInitiated) { try AgentOffice.snapshot(files: files, file: file) }.value
+            let pinned: AgentOfficeSnapshot
+            if recovery?.dirty == true, let asset = loaded?.asset, let hash = loaded?.saved.value.asset?.hash {
+                pinned = try await Task.detached(priority: .userInitiated) { try AgentOffice.recoverySnapshot(asset: asset, hash: hash, file: file) }.value
+            } else { pinned = try await Task.detached(priority: .userInitiated) { try AgentOffice.snapshot(files: files, file: file) }.value }
             guard !closed, !Task.isCancelled else { try? FileManager.default.removeItem(at: pinned.folder); throw CancellationError() }
             let previous = snapshot; snapshot = pinned
             server?.stop(); server = nil
@@ -81,8 +139,18 @@ import Darwin
             }
             _ = try await evaluate("return await BlueFatFishOffice.load(url,name,locked)", args: ["url": base!.appendingPathComponent("document").absoluteString, "name": file.lastPathComponent, "locked": !manuallyWritable])
             guard !closed else { throw CancellationError() }
-            openedHash = pinned.hash; openedSignature = pinned.signature; openedPermissions = pinned.permissions
-            ready = true; conflict = false; dirty = false; lastReadOnly = nil; window?.isDocumentEdited = false; state.stringValue = ""; watch()
+            editorRevision = 0; lastExportedRevision = 0
+            if let recovery, recovery.dirty {
+                openedHash = recovery.openedHash; openedSignature = recovery.openedSignature; openedPermissions = recovery.openedPermissions
+                recoveryBaseRevision = recovery.editorRevision; recoveredDirty = true
+                let signature = openedSignature, hash = openedHash
+                conflict = await Task.detached { (try? files.entryMetadata(file).signature) != signature || (try? files.fileHash(file, maximum: AgentOffice.maximum)) != hash }.value
+                state.stringValue = conflict ? "原文件已变化，可另存为新文件" : "已恢复未保存内容"
+            } else {
+                openedHash = pinned.hash; openedSignature = pinned.signature; openedPermissions = pinned.permissions
+                recoveryBaseRevision = 0; recoveredDirty = false; conflict = false; state.stringValue = ""
+            }
+            ready = true; dirty = recoveredDirty; lastReadOnly = nil; window?.isDocumentEdited = dirty; state.toolTip = state.stringValue; watch()
         }
         opening = operation
         do { try await operation.value; opening = nil }
@@ -109,7 +177,7 @@ import Darwin
         switch action {
         case "shell-ready": finishShell(.success(()))
         case "dirty":
-            dirty = body["value"] as? Bool == true; window?.isDocumentEdited = dirty
+            applyEditorState(body)
             if !working { state.stringValue = conflict ? "磁盘文件已变化，可另存为新文件" : dirty ? "未保存" : "" }; updateAvailability()
         case "save-request": saveFile()
         case "open-request": chooseFile()
@@ -130,7 +198,7 @@ import Darwin
     func verifyClean() async throws {
         guard !working, ready else { throw PetError("办公文件正在处理，请稍候") }
         guard let result = try await evaluate("return await BlueFatFishOffice.verifyClean()") as? [String: Any] else { throw PetError("办公文件状态不可用") }
-        dirty = result["dirty"] as? Bool == true; window?.isDocumentEdited = dirty; updateAvailability()
+        applyEditorState(result); updateAvailability()
     }
     func inspect(_ request: [String: Any] = [:]) async throws -> [String: Any] {
         guard ready else { throw PetError("办公文件尚未打开") }
@@ -140,7 +208,7 @@ import Darwin
     func applyAndSave(_ request: [String: Any], expected: String) async throws {
         guard !working, !dirty, ready, expected == openedHash else { throw PetError("办公文件已有未保存更改，请重新读取") }
         working = true; state.stringValue = "正在修改…"; updateAvailability(); let epoch = toolEpoch
-        defer { working = false; updateAvailability() }
+        defer { working = false; updateAvailability(); onWorkspaceChange?() }
         do {
             guard let result = try await evaluate("return await BlueFatFishOffice.edit(request,true)", args: ["request": request]) as? [String: Any] else { throw PetError("编辑器未返回实际修改结果") }
             guard result["ok"] as? Bool == true else {
@@ -152,7 +220,9 @@ import Darwin
         } catch { state.stringValue = error is CancellationError ? "修改保留在窗口，尚未保存" : error.localizedDescription; throw error }
     }
     private func exportFile() async throws -> URL {
-        guard let snapshot, let result = try await evaluate("return await BlueFatFishOffice.beginExport()") as? [String: Any], let count = result["bytes"] as? Int, count > 0, count <= AgentOffice.maximum else { throw PetError("办公文件导出无效") }
+        guard let snapshot, let result = try await evaluate("return await BlueFatFishOffice.beginExport()") as? [String: Any], let count = result["bytes"] as? Int, count > 0, count <= AgentOffice.maximum,
+              let revision = result["revision"] as? Int, revision >= 0 else { throw PetError("办公文件导出无效") }
+        lastExportedRevision = revision
         let output = snapshot.folder.appendingPathComponent("export." + file.pathExtension)
         let temporary = try AgentFiles(workspace: snapshot.folder.path)
         try temporary.writeData(Data(), to: output, permissions: 0o600)
@@ -172,7 +242,7 @@ import Darwin
         // Always release an actual export, including after native I/O failed.
         guard !closed else { return }
         if let value = try? await web.callAsyncJavaScript("return BlueFatFishOffice.finishExport(saved)", arguments: ["saved": saved], in: nil, contentWorld: .page) as? [String: Any] {
-            dirty = value["dirty"] as? Bool == true; window?.isDocumentEdited = dirty
+            if saved { recoveredDirty = false }; applyEditorState(value)
         }
     }
     private func writeExport(agent: Bool, expected: String) async throws {
@@ -190,7 +260,7 @@ import Darwin
         guard ready, !working else { throw PetError("办公文件正在处理") }
         _ = try office.task(taskID, root: files.root, manualWrite: true)
         working = true; state.stringValue = "正在保存…"; updateAvailability()
-        defer { working = false; updateAvailability() }
+        defer { working = false; updateAvailability(); onWorkspaceChange?() }
         try await writeExport(agent: false, expected: openedHash)
     }
     @objc private func saveFile() {
@@ -199,15 +269,16 @@ import Darwin
     }
     @objc private func reloadFile() {
         guard !working, uiTask == nil else { return }
-        uiTask = Task { [weak self] in guard let self else { return }; defer { uiTask = nil }; do { if ready { try await verifyClean() }; guard canDiscard() else { return }; dirty = false; window?.isDocumentEdited = false; ready = false; try await open() } catch { state.stringValue = error.localizedDescription } }
+        uiTask = Task { [weak self] in guard let self else { return }; defer { uiTask = nil; onWorkspaceChange?() }; do { if ready { try await verifyClean() }; guard canDiscard() else { return }; recoveredDirty = false; dirty = false; window?.isDocumentEdited = false; ready = false; try await open() } catch { state.stringValue = error.localizedDescription } }
     }
     @objc private func saveAs() {
         guard ready, !working, manuallyWritable, let window = presentingWindow else { return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [UTType(filenameExtension: file.pathExtension) ?? .data]; panel.directoryURL = file.deletingLastPathComponent(); panel.nameFieldStringValue = file.deletingPathExtension().lastPathComponent + " 副本." + file.pathExtension
         panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let target = panel.url, let self else { return }
+            guard let self else { return }; defer { self.onWorkspaceChange?() }
+            guard response == .OK, let target = panel.url else { return }
             self.uiTask = Task { @MainActor in
-                self.working = true; self.updateAvailability(); defer { self.working = false; self.uiTask = nil; self.updateAvailability() }
+                self.working = true; self.updateAvailability(); defer { self.working = false; self.uiTask = nil; self.updateAvailability(); self.onWorkspaceChange?() }
                 do {
                     _ = try self.office.task(self.taskID, root: self.files.root, manualWrite: true)
                     let (_, safe) = try self.office.file(target.path, taskID: self.taskID)
@@ -229,7 +300,8 @@ import Darwin
         guard !working, let window = presentingWindow else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = AgentOffice.formats.compactMap { UTType(filenameExtension: $0) }; panel.directoryURL = files.root; panel.canChooseDirectories = false
         panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let url = panel.url, let self else { return }
+            guard let self else { return }; defer { self.onWorkspaceChange?() }
+            guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in do { _ = try await self.office.show(url.path, taskID: self.taskID, location: self.settingsHostWindow == nil ? .window : .workspace) } catch { self.state.stringValue = error.localizedDescription } }
         }
     }
@@ -296,9 +368,9 @@ import Darwin
         }
         return value
     }
-    func checkWorkspaceEdit(_ request: [String: Any]) async throws {
+    func checkWorkspaceEdit(_ request: [String: Any], verify: Bool = true) async throws {
         guard AgentTaskWorkspace.readbackEnabled else { throw PetError("仅限工作区验收") }
-        _ = try await evaluate("return await BlueFatFishOffice.edit(request)", args: ["request": request]); try await verifyClean()
+        _ = try await evaluate("return await BlueFatFishOffice.edit(request)", args: ["request": request]); if verify { try await verifyClean() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if working { if opening != nil && !dirty { finishClose(); return true }; state.stringValue = "正在处理，请稍候"; return false }

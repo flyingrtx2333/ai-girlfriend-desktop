@@ -49,7 +49,7 @@ import AppKit
                 checks["multipleWindowsUseDistinctPersistentIdentity"] = mainID != childID
                 checks["originalMarkdownAndUTF16BytesRemainExact"] = try files.fileHash(guide) == fixture.guideHash && files.fileHash(plain) == fixture.plainHash
                 checks["memoryAutosaveDoesNotWriteProjectOrGlobalMemory"] = !FileManager.default.fileExists(atPath: project.appendingPathComponent(".bluefatfish/memory.md").path) && !FileManager.default.fileExists(atPath: tasks.directory.appendingPathComponent("memory.md").path)
-                checks["actualRootRecordsEligibleForHotExit"] = control.workspaceSession?.preservedRecords.count == 4 && child.workspaceSession?.preservedRecords.count == 1
+                checks["actualRootRecordsEligibleForHotExit"] = control.workspaceSession?.preservedEditors.count == 4 && child.workspaceSession?.preservedEditors.count == 1
                 let journal = AgentWorkspaceRecovery(profile: store.directory), saved = try journal.loadWindow(mainID)
                 checks["layoutPersistsSelectionAndCachedTaskTabs"] = saved?.value.tasks.first(where: { $0.taskID == first })?.selected == "document:" + guide.path && saved?.value.closed == false
                 checks["childExpandedStatePersists"] = try journal.loadWindow(childID)?.value.tasks.first?.expanded == true

@@ -57,7 +57,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -146,7 +146,7 @@ import AppKit
         guard let window, window.attachedSheet == nil, let content = controller.settingsContent(in: window, styled: false) else { return }
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
         (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
-        (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
@@ -247,6 +247,13 @@ import AppKit
     func root(for controller: AgentSettingsPageController, taskID id: String) -> Root? {
         stacks[id]?.first(where: { $0.value.first?.controller === controller })?.key
     }
+    func failedRecovery(taskID id: String, tab: AgentWorkspaceRecovery.Tab, controller: AgentSettingsPageController) {
+        guard let root = Root(key: tab.root), stacks[id]?[root]?.first?.controller === controller else { return }
+        let entries = stacks[id]?.removeValue(forKey: root) ?? []
+        entries.reversed().forEach { $0.controller.onSettingsClose = nil; $0.controller.endSettingsHosting() }
+        pendingRecovery.insert(tab.id); recoveryRequested.insert(tab.id)
+        if taskID == id { displayCurrent(); onLayoutChange?() }
+    }
     func detach(_ controller: AgentSettingsPageController, taskID id: String) -> Bool {
         guard let root = root(for: controller, taskID: id), let stack = stacks[id]?[root], stack.count == 1,
               prepareToNavigate(), prepareToNavigate(stack) else { return false }
@@ -295,10 +302,11 @@ import AppKit
     @objc private func hideWorkspace() { guard let taskID, prepareToNavigate() else { return }; opened.remove(taskID); onLayoutChange?(); onRecoveryChange?() }
     func hideForNavigation() { hideWorkspace() }
     @objc private func toggleExpanded() { guard let taskID else { return }; if expandedTasks.contains(taskID) { expandedTasks.remove(taskID) } else { expandedTasks.insert(taskID) }; onLayoutChange?(); onRecoveryChange?() }
-    func canFinish(preserving records: Set<ObjectIdentifier> = []) async -> Bool {
+    func canFinish(preserving editors: Set<ObjectIdentifier> = []) async -> Bool {
         guard !closing else { return false }; closing = true; defer { closing = false }
         for controller in controllers.reversed() {
-            if let record = controller as? AgentRecordWindow, record.canPreserveForQuit, records.contains(ObjectIdentifier(record)) { guard record.prepareWorkspaceNavigation() else { return false }; continue }
+            if let record = controller as? AgentRecordWindow, record.canPreserveForQuit, editors.contains(ObjectIdentifier(record)) { guard record.prepareWorkspaceNavigation() else { return false }; continue }
+            if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit, editors.contains(ObjectIdentifier(office)) { guard office.prepareWorkspaceNavigation() else { return false }; continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }

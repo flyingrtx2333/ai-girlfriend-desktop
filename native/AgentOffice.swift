@@ -65,10 +65,25 @@ struct AgentOfficeEditError: LocalizedError {
         }
         guard windows.count < 4, let store else { throw PetError("最多同时打开4份办公文件，请先关闭一份") }
         let window = AgentOfficeWindow(office: self, store: store, taskID: taskID, files: files, file: url)
-        windows[url.path] = window
-        window.onClose = { [weak self, weak window] in if self?.windows[url.path] === window { self?.windows[url.path] = nil } }
+        register(window)
         do { try onPresent?(window, location) } catch { window.finishClose(); throw error }
         try await window.open(); return window
+    }
+    private func register(_ window: AgentOfficeWindow) {
+        windows[window.file.path] = window
+        window.onClose = { [weak self, weak window] in guard let window else { return }; if self?.windows[window.file.path] === window { self?.windows[window.file.path] = nil } }
+    }
+    func restore(_ loaded: AgentWorkspaceRecovery.LoadedPage, taskID: String, present: (AgentOfficeWindow) throws -> Void) async throws -> AgentOfficeWindow {
+        let value = try AgentOfficeWindow.recoveryState(loaded.saved.value)
+        guard value.taskID == taskID else { throw PetError("办公恢复草稿不属于当前任务") }
+        let (files, url) = try file(value.file, taskID: taskID)
+        guard files.root.path == value.sourceRoot, url.path == value.file else { throw PetError("原办公文件目录或访问范围已变化，恢复草稿已保留") }
+        _ = try task(taskID, root: files.root)
+        guard windows[url.path] == nil else { throw PetError("此文件已有办公窗口，原恢复草稿已保留，请先返回该窗口") }
+        guard windows.count < 4, let store else { throw PetError("最多同时打开4份办公文件，请先关闭一份") }
+        let window = AgentOfficeWindow(office: self, store: store, taskID: taskID, files: files, file: url); register(window)
+        do { try present(window); try await window.open(recovering: loaded); return window }
+        catch { window.onSettingsClose = nil; window.finishClose(); throw error }
     }
     func changed(_ taskID: String) { for window in windows.values { window.updateAvailability() } }
     func unsavedReason(task:AgentTaskRecord) -> String? { task.workspacePaths.compactMap{unsavedReason(workspace:$0)}.first }
@@ -87,10 +102,10 @@ struct AgentOfficeEditError: LocalizedError {
             guard !window.dirty else { throw PetError("请先保存或关闭办公文档：" + window.file.lastPathComponent) }
         }
     }
-    func canQuit() async -> Bool {
+    func canQuit(preserving editors: Set<ObjectIdentifier> = []) async -> Bool {
         if windows.values.contains(where: \.working) { let alert = AgentConfirmation(); alert.messageText = "办公文件正在处理，请稍后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false }
         for window in windows.values { do { try await window.verifyClean() } catch { if window.dirty { continue }; let alert = AgentConfirmation(); alert.messageText = "办公文件尚未就绪，请关闭其窗口后退出"; alert.addButton(withTitle: "继续"); alert.runModal(); return false } }
-        let unsaved = windows.values.filter(\.dirty)
+        let unsaved = windows.values.filter { $0.dirty && !(editors.contains(ObjectIdentifier($0)) && $0.canPreserveForQuit) }
         guard !unsaved.isEmpty else { return true }
         if AgentUnsavedChanges.discard("仍有未保存的办公文档", detail: unsaved.map { $0.file.lastPathComponent }.sorted().joined(separator: "\n"), discardTitle: "放弃更改并退出") { return true }
         if let first = unsaved.first { if let onPresent { try? onPresent(first, first.settingsHostWindow == nil ? .window : .workspace) } else { first.showWindow(nil); first.window?.makeKeyAndOrderFront(nil) } }; return false
@@ -104,6 +119,15 @@ struct AgentOfficeEditError: LocalizedError {
     nonisolated static func snapshot(files: AgentFiles, file: URL) throws -> AgentOfficeSnapshot {
         let metadata = try files.entryMetadata(file)
         guard metadata.kind == "file" else { throw PetError("办公文件不存在或已变成链接") }
+        let folder = try snapshotFolder()
+        do {
+            let snapshots = try AgentFiles(workspace: folder.path), copy = folder.appendingPathComponent("document." + file.pathExtension)
+            let hash = try snapshots.copyFile(file, from: files, to: copy, permissions: 0o400, maximum: maximum)
+            guard try files.entryMetadata(file).signature == metadata.signature else { throw PetError("打开期间文件已变化，请重试") }
+            return AgentOfficeSnapshot(folder: folder, file: copy, hash: hash, signature: metadata.signature, permissions: metadata.permissions ?? 0o644)
+        } catch { try? FileManager.default.removeItem(at: folder); throw error }
+    }
+    nonisolated private static func snapshotFolder() throws -> URL {
         var temporary = FileManager.default.temporaryDirectory
         if let index = CommandLine.arguments.firstIndex(of: "--check") {
             guard CommandLine.arguments.indices.contains(index + 1) else { throw PetError("缺少独立验收目录") }
@@ -112,23 +136,34 @@ struct AgentOfficeEditError: LocalizedError {
         }
         let folder = temporary.appendingPathComponent("bluefatfish-office-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        return folder
+    }
+    nonisolated static func recoverySnapshot(asset: URL, hash: String, file: URL) throws -> AgentOfficeSnapshot {
+        let folder = try snapshotFolder()
         do {
-            let snapshots = try AgentFiles(workspace: folder.path), copy = folder.appendingPathComponent("document." + file.pathExtension)
-            let hash = try snapshots.copyFile(file, from: files, to: copy, permissions: 0o400, maximum: maximum)
-            guard try files.entryMetadata(file).signature == metadata.signature else { throw PetError("打开期间文件已变化，请重试") }
-            return AgentOfficeSnapshot(folder: folder, file: copy, hash: hash, signature: metadata.signature, permissions: metadata.permissions ?? 0o644)
+            let snapshots = try AgentFiles(workspace: folder.path), source = try AgentFiles(workspace: asset.deletingLastPathComponent().path), copy = folder.appendingPathComponent("document." + file.pathExtension)
+            let actual = try snapshots.copyFile(asset, from: source, to: copy, permissions: 0o400, expectedHash: hash, maximum: maximum)
+            return AgentOfficeSnapshot(folder: folder, file: copy, hash: actual, signature: try snapshots.entryMetadata(copy).signature, permissions: 0o400)
         } catch { try? FileManager.default.removeItem(at: folder); throw error }
+    }
+    nonisolated private static func requireWritableVersion(files: AgentFiles, file: URL, signature: String, hash: String) throws {
+        let metadata = try files.entryMetadata(file)
+        guard metadata.kind == "file" else { throw PetError("原办公文件已不存在或变成链接，可另存为新文件") }
+        guard (metadata.permissions ?? 0) & 0o222 != 0 else { throw PetError("原办公文件只读，可另存为新文件") }
+        guard metadata.signature == signature, try files.fileHash(file, maximum: maximum) == hash else { throw PetError("磁盘文件已变化，未覆盖其他编辑；可另存为新文件") }
     }
     func recordWrite(_ window: AgentOfficeWindow, source: URL, agent: Bool, expected: String) async throws -> (String, String) {
         guard let store else { throw PetError("任务存储不可用") }
         _ = try task(window.taskID, root: window.files.root, agentWrite: agent, manualWrite: !agent)
+        let originalFiles = window.files, originalFile = window.file, originalSignature = window.openedSignature
+        try await Task.detached { try Self.requireWritableVersion(files: originalFiles, file: originalFile, signature: originalSignature, hash: expected) }.value
         var written: (String, String)?
         _ = try await store.projectChanges.observe(taskID: window.taskID, origin: agent ? "办公工具" : "办公编辑", paths: [window.file.path], requireCheckpoint: true) {
             _ = try self.task(window.taskID, root: window.files.root, agentWrite: agent, manualWrite: !agent, allowCapture: true)
             try Task.checkCancellation()
             let files = window.files, file = window.file, signature = window.openedSignature, permissions = window.openedPermissions
             written = try await Task.detached(priority: .userInitiated) {
-                guard try files.entryMetadata(file).signature == signature, try files.fileHash(file, maximum: Self.maximum) == expected else { throw PetError("磁盘文件已变化，未覆盖其他编辑；可另存为新文件") }
+                try Self.requireWritableVersion(files: files, file: file, signature: signature, hash: expected)
                 let temporary = try AgentFiles(workspace: source.deletingLastPathComponent().path)
                 let hash = try files.copyFile(source, from: temporary, to: file, permissions: permissions, expectedTarget: signature, maximum: Self.maximum)
                 let after = try files.entryMetadata(file); guard try files.fileHash(file, maximum: Self.maximum) == hash else { throw PetError("保存后的文件再次变化，请核对磁盘内容") }

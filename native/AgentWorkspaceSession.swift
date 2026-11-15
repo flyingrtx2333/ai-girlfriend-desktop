@@ -11,7 +11,7 @@ import AppKit
     private var revision = 0, savedRevision = -1, disabled = false, stopped = false, closing = false
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
     private var failure: Error?
-    private(set) var preservedRecords = Set<ObjectIdentifier>()
+    private(set) var preservedEditors = Set<ObjectIdentifier>()
     var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty) }
 
     init(owner: ControlWindow, profile: URL, saved: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>?) {
@@ -37,28 +37,37 @@ import AppKit
                 // A restore owns its page until its factory has finished. Do
                 // not replace it with the fresh editor's initial disk content.
                 let pending = Array(roots.values); for root in pending { await root.value }
-                let snapshots = try owner.taskWorkspace.recoveryEditors.compactMap { _, tab, controller -> (String, AgentWorkspaceRecovery.Page, String?)? in
-                    guard let record = controller as? AgentRecordWindow else { return nil }
-                    return (tab.id, try record.captureWorkspaceRecovery(), pageHashes[tab.id])
+                let targetRevision = revision
+                for (_, tab, controller) in owner.taskWorkspace.recoveryEditors {
+                    if let record = controller as? AgentRecordWindow {
+                        let page = try record.captureWorkspaceRecovery()
+                        if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let office = controller as? AgentOfficeWindow {
+                        try await office.persistWorkspaceRecovery(previous: pages[tab.id]) { page, asset in
+                            try await self.persist(page, asset: asset, pageID: tab.id)
+                        }
+                    }
                 }
-                let targetRevision = revision, journal = journal, windowID = id
+                let journal = journal
                 var layout = AgentWorkspaceRecovery.Window(id: id, number: owner.taskWindowNumber, taskID: owner.agentTaskID,
                     frame: owner.window.map { .init(x: $0.frame.minX, y: $0.frame.minY, width: $0.frame.width, height: $0.frame.height) }, tasks: owner.taskWorkspace.recoveryLayouts)
                 layout.floating = previous?.floating ?? []
-                for (pageID, page, hash) in snapshots where pages[pageID] != page {
-                    let saved = try await Task.detached(priority: .utility) { try journal.savePage(page, asset: nil, windowID: windowID, pageID: pageID, expected: hash) }.value
-                    // Keep each successful revision even when a later page or
-                    // layout fails, so a retry never reuses a stale hash.
-                    pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
-                }
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await Task.detached(priority: .utility) { try journal.saveWindow(capturedLayout, expected: expected) }.value
                 layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision; failure = nil
-                preservedRecords = Set(owner.taskWorkspace.recoveryEditors.compactMap { _, _, controller in
-                    guard let record = controller as? AgentRecordWindow, record.canPreserveForQuit else { return nil }; return ObjectIdentifier(record)
+                preservedEditors = Set(owner.taskWorkspace.recoveryEditors.compactMap { _, _, controller in
+                    if let record = controller as? AgentRecordWindow, record.canPreserveForQuit { return ObjectIdentifier(record) }
+                    if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit { return ObjectIdentifier(office) }
+                    return nil
                 })
             }
-        } catch { failure = error; preservedRecords = []; owner.setStatus("工作区恢复未保存：" + error.localizedDescription, error: true) }
+        } catch { failure = error; preservedEditors = []; owner.setStatus("工作区恢复未保存：" + error.localizedDescription, error: true) }
+    }
+    private func persist(_ page: AgentWorkspaceRecovery.Page, asset: URL?, pageID: String) async throws {
+        let journal = journal, windowID = id, hash = pageHashes[pageID]
+        let saved = try await Task.detached(priority: .utility) { try journal.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: hash) }.value
+        // Keep each successful revision if a later page or layout fails.
+        pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
     }
     func flush() async throws {
         guard !disabled else { return }
@@ -66,7 +75,7 @@ import AppKit
         if savedRevision != revision { await savePending() }
         if let failure { throw failure }
     }
-    func stop() { stopped = true; preservedRecords = [] }
+    func stop() { stopped = true; preservedEditors = [] }
     func markClosed() async throws {
         guard !disabled else { stop(); return }
         try await flush()
@@ -90,7 +99,7 @@ import AppKit
                 let loaded = try await Task.detached(priority: .utility) { try journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task) }.value
                 guard !stopped, owner.agentTaskID == task, owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
-                try await owner.materializeRecoveryRoot(task: task, tab: tab, page: loaded?.saved.value)
+                try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded)
                 changed()
             } catch { owner.setStatus("标签恢复失败，原草稿已保留：" + error.localizedDescription, error: true) }
         }
@@ -104,7 +113,7 @@ import AppKit
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

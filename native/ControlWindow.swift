@@ -2101,7 +2101,7 @@ final class FormDocumentView: NSView {
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave() else { return false }
-        guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedRecords ?? [] : []) else { return false }
+        guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         for record in Array(artifactDocuments) {
             guard record.canLeaveSettings() else { record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil); return false }
@@ -3124,9 +3124,22 @@ final class FormDocumentView: NSView {
         if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
         return record
     }
-    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, page: AgentWorkspaceRecovery.Page?) async throws {
+    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?) async throws {
         guard agentTaskID == id, selectedTab == "chat", let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
-        if let page {
+        if let loaded, loaded.saved.value.kind == "office" {
+            guard case .document(let path) = root, try AgentOfficeWindow.recoveryState(loaded.saved.value).file == path else { throw PetError("恢复的办公文件与标签不匹配") }
+            var presented: AgentOfficeWindow?
+            do {
+                _ = try await store.offices.restore(loaded, taskID: id) { editor in
+                    presented = editor
+                    guard self.taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开办公草稿") }
+                    editor.window?.orderOut(nil)
+                }
+            } catch {
+                if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
+                throw error
+            }
+        } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
             switch root {
             case .document: guard value.documentOnly else { throw PetError("恢复文件与标签页不符") }

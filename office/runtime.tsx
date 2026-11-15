@@ -42,7 +42,7 @@ function failure(error: unknown, info?: { recoverable?: boolean }) {
 function changed() {
   if (!ready) return;
   revision += 1;
-  if (!dirty) { dirty = true; notify('dirty', { value: true }); }
+  dirty = true; notify('dirty', { value: true, revision });
 }
 async function presentationFonts() {
   const selected = fonts.BUNDLED_FONTS.filter(face => ['Carlito', 'Noto Sans SC'].includes(face.family));
@@ -171,7 +171,7 @@ function exportChunk(offset: number, length: number) {
 function finishExport(saved: boolean) {
   exported = null;
   if (saved && revision === exportedRevision) dirty = false;
-  notify('dirty', { value: dirty }); return { dirty };
+  notify('dirty', { value: dirty, revision }); return { dirty, revision };
 }
 async function read(request: any = {}) {
   if (!ready || !editor) throw new Error('文档尚未打开');
@@ -196,7 +196,7 @@ async function verifyClean() {
   if (!ready || !editor) throw new Error('办公文件尚未打开');
   if (currentFormat === 'docx') await perform(() => editor.flushPendingInput());
   else await perform(() => editor.version());
-  return { dirty, ready };
+  return { dirty, ready, revision };
 }
 async function inspectContent(request: any = {}) {
   if (!ready || !editor) throw new Error('文档尚未打开');
