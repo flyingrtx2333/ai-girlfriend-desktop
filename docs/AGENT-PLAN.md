@@ -2100,3 +2100,23 @@ Canvas 接入任务工作区的恢复存储，继续以任务记录中原有的 
 完整索引为 `evidence/agent/workspace-cold-tabs-2op3gs8a/acceptance-index.json`；原生报告位于 `workspace-recovery-command-gsx6CI`、`canvas-recovery-command-pcFYzH`、`workspace-recovery-command-A5Hkf8`、`office-recovery-command-h9HWHT` 与 `task-workspace-command-IuZ559`。构建、旧版布局、窗口及资料证明为本轮目录中的 `build-provenance-proof.json`、`runtime-ui/legacy-layout-fixture.json`、`runtime-ui/ui-preservation-proof.json`、`cua-01-initial-quit`、`cua-02-legacy-reopen`、`process-and-protection-proof.json` 和 `daily-change-attribution.json`。
 
 冷标签缺口完成独立本地验收，尚未进入当前日常包。完整恢复继续包括 Office 工作表／幻灯片／光标、浏览器与未添加标注、MCP 参数、编辑并重发、独立产物窗口、视频位置、明确关闭／放弃及更多来源／权限失败边界。完整恢复项保持未勾选，整体清单仍为 75 项候选已勾选、32 项未勾选；各页面日常入口、真实模型业务流和其余完整复刻范围继续推进。
+
+## 2026-11-15 MCP 参数恢复与后台确认返回输入
+
+`89f5851` 为 MCP 资料页保存按任务／窗口／连接器版本隔离的资料类型、搜索、所选条目及全部表单草稿，退出时保留最后输入。重开可离线恢复字段，不自动连接或复用旧预览／附件令牌；重新读取必须取得新目录。来源失联、连接器版本变化、条目消失及归属校验失败时保留原冷页／草稿，不把其他窗口或任务内容带入。本次没有增加依赖或改变恢复数据版本。
+
+实际窗口发现后台同步确认只依赖 keyWindow，返回后可能没有接收键盘的窗口。`f27f6d8` 为确认框增加明确所属窗口，显示及返回时激活应用，恢复仍属该窗口且可见的原输入视图；MCP 关闭确认传入实际承载窗口。新增后台双窗口、原文本／选区、原响应视图及模态结束四项回归均通过。
+
+最终独立优化应用为 `evidence/agent/workspace-mcp-recovery-7u3zqc9j/final-04/小鲸MCP参数恢复验收.app`，冻结源码 `34e369d07959e10d4be756b002c5132309682720`，二进制 SHA256 `b96d5dd4b557d1d1230a2dd86b7457f8bca5cbc094ac35075321bc5c4b9ae845`。378 份原生输入、7 份 MCP 输入、4 份图标、23 份辅助输入、Office 9 份源及 140 份资源、Canvas 4 份源及 3 份资源均按清单核对；实际编译参数与冻结 Git 源码一致，未改变的 MCP 库和网页资源固定于前次验收输入。四份焦点修复输入与通过的类型检查副本完全一致。本地签名及严格验签通过，无需个人证书或解锁钥匙串。
+
+同一最终独立程序通过三进程 MCP 恢复 46、原 MCP 内容／工作区 97、任务工作区 132、未保存保护 64、操作确认 10 项，共 349 项。禁用来源的阶段仅在独立资料中改变 enabled，重开前恢复原配置原字节，不能把该样例描述为普通界面重新启用；普通重新启用改变版本时仍按来源变化保护。完整预览使用 displayText 核对 Resource 2 正文，任务引用使用 promptText 核对嵌入 URI，避免把附件引用当正文。
+
+实际窗口将已知参数完整粘贴后立即正常退出，新进程在未连接时逐字恢复。后台准备入口有一项“启动后已失活”前提未能满足，原失败报告保留，不算成功检查；随后启动另一个禁止模型请求的独立验收应用激活自身，实际截图确认本次验收窗口已在后台。由后台点击关闭 MCP 标签，统一确认选择“继续编辑”后原窗口恢复激活，可直接输入 `2 LAST_MCP_CUA_371 PASTE_482 NEXT_614`，没有经设置页返回的绕行。缩到 780×540 后再正常退出。两轮共 22 次窗口调用、44 条原记录及 10 张原图，含后台准备诊断与辅助窗口退出，不把每次调用都算作成功业务检查。
+
+42 项独立持久资料核对全部通过：两个完整任务、项目、连接器配置、其他任务及窗口的 MCP 页面和权限保持；只有明确输入、窗口尺寸及正常索引数组顺序变化。最终独立资料 13 份，初始 11 份；新增仅为正常历史与设置。7 个原生应用进程、2 个实际窗口进程、1 个辅助应用进程和最终编译进程均核对退出。模型请求 0，不转用旧额度。
+
+结束时日常二进制及 Info.plist 与本轮起点不同，保留 `daily-baseline-mismatch-final-04.json`，未报告 12 项全部不变。只读核查归属于另一项 P0 发布的 `evidence/agent/p0-interface-PiJm2h/installation-08.json`、`package-proof-08.json` 和 `final-delivery-proof.json`：当前源码同为 `34e369d`，实际二进制为 `ba568a60dac0746c529f1bc167d370776b48d1138139072f60a52f1c0d3e05d5`，运行进程 86519；旧版备份两份文件与本轮起点完全一致。10 份正式资料内容及权限保持，防休眠进程 1858 保留。本专项未替换或重启日常应用；349 项是独立包成绩，不与另一份日常二进制的检查数相加。专项日常恢复入口未在本记录复验。
+
+完整索引为 `evidence/agent/workspace-mcp-recovery-7u3zqc9j/acceptance-index.json`；同目录保留构建归属、42 项资料核对、22 次窗口原记录、日常变化归属和全部旧失败。原生报告目录为 `mcp-recovery-command-mlveOo`、`mcp-content-QG71FA`、`task-workspace-command-oaSt1d`、`unsaved-changes-command-davjBM` 和 `operation-confirmation-command-lc6faJ`。前两轮测试入口／正文断言错误、调试编译 signal 9、最初键盘输入丢下划线、后台准备前提及汇总脚本字段位置假设错误均保留；没有覆盖或重算成成功。
+
+MCP 参数缺口完成独立验收且源码已进入当前日常包；全类型恢复保持未勾选。其余 Office 当前工作表／幻灯片／光标、网页与未添加标注、编辑重发、独立产物窗口、视频位置及完整 P1／P2 继续跟踪；P0 物理触控板连续手势／惯性待人工实机验收。当前范围以唯一编号 TODO 为准，旧 75／32 统计为历史记录，不继续作为完成率。
