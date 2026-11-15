@@ -11,12 +11,23 @@ import WebKit
     private var allowedOrigins = Set<String>(), navigation = UUID(), documentID = UUID()
     private let world = WKContentWorld.world(name: "BlueFatFishBrowser")
     private var titleObservation: NSKeyValueObservation?, urlObservation: NSKeyValueObservation?
+    private let recoveryEvents = AgentBrowserRecoveryEvents()
+    private var pendingRecovery: AgentBrowserRecoveryState.Page?
+    private var restoringView: Task<Void, Never>?
+    var recoveryURL: String? { web.url?.absoluteString ?? pendingRecovery?.url }
+    var recoveryTitle: String { web.title.flatMap { $0.isEmpty ? nil : $0 } ?? pendingRecovery?.title ?? "" }
 
     init(dataStore: WKWebsiteDataStore, configuration: WKWebViewConfiguration? = nil, origins: Set<String> = []) {
         let config = configuration ?? WKWebViewConfiguration(); config.websiteDataStore = dataStore
         config.preferences.javaScriptCanOpenWindowsAutomatically = false; config.mediaTypesRequiringUserActionForPlayback = .all
+        // Popup configurations may share their parent's content controller.
+        // Each page owns its recovery relay and releases it when closed.
+        config.userContentController = WKUserContentController()
+        config.userContentController.addUserScript(WKUserScript(source: AgentBrowserRecoveryEvents.script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
         web = WKWebView(frame: .zero, configuration: config); allowedOrigins = origins
         super.init(); web.navigationDelegate = self; web.uiDelegate = self; web.allowsBackForwardNavigationGestures = true
+        recoveryEvents.onChange = { [weak self] in self?.notify() }
+        config.userContentController.add(recoveryEvents, contentWorld: world, name: "workspaceRecovery")
         titleObservation = web.observe(\.title) { [weak self] _, _ in MainActor.assumeIsolated { self?.notify() } }
         urlObservation = web.observe(\.url) { [weak self] _, _ in MainActor.assumeIsolated { self?.invalidate(); self?.notify() } }
     }
@@ -37,13 +48,19 @@ import WebKit
     }
     private func end() { busy = false; notify() }
     func stop() { navigation = UUID(); web.stopLoading(); invalidate(); status = "已停止加载" }
-    func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
+    func close() { closed = true; lastObservation = nil; titleObservation = nil; urlObservation = nil; restoringView?.cancel(); pendingRecovery = nil; recoveryEvents.onChange = nil; web.configuration.userContentController.removeScriptMessageHandler(forName: "workspaceRecovery", contentWorld: world); stop(); web.navigationDelegate = nil; web.uiDelegate = nil; web.removeFromSuperview() }
     func manualNavigation(_ action: String) {
         invalidate(); pageError = nil
-        switch action { case "back": web.goBack(); case "forward": web.goForward(); default: web.reload() }
+        switch action {
+        case "back": pendingRecovery = nil; web.goBack()
+        case "forward": pendingRecovery = nil; web.goForward()
+        default:
+            if web.url == nil, let value = pendingRecovery?.url, let url = try? AgentBrowser.url(value) { web.load(URLRequest(url: url, timeoutInterval: 25)) }
+            else { web.reload() }
+        }
     }
     func open(_ url: URL) async throws -> AgentToolResult {
-        try begin(); defer { end() }; invalidate(); allowedOrigins.insert(AgentBrowser.origin(url))
+        try begin(); defer { end() }; invalidate(); pendingRecovery = nil; allowedOrigins.insert(AgentBrowser.origin(url))
         web.load(URLRequest(url: url, timeoutInterval: 25)); return try await capture(offset: 1, query: "")
     }
     func read(offset: Int, query: String, elementOffset: Int = 0) async throws -> AgentToolResult {
@@ -106,6 +123,7 @@ import WebKit
     func act(_ args: [String: Any]) async throws -> AgentToolResult {
         _ = try actionReason(args); try begin(); defer { end() }
         let id = args["revision"] as! String, operation = args["action"] as! String
+        if operation != "reload" { pendingRecovery = nil }
         let ref = args["ref"] as? String ?? "", value = args["value"] as? String ?? ""
         // Grant only the reviewed link/form destination. Unreviewed cross-site
         // redirects and script navigations are rejected by the navigation delegate.
@@ -126,6 +144,8 @@ import WebKit
         do {
             let url = try AgentBrowser.url(navigationAction.request.url?.absoluteString ?? "")
             guard allowedOrigins.contains(AgentBrowser.origin(url)) else { throw PetError("页面尝试打开另一站点，请用 browser_open 单独打开：" + url.absoluteString) }
+            if [.linkActivated, .formSubmitted].contains(navigationAction.navigationType) { pendingRecovery = nil }
+            if pendingRecovery != nil, !["GET", "HEAD"].contains(navigationAction.request.httpMethod ?? "GET") { throw PetError("此网页需要重新提交，请在恢复后手动完成；原页面记录已保留") }
             if navigationAction.shouldPerformDownload { throw PetError("请在外部浏览器中下载文件，再作为附件添加") }
             decisionHandler(.allow)
         } catch {
@@ -141,7 +161,24 @@ import WebKit
         } else { decisionHandler(.allow) }
     }
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { documentID = UUID(); invalidate(); lastObservation = nil; status = "加载中…" }
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { status = pageError ?? web.title ?? ""; notify() }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        status = pageError ?? web.title ?? ""
+        if let saved = pendingRecovery, pageError == nil {
+            restoringView?.cancel()
+            restoringView = Task { [weak self] in
+                guard let self else { return }; defer { restoringView = nil }
+                do {
+                    // Apply coordinates only to the same document. A login or
+                    // other redirect keeps its own viewport and original state.
+                    guard web.url?.absoluteString == saved.url else { notify(); return }
+                    web.pageZoom = saved.zoom
+                    _ = try await web.callAsyncJavaScript("scrollTo(x,y); return {x:scrollX,y:scrollY};", arguments: ["x": saved.x, "y": saved.y], in: nil, contentWorld: world)
+                    try Task.checkCancellation(); guard !closed else { return }; pendingRecovery = nil; notify()
+                } catch { if !closed { status = "网页位置尚未恢复，原记录已保留" } }
+            }
+        }
+        notify()
+    }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
     private func failed(_ error: Error) { if (error as NSError).code != NSURLErrorCancelled { pageError = error.localizedDescription; status = error.localizedDescription }; invalidate(); notify() }
@@ -168,4 +205,27 @@ import WebKit
         let alert = AgentConfirmation(); alert.messageText = frame.request.url?.host ?? "网页确认"; alert.informativeText = String(message.prefix(2000)); alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "取消"); alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
     }
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) { completionHandler(nil) }
+
+    func captureWorkspaceRecovery() async throws -> AgentBrowserRecoveryState.Page {
+        guard !closed else { throw PetError("浏览器标签页已关闭") }
+        if let restoringView { await restoringView.value }
+        if let pendingRecovery { return pendingRecovery }
+        guard let url = web.url else { return .init(id: id, title: "", origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: 0, y: 0) }
+        _ = try AgentBrowser.url(url.absoluteString)
+        let point = try await web.callAsyncJavaScript("return {url:location.href,x:scrollX,y:scrollY};", arguments: [:], in: nil, contentWorld: world) as? [String: Any]
+        guard !closed, web.url == url, point?["url"] as? String == url.absoluteString,
+              let x = point?["x"] as? Double, let y = point?["y"] as? Double,
+              let interaction = web.interactionState as? Data else { throw PetError("网页正在变化，请稍候重试恢复保存") }
+        return .init(id: id, title: web.title ?? "", url: url.absoluteString, interaction: interaction, origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: x, y: y)
+    }
+    func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Page) throws {
+        guard !closed, web.url == nil, !busy else { throw PetError("当前网页不能替换为恢复记录") }
+        allowedOrigins = Set(value.origins); pendingRecovery = value; web.pageZoom = value.zoom
+        if let data = value.interaction {
+            web.interactionState = data
+            guard web.backForwardList.currentItem != nil else { throw PetError("系统无法读取网页历史，原记录已保留") }
+        } else if let url = value.url { web.load(URLRequest(url: try AgentBrowser.url(url), timeoutInterval: 25)) }
+        else { pendingRecovery = nil }
+        invalidate(); lastObservation = nil
+    }
 }

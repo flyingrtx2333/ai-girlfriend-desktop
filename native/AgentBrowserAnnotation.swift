@@ -53,6 +53,11 @@ import AppKit
     }
     func undoMark() { current = nil; if !marks.isEmpty { marks.removeLast() }; changed() }
     func clearMarks() { current = nil; marks = []; changed() }
+    func recoveryMarks() -> [AgentBrowserMark] {
+        guard let current, current.points.count > 1, let first = current.points.first, let last = current.points.last,
+              current.kind == .pen || hypot(first.x - last.x, first.y - last.y) > 0.005 else { return marks }; return marks + [current]
+    }
+    func restoreMarks(_ values: [AgentBrowserMark]) { current = nil; marks = values; changed() }
     private func changed() { needsDisplay = true; setAccessibilityValue("\(marks.count) 处标注"); onChange?() }
 }
 
@@ -64,8 +69,11 @@ import AppKit
     private let note = NSTextField(), state = NSTextField(labelWithString: "")
     private let onSubmit: ([AgentBrowserMark], String) async throws -> Void
     private var job: Task<Void, Never>?, closed = false, submitted = false, discardAccepted = false
+    private var recoveryImage: Data?, restoredNoteSelection: AgentBrowserRecoveryState.Selection?
+    private var restoreNoteFocus = false
     var onWorkspaceChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
+    var canPreserveForQuit: Bool { !closed && job == nil && !submitted && !discardAccepted }
     var hasPendingChanges: Bool { !closed && !submitted && !discardAccepted && (!canvas.marks.isEmpty || !note.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
     init(shot: AgentBrowserShot, onSubmit: @escaping ([AgentBrowserMark], String) async throws -> Void) {
         canvas = AgentBrowserAnnotationView(shot: shot); self.onSubmit = onSubmit
@@ -109,14 +117,14 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
     func finishClose() { guard !closed else { return }; closed = true; job?.cancel(); onWorkspaceChange?() }
-    func controlTextDidChange(_ obj: Notification) { onWorkspaceChange?() }
+    func controlTextDidChange(_ obj: Notification) { restoredNoteSelection = nil; onWorkspaceChange?() }
     private func updateControls() {
         let enabled = job == nil
         canvas.isEnabled = enabled; mode.isEnabled = enabled; undo.isEnabled = enabled && !canvas.marks.isEmpty; clear.isEnabled = undo.isEnabled; copy.isEnabled = enabled; add.isEnabled = enabled; note.isEnabled = enabled
         add.title = enabled ? "添加到对话" : "添加中…"
         onWorkspaceChange?()
     }
-    @objc private func annotationToolChanged() { canvas.kind = AgentBrowserMark.Kind(rawValue: mode.selectedSegment) ?? .rectangle }
+    @objc private func annotationToolChanged() { canvas.kind = AgentBrowserMark.Kind(rawValue: mode.selectedSegment) ?? .rectangle; onWorkspaceChange?() }
     @objc private func undoMark() { canvas.undoMark() }
     @objc private func clearMarks() { canvas.clearMarks() }
     @objc private func cancelEdit() { close() }
@@ -154,5 +162,24 @@ import AppKit
         if let text { note.stringValue = text; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: note)) }
         if mark { canvas.beginMark(at: CGPoint(x: 0.2, y: 0.2)); canvas.continueMark(at: CGPoint(x: 0.4, y: 0.4)); canvas.endMark() }
         if submit { addToTask(); await job?.value }
+    }
+    func captureWorkspaceRecovery() throws -> AgentBrowserRecoveryState.Annotation {
+        guard canPreserveForQuit else { throw PetError("网页标注尚在添加，请稍候") }
+        if recoveryImage == nil { recoveryImage = try canvas.shot.png() }
+        let editor = note.currentEditor() as? NSTextView
+        let selected = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
+        return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue, tool: mode.selectedSegment,
+                     focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection)
+    }
+    func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Annotation) {
+        recoveryImage = value.image; mode.selectedSegment = value.tool; canvas.kind = AgentBrowserMark.Kind(rawValue: value.tool) ?? .rectangle
+        canvas.restoreMarks(value.marks); note.stringValue = value.note; restoredNoteSelection = value.selection; restoreNoteFocus = value.focusNote; updateControls()
+    }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        guard restoreNoteFocus, isPageVisible, let host = presentingWindow, host.isKeyWindow else { return }
+        host.makeFirstResponder(note)
+        if let selection = restoredNoteSelection, selection.valid(in: note.stringValue), let editor = note.currentEditor() as? NSTextView { editor.setSelectedRange(NSRange(location: selection.location, length: selection.length)) }
+        restoreNoteFocus = false
     }
 }

@@ -14,9 +14,13 @@ import WebKit
               parts.user == nil, parts.password == nil else { throw PetError("浏览器需要不含账户密码的 HTTP/HTTPS 网址") }
         return url
     }
-    static func origin(_ url: URL) -> String { "\(url.scheme?.lowercased() ?? "")://\(url.host?.lowercased() ?? ""):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))" }
+    nonisolated static func origin(_ url: URL) -> String { "\(url.scheme?.lowercased() ?? "")://\(url.host?.lowercased() ?? ""):\(url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80))" }
     func show(taskID: String, title: String) throws -> AgentBrowserWindow {
         if let session = sessions[taskID] { session.window?.title = "浏览器 · " + title; try session.present(); return session }
+        let session = try makeSession(taskID: taskID, title: title)
+        do { try session.present(); return session } catch { session.close(); throw error }
+    }
+    private func makeSession(taskID: String, title: String) throws -> AgentBrowserWindow {
         guard sessions.count < 4 else { throw PetError("请先关闭一个任务浏览器，最多同时打开 4 个") }
         let session = AgentBrowserWindow(title: title, taskID: taskID)
         session.onPresent = onPresent; session.onDetach = onDetach
@@ -32,7 +36,14 @@ import WebKit
         }
         sessions[taskID] = session
         onChange?(taskID)
-        do { try session.present(); return session } catch { session.close(); throw error }
+        return session
+    }
+    func restore(_ page: AgentWorkspaceRecovery.Page, taskID: String, title: String, present: (AgentBrowserWindow) throws -> Void) throws -> AgentBrowserWindow {
+        let value = try AgentBrowserRecoveryState.decode(page)
+        guard value.taskID == taskID, sessions[taskID] == nil else { throw PetError("另一窗口已有此任务浏览器，请先返回原窗口；恢复记录已保留") }
+        let session = try makeSession(taskID: taskID, title: title)
+        do { try present(session); try session.restoreWorkspaceRecovery(value); return session }
+        catch { session.cancelRecovery(); throw error }
     }
     func session(_ taskID: String) throws -> AgentBrowserWindow {
         guard let session = sessions[taskID] else { throw PetError("此任务没有打开的浏览器，请先 browser_open；旧页面引用在重启或关闭后失效") }; return session
@@ -75,7 +86,7 @@ import WebKit
     }
 }
 
-@MainActor final class AgentBrowserWindow: AgentSettingsPageController, NSWindowDelegate, NSTabViewDelegate {
+@MainActor final class AgentBrowserWindow: AgentSettingsPageController, NSWindowDelegate, NSTabViewDelegate, NSTextFieldDelegate {
     let taskID: String
     private(set) var pages: [AgentBrowserPage] = []
     private let dataStore = WKWebsiteDataStore.nonPersistent(), tabs = NSTabView()
@@ -85,6 +96,7 @@ import WebKit
     private let annotate = NSButton()
     private let separate = NSButton(title: "新窗口", target: nil, action: nil), pageTabs = NSStackView(), pageTabScroll = NSScrollView()
     private var tabSignature = "", detached = false
+    private var addressDraft: String?, restoredAddressSelection: AgentBrowserRecoveryState.Selection?, restoringRecovery = false
     private var busy = false, closed = false, selecting = false, capturingViewport = false, popupError: String?
     private var manualLoad: Task<Void, Never>?
     private var captureJob: Task<Void, Never>?, annotationWindow: AgentBrowserAnnotationWindow?
@@ -96,6 +108,8 @@ import WebKit
     var onMonitorChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
     var workspaceHasUnsavedChanges: Bool { annotationWindow?.hasPendingChanges == true }
+    var recoveryAnnotation: AgentBrowserAnnotationWindow? { annotationWindow.flatMap { $0.workspaceIsClosed ? nil : $0 } }
+    var canPreserveForQuit: Bool { !closed && !busy && !restoringRecovery && captureJob == nil && !capturingViewport && recoveryAnnotation?.canPreserveForQuit != false }
     private var current: AgentBrowserPage { pages.first { $0.id == tabs.selectedTabViewItem?.identifier as? String } ?? pages[0] }
     var web: WKWebView { current.web }
 
@@ -106,7 +120,7 @@ import WebKit
         window.backgroundColor = .windowBackgroundColor
         super.init(window: window); window.delegate = self; tabs.delegate = self; tabs.tabViewType = .noTabsNoBorder
         tabs.font = .systemFont(ofSize: 11); tabs.setAccessibilityLabel("浏览器标签页")
-        address.placeholderString = "输入网址"; address.setAccessibilityLabel("浏览器网址"); address.target = self; address.action = #selector(navigate)
+        address.placeholderString = "输入网址"; address.setAccessibilityLabel("浏览器网址"); address.target = self; address.action = #selector(navigate); address.delegate = self
         for (button, symbol, label, action) in [(back, "chevron.left", "后退", #selector(goBack)), (forward, "chevron.right", "前进", #selector(goForward)), (reload, "arrow.clockwise", "重新加载", #selector(refresh)), (halt, "stop", "停止加载", #selector(stopLoading)), (add, "plus", "新标签页", #selector(newTab)), (remove, "xmark", "关闭当前标签页", #selector(closeTab)), (copyLink, "link", "复制当前链接", #selector(copyCurrentLink)), (copyImage, "camera", "复制页面截图", #selector(copyScreenshot)), (annotate, "pencil.tip.crop.circle", "标注页面", #selector(annotatePage))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol)
             button.target = self; button.action = action
@@ -154,13 +168,13 @@ import WebKit
         if pageTabs.frame.size != size { pageTabs.setFrameSize(size) }
     }
     private func updatePageTabs() {
-        let signature = pages.map { $0.id + ($0.web.title ?? "") + ($0.web.url?.absoluteString ?? "") }.joined() + current.id
+        let signature = pages.map { $0.id + $0.recoveryTitle + ($0.recoveryURL ?? "") }.joined() + current.id
         guard signature != tabSignature else { pageDidLayout(); return }; tabSignature = signature
         pageTabs.arrangedSubviews.forEach { pageTabs.removeArrangedSubview($0); $0.removeFromSuperview() }
         for (index, page) in pages.enumerated() {
-            let label = page.web.title?.isEmpty == false ? page.web.title! : page.web.url?.host ?? "新标签页"
+            let label = page.recoveryTitle.isEmpty ? page.recoveryURL.flatMap(URL.init(string:))?.host ?? "新标签页" : page.recoveryTitle
             let button = NSButton(title: label, target: self, action: #selector(selectPageTab(_:)))
-            button.tag = index; button.isBordered = false; button.font = .systemFont(ofSize: 12); button.cell?.lineBreakMode = .byTruncatingTail; button.toolTip = page.web.url?.absoluteString
+            button.tag = index; button.isBordered = false; button.font = .systemFont(ofSize: 12); button.cell?.lineBreakMode = .byTruncatingTail; button.toolTip = page.recoveryURL
             button.setAccessibilityLabel("网页：" + label); button.state = page.id == current.id ? .on : .off
             let group = AgentThemeView(fill: page.id == current.id ? AgentWorkbenchTheme.navigationSelection : .clear); group.wantsLayer = true; group.layer?.cornerRadius = 6; group.addSubview(button); button.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([group.widthAnchor.constraint(equalToConstant: min(180, max(84, ceil((label as NSString).size(withAttributes: [.font: button.font!]).width) + 22))), group.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: group.leadingAnchor, constant: 6), button.trailingAnchor.constraint(equalTo: group.trailingAnchor, constant: -6), button.topAnchor.constraint(equalTo: group.topAnchor), button.bottomAnchor.constraint(equalTo: group.bottomAnchor)])
@@ -171,7 +185,7 @@ import WebKit
     private func addPage(configuration: WKWebViewConfiguration? = nil, origins: Set<String> = [], activate: Bool = true) throws -> AgentBrowserPage {
         guard !closed, pages.count < 8 else { throw PetError("每个任务最多打开 8 个标签页，请先关闭不需要的页面") }
         let page = AgentBrowserPage(dataStore: dataStore, configuration: configuration, origins: origins)
-        page.onChange = { [weak self] in self?.updateControls() }
+        page.onChange = { [weak self] in guard let self, !restoringRecovery else { return }; updateControls(); onWorkspaceChange?() }
         let parentID = page.id
         page.onNewWindow = { [weak self] configuration, _, origins in
             guard let self, !self.closed, self.pages.contains(where: { $0.id == parentID }) else { return nil }
@@ -184,8 +198,9 @@ import WebKit
         if activate { select(page) } else { updateControls() }; return page
     }
     private func select(_ page: AgentBrowserPage) {
-        current.invalidate(); page.invalidate()
+        current.invalidate(); page.invalidate(); addressDraft = nil; restoredAddressSelection = nil
         selecting = true; tabs.selectTabViewItem(withIdentifier: page.id); selecting = false; updateControls()
+        onWorkspaceChange?()
     }
     private func page(_ id: String?) throws -> AgentBrowserPage {
         guard !closed else { throw PetError("任务浏览器已关闭") }
@@ -195,12 +210,12 @@ import WebKit
     private func updateControls() {
         guard !closed, !pages.isEmpty else { return }
         for item in tabs.tabViewItems {
-            if let page = pages.first(where: { $0.id == item.identifier as? String }) { item.label = String((page.web.title?.isEmpty == false ? page.web.title! : page.web.url?.host ?? "新标签页").prefix(24)) }
+            if let page = pages.first(where: { $0.id == item.identifier as? String }) { item.label = String((page.recoveryTitle.isEmpty ? page.recoveryURL.flatMap(URL.init(string:))?.host ?? "新标签页" : page.recoveryTitle).prefix(24)) }
         }
-        if presentingWindow?.firstResponder !== address.currentEditor() { address.stringValue = web.url?.absoluteString ?? "" }
+        if presentingWindow?.firstResponder !== address.currentEditor() { address.stringValue = addressDraft ?? current.recoveryURL ?? "" }
         state.stringValue = current.status
         back.isEnabled = !busy && web.canGoBack; forward.isEnabled = !busy && web.canGoForward
-        reload.isEnabled = !busy && web.url != nil; address.isEnabled = !busy; add.isEnabled = !busy && pages.count < 8; remove.isEnabled = !busy
+        reload.isEnabled = !busy && current.recoveryURL != nil; address.isEnabled = !busy; add.isEnabled = !busy && pages.count < 8; remove.isEnabled = !busy
         copyLink.isEnabled = web.url != nil; copyImage.isEnabled = web.url != nil
         annotate.isEnabled = !busy && captureJob == nil && web.url != nil
         separate.isHidden = onPresent == nil; separate.title = detached ? "回到任务" : "新窗口"; separate.isEnabled = !busy && captureJob == nil
@@ -234,7 +249,7 @@ import WebKit
     @objc private func newTab() { do { _ = try addPage() } catch { state.stringValue = error.localizedDescription } }
     @objc private func closeTab() { do { _ = try manageTabs(["action": "close", "tab_id": current.id]) } catch { state.stringValue = error.localizedDescription } }
     @objc private func navigate() {
-        manualLoad?.cancel(); let value = address.stringValue
+        manualLoad?.cancel(); let value = address.stringValue; addressDraft = nil; restoredAddressSelection = nil
         manualLoad = Task { [weak self] in
             guard let self else { return }
             do { _ = try await open(AgentBrowser.url(value)) } catch { state.stringValue = error.localizedDescription }
@@ -255,12 +270,7 @@ import WebKit
             do {
                 let shot = try await screenshot()
                 if annotating {
-                    let editor = AgentBrowserAnnotationWindow(shot: shot) { [weak self] marks, note in
-                        guard let handler = self?.onDraftCapture else { throw PetError("任务浏览器已关闭") }
-                        try await handler(shot, marks, note)
-                    }
-                    editor.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
-                    annotationWindow = editor; captureJob = nil; presentSettingsChild(editor)
+                    let editor = makeAnnotation(shot); captureJob = nil; presentSettingsChild(editor); onWorkspaceChange?()
                 } else {
                     NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([shot.image]); state.stringValue = shot.source.method == "webkit-software" ? "已复制软件快照，视频和 3D 内容可能缺失" : "已复制页面截图"
                 }
@@ -328,7 +338,7 @@ import WebKit
             }
             let target = pages[index], item = tabs.tabViewItems.first { $0.identifier as? String == id }!
             if current.id == id { select(pages[index == 0 ? 1 : index - 1]) }
-            target.close(); pages.remove(at: index); tabs.removeTabViewItem(item); updateControls()
+            target.close(); pages.remove(at: index); tabs.removeTabViewItem(item); updateControls(); onWorkspaceChange?()
         default: throw PetError("标签页操作只支持 list/new/switch/close")
         }
         let entries: [[String: Any]] = pages.map { ["tab_id": $0.id, "title": $0.web.title ?? "新标签页", "url": $0.web.url?.absoluteString ?? "", "selected": $0.id == current.id, "loading": $0.web.isLoading] }
@@ -352,4 +362,44 @@ import WebKit
         if action == "separate" { toggleSeparateWindow() }
         if action == "annotate" { beginCapture(annotating: true); await captureJob?.value }
     }
+    func controlTextDidChange(_ obj: Notification) { addressDraft = address.stringValue; restoredAddressSelection = nil; onWorkspaceChange?() }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        guard isPageVisible, let host = presentingWindow, host.isKeyWindow else { return }
+        if let selection = restoredAddressSelection, selection.valid(in: address.stringValue) {
+            host.makeFirstResponder(address)
+            (address.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: selection.location, length: selection.length))
+        } else { host.makeFirstResponder(web) }
+    }
+    private func makeAnnotation(_ shot: AgentBrowserShot) -> AgentBrowserAnnotationWindow {
+        let editor = AgentBrowserAnnotationWindow(shot: shot) { [weak self] marks, note in
+            guard let handler = self?.onDraftCapture else { throw PetError("任务浏览器已关闭") }; try await handler(shot, marks, note)
+        }
+        editor.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }; annotationWindow = editor; return editor
+    }
+    func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
+        let deadline = Date().addingTimeInterval(30)
+        while busy || captureJob != nil {
+            try Task.checkCancellation(); guard !closed, Date() < deadline else { throw PetError("浏览器操作尚未结束，原恢复记录已保留") }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        guard !closed, !restoringRecovery, !pages.isEmpty else { throw PetError("浏览器当前无法保存恢复记录") }
+        var savedPages: [AgentBrowserRecoveryState.Page] = []
+        for page in pages { savedPages.append(try await page.captureWorkspaceRecovery()) }
+        let editor = address.currentEditor() as? NSTextView, text = editor?.string ?? address.stringValue
+        let selection = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
+        let value = AgentBrowserRecoveryState(taskID: taskID, pages: savedPages, selected: pages.firstIndex(where: { $0.id == current.id })!, address: text, addressEdited: addressDraft != nil,
+                                              addressSelection: selection, annotation: try recoveryAnnotation?.captureWorkspaceRecovery())
+        return try value.encodedPage()
+    }
+    func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState) throws {
+        try value.validate(); guard value.taskID == taskID, !closed, !busy, !workspaceHasUnsavedChanges else { throw PetError("浏览器恢复归属已变化") }
+        restoringRecovery = true; defer { restoringRecovery = false }
+        for page in pages { page.close() }; pages = []; for item in tabs.tabViewItems { tabs.removeTabViewItem(item) }
+        for saved in value.pages { let page = try addPage(activate: false); try page.restoreWorkspaceRecovery(saved) }
+        select(pages[value.selected]); addressDraft = value.addressEdited ? value.address : nil; address.stringValue = value.address; restoredAddressSelection = value.addressSelection
+        updateControls(); settingsDidAppear()
+        if let saved = value.annotation { let editor = makeAnnotation(try saved.shot()); editor.restoreWorkspaceRecovery(saved); presentSettingsChild(editor) }
+    }
+    func cancelRecovery() { finishClose() }
 }

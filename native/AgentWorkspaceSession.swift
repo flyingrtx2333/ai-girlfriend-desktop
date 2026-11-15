@@ -74,6 +74,9 @@ import AppKit
                     } else if let editor = controller as? AgentEditResendWindow {
                         let page = try editor.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let browser = controller as? AgentBrowserWindow {
+                        let page = try await browser.captureWorkspaceRecovery()
+                        if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
                     }
                 }
                 let journal = journal
@@ -89,8 +92,13 @@ import AppKit
                     if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit { return ObjectIdentifier(canvas) }
                     if let mcp = controller as? AgentMCPContentWindow, mcp.canPreserveForQuit { return ObjectIdentifier(mcp) }
                     if let editor = controller as? AgentEditResendWindow, editor.canPreserveForQuit { return ObjectIdentifier(editor) }
+                    if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit { return ObjectIdentifier(browser) }
                     return nil
                 })
+                for (_, _, controller) in owner.taskWorkspace.recoveryEditors {
+                    if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
+                       let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
+                }
             }
         } catch { failure = error; preservedEditors = []; owner.setStatus("工作区恢复未保存：" + error.localizedDescription, error: true) }
     }
@@ -146,7 +154,7 @@ import AppKit
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

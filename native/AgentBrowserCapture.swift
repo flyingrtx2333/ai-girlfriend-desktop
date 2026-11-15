@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 import ScreenCaptureKit
 
-struct AgentBrowserCapture: Codable, Sendable {
+struct AgentBrowserCapture: Codable, Equatable, Sendable {
     var tabID: String
     var url: String
     var title: String
@@ -103,12 +103,12 @@ struct AgentBrowserCapture: Codable, Sendable {
     }
 }
 
-@MainActor struct AgentBrowserMark {
-    enum Kind: Int, CaseIterable { case rectangle, arrow, pen }
+struct AgentBrowserMark: Codable, Equatable, Sendable {
+    enum Kind: Int, CaseIterable, Codable, Sendable { case rectangle, arrow, pen }
     var kind: Kind
     var points: [CGPoint]
 
-    static func draw(_ marks: [Self], in rect: NSRect) {
+    @MainActor static func draw(_ marks: [Self], in rect: NSRect) {
         NSColor.systemRed.setStroke()
         for mark in marks {
             let points = mark.points.map { NSPoint(x: rect.minX + $0.x * rect.width, y: rect.minY + $0.y * rect.height) }

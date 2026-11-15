@@ -121,6 +121,7 @@
     "native:check-text-encoding": "node scripts/check-native-markdown.mjs --encodings",
     "native:check-video": "node scripts/check-native-video.mjs",
     "native:check-browser-workspace": "node scripts/check-native-browser-workspace.mjs",
+    "native:check-browser-recovery": "node scripts/check-native-browser-recovery.mjs",
     "native:check-video-workspace": "node scripts/check-native-video-workspace.mjs",
     "native:check-knowledge-video": "node scripts/check-native-video-workspace.mjs --knowledge",
     "native:check-repo-wiki-overview": "node scripts/check-native-repo-wiki-overview.mjs",

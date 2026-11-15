@@ -3239,6 +3239,19 @@ final class FormDocumentView: NSView {
                 if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
                 throw error
             }
+        } else if let page = loaded?.saved.value, page.kind == "browser" {
+            guard root == .browser else { throw PetError("恢复的浏览器与标签不匹配") }
+            var presented: AgentBrowserWindow?
+            do {
+                _ = try store.browser.restore(page, taskID: id, title: task.title) { browser in
+                    presented = browser
+                    guard self.taskWorkspace.show(taskID: id, root: root, recovering: true, make: { browser }) else { throw PetError("工作区当前无法打开恢复网页") }
+                    browser.window?.orderOut(nil)
+                }
+            } catch {
+                if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
+                throw error
+            }
         } else if let page = loaded?.saved.value, page.kind == "canvas" {
             let value = try AgentCanvasWindow.recoveryState(page)
             guard case .canvas(let canvas) = root, value.canvasID == canvas else { throw PetError("恢复画布与标签不匹配") }
