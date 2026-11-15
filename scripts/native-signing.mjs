@@ -4,14 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 export function signingIdentity() {
-  const output = execFileSync('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning'], { encoding: 'utf8' });
-  const identities = [...output.matchAll(/^\s*\d+\) ([A-F0-9]{40}) "([^"]+)"/gm)]
-    .map(([, hash, name]) => ({ hash, name }));
-  const requested = process.env.BLUEFATFISH_SIGN_IDENTITY;
-  const candidates = requested ? identities.filter(i => i.hash === requested || i.name === requested)
-    : identities.filter(i => /^(Apple Development:|Developer ID Application:)/.test(i.name));
-  if (candidates.length !== 1) throw new Error('请用 BLUEFATFISH_SIGN_IDENTITY 指定一个有效的 Apple 签名证书；应用不再回退到临时签名。');
-  return candidates[0].hash;
+  return process.env.BLUEFATFISH_SIGN_IDENTITY?.trim() || '-';
 }
 
 export function signNative(target, identifier) {
@@ -27,7 +20,7 @@ export function signNativeCheck(target) {
   let isolated = false;
   try { isolated = value('BlueFatFishAcceptanceOnly') === 'true' && value('CFBundleIdentifier').startsWith('com.xjs.bluefatfish.'); } catch { /* Missing metadata is not an acceptance package. */ }
   if (!isolated) {
-    throw new Error('本地签名只用于独立验收包，不能替换日常应用的签名。');
+    throw new Error('验收包必须具有独立验收标记和应用标识。');
   }
   execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', target], { stdio: 'inherit' });
   execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', target], { stdio: 'inherit' });
