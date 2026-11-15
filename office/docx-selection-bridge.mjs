@@ -49,15 +49,23 @@ export function docxSelectionBridge() {
 export function docxParagraphIds() {
   const workerSuffix = '/@betteroffice/docx/dist/yrs/docxWorker.mjs';
   const hash = '6f59a5a727a6d8b9f6a6e767ef125657fefb3605a47ac171de95ef37cb132f1b';
+  const identitiesTarget = 'paragraphIdentities:()=>JSON.parse(t.paragraph_identities()),';
+  // The worker has its own session facade. Use its resident WASM session and
+  // projection invalidation, without adding this metadata change to undo.
+  const identitiesBridge = `${identitiesTarget}persistParagraphIds:()=>{
+    const receipt=JSON.parse(t.persist_paragraph_ids());
+    if(receipt.status==="applied")j(t.story_ids());
+    return receipt;
+  },`;
   const target = 'let r=S.proposalEngine.version();try{let s=be?S.commentProjection';
   let patched = false;
   return {
     name: 'office-docx-saved-paragraph-identities',
     transform(source, id) {
       if (!id.replaceAll('\\', '/').endsWith(workerSuffix)) return;
-      if (createHash('sha256').update(source).digest('hex') !== hash || source.split(target).length !== 2) this.error('The DOCX paragraph identity adapter needs review for this SDK build.');
+      if (createHash('sha256').update(source).digest('hex') !== hash || [target, identitiesTarget].some(value => source.split(value).length !== 2)) this.error('The DOCX paragraph identity adapter needs review for this SDK build.');
       patched = true;
-      return { code: source.replace(target, 'let r=S.proposalEngine.version();try{const identities=S.persistParagraphIds();if(identities.status==="refused")throw new Error("文档段落标识存在冲突，原草稿已保留");let s=be?S.commentProjection'), map: null };
+      return { code: source.replace(identitiesTarget, identitiesBridge).replace(target, 'let r=S.proposalEngine.version();try{const identities=S.persistParagraphIds();if(identities.status==="refused")throw new Error("文档段落标识存在冲突，原草稿已保留");let s=be?S.commentProjection'), map: null };
     },
     generateBundle() {
       if ([...this.getModuleIds()].some(id => id.replaceAll('\\', '/').endsWith(workerSuffix)) && !patched) this.error('The DOCX saved paragraph identity adapter was not installed.');
