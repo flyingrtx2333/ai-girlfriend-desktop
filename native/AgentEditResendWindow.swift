@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor final class AgentEditResendWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
     private let store: AgentStore, runtime: AgentRuntime, taskID: String, messageID: String, original: String
-    private let editor = NSTextView(), notice = NSTextField(wrappingLabelWithString: ""), state = NSTextField(wrappingLabelWithString: "")
+    private let editor = NSTextView(), scroll = NSScrollView(), notice = NSTextField(wrappingLabelWithString: ""), state = NSTextField(wrappingLabelWithString: "")
     private let send = NSButton(title: "重新发送", target: nil, action: nil)
     private var reviewWindow: AgentRoundRollbackWindow?, currentReview: AgentEditResend.Review?, applying = false, completed = false
     var onWorkspaceChange: (() -> Void)?
@@ -18,7 +18,9 @@ import AppKit
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         editor.isRichText = false; editor.font = .systemFont(ofSize: 14); editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false; editor.autoresizingMask = .width; editor.textContainer?.widthTracksTextView = true
         editor.textContainerInset = NSSize(width: 8, height: 8); editor.string = original; editor.delegate = self; editor.allowsUndo = true; editor.setAccessibilityLabel("修改后的要求")
-        let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
+        scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(recoveryViewChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         notice.stringValue = review.notice; notice.font = .systemFont(ofSize: 12); notice.textColor = AgentWorkbenchTheme.secondaryText
         state.font = .systemFont(ofSize: 12); state.textColor = .systemRed
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)); cancel.keyEquivalent = "\u{1b}"
@@ -36,7 +38,45 @@ import AppKit
     var boundTaskID: String { taskID }
     var hasPendingOperation: Bool { applying || reviewWindow?.hasPendingOperation == true }
     var workspaceHasUnsavedChanges: Bool { !completed && editor.string != original }
+    var canPreserveForQuit: Bool { !completed && !hasPendingOperation && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     func prepareWorkspaceNavigation() -> Bool { !hasPendingOperation }
+    struct RecoveryState: Codable {
+        var version = 1
+        var taskID: String, messageID: String, originalHash: String, text: String
+        var selectionLocation: Int, selectionLength: Int
+        var scrollY: Double
+    }
+    static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
+        guard page.kind == "edit-resend", page.asset == nil,
+              let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+              Set(object.keys).isSubset(of: ["version", "taskID", "messageID", "originalHash", "text", "selectionLocation", "selectionLength", "scrollY"]) else { throw PetError("编辑重发恢复格式不受支持，原草稿已保留") }
+        let value = try JSONDecoder().decode(RecoveryState.self, from: page.state), count = (value.text as NSString).length
+        guard value.version == 1, value.taskID == page.taskID, UUID(uuidString: value.taskID) != nil, UUID(uuidString: value.messageID) != nil,
+              value.originalHash.count == 64, value.originalHash.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              (0...count).contains(value.selectionLocation), (0...(count - value.selectionLocation)).contains(value.selectionLength),
+              value.scrollY.isFinite, (0...1_000_000_000).contains(value.scrollY) else { throw PetError("编辑重发恢复版本或选择范围无效，原草稿已保留") }
+        return value
+    }
+    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
+        guard !completed, !hasPendingOperation else { throw PetError("请先完成当前重发或文件审阅操作") }
+        let selection = editor.selectedRange()
+        let value = RecoveryState(taskID: taskID, messageID: messageID, originalHash: AgentFiles.hash(Data(original.utf8)), text: editor.string,
+            selectionLocation: selection.location, selectionLength: selection.length, scrollY: scroll.contentView.bounds.minY)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "edit-resend", state: try encoder.encode(value), dirty: workspaceHasUnsavedChanges, asset: nil)
+        _ = try Self.recoveryState(page); return page
+    }
+    func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
+        let value = try Self.recoveryState(page)
+        guard value.taskID == taskID, value.messageID == messageID, value.originalHash == AgentFiles.hash(Data(original.utf8)),
+              page.dirty == (value.text != original) else { throw PetError("恢复编辑所属的原消息已变化，原草稿已保留") }
+        editor.string = value.text; editor.setSelectedRange(NSRange(location: value.selectionLocation, length: value.selectionLength))
+        update(); presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+        if let container = editor.textContainer { editor.layoutManager?.ensureLayout(for: container) }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: value.scrollY)); scroll.reflectScrolledClipView(scroll.contentView)
+    }
+    @objc private func recoveryViewChanged(_ notification: Notification) { if !completed { onWorkspaceChange?() } }
+    func textViewDidChangeSelection(_ notification: Notification) { recoveryViewChanged(notification) }
     override func settingsDidAppear() {
         super.settingsDidAppear()
         if let content = pageContentView { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
@@ -87,17 +127,24 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !hasPendingOperation else { return false }
         guard workspaceHasUnsavedChanges else { return true }
-        return AgentUnsavedChanges.discard("放弃修改后的要求？", detail: "原任务与未发送的任务草稿会保留。", discardTitle: "放弃修改")
+        return AgentUnsavedChanges.discard("放弃修改后的要求？", detail: "原任务与未发送的任务草稿会保留。", discardTitle: "放弃修改", owner: presentingWindow)
     }
     func windowWillClose(_ notification: Notification) { if reviewWindow?.settingsHostWindow == nil { reviewWindow?.window?.performClose(nil) }; settingsWillLeave() }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled, let content = pageContentView else { return [:] }
         func inside(_ view: NSView) -> Bool { content.bounds.insetBy(dx: -1, dy: -1).contains(view.convert(view.bounds, to: content)) }
-        return ["taskID": taskID, "messageID": messageID, "visible": isPageVisible, "busy": hasPendingOperation, "dirty": workspaceHasUnsavedChanges, "text": editor.string, "original": original, "notice": notice.stringValue, "status": state.stringValue, "sendEnabled": send.isEnabled, "sendTitle": send.title, "editorFocused": presentingWindow?.firstResponder === editor, "checks": ["editedInputFitsPage": inside(editor.enclosingScrollView!), "editedInputHasUsableHeight": editor.enclosingScrollView!.bounds.height >= 100, "resendButtonFitsPage": inside(send), "resendNoticeFitsPage": inside(notice)]]
+        return ["taskID": taskID, "messageID": messageID, "visible": isPageVisible, "busy": hasPendingOperation, "dirty": workspaceHasUnsavedChanges, "text": editor.string, "original": original, "notice": notice.stringValue, "status": state.stringValue, "sendEnabled": send.isEnabled, "sendTitle": send.title, "editorFocused": presentingWindow?.firstResponder === editor, "selectionLocation": editor.selectedRange().location, "selectionLength": editor.selectedRange().length, "scrollY": scroll.contentView.bounds.minY, "checks": ["editedInputFitsPage": inside(editor.enclosingScrollView!), "editedInputHasUsableHeight": editor.enclosingScrollView!.bounds.height >= 100, "resendButtonFitsPage": inside(send), "resendNoticeFitsPage": inside(notice)]]
     }
     func checkAction(_ action: String = "", text: String? = nil) {
-        guard CommandLine.arguments.contains("--conversation-workspace-check") else { return }
+        guard ["--conversation-workspace-check", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return }
         if let text { editor.string = text; update() }
         if action == "refresh" { refresh() }; if action == "send" { performResend(startImmediately: false) }; if action == "cancel" { cancel() }
+    }
+    func checkRecoveryView(_ range: NSRange, scrollY: Double) {
+        guard ["--workspace-edit-recovery-check", "--workspace-edit-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return }
+        editor.setSelectedRange(range); presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+        if let container = editor.textContainer { editor.layoutManager?.ensureLayout(for: container) }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: scrollY)); scroll.reflectScrolledClipView(scroll.contentView)
+        onWorkspaceChange?()
     }
 }

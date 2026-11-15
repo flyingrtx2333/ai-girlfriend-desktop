@@ -59,7 +59,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -177,7 +177,7 @@ import AppKit
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
-        (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if stacks[id]?[root]?.count == 1, let tab = recoveryTabs[id]?[root] { pendingRecovery.remove(tab.id) }
         if taskID == id, selectedRoot == root { displayCurrent() }
@@ -333,6 +333,7 @@ import AppKit
             if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit, editors.contains(ObjectIdentifier(office)) { guard office.prepareWorkspaceNavigation() else { return false }; continue }
             if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit, editors.contains(ObjectIdentifier(canvas)) { guard canvas.prepareWorkspaceNavigation() else { return false }; continue }
             if let mcp = controller as? AgentMCPContentWindow, mcp.canPreserveForQuit, editors.contains(ObjectIdentifier(mcp)) { continue }
+            if let editor = controller as? AgentEditResendWindow, editor.canPreserveForQuit, editors.contains(ObjectIdentifier(editor)) { continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }

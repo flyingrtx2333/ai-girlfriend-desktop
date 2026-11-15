@@ -3258,6 +3258,16 @@ final class FormDocumentView: NSView {
                 guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开恢复参数") }
             } catch { editor.endSettingsHosting(); throw error }
             editor.window?.orderOut(nil)
+        } else if let page = loaded?.saved.value, page.kind == "edit-resend" {
+            let value = try AgentEditResendWindow.recoveryState(page)
+            guard case .editResend(let message) = root, message == value.messageID, let runtime = companion?.agentRuntime else { throw PetError("恢复的编辑要求与标签不匹配") }
+            let editor = try preparedEditResend(store: store, runtime: runtime, taskID: id, messageID: message)
+            guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开恢复编辑") }
+            do {
+                updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+                try editor.restoreWorkspaceRecovery(page)
+            } catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
+            editor.window?.orderOut(nil)
         } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
             switch root {
@@ -3393,11 +3403,15 @@ final class FormDocumentView: NSView {
         guard agentTaskID == taskID, let store = companion?.agentStore, let runtime = companion?.agentRuntime, saveAgentDraft() else { return }
         if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
         do {
-            let root = AgentTaskWorkspace.Root.editResend(messageID), panel = try taskWorkspace.rootController(.editResend(messageID)) as? AgentEditResendWindow ?? AgentEditResendWindow(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
-            panel.beforeApply = { [weak self, weak panel] in guard let companion = self?.companion, let panel else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID], ignoring: panel) }
-            panel.onSent = { [weak self] id in self?.selectAgentTask(id) }
+            let root = AgentTaskWorkspace.Root.editResend(messageID), panel = try taskWorkspace.rootController(.editResend(messageID)) as? AgentEditResendWindow ?? preparedEditResend(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
             taskWorkspace.show(taskID: taskID, root: root) { panel }; updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded(); focusTaskInput()
         } catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func preparedEditResend(store: AgentStore, runtime: AgentRuntime, taskID: String, messageID: String) throws -> AgentEditResendWindow {
+        let panel = try AgentEditResendWindow(store: store, runtime: runtime, taskID: taskID, messageID: messageID)
+        panel.beforeApply = { [weak self, weak panel] in guard let companion = self?.companion, let panel else { throw PetError("所属任务窗口已关闭") }; try companion.requireTaskDeletionAllowed([taskID], ignoring: panel) }
+        panel.onSent = { [weak self] id in self?.selectAgentTask(id) }
+        return panel
     }
     private func replyAction(_ action: String, taskID: String, messageID: String, hash: String) -> Bool {
         guard agentTaskID == taskID, let tasks = companion?.agentStore else { return false }
