@@ -281,6 +281,10 @@ import Foundation
         let files = try AgentFiles(workspace: directory.path), hash = try files.fileHash(files.literalURL(id + ".json"), maximum: 20_000_000)
         guard hash == taskHashes[id] else { throw PetError("任务记录已变化，请重新打开后重试") }; return hash
     }
+    func recordIsPersisted(_ id: String) throws -> Bool {
+        guard let value = task(id) else { throw PetError("任务记录不可用") }
+        return try recordVersion(id) == AgentFiles.hash(encoder.encode(value))
+    }
     func renameTask(_ id: String, title: String, expectedHash: String) throws {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 120, !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("请输入不超过120字的任务名称") }

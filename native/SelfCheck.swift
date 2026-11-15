@@ -58,6 +58,8 @@ import WebKit
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-recovery-check") { await runWorkspaceRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workspace-canvas-recovery-check") { await runCanvasRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--workspace-canvas-recovery-ui") { await runCanvasRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-office-recovery-check") { await runOfficeRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-office-recovery-ui") { await runOfficeRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") { await runWorkspaceRecoveryLifecycleCheck(output); NSApp.terminate(nil); return }

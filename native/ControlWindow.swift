@@ -3139,6 +3139,20 @@ final class FormDocumentView: NSView {
                 if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
                 throw error
             }
+        } else if let page = loaded?.saved.value, page.kind == "canvas" {
+            let value = try AgentCanvasWindow.recoveryState(page)
+            guard case .canvas(let canvas) = root, value.canvasID == canvas else { throw PetError("恢复画布与标签不匹配") }
+            var presented: AgentCanvasWindow?
+            do {
+                _ = try await store.canvases.restore(page, taskID: id) { editor in
+                    presented = editor
+                    guard self.taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开画布草稿") }
+                    editor.window?.orderOut(nil)
+                }
+            } catch {
+                if let presented { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: presented) }
+                throw error
+            }
         } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
             switch root {

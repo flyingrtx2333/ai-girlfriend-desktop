@@ -57,7 +57,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -147,7 +147,7 @@ import AppKit
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
         (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
-        (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
+        (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
         (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs() }
@@ -307,6 +307,7 @@ import AppKit
         for controller in controllers.reversed() {
             if let record = controller as? AgentRecordWindow, record.canPreserveForQuit, editors.contains(ObjectIdentifier(record)) { guard record.prepareWorkspaceNavigation() else { return false }; continue }
             if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit, editors.contains(ObjectIdentifier(office)) { guard office.prepareWorkspaceNavigation() else { return false }; continue }
+            if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit, editors.contains(ObjectIdentifier(canvas)) { guard canvas.prepareWorkspaceNavigation() else { return false }; continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }

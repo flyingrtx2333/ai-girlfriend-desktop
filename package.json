@@ -45,6 +45,7 @@
     "native:check-task-workspace": "node scripts/check-native-task-workspace.mjs",
     "native:check-workspace-recovery": "node scripts/check-native-workspace-recovery.mjs",
     "native:check-workspace-recovery-lifecycle": "node scripts/check-native-workspace-recovery.mjs --lifecycle",
+    "native:check-canvas-recovery": "node scripts/check-native-canvas-recovery.mjs",
     "native:check-office-recovery": "node scripts/check-native-office-recovery.mjs",
     "native:check-conversation-workspace": "node scripts/check-native-task-workspace.mjs --conversation",
     "native:check-artifact-workspace": "node scripts/check-native-artifact-workspace.mjs",

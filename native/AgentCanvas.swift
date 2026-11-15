@@ -126,14 +126,25 @@ struct AgentCanvasCapture: Codable, Sendable {
         _ = try record(id, taskID: taskID)
         let window: AgentCanvasWindow, key = taskID + ":" + id, created: Bool
         if let existing = windows[key] { window = existing; created = false }
-        else {
-            guard windows.count < 4 else { throw PetError("最多同时打开4个画布，请先关闭一个") }
-            window = AgentCanvasWindow(canvas: self, taskID: taskID); created = true
-            window.onClose = { [weak self] in self?.windows[key] = nil }; windows[key] = window
-        }
+        else { window = try makeWindow(id, taskID: taskID); created = true }
         do { try onPresent?(window, id, location) } catch { if created { window.finishClose() }; throw error }
         try await window.open(id); return window
     }
+    private func makeWindow(_ id: String, taskID: String) throws -> AgentCanvasWindow {
+        guard windows.count < 4 else { throw PetError("最多同时打开4个画布，请先关闭一个") }
+        let window = AgentCanvasWindow(canvas: self, taskID: taskID), key = taskID + ":" + id
+        window.onClose = { [weak self] in self?.windows[key] = nil }; windows[key] = window; return window
+    }
+    func restore(_ page: AgentWorkspaceRecovery.Page, taskID: String, present: (AgentCanvasWindow) throws -> Void) async throws -> AgentCanvasWindow {
+        let value = try AgentCanvasWindow.recoveryState(page)
+        guard value.taskID == taskID, let task = store?.task(taskID), !task.archived else { throw PetError("恢复画布所属任务不可用") }
+        _ = try record(value.canvasID, taskID: taskID)
+        guard windows[taskID + ":" + value.canvasID] == nil else { throw PetError("此画布已有窗口，请先返回该窗口；原恢复页已保留") }
+        let window = try makeWindow(value.canvasID, taskID: taskID)
+        do { try present(window); try await window.restoreWorkspaceRecovery(page); return window }
+        catch { window.onSettingsClose = nil; window.finishClose(); throw error }
+    }
+    func canPreserveForQuit(_ taskID: String) -> Bool { store?.task(taskID).map { !$0.archived && $0.sideTask?.retained != false } == true }
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.stop() } }
     func close(_ taskID: String) { for window in Array(windows.values) where window.taskID == taskID { window.finishClose() } }
     func closeAll() { for window in Array(windows.values) { window.finishClose() } }
@@ -147,7 +158,11 @@ struct AgentCanvasCapture: Codable, Sendable {
     func records(_ taskID: String) -> [AgentCanvasRecord] { store?.task(taskID)?.canvases ?? [] }
     func sourceURL(_ id: String, taskID: String) throws -> URL { try directory(id, taskID: taskID).appendingPathComponent("document.canvas.tsx") }
     @discardableResult func saveDraft(_ text: String?, hash: String?, id: String, taskID: String) -> Bool {
-        guard (text?.utf8.count ?? 0) <= 256_000, (try? record(id, taskID: taskID)) != nil else { return false }
+        guard (text?.utf8.count ?? 0) <= 256_000, let record = try? record(id, taskID: taskID) else { return false }
+        if record.draft == text, record.draftHash == hash, let store {
+            do { if try store.recordIsPersisted(taskID), store.writeError == nil { return true } }
+            catch { return false }
+        }
         store?.update(taskID) { task in
             if let index = task.canvases?.firstIndex(where: { $0.id == id }) { task.canvases?[index].draft = text; task.canvases?[index].draftHash = hash }
         }
