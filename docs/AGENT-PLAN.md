@@ -2061,3 +2061,24 @@ Word、表格和幻灯片接入原任务窗口的恢复存储，保存完整导�
 完整索引为 `evidence/agent/workspace-office-recovery-r6m3v8p2/acceptance-index.json`。最终原生报告位于 `office-recovery-command-icRc48`、`workspace-recovery-command-RwXtTI`、`task-workspace-command-nN4LnP`、`unsaved-changes-command-P7odDF` 和 `workspace-recovery-command-rkNQcE`。实际窗口与保护证明为本轮目录中的 `cua-office-01-edit-quit`、`cua-office-02-reopen`、`runtime-ui/actual-quit-proof.json`、`runtime-ui/reopen-preservation-proof.json` 及 `process-and-protection-proof.json`。证据整理时对辅助输入冻结位置的一次错误假定已修正，原诊断保留，未改变应用源码或重跑已通过的原生检查。
 
 完整恢复仍未完成：Office 当前工作表、幻灯片及光标等视图状态，Canvas 原有草稿与选择，浏览器与未添加标注，MCP 参数，编辑并重发，独立产物窗口，视频位置，以及明确关闭／放弃和更多来源／权限失败边界继续验收。日常应用未更新，完整恢复 TODO 保持未勾选；历史 Wiki 首次无按键记录的跳转也继续保留。
+
+
+## 2026-11-15 Canvas 原有草稿与源码视图跨启动候选
+
+Canvas 接入任务工作区的恢复存储，继续以任务记录中原有的 `draft／draftHash` 保存源码，窗口恢复页只记录画布身份、预览／源码模式、选择范围与源码滚动位置，不复制另一份正文。每次源码、选择、滚动或模式变化通知窗口保存，退出前同步最后输入；相同且确已落盘的草稿不反复修改任务时间。恢复后沿用原草稿及打开时源码版本，旧版本拒绝覆盖外部改动；实际保存后才清除未保存状态。恢复失败保留原页与冷标签，已有画布窗口不被另一窗口接管。
+
+新增磁盘持久状态核对，避免只因内存中的草稿相同而认定保存成功。实际检查将当前任务记录设为只读，保存失败后再成功保存另一个任务，当前草稿仍拒绝退出保护；恢复权限后同一份最后编辑可以重试。明确关闭时只有草稿清除成功才接受放弃；源码实际写入后，若草稿状态未能保存，仍保留未保存状态。正常应用退出只保留已完成持久保存、仍属于保留任务的编辑器，独立产物窗口及批注继续沿用原关闭保护。
+
+源码 `3f14dfebf05ec51b66cc935dbec553efebf60175` 已提交并推送 main。最终优化程序 `evidence/agent/workspace-canvas-recovery-yn8evtmn/final-01/小鲸画布恢复验收.app` 的 SHA-256 为 `df86ccb1aa946a7e180e0aa7ba7a3df9458d7ff8e6cbab5c6e03392086c090d1`；376 份原生输入、7 份 MCP 输入、4 份图标资源、22 份辅助输入、9 份 Office 源与 140 份 Office 资源，以及 4 份 Canvas 源与 3 份 Canvas 运行资源均核对。实际构建输入另与冻结副本一致，辅助输入按原清单核对；构建时源状态干净，严格 ad hoc 签名通过，无需个人证书或解锁钥匙串。
+
+最终同一程序通过 Canvas 跨进程 36、Record 跨进程 25、Office 跨进程 31、原任务工作区 132、未保存保护 44 项，共 268 项相关检查。Canvas 覆盖无工作区通用问答、多个任务及画布、已存在的源码草稿、连续脏编辑、只读失败与跨任务干扰后的重试、实际恢复后的保存、外部版本拒绝及来源失联后保留冷页。首次恢复的选择位置 50、长度 27、滚动位置 320 均直接从实际编辑器读回。Node 另独立读取两组产物的 17 类内容与版本；Office 的 3 组产物另有 17 类独立文档核对，未将重复类别累加到原生总数。此前调试检查不累加。
+
+实际窗口在 1200×774 中向原有草稿末尾追加 `// 实际窗口画布恢复 CUA_CANVAS_FINAL_853`，关闭标签后选择继续编辑，切换另一画布的真实预览并返回。缩至 780×540 后补写 ` LAST_206`，立即正常退出；磁盘中的完整草稿与验收前的完整草稿加这一个明确补记完全一致。用同一程序重开，真实窗口可见最后输入、未保存标记、源码模式及末尾滚动位置；尚未载入的另一画布点击后也恢复原有草稿。返回原画布并再次正常退出，两轮保留 22 次调用、44 份原始记录、9 张原图。18 类实际窗口内容核对在首次退出和重开后均通过。
+
+首次退出后原 18 份文件权限保持、14 份字节一致，只有明确编辑的画布任务及其索引元数据、窗口布局和该画布的选择／滚动恢复页变化；另正常新增历史和设置两份文件。4 份原源码与 4 份原历史版本、项目原文件均保持；两项完整任务除明确补记及相应任务更新时间外保持。重开并再次退出后，20 份文件权限保持、19 份字节一致，仅任务索引的数组顺序变化；使用当前条目的原始字节重排后能重建上次退出的原始 SHA-256，证明条目内容及选中任务完全相同，两项完整任务与全部原源码／版本保持。原始“全部文件字节相同”的失败断言保留在 `runtime-ui/after-reopen-independent.json`，排序差异另由 `runtime-ui/reopen-preservation-proof.json` 精确说明，未修改原断言。
+
+类型检查首次的两处可抛出布尔表达式标记错误已修正。首轮独立入口遗漏工作台模式，画布误入独立窗口；失败样例选择继续编辑，实际保存公开草稿后正常退出，原源码仍在两份历史版本之一，原始失败和窗口记录保留。第二轮的源码选择／滚动读回将 `CGFloat` 条件转为 `Double` 得到空值，已用独立 Swift 读回确认并改为明确数值类型，最终同版重启原条件通过。窗口操作还保留长源码索引点击不可见、首次补记位置错误后撤销恢复，以及冷标签点击读取错误但动作已生效的原始记录；随后从新状态确认实际结果，未重复点击或用观察失败推断进程结束。
+
+完整索引为 `evidence/agent/workspace-canvas-recovery-yn8evtmn/acceptance-index.json`。原生报告位于 `canvas-recovery-command-mggfsF`、`workspace-recovery-command-iuej0k`、`office-recovery-command-cHohMp`、`task-workspace-command-awZ32M` 和 `unsaved-changes-command-tRZw3n`。构建、资料、原始窗口及进程证明见本轮目录中的 `build-provenance-proof.json`、`runtime-ui/actual-quit-proof.json`、`runtime-ui/reopen-preservation-proof.json`、`cua-final-01-edit-quit`、`cua-final-02-reopen` 和 `process-and-protection-proof.json`。19 个已记录的编译、检查与窗口进程均核对退出；日常程序及防休眠进程保留，日常应用和 12 个正式保护项字节与权限一致，模型请求 0，日常入口未替换。
+
+实际重开还发现，尚未载入的 Canvas 标签暂时使用通用名称且没有未保存点，点击恢复后才显示正确名称与状态；这一项明确留待修复。完整范围继续包括该冷标签问题、Office 当前工作表／幻灯片／光标、浏览器与未添加标注、MCP 参数、编辑并重发、独立产物窗口、视频位置、明确关闭／放弃及更多来源／权限失败边界，以及日常发布。完整恢复 TODO 保持未勾选，历史 Wiki 首次无按键记录的跳转及其余完整清单也继续保留。
