@@ -91,7 +91,7 @@ import AppKit
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
             } else {
                 fixture = try JSONDecoder().decode(FloatingRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
-                restoreAdditionalWorkspaceWindows(); guard await flushWorkspaceWindows(), let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.otherWindowID }) else { throw PetError("原任务窗口未恢复") }
+                control.show(tab: "chat"); restoreAdditionalWorkspaceWindows(); guard await flushWorkspaceWindows(), let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.otherWindowID }) else { throw PetError("原任务窗口未恢复") }
                 let main = try layout(control), other = try layout(child)
                 checks["sameWindowTaskAndFloatingIdentitiesRestore"] = main.id == fixture.windowID && main.floating.map(\.tab.id).sorted() == fixture.main.map(\.tab.id).sorted() && other.floating.map(\.tab.id).sorted() == fixture.other.map(\.tab.id).sorted()
                 checks["explicitlyClosedWindowNeverResurrects"] = !main.floating.contains { $0.tab.root.hasSuffix("closed.txt") }
@@ -123,6 +123,8 @@ import AppKit
                     await first.checkTaskDocument(text: firstState.text! + "继续编辑 PUBLIC_FLOATING_CONTINUE_951\n")
                     checks["restoredIndependentDocumentCanContinueEditing"] = try AgentRecordWindow.recoveryState(await first.captureWorkspaceRecovery()).text?.hasSuffix("继续编辑 PUBLIC_FLOATING_CONTINUE_951\n") == true
                 }
+                report["restoration"] = taskControls.map { $0.workspaceSession?.floatingRecoveryReadback ?? [:] }
+                report["serviceAvailability"] = ["browser": tasks.browser.sessions[fixture.taskID] != nil, "office": tasks.offices.windows[fixture.office] != nil, "canvas": tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] != nil]
                 guard let browser = tasks.browser.sessions[fixture.taskID], let office = tasks.offices.windows[fixture.office], let canvas = tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] else { throw PetError("浏览器／Office／Canvas 独立窗口未恢复") }
                 checks["browserRestoresAsIndependentWindowAndExactForm"] = try await form(browser) == "PUBLIC_FLOATING_FORM_941" && browser.workspaceReadback()["detached"] as? Bool == true && browser.settingsHostWindow == nil && browser.window?.isVisible == true
                 let actual = try await office.inspect([:])
@@ -140,6 +142,7 @@ import AppKit
             checks["noModelRequests"] = requests == 0
             report["stage"] = stage
         } catch { report["error"] = error.localizedDescription }
+        report["restoration"] = taskControls.map { $0.workspaceSession?.floatingRecoveryReadback ?? [:] }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         if let binary = Bundle.main.executableURL { report["binaryHash"] = try? AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary) }
         report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }

@@ -1,10 +1,34 @@
 import AppKit
 
-// One serialized writer per task window. Cold tabs keep their stored page until
+// The journal uses a nonblocking file lock to reject external writers. Keep
+// this window's own reads and writes serialized so eager restores cannot race it.
+private actor AgentWorkspaceJournal {
+    private let storage: AgentWorkspaceRecovery
+    init(profile: URL) { storage = AgentWorkspaceRecovery(profile: profile) }
+    func tabStates(_ tasks: [AgentWorkspaceRecovery.TaskLayout], windowID: String) -> ([String: Bool], [String]) {
+        var values: [String: Bool] = [:], issues: [String] = []
+        for task in tasks { for tab in task.tabs {
+            do { values[tab.id] = try storage.loadTabDirtyState(windowID: windowID, pageID: tab.id, taskID: task.taskID) }
+            catch { issues.append(tab.title + "：" + error.localizedDescription) }
+        } }
+        return (values, issues)
+    }
+    func loadPage(windowID: String, pageID: String, taskID: String) throws -> AgentWorkspaceRecovery.LoadedPage? {
+        try storage.loadPage(windowID: windowID, pageID: pageID, taskID: taskID)
+    }
+    func savePage(_ page: AgentWorkspaceRecovery.Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Page> {
+        try storage.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: expected)
+    }
+    func saveWindow(_ layout: AgentWorkspaceRecovery.Window, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window> {
+        try storage.saveWindow(layout, expected: expected)
+    }
+}
+
+// One serialized journal per task window. Cold tabs keep their stored page until
 // materialized; closing a tab and quitting the app have different lifecycles.
 @MainActor final class AgentWorkspaceSession: NSObject {
     private weak var owner: ControlWindow?
-    private let journal: AgentWorkspaceRecovery
+    private let journal: AgentWorkspaceJournal
     let id: String
     private var layoutHash: String?, previous: AgentWorkspaceRecovery.Window?
     private var pages: [String: AgentWorkspaceRecovery.Page] = [:], pageHashes: [String: String] = [:]
@@ -18,12 +42,17 @@ import AppKit
     private(set) var preservedEditors = Set<ObjectIdentifier>()
     var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty && tabStateJob == nil) }
     var floatingControllers: [AgentSettingsPageController] { floating.values.map(\.1) }
+    var floatingRecoveryReadback: [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        return ["windowID": id, "coldRoots": coldFloating.map(\.tab.root), "errors": floatingFailures,
+                "open": floating.map { ["pageID": $0.key, "root": $0.value.0.tab.root, "controller": String(describing: type(of: $0.value.1))] }]
+    }
     private var editors: [(String, AgentWorkspaceRecovery.Tab, AgentSettingsPageController)] {
         (owner?.taskWorkspace.recoveryEditors ?? []) + floating.values.map { ($0.0.taskID, $0.0.tab, $0.1) }
     }
 
     init(owner: ControlWindow, profile: URL, saved: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>?) {
-        self.owner = owner; journal = AgentWorkspaceRecovery(profile: profile)
+        self.owner = owner; journal = AgentWorkspaceJournal(profile: profile)
         id = saved?.value.id ?? UUID().uuidString; layoutHash = saved?.hash; previous = saved?.value
         coldFloating = saved?.value.floating ?? []
         super.init()
@@ -81,7 +110,7 @@ import AppKit
                 defer { roots[pageID] = nil }
                 do {
                     let journal = journal, windowID = id
-                    let loaded = try await Task.detached(priority: .utility) { try journal.loadPage(windowID: windowID, pageID: pageID, taskID: metadata.taskID) }.value
+                    let loaded = try await journal.loadPage(windowID: windowID, pageID: pageID, taskID: metadata.taskID)
                     guard !stopped, coldFloating.contains(where: { $0.tab.id == pageID }) else { return }
                     guard let loaded else { throw PetError("独立窗口缺少恢复内容，原记录已保留") }
                     pageHashes[pageID] = loaded.saved.hash; pages[pageID] = loaded.saved.value
@@ -126,14 +155,7 @@ import AppKit
         let journal = journal, windowID = id
         tabStateJob = Task { @MainActor [weak self] in
             guard let self else { return }; defer { tabStateJob = nil }
-            let result = await Task.detached(priority: .utility) {
-                var values: [String: Bool] = [:], issues: [String] = []
-                for task in tasks { for tab in task.tabs {
-                    do { values[tab.id] = try journal.loadTabDirtyState(windowID: windowID, pageID: tab.id, taskID: task.taskID) }
-                    catch { issues.append(tab.title + "：" + error.localizedDescription) }
-                } }
-                return (values, issues)
-            }.value
+            let result = await journal.tabStates(tasks, windowID: windowID)
             guard !stopped, !Task.isCancelled, let owner else { return }
             owner.taskWorkspace.applyRecoveredTabStates(result.0)
             if !result.1.isEmpty { owner.setStatus("部分标签状态未读取，原记录已保留：" + result.1.prefix(2).joined(separator: "；"), error: true) }
@@ -188,7 +210,7 @@ import AppKit
                     return value
                 }.sorted { $0.tab.id < $1.tab.id }
                 let expected = layoutHash, capturedLayout = layout
-                let saved = try await Task.detached(priority: .utility) { try journal.saveWindow(capturedLayout, expected: expected) }.value
+                let saved = try await journal.saveWindow(capturedLayout, expected: expected)
                 layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision
                 if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
                 failure = nil
@@ -210,7 +232,7 @@ import AppKit
     }
     private func persist(_ page: AgentWorkspaceRecovery.Page, asset: URL?, pageID: String) async throws {
         let journal = journal, windowID = id, hash = pageHashes[pageID]
-        let saved = try await Task.detached(priority: .utility) { try journal.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: hash) }.value
+        let saved = try await journal.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: hash)
         // Keep each successful revision if a later page or layout fails.
         pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
         owner?.taskWorkspace.applyRecoveredTabStates([pageID: saved.value.dirty])
@@ -234,7 +256,7 @@ import AppKit
         defer { closing = false; if !stopped, revision != closingRevision { changed() } }
         layout.closed = true
         let journal = journal, expected = layoutHash
-        let saved = try await Task.detached(priority: .utility) { try journal.saveWindow(layout, expected: expected) }.value
+        let saved = try await journal.saveWindow(layout, expected: expected)
         layoutHash = saved.hash; previous = saved.value
         guard revision == closingRevision else { throw PetError("关闭期间内容已变化，请重新检查后关闭") }
         stop()
@@ -246,7 +268,7 @@ import AppKit
             defer { roots[tab.id] = nil; owner.taskWorkspace.retryRecovery(tab.id) }
             do {
                 let journal = journal, windowID = id
-                let loaded = try await Task.detached(priority: .utility) { try journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task) }.value
+                let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task)
                 guard !stopped, owner.agentTaskID == task, owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
                 try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded)
