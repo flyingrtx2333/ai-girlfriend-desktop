@@ -61,11 +61,20 @@ struct AgentVideoSnapshot: Sendable {
         video.addEventListener('error',()=>{state.textContent=video.error?.code===2?'视频读取失败，请刷新重试':'无法播放视频，请检查文件格式或编码';});
         const restored=\(restored);let lastSecond=-1;
         const changed=()=>window.webkit?.messageHandlers.videoPlayback?.postMessage('changed');
-        video.addEventListener('loadedmetadata',()=>{
+        video.dataset.recoveryReady='false';
+        const restore=()=>{
+          if(video.dataset.recoveryReady==='true'||video.readyState<1||!Number.isFinite(video.duration)||video.duration<=0)return;
           state.textContent='';
-          if(restored){video.pause();video.playbackRate=restored.rate;video.volume=restored.volume;video.muted=restored.muted;video.currentTime=Math.min(restored.time,video.duration);}
+          if(restored){
+            const time=Math.min(restored.time,video.duration),ranges=video.seekable;
+            if(time>0&&!Array.from({length:ranges.length},(_,i)=>i).some(i=>ranges.start(i)<=time&&time<=ranges.end(i)))return;
+            video.pause();video.playbackRate=restored.rate;video.volume=restored.volume;video.muted=restored.muted;video.currentTime=time;
+            if(Math.abs(video.currentTime-time)>0.05)return;
+          }
+          video.dataset.recoveryReady='true';
           changed();
-        },{once:true});
+        };
+        for(const event of ['loadedmetadata','loadeddata','canplay','progress','durationchange'])video.addEventListener(event,restore);
         for(const event of ['play','pause','seeking','seeked','ratechange','volumechange'])video.addEventListener(event,changed);
         video.addEventListener('timeupdate',()=>{const second=Math.floor(video.currentTime);if(second!==lastSecond){lastSecond=second;changed();}});
         document.addEventListener('keydown',event=>{
@@ -147,7 +156,7 @@ struct AgentVideoSnapshot: Sendable {
     func capturePlayback() async -> AgentVideoPlayback? {
         await opening?.value
         guard let web, let snapshot else { return playback }; let current = generation
-        let script = "(()=>{const v=document.getElementById('video');return v&&v.readyState>0&&!v.error&&Number.isFinite(v.duration)&&v.duration>0?{time:v.currentTime,duration:v.duration,rate:v.playbackRate,volume:v.volume,muted:v.muted}:null;})()"
+        let script = "(()=>{const v=document.getElementById('video');return v&&v.dataset.recoveryReady==='true'&&v.readyState>0&&!v.error&&Number.isFinite(v.duration)&&v.duration>0?{time:v.currentTime,duration:v.duration,rate:v.playbackRate,volume:v.volume,muted:v.muted}:null;})()"
         if let value = try? await web.evaluateJavaScript(script) as? [String: Any], generation == current,
            let time = value["time"] as? Double, let duration = value["duration"] as? Double,
            let rate = value["rate"] as? Double, let volume = value["volume"] as? Double, let muted = value["muted"] as? Bool {
@@ -188,7 +197,7 @@ struct AgentVideoSnapshot: Sendable {
         await opening?.value
         var result: [String: Any] = ["file": source?.path ?? "", "sourceHash": snapshot?.hash ?? "", "snapshotFolder": snapshot?.folder.path ?? "", "webPresent": web != nil, "status": status.stringValue, "hidden": isHidden, "reloadEnabled": reload.isEnabled]
         result["previewFrame"] = NSStringFromRect(frame); result["surfaceBounds"] = NSStringFromRect(player.bounds); result["webFrame"] = web.map { NSStringFromRect($0.frame) } ?? ""
-        if let web, let value = try? await web.evaluateJavaScript("(()=>{const v=document.getElementById('video');return v?{readyState:v.readyState,duration:Number.isFinite(v.duration)?v.duration:0,time:v.currentTime,rate:v.playbackRate,volume:v.volume,muted:v.muted,paused:v.paused,seeking:v.seeking,ended:v.ended,width:v.videoWidth,height:v.videoHeight,clientWidth:v.clientWidth,clientHeight:v.clientHeight,viewportWidth:innerWidth,viewportHeight:innerHeight,error:v.error?.code??0,status:document.getElementById('state').textContent,controls:v.controls,frames:v.getVideoPlaybackQuality().totalVideoFrames,fullscreen:document.fullscreenElement===v,webkitFullscreen:v.webkitDisplayingFullscreen===true}:{};})()") as? [String: Any] { result["player"] = value }
+        if let web, let value = try? await web.evaluateJavaScript("(()=>{const v=document.getElementById('video');return v?{restoreReady:v.dataset.recoveryReady==='true',readyState:v.readyState,duration:Number.isFinite(v.duration)?v.duration:0,time:v.currentTime,rate:v.playbackRate,volume:v.volume,muted:v.muted,paused:v.paused,seeking:v.seeking,ended:v.ended,width:v.videoWidth,height:v.videoHeight,clientWidth:v.clientWidth,clientHeight:v.clientHeight,viewportWidth:innerWidth,viewportHeight:innerHeight,error:v.error?.code??0,status:document.getElementById('state').textContent,controls:v.controls,frames:v.getVideoPlaybackQuality().totalVideoFrames,fullscreen:document.fullscreenElement===v,webkitFullscreen:v.webkitDisplayingFullscreen===true}:{};})()") as? [String: Any] { result["player"] = value }
         return result
     }
     func checkWorkspace(action: String = "", time: Double? = nil, rate: Double? = nil, volume: Double? = nil, muted: Bool? = nil) async {

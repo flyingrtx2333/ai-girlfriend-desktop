@@ -18,7 +18,7 @@ import AppKit
                 var value: [String: Any] = [:]
                 for _ in 0..<100 {
                     value = await record.videoPreviewReadback()
-                    if let player = value["player"] as? [String: Any], (player["readyState"] as? Int ?? 0) > 0, (player["error"] as? Int ?? 0) == 0 { return value }
+                    if let player = value["player"] as? [String: Any], (player["readyState"] as? Int ?? 0) >= 2, player["seeking"] as? Bool == false, player["restoreReady"] as? Bool == true, (player["error"] as? Int ?? 0) == 0 { return value }
                     await wait(0.05)
                 }
                 throw PetError("实际视频未完成解码：" + (value["status"] as? String ?? ""))
@@ -120,7 +120,10 @@ import AppKit
                     checks["persistentWindowAndTabIdentitiesRemainOwned"] = control.workspaceSession?.id == fixture.windowID && control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == fixture.taskID })?.tabs.map(\.id).contains(fixture.tabID) == true && child.agentTaskID == fixture.otherID
                     checks["newProcessUsesFreshPrivateSnapshot"] = !fixture.sourceFolders.contains(firstState["snapshotFolder"] as? String ?? "") && fixture.sourceFolders.allSatisfy { !FileManager.default.fileExists(atPath: $0) }
                     control.taskWorkspace.checkSelect(.document(fixture.secondFile)); guard await flushWorkspaceWindows(), let second = control.taskWorkspace.currentController as? AgentRecordWindow else { throw PetError("未载入的第二视频标签未恢复") }
-                    checks["coldSecondFormatRestoresItsOwnPosition"] = matches(try await decoded(second), fixture.second)
+                    let secondPending = try await playback(second), secondState = try await decoded(second)
+                    report["actualRestoredPlayers"] = ["first": firstState, "second": secondState, "other": otherState]
+                    checks["coldSecondFormatKeepsPendingPositionBeforeDecode"] = abs(secondPending.time - fixture.second.time) < 0.01 && secondPending.hash == fixture.second.hash
+                    checks["coldSecondFormatRestoresItsOwnPosition"] = matches(secondState, fixture.second)
                     control.taskWorkspace.checkSelect(.document(fixture.file)); await wait(0.2)
                     let remainedFirst = try await decoded(first), remainedOther = try await decoded(otherVideo)
                     checks["restoredPlayersNeverAutoplay"] = matches(remainedFirst, expected) && matches(remainedOther, fixture.other)
