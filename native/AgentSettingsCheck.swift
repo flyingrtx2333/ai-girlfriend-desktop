@@ -66,12 +66,13 @@ import Darwin
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
             let pane = AgentSettingsPageHost(); host.contentView = pane
+            host.makeKeyAndOrderFront(nil)
             func visibleContentWindows() -> Set<ObjectIdentifier> {
                 Set(NSApp.windows.filter { $0.isVisible && $0 !== pet && $0 !== statusItem?.button?.window }.map(ObjectIdentifier.init))
             }
             let visible = visibleContentWindows()
             func windows() -> [[String: Any]] {
-                NSApp.windows.filter(\.isVisible).map { ["number": $0.windowNumber, "title": $0.title, "class": String(describing: type(of: $0)), "pet": $0 === pet, "bubble": $0 === bubble, "statusItem": $0 === statusItem?.button?.window] }
+                NSApp.windows.filter(\.isVisible).map { ["number": $0.windowNumber, "title": $0.title, "class": String(describing: type(of: $0)), "pet": $0 === pet, "bubble": $0 === bubble, "statusItem": $0 === statusItem?.button?.window, "fixtureHost": $0 === host] }
             }
             report["visibleWindowsBefore"] = windows()
             var windowStages: [[String: Any]] = []
