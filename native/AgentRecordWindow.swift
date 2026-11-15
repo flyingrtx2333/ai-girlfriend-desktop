@@ -80,7 +80,8 @@ import UniformTypeIdentifiers
     private var textFocusRequested = false
     private var hasInlineVideoPlayback: Bool { !video.isHidden && openedFile.map(AgentVideoSnapshot.supports) == true }
     var hasIndependentVideoWindow: Bool { videoWindow?.hasIndependentWindow == true }
-    var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow }
+    var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true }
+    var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow || sourceWindow?.hasVideoPlayback == true }
     init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
         self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.memoryWorkspace = memoryWorkspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -211,7 +212,7 @@ import UniformTypeIdentifiers
         guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
         if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
-        do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
+        do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); sourceWindow?.prepareWorkspaceNavigation(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     struct RecoveryState: Codable {
         var version = 1
@@ -231,27 +232,27 @@ import UniformTypeIdentifiers
         var videoWindow: AgentVideoWindow.RecoveryState? = nil
         var textViewport: AgentTextViewport? = nil
         var markdownViewport: AgentMarkdownReader.ViewRecovery? = nil
+        var sourceWindow: AgentMarkdownSourceWindow.RecoveryState? = nil
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "record", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "videoWindow", "textViewport", "markdownViewport"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "videoWindow", "textViewport", "markdownViewport", "sourceWindow"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
         if let raw = object["textViewport"], !(raw is NSNull) { try AgentTextViewport.validateObject(raw) }
         if let raw = object["markdownViewport"], !(raw is NSNull) { try AgentMarkdownReader.ViewRecovery.validateObject(raw) }
+        if let raw = object["sourceWindow"], !(raw is NSNull) { try AgentMarkdownSourceWindow.RecoveryState.validateObject(raw) }
         if let video = object["video"] {
             guard let video = video as? [String: Any], Set(video.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频播放记录格式不受支持，原记录已保留") }
         }
         if let raw = object["videoWindow"], !(raw is NSNull) {
-            guard let child = raw as? [String: Any], Set(child.keys).isSubset(of: ["version", "file", "sourceRoot", "playback", "frame"]) else { throw PetError("视频子窗口恢复格式不受支持，原记录已保留") }
-            if let raw = child["playback"], !(raw is NSNull) { guard let playback = raw as? [String: Any], Set(playback.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频子窗口播放记录格式不受支持") } }
-            if let raw = child["frame"], !(raw is NSNull) { guard let frame = raw as? [String: Any], Set(frame.keys).isSubset(of: ["x", "y", "width", "height"]) else { throw PetError("视频子窗口位置格式不受支持") } }
+            try AgentVideoWindow.validateRecoveryObject(raw)
         }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, (0...6).contains(value.section), [0, 1].contains(value.mode),
               value.dirty == page.dirty, AgentTextEncoding(rawValue: value.encoding) != nil,
               !value.dirty || (value.text != nil && value.openedHash?.count == 64),
               value.file.map({ $0.hasPrefix("/") && !$0.contains("\0") }) ?? true,
-              value.videoWindow?.valid != false, value.textViewport?.valid != false, value.markdownViewport?.valid != false else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
+              value.videoWindow?.valid != false, value.textViewport?.valid != false, value.markdownViewport?.valid != false, value.sourceWindow?.valid != false else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
         if value.textViewport != nil || value.markdownViewport != nil {
             guard value.video == nil, value.openedHash != nil else { throw PetError("文本位置没有对应正文，原记录已保留") }
         }
@@ -267,6 +268,11 @@ import UniformTypeIdentifiers
         guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
         let playback = hasInlineVideoPlayback ? await video.capturePlayback() : nil
         let child = try await videoWindow?.captureWorkspaceRecovery()
+        var source: AgentMarkdownSourceWindow.RecoveryState?
+        while let current = sourceWindow {
+            let value = try await current.captureWorkspaceRecovery()
+            guard sourceWindow === current else { continue }; source = value; break
+        }
         let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
         let viewport: AgentTextViewport?
         if openedHash != nil, !hasInlineVideoPlayback {
@@ -280,7 +286,7 @@ import UniformTypeIdentifiers
         } else { viewport = nil }
         let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
             file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
-            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback, videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport)
+            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback, videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport, sourceWindow: source)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty, asset: nil)
         _ = try Self.recoveryState(page); return page
@@ -298,7 +304,7 @@ import UniformTypeIdentifiers
             else if let selection = value.selection { selectItem(section: value.section, value: selection) }
             if value.video != nil, openedFile?.path != value.file || video.isHidden { throw PetError("原视频暂不可访问，播放记录已保留") }
             if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
-            try restoreTextViewports(value); restoreVideoWindow(value.videoWindow); return
+            try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); return
         }
         guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
         var issue: String?, currentHash: String?
@@ -324,7 +330,7 @@ import UniformTypeIdentifiers
         else { state.stringValue = currentHash == hash ? "已恢复未保存内容" : "文件已更改，草稿已恢复；保存前请比较" }
         if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
         text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
-        try restoreTextViewports(value); restoreVideoWindow(value.videoWindow)
+        try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow)
     }
     private func restoreTextViewports(_ value: RecoveryState) throws {
         if let viewport = value.textViewport {
@@ -355,6 +361,25 @@ import UniformTypeIdentifiers
         next.onClose = { [weak self, weak next] in
             guard let self, videoWindow === next else { return }; videoWindow = nil; onWorkspaceChange?()
         }
+    }
+    private func retainSourceWindow(_ next: AgentMarkdownSourceWindow) {
+        sourceWindow?.onClose = nil; sourceWindow?.close(); sourceWindow = next
+        next.onAddSelection = onAddSelection; next.canAddSelection = { [weak self] in self?.canAddSelection == true }
+        next.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
+        next.onClose = { [weak self, weak next] in guard let self, sourceWindow === next else { return }; sourceWindow = nil; onWorkspaceChange?() }
+    }
+    private func sourceScope(_ root: String) -> () throws -> Void {
+        { [weak self] in
+            guard let self, let task = store.task(taskID), try AgentWorkspaceScope.roots(task).contains(where: { $0.root.path == root }) else { throw PetError("来源所属任务或目录已变化，原阅读记录已保留") }
+        }
+    }
+    private func restoreSourceWindow(_ value: AgentMarkdownSourceWindow.RecoveryState?) throws {
+        guard let value else { return }
+        let next = try AgentMarkdownSourceWindow(restoring: value, validate: sourceScope(value.root)); retainSourceWindow(next)
+        if value.presentation == "window" { next.presentRecoveredWindow() }
+    }
+    private func presentPendingSourcePage() {
+        guard let sourceWindow, sourceWindow.needsHostedPresentation, onSettingsPush != nil else { return }; presentSettingsChild(sourceWindow)
     }
     private func restoreVideoWindow(_ value: AgentVideoWindow.RecoveryState?) {
         guard let value else { return }
@@ -839,9 +864,8 @@ import UniformTypeIdentifiers
                 _ = markdown.navigate(AgentMarkdownDocument.fragment(target))
             } else if AgentVideoSnapshot.supports(target) { try showVideo(target, files: files, presentation: .window) }
             else {
-                let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target)
-                next.onAddSelection = onAddSelection; next.canAddSelection = { [weak self] in self?.canAddSelection == true }
-                sourceWindow?.close(); sourceWindow = next; presentSettingsChild(next)
+                let next = try AgentMarkdownSourceWindow(workspace: workspace, target: target, validate: sourceScope(workspace))
+                retainSourceWindow(next); presentSettingsChild(next); onWorkspaceChange?()
             }
         } catch { state.stringValue = error.localizedDescription }
     }
@@ -1001,6 +1025,7 @@ import UniformTypeIdentifiers
     override func settingsDidAppear() {
         super.settingsDidAppear()
         scheduleTextViewport(activating: true); markdown.activateRememberedView()
+        presentPendingSourcePage()
         if pendingTextViewport == nil, sections.selectedSegment == 5, isPageVisible, !viewer.isHidden, !text.isHiddenOrHasHiddenAncestor { presentingWindow?.makeFirstResponder(text) }
     }
     override func canLeaveSettings() -> Bool {
@@ -1013,7 +1038,7 @@ import UniformTypeIdentifiers
     override func settingsWillLeave() { closeContent() }
     func windowWillClose(_ notification: Notification) { closeContent(); onWindowClose?(); onWindowClose = nil }
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
-    func windowDidBecomeKey(_ notification: Notification) { scheduleTextViewport(activating: true); markdown.activateRememberedView() }
+    func windowDidBecomeKey(_ notification: Notification) { scheduleTextViewport(activating: true); markdown.activateRememberedView(); presentPendingSourcePage() }
     func checkTextViewport(preview: Bool = false, action: String = "", target: String = "", input: String? = nil, selection: NSRange? = nil, y: Double? = nil, cell: Bool = false) throws {
         guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }
         if !displayMode.isHidden, displayMode.selectedSegment != (preview ? 0 : 1) { displayMode.selectedSegment = preview ? 0 : 1; switchDocumentMode(displayMode) }
@@ -1031,6 +1056,10 @@ import UniformTypeIdentifiers
     var textViewportReadback: [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         return ["raw": ["location": text.selectedRange().location, "length": text.selectedRange().length, "y": Double(viewer.contentView.bounds.minY), "focused": presentingWindow?.firstResponder === text, "pending": pendingTextViewport != nil], "markdown": markdown.viewportReadback]
+    }
+    func sourceForRecoveryCheck(open url: URL? = nil) -> AgentMarkdownSourceWindow? {
+        guard ["--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return nil }
+        if let url { openDocumentLink(url) }; return sourceWindow
     }
     func videoPreviewReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled || CommandLine.arguments.contains("--video-preview-check") else { return [:] }

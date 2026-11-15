@@ -230,6 +230,11 @@ struct AgentVideoSnapshot: Sendable {
             playback?.isValid != false && frame?.valid != false
         }
     }
+    nonisolated static func validateRecoveryObject(_ raw: Any) throws {
+        guard let child = raw as? [String: Any], Set(child.keys).isSubset(of: ["version", "file", "sourceRoot", "playback", "frame"]) else { throw PetError("视频子窗口恢复格式不受支持，原记录已保留") }
+        if let raw = child["playback"], !(raw is NSNull) { guard let playback = raw as? [String: Any], Set(playback.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频子窗口播放记录格式不受支持") } }
+        if let raw = child["frame"], !(raw is NSNull) { guard let frame = raw as? [String: Any], Set(frame.keys).isSubset(of: ["x", "y", "width", "height"]) else { throw PetError("视频子窗口位置格式不受支持") } }
+    }
     let preview = AgentVideoPreview()
     private let file: URL, sourceRoot: String
     private let resolve: () throws -> (AgentFiles, URL)
@@ -273,11 +278,11 @@ struct AgentVideoSnapshot: Sendable {
         } catch { preview.showUnavailable(error.localizedDescription) { [weak self] in self?.openVideo() } }
     }
     @objc private func geometryChanged(_ notification: Notification) { if !workspaceIsClosed { onWorkspaceChange?() } }
-    func captureWorkspaceRecovery() async throws -> RecoveryState? {
-        guard hasIndependentWindow else { return nil }
+    func captureWorkspaceRecovery(includingHosted: Bool = false) async throws -> RecoveryState? {
+        guard !workspaceIsClosed, includingHosted || hasIndependentWindow else { return nil }
         if let latest = await preview.capturePlayback() { lastPlayback = latest }
         guard !workspaceIsClosed else { return nil }
-        let state = RecoveryState(file: file.path, sourceRoot: sourceRoot, playback: lastPlayback, frame: window.map { .init($0) })
+        let state = RecoveryState(file: file.path, sourceRoot: sourceRoot, playback: lastPlayback, frame: settingsHostWindow == nil ? window.map { .init($0) } : nil)
         guard state.valid else { throw PetError("视频子窗口恢复记录无效，原记录已保留") }; return state
     }
     private func finishClose() {

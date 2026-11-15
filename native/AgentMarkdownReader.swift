@@ -271,12 +271,13 @@ import AppKit
         var viewport: AgentTextViewport
         var editing: Bool
         var editor: Editor?
+        var heading: Int? = nil
         var valid: Bool {
             version == 1 && sourceHash.count == 64 && sourceHash.allSatisfy { $0.isHexDigit && !$0.isUppercase } && viewport.valid &&
-                editor?.valid != false && (editor == nil || editing)
+                editor?.valid != false && (editor == nil || editing) && (heading.map { (0...20_000).contains($0) } ?? true)
         }
         static func validateObject(_ raw: Any) throws {
-            guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["version", "sourceHash", "viewport", "editing", "editor"]) else { throw PetError("Markdown 位置恢复格式不受支持，原记录已保留") }
+            guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["version", "sourceHash", "viewport", "editing", "editor", "heading"]) else { throw PetError("Markdown 位置恢复格式不受支持，原记录已保留") }
             try AgentTextViewport.validateObject(value["viewport"] ?? NSNull())
             if let raw = value["editor"], !(raw is NSNull) {
                 guard let editor = raw as? [String: Any], Set(editor.keys).isSubset(of: ["base", "value", "location", "length", "table", "row", "column", "viewport"]) else { throw PetError("Markdown 编辑位置恢复格式不受支持，原草稿已保留") }
@@ -303,7 +304,7 @@ import AppKit
                 table: table, row: row, column: column, viewport: viewport)
         }
         var viewport = try AgentTextViewport(text); viewport.focused = rememberedPreviewFocus
-        let result = ViewRecovery(sourceHash: AgentFiles.hash(Data(source.utf8)), viewport: viewport, editing: isEditing, editor: editorState)
+        let result = ViewRecovery(sourceHash: AgentFiles.hash(Data(source.utf8)), viewport: viewport, editing: isEditing, editor: editorState, heading: max(0, outline.indexOfSelectedItem))
         guard result.valid else { throw PetError("Markdown 编辑位置无效，原草稿已保留") }; return result
     }
     func restoreViewRecovery(_ value: ViewRecovery) throws {
@@ -318,6 +319,7 @@ import AppKit
             inlineEditor?.restoreValue(saved.value); inlineEditor?.setEditable(canEdit?() == true)
         }
         guard value.viewport.matches(text) else { throw PetError("Markdown 预览已变化，原阅读位置已保留") }
+        if let heading = value.heading { guard heading < outline.numberOfItems else { throw PetError("Markdown 章节已变化，原阅读位置已保留") }; outline.selectItem(at: heading) }
         rememberedPreviewFocus = value.viewport.focused; rememberedEditorFocus = value.editor?.viewport.focused ?? false
         isEditing = value.editing; updateEditingState(); pendingViewRecovery = value
     }
@@ -388,6 +390,11 @@ import AppKit
             if let y { scroll.contentView.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(scroll.contentView) }
         }
     }
+    func checkSourceHeading(_ title: String) throws {
+        guard ["--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return }
+        guard let index = document?.headings.firstIndex(where: { $0.title == title }) else { throw PetError("公开来源章节未找到") }
+        outline.selectItem(at: index + 1); selectHeading()
+    }
     var viewportReadback: [String: Any] {
         ["location": text.selectedRange().location, "length": text.selectedRange().length, "y": Double(scroll.contentView.bounds.minY),
          "focused": window?.firstResponder === text, "editor": inlineEditor?.viewportReadback ?? [:], "editing": isEditing,
@@ -420,104 +427,5 @@ import AppKit
         guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)) else { return true }
         if url.isFileURL, url.path == file?.path, navigate(AgentMarkdownDocument.fragment(url)) { return true }
         onLink?(url); return true
-    }
-}
-
-// Source citations stay inside a read-only native viewer. Opening a document
-// never grants a new workspace or executes a URL scheme from its contents.
-@MainActor final class AgentMarkdownSourceWindow: AgentSettingsPageController, NSTextViewDelegate, NSWindowDelegate {
-    private let files: AgentFiles, reader = AgentMarkdownReader(), text = AgentMarkdownTextView(), label = NSTextField(labelWithString: "")
-    private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
-    private lazy var sourceSelection = AgentMarkdownSelectionAction(text: text, button: sourceAdd) { [weak self] in guard let self, !self.scroll.isHidden, let file = self.file else { return nil }; return (file, self.files.root.path) }
-    var onAddSelection: ((AgentMarkdownSelection) throws -> Void)? { didSet { reader.onAddSelection = onAddSelection; sourceSelection.onAdd = onAddSelection; switchMode() } }
-    var canAddSelection: (() -> Bool)? { didSet { reader.canAddSelection = canAddSelection; sourceSelection.canAdd = canAddSelection } }
-    private let back = NSButton(title: "返回", target: nil, action: nil), reload = NSButton(title: "刷新", target: nil, action: nil), mode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
-    private let scroll = NSScrollView()
-    private var history: [URL] = [], file: URL?
-    private var videoWindow: AgentVideoWindow?
-    private let encodingMenu = NSPopUpButton()
-    private var encodings: [String: AgentTextEncoding] = [:], requestedEncoding: AgentTextEncoding?, currentFormat: AgentTextFormat?
-    init(workspace: String, target: URL) throws {
-        files = try AgentFiles(workspace: workspace)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "来源"; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
-        super.init(window: window); window.delegate = self
-        let view = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = view
-        text.isEditable = false; text.isRichText = false; text.delegate = self; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.textContainerInset = NSSize(width: 16, height: 14); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("来源原文")
-        scroll.documentView = text; scroll.hasVerticalScroller = true
-        text.drawsBackground = false; text.textColor = .labelColor; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
-        label.lineBreakMode = .byTruncatingMiddle; label.font = .systemFont(ofSize: 12)
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        back.target = self; back.action = #selector(goBack); mode.target = self; mode.action = #selector(switchMode); mode.selectedSegment = 0
-        reload.target = self; reload.action = #selector(refreshFile)
-        AgentTextEncoding.prepareMenu(encodingMenu); encodingMenu.target = self; encodingMenu.action = #selector(reopenEncoding)
-        reader.onLink = { [weak self] url in self?.follow(url) }
-        let location = NSStackView(views: [back, label, NSView(), reload]), actions = NSStackView(views: [mode, NSView(), sourceAdd])
-        let toolbar = NSStackView(views: [location, actions]); toolbar.orientation = .vertical; toolbar.alignment = .leading; toolbar.spacing = 8
-        for row in [location, actions] { row.spacing = 8; row.widthAnchor.constraint(equalTo: toolbar.widthAnchor).isActive = true }; sourceSelection.update()
-        for child in [toolbar, scroll, reader, encodingMenu] { view.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 12), toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), encodingMenu.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: encodingMenu.topAnchor, constant: -8), reader.topAnchor.constraint(equalTo: scroll.topAnchor), reader.leadingAnchor.constraint(equalTo: scroll.leadingAnchor), reader.trailingAnchor.constraint(equalTo: scroll.trailingAnchor), reader.bottomAnchor.constraint(equalTo: scroll.bottomAnchor)])
-        try open(target)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    private func open(_ target: URL, remember: Bool = true) throws {
-        let safe = try AgentMarkdownDocument.target(target, document: file ?? files.root.appendingPathComponent("index.md"), files: files)
-        guard safe.isFileURL else { throw PetError("请选择项目文件") }
-        let data = try files.readData(try files.resolve(safe.path))
-        let document: AgentTextFile
-        do { document = try AgentTextFile.decode(data, encoding: encodings[safe.path]) }
-        catch {
-            guard AgentTextEncoding.canReopen(safe) else { throw PetError("此文件不能作为文本预览") }
-            if remember, let file { history.append(file) }; file = safe; requestedEncoding = encodings[safe.path]; currentFormat = nil
-            text.string = ""; reader.clear(); mode.isHidden = true; window?.title = files.relative(safe); label.stringValue = error.localizedDescription; label.toolTip = safe.path; back.isEnabled = !history.isEmpty
-            AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: nil); switchMode(); return
-        }
-        if remember, let file { history.append(file) }; file = safe; requestedEncoding = encodings[safe.path]
-        showDocument(document, file: safe)
-    }
-    private func showDocument(_ document: AgentTextFile, file safe: URL) {
-        let value = document.text; currentFormat = document.format; text.string = value
-        AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: currentFormat)
-        let fragment = AgentMarkdownDocument.fragment(safe)
-        window?.title = files.relative(safe); label.stringValue = files.relative(safe) + (fragment.map { " · " + $0 } ?? ""); label.toolTip = safe.path
-        back.isEnabled = !history.isEmpty; mode.isHidden = !["md", "markdown"].contains(safe.pathExtension.lowercased()); mode.selectedSegment = 0
-        if mode.isHidden { reader.clear() } else { reader.show(value, file: safe, workspace: files.root.path) }; switchMode()
-        if let range = AgentMarkdownDocument.lineRange(fragment, in: value) {
-            mode.selectedSegment = 1; switchMode()
-            DispatchQueue.main.async { [weak self] in guard let self, self.file == safe, self.text.string == value else { return }; self.text.setSelectedRange(range); AgentMarkdownDocument.reveal(range, in: self.text) }
-        }
-        else if !mode.isHidden { _ = reader.navigate(fragment) }
-    }
-    @objc private func reopenEncoding() {
-        guard let file else { return }; let chosen = AgentTextEncoding.selection(encodingMenu)
-        do {
-            let safe = try files.resolve(file.path); guard safe.path == file.path else { throw PetError("文件位置已变化") }
-            let data = try files.readData(safe), document = try AgentTextFile.decode(data, encoding: chosen)
-            encodings[file.path] = chosen; requestedEncoding = chosen; showDocument(document, file: file)
-        } catch { label.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: currentFormat) }
-    }
-    private func follow(_ url: URL) {
-        do {
-            if ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) }
-            else if AgentVideoSnapshot.supports(url) {
-                let target = try AgentMarkdownDocument.target(url, document: file ?? files.root.appendingPathComponent("index.md"), files: files)
-                videoWindow?.close(); let next = AgentVideoWindow(file: target, files: files); videoWindow = next; presentSettingsChild(next)
-            } else { try open(url) }
-        }
-        catch { label.stringValue = error.localizedDescription }
-    }
-    @objc private func switchMode() { let preview = !mode.isHidden && mode.selectedSegment == 0; reader.isHidden = !preview; scroll.isHidden = preview; sourceSelection.update(); sourceAdd.isHidden = preview || onAddSelection == nil }
-    func textViewDidChangeSelection(_ notification: Notification) { sourceSelection.update(); sourceAdd.isHidden = scroll.isHidden || onAddSelection == nil }
-    func windowWillClose(_ notification: Notification) { videoWindow?.close(); videoWindow = nil; reader.clear(); text.string = "" }
-    @objc private func refreshFile() { guard let file else { return }; do { try open(file, remember: false) } catch { label.stringValue = error.localizedDescription } }
-    var encodingCheckState: [String: Any] {
-        guard CommandLine.arguments.contains("--text-encoding-check") || AgentKnowledgePageHost.readbackEnabled || AgentTaskWorkspace.readbackEnabled else { return [:] }
-        return ["editable": text.isEditable, "encoding": currentFormat?.encoding.rawValue ?? "", "byteOrderMark": currentFormat?.bom ?? false, "textHash": AgentFiles.hash(Data(text.string.utf8)), "file": file?.path ?? ""]
-    }
-    func checkVideoLink(_ url: URL) { if CommandLine.arguments.contains("--knowledge-video-check") { follow(url) } }
-    @objc private func goBack() {
-        guard let previous = history.popLast() else { return }
-        do { try open(previous, remember: false) }
-        catch { history.append(previous); label.stringValue = error.localizedDescription }
     }
 }

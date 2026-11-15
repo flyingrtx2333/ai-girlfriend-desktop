@@ -60,7 +60,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-source-recovery-check", "--workspace-source-recovery-ui", "--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -119,7 +119,7 @@ import AppKit
                 guard var tab = recoveryTabs[id]?[root] else { return nil }
                 tab.title = presentation(task: id, root: root).title
                 if let controller = stacks[id]?[root]?.first?.controller {
-                    tab.hasIndependentChild = (controller as? AgentRecordWindow)?.hasIndependentVideoWindow == true || (controller as? AgentBrowserWindow)?.hasIndependentAnnotation == true ? true : nil
+                    tab.hasIndependentChild = (controller as? AgentRecordWindow)?.hasIndependentWorkspaceChild == true || (controller as? AgentBrowserWindow)?.hasIndependentAnnotation == true ? true : nil
                 }
                 return tab
             }, selected: selected[id]?.key, opened: opened.contains(id), expanded: expandedTasks.contains(id))
