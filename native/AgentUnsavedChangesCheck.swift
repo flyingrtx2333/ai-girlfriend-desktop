@@ -59,6 +59,21 @@ import AppKit
             guard let tasks = agentStore, let runtime = agentRuntime, let id = tasks.selectedID else { throw PetError("缺少确认验收任务") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("未保存确认验收禁止模型请求") }
             checks["isolatedProfileAndModelBlock"] = usesAgent && tasks.extensions.sharedHome?.resolvingSymlinksInPath() == output.appendingPathComponent("shared-home").resolvingSymlinksInPath()
+            let focusOwner = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 260), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            focusOwner.isReleasedWhenClosed = false
+            defer { if focusOwner.isVisible { focusOwner.close() } }
+            let focusEditor = NSTextView(frame: NSRect(x: 0, y: 0, width: 460, height: 260))
+            focusEditor.isRichText = false; focusEditor.string = "PUBLIC_OWNER_FOCUS_427"
+            focusOwner.contentView = focusEditor; focusOwner.makeKeyAndOrderFront(nil); focusOwner.makeFirstResponder(focusEditor)
+            focusEditor.setSelectedRange(NSRange(location: 7, length: 5))
+            host.makeKeyAndOrderFront(nil); NSApp.deactivate(); await wait(0.05)
+            let wasInactive = !NSApp.isActive
+            let inactiveChoice = try choose("继续编辑", { AgentUnsavedChanges.discard("保留后台窗口中的输入？", owner: focusOwner) })
+            checks["inactiveConfirmationActivatesExplicitOwner"] = wasInactive && !inactiveChoice && NSApp.isActive && focusOwner.isKeyWindow
+            checks["inactiveConfirmationRestoresOriginalTextResponder"] = focusOwner.firstResponder === focusEditor
+            checks["inactiveConfirmationPreservesTextAndSelection"] = focusEditor.string == "PUBLIC_OWNER_FOCUS_427" && focusEditor.selectedRange() == NSRange(location: 7, length: 5)
+            checks["inactiveConfirmationEndsItsModalSession"] = NSApp.modalWindow == nil && host.isVisible
+            focusOwner.close(); host.makeKeyAndOrderFront(nil)
             let form = AgentExtensionCreationPage(service: tasks.extensions, kind: .skill, workspace: tasks.task(id)?.workspace)
             try show(form, "skill")
             let name = try control(NSTextField.self, "扩展名称", form), originalCatalog = try tasks.extensions.catalog(workspace: tasks.task(id)?.workspace).map(\.id)

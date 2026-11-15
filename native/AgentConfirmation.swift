@@ -62,17 +62,19 @@ import AppKit
     private func prepare(in window: NSWindow?) { owner = window; previousResponder = window?.firstResponder }
     private func restoreFocus() {
         if let owner, owner.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
             owner.makeKeyAndOrderFront(nil)
-            if let view = previousResponder as? NSView, view.window === owner { owner.makeFirstResponder(view) }
+            if let view = previousResponder as? NSView, view.window === owner, !view.isHiddenOrHasHiddenAncestor { owner.makeFirstResponder(view) }
         }
     }
-    @discardableResult func runModal() -> NSApplication.ModalResponse {
-        prepare(in: NSApp.keyWindow); let panel = build()
+    @discardableResult func runModal(for requestedOwner: NSWindow? = nil) -> NSApplication.ModalResponse {
+        prepare(in: requestedOwner ?? NSApp.keyWindow ?? NSApp.mainWindow); let panel = build()
         AgentThemeContext.inherit(panel, from: owner)
         if let owner {
             let area = owner.screen?.visibleFrame ?? owner.frame, size = panel.frame.size
             panel.setFrameOrigin(NSPoint(x: max(area.minX, min(owner.frame.midX - size.width / 2, area.maxX - size.width)), y: max(area.minY, min(owner.frame.midY - size.height / 2, area.maxY - size.height))))
         } else { panel.center() }
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(panel.initialFirstResponder)
         let response = NSApp.runModal(for: panel); panel.orderOut(nil); restoreFocus(); return response
     }
@@ -93,11 +95,11 @@ import AppKit
 }
 
 @MainActor enum AgentUnsavedChanges {
-    static func discard(_ title: String, detail: String = "", discardTitle: String = "放弃更改") -> Bool {
+    static func discard(_ title: String, detail: String = "", discardTitle: String = "放弃更改", owner: NSWindow? = nil) -> Bool {
         let alert = AgentConfirmation(); alert.messageText = title; alert.informativeText = detail
         alert.primaryButtonIndex = 0; alert.cancellationButtonIndex = 0
         alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: discardTitle).hasDestructiveAction = true
-        return alert.runModal() == .alertSecondButtonReturn
+        return alert.runModal(for: owner) == .alertSecondButtonReturn
     }
     static func saveOrDiscard(_ title: String) -> NSApplication.ModalResponse {
         let alert = AgentConfirmation(); alert.messageText = title; alert.primaryButtonIndex = 0; alert.cancellationButtonIndex = 2

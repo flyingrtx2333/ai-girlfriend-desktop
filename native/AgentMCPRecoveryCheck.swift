@@ -158,7 +158,13 @@ import AppKit
                 let deadline = Date().addingTimeInterval(5)
                 while ownedProcesses.contains(where: { kill($0, 0) == 0 }) && Date() < deadline { await wait(0.03) }
                 checks["ownedConnectorProcessesExit"] = ownedProcesses.allSatisfy { kill($0, 0) != 0 }
-            } else { control.window?.makeKeyAndOrderFront(nil) }
+            } else {
+                control.window?.makeKeyAndOrderFront(nil)
+                if CommandLine.arguments.contains("--inactive-confirm-ui") {
+                    NSApp.deactivate(); await wait(0.05)
+                    checks["inactiveConfirmationFixtureStartsInactive"] = !NSApp.isActive
+                }
+            }
             checks["allRecoverySnapshotsCurrent"] = await flushWorkspaceWindows()
             checks["modelRuntimeMakesNoRequest"] = requests == 0
             report["fixture"] = fixtureURL.path; report["mainWorkspace"] = control.taskWorkspace.checkState()
