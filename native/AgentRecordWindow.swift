@@ -962,10 +962,12 @@ import UniformTypeIdentifiers
         if let videoWindow { result["separateWindowVisible"] = videoWindow.window?.isVisible == true; result["separatePlayer"] = await videoWindow.preview.checkState(); result["separateFrame"] = videoWindow.window.map { ["x": $0.frame.minX, "y": $0.frame.minY, "width": $0.frame.width, "height": $0.frame.height] } }
         return result
     }
-    func checkVideoWorkspace(action: String = "", time: Double? = nil, rate: Double? = nil, volume: Double? = nil, muted: Bool? = nil, link: URL? = nil) async -> [String: Any] {
+    func checkVideoWorkspace(action: String = "", time: Double? = nil, rate: Double? = nil, volume: Double? = nil, muted: Bool? = nil, link: URL? = nil, childFrame: NSRect? = nil) async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         if let link { openDocumentLink(link) }
         if action == "new-window" || action == "open" { openItem() }
+        if let childFrame { videoWindow?.window?.setFrame(childFrame, display: true) }
+        if action == "child-front" { videoWindow?.window?.makeKeyAndOrderFront(nil) }
         if action == "close-child" { videoWindow?.close() }
         if action == "separate" || action == "separate-refresh" {
             await videoWindow?.preview.checkWorkspace(action: action == "separate-refresh" ? "refresh" : "", time: time, rate: rate, volume: volume, muted: muted)
