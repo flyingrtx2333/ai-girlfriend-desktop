@@ -62,7 +62,11 @@ import AppKit
             checks["isolatedProfileAndBlockedModelTransmission"] = usesAgent && tasks.extensions.sharedHome?.resolvingSymlinksInPath() == output.appendingPathComponent("shared-home").resolvingSymlinksInPath()
             let config = tasks.extensions.profile.appendingPathComponent("extensions/mcp.json"), configBytes = try Data(contentsOf: config), serverIDs = tasks.mcp.availableServers(workspace: workspace).map(\.id)
             let mcp = AgentMCPWindow(service: tasks.mcp, workspace: workspace); try show(mcp, "mcp")
-            try await probe("取消", owner: host) { try button("移除", mcp.pageContentView).performClick(nil) }
+            guard let server = tasks.mcp.availableServers(workspace: workspace).first(where: { $0.name == "设置连接器" }) else { throw PetError("缺少公开连接器") }
+            mcp.selectServer(server.id)
+            guard let detail = pane.currentController, detail !== mcp else { throw PetError("未进入连接器详情") }
+            checks["removeUsesInlineConnectorDetail"] = detail.settingsHostWindow === host && detail.window?.isVisible != true
+            try await probe("取消", owner: host) { try button("移除", detail.pageContentView).performClick(nil) }
             checks["synchronousRemoveCancelPreservesActualMCPConfiguration"] = try Data(contentsOf: config) == configBytes && tasks.mcp.availableServers(workspace: workspace).map(\.id) == serverIDs
             guard pane.leave() else { throw PetError("连接器确认未能结束") }
             let rules = AgentRuleWindow(store: tasks, taskID: id); try show(rules, "rules")
