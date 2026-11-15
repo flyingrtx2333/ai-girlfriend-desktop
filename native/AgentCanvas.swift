@@ -148,8 +148,9 @@ struct AgentCanvasCapture: Codable, Sendable {
     func stop(_ taskID: String) { for window in windows.values where window.taskID == taskID { window.stop() } }
     func close(_ taskID: String) { for window in Array(windows.values) where window.taskID == taskID { window.finishClose() } }
     func closeAll() { for window in Array(windows.values) { window.finishClose() } }
-    func canQuit() async -> Bool {
+    func canQuit(preserving editors: Set<ObjectIdentifier> = []) async -> Bool {
         for editor in Array(windows.values) where editor.settingsHostWindow == nil {
+            if editors.contains(ObjectIdentifier(editor)), editor.canPreserveForQuit { guard editor.prepareWorkspaceNavigation() else { return false }; continue }
             editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
             guard await editor.prepareForWorkspaceClose() else { return false }
         }

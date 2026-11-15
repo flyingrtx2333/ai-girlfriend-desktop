@@ -51,7 +51,7 @@ import AppKit
         }
         tasks.browser.onPresent = { [weak self] browser in
             guard let self else { throw PetError("任务窗口已关闭") }
-            let owner = self.taskControls.first(where: { $0.window === browser.settingsHostWindow }) ?? self.taskControl(for: browser.taskID)
+            let owner = self.taskControls.first(where: { $0.window === browser.settingsHostWindow || $0.workspaceSession?.ownsFloating(browser) == true }) ?? self.taskControl(for: browser.taskID)
             try owner.presentBrowserWorkspace(browser)
         }
         tasks.browser.onDetach = { [weak self] browser in
@@ -72,14 +72,14 @@ import AppKit
         tasks.canvases.onChange = { [weak runtime] id in runtime?.onChange?(id) }
         tasks.offices.onPresent = { [weak self] editor, location in
             guard let self else { throw PetError("任务窗口已关闭") }
-            let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow }) ?? self.taskControl(for: editor.taskID)
+            let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow || $0.workspaceSession?.ownsFloating(editor) == true }) ?? self.taskControl(for: editor.taskID)
             if location == .window { try owner.presentArtifactWindow(editor, taskID: editor.taskID) }
             else { try owner.presentOfficeWorkspace(editor) }
         }
         tasks.canvases.onPresent = { [weak self] editor, id, location in
             guard let self else { throw PetError("任务窗口已关闭") }
-            let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow }) ?? self.taskControl(for: editor.taskID)
-            if location == .window { try owner.presentArtifactWindow(editor, taskID: editor.taskID) }
+            let owner = self.taskControls.first(where: { $0.window === editor.settingsHostWindow || $0.workspaceSession?.ownsFloating(editor) == true }) ?? self.taskControl(for: editor.taskID)
+            if location == .window { try owner.presentArtifactWindow(editor, taskID: editor.taskID, root: .canvas(id)) }
             else { try owner.presentCanvasWorkspace(editor, id: id) }
         }
         tasks.canvases.onDraftCapture = { [weak self] id, shot, marks, note in

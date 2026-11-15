@@ -2,7 +2,7 @@ import AppKit
 
 // One serialized writer per task window. Cold tabs keep their stored page until
 // materialized; closing a tab and quitting the app have different lifecycles.
-@MainActor final class AgentWorkspaceSession {
+@MainActor final class AgentWorkspaceSession: NSObject {
     private weak var owner: ControlWindow?
     private let journal: AgentWorkspaceRecovery
     let id: String
@@ -12,16 +12,115 @@ import AppKit
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
     private var tabStateJob: Task<Void, Never>?
     private var failure: Error?
+    private var coldFloating: [AgentWorkspaceRecovery.FloatingPage] = []
+    private var floatingFailures: [String: String] = [:]
+    private var floating: [String: (AgentWorkspaceRecovery.FloatingPage, AgentSettingsPageController)] = [:]
     private(set) var preservedEditors = Set<ObjectIdentifier>()
     var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty && tabStateJob == nil) }
+    var floatingControllers: [AgentSettingsPageController] { floating.values.map(\.1) }
+    private var editors: [(String, AgentWorkspaceRecovery.Tab, AgentSettingsPageController)] {
+        (owner?.taskWorkspace.recoveryEditors ?? []) + floating.values.map { ($0.0.taskID, $0.0.tab, $0.1) }
+    }
 
     init(owner: ControlWindow, profile: URL, saved: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>?) {
         self.owner = owner; journal = AgentWorkspaceRecovery(profile: profile)
         id = saved?.value.id ?? UUID().uuidString; layoutHash = saved?.hash; previous = saved?.value
+        coldFloating = saved?.value.floating ?? []
+        super.init()
         owner.taskWorkspace.onRecoveryChange = { [weak self] in self?.changed() }
         owner.taskWorkspace.onRestoreRoot = { [weak self] task, tab in self?.restore(task: task, tab: tab) }
         do { if let saved { try owner.taskWorkspace.restoreLayouts(saved.value.tasks); loadTabStates(saved.value.tasks) } }
         catch { disabled = true; owner.setStatus(error.localizedDescription, error: true) }
+        restoreFloating()
+    }
+    func ownsFloating(_ controller: AgentSettingsPageController) -> Bool { floating.values.contains { $0.1 === controller } }
+    func requireFloatingAvailable(taskID: String, root: String) throws {
+        guard !coldFloating.contains(where: { $0.taskID == taskID && $0.tab.root == root }) else {
+            throw PetError("此独立窗口有待恢复内容，请从“窗口”菜单恢复；原草稿已保留")
+        }
+    }
+    func registerFloating(_ controller: AgentSettingsPageController, taskID: String, root: String, tab: AgentWorkspaceRecovery.Tab? = nil) {
+        guard !stopped, !ownsFloating(controller) else { return }
+        let tab = tab ?? .init(root: root, title: controller.window?.title ?? "")
+        floating[tab.id] = (.init(taskID: taskID, tab: tab, frame: nil), controller)
+        coldFloating.removeAll { $0.tab.id == tab.id }
+        let change: () -> Void = { [weak self] in self?.changed() }
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = change
+        (controller as? AgentOfficeWindow)?.onWorkspaceChange = change
+        (controller as? AgentCanvasWindow)?.onWorkspaceChange = change
+        (controller as? AgentBrowserWindow)?.onWorkspaceChange = change
+        if let window = controller.window {
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(floatingGeometryChanged(_:)), name: name, object: window)
+            }
+            NotificationCenter.default.addObserver(self, selector: #selector(floatingWillClose(_:)), name: NSWindow.willCloseNotification, object: window)
+        }
+        changed()
+    }
+    @discardableResult func releaseFloating(_ controller: AgentSettingsPageController) -> AgentWorkspaceRecovery.FloatingPage? {
+        guard let entry = floating.first(where: { $0.value.1 === controller }) else { return nil }
+        floating[entry.key] = nil
+        if let window = controller.window {
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification, NSWindow.willCloseNotification] {
+                NotificationCenter.default.removeObserver(self, name: name, object: window)
+            }
+        }
+        changed(); return entry.value.0
+    }
+    @objc private func floatingGeometryChanged(_ notification: Notification) { changed() }
+    @objc private func floatingWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, let controller = floating.values.first(where: { $0.1.window === window })?.1 else { return }
+        releaseFloating(controller)
+    }
+    func restoreFloating() {
+        guard !stopped, !disabled else { return }
+        for metadata in coldFloating where roots[metadata.tab.id] == nil {
+            let pageID = metadata.tab.id
+            roots[pageID] = Task { @MainActor [weak self] in
+                guard let self, let owner else { return }
+                defer { roots[pageID] = nil }
+                do {
+                    let journal = journal, windowID = id
+                    let loaded = try await Task.detached(priority: .utility) { try journal.loadPage(windowID: windowID, pageID: pageID, taskID: metadata.taskID) }.value
+                    guard !stopped, coldFloating.contains(where: { $0.tab.id == pageID }) else { return }
+                    guard let loaded else { throw PetError("独立窗口缺少恢复内容，原记录已保留") }
+                    pageHashes[pageID] = loaded.saved.hash; pages[pageID] = loaded.saved.value
+                    let controller = try await owner.materializeFloatingRecovery(metadata, loaded: loaded)
+                    registerFloating(controller, taskID: metadata.taskID, root: metadata.tab.root, tab: metadata.tab)
+                    if let old = floatingFailures.removeValue(forKey: pageID) { owner.clearWorkspaceRecoveryStatus(old, prefix: "") }
+                    if let frame = metadata.frame, let window = controller.window, let screen = window.screen ?? NSScreen.main {
+                        let visible = screen.visibleFrame
+                        let width = min(visible.width, max(window.minSize.width, frame.width)), height = min(visible.height, max(window.minSize.height, frame.height))
+                        window.setFrame(NSRect(x: max(visible.minX, min(frame.x, visible.maxX - width)), y: max(visible.minY, min(frame.y, visible.maxY - height)), width: width, height: height), display: true)
+                    }
+                } catch {
+                    let message = "独立窗口未恢复，原草稿已保留；可从“窗口”菜单重试：" + error.localizedDescription
+                    floatingFailures[pageID] = message; owner.setStatus(message, error: true)
+                }
+            }
+        }
+    }
+    func prepareFloating(preserving: Bool) async -> Bool {
+        for controller in floatingControllers {
+            if preserving, preservedEditors.contains(ObjectIdentifier(controller)) {
+                if let record = controller as? AgentRecordWindow { guard record.prepareWorkspaceNavigation() else { return false }; continue }
+                if let office = controller as? AgentOfficeWindow { guard office.prepareWorkspaceNavigation() else { return false }; continue }
+                if let canvas = controller as? AgentCanvasWindow { guard canvas.prepareWorkspaceNavigation() else { return false }; continue }
+                if let browser = controller as? AgentBrowserWindow { guard browser.prepareWorkspaceNavigation() else { return false }; continue }
+            }
+            guard await controller.prepareForWorkspaceClose() else { controller.presentingWindow?.makeKeyAndOrderFront(nil); return false }
+        }
+        return true
+    }
+    func finish() {
+        let controllers = floatingControllers
+        stop(); NotificationCenter.default.removeObserver(self); floating.removeAll()
+        for controller in controllers { controller.endSettingsHosting() }
+    }
+    func removeFloatingTasks(_ ids: Set<String>) {
+        coldFloating.removeAll { ids.contains($0.taskID) }
+        for (_, entry) in Array(floating) where ids.contains(entry.0.taskID) { releaseFloating(entry.1); entry.1.endSettingsHosting() }
+        changed()
     }
     private func loadTabStates(_ tasks: [AgentWorkspaceRecovery.TaskLayout]) {
         let journal = journal, windowID = id
@@ -57,7 +156,7 @@ import AppKit
                 // not replace it with the fresh editor's initial disk content.
                 let pending = Array(roots.values); for root in pending { await root.value }
                 let targetRevision = revision
-                for (_, tab, controller) in owner.taskWorkspace.recoveryEditors {
+                for (_, tab, controller) in editors {
                     if let record = controller as? AgentRecordWindow {
                         let page = try await record.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
@@ -82,13 +181,18 @@ import AppKit
                 let journal = journal
                 var layout = AgentWorkspaceRecovery.Window(id: id, number: owner.taskWindowNumber, taskID: owner.agentTaskID,
                     frame: owner.window.map { .init(x: $0.frame.minX, y: $0.frame.minY, width: $0.frame.width, height: $0.frame.height) }, tasks: owner.taskWorkspace.recoveryLayouts)
-                layout.floating = previous?.floating ?? []
+                layout.floating = coldFloating + floating.values.map { metadata, controller in
+                    var value = metadata
+                    value.tab.title = controller.window?.title ?? metadata.tab.title
+                    value.frame = controller.window.map { .init(x: $0.frame.minX, y: $0.frame.minY, width: $0.frame.width, height: $0.frame.height) }
+                    return value
+                }.sorted { $0.tab.id < $1.tab.id }
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await Task.detached(priority: .utility) { try journal.saveWindow(capturedLayout, expected: expected) }.value
                 layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision
                 if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
                 failure = nil
-                preservedEditors = Set(owner.taskWorkspace.recoveryEditors.compactMap { _, _, controller in
+                preservedEditors = Set(editors.compactMap { _, _, controller in
                     if let record = controller as? AgentRecordWindow, record.canPreserveForQuit { return ObjectIdentifier(record) }
                     if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit { return ObjectIdentifier(office) }
                     if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit { return ObjectIdentifier(canvas) }
@@ -97,7 +201,7 @@ import AppKit
                     if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit { return ObjectIdentifier(browser) }
                     return nil
                 })
-                for (_, _, controller) in owner.taskWorkspace.recoveryEditors {
+                for (_, _, controller) in editors {
                     if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
                        let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
                 }
@@ -113,14 +217,15 @@ import AppKit
     }
     func flush() async throws {
         guard !disabled else { return }
+        for root in Array(roots.values) { await root.value }
         // Read the latest media position even between throttled time events.
-        if owner?.taskWorkspace.recoveryEditors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) == true { revision &+= 1 }
+        if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) { revision &+= 1 }
         if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }
         if savedRevision != revision { await savePending() }
         if let failure { throw failure }
     }
-    func stop() { stopped = true; tabStateJob?.cancel(); tabStateJob = nil; preservedEditors = [] }
+    func stop() { stopped = true; tabStateJob?.cancel(); tabStateJob = nil; preservedEditors = []; NotificationCenter.default.removeObserver(self) }
     func markClosed() async throws {
         guard !disabled else { stop(); return }
         try await flush()
@@ -152,13 +257,14 @@ import AppKit
 }
 
 @MainActor extension AppDelegate {
+    @objc func restoreFloatingWorkspaceWindows() { for window in taskControls { window.workspaceSession?.restoreFloating() } }
     func flushWorkspaceWindows() async -> Bool {
         repeat {
             for window in taskControls { if !(await window.flushWorkspaceRecovery()) { return false } }
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-floating-recovery-check") || CommandLine.arguments.contains("--workspace-floating-recovery-ui") || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

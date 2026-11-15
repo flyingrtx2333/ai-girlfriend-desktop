@@ -60,7 +60,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { ["--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { ["--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -128,6 +128,11 @@ import AppKit
         } }
     }
     func recoveryController(taskID: String, root: Root) -> AgentSettingsPageController? { stacks[taskID]?[root]?.first?.controller }
+    func reuseRecoveryTab(_ tab: AgentWorkspaceRecovery.Tab, controller: AgentSettingsPageController, taskID id: String) {
+        guard let root = root(for: controller, taskID: id), root.key == tab.root else { return }
+        if let old = recoveryTabs[id]?[root] { recoveredDirty[old.id] = nil }
+        recoveryTabs[id]?[root] = tab; updateTabs(); onRecoveryChange?()
+    }
     func permitRecovery(_ id: String) { permittedRecovery.insert(id) }
     func retryRecovery(_ id: String) { recoveryRequested.remove(id); permittedRecovery.remove(id); updateTabs() }
     func applyRecoveredTabStates(_ states: [String: Bool]) {

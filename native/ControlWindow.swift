@@ -2013,8 +2013,8 @@ final class FormDocumentView: NSView {
             savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         }
     }
-    func clearWorkspaceRecoveryStatus(_ failure: String) {
-        let message = "工作区恢复未保存：" + failure
+    func clearWorkspaceRecoveryStatus(_ failure: String, prefix: String = "工作区恢复未保存：") {
+        let message = prefix + failure
         if status.stringValue == message { status.stringValue = ""; status.isHidden = true }
         if savedStatus.stringValue == message { savedStatus.stringValue = "" }
     }
@@ -2114,7 +2114,7 @@ final class FormDocumentView: NSView {
         }
     }
     func windowWillClose(_ notification: Notification) {
-        workspaceSession?.stop()
+        workspaceSession?.finish()
         monitorPanel?.orderOut(nil); if let monitorPanel { window?.removeChildWindow(monitorPanel) }; monitorPanel = nil
         settingsPageHost.finish()
         knowledgePageHost.finish()
@@ -2155,15 +2155,19 @@ final class FormDocumentView: NSView {
         guard knowledgePageHost.prepareToLeave() else { return false }
         guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
-        for record in Array(artifactDocuments) {
-            guard record.canLeaveSettings() else { record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil); return false }
-            record.window?.close()
+        if let workspaceSession {
+            guard await workspaceSession.prepareFloating(preserving: preservingRecovery) else { return false }
+        } else {
+            for record in Array(artifactDocuments) {
+                guard record.canLeaveSettings() else { record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil); return false }
+                record.window?.close()
+            }
         }
         let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
-    func finishOwnedTaskPanels() { workspaceSession?.stop(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func finishOwnedTaskPanels() { workspaceSession?.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
     func flushWorkspaceRecovery() async -> Bool {
         do { try await workspaceSession?.flush(); return true }
         catch { setStatus("工作区恢复未保存：" + error.localizedDescription, error: true); return false }
@@ -2180,6 +2184,7 @@ final class FormDocumentView: NSView {
         }
     }
     func closeDeletedTaskRecords(_ ids: Set<String>) {
+        workspaceSession?.removeFloatingTasks(ids)
         recordWindow?.closeDeletedTask(ids)
         for record in Array(artifactDocuments) { record.closeDeletedTask(ids) }
         taskWorkspace.finish(tasks: ids)
@@ -3181,16 +3186,16 @@ final class FormDocumentView: NSView {
             }
             if let existing, !(try existing.openWorkspaceDocument(file.path)) { return }
             if location == .window {
+                try workspaceSession?.requireFloatingAvailable(taskID: id, root: key.key)
                 let editor = existing ?? preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true)
                 if existing == nil { _ = try editor.openWorkspaceDocument(file.path) }
                 try presentArtifactWindow(editor, taskID: id)
-                if !artifactDocuments.contains(where: { $0 === editor }) { artifactDocuments.append(editor) }
-                editor.onWindowClose = { [weak self, weak editor] in self?.artifactDocuments.removeAll { $0 === editor } }
                 return
             }
             if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
             let root = existing.flatMap { taskWorkspace.root(for: $0, taskID: id) } ?? key
             guard taskWorkspace.show(taskID: id, root: root, make: { existing ?? preparedRecord(store: store, taskID: id, section: 1, taskHosted: true, documentOnly: true) }), let editor = taskWorkspace.rootController(root) as? AgentRecordWindow else { return }
+            adoptFloatingWorkspace(editor, taskID: id)
             artifactDocuments.removeAll { $0 === editor }; editor.onWindowClose = nil; editor.window?.orderOut(nil)
             if existing == nil { _ = try editor.openWorkspaceDocument(file.path) }
             updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
@@ -3322,6 +3327,7 @@ final class FormDocumentView: NSView {
         guard agentTaskID == editor.taskID else { throw PetError("办公文件所属任务未打开") }
         show(tab: "chat")
         guard taskWorkspace.show(taskID: editor.taskID, root: .document(editor.file.path), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        adoptFloatingWorkspace(editor, taskID: editor.taskID)
         editor.window?.orderOut(nil)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
@@ -3331,10 +3337,14 @@ final class FormDocumentView: NSView {
         guard agentTaskID == browser.taskID else { throw PetError("浏览器所属任务未打开") }
         show(tab: "chat")
         guard taskWorkspace.show(taskID: browser.taskID, root: .browser, make: { browser }) else { throw PetError("请先完成当前工作区操作") }
+        adoptFloatingWorkspace(browser, taskID: browser.taskID)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func detachBrowserWorkspace(_ browser: AgentBrowserWindow) throws {
+        try workspaceSession?.requireFloatingAvailable(taskID: browser.taskID, root: AgentTaskWorkspace.Root.browser.key)
+        let tab = taskWorkspace.recoveryEditors.first(where: { $0.2 === browser })?.1
         guard taskWorkspace.detachBrowser(browser) else { throw PetError("请先返回浏览器并完成当前操作") }
+        workspaceSession?.registerFloating(browser, taskID: browser.taskID, root: AgentTaskWorkspace.Root.browser.key, tab: tab)
     }
     internal func presentCanvasWorkspace(_ editor: AgentCanvasWindow, id: String) throws {
         guard saveAgentDraft(), canLeaveMainPage() else { throw PetError("请先完成当前操作") }
@@ -3342,15 +3352,66 @@ final class FormDocumentView: NSView {
         guard agentTaskID == editor.taskID else { throw PetError("画布所属任务未打开") }
         show(tab: "chat")
         guard taskWorkspace.show(taskID: editor.taskID, root: .canvas(id), make: { editor }) else { throw PetError("请先完成当前工作区操作") }
+        adoptFloatingWorkspace(editor, taskID: editor.taskID)
         editor.window?.orderOut(nil)
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
-    internal func presentArtifactWindow(_ editor: AgentSettingsPageController, taskID: String) throws {
+    internal func presentArtifactWindow(_ editor: AgentSettingsPageController, taskID: String, root suppliedRoot: AgentTaskWorkspace.Root? = nil) throws {
         guard saveAgentDraft(), window?.attachedSheet == nil else { throw PetError("请先完成当前操作") }
+        let root: AgentTaskWorkspace.Root
+        if let suppliedRoot { root = suppliedRoot }
+        else if let office = editor as? AgentOfficeWindow { root = .document(office.file.path) }
+        else if let canvas = editor as? AgentCanvasWindow, let id = canvas.selectedID { root = .canvas(id) }
+        else if let record = editor as? AgentRecordWindow, let file = record.workspaceDocumentURL { root = .document(file.path) }
+        else { throw PetError("此内容尚不支持独立窗口") }
+        try workspaceSession?.requireFloatingAvailable(taskID: taskID, root: root.key)
+        var tab = taskWorkspace.recoveryEditors.first(where: { $0.2 === editor })?.1
         if let host = editor.settingsHostWindow {
             guard host === window, taskWorkspace.detach(editor, taskID: taskID) else { throw PetError("请先返回文件并完成当前操作，再切换打开位置") }
         }
+        for owner in companion?.taskControls ?? [] where owner !== self {
+            if let metadata = owner.workspaceSession?.releaseFloating(editor) { tab = metadata.tab }
+            owner.artifactDocuments.removeAll { $0 === editor }
+        }
+        workspaceSession?.registerFloating(editor, taskID: taskID, root: root.key, tab: tab)
+        if let record = editor as? AgentRecordWindow { retainArtifactRecord(record) }
         editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil)
+    }
+    private func adoptFloatingWorkspace(_ editor: AgentSettingsPageController, taskID: String) {
+        for owner in companion?.taskControls ?? [] {
+            if let metadata = owner.workspaceSession?.releaseFloating(editor) { taskWorkspace.reuseRecoveryTab(metadata.tab, controller: editor, taskID: taskID) }
+            owner.artifactDocuments.removeAll { $0 === editor }
+        }
+        (editor as? AgentRecordWindow)?.onWindowClose = nil
+    }
+    private func retainArtifactRecord(_ record: AgentRecordWindow) {
+        if !artifactDocuments.contains(where: { $0 === record }) { artifactDocuments.append(record) }
+        record.onWindowClose = { [weak self, weak record] in self?.artifactDocuments.removeAll { $0 === record } }
+    }
+    internal func materializeFloatingRecovery(_ metadata: AgentWorkspaceRecovery.FloatingPage, loaded: AgentWorkspaceRecovery.LoadedPage) async throws -> AgentSettingsPageController {
+        guard let store = companion?.agentStore, let task = store.task(metadata.taskID), task.sideTask?.retained != false,
+              let root = AgentTaskWorkspace.Root(key: metadata.tab.root) else { throw PetError("独立窗口所属任务或类型暂不可用") }
+        let page = loaded.saved.value
+        if page.kind == "browser", root == .browser {
+            return try store.browser.restore(page, taskID: task.id, title: task.title) { $0.presentRecoveredWindow() }
+        }
+        if page.kind == "office", case .document(let path) = root {
+            guard try AgentOfficeWindow.recoveryState(page).file == path else { throw PetError("恢复办公文件与独立窗口不匹配") }
+            return try await store.offices.restore(loaded, taskID: task.id) { $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
+        }
+        if page.kind == "canvas", case .canvas(let id) = root {
+            guard try AgentCanvasWindow.recoveryState(page).canvasID == id else { throw PetError("恢复画布与独立窗口不匹配") }
+            return try await store.canvases.restore(page, taskID: task.id) { $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
+        }
+        guard page.kind == "record", case .document(let path) = root else { throw PetError("独立窗口恢复格式暂不支持") }
+        let state = try AgentRecordWindow.recoveryState(page)
+        guard state.documentOnly, (state.file ?? state.selection) == path else { throw PetError("恢复文档与独立窗口不匹配") }
+        let record = preparedRecord(store: store, taskID: task.id, section: state.section, taskHosted: true, documentOnly: true, memoryWorkspace: state.memoryWorkspace)
+        do { try record.restoreWorkspaceRecovery(page) }
+        catch { record.endSettingsHosting(); throw error }
+        retainArtifactRecord(record)
+        record.showWindow(nil); record.window?.makeKeyAndOrderFront(nil)
+        return record
     }
     func addDocumentSelection(_ selection: AgentMarkdownSelection, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, task.kind != "hook", !task.isProjectDocumentation,

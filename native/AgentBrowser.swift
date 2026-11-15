@@ -51,8 +51,9 @@ import WebKit
     func stop(_ taskID: String) { sessions[taskID]?.stop() }
     func close(_ taskID: String) { sessions[taskID]?.close(); sessions[taskID] = nil }
     func closeAll() { for id in Array(sessions.keys) { close(id) } }
-    func canQuit() async -> Bool {
+    func canQuit(preserving editors: Set<ObjectIdentifier> = []) async -> Bool {
         for browser in Array(sessions.values) where browser.settingsHostWindow == nil {
+            if editors.contains(ObjectIdentifier(browser)), browser.canPreserveForQuit { guard browser.prepareWorkspaceNavigation() else { return false }; continue }
             if !(await browser.prepareForWorkspaceClose()) { browser.focusPendingEditor(); return false }
         }; return true
     }
@@ -154,6 +155,7 @@ import WebKit
         updateControls()
     }
     func focusPendingEditor() { (annotationWindow?.presentingWindow ?? presentingWindow)?.makeKeyAndOrderFront(nil) }
+    func presentRecoveredWindow() { detached = true; showWindow(nil); window?.makeKeyAndOrderFront(nil); updateControls() }
     @objc private func toggleSeparateWindow() {
         do {
             guard prepareWorkspaceNavigation() else { return }
