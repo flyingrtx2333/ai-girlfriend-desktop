@@ -100,6 +100,7 @@ import AppKit
                     checks["otherWindowSameMessageRestoresOwnText"] = d.workspaceReadback()["text"] as? String == fixture.texts["d"]
                     if !interactive {
                         let view = a.workspaceReadback()
+                        report["restoredPrimaryView"] = ["selectionLocation": view["selectionLocation"] ?? -1, "selectionLength": view["selectionLength"] ?? -1, "scrollY": view["scrollY"] ?? -1]
                         checks["selectionAndScrollRestoreAgainstActualText"] = view["selectionLocation"] as? Int == fixture.selectionLocation && view["selectionLength"] as? Int == fixture.selectionLength && abs((view["scrollY"] as? Double ?? -1000) - fixture.scrollY) < 1
                     }
                     checks["unselectedMessageRemainsColdAndDirty"] = try control.taskWorkspace.recoveryController(taskID: fixture.projectTask, root: .editResend(fixture.secondMessage)) == nil && journal.loadPage(windowID: fixture.mainWindow, pageID: fixture.tabs["b"]!, taskID: fixture.projectTask)?.saved.value.dirty == true
@@ -155,6 +156,7 @@ import AppKit
                             let deadline = Date().addingTimeInterval(15)
                             while review.hasPendingOperation && Date() < deadline { await wait(0.03) }
                             guard !review.hasPendingOperation else { throw PetError("恢复修订的文件操作未结束") }
+                            report["reviewedApplyState"] = review.workspaceReadback()
                             guard let next = tasks.selectedID, tasks.task(next)?.parentID == fixture.projectTask else { throw PetError("恢复修订后的文件审阅未真正应用") }
                             checks["restoredReviewedInputActuallyCreatesContinuation"] = tasks.task(next)?.messages.last?.content == fixture.texts["b"] && tasks.task(fixture.projectTask)?.archived == true
                             try JSONSerialization.data(withJSONObject: ["project": next, "general": generalNext], options: [.sortedKeys]).write(to: output.appendingPathComponent("edit-recovery-applied.json"))

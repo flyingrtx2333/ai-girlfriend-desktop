@@ -99,7 +99,7 @@ import AppKit
         return ["taskID": taskID, "messageID": messageID, "visible": isPageVisible, "busy": applying, "paths": review?.paths ?? [], "fingerprint": review?.fingerprint ?? "", "patch": diff.patch, "status": state.stringValue, "applyEnabled": applyButton.isEnabled, "focusInPage": (presentingWindow?.firstResponder as? NSView)?.isDescendant(of: content) == true, "checks": ["rollbackListFitsPage": inside(table.enclosingScrollView!), "rollbackDiffFitsPage": inside(diff), "rollbackButtonsFitPage": inside(applyButton) && inside(refreshButton), "rollbackDiffHasUsableHeight": diff.bounds.height >= 100]]
     }
     func checkAction(_ action: String, row: Int? = nil) {
-        guard CommandLine.arguments.contains("--conversation-workspace-check") else { return }
+        guard ["--conversation-workspace-check", "--workspace-edit-recovery-check"].contains(where: CommandLine.arguments.contains) else { return }
         if let row, (0..<table.numberOfRows).contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
         if action == "refresh" { refresh() }; if action == "apply" { apply() }; if action == "cancel" { cancel() }
     }

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { finished } from 'node:stream/promises';
-import { mkdir, mkdtemp, readFile, writeFile, stat, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, stat, readdir, cp } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { verifyNativeCandidate } from './native-signing.mjs';
@@ -47,6 +47,7 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
   await writeFile(path.join(output, stage + '-process-exit.json'), JSON.stringify(status, null, 2) + '\n');
   const report = await json('edit-recovery-report.json');
   await writeFile(path.join(output, stage + '-report.json'), JSON.stringify(report, null, 2) + '\n');
+  await cp(path.join(output, 'profile/workspace-recovery'), path.join(output, stage + '-workspace-snapshot'), { recursive: true, force: false, errorOnExist: true }).catch(error => { if (error.code !== 'ENOENT') throw error; });
   if (status.exit !== 0 || status.signal != null || !report.success) {
     const result = { output, stage, ...status, success: false, checks: Object.keys(report.checks ?? {}).length, failed: Object.keys(report.checks ?? {}).filter(name => !report.checks[name]), error: report.error, modelRequests: report.modelRequests };
     results.push(result); await writeFile(path.join(output, stage + '-result.json'), JSON.stringify(result, null, 2) + '\n');
