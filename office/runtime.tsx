@@ -167,6 +167,7 @@ async function beginExport() {
     exported = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     if (exported.length > 500 * 1024 * 1024) { exported = null; throw new Error('文档超过500MiB'); }
     exportedRevision = revision;
+    workspaceView?.saved();
     const captured = await captureView();
     if (captured.revision !== exportedRevision) throw new Error('导出期间办公内容已变化，请重试');
     return { bytes: exported.length, revision: exportedRevision, view: captured.view };

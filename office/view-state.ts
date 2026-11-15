@@ -1,6 +1,6 @@
 // View coordinates belong to the exact document bytes stored by the native
 // journal. Session IDs are resolved again after opening those bytes.
-type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number };
+type Point = { part: string; ordinal: number; paragraphID: string | null; storyKind: string | null; itemID: string | null; offset: number; sourceHash?: string | null };
 export type OfficeView = { version: 1; format: string; zoom: number | 'fit'; selection: any; scroll: { path: number[]; x: number; y: number }[] };
 const issue = () => new Error('办公位置记录无效，原草稿已保留');
 const integer = (value: any, maximum = 100_000_000) => Number.isSafeInteger(value) && value >= 0 && value <= maximum;
@@ -15,9 +15,10 @@ export function validateOfficeView(value: any, format: string): asserts value is
   const selected = value.selection;
   if (selected === null) return;
   if (format === 'docx') {
-    const point = (p: any) => keys(p, ['part', 'ordinal', 'paragraphID', 'storyKind', 'itemID', 'offset']) && text(p.part) && p.part.startsWith('/') && integer(p.ordinal, 1_000_000) && integer(p.offset) &&
+    const point = (p: any) => (keys(p, ['part', 'ordinal', 'paragraphID', 'storyKind', 'itemID', 'offset']) || keys(p, ['part', 'ordinal', 'paragraphID', 'storyKind', 'itemID', 'offset', 'sourceHash'])) && text(p.part) && p.part.startsWith('/') && integer(p.ordinal, 1_000_000) && integer(p.offset) &&
       (p.paragraphID === null || typeof p.paragraphID === 'string' && /^[a-fA-F0-9]{8}$/.test(p.paragraphID)) &&
-      (p.storyKind === null || ['body', 'header', 'footer', 'footnote', 'endnote', 'comment'].includes(p.storyKind)) && (p.itemID === null || text(p.itemID));
+      (p.storyKind === null || ['body', 'header', 'footer', 'footnote', 'endnote', 'comment'].includes(p.storyKind)) && (p.itemID === null || text(p.itemID)) &&
+      (p.sourceHash == null || typeof p.sourceHash === 'string' && /^[0-9a-f]{64}$/.test(p.sourceHash));
     if (!keys(selected, ['anchor', 'focus']) || !point(selected.anchor) || !point(selected.focus)) throw issue();
   } else if (format === 'xlsx') {
     const cell = (p: any) => keys(p, ['row', 'col']) && integer(p.row, 1_048_575) && integer(p.col, 16_383);
@@ -53,11 +54,13 @@ function shapePath(shapes: any[], id: string, prefix: number[] = []): number[] |
   for (const [index, shape] of shapes.entries()) { const route = [...prefix, index]; if (shape.id === id) return route; const child = shapePath(shape.children ?? [], id, route); if (child) return child; }
   return null;
 }
-function wordPoint(identities: any[], position: any): Point {
+function wordPoint(identities: any[], position: any, saved: boolean): Point {
   const paragraphs = identities.filter(p => p.session?.story === position.story), paragraph = paragraphs.find(p => p.session.paraId === position.paraId);
   const part = paragraph?.persisted?.story.partUri ?? paragraph?.source?.partUri ?? paragraphs.find(p => p.persisted || p.source)?.persisted?.story.partUri ?? paragraphs.find(p => p.source)?.source.partUri;
   if (!paragraph || !part) throw issue();
-  return { part, ordinal: paragraphs.indexOf(paragraph), paragraphID: paragraph.persisted?.paraId ?? null, storyKind: paragraph.persisted?.story.kind ?? null, itemID: paragraph.persisted?.story.itemId ?? null, offset: position.offset };
+  const persistent = paragraph.persisted && (paragraph.idOrigin === 'source' || saved || !paragraph.source) ? paragraph.persisted : null;
+  if (!persistent && !paragraph.source) throw issue();
+  return { part, ordinal: persistent ? paragraphs.indexOf(paragraph) : paragraph.source.paragraphOrdinal, paragraphID: persistent?.paraId ?? null, storyKind: persistent?.story.kind ?? null, itemID: persistent?.story.itemId ?? null, offset: position.offset, sourceHash: persistent ? null : paragraph.source.packageSha256 };
 }
 async function resolveWordPoint(editor: any, identities: any[], point: Point) {
   if (point.paragraphID && point.storyKind) {
@@ -66,17 +69,18 @@ async function resolveWordPoint(editor: any, identities: any[], point: Point) {
     if (answer?.status === 'found' && answer.anchor.kind === 'session') return { story: answer.anchor.story, paraId: answer.anchor.paraId, offset: point.offset };
     throw issue();
   }
-  const stories = new Map<string, any[]>();
-  for (const paragraph of identities) if (paragraph.session) {
-    const group = stories.get(paragraph.session.story) ?? []; group.push(paragraph); stories.set(paragraph.session.story, group);
+  if (point.sourceHash) {
+    const answer = (await editor.resolveParagraphAnchors([{ kind: 'source', packageSha256: point.sourceHash, partUri: point.part, paragraphOrdinal: point.ordinal }])).results[0];
+    if (answer?.status === 'found' && answer.anchor.kind === 'session') return { story: answer.anchor.story, paraId: answer.anchor.paraId, offset: point.offset };
+    throw issue();
   }
-  const matches = [...stories.values()].filter(paragraphs => paragraphs.some(p => (p.persisted?.story.partUri ?? p.source?.partUri) === point.part));
-  if (matches.length !== 1 || !matches[0][point.ordinal]) throw issue();
-  return { story: matches[0][point.ordinal].session.story, paraId: matches[0][point.ordinal].session.paraId, offset: point.offset };
+  const matches = identities.filter(p => p.session && p.source?.partUri === point.part && p.source.paragraphOrdinal === point.ordinal);
+  if (matches.length !== 1) throw issue();
+  return { story: matches[0].session.story, paraId: matches[0].session.paraId, offset: point.offset };
 }
 
 export function createOfficeView(format: string, root: HTMLElement, editor: () => any, changed: () => void, definePlugin?: (value: any) => any) {
-  let context: any = null, unsubscribe: (() => void) | null = null, signature = '';
+  let context: any = null, unsubscribe: (() => void) | null = null, signature = '', savedParagraphs = false;
   const update = (value: any) => {
     context = value;
     const next = JSON.stringify([value.snapshot.selection, value.snapshot.layout?.zoom, value.snapshot.layout?.viewport]);
@@ -92,7 +96,7 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     const api = editor(); let selection: any = null;
     if (format === 'docx') {
       const current = await api.readHostSelection();
-      if (current) { const identities = (await api.getParagraphIdentities()).paragraphs; selection = { anchor: wordPoint(identities, current.anchor), focus: wordPoint(identities, current.focus) }; }
+      if (current) { const identities = (await api.getParagraphIdentities()).paragraphs; selection = { anchor: wordPoint(identities, current.anchor, savedParagraphs), focus: wordPoint(identities, current.focus, savedParagraphs) }; }
     } else if (format === 'xlsx') {
       const catalog = await api.readCells({ ranges: [] }); if (!catalog.ok) throw issue();
       const current = context?.snapshot.selection, id = current?.sheetId ?? context?.snapshot.layout?.sheetId;
@@ -173,7 +177,7 @@ export function createOfficeView(format: string, root: HTMLElement, editor: () =
     const scroll = scrollElements(root).map(element => ({ path: scrollPath(root, element), x: element.scrollLeft, y: element.scrollTop }));
     editor().focus(); await applyScroll({ scroll });
   }
-  return { plugin, capture, restore, applyScroll, focus, ready() {
+  return { plugin, capture, restore, applyScroll, focus, saved() { savedParagraphs = true; }, ready() {
     const zoom = () => format === 'docx' ? editor().getZoom() : editor().commands.getState('zoom').value;
     let previous = zoom();
     unsubscribe = editor().commands.subscribe(() => { const next = zoom(); if (next !== previous) { previous = next; changed(); } });

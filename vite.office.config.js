@@ -1,14 +1,14 @@
 import { defineConfig } from 'vite';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { docxSelectionBridge } from './office/docx-selection-bridge.mjs';
+import { docxSelectionBridge, docxParagraphIds } from './office/docx-selection-bridge.mjs';
 
 export default defineConfig({
   root: 'office', base: './',
   build: { outDir: '../dist/office', emptyOutDir: true, target: 'safari17', assetsInlineLimit: 0, sourcemap: false },
   // Dynamic chunks that import their worker entry re-evaluate it in WebKit,
   // resetting its open document. Keep each worker's code in one module.
-  worker: { format: 'es', rolldownOptions: { output: { codeSplitting: false } } },
+  worker: { format: 'es', plugins: () => [docxParagraphIds()], rolldownOptions: { output: { codeSplitting: false } } },
   plugins: [docxSelectionBridge(), {
     name: 'office-license-notices',
     async generateBundle() {
