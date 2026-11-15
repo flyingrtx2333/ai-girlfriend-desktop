@@ -464,7 +464,7 @@ final class FormDocumentView: NSView {
         var checks: [String: Bool] = [:], frames: [String: [String: Double]] = [:]
         window.makeKeyAndOrderFront(nil)
         for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
-            for category in ["model", "appearance", "extensions", "agents", "teams", "hooks", "memory"] {
+            for category in settingsCategories.map({ $0.0 }) {
                 guard let index = settingsCategories.firstIndex(where: { $0.0 == category }) else { continue }
                 returnToChat(); window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
                 try? await Task.sleep(nanoseconds: 100_000_000)
