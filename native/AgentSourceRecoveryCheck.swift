@@ -163,6 +163,7 @@ import AppKit
                             checks["sourcePreviewAppliesWhenVideoPageReturns"] = await eventually { (a.sourceRecoveryReadback["preview"] as? [String: Any])?["pending"] as? Bool == false }
                             a.checkSourceAction("back"); let current = try await state(a)
                             checks["historyBackAfterRestartOpensOriginalReadonlySource"] = URL(string: current.target)?.path == fixture.source1 && current.history.isEmpty && current.hash == fixture.hashes[fixture.source1] && a.sourceRecoveryReadback["editable"] as? Bool == false
+                            checks["historyBackRefreshesVisibleNavigationTitle"] = control.taskWorkspace.checkState()["pageTitle"] as? String == "sources/source1.md"
                             control.showAgentTask(fixture.second)
                         } else if stage == "reopen" {
                             checks["explicitLatestVersionChoiceIsProtectedOnFollowingSourceChange"] = b.sourceRecoveryReadback["pending"] as? Bool == true

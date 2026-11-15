@@ -290,7 +290,7 @@ import AppKit
     var recoveryVideoForCheck: AgentVideoWindow? { sourceCheckEnabled ? videoWindow : nil }
     func checkSourceLink(_ url: URL) { if sourceCheckEnabled { follow(url) } }
     func checkSourceAction(_ action: String) {
-        guard sourceCheckEnabled else { return }
+        guard sourceCheckEnabled || action == "back" && CommandLine.arguments.contains("--knowledge-video-check") else { return }
         switch action { case "back": goBack(); case "retry": refreshFile(); case "latest": openLatest(); case "close": close(); default: break }
     }
     func checkSourceView(preview: Bool, target: String = "", y: Double? = nil, encoding: AgentTextEncoding? = nil, heading: String? = nil) throws {

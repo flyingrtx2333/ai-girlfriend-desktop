@@ -47,6 +47,7 @@ import AppKit
         guard let host = window, host.attachedSheet == nil, let content = controller.settingsContent(in: host, styled: false) else { return false }
         controller.onSettingsPush = { [weak self] child in _ = self?.push(child) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateHeader() }
         stacks[root, default: []].append(Entry(controller: controller, content: content)); displayCurrent(); return true
     }
     private func displayCurrent() {
@@ -113,7 +114,7 @@ import AppKit
                       "rootTabsShownAtCatalog": tabs.isHidden == ((stacks[root]?.count ?? 0) > 1),
                       "readableMainColumn": body.bounds.width >= 500 && body.bounds.width <= 825 && body.bounds.height >= 290]
         let focused = window?.firstResponder as? NSView
-        return ["root": root, "depth": stacks[root]?.count ?? 0, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "focusInPage": currentController?.pageContentView.map { focused?.isDescendant(of: $0) == true } ?? false, "size": [bounds.width, bounds.height], "bodySize": [body.bounds.width, body.bounds.height], "backVisible": !back.isHidden, "controls": frames, "checks": checks]
+        return ["root": root, "depth": stacks[root]?.count ?? 0, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "pageTitle": title.stringValue, "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "focusInPage": currentController?.pageContentView.map { focused?.isDescendant(of: $0) == true } ?? false, "size": [bounds.width, bounds.height], "bodySize": [body.bounds.width, body.bounds.height], "backVisible": !back.isHidden, "controls": frames, "checks": checks]
     }
 }
 

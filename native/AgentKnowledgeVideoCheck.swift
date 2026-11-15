@@ -95,6 +95,12 @@ import AppKit
         checks["nestedVideoLoadFocusesVisiblePage"] = host.checkState()["focusInPage"] as? Bool == true
         host.checkBack()
         checks["backKeepsSourceAndReleasesNestedVideo"] = host.currentController === source && source.encodingCheckState["textHash"] as? String == sourceHash && !FileManager.default.fileExists(atPath: nestedSnapshot)
+        let alternateSource = try files.resolve("docs/SOURCE-TITLE.md")
+        try files.writeData(Data("# 另一份来源\n\nPUBLIC_SOURCE_TITLE_417\n".utf8), to: alternateSource)
+        source.checkVideoLink(alternateSource)
+        checks["knowledgeSourceTitleFollowsLinkedDocument"] = host.checkState()["pageTitle"] as? String == "docs/SOURCE-TITLE.md"
+        source.checkSourceAction("back")
+        checks["knowledgeSourceHistoryBackRefreshesTitle"] = host.checkState()["pageTitle"] as? String == "docs/VIDEO.md" && source.encodingCheckState["textHash"] as? String == sourceHash
         host.checkBack()
         checks["sourceBackReturnsSameWikiReader"] = host.currentController === reader
         let outside = output.appendingPathComponent("knowledge-outside.mp4"), sensitive = try files.resolve(".env.video-check/flower.mp4"), mediaBytes = try files.readData(f.mp4)

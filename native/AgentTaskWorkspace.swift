@@ -191,7 +191,9 @@ import AppKit
         if taskID == id, selectedRoot == root, !prepareToNavigate() { return }
         guard let window, window.attachedSheet == nil, let content = controller.settingsContent(in: window, styled: false) else { return }
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
-        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in
+            guard let self else { return }; updateTabs(); updateHeader(full: headerFull ?? expanded); onRecoveryChange?()
+        }
         (controller as? AgentOfficeWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentCanvasWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
@@ -390,6 +392,6 @@ import AppKit
         guard Self.readbackEnabled else { return [:] }
         let attached = currentController?.pageContentView?.window === window && currentController?.presentingWindow === window
         let checks = ["workspaceUsesTaskWindow": attached, "noFloatingGitPages": controllers.allSatisfy { $0.window?.isVisible != true }, "workspaceHasUsableWidth": bounds.width >= 450, "workspaceHasUsableHeight": body.bounds.height >= 300]
-        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "visible": !isHiddenOrHasHiddenAncestor, "bodyAttached": currentController?.pageContentView?.superview === body, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks, "mcp": (currentController as? AgentMCPContentWindow)?.workspaceReadback() ?? [:]]
+        return ["taskID": taskID ?? "", "root": selectedRoot.key, "roots": taskID.flatMap { orders[$0]?.map(\.key) } ?? [], "tabLabels": tabViews.map { $0.2.title }, "requested": requested, "expanded": expanded, "closing": closing, "depth": entries.count, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "pageTitle": title.stringValue, "visible": !isHiddenOrHasHiddenAncestor, "bodyAttached": currentController?.pageContentView?.superview === body, "size": [bounds.width, bounds.height], "expandVisible": !expand.isHidden, "expandLabel": expand.accessibilityLabel() ?? "", "backLabel": back.accessibilityLabel() ?? "", "checks": checks, "mcp": (currentController as? AgentMCPContentWindow)?.workspaceReadback() ?? [:]]
     }
 }
