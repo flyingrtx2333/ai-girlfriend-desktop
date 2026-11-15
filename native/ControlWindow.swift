@@ -123,7 +123,7 @@ final class FormDocumentView: NSView {
     private let mcpInputRow = NSStackView(), mcpInputButton = NSButton()
     private var mcpInputPanel: AgentMCPUserInputPanel?
     private let status = NSTextField(labelWithString: "")
-    private let savedStatus = NSTextField(labelWithString: "")
+    private let savedStatus = AgentSettingsStatusField("设置保存状态")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let clearButton = NSButton(title: "清空", target: nil, action: nil)
     private let endpoint = NSTextField(), persona = NSTextField(), model = NSComboBox()
@@ -1706,7 +1706,6 @@ final class FormDocumentView: NSView {
         row("", stack([location, changes, NSView()], spacing: 12))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
-        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         generalSettingsSave = save
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
         save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
@@ -1795,6 +1794,7 @@ final class FormDocumentView: NSView {
         screenTarget.toolTip = p.model
         updateScreenStatus(companion.screenCompanion.status)
         savedBasicSettings = basicSettingsValues()
+        savedStatus.stringValue = ""
     }
     private func basicSettingsValues() -> [String] {
         [endpoint.stringValue, model.stringValue, persona.stringValue, apiKey.stringValue,
@@ -2342,10 +2342,12 @@ final class FormDocumentView: NSView {
               companion.checkDirectory != nil, showSettingsCategory("model") else { throw PetError("缺少基础设置草稿验收上下文") }
         var checks: [String: Bool] = [:]
         let original = companion.store.preferences, file = companion.store.directory.appendingPathComponent("settings.json")
+        let originalFrame = window.frame
+        window.setFrame(NSRect(origin: originalFrame.origin, size: NSSize(width: 780, height: 540)), display: true)
         let backup = companion.store.directory.appendingPathComponent("settings-draft-check.backup")
         let before = try? Data(contentsOf: file)
         refreshPreferences()
-        defer { companion.store.preferences = original; refreshPreferences(); returnToChat() }
+        defer { companion.store.preferences = original; refreshPreferences(); returnToChat(); window.setFrame(originalFrame, display: true) }
         checks["loadedBasicSettingsDoNotPrompt"] = basicSettingsValues() == savedBasicSettings && canLeaveBasicSettings()
         let oldEndpoint = endpoint.stringValue, draft = "https://example.invalid/v1/chat/completions"
         endpoint.stringValue = draft; window.makeFirstResponder(endpoint)
@@ -2378,11 +2380,14 @@ final class FormDocumentView: NSView {
                 if before != nil { try? FileManager.default.moveItem(at: backup, to: file) }
             }
             generalSettingsSave?.performClick(nil)
+            window.contentView?.layoutSubtreeIfNeeded()
             checks["basicSaveFailureKeepsDraftAndSavedMemory"] = endpoint.stringValue == draft && companion.store.preferences.endpoint == original.endpoint && basicSettingsValues() != savedBasicSettings && savedStatus.textColor == .systemRed
+            checks["basicSaveFailureRemainsReadableAt780By540"] = window.frame.size == NSSize(width: 780, height: 540) && savedStatus.cell?.wraps == true && savedStatus.isSelectable && savedStatus.toolTip == savedStatus.stringValue
         }
         checks["basicSaveFailureLeavesOriginalFileIntact"] = (try? Data(contentsOf: file)) == before
         checks["basicSaveUsesCommandS"] = generalSettingsSave?.keyEquivalent == "s" && generalSettingsSave?.keyEquivalentModifierMask == .command
         _ = try choose("放弃更改", { canLeaveBasicSettings() })
+        checks["discardedBasicDraftClearsStaleSaveError"] = savedStatus.stringValue.isEmpty && savedStatus.isHidden
         return checks
     }
     func checkSettings(_ output: URL) async -> [String: Any] {
