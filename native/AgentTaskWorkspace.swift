@@ -52,6 +52,7 @@ import AppKit
     var onRecoveryChange: (() -> Void)?
     var onRestoreRoot: ((String, AgentWorkspaceRecovery.Tab) -> Void)?
     var onResolveCanvas: ((String, String) -> AgentCanvasRecord?)?
+    var onResolveEditTitle: ((String, String) -> String?)?
     var onOpenRoot: ((Root) -> Void)?, onOpenDocument: (() -> Void)?, onOpenTerminal: (() -> Void)?
     var requested: Bool { taskID.map(opened.contains) == true }
     var expanded: Bool { taskID.map(expandedTasks.contains) == true }
@@ -146,6 +147,10 @@ import AppKit
             else if let record { title = "画布 · " + record.title }
             if let record { dirty = record.draft != nil }
         }
+        else if case .editResend(let messageID) = root {
+            if let editor = page as? AgentEditResendWindow { title = editor.window?.title ?? title }
+            else if title == root.title, let resolved = onResolveEditTitle?(id, messageID) { title = resolved }
+        }
         if let page, tab.map({ !recoveryRequested.contains($0.id) }) ?? true {
             dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
         }
@@ -222,6 +227,7 @@ import AppKit
             let label = value?.title ?? root.title, dirty = value?.dirty == true
             let document = (page as? AgentRecordWindow)?.workspaceDocumentURL
             if case .document(let path) = root { let current = document?.path ?? path; AgentFileIcons.bind(button, filename: current); button.toolTip = current }
+            else { button.toolTip = label }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(174, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12 + (button.image == nil ? 0 : 20))); groupWidth.constant = buttonWidth.constant + 26
             close.setAccessibilityLabel("关闭 " + label + " 标签页")

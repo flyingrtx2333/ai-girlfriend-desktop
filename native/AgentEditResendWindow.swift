@@ -8,6 +8,13 @@ import AppKit
     var onWorkspaceChange: (() -> Void)?
     var beforeApply: (() throws -> Void)?
     var onSent: ((String) -> Void)?
+    static func title(task: AgentTaskRecord, messageID: String) -> String? {
+        let inputs = task.messages.filter(\.isHumanInput)
+        guard let index = inputs.firstIndex(where: { $0.id == messageID }) else { return nil }
+        let text = String(inputs[index].content.prefix(160)).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let label = "编辑 \(index + 1)"
+        return text.isEmpty ? label : label + " · " + String(text.prefix(48)) + (text.count > 48 ? "…" : "")
+    }
     init(store: AgentStore, runtime: AgentRuntime, taskID: String, messageID: String) throws {
         let review = try AgentEditResend.review(taskID: taskID, messageID: messageID, store: store)
         guard let task = store.task(taskID), let message = task.messages.first(where: { $0.id == messageID }) else { throw PetError("原始要求已变化") }
@@ -15,7 +22,7 @@ import AppKit
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         originalHash = AgentFiles.hash(try encoder.encode(message))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 350), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "编辑并重发 · " + task.title; window.minSize = NSSize(width: 480, height: 300); window.center(); window.isReleasedWhenClosed = false
+        window.title = Self.title(task: task, messageID: messageID) ?? "编辑并重发"; window.minSize = NSSize(width: 480, height: 300); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         editor.isRichText = false; editor.font = .systemFont(ofSize: 14); editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false; editor.autoresizingMask = .width; editor.textContainer?.widthTracksTextView = true
@@ -129,7 +136,7 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !hasPendingOperation else { return false }
         guard workspaceHasUnsavedChanges else { return true }
-        return AgentUnsavedChanges.discard("放弃修改后的要求？", detail: "原任务与未发送的任务草稿会保留。", discardTitle: "放弃修改", owner: presentingWindow)
+        return AgentUnsavedChanges.discard("放弃修改后的要求？", detail: (window?.title ?? "编辑并重发") + "\n原任务与未发送的任务草稿会保留。", discardTitle: "放弃修改", owner: presentingWindow)
     }
     func windowWillClose(_ notification: Notification) { if reviewWindow?.settingsHostWindow == nil { reviewWindow?.window?.performClose(nil) }; settingsWillLeave() }
     func workspaceReadback() -> [String: Any] {

@@ -714,6 +714,9 @@ final class FormDocumentView: NSView {
         taskWorkspace.onResolveCanvas = { [weak self] task, canvas in
             self?.companion?.agentStore?.task(task)?.canvases?.first { $0.id == canvas }
         }
+        taskWorkspace.onResolveEditTitle = { [weak self] task, message in
+            self?.companion?.agentStore?.task(task).flatMap { AgentEditResendWindow.title(task: $0, messageID: message) }
+        }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         conversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor)
         fullConversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: chat.trailingAnchor)

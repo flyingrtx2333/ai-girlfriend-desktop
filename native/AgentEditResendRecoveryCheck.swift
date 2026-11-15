@@ -48,6 +48,7 @@ import AppKit
                 checks["actualUtf16SelectionAndScrollCaptured"] = view.selectionLocation == selection.location && view.selectionLength == selection.length && view.scrollY > 0
                 control.presentEditResend(taskID: source.taskID, messageID: source.second)
                 let b = try editor(control); b.checkAction(text: texts["b"]!)
+                checks["multipleEditedMessagesShowTheirOriginalInputAndOrdinal"] = a.window?.title == "编辑 1 · 第一轮：将 a.txt 和 b space.txt 改为各自的第一版。" && b.window?.title == "编辑 2 · 第二轮：将两个文件改为第二版。另创建 created.txt。" && (control.taskWorkspace.checkState()["tabLabels"] as? [String] ?? []).contains("• " + b.window!.title)
                 let mainTabs = ["a": try tab(control, task: source.taskID, message: firstMessage), "b": try tab(control, task: source.taskID, message: source.second)]
                 control.showAgentTask(general); control.presentEditResend(taskID: general, messageID: generalMessage)
                 let c = try editor(control); c.checkAction(text: texts["c"]!)
@@ -104,12 +105,13 @@ import AppKit
                         checks["selectionAndScrollRestoreAgainstActualText"] = view["selectionLocation"] as? Int == fixture.selectionLocation && view["selectionLength"] as? Int == fixture.selectionLength && abs((view["scrollY"] as? Double ?? -1000) - fixture.scrollY) < 1
                     }
                     checks["unselectedMessageRemainsColdAndDirty"] = try control.taskWorkspace.recoveryController(taskID: fixture.projectTask, root: .editResend(fixture.secondMessage)) == nil && journal.loadPage(windowID: fixture.mainWindow, pageID: fixture.tabs["b"]!, taskID: fixture.projectTask)?.saved.value.dirty == true
+                    checks["coldSecondMessageKeepsItsOwnSourceLabelBeforeOpening"] = (control.taskWorkspace.checkState()["tabLabels"] as? [String] ?? []).contains("• 编辑 2 · 第二轮：将两个文件改为第二版。另创建 created.txt。")
                     let prior = try journal.loadPage(windowID: fixture.mainWindow, pageID: fixture.tabs["c"]!, taskID: fixture.generalTask)!
                     control.showAgentTask(fixture.generalTask); control.taskWorkspace.checkSelect(.editResend(fixture.generalMessage))
                     guard await flushWorkspaceWindows() else { throw PetError("无工作区修订恢复未完成") }
                     if stage == "unavailable" {
                         checks["changedAttachmentSourceStillHasValidNormalReview"] = try AgentEditResend.review(taskID: fixture.generalTask, messageID: fixture.generalMessage, store: tasks).canApply
-                        checks["changedOriginalMessageKeepsColdEditorAndDirtyTab"] = control.taskWorkspace.currentController == nil && (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 编辑并重发") == true
+                        checks["changedOriginalMessageKeepsColdEditorAndDirtyTab"] = control.taskWorkspace.currentController == nil && (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 编辑 1 · 原始公开问题 PUBLIC_EDIT_ORIGINAL_172") == true
                         checks["changedOriginalMessageKeepsExactStoredDraft"] = try journal.loadPage(windowID: fixture.mainWindow, pageID: fixture.tabs["c"]!, taskID: fixture.generalTask)?.saved.hash == prior.saved.hash
                     } else {
                         let c = try editor(control)

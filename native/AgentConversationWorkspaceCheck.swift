@@ -82,7 +82,7 @@ import AppKit
             checks["editorStartsAtOriginalHumanInputWithoutSending"] = editor.workspaceReadback()["text"] as? String == original.messages.last?.content && editor.workspaceReadback()["sendEnabled"] as? Bool == false && editor.presentingWindow === control.window && editor.window?.isVisible == false
             let edited = "按修订后的第二轮要求核对文件，保留原对话。"
             editor.checkAction(text: edited)
-            checks["unsentEditedRequirementIsMarkedInItsTab"] = editor.workspaceHasUnsavedChanges && (host.checkState()["tabLabels"] as? [String] ?? []).contains("• 编辑并重发")
+            checks["unsentEditedRequirementIsMarkedInItsTab"] = editor.workspaceHasUnsavedChanges && (host.checkState()["tabLabels"] as? [String] ?? []).contains("• " + (editor.window?.title ?? ""))
             await inspect("edit", page: editor, state: editor.workspaceReadback)
             try await inspectHiddenSizing("edit", page: editor, state: editor.workspaceReadback)
             control.presentTaskContext(section: 0); control.presentEditResend(taskID: fixture.taskID, messageID: fixture.messageID)

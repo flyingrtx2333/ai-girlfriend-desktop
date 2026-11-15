@@ -32,6 +32,14 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
     message.attachmentIDs = ['00000000-0000-4000-8000-000000000965'];
     await writeFile(taskFile(fixture.generalTask), JSON.stringify(changed) + '\n');
     await writeFile(path.join(output, 'unavailable-source-change.json'), JSON.stringify({ taskID: fixture.generalTask, messageID: fixture.generalMessage, onlyAttachmentIDsChanged: true, originalContentUnchanged: message.content === JSON.parse(originalGeneral).messages.find(value => value.id === fixture.generalMessage).content, originalSHA256: hash(originalGeneral), changedSHA256: hash(await readFile(taskFile(fixture.generalTask))) }, null, 2) + '\n');
+    const layoutFile = path.join(output, 'profile/workspace-recovery', fixture.mainWindow, 'layout.json');
+    const layoutBytes = await readFile(layoutFile), layout = JSON.parse(layoutBytes);
+    await writeFile(path.join(output, 'legacy-label-layout-before.json'), layoutBytes);
+    for (const task of layout.tasks) for (const tab of task.tabs) {
+      if ([fixture.tabs.b, fixture.tabs.c].includes(tab.id)) tab.title = '编辑并重发';
+    }
+    await writeFile(layoutFile, JSON.stringify(layout) + '\n');
+    await writeFile(path.join(output, 'legacy-label-layout-input.json'), await readFile(layoutFile));
   } else if (stage === 'reopen') {
     const fixture = await json('edit-recovery-fixture.json');
     await writeFile(taskFile(fixture.generalTask), originalGeneral);
@@ -78,7 +86,8 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
       const page = JSON.parse(await readFile(file)), state = JSON.parse(Buffer.from(page.state, 'base64'));
       checks[key + 'ExactPrivateDraftOwnerAndOriginal'] = page.taskID === owner && page.kind === 'edit-resend' && page.dirty && state.taskID === owner && state.messageID === message && state.text === fixture.texts[key] && /^[0-9a-f]{64}$/.test(state.originalHash) && !page.asset && ((await stat(file)).mode & 0o777) === 0o600;
       const layout = JSON.parse(await readFile(path.join(output, 'profile/workspace-recovery', window, 'layout.json')));
-      checks[key + 'LayoutReferencesExactMessageAndTab'] = layout.tasks.find(value => value.taskID === owner)?.tabs.some(value => value.id === fixture.tabs[key] && value.root === 'edit-resend:' + message) === true;
+      const title = key === 'c' ? '编辑 1 · 原始公开问题 PUBLIC_EDIT_ORIGINAL_172' : key === 'b' ? '编辑 2 · 第二轮：将两个文件改为第二版。另创建 created.txt。' : '编辑 1 · 第一轮：将 a.txt 和 b space.txt 改为各自的第一版。';
+      checks[key + 'LayoutReferencesExactMessageTabAndSourceLabel'] = layout.tasks.find(value => value.taskID === owner)?.tabs.some(value => value.id === fixture.tabs[key] && value.root === 'edit-resend:' + message && value.title === title) === true;
     }
   } else {
     checks.originalGeneralHistoryExact = equal(generalTask.messages, baselineTasks.general.messages);
