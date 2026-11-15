@@ -107,6 +107,7 @@ import AppKit
                     control.showAgentTask(fixture.generalTask); control.taskWorkspace.checkSelect(.editResend(fixture.generalMessage))
                     guard await flushWorkspaceWindows() else { throw PetError("无工作区修订恢复未完成") }
                     if stage == "unavailable" {
+                        checks["changedAttachmentSourceStillHasValidNormalReview"] = try AgentEditResend.review(taskID: fixture.generalTask, messageID: fixture.generalMessage, store: tasks).canApply
                         checks["changedOriginalMessageKeepsColdEditorAndDirtyTab"] = control.taskWorkspace.currentController == nil && (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 编辑并重发") == true
                         checks["changedOriginalMessageKeepsExactStoredDraft"] = try journal.loadPage(windowID: fixture.mainWindow, pageID: fixture.tabs["c"]!, taskID: fixture.generalTask)?.saved.hash == prior.saved.hash
                     } else {
@@ -165,7 +166,8 @@ import AppKit
             checks["originalComposerInputsRemainIndependent"] = [fixture.projectTask, fixture.generalTask].allSatisfy { tasks.task($0)?.draft == "保留主输入 PUBLIC_EDIT_COMPOSER_294" }
             checks["originalProjectHumanHistoryRemainsExact"] = try history(fixture.projectTask) == fixture.history["project"]
             if stage == "unavailable" {
-                checks["onlyDeclaredGeneralMessageChangeIsObserved"] = tasks.task(fixture.generalTask)?.messages.first(where: { $0.id == fixture.generalMessage })?.content == "原消息已由外部修改 PUBLIC_EDIT_SOURCE_CHANGE_965"
+                let source = tasks.task(fixture.generalTask)?.messages.first(where: { $0.id == fixture.generalMessage })
+                checks["onlyDeclaredGeneralMessageChangeIsObserved"] = source?.content == "原始公开问题 PUBLIC_EDIT_ORIGINAL_172" && source?.attachmentIDs == ["00000000-0000-4000-8000-000000000965"]
             } else { checks["originalGeneralHumanHistoryRemainsExact"] = try history(fixture.generalTask) == fixture.history["general"] }
             checks["noModelRequestsReceiptsOrAssistantOutputs"] = requests == 0 && tasks.tasks.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 && !$0.messages.contains { $0.role == "assistant" } }
             checks["allRecoverySnapshotsCurrent"] = await flushWorkspaceWindows()

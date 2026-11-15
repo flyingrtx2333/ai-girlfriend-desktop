@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor final class AgentEditResendWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
-    private let store: AgentStore, runtime: AgentRuntime, taskID: String, messageID: String, original: String
+    private let store: AgentStore, runtime: AgentRuntime, taskID: String, messageID: String, original: String, originalHash: String
     private let editor = NSTextView(), scroll = NSScrollView(), notice = NSTextField(wrappingLabelWithString: ""), state = NSTextField(wrappingLabelWithString: "")
     private let send = NSButton(title: "重新发送", target: nil, action: nil)
     private var reviewWindow: AgentRoundRollbackWindow?, currentReview: AgentEditResend.Review?, applying = false, completed = false
@@ -12,6 +12,8 @@ import AppKit
         let review = try AgentEditResend.review(taskID: taskID, messageID: messageID, store: store)
         guard let task = store.task(taskID), let message = task.messages.first(where: { $0.id == messageID }) else { throw PetError("原始要求已变化") }
         self.store = store; self.runtime = runtime; self.taskID = taskID; self.messageID = messageID; original = message.content
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        originalHash = AgentFiles.hash(try encoder.encode(message))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 350), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "编辑并重发 · " + task.title; window.minSize = NSSize(width: 480, height: 300); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
@@ -60,7 +62,7 @@ import AppKit
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
         guard !completed, !hasPendingOperation else { throw PetError("请先完成当前重发或文件审阅操作") }
         let selection = editor.selectedRange()
-        let value = RecoveryState(taskID: taskID, messageID: messageID, originalHash: AgentFiles.hash(Data(original.utf8)), text: editor.string,
+        let value = RecoveryState(taskID: taskID, messageID: messageID, originalHash: originalHash, text: editor.string,
             selectionLocation: selection.location, selectionLength: selection.length, scrollY: scroll.contentView.bounds.minY)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "edit-resend", state: try encoder.encode(value), dirty: workspaceHasUnsavedChanges, asset: nil)
@@ -68,7 +70,7 @@ import AppKit
     }
     func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
         let value = try Self.recoveryState(page)
-        guard value.taskID == taskID, value.messageID == messageID, value.originalHash == AgentFiles.hash(Data(original.utf8)),
+        guard value.taskID == taskID, value.messageID == messageID, value.originalHash == originalHash,
               page.dirty == (value.text != original) else { throw PetError("恢复编辑所属的原消息已变化，原草稿已保留") }
         editor.string = value.text; editor.setSelectedRange(NSRange(location: value.selectionLocation, length: value.selectionLength))
         update(); presentingWindow?.contentView?.layoutSubtreeIfNeeded()

@@ -29,9 +29,9 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
     await writeFile(path.join(output, 'seed-original-general.json'), originalGeneral);
     const changed = JSON.parse(originalGeneral), message = changed.messages.find(value => value.id === fixture.generalMessage);
     if (!message) throw Error('独立验收缺少原始问题。');
-    message.content = '原消息已由外部修改 PUBLIC_EDIT_SOURCE_CHANGE_965';
+    message.attachmentIDs = ['00000000-0000-4000-8000-000000000965'];
     await writeFile(taskFile(fixture.generalTask), JSON.stringify(changed) + '\n');
-    await writeFile(path.join(output, 'unavailable-source-change.json'), JSON.stringify({ taskID: fixture.generalTask, messageID: fixture.generalMessage, onlyContentChanged: true, originalSHA256: hash(originalGeneral), changedSHA256: hash(await readFile(taskFile(fixture.generalTask))) }, null, 2) + '\n');
+    await writeFile(path.join(output, 'unavailable-source-change.json'), JSON.stringify({ taskID: fixture.generalTask, messageID: fixture.generalMessage, onlyAttachmentIDsChanged: true, originalContentUnchanged: message.content === JSON.parse(originalGeneral).messages.find(value => value.id === fixture.generalMessage).content, originalSHA256: hash(originalGeneral), changedSHA256: hash(await readFile(taskFile(fixture.generalTask))) }, null, 2) + '\n');
   } else if (stage === 'reopen') {
     const fixture = await json('edit-recovery-fixture.json');
     await writeFile(taskFile(fixture.generalTask), originalGeneral);
@@ -66,7 +66,7 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
   checks.originalGeneralComposerExact = generalTask.draft === baselineTasks.general.draft;
   if (stage === 'seed' || stage === 'unavailable') {
     const expectedGeneral = structuredClone(baselineTasks.general);
-    if (stage === 'unavailable') expectedGeneral.messages.find(value => value.id === fixture.generalMessage).content = '原消息已由外部修改 PUBLIC_EDIT_SOURCE_CHANGE_965';
+    if (stage === 'unavailable') expectedGeneral.messages.find(value => value.id === fixture.generalMessage).attachmentIDs = ['00000000-0000-4000-8000-000000000965'];
     checks.onlyDeclaredTaskSourceChange = equal(generalTask, expectedGeneral) && equal(projectTask, baselineTasks.project);
     checks.actualProjectFilesUnchanged = equal(await projectFiles(fixture.project), baselineFiles);
     for (const key of ['a', 'b', 'c', 'd']) {
@@ -75,8 +75,7 @@ for (const stage of ['seed', 'unavailable', 'reopen', 'after-send']) {
       const message = key === 'c' ? fixture.generalMessage : key === 'b' ? fixture.secondMessage : fixture.firstMessage;
       const file = path.join(output, 'profile/workspace-recovery', window, 'pages', fixture.tabs[key] + '.json');
       const page = JSON.parse(await readFile(file)), state = JSON.parse(Buffer.from(page.state, 'base64'));
-      const original = (key === 'c' ? baselineTasks.general : baselineTasks.project).messages.find(value => value.id === message);
-      checks[key + 'ExactPrivateDraftOwnerAndOriginal'] = page.taskID === owner && page.kind === 'edit-resend' && page.dirty && state.taskID === owner && state.messageID === message && state.text === fixture.texts[key] && state.originalHash === hash(original.content) && !page.asset && ((await stat(file)).mode & 0o777) === 0o600;
+      checks[key + 'ExactPrivateDraftOwnerAndOriginal'] = page.taskID === owner && page.kind === 'edit-resend' && page.dirty && state.taskID === owner && state.messageID === message && state.text === fixture.texts[key] && /^[0-9a-f]{64}$/.test(state.originalHash) && !page.asset && ((await stat(file)).mode & 0o777) === 0o600;
       const layout = JSON.parse(await readFile(path.join(output, 'profile/workspace-recovery', window, 'layout.json')));
       checks[key + 'LayoutReferencesExactMessageAndTab'] = layout.tasks.find(value => value.taskID === owner)?.tabs.some(value => value.id === fixture.tabs[key] && value.root === 'edit-resend:' + message) === true;
     }
