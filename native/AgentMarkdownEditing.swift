@@ -207,6 +207,7 @@ enum AgentMarkdownEditing {
     private let field = AgentMarkdownUnitTextView()
     let region: AgentMarkdownEditing.Region, base: String
     var onChange: ((String) -> Void)?, onFinish: ((Bool, Int) -> Void)?
+    var onViewportChange: (() -> Void)?
     var value: String { field.string }
     init(region: AgentMarkdownEditing.Region, source: String) throws {
         self.region = region; base = source; super.init(frame: .zero)
@@ -224,10 +225,30 @@ enum AgentMarkdownEditing {
             return false
         }
         documentView = field; hasVerticalScroller = true; drawsBackground = true; borderType = .lineBorder
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: contentView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func focus() { window?.makeFirstResponder(field); field.setSelectedRange(region.isCell ? NSRange(location: 0, length: (field.string as NSString).length) : NSRange(location: (field.string as NSString).length, length: 0)) }
-    func textDidChange(_ notification: Notification) { onChange?(field.string) }
+    func textDidChange(_ notification: Notification) { onChange?(field.string); onViewportChange?() }
+    func textViewDidChangeSelection(_ notification: Notification) { onViewportChange?() }
+    @objc private func viewportChanged(_ notification: Notification) { onViewportChange?() }
+    func captureViewport() throws -> AgentTextViewport { try AgentTextViewport(field) }
+    var hasInputFocus: Bool { field.window?.firstResponder === field }
+    func restoreValue(_ value: String) { field.string = value }
+    func setEditable(_ editable: Bool) { field.isEditable = editable }
+    @discardableResult func restoreViewport(_ value: AgentTextViewport) -> Bool { value.apply(to: field) }
     func undoManager(for view: NSTextView) -> UndoManager? { field.edits }
     func commitInput() { field.unmarkText(); field.inputContext?.discardMarkedText() }
+    func checkRecoveryInput(_ input: String?, insert: Bool, selection: NSRange?, y: Double?) throws {
+        guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }
+        if let input {
+            guard field.isEditable else { throw PetError("当前段落只读") }
+            field.insertText(input, replacementRange: insert ? field.selectedRange() : NSRange(location: 0, length: (field.string as NSString).length))
+        }
+        if let selection { field.setSelectedRange(selection); window?.makeFirstResponder(field) }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        if let y { contentView.scroll(to: NSPoint(x: 0, y: y)); reflectScrolledClipView(contentView) }
+    }
+    var viewportReadback: [String: Any] { ["location": field.selectedRange().location, "length": field.selectedRange().length, "y": Double(contentView.bounds.minY), "focused": hasInputFocus] }
 }

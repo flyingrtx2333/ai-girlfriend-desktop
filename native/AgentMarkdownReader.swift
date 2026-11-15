@@ -22,6 +22,9 @@ import AppKit
     private(set) var drawings: [Int: AgentMarkdownDiagrams.Drawing] = [:], diagramErrors: [Int: String] = [:]
     private var diagramWindow: AgentMarkdownDiagramWindow?
     var onLink: ((URL) -> Void)?
+    var onViewportChange: (() -> Void)?
+    private var pendingViewRecovery: ViewRecovery?, applyingViewRecovery = false, viewRecoveryScheduled = false
+    private var rememberedPreviewFocus = false, rememberedEditorFocus = false
     override init(frame: NSRect) {
         super.init(frame: frame)
         text.isEditable = false; text.isSelectable = true; text.isRichText = true; text.importsGraphics = false; text.delegate = self
@@ -39,16 +42,18 @@ import AppKit
             tableActions.menu?.addItem(item)
         }
         scroll.documentView = text; scroll.hasVerticalScroller = true
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         let toolbar = NSStackView(views: [outline, NSView(), tableActions, edit, addSelection]); toolbar.spacing = 8
         for view in [toolbar, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor, constant: 4), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), outline.widthAnchor.constraint(lessThanOrEqualToConstant: 380), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)])
         selectionAction.update(); updateEditingState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func clear() { inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); diagramWindow?.close(); diagramWindow = nil; source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
+    func clear() { pendingViewRecovery = nil; rememberedPreviewFocus = false; rememberedEditorFocus = false; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); diagramWindow?.close(); diagramWindow = nil; source = ""; file = nil; workspace = nil; document = nil; pendingAnchor = nil; outline.removeAllItems(); text.string = ""; selectionAction.update(); updateEditingState() }
     func show(_ source: String, file: URL, workspace: String, reuseIfUnchanged: Bool = false) {
         if reuseIfUnchanged, inlineEditor == nil, self.source == source, self.file == file, self.workspace == workspace, document != nil { isEditing = false; updateEditingState(); return }
-        inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
+        pendingViewRecovery = nil; inlineEditor?.removeFromSuperview(); inlineEditor = nil; tableCell = nil; isEditing = false; edits.removeAllActions(); cancelDiagrams(); pendingAnchor = nil; self.source = source; self.file = file; self.workspace = workspace; outline.selectItem(at: 0); render(); updateEditingState()
         text.scrollRangeToVisible(NSRange(location: 0, length: 0))
     }
     override func layout() {
@@ -56,6 +61,7 @@ import AppKit
         if !isHidden, abs(bounds.width - renderedWidth) > 8 { resizeImages() }
         positionEditor()
         scheduleReveal()
+        scheduleViewRecovery()
     }
     private func scheduleReveal() {
         guard pendingAnchor != nil, !revealScheduled else { return }; revealScheduled = true
@@ -122,6 +128,7 @@ import AppKit
         } catch { onEditError?(error.localizedDescription) }
     }
     @objc private func toggleEditing() {
+        defer { viewChanged() }
         do {
             if isEditing { try finishEditing(); isEditing = false; window?.makeFirstResponder(text) }
             else { guard canEdit?() == true else { throw PetError("此文件当前只读") }; isEditing = true }
@@ -158,12 +165,13 @@ import AppKit
         } catch { onEditError?(error.localizedDescription) }
         return true
     }
-    private func beginEditing(_ region: AgentMarkdownEditing.Region) throws {
-        let editor = try AgentMarkdownInlineEditor(region: region, source: source); inlineEditor = editor
+    private func beginEditing(_ region: AgentMarkdownEditing.Region, base: String? = nil, restoring: Bool = false) throws {
+        let editor = try AgentMarkdownInlineEditor(region: region, source: base ?? source); inlineEditor = editor
+        editor.onViewportChange = { [weak self] in self?.viewChanged() }
         if case .cell(let table, let row, let column) = region.kind { tableCell = (table, row, column) } else { tableCell = nil }
         editor.onChange = { [weak self, weak editor] value in
             guard let self, let editor else { return }
-            do { let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: value); if source != next { source = next; onSourceChanged?(next) } }
+            do { let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: value); if source != next { pendingViewRecovery = nil; source = next; onSourceChanged?(next) } }
             catch { onEditError?(error.localizedDescription) }
         }
         editor.onFinish = { [weak self] commit, direction in
@@ -174,7 +182,10 @@ import AppKit
                 if direction != 0, let old, let cells = document?.regions.filter({ $0.isCell }), let index = cells.firstIndex(where: { $0.kind == old }), cells.indices.contains(index + direction), case .cell(let table, _, _) = old, case .cell(let nextTable, _, _) = cells[index + direction].kind, table == nextTable { try beginEditing(cells[index + direction]) }
             } catch { onEditError?(error.localizedDescription) }
         }
-        text.addSubview(editor); text.previewEditor = editor; positionEditor(); _ = text.scrollToVisible(editor.frame); editor.focus(); selectionAction.update(); updateTableActions()
+        text.addSubview(editor); text.previewEditor = editor; positionEditor()
+        if !restoring { _ = text.scrollToVisible(editor.frame); editor.focus() }
+        selectionAction.update(); updateTableActions()
+        viewChanged()
     }
     private func positionEditor() {
         guard let editor = inlineEditor else { return }
@@ -184,6 +195,7 @@ import AppKit
     }
     func finishEditing(commit: Bool = true) throws {
         guard let editor = inlineEditor else { return }; editor.commitInput()
+        pendingViewRecovery = nil
         let previous = editor.base, next = commit ? try AgentMarkdownEditing.replacing(editor.region, in: previous, with: editor.value) : previous
         inlineEditor = nil; text.previewEditor = nil; editor.removeFromSuperview()
         if source != next { source = next; onSourceChanged?(next) }
@@ -230,18 +242,134 @@ import AppKit
                 text.setFrameSize(NSSize(width: text.frame.width, height: height))
                 let currentGlyph = layout.glyphIndexForCharacter(at: character), rect = layout.boundingRect(forGlyphRange: NSRange(location: currentGlyph, length: 1), in: container)
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, rect.minY + offset))); scroll.reflectScrolledClipView(scroll.contentView)
-                scheduleReveal()
+                positionEditor(); scheduleReveal(); scheduleViewRecovery()
             }
             renderer.stop()
             if let self, self.generation == token { self.diagramRenderer = nil; self.diagramTask = nil }
         }
     }
+    struct ViewRecovery: Codable, Equatable, Sendable {
+        struct Editor: Codable, Equatable, Sendable {
+            var base: String, value: String
+            var location: Int, length: Int
+            var table: Int?, row: Int?, column: Int?
+            var viewport: AgentTextViewport
+            var valid: Bool {
+                let count = (base as NSString).length
+                let cell = table == nil && row == nil && column == nil || table.map { (0...count).contains($0) } == true && row.map { (0...2_000_000).contains($0) } == true && column.map { (0...2_000_000).contains($0) } == true
+                return base.utf8.count <= 2_000_000 && value.utf8.count <= 2_000_000 && !value.contains("\0") &&
+                    location >= 0 && length >= 0 && location <= count && length <= count - location && cell && viewport.valid &&
+                    viewport.count == (value as NSString).length && viewport.hash == AgentFiles.hash(Data(value.utf8))
+            }
+            var kind: AgentMarkdownEditing.Region.Kind {
+                if let table, let row, let column { return .cell(table: table, row: row, column: column) }; return .block
+            }
+        }
+        var version = 1
+        var sourceHash: String
+        var viewport: AgentTextViewport
+        var editing: Bool
+        var editor: Editor?
+        var valid: Bool {
+            version == 1 && sourceHash.count == 64 && sourceHash.allSatisfy { $0.isHexDigit && !$0.isUppercase } && viewport.valid &&
+                editor?.valid != false && (editor == nil || editing)
+        }
+        static func validateObject(_ raw: Any) throws {
+            guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["version", "sourceHash", "viewport", "editing", "editor"]) else { throw PetError("Markdown 位置恢复格式不受支持，原记录已保留") }
+            try AgentTextViewport.validateObject(value["viewport"] ?? NSNull())
+            if let raw = value["editor"], !(raw is NSNull) {
+                guard let editor = raw as? [String: Any], Set(editor.keys).isSubset(of: ["base", "value", "location", "length", "table", "row", "column", "viewport"]) else { throw PetError("Markdown 编辑位置恢复格式不受支持，原草稿已保留") }
+                try AgentTextViewport.validateObject(editor["viewport"] ?? NSNull())
+            }
+        }
+    }
+    // Autosave reads the active editor. It must not turn a user's editing
+    // pause into an implicit press of the Done button.
+    func captureViewRecovery(source expected: String) throws -> ViewRecovery? {
+        guard document != nil, source == expected else { return nil }
+        rememberViewportFocus()
+        if let editor = inlineEditor {
+            let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: editor.value)
+            if source != next { pendingViewRecovery = nil; source = next; onSourceChanged?(next) }
+        }
+        if let pendingViewRecovery { return pendingViewRecovery }
+        var editorState: ViewRecovery.Editor?
+        if let editor = inlineEditor {
+            var table: Int?, row: Int?, column: Int?
+            if case .cell(let t, let r, let c) = editor.region.kind { table = t; row = r; column = c }
+            var viewport = try editor.captureViewport(); viewport.focused = rememberedEditorFocus
+            editorState = .init(base: editor.base, value: editor.value, location: editor.region.source.location, length: editor.region.source.length,
+                table: table, row: row, column: column, viewport: viewport)
+        }
+        var viewport = try AgentTextViewport(text); viewport.focused = rememberedPreviewFocus
+        let result = ViewRecovery(sourceHash: AgentFiles.hash(Data(source.utf8)), viewport: viewport, editing: isEditing, editor: editorState)
+        guard result.valid else { throw PetError("Markdown 编辑位置无效，原草稿已保留") }; return result
+    }
+    func restoreViewRecovery(_ value: ViewRecovery) throws {
+        guard value.valid, value.sourceHash == AgentFiles.hash(Data(source.utf8)) else { throw PetError("Markdown 正文已变化，原阅读位置已保留") }
+        applyingViewRecovery = true
+        defer { applyingViewRecovery = false }
+        if let saved = value.editor {
+            let current = source; cancelDiagrams(); pendingAnchor = nil; source = saved.base; render(); source = current
+            guard let region = document?.regions.first(where: { $0.source == NSRange(location: saved.location, length: saved.length) && $0.kind == saved.kind }),
+                  try AgentMarkdownEditing.replacing(region, in: saved.base, with: saved.value) == current else { throw PetError("Markdown 原编辑段落已变化，原草稿已保留") }
+            try beginEditing(region, base: saved.base, restoring: true)
+            inlineEditor?.restoreValue(saved.value); inlineEditor?.setEditable(canEdit?() == true)
+        }
+        guard value.viewport.matches(text) else { throw PetError("Markdown 预览已变化，原阅读位置已保留") }
+        rememberedPreviewFocus = value.viewport.focused; rememberedEditorFocus = value.editor?.viewport.focused ?? false
+        isEditing = value.editing; updateEditingState(); pendingViewRecovery = value; scheduleViewRecovery()
+    }
+    private func rememberViewportFocus() {
+        guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor, pendingViewRecovery == nil else { return }
+        rememberedPreviewFocus = window?.firstResponder === text; rememberedEditorFocus = inlineEditor?.hasInputFocus == true
+    }
+    func prepareWorkspaceNavigation() throws {
+        rememberViewportFocus()
+        guard let editor = inlineEditor else { return }; editor.commitInput()
+        let next = try AgentMarkdownEditing.replacing(editor.region, in: editor.base, with: editor.value)
+        if source != next { source = next; onSourceChanged?(next) }
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleViewRecovery() }
+    func scheduleViewRecovery() {
+        guard pendingViewRecovery != nil, !viewRecoveryScheduled, !applyingViewRecovery else { return }; viewRecoveryScheduled = true
+        DispatchQueue.main.async { [weak self] in self?.viewRecoveryScheduled = false; self?.applyPendingViewRecovery() }
+    }
+    private func applyPendingViewRecovery() {
+        guard let value = pendingViewRecovery, !applyingViewRecovery, window?.isVisible == true, !isHiddenOrHasHiddenAncestor,
+              bounds.width > 0, bounds.height > 0 else { return }
+        applyingViewRecovery = true
+        defer { applyingViewRecovery = false }
+        window?.contentView?.layoutSubtreeIfNeeded(); positionEditor()
+        guard value.editor.map({ inlineEditor?.restoreViewport($0.viewport) == true }) ?? true, value.viewport.apply(to: text) else { return }
+        pendingViewRecovery = nil; onViewportChange?()
+    }
+    @objc private func viewportChanged(_ notification: Notification) { viewChanged() }
+    private func viewChanged() { if !applyingViewRecovery, pendingViewRecovery == nil { onViewportChange?() } }
     func waitForDiagrams() async { await diagramTask?.value }
+    func checkViewRecovery(action: String, target: String, input: String?, selection: NSRange?, y: Double?, cell: Bool) throws {
+        guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }
+        if action == "begin" {
+            guard canEdit?() == true, let region = document?.regions.first(where: { $0.isCell == cell && (try? AgentMarkdownEditing.value($0, in: source).contains(target)) == true }) else { throw PetError("未找到公开编辑段落") }
+            isEditing = true; try beginEditing(region); updateEditingState()
+        }
+        if let inlineEditor { try inlineEditor.checkRecoveryInput(input, insert: action == "insert", selection: selection, y: y) }
+        else {
+            if let selection { text.setSelectedRange(selection); window?.makeFirstResponder(text) }
+            window?.contentView?.layoutSubtreeIfNeeded()
+            if let y { scroll.contentView.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(scroll.contentView) }
+        }
+    }
+    var viewportReadback: [String: Any] {
+        ["location": text.selectedRange().location, "length": text.selectedRange().length, "y": Double(scroll.contentView.bounds.minY),
+         "focused": window?.firstResponder === text, "editor": inlineEditor?.viewportReadback ?? [:], "editing": isEditing,
+         "pending": pendingViewRecovery != nil]
+    }
     var editingCheckState: [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled || ["--markdown-edit-check", "--file-conflict-check", "--text-encoding-check", "--markdown-table-check", "--wiki-tree-check", "--wiki-plan-check"].contains(where: CommandLine.arguments.contains) else { return [:] }
         return ["canEdit": canEdit?() == true, "editButtonVisible": !edit.isHidden, "isEditing": isEditing, "activeEditor": inlineEditor != nil, "tableMenuVisible": !tableActions.isHidden, "tableRow": tableCell?.row ?? -1, "tableColumn": tableCell?.column ?? -1, "tableActions": tableActions.itemArray.filter { !$0.isSeparatorItem }.map { ["title": $0.title, "enabled": $0.isEnabled, "checked": $0.state == .on] }, "diagramImages": drawings.values.map { String(describing: ObjectIdentifier($0.image)) }.sorted(), "diagramErrors": diagramErrors.count]
     }
-    func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update() }
+    func textViewDidChangeSelection(_ notification: Notification) { selectionAction.update(); viewportChanged(notification) }
     func undoManager(for view: NSTextView) -> UndoManager? { edits }
     private func openDiagram(_ index: Int) -> Bool {
         guard let drawing = drawings[index] else { return false }; selectionAction.update(); diagramWindow = AgentMarkdownDiagramWindow(drawing); diagramWindow?.showWindow(nil); diagramWindow?.window?.makeKeyAndOrderFront(nil); return true
