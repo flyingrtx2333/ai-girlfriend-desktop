@@ -147,6 +147,8 @@ import AppKit
                         checks["backgroundBlockFullDraftAndViewportRestore"] = blockState.text == fixture.block.text && same(blockState.markdownViewport?.editor?.viewport, fixture.block.markdownViewport?.editor?.viewport)
                         if let file = fixture.readingFile, let saved = fixture.reading {
                             control.taskWorkspace.checkSelect(.document(file)); guard await flushWorkspaceWindows(), let reading = control.taskWorkspace.currentController as? AgentRecordWindow else { throw PetError("冷阅读标签未恢复") }
+                            checks["readingKeepsModeFromPreviousProcess"] = try await state(reading).mode == (stage == "reopen" ? 1 : saved.mode)
+                            try reading.checkTextViewport(preview: true)
                             checks["readingPreviewAppliesAfterItsFinalLayout"] = await eventually { (reading.textViewportReadback["markdown"] as? [String: Any])?["pending"] as? Bool == false }
                             let restored = try await state(reading)
                             checks["previewReadingSelectionAndScrollRestore"] = same(restored.markdownViewport?.viewport, saved.markdownViewport?.viewport)
