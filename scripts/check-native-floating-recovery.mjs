@@ -26,7 +26,7 @@ if(!reopen){
   await writeFile(path.join(output,'workspace/closed.txt'),'PUBLIC_FLOATING_CLOSED_617\n');
 }
 const oldInput=reopen?JSON.parse(await readFile(path.join(output,'browser-input.json'),'utf8')):null;
-const server=createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>公开窗口恢复表单</title><label>公开草稿<input id="note" aria-label="公开草稿"></label><p>PUBLIC_FLOATING_WEB_941</p><div style="height:2000px"></div>');});
+const server=createServer((req,res)=>{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>公开窗口恢复表单</title><label>公开草稿<input id="note" aria-label="公开草稿"></label><label>公开备注<textarea id="details" aria-label="公开备注"></textarea></label><label><input id="approved" type="checkbox">公开选择</label><select id="choice" aria-label="公开选项"><option value="a">甲</option><option value="b">乙</option></select><input id="credential" type="password" value="PUBLIC_DEFAULT"><input id="hidden" type="hidden" value="PUBLIC_DEFAULT"><input id="excluded" autocomplete="off" value="PUBLIC_DEFAULT"><p>PUBLIC_FLOATING_WEB_941</p><div style="height:2000px"></div><script>window.recoveryInputEvents=0;for(const name of ["input","change"])document.addEventListener(name,()=>window.recoveryInputEvents++);</script>');});
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(oldInput?Number(new URL(oldInput.url).port):0,'127.0.0.1',resolve);});
 const base=`http://127.0.0.1:${server.address().port}/`;
 if(!reopen)await writeFile(path.join(output,'browser-input.json'),JSON.stringify({url:base},null,2)+'\n');

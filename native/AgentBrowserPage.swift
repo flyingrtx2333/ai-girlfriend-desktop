@@ -172,9 +172,13 @@ import WebKit
                     // other redirect keeps its own viewport and original state.
                     guard web.url?.absoluteString == saved.url else { notify(); return }
                     web.pageZoom = saved.zoom
+                    if let forms = saved.forms {
+                        let restored = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.restoreScript, arguments: ["state": try forms.object()], in: nil, contentWorld: world)
+                        guard restored as? Bool == true else { throw PetError("网页表单已变化，原填写已保留") }
+                    }
                     _ = try await web.callAsyncJavaScript("scrollTo(x,y); return {x:scrollX,y:scrollY};", arguments: ["x": saved.x, "y": saved.y], in: nil, contentWorld: world)
                     try Task.checkCancellation(); guard !closed else { return }; pendingRecovery = nil; notify()
-                } catch { if !closed { status = "网页位置尚未恢复，原记录已保留" } }
+                } catch { if !closed { status = "网页填写或位置尚未恢复，原记录已保留" } }
             }
         }
         notify()
@@ -212,11 +216,12 @@ import WebKit
         if let pendingRecovery { return pendingRecovery }
         guard let url = web.url else { return .init(id: id, title: "", origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: 0, y: 0) }
         _ = try AgentBrowser.url(url.absoluteString)
-        let point = try await web.callAsyncJavaScript("return {url:location.href,x:scrollX,y:scrollY};", arguments: [:], in: nil, contentWorld: world) as? [String: Any]
+        let point = try await web.callAsyncJavaScript(AgentBrowserFormRecovery.captureScript, arguments: [:], in: nil, contentWorld: world) as? [String: Any]
         guard !closed, web.url == url, point?["url"] as? String == url.absoluteString,
               let x = point?["x"] as? Double, let y = point?["y"] as? Double,
               let interaction = web.interactionState as? Data else { throw PetError("网页正在变化，请稍候重试恢复保存") }
-        return .init(id: id, title: web.title ?? "", url: url.absoluteString, interaction: interaction, origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: x, y: y)
+        let forms = try point?["forms"].flatMap { $0 is NSNull ? nil : try AgentBrowserFormRecovery.capture($0, url: url.absoluteString) }
+        return .init(id: id, title: web.title ?? "", url: url.absoluteString, interaction: interaction, origins: allowedOrigins.sorted(), zoom: web.pageZoom, x: x, y: y, forms: forms)
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Page) throws {
         guard !closed, web.url == nil, !busy else { throw PetError("当前网页不能替换为恢复记录") }

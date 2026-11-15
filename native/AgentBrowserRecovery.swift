@@ -12,6 +12,7 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
         var url: String?, interaction: Data?
         var origins: [String]
         var zoom: Double, x: Double, y: Double
+        var forms: AgentBrowserFormRecovery? = nil
     }
     struct Annotation: Codable, Equatable, Sendable {
         var source: AgentBrowserCapture
@@ -45,6 +46,7 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
             if let url = page.url { try require(page.origins.contains(AgentBrowser.origin(try AgentBrowser.url(url)))) }
             else { try require(page.interaction == nil) }
             if let interaction = page.interaction { try require(!interaction.isEmpty && interaction.count <= 4_000_000) }
+            try page.forms?.validate(for: page.url)
         }
         if let annotation {
             let source = annotation.source
@@ -67,7 +69,13 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
         let root = try object(JSONSerialization.jsonObject(with: page.state), ["version", "taskID", "pages", "selected", "address", "addressEdited", "addressSelection", "annotation"])
         func selection(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try object(value, ["location", "length"]) } }
         try selection(root["addressSelection"])
-        for value in root["pages"] as? [Any] ?? [] { _ = try object(value, ["id", "title", "url", "interaction", "origins", "zoom", "x", "y"]) }
+        for value in root["pages"] as? [Any] ?? [] {
+            let page = try object(value, ["id", "title", "url", "interaction", "origins", "zoom", "x", "y", "forms"])
+            if let value = page["forms"], !(value is NSNull) {
+                let form = try object(value, ["version", "url", "signature", "values"])
+                for value in form["values"] as? [Any] ?? [] { _ = try object(value, ["value", "checked", "selected"]) }
+            }
+        }
         if let value = root["annotation"], !(value is NSNull) {
             let a = try object(value, ["source", "image", "marks", "note", "tool", "focusNote", "selection"])
             _ = try object(a["source"] ?? NSNull(), ["tabID", "url", "title", "created", "viewportWidth", "viewportHeight", "annotations", "method"])

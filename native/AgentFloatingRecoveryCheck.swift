@@ -7,6 +7,7 @@ import AppKit
         var main: [AgentWorkspaceRecovery.FloatingPage], other: [AgentWorkspaceRecovery.FloatingPage]
         var sourceHash: String, officeHash: String
         var officeView: String? = nil
+        var browserDraft: String? = nil
     }
     func runFloatingRecoveryCheck(_ output: URL, interactive: Bool = false) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
@@ -110,9 +111,21 @@ import AppKit
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pagePath.path)
                 checks["floatingRetrySavesLatestDraftWithoutAnotherEdit"] = await flushWorkspaceWindows()
                 checks["quitPreparationPreservesEveryIndependentEditor"] = await control.prepareOwnedTaskPanels(preservingRecovery: true) && control.workspaceSession?.floatingControllers.count == 4 && child.workspaceSession?.floatingControllers.count == 1
+                let browserDraft = "PUBLIC_FLOATING_FORM_LAST_582"
+                _ = try await browser.web.callAsyncJavaScript("document.getElementById('note').value=value;document.getElementById('details').value='PUBLIC_DETAILS_729 中文';document.getElementById('approved').checked=true;document.getElementById('choice').selectedIndex=1;document.getElementById('note').dispatchEvent(new Event('input',{bubbles:true}));", arguments: ["value": browserDraft], in: nil, contentWorld: .page)
+                guard await flushWorkspaceWindows() else { throw PetError("网页最后填写尚未保存") }
+                let formState = try AgentBrowserRecoveryState.decode(await browser.captureWorkspaceRecovery())
+                checks["lastFormInputHasExplicitRecoveryWithoutNavigation"] = formState.pages.first?.forms?.values.first?.value == browserDraft && formState.pages.first?.url == base + "form" && formState.pages.first?.y == 0
+                let forms = formState.pages.first?.forms
+                checks["ordinaryTextCheckboxAndSelectionHaveCompleteDrafts"] = forms?.values.count == 4 && forms?.values[1].value == "PUBLIC_DETAILS_729 中文" && forms?.values[2].checked == true && forms?.values[3].selected == [1]
+                checks["explicitFormDraftExcludesPasswordHiddenAndAutocompleteOff"] = forms?.signature.contains("credential") == false && forms?.signature.contains("hidden") == false && forms?.signature.contains("excluded") == false
+                if let forms {
+                    let refusal = "const note=document.getElementById('note'),name=note.name,value=note.value,before=window.recoveryInputEvents;note.name='PUBLIC_CHANGED_FORM';note.value='PUBLIC_KEEP_CURRENT';try{const restored=await(async()=>{" + AgentBrowserFormRecovery.restoreScript + "})();return restored===false&&note.value==='PUBLIC_KEEP_CURRENT'&&window.recoveryInputEvents===before;}finally{note.name=name;note.value=value;}"
+                    checks["changedFormStructureKeepsCurrentFieldsAndSavedDraft"] = try await browser.web.callAsyncJavaScript(refusal, arguments: ["state": try forms.object()], in: nil, contentWorld: .page) as? Bool == true
+                }
                 fixture = .init(taskID: id, otherID: other, windowID: main.id, otherWindowID: try layout(child).id, file: file.path, office: officeFile.path, canvasID: canvasRecord.id, base: base,
                                 main: try layout(control).floating, other: try layout(child).floating, sourceHash: try AgentFiles(workspace: project.path).fileHash(file), officeHash: try AgentFiles(workspace: project.path).fileHash(officeFile),
-                                officeView: try await officeViewText(office))
+                                officeView: try await officeViewText(office), browserDraft: browserDraft)
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
             } else {
                 fixture = try JSONDecoder().decode(FloatingRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
@@ -169,7 +182,10 @@ import AppKit
                         return (state["coldRoots"] as? [String])?.isEmpty == true && (state["errors"] as? [String: String])?.isEmpty == true
                     }
                 } else {
-                    checks["browserRestoresAsIndependentWindowAndExactForm"] = try await form(browser) == "PUBLIC_FLOATING_FORM_941" && browser.workspaceReadback()["detached"] as? Bool == true && browser.settingsHostWindow == nil && browser.window?.isVisible == true
+                    checks["browserRestoresAsIndependentWindowAndExactForm"] = try await form(browser) == (fixture.browserDraft ?? "PUBLIC_FLOATING_FORM_941") && browser.workspaceReadback()["detached"] as? Bool == true && browser.settingsHostWindow == nil && browser.window?.isVisible == true
+                    if fixture.browserDraft != nil {
+                        checks["ordinaryFormFieldsRestoreWithoutReplayingInputEvents"] = try await browser.web.evaluateJavaScript("document.getElementById('details').value==='PUBLIC_DETAILS_729 中文'&&document.getElementById('approved').checked&&document.getElementById('choice').selectedIndex===1&&window.recoveryInputEvents===0") as? Bool == true
+                    }
                     let actual = try await office.inspect([:])
                     checks["fullDirtyOfficeDraftRestoresInIndependentEditor"] = office.dirty && (actual["paragraphs"] as? [[String: Any]])?.contains { $0["text"] as? String == "审阅人：独立窗口草稿" } == true && office.settingsHostWindow == nil && office.window?.isVisible == true
                     checks["canvasSourceDraftRestoresInIndependentEditor"] = canvas.workspaceReadback()["source"] as? String == canvasDraft && canvas.settingsHostWindow == nil && canvas.window?.isVisible == true
