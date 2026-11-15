@@ -6,6 +6,8 @@ import AppKit
         var plainFile: String, guide: String, plainTab: String, blockTab: String, cellTab: String
         var plain: AgentRecordWindow.RecoveryState, block: AgentRecordWindow.RecoveryState, cell: AgentRecordWindow.RecoveryState
         var sourceHashes: [String: String]
+        var readingFile: String? = nil, readingTab: String? = nil
+        var reading: AgentRecordWindow.RecoveryState? = nil
     }
     func runTextViewportRecoveryCheck(_ output: URL, interactive: Bool = false) async {
         var report: [String: Any] = [:], checks: [String: Bool] = [:], requests = 0
@@ -62,6 +64,13 @@ import AppKit
                 checks["readOnlyCheckpointRetainsBytesAndLatestLiveScroll"] = refused && current == original && (live.textViewport?.y ?? 0) > (before.textViewport?.y ?? 0) + 10
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
                 checks["scrollCheckpointRetriesWithoutAnotherEdit"] = await flushWorkspaceWindows()
+                let readingFile = try files.resolve("reading.md")
+                control.showTaskDocument(readingFile.path)
+                guard let reading = control.taskWorkspace.currentController as? AgentRecordWindow else { throw PetError("阅读页未进入工作区") }
+                try reading.checkTextViewport(selection: (try expected("guideText") as NSString).range(of: "PUBLIC_PARAGRAPH_50"), y: 520)
+                guard await flushWorkspaceWindows() else { throw PetError("原文阅读位置未保存") }
+                try reading.checkTextViewport(preview: true, target: "PUBLIC_PARAGRAPH_50", y: 700)
+                guard await flushWorkspaceWindows() else { throw PetError("预览阅读位置未保存") }
                 control.showTaskDocument(guide.path)
                 let block = try editor(first), blockValue = try expected("blockValue")
                 try block.checkTextViewport(preview: true, action: "begin", target: "PUBLIC_BLOCK_ORIGINAL_517", input: blockValue, selection: (blockValue as NSString).range(of: "中文😀"), y: 90)
@@ -74,12 +83,15 @@ import AppKit
                 guard await flushWorkspaceWindows(), let layout = try journal.loadWindow(window)?.value,
                       let blockTab = layout.tasks.first(where: { $0.taskID == first })?.tabs.first(where: { $0.root == "document:" + guide.path })?.id,
                       let cellTab = layout.tasks.first(where: { $0.taskID == second })?.tabs.first(where: { $0.root == "document:" + guide.path })?.id else { throw PetError("段落或表格位置没有保存") }
+                let readingTab = layout.tasks.first(where: { $0.taskID == first })?.tabs.first(where: { $0.root == "document:" + readingFile.path })?.id
                 fixture = .init(first: first, second: second, window: window, plainFile: plainFile.path, guide: guide.path, plainTab: plainTab, blockTab: blockTab, cellTab: cellTab,
-                    plain: try await state(plain), block: try await state(block), cell: try await state(cell), sourceHashes: try Dictionary(uniqueKeysWithValues: [plainFile, guide].map { ($0.path, try files.fileHash($0)) }))
+                    plain: try await state(plain), block: try await state(block), cell: try await state(cell), sourceHashes: try Dictionary(uniqueKeysWithValues: [plainFile, guide, readingFile].map { ($0.path, try files.fileHash($0)) }),
+                    readingFile: readingFile.path, readingTab: readingTab, reading: try await state(reading))
                 checks["floatingUTF16SourceHasIndependentSelectionAndScroll"] = fixture.plain.encoding == AgentTextEncoding.utf16LE.rawValue && fixture.plain.bom && (fixture.plain.textViewport?.y ?? 0) > 400 && fixture.plain.textViewport?.selections.first?.location == caret.location
                 checks["backgroundBlockRetainsEditorSelectionAndFocus"] = fixture.block.markdownViewport?.editor?.viewport.focused == true && fixture.block.markdownViewport?.editor?.value == blockValue
                 checks["sameFileTasksHaveDistinctCompleteDrafts"] = try fixture.block.text == expected("expectedBlock") && fixture.cell.text == expected("expectedCell") && fixture.block.text != fixture.cell.text
                 checks["activeCellHasItsOwnCursorAndScroll"] = fixture.cell.markdownViewport?.editor?.viewport.focused == true && (fixture.cell.markdownViewport?.editor?.viewport.y ?? 0) > 0 && fixture.cell.markdownViewport?.editor?.viewport.selections.first?.length == 4
+                checks["readingKeepsSeparateOriginalAndPreviewViewports"] = (fixture.reading?.textViewport?.y ?? 0) > 400 && (fixture.reading?.markdownViewport?.viewport.y ?? 0) > 600 && fixture.reading?.textViewport?.selections.first?.location != fixture.reading?.markdownViewport?.viewport.selections.first?.location
                 var page = try await cell.captureWorkspaceRecovery(), object = try JSONSerialization.jsonObject(with: page.state) as! [String: Any]
                 object.removeValue(forKey: "textViewport"); object.removeValue(forKey: "markdownViewport"); page.state = try JSONSerialization.data(withJSONObject: object)
                 checks["legacyV1RecordsWithoutViewStateStillDecode"] = try AgentRecordWindow.recoveryState(page).text == fixture.cell.text
@@ -133,6 +145,24 @@ import AppKit
                         checks["coldBackgroundBlockRestoresActualEditorFocus"] = await eventually { inlineReady(block) }
                         let blockState = try await state(block)
                         checks["backgroundBlockFullDraftAndViewportRestore"] = blockState.text == fixture.block.text && same(blockState.markdownViewport?.editor?.viewport, fixture.block.markdownViewport?.editor?.viewport)
+                        if let file = fixture.readingFile, let saved = fixture.reading {
+                            control.taskWorkspace.checkSelect(.document(file)); guard await flushWorkspaceWindows(), let reading = control.taskWorkspace.currentController as? AgentRecordWindow else { throw PetError("冷阅读标签未恢复") }
+                            checks["readingPreviewAppliesAfterItsFinalLayout"] = await eventually { (reading.textViewportReadback["markdown"] as? [String: Any])?["pending"] as? Bool == false }
+                            let restored = try await state(reading)
+                            checks["previewReadingSelectionAndScrollRestore"] = same(restored.markdownViewport?.viewport, saved.markdownViewport?.viewport)
+                            try reading.checkTextViewport(preview: false)
+                            checks["switchingToOriginalAppliesDeferredViewAndFocus"] = await eventually {
+                                guard let raw = reading.textViewportReadback["raw"] as? [String: Any] else { return false }
+                                return raw["pending"] as? Bool == false && raw["focused"] as? Bool == true && raw["location"] as? Int == saved.textViewport?.selections.first?.location
+                            }
+                            checks["originalReadingSelectionAndScrollStayIndependent"] = same(try await state(reading).textViewport, saved.textViewport)
+                            if stage == "reopen" {
+                                try reading.checkTextViewport(input: "RAW_RESUMED_953")
+                                checks["originalTextContinuesAtItsOwnRestoredSelection"] = try await state(reading).text == expected("continuedReading")
+                            }
+                            control.taskWorkspace.checkSelect(.document(fixture.guide)); _ = await flushWorkspaceWindows()
+                            checks["cachedBlockRegainsItsRememberedInputFocus"] = await eventually { inlineReady(block) }
+                        }
                         if stage == "reopen" {
                             try block.checkTextViewport(preview: true, action: "insert", input: "BLOCK_RESUMED_739")
                             let continuedBlock = try await state(block)

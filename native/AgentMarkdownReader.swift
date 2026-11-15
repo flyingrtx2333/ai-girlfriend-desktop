@@ -25,6 +25,7 @@ import AppKit
     var onViewportChange: (() -> Void)?
     private var pendingViewRecovery: ViewRecovery?, applyingViewRecovery = false, viewRecoveryScheduled = false
     private var rememberedPreviewFocus = false, rememberedEditorFocus = false
+    private var viewActivationScheduled = false, forceViewActivation = false
     override init(frame: NSRect) {
         super.init(frame: frame)
         text.isEditable = false; text.isSelectable = true; text.isRichText = true; text.importsGraphics = false; text.delegate = self
@@ -308,7 +309,7 @@ import AppKit
     func restoreViewRecovery(_ value: ViewRecovery) throws {
         guard value.valid, value.sourceHash == AgentFiles.hash(Data(source.utf8)) else { throw PetError("Markdown 正文已变化，原阅读位置已保留") }
         applyingViewRecovery = true
-        defer { applyingViewRecovery = false }
+        defer { applyingViewRecovery = false; scheduleViewRecovery() }
         if let saved = value.editor {
             let current = source; cancelDiagrams(); pendingAnchor = nil; source = saved.base; render(); source = current
             guard let region = document?.regions.first(where: { $0.source == NSRange(location: saved.location, length: saved.length) && $0.kind == saved.kind }),
@@ -318,11 +319,34 @@ import AppKit
         }
         guard value.viewport.matches(text) else { throw PetError("Markdown 预览已变化，原阅读位置已保留") }
         rememberedPreviewFocus = value.viewport.focused; rememberedEditorFocus = value.editor?.viewport.focused ?? false
-        isEditing = value.editing; updateEditingState(); pendingViewRecovery = value; scheduleViewRecovery()
+        isEditing = value.editing; updateEditingState(); pendingViewRecovery = value
     }
-    private func rememberViewportFocus() {
-        guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor, pendingViewRecovery == nil else { return }
+    func rememberViewportFocus() {
+        guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor, pendingViewRecovery == nil, !viewActivationScheduled else { return }
         rememberedPreviewFocus = window?.firstResponder === text; rememberedEditorFocus = inlineEditor?.hasInputFocus == true
+    }
+    func activateRememberedView(force: Bool = false) {
+        forceViewActivation = forceViewActivation || force
+        scheduleViewRecovery()
+        guard forceViewActivation || rememberedPreviewFocus || rememberedEditorFocus, !viewActivationScheduled else { return }
+        viewActivationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; let force = forceViewActivation; forceViewActivation = false
+            defer { viewActivationScheduled = false }
+            guard document != nil, window?.isVisible == true, !isHiddenOrHasHiddenAncestor else { return }
+            window?.contentView?.layoutSubtreeIfNeeded(); positionEditor()
+            applyPendingViewRecovery()
+            guard pendingViewRecovery == nil, var viewport = try? AgentTextViewport(text) else { return }
+            applyingViewRecovery = true
+            defer { applyingViewRecovery = false }
+            if let editor = inlineEditor, force || rememberedEditorFocus, var input = try? editor.captureViewport() {
+                input.focused = true; _ = editor.restoreViewport(input)
+                viewport.focused = false; _ = viewport.apply(to: text, focus: false); rememberedEditorFocus = true
+            } else if force || rememberedPreviewFocus {
+                viewport.focused = true; _ = viewport.apply(to: text); rememberedPreviewFocus = true
+            }
+            onViewportChange?()
+        }
     }
     func prepareWorkspaceNavigation() throws {
         rememberViewportFocus()
@@ -355,7 +379,8 @@ import AppKit
         }
         if let inlineEditor { try inlineEditor.checkRecoveryInput(input, insert: action == "insert", selection: selection, y: y) }
         else {
-            if let selection { text.setSelectedRange(selection); window?.makeFirstResponder(text) }
+            let range = selection ?? (target.isEmpty ? nil : (text.string as NSString).range(of: target))
+            if let range { guard range.location != NSNotFound else { throw PetError("未找到公开预览选区") }; text.setSelectedRange(range); window?.makeFirstResponder(text) }
             window?.contentView?.layoutSubtreeIfNeeded()
             if let y { scroll.contentView.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(scroll.contentView) }
         }

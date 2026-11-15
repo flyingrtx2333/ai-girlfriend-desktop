@@ -77,6 +77,7 @@ import UniformTypeIdentifiers
     private var restoringVideo: (file: String, state: AgentVideoPlayback)?
     private var pendingTextViewport: AgentTextViewport?, applyingTextViewport = false, textViewportScheduled = false
     private var rememberedTextFocus = false
+    private var textFocusRequested = false
     private var hasInlineVideoPlayback: Bool { !video.isHidden && openedFile.map(AgentVideoSnapshot.supports) == true }
     var hasIndependentVideoWindow: Bool { videoWindow?.hasIndependentWindow == true }
     var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow }
@@ -110,7 +111,7 @@ import UniformTypeIdentifiers
         viewer.documentView = text; viewer.hasVerticalScroller = true
         viewer.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(textViewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: viewer.contentView)
-        displayMode.target = self; displayMode.action = #selector(switchDocumentMode); displayMode.selectedSegment = 0; displayMode.setAccessibilityLabel("Markdown 显示方式")
+        displayMode.target = self; displayMode.action = #selector(switchDocumentMode(_:)); displayMode.selectedSegment = 0; displayMode.setAccessibilityLabel("Markdown 显示方式")
         markdown.onLink = { [weak self] url in self?.openDocumentLink(url) }
         markdown.canEdit = { [weak self] in guard let self, self.text.isEditable, let task = self.store.task(self.taskID), let file = self.markdownFile else { return false }; return self.fileIsEditable(task, file: file) }
         markdown.onSourceChanged = { [weak self] value in
@@ -209,7 +210,7 @@ import UniformTypeIdentifiers
     func prepareWorkspaceNavigation() -> Bool {
         guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
-        if isPageVisible, !viewer.isHidden { rememberedTextFocus = presentingWindow?.firstResponder === text }
+        if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = presentingWindow?.firstResponder === text }
         do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     struct RecoveryState: Codable {
@@ -264,15 +265,15 @@ import UniformTypeIdentifiers
     }
     func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
         guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
-        let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
         let playback = hasInlineVideoPlayback ? await video.capturePlayback() : nil
         let child = try await videoWindow?.captureWorkspaceRecovery()
+        let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
         let viewport: AgentTextViewport?
         if openedHash != nil, !hasInlineVideoPlayback {
             if let pendingTextViewport, pendingTextViewport.matches(text) { viewport = pendingTextViewport }
             else {
                 pendingTextViewport = nil; var current = try AgentTextViewport(text)
-                if isPageVisible, !viewer.isHidden { rememberedTextFocus = current.focused }
+                if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = current.focused }
                 else { current.focused = rememberedTextFocus }
                 viewport = current
             }
@@ -332,14 +333,18 @@ import UniformTypeIdentifiers
         if let viewport = value.markdownViewport { try markdown.restoreViewRecovery(viewport) }
         scheduleTextViewport()
     }
-    private func scheduleTextViewport() {
-        guard pendingTextViewport != nil, !applyingTextViewport, !textViewportScheduled else { return }; textViewportScheduled = true
+    private func scheduleTextViewport(activating: Bool = false, forceFocus: Bool = false) {
+        textFocusRequested = textFocusRequested || forceFocus || activating && rememberedTextFocus
+        guard pendingTextViewport != nil || textFocusRequested, !applyingTextViewport, !textViewportScheduled else { return }; textViewportScheduled = true
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; textViewportScheduled = false
-            guard let viewport = pendingTextViewport, isPageVisible, !viewer.isHidden, !text.isHiddenOrHasHiddenAncestor else { return }
+            guard let self else { return }; let focus = textFocusRequested; textFocusRequested = false
+            defer { textViewportScheduled = false }
+            guard isPageVisible, !viewer.isHidden, !text.isHiddenOrHasHiddenAncestor,
+                  var viewport = pendingTextViewport ?? (try? AgentTextViewport(text)) else { return }
             applyingTextViewport = true
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
-            if viewport.apply(to: text) { pendingTextViewport = nil }
+            if focus { viewport.focused = true }
+            if viewport.apply(to: text) { pendingTextViewport = nil; rememberedTextFocus = viewport.focused }
             applyingTextViewport = false; onWorkspaceChange?()
         }
     }
@@ -756,7 +761,7 @@ import UniformTypeIdentifiers
               (try? store.agents.limits(task, store: store).readOnly) == false else { return false }
         return true
     }
-    private func resetDocumentMode() { pendingTextViewport = nil; rememberedTextFocus = false; readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
+    private func resetDocumentMode() { pendingTextViewport = nil; rememberedTextFocus = false; textFocusRequested = false; readingToolbar.isHidden = true; video.clear(); video.isHidden = true; conflictWindow?.close(); conflictWindow = nil; markdownFile = nil; openedFile = nil; fileFormat = AgentTextFormat(); requestedEncoding = nil; encodingMenu.isHidden = true; markdown.clear(); markdown.isHidden = true; viewer.isHidden = false; displayMode.isHidden = true; sourceSelection.update() }
     private func videoScope(_ files: AgentFiles) -> () throws -> Void {
         { [weak self] in guard let self, let task = self.store.task(self.taskID), try AgentWorkspaceScope.roots(task).contains(where:{$0.root == files.root}) else { throw PetError("视频所属任务或工作区已变化") } }
     }
@@ -805,9 +810,15 @@ import UniformTypeIdentifiers
             conflictWindow?.close(); conflictWindow = nil; requestedEncoding = chosen; encodings[file.path] = chosen; loadText(decoded, data: latest, file: file, task: current); state.stringValue = (text.isEditable ? "" : "只读 · ") + currentFiles.relative(file)
         } catch { dirty = dirty || retainedDirty; state.stringValue = error.localizedDescription; AgentTextEncoding.updateMenu(encodingMenu, requested: requestedEncoding, format: openedHash == nil ? nil : fileFormat) }
     }
-    @objc private func switchDocumentMode() {
+    @objc private func switchDocumentMode(_ sender: Any? = nil) {
         guard let file = markdownFile, let task = store.task(taskID), let workspace = try? AgentWorkspaceScope.files(task,path:file.path).root.path else { return }
-        defer { onWorkspaceChange?() }
+        if isPageVisible, !viewer.isHidden, !textViewportScheduled { rememberedTextFocus = presentingWindow?.firstResponder === text }
+        markdown.rememberViewportFocus()
+        defer {
+            scheduleTextViewport(activating: sender != nil && displayMode.selectedSegment == 1, forceFocus: sender != nil && displayMode.selectedSegment == 1)
+            if displayMode.selectedSegment == 0 { markdown.activateRememberedView(force: sender != nil) }
+            onWorkspaceChange?()
+        }
         do { try markdown.finishEditing() } catch { state.stringValue = error.localizedDescription; displayMode.selectedSegment = markdown.isHidden ? 1 : 0; return }
         let preview = displayMode.selectedSegment == 0
         markdown.isHidden = !preview; viewer.isHidden = preview
@@ -989,7 +1000,7 @@ import UniformTypeIdentifiers
     func windowShouldClose(_ sender: NSWindow) -> Bool { guard wikiPlanWindow?.confirmClosing() != false else { return false }; if canLeave() { load?.cancel(); return true }; return false }
     override func settingsDidAppear() {
         super.settingsDidAppear()
-        scheduleTextViewport(); markdown.scheduleViewRecovery()
+        scheduleTextViewport(activating: true); markdown.activateRememberedView()
         if pendingTextViewport == nil, sections.selectedSegment == 5, isPageVisible, !viewer.isHidden, !text.isHiddenOrHasHiddenAncestor { presentingWindow?.makeFirstResponder(text) }
     }
     override func canLeaveSettings() -> Bool {
@@ -1002,10 +1013,10 @@ import UniformTypeIdentifiers
     override func settingsWillLeave() { closeContent() }
     func windowWillClose(_ notification: Notification) { closeContent(); onWindowClose?(); onWindowClose = nil }
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
-    func windowDidBecomeKey(_ notification: Notification) { scheduleTextViewport(); markdown.scheduleViewRecovery() }
+    func windowDidBecomeKey(_ notification: Notification) { scheduleTextViewport(activating: true); markdown.activateRememberedView() }
     func checkTextViewport(preview: Bool = false, action: String = "", target: String = "", input: String? = nil, selection: NSRange? = nil, y: Double? = nil, cell: Bool = false) throws {
         guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }
-        if !displayMode.isHidden, displayMode.selectedSegment != (preview ? 0 : 1) { displayMode.selectedSegment = preview ? 0 : 1; switchDocumentMode() }
+        if !displayMode.isHidden, displayMode.selectedSegment != (preview ? 0 : 1) { displayMode.selectedSegment = preview ? 0 : 1; switchDocumentMode(displayMode) }
         if preview { try markdown.checkViewRecovery(action: action, target: target, input: input, selection: selection, y: y, cell: cell) }
         else {
             if let input {

@@ -29,10 +29,12 @@ if (!reopen) {
     expectedBlock: guideText.replace('PUBLIC_BLOCK_ORIGINAL_517', blockSource(blockValue)),
     expectedCell: guideText.replace('PUBLIC_CELL_ORIGINAL_628', cellSource(cellValue)),
     continuedBlock: guideText.replace('PUBLIC_BLOCK_ORIGINAL_517', blockSource(blockValue.replace('中文😀', 'BLOCK_RESUMED_739'))),
-    continuedCell: guideText.replace('PUBLIC_CELL_ORIGINAL_628', cellSource(cellValue.replace('中文😀', 'CELL_RESUMED_842'))) };
+    continuedCell: guideText.replace('PUBLIC_CELL_ORIGINAL_628', cellSource(cellValue.replace('中文😀', 'CELL_RESUMED_842'))),
+    continuedReading: guideText.replace('PUBLIC_PARAGRAPH_50', 'RAW_RESUMED_953') };
   await writeFile(path.join(output, 'input.json'), JSON.stringify(input, null, 2) + '\n', { mode: 0o600 });
   await writeFile(path.join(output, 'workspace/plain.txt'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(plainText, 'utf16le')]), { mode: 0o600 });
   await writeFile(path.join(output, 'workspace/guide.md'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(guideText)]), { mode: 0o600 });
+  await writeFile(path.join(output, 'workspace/reading.md'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(guideText)]), { mode: 0o600 });
 }
 const binary = path.join(app, 'Contents/MacOS/BlueFatFish'), binaryHash = hash(await readFile(binary)), results = [];
 async function run(stage, ui = false) {
@@ -68,10 +70,11 @@ try {
     await writeFile(plain, originalPlain); await run('reopen');
     const input = JSON.parse(await readFile(path.join(output, 'input.json'), 'utf8'));
     const decoded = async tab => JSON.parse(Buffer.from(JSON.parse(await readFile(path.join(pages, tab + '.json'), 'utf8')).state, 'base64'));
-    const block = await decoded(fixture.blockTab), cell = await decoded(fixture.cellTab);
+    const block = await decoded(fixture.blockTab), cell = await decoded(fixture.cellTab), reading = await decoded(fixture.readingTab);
     const checks = { allFiveProcessesPassed: results.length === 5 && results.every(x => x.success), sameApplication: results.every(x => x.sameApplication),
       fullContinuedBlockExact: block.text === input.continuedBlock && block.markdownViewport.editor.value.includes('BLOCK_RESUMED_739'),
       fullContinuedCellExact: cell.text === input.continuedCell && cell.markdownViewport.editor.value.includes('CELL_RESUMED_842'),
+      fullContinuedOriginalViewExact: reading.text === input.continuedReading,
       originalFilesAndModesExact: (await Promise.all(Object.entries(fixture.sourceHashes).map(async ([file, expected]) => hash(await readFile(file)) === expected && ((await stat(file)).mode & 0o777) === 0o600))).every(Boolean),
       noModels: results.every(x => x.modelRequests === 0) };
     await writeFile(path.join(output, 'independent.json'), JSON.stringify({ success: Object.values(checks).every(Boolean), checks }, null, 2) + '\n');
