@@ -99,6 +99,7 @@ final class FormDocumentView: NSView {
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
+    private var savedBasicSettings: [String] = []
     private var settingGroups: [(category: String, title: String, keywords: String, view: NSView, key: String?)] = []
     private struct SettingsSearchResult {
         let category: String, title: String, section: String, key: String?
@@ -1214,7 +1215,7 @@ final class FormDocumentView: NSView {
         return leaveSettingsPage()
     }
     private func leaveSettingsPage() -> Bool {
-        guard !settingsPageHost.leave() else { return true }
+        if canLeaveBasicSettings(), settingsPageHost.leave() { return true }
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
             let input = settingsEditingInput, selection = settingsEditingSelection
             settingsSearch.stringValue = ""; updateSettingsSections()
@@ -1227,8 +1228,8 @@ final class FormDocumentView: NSView {
         return false
     }
     func windowDidUpdate(_ notification: Notification) {
-        guard selectedTab == "settings", !settingsPageHost.isHidden, let window, window.isVisible,
-              let responder = window.firstResponder, let root = settingsPageHost.currentController?.pageContentView else { return }
+        guard selectedTab == "settings", let window, window.isVisible, let responder = window.firstResponder,
+              let root = settingsPageHost.isHidden ? settingsForm : settingsPageHost.currentController?.pageContentView else { return }
         func find(_ view: NSView) -> NSView? {
             if view === responder || (view as? NSControl)?.currentEditor() === responder { return view }
             for child in view.subviews { if let value = find(child) { return value } }; return nil
@@ -1705,6 +1706,7 @@ final class FormDocumentView: NSView {
         row("", stack([location, changes, NSView()], spacing: 12))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         generalSettingsSave = save
         save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
         save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
@@ -1792,6 +1794,26 @@ final class FormDocumentView: NSView {
         screenTarget.stringValue = (try? CompanionService.endpoint(p.endpoint).host) ?? "未配置"
         screenTarget.toolTip = p.model
         updateScreenStatus(companion.screenCompanion.status)
+        savedBasicSettings = basicSettingsValues()
+    }
+    private func basicSettingsValues() -> [String] {
+        [endpoint.stringValue, model.stringValue, persona.stringValue, apiKey.stringValue,
+         voiceEndpoint.stringValue, voiceModel.stringValue, voiceID.stringValue, voiceKey.stringValue,
+         wakePhrase.stringValue, contextTokens.stringValue, replyTokens.stringValue,
+         String(vision.indexOfSelectedItem), String(reasoning.indexOfSelectedItem), String(pauseWait.indexOfSelectedItem),
+         String(performance.indexOfSelectedItem), String(screenInterval.indexOfSelectedItem), String(scale.doubleValue),
+         String(voiceEnabled.state.rawValue), String(onTop.state.rawValue), String(wakeEnabled.state.rawValue),
+         String(screenEnabled.state.rawValue), String(removeChatKey), String(removeVoiceKey)]
+    }
+    private func canLeaveBasicSettings() -> Bool {
+        guard !savedBasicSettings.isEmpty, basicSettingsValues() != savedBasicSettings else { return true }
+        let input = settingsEditingInput, selection = settingsEditingSelection
+        guard AgentUnsavedChanges.discard("放弃未保存的设置更改？") else {
+            if let input, input.window === window, !input.isHiddenOrHasHiddenAncestor, window?.makeFirstResponder(input) == true,
+               let selection, let editor = window?.firstResponder as? NSTextView, NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
+            return false
+        }
+        refreshPreferences(); return true
     }
     private func updateScreenStatus(_ value: String) {
         screenStatus.stringValue = value; screenStatus.toolTip = value
@@ -1941,7 +1963,11 @@ final class FormDocumentView: NSView {
             p.scale = scale.doubleValue
             if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }
             if removeVoiceKey || !voiceKey.stringValue.isEmpty { try companion.store.keychain.write(voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "voice") }
-            companion.store.preferences = p; try companion.store.savePreferences(); companion.applyPreferences()
+            let previous = companion.store.preferences
+            companion.store.preferences = p
+            do { try companion.store.savePreferences() }
+            catch { companion.store.preferences = previous; throw error }
+            companion.applyPreferences()
             refreshPreferences(); savedStatus.stringValue = "已保存"; savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         } catch { savedStatus.stringValue = error.localizedDescription; savedStatus.textColor = .systemRed }
     }
@@ -2114,6 +2140,7 @@ final class FormDocumentView: NSView {
         finishOwnedTaskPanels(); return true
     }
     func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
+        guard canLeaveBasicSettings() else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
@@ -2308,6 +2335,54 @@ final class FormDocumentView: NSView {
         checks["discardRuleNavigationPreservesSourceAndOpensRequestedPage"] = try choose("放弃更改", { openSettingsSearchResult(finalConnector); return settingsCategory == "extensions" && settingsPageHost.selectedPageKey == "mcp" }) && Data(contentsOf: source) == ruleBefore
         returnToChat()
         checks["settingsSearchNavigationPreservesOriginalTaskAndInput"] = selectedTab == "chat" && agentTaskID == id && composer.string == draft && tasks.task(id)?.draft == task.draft
+        return checks
+    }
+    func checkBasicSettingsDraft(choose: (String, () -> Bool) throws -> Bool) throws -> [String: Bool] {
+        guard CommandLine.arguments.contains("--unsaved-changes-check"), let companion, let window,
+              companion.checkDirectory != nil, showSettingsCategory("model") else { throw PetError("缺少基础设置草稿验收上下文") }
+        var checks: [String: Bool] = [:]
+        let original = companion.store.preferences, file = companion.store.directory.appendingPathComponent("settings.json")
+        let backup = companion.store.directory.appendingPathComponent("settings-draft-check.backup")
+        let before = try? Data(contentsOf: file)
+        refreshPreferences()
+        defer { companion.store.preferences = original; refreshPreferences(); returnToChat() }
+        checks["loadedBasicSettingsDoNotPrompt"] = basicSettingsValues() == savedBasicSettings && canLeaveBasicSettings()
+        let oldEndpoint = endpoint.stringValue, draft = "https://example.invalid/v1/chat/completions"
+        endpoint.stringValue = draft; window.makeFirstResponder(endpoint)
+        let selection = NSRange(location: 8, length: 7)
+        (window.firstResponder as? NSTextView)?.setSelectedRange(selection)
+        windowDidUpdate(Notification(name: NSWindow.didUpdateNotification, object: window))
+        checks["basicDraftContinueBlocksActualCategoryNavigation"] = try !choose("继续编辑", { showSettingsCategory("voice") }) && settingsCategory == "model" && endpoint.stringValue == draft
+        checks["basicDraftContinueRestoresFieldAndCursor"] = endpoint.currentEditor().map { window.firstResponder === $0 && ($0 as? NSTextView)?.selectedRange() == selection } == true
+        settingsSearch.stringValue = "语音"; updateSettingsSections()
+        checks["basicDraftCancelledSearchRevealsOriginalForm"] = try !choose("继续编辑", { showSettingsCategory("voice") }) && settingsSearch.stringValue.isEmpty && settingsCategory == "model" && !endpoint.isHiddenOrHasHiddenAncestor && endpoint.stringValue == draft
+        checks["basicDraftContinueBlocksActualWindowClose"] = try !choose("继续编辑", { windowShouldClose(window) }) && window.isVisible && closeWindowTask == nil && endpoint.stringValue == draft
+        checks["basicDraftDiscardRestoresSavedFieldsWithoutWriting"] = try choose("放弃更改", { canLeaveBasicSettings() }) && endpoint.stringValue == oldEndpoint && (try? Data(contentsOf: file)) == before
+        let oldSwitch = onTop.state; onTop.state = oldSwitch == .on ? .off : .on
+        checks["basicDraftIncludesSwitches"] = basicSettingsValues() != savedBasicSettings; onTop.state = oldSwitch
+        let oldChoice = vision.indexOfSelectedItem; vision.selectItem(at: oldChoice == 0 ? 1 : 0)
+        checks["basicDraftIncludesSelectors"] = basicSettingsValues() != savedBasicSettings; vision.selectItem(at: oldChoice)
+        let oldScale = scale.doubleValue; scale.doubleValue = oldScale + 0.01
+        checks["basicDraftIncludesSlider"] = basicSettingsValues() != savedBasicSettings; scale.doubleValue = oldScale
+        apiKey.stringValue = "public-fixture-not-a-secret"
+        checks["basicDraftIncludesCredentialInput"] = basicSettingsValues() != savedBasicSettings; apiKey.stringValue = ""
+        removeChatKey = true
+        checks["basicDraftIncludesCredentialRemoval"] = basicSettingsValues() != savedBasicSettings; removeChatKey = false
+        endpoint.stringValue = draft
+        guard !FileManager.default.fileExists(atPath: backup.path) else { throw PetError("基础设置验收备份已存在") }
+        if before != nil { try FileManager.default.moveItem(at: file, to: backup) }
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        do {
+            defer {
+                try? FileManager.default.removeItem(at: file)
+                if before != nil { try? FileManager.default.moveItem(at: backup, to: file) }
+            }
+            generalSettingsSave?.performClick(nil)
+            checks["basicSaveFailureKeepsDraftAndSavedMemory"] = endpoint.stringValue == draft && companion.store.preferences.endpoint == original.endpoint && basicSettingsValues() != savedBasicSettings && savedStatus.textColor == .systemRed
+        }
+        checks["basicSaveFailureLeavesOriginalFileIntact"] = (try? Data(contentsOf: file)) == before
+        checks["basicSaveUsesCommandS"] = generalSettingsSave?.keyEquivalent == "s" && generalSettingsSave?.keyEquivalentModifierMask == .command
+        _ = try choose("放弃更改", { canLeaveBasicSettings() })
         return checks
     }
     func checkSettings(_ output: URL) async -> [String: Any] {
