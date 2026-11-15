@@ -2042,3 +2042,22 @@ Skill 自进化的目标查找和来源校验改为任务固定的全部源目�
 两轮实际窗口保留 15 次调用、30 份原始记录及 4 张原图，覆盖 1200×774／780×540。首次退出后的画面查询曾超时，该记录保留；后续以原进程正常退出状态和同版真实重开画面完成核对，没有用观察超时推断进程结束。14 个已记录的编译、检查与窗口进程均核对退出；原日常程序及防休眠进程继续保留。模型请求 0，日常应用及 12 个正式保护项的字节和权限保持，未解锁个人钥匙串，未替换日常入口。
 
 总索引为 `evidence/agent/workspace-recovery-p8r4m2v6/acceptance-index.json`，本轮索引为 `runtime-acceptance-index.json`，原存储阶段另存 `storage-acceptance-index.json`。最终原生报告位于 `workspace-recovery-command-cXCwda`、`task-workspace-command-8wThz5`、`unsaved-changes-command-oRtQLF` 和 `workspace-recovery-command-uwHYLy`；窗口及数据证明为本轮目录中的 `cua-runtime-01-edit-quit`、`cua-runtime-02-reopen`、`runtime-ui/actual-quit-proof.json` 与 `runtime-ui/reopen-preservation-proof.json`。历史 Wiki 首次无按键记录的跳转仍未定因；本轮不改变其待办状态。
+
+
+## 2026-11-15 Office 完整草稿跨启动候选
+
+Word、表格和幻灯片接入原任务窗口的恢复存储，保存完整导出文件，沿用 500MiB 资源上限和流式复制，不以正文抽取代替文档。每次后续编辑继续更新恢复版本，退出前等待最后输入落盘。重开保留原任务、原目录、打开时摘要／签名／权限及未保存状态；恢复文件经过摘要固定后才交给实际编辑器。恢复后的编辑器即使将私有副本视为干净基线，也不会因此清除逻辑上的未保存状态；只有实际保存成功才清除。加载失败时保留冷标签及原恢复页，避免误删草稿。
+
+原文件已被外部修改、只读或失联时，继续保留完整草稿并拒绝覆盖；另存入口保留。修正 Office 原保存流程仅靠原子替换可能越过源文件只读权限的问题，在生成检查点前与实际写入时均复核版本及写权限。原版本未变的恢复后幻灯片已实际保存，检查点及清除私有未保存指针一并核对。应用正常退出仅对已持久保存、仍属于保留任务的编辑器跳过放弃提示，明确关闭／放弃继续使用原保护。
+
+源码 `1e3371f79e3d00b2ff075971c40ad5cbc6037cf7` 已提交并推送 main。最终同一优化程序 `evidence/agent/workspace-office-recovery-r6m3v8p2/final-01/小鲸办公恢复验收.app` 的 SHA-256 为 `3557b4eff3d2bcfc5e683fcbf53d7e4e9073ce2673050e6c4f342f92ddff535a`，375 份原生输入、7 份 MCP 输入、4 份图标资源、21 份辅助输入、9 份 Office 源输入及新构建的 140 份 Office 资源均核对；实际构建输入另与冻结副本一致。构建时源状态干净，独立 ad hoc 签名通过，无需个人证书或解锁钥匙串。
+
+最终程序通过 Office 跨进程 31、Record 跨进程 25、原任务工作区 132、未保存保护 44、恢复存储 24 项，共 256 项相关检查。Office 检查在已脏草稿中再次编辑，不借助强制刷新验证后续修订通知；覆盖完整 DOCX／XLSX／PPTX、失联原件、只读拒绝且不新增检查点、外部版本冲突以及恢复后的实际保存。Python 文档工具另独立读取种子恢复、再次重开和实际保存 3 组产物的 17 类内容，核对文字、表格、公式及 43.65 的实际缓存值、样式、图片、页眉页脚、幻灯片几何与不透明 XML；这 3 组不计为 51 类。调试预检 31 项不累加至最终总数。
+
+实际窗口向原 Word 第三段后追加 `实际窗口恢复补记 CUA_OFFICE_FINAL_641`，保留原审阅人、正文、表格和图片；关闭标签时选择继续编辑。只读表格显示必要状态并禁用覆盖保存，实际进入“审阅”工作表与幻灯片核对内容。窗口从 1200×774 缩至 780×540 后再次补写 ` LAST_208`，立即正常退出；独立读取完整文档确认最后输入、原样式、表格、图片及页眉页脚。用同一程序重开，真实窗口可见完整补记、未保存标记、恢复状态和窄窗口，再次正常退出。两轮共 15 次窗口调用、30 份原始记录、8 张原图；14 类实际窗口内容核对在首次退出及重开后均通过。
+
+首次退出后原 18 份资料权限保持，其中 14 份字节一致，只有明确编辑的 Word 恢复元数据／两个资源槽位与缩窄后的窗口布局变化，另正常新增历史和设置两份文件；4 份原件、5 份公开来源和完整原任务保持。重开并再次退出后全部 20 份资料的字节与权限同上次退出完全一致。15 个已记录的编译、检查及窗口进程均核对退出；日常程序和防休眠进程保留，日常应用及 12 个正式保护项字节与权限一致，模型请求 0。
+
+完整索引为 `evidence/agent/workspace-office-recovery-r6m3v8p2/acceptance-index.json`。最终原生报告位于 `office-recovery-command-icRc48`、`workspace-recovery-command-RwXtTI`、`task-workspace-command-nN4LnP`、`unsaved-changes-command-P7odDF` 和 `workspace-recovery-command-rkNQcE`。实际窗口与保护证明为本轮目录中的 `cua-office-01-edit-quit`、`cua-office-02-reopen`、`runtime-ui/actual-quit-proof.json`、`runtime-ui/reopen-preservation-proof.json` 及 `process-and-protection-proof.json`。证据整理时对辅助输入冻结位置的一次错误假定已修正，原诊断保留，未改变应用源码或重跑已通过的原生检查。
+
+完整恢复仍未完成：Office 当前工作表、幻灯片及光标等视图状态，Canvas 原有草稿与选择，浏览器与未添加标注，MCP 参数，编辑并重发，独立产物窗口，视频位置，以及明确关闭／放弃和更多来源／权限失败边界继续验收。日常应用未更新，完整恢复 TODO 保持未勾选；历史 Wiki 首次无按键记录的跳转也继续保留。
