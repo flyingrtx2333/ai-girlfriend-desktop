@@ -710,6 +710,9 @@ final class FormDocumentView: NSView {
             switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
+        taskWorkspace.onResolveCanvas = { [weak self] task, canvas in
+            self?.companion?.agentStore?.task(task)?.canvases?.first { $0.id == canvas }
+        }
         taskWorkspace.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
         conversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: workbenchInspector.leadingAnchor)
         fullConversationTrailing = terminalSplit.trailingAnchor.constraint(equalTo: chat.trailingAnchor)

@@ -175,6 +175,15 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    // Tab chrome needs only metadata. It must not hash a large Office asset or
+    // construct an editor merely to retain the last known unsaved marker.
+    func loadTabDirtyState(windowID: String, pageID: String, taskID: String) throws -> Bool? {
+        let files = try files(), url = try literal(files, pagePath(windowID, pageID) + ".json")
+        if try files.entryMetadata(url).kind == "missing" { return nil }
+        let value = try decodePage(files.readData(url, maximum: Self.maximumState))
+        guard value.taskID == taskID else { throw PetError("恢复草稿不属于当前任务") }
+        return value.dirty
+    }
     func loadPage(windowID: String, pageID: String, taskID: String) throws -> LoadedPage? {
         let files = try files(), path = try pagePath(windowID, pageID) + ".json", url = try literal(files, path)
         if try files.entryMetadata(url).kind == "missing" { return nil }

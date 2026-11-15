@@ -15,6 +15,7 @@ import AppKit
             var window = AgentWorkspaceRecovery.Window(id: windowID, number: 1, taskID: owner, frame: .init(x: 100, y: 120, width: 1200, height: 774), tasks: [.init(taskID: owner, tabs: [tab], selected: tab.root, opened: true, expanded: false)])
             var savedWindow = try journal.saveWindow(window, expected: nil)
             checks["windowLayoutRoundTripsWithoutChangingTaskData"] = try journal.loadWindow(windowID)?.value == window && files.readData(sentinel) == original
+            checks["missingTabStateDoesNotCreateDraft"] = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: owner) == nil
             let firstAsset = try sourceFiles.resolve("first.data"), secondAsset = try sourceFiles.resolve("second.data")
             let firstBytes = Data("FIRST_RECOVERY_RESOURCE_PUBLIC_624".utf8), secondBytes = Data("SECOND_RECOVERY_RESOURCE_PUBLIC_835".utf8)
             try sourceFiles.writeData(firstBytes, to: firstAsset, permissions: 0o600); try sourceFiles.writeData(secondBytes, to: secondAsset, permissions: 0o600)
@@ -23,6 +24,9 @@ import AppKit
             var savedPage = try journal.savePage(page, asset: firstAsset, windowID: windowID, pageID: pageID, expected: nil)
             var loaded = try journal.loadPage(windowID: windowID, pageID: pageID, taskID: owner)!
             checks["draftAndResourceRoundTripExactly"] = try loaded.saved.value.state == state && loaded.saved.value.dirty && Data(contentsOf: loaded.asset!) == firstBytes
+            checks["tabMetadataReadsDurableDirtyState"] = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: owner) == true
+            do { _ = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: UUID().uuidString); checks["tabMetadataRejectsDifferentTask"] = false }
+            catch { checks["tabMetadataRejectsDifferentTask"] = true }
             let layoutURL = try files.resolve("workspace-recovery/" + windowID + "/layout.json"), pageURL = try files.resolve("workspace-recovery/" + windowID + "/pages/" + pageID + ".json")
             let pageBefore = try files.readData(pageURL), firstAssetURL = loaded.asset!
             try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
@@ -84,6 +88,7 @@ import AppKit
             let listing = try journal.list()
             checks["invalidWindowsAreReportedWhileValidWindowRemainsAvailable"] = listing.windows.count == 1 && listing.windows.first?.value == window && listing.issues.count == 2
             try files.writeData(Data("DAMAGED_RESOURCE_PUBLIC".utf8), to: loaded.asset!, permissions: 0o600)
+            checks["coldMarkerDoesNotRequireDamagedAssetToLoad"] = try journal.loadTabDirtyState(windowID: windowID, pageID: pageID, taskID: owner) == true && files.readData(pageURL) == activeBefore
             do { _ = try journal.loadPage(windowID: windowID, pageID: pageID, taskID: owner); checks["damagedResourceFailsChecksumWithoutRewritingDraft"] = false }
             catch { checks["damagedResourceFailsChecksumWithoutRewritingDraft"] = try files.readData(pageURL) == activeBefore }
             checks["privateRecoveryMetadataAndResourcePermissions"] = try [layoutURL, pageURL, firstAssetURL, loaded.asset!].allSatisfy { (try FileManager.default.attributesOfItem(atPath: $0.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600 }

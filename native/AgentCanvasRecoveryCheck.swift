@@ -82,6 +82,7 @@ import AppKit
                 guard await flushWorkspaceWindows() else { throw PetError("画布最后状态未保存") }
                 fixture = .init(first: first, second: second, windowID: window, ids: ids, tabs: tabs, originals: originals, drafts: drafts, selectionLocation: selection.location, selectionLength: selection.length, sourceScrollY: selected.sourceScrollY)
                 checks["allFourCanvasEditorsEligibleForDurableHotExit"] = control.workspaceSession?.preservedEditors.count == 4
+                checks["canvasTitlesPersistInExistingLayoutField"] = try journal.loadWindow(window)?.value.tasks.first(where: { $0.taskID == first })?.tabs.filter { $0.root.hasPrefix("canvas:") }.allSatisfy { $0.title.hasPrefix("画布 · 公开画布 ") } == true
                 checks["askWithoutWorkspaceKeepsCanvasDraftAndComposer"] = tasks.task(first)?.workspace == nil && tasks.task(first)?.mode == .ask && tasks.task(first)?.draft == "保留原任务输入 PUBLIC_CANVAS_INPUT_184"
                 do { _ = try await tasks.canvases.restore(page.saved.value, taskID: first) { _ in }; checks["secondWindowCannotTakeOverOpenCanvasRecovery"] = false }
                 catch { checks["secondWindowCannotTakeOverOpenCanvasRecovery"] = tasks.canvases.windows[first + ":" + ids["a"]!] === a }
@@ -98,6 +99,10 @@ import AppKit
                 fixture = try JSONDecoder().decode(CanvasRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
                 control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("画布恢复未完成") }
                 checks["sameCanvasTaskWindowIdentityRestores"] = control.workspaceSession?.id == fixture.windowID && control.agentTaskID == fixture.first
+                let coldLabels = control.taskWorkspace.checkState()["tabLabels"] as? [String] ?? []
+                checks["coldCanvasTitleAndDirtyMarkerRestoreBeforeEditorLoads"] = coldLabels.contains("• 画布 · 公开画布 D") && control.taskWorkspace.recoveryController(taskID: fixture.first, root: .canvas(fixture.ids["d"]!)) == nil
+                checks["cleanColdCanvasHasExactNameWithoutDirtyMarker"] = coldLabels.contains("画布 · 公开画布 B") && control.taskWorkspace.recoveryController(taskID: fixture.first, root: .canvas(fixture.ids["b"]!)) == nil
+                report["initialColdTabLabels"] = coldLabels
                 for key in ["a", "b", "c"] {
                     let owner = key == "c" ? fixture.second : fixture.first
                     control.showAgentTask(owner); control.taskWorkspace.checkSelect(.canvas(fixture.ids[key]!))
@@ -127,6 +132,7 @@ import AppKit
                     let before = try journal.loadPage(windowID: fixture.windowID, pageID: fixture.tabs["d"]!, taskID: fixture.first)!
                     control.taskWorkspace.checkSelect(.canvas(fixture.ids["d"]!)); guard await flushWorkspaceWindows() else { throw PetError("失联画布恢复检查未完成") }
                     checks["missingSourceKeepsColdTabPageAndExistingDraft"] = try control.taskWorkspace.currentController == nil && journal.loadPage(windowID: fixture.windowID, pageID: fixture.tabs["d"]!, taskID: fixture.first)?.saved.hash == before.saved.hash && tasks.canvases.record(fixture.ids["d"]!, taskID: fixture.first).draft == fixture.drafts["d"] && tasks.canvases.windows[fixture.first + ":" + fixture.ids["d"]!] == nil
+                    checks["failedCanvasRestoreKeepsNamedUnsavedColdTab"] = (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 画布 · 公开画布 D") == true
                 }
                 control.taskWorkspace.checkSelect(.canvas(fixture.ids["a"]!)); guard await flushWorkspaceWindows() else { throw PetError("返回原画布失败") }
                 checks["originalCanvasTaskComposersRemainExact"] = [fixture.first, fixture.second].allSatisfy { tasks.task($0)?.draft == "保留原任务输入 PUBLIC_CANVAS_INPUT_184" }

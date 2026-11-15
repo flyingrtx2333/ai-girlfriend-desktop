@@ -44,12 +44,14 @@ import AppKit
     private let title = NSTextField(labelWithString: ""), body = NSView(), tabs = NSStackView(), tabScroll = NSScrollView(), breadcrumb = NSStackView()
     private var stacks: [String: [Root: [Entry]]] = [:], orders: [String: [Root]] = [:], selected: [String: Root] = [:]
     private var recoveryTabs: [String: [Root: AgentWorkspaceRecovery.Tab]] = [:], recoveryRequested = Set<String>(), pendingRecovery = Set<String>(), permittedRecovery = Set<String>()
+    private var recoveredDirty: [String: Bool] = [:]
     private var opened = Set<String>(), expandedTasks = Set<String>(), tabSignature = "", headerFull: Bool?, closing = false
     private var breadcrumbHeight: NSLayoutConstraint!, tabViews: [(Root, AgentThemeView, NSButton, NSButton, NSLayoutConstraint, NSLayoutConstraint)] = []
     private(set) var taskID: String?
     var onLayoutChange: (() -> Void)?
     var onRecoveryChange: (() -> Void)?
     var onRestoreRoot: ((String, AgentWorkspaceRecovery.Tab) -> Void)?
+    var onResolveCanvas: ((String, String) -> AgentCanvasRecord?)?
     var onOpenRoot: ((Root) -> Void)?, onOpenDocument: (() -> Void)?, onOpenTerminal: (() -> Void)?
     var requested: Bool { taskID.map(opened.contains) == true }
     var expanded: Bool { taskID.map(expandedTasks.contains) == true }
@@ -112,7 +114,10 @@ import AppKit
     }
     var recoveryLayouts: [AgentWorkspaceRecovery.TaskLayout] {
         orders.keys.sorted().map { id in
-            .init(taskID: id, tabs: (orders[id] ?? []).compactMap { recoveryTabs[id]?[$0] }, selected: selected[id]?.key, opened: opened.contains(id), expanded: expandedTasks.contains(id))
+            .init(taskID: id, tabs: (orders[id] ?? []).compactMap { root in
+                guard var tab = recoveryTabs[id]?[root] else { return nil }
+                tab.title = presentation(task: id, root: root).title; return tab
+            }, selected: selected[id]?.key, opened: opened.contains(id), expanded: expandedTasks.contains(id))
         }
     }
     var recoveryEditors: [(String, AgentWorkspaceRecovery.Tab, AgentSettingsPageController)] {
@@ -123,7 +128,29 @@ import AppKit
     }
     func recoveryController(taskID: String, root: Root) -> AgentSettingsPageController? { stacks[taskID]?[root]?.first?.controller }
     func permitRecovery(_ id: String) { permittedRecovery.insert(id) }
-    func retryRecovery(_ id: String) { recoveryRequested.remove(id); permittedRecovery.remove(id) }
+    func retryRecovery(_ id: String) { recoveryRequested.remove(id); permittedRecovery.remove(id); updateTabs() }
+    func applyRecoveredTabStates(_ states: [String: Bool]) {
+        let valid = Set(recoveryTabs.values.flatMap { $0.values.map(\.id) })
+        for (id, dirty) in states where valid.contains(id) { recoveredDirty[id] = dirty }
+        updateTabs()
+    }
+    private func presentation(task id: String, root: Root) -> (title: String, dirty: Bool) {
+        let page = stacks[id]?[root]?.first?.controller, tab = recoveryTabs[id]?[root]
+        var title = tab?.title ?? root.title
+        if title.isEmpty { title = root.title }
+        var dirty = tab.flatMap { recoveredDirty[$0.id] } ?? false
+        if case .document = root, let document = (page as? AgentRecordWindow)?.workspaceDocumentURL { title = document.lastPathComponent }
+        else if case .canvas(let canvasID) = root {
+            let record = onResolveCanvas?(id, canvasID)
+            if let canvas = page as? AgentCanvasWindow, canvas.selectedID == canvasID { title = canvas.window?.title ?? title }
+            else if let record { title = "画布 · " + record.title }
+            if let record { dirty = record.draft != nil }
+        }
+        if let page, tab.map({ !recoveryRequested.contains($0.id) }) ?? true {
+            dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
+        }
+        return (title, dirty)
+    }
     func restoreLayouts(_ values: [AgentWorkspaceRecovery.TaskLayout]) throws {
         guard orders.isEmpty else { throw PetError("当前工作区已有标签，无法替换恢复布局") }
         var parsed: [(AgentWorkspaceRecovery.TaskLayout, [Root])] = []
@@ -191,12 +218,9 @@ import AppKit
             }
         }
         for (root, group, button, close, groupWidth, buttonWidth) in tabViews {
-            let page = rootController(root), dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
+            let page = rootController(root), value = taskID.map { presentation(task: $0, root: root) }
+            let label = value?.title ?? root.title, dirty = value?.dirty == true
             let document = (page as? AgentRecordWindow)?.workspaceDocumentURL
-            let label: String
-            if case .document = root { label = document?.lastPathComponent ?? root.title }
-            else if case .canvas = root { label = page?.window?.title ?? root.title }
-            else { label = root.title }
             if case .document(let path) = root { let current = document?.path ?? path; AgentFileIcons.bind(button, filename: current); button.toolTip = current }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(174, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12 + (button.image == nil ? 0 : 20))); groupWidth.constant = buttonWidth.constant + 26
@@ -234,7 +258,7 @@ import AppKit
     }
     private func removeRoot(taskID id: String, root: Root, detaching: Bool = false) {
         let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { if detaching { $0.controller.detachSettingsHosting() } else { $0.controller.endSettingsHosting() } }; orders[id]?.removeAll { $0 == root }
-        if let tab = recoveryTabs[id]?.removeValue(forKey: root) { recoveryRequested.remove(tab.id); pendingRecovery.remove(tab.id); permittedRecovery.remove(tab.id) }
+        if let tab = recoveryTabs[id]?.removeValue(forKey: root) { recoveryRequested.remove(tab.id); pendingRecovery.remove(tab.id); permittedRecovery.remove(tab.id); recoveredDirty[tab.id] = nil }
         if selected[id] == root { selected[id] = orders[id]?.last }
         if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
         if taskID == id { displayCurrent(); onLayoutChange?() }

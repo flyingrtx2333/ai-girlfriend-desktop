@@ -10,17 +10,35 @@ import AppKit
     private var pages: [String: AgentWorkspaceRecovery.Page] = [:], pageHashes: [String: String] = [:]
     private var revision = 0, savedRevision = -1, disabled = false, stopped = false, closing = false
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
+    private var tabStateJob: Task<Void, Never>?
     private var failure: Error?
     private(set) var preservedEditors = Set<ObjectIdentifier>()
-    var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty) }
+    var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty && tabStateJob == nil) }
 
     init(owner: ControlWindow, profile: URL, saved: AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window>?) {
         self.owner = owner; journal = AgentWorkspaceRecovery(profile: profile)
         id = saved?.value.id ?? UUID().uuidString; layoutHash = saved?.hash; previous = saved?.value
         owner.taskWorkspace.onRecoveryChange = { [weak self] in self?.changed() }
         owner.taskWorkspace.onRestoreRoot = { [weak self] task, tab in self?.restore(task: task, tab: tab) }
-        do { if let saved { try owner.taskWorkspace.restoreLayouts(saved.value.tasks) } }
+        do { if let saved { try owner.taskWorkspace.restoreLayouts(saved.value.tasks); loadTabStates(saved.value.tasks) } }
         catch { disabled = true; owner.setStatus(error.localizedDescription, error: true) }
+    }
+    private func loadTabStates(_ tasks: [AgentWorkspaceRecovery.TaskLayout]) {
+        let journal = journal, windowID = id
+        tabStateJob = Task { @MainActor [weak self] in
+            guard let self else { return }; defer { tabStateJob = nil }
+            let result = await Task.detached(priority: .utility) {
+                var values: [String: Bool] = [:], issues: [String] = []
+                for task in tasks { for tab in task.tabs {
+                    do { values[tab.id] = try journal.loadTabDirtyState(windowID: windowID, pageID: tab.id, taskID: task.taskID) }
+                    catch { issues.append(tab.title + "：" + error.localizedDescription) }
+                } }
+                return (values, issues)
+            }.value
+            guard !stopped, !Task.isCancelled, let owner else { return }
+            owner.taskWorkspace.applyRecoveredTabStates(result.0)
+            if !result.1.isEmpty { owner.setStatus("部分标签状态未读取，原记录已保留：" + result.1.prefix(2).joined(separator: "；"), error: true) }
+        }
     }
     func changed() {
         guard !stopped, !disabled else { return }; revision &+= 1
@@ -32,6 +50,7 @@ import AppKit
     }
     private func savePending() async {
         guard !stopped, !disabled, let owner else { return }
+        if let tabStateJob { await tabStateJob.value }
         do {
             while savedRevision != revision {
                 // A restore owns its page until its factory has finished. Do
@@ -72,14 +91,16 @@ import AppKit
         let saved = try await Task.detached(priority: .utility) { try journal.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: hash) }.value
         // Keep each successful revision if a later page or layout fails.
         pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
+        owner?.taskWorkspace.applyRecoveredTabStates([pageID: saved.value.dirty])
     }
     func flush() async throws {
         guard !disabled else { return }
+        if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }
         if savedRevision != revision { await savePending() }
         if let failure { throw failure }
     }
-    func stop() { stopped = true; preservedEditors = [] }
+    func stop() { stopped = true; tabStateJob?.cancel(); tabStateJob = nil; preservedEditors = [] }
     func markClosed() async throws {
         guard !disabled else { stop(); return }
         try await flush()

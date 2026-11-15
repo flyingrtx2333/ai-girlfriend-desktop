@@ -99,6 +99,11 @@ import AppKit
                 fixture = try JSONDecoder().decode(OfficeRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
                 control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("初始办公草稿没有恢复") }
                 checks["sameTaskWindowIdentityRestores"] = control.workspaceSession?.id == fixture.windowID
+                let coldLabels = control.taskWorkspace.checkState()["tabLabels"] as? [String] ?? []
+                checks["coldOfficeNamesAndDirtyMarkersRestoreWithoutEditors"] = ["xlsx", "pptx", "missing"].allSatisfy { key in
+                    coldLabels.contains("• " + URL(fileURLWithPath: fixture.paths[key]!).lastPathComponent) && control.taskWorkspace.recoveryController(taskID: fixture.taskID, root: .document(fixture.paths[key]!)) == nil
+                }
+                report["initialColdTabLabels"] = coldLabels
                 for key in keys {
                     control.taskWorkspace.checkSelect(.document(fixture.paths[key]!))
                     guard await flushWorkspaceWindows(), let editor = control.taskWorkspace.currentController as? AgentOfficeWindow else { throw PetError("办公草稿标签未恢复：" + key) }

@@ -61,6 +61,7 @@ import AppKit
                 control.show(tab: "chat"); restoreAdditionalWorkspaceWindows()
                 guard await flushWorkspaceWindows(), let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.childWindow }) else { throw PetError("持久窗口未恢复") }
                 checks["sameMainAndChildWindowIdentitiesRestore"] = control.workspaceSession?.id == fixture.mainWindow && child.taskWindowNumber == 2
+                checks["coldRecordDirtyMarkerRestoresWithoutMemoryEditor"] = (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 记录") == true && control.taskWorkspace.recoveryController(taskID: fixture.first, root: .records) == nil
                 checks["selectedMarkdownRestoresWithUnsavedText"] = try editor(control).captureWorkspaceRecovery().dirty && AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).text == fixture.firstDraft
                 checks["sourceVersionAndBOMCRLFRetained"] = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).openedHash == fixture.guideHash && AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).bom
                 checks["previewModeRestoresAcrossProcessRestart"] = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).mode == fixture.mode

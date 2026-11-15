@@ -58,6 +58,14 @@ for (const stage of ['seed', 'reopen']) {
     const source = path.join(output, 'profile/agent', fixture.first, 'canvases', fixture.ids.d, 'document.canvas.tsx');
     await rename(source, path.join(output, 'moved-original.canvas.tsx'));
     await writeFile(path.join(output, 'missing-source-fixture.json'), JSON.stringify({ source, movedSHA256: hash(await readFile(path.join(output, 'moved-original.canvas.tsx'))) }, null, 2) + '\n');
+    // Earlier layouts stored the generic Canvas label. Preserve their exact
+    // bytes, then exercise that existing format without materializing tabs.
+    const layoutFile = path.join(output, 'profile/workspace-recovery', fixture.windowID, 'layout.json');
+    const original = await readFile(layoutFile), legacy = JSON.parse(original);
+    await writeFile(path.join(output, 'seed-original-layout.json'), original);
+    for (const task of legacy.tasks) for (const tab of task.tabs) if (tab.root.startsWith('canvas:')) tab.title = '画布';
+    await writeFile(layoutFile, JSON.stringify(legacy) + '\n');
+    await writeFile(path.join(output, 'legacy-layout-fixture.json'), JSON.stringify({ version: legacy.version, originalSHA256: hash(original), legacySHA256: hash(await readFile(layoutFile)), retainedPageIDs: legacy.tasks.flatMap(task => task.tabs.map(tab => tab.id)) }, null, 2) + '\n');
   }
 }
 await writeFile(path.join(output, 'results.json'), JSON.stringify(results, null, 2) + '\n');
