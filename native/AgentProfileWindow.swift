@@ -82,7 +82,7 @@ import UniformTypeIdentifiers
     }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let value = values[row], text = NSTextField(labelWithString: value.name + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
+        let value = values[row], text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名智能体" : value.name) + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !loading, values.indices.contains(table.selectedRow) else { return }
@@ -101,7 +101,7 @@ import UniformTypeIdentifiers
         permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0); readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; enabled.state = value?.enabled == true ? .on : .off; selectedTools = Set(value?.tools ?? [])
         selectedSkills = Set(value?.skills ?? []); selectedMCP = Set(value?.mcpServers ?? []); toolPermissions = value?.toolPermissions ?? [:]; mcpPermissions = value?.mcpToolPermissions ?? []
         refreshMenus()
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? (value == nil ? "暂无 Agent" : "")
+        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? ""
     }
     private func capture() {
         guard let i = values.firstIndex(where: { $0.id == selectedID }) else { return }

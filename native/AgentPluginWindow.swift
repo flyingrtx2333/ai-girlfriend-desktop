@@ -92,7 +92,7 @@ import UniformTypeIdentifiers
             items = all.filter { query.isEmpty || $0.metadata.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) || $0.metadata.description.localizedCaseInsensitiveContains(query) }
             list.delegate = nil; list.reloadData(); let row = items.firstIndex(where: { $0.id == (id ?? selected?.id) }) ?? (items.isEmpty ? -1 : 0)
             if row >= 0 { list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { list.deselectAll(nil) }; list.delegate = self; open(row)
-            state.stringValue = service.warnings.isEmpty ? (selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false ? "需本机审阅后启用" : items.isEmpty ? "暂无插件" : "\(items.count) 项") : service.warnings.joined(separator: "；"); state.toolTip = state.stringValue
+            state.stringValue = service.warnings.isEmpty ? (selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false ? "需本机审阅后启用" : "\(items.count) 项") : service.warnings.joined(separator: "；"); state.toolTip = state.stringValue
         } catch { state.stringValue = error.localizedDescription }; updateControls()
     }
     private func open(_ row: Int) {

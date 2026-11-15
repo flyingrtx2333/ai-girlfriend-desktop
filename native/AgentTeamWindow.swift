@@ -66,7 +66,7 @@ import AppKit
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let value = values[row], sources = (try? store.teams.sourceWorkspaces(value).sorted()) ?? []
         let suffix = value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? (sources.count > 1 ? " · \(sources.count) 个来源" : "")
-        let text = NSTextField(labelWithString: value.name + suffix + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = ([value.description] + sources).joined(separator: "\n"); return text
+        let text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名团队" : value.name) + suffix + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = ([value.description] + sources).joined(separator: "\n"); return text
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !loading, values.indices.contains(table.selectedRow) else { return }
@@ -81,7 +81,7 @@ import AppKit
         loading = true; selectedID = id; let value = values.first { $0.id == id }
         name.stringValue = value?.name ?? ""; purpose.stringValue = value?.description ?? ""; instructions.string = value?.instructions ?? ""; enabled.state = value?.enabled == true ? .on : .off
         selectedMembers = Set(value?.memberIDs ?? []); refreshRoles(leaderID: value?.leaderID)
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(); loading = false; updateControls(); state.stringValue = value == nil ? "暂无团队" : ""
+        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(); loading = false; updateControls(); state.stringValue = ""
     }
     private func roleTitle(_ value: AgentProfile) -> String {
         let scope = value.pluginSource.map { (try? AgentPlugins.scope($0.name).workspace) != nil ? " · 项目插件" : " · 用户插件" } ?? ""
