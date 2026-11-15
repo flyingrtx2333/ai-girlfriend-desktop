@@ -23,7 +23,7 @@ import AppKit
     private let enabled = NSSwitch(), scope = NSPopUpButton(), period = NSPopUpButton(), projects = NSPopUpButton()
     private let apply = NSButton(title: "应用回收设置", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
     private let check = NSButton(title: "立即检查", target: nil, action: nil), manage = NSButton(title: "管理工作树…", target: nil, action: nil), backups = NSButton(title: "打开备份", target: nil, action: nil)
-    private let state = NSTextField(wrappingLabelWithString: ""), history = NSTextView()
+    private let state = AgentSettingsStatusField("工作树回收状态"), history = NSTextView()
     private var periods: [Double] = [], roots: [AgentWorktreeRoot] = [], revision: String?, savedRevision: String?
     private var hasEdits = false
     init(store: AgentStore, onOpenTask: @escaping (String) -> Void) {
@@ -32,22 +32,24 @@ import AppKit
         scope.addItems(withTitles: ["仅已归档任务", "全部闲置任务"])
         for control in [enabled, scope, period] as [NSControl] { control.target = self; control.action = #selector(policyEdited) }
         let backup = NSTextField(labelWithString: "完整文件与暂存区 · 长期保留")
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "自动回收"), enabled], [NSTextField(labelWithString: "回收范围"), scope], [NSTextField(labelWithString: "保留期"), period], [NSTextField(labelWithString: "备份"), backup]])
-        grid.rowSpacing = 12; grid.columnSpacing = 12; grid.column(at: 0).width = 72; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill
-        grid.cell(atColumnIndex: 1, rowIndex: 0).xPlacement = .leading
+        backup.font = .systemFont(ofSize: 12); backup.textColor = AgentWorkbenchTheme.secondaryText
         for button in [apply, reload, check, manage, backups] { button.target = self }
         apply.action = #selector(save); reload.action = #selector(reloadPolicy); check.action = #selector(checkNow); manage.action = #selector(openManager); backups.action = #selector(openBackups)
         projects.target = self; projects.action = #selector(projectChanged)
-        let actions = NSStackView(views: [apply, reload, check, NSView()]); actions.spacing = 10
+        AgentSettingsStyle.primaryAction(apply); apply.keyEquivalent = "s"; apply.keyEquivalentModifierMask = .command
+        let actions = NSStackView(views: [check, NSView(), reload, apply]); actions.spacing = 10
         let project = NSStackView(views: [projects, manage, backups]); project.spacing = 10
         projects.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        projects.font = .systemFont(ofSize: 13); projects.controlSize = .large
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
-        history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 12); history.setAccessibilityLabel("自动回收记录")
+        history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 13); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true
         let scroll = NSScrollView(); scroll.documentView = history; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
-        let column = NSStackView(views: [grid, actions, project, state, scroll]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 16
+        let policy = AgentSettingsStyle.section("自动回收", id: "worktree-policy", rows: [AgentSettingsStyle.formRow("启用", enabled, trailing: true), AgentSettingsStyle.formRow("回收范围", scope, trailing: true), AgentSettingsStyle.formRow("保留期", period, trailing: true), AgentSettingsStyle.formRow("备份", backup, trailing: true), actions])
+        let records = AgentSettingsStyle.section("工作树与记录", id: "worktree-history", rows: [project, state, scroll])
+        let column = NSStackView(views: [policy, records]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 24
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), heightAnchor.constraint(equalToConstant: 430), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 110)])
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), scroll.heightAnchor.constraint(equalToConstant: 150)])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         loadControls()
     }
