@@ -28,7 +28,9 @@ import AppKit
                 var actual: [String: Any] = [:]
                 for _ in 0..<150 {
                     guard let video = view.recoveryVideoForCheck else { throw PetError("来源视频未恢复") }; actual = await video.preview.checkState()
-                    if let player = actual["player"] as? [String: Any], player["restoreReady"] as? Bool == true, (player["readyState"] as? Int ?? 0) >= 2, player["seeking"] as? Bool == false, (player["error"] as? Int ?? 0) == 0 { return actual }
+                    if let player = actual["player"] as? [String: Any], player["restoreReady"] as? Bool == true,
+                       (player["readyState"] as? Int ?? 0) >= ((player["time"] as? Double ?? 0) > 0 ? 2 : 1),
+                       player["seeking"] as? Bool == false, (player["error"] as? Int ?? 0) == 0 { return actual }
                     await wait(0.05)
                 }
                 report["decoderFailure"] = actual; throw PetError("来源视频未实际解码就绪")
