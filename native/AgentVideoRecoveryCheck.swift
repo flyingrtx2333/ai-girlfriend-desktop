@@ -18,10 +18,15 @@ import AppKit
                 var value: [String: Any] = [:]
                 for _ in 0..<100 {
                     value = await record.videoPreviewReadback()
-                    if let player = value["player"] as? [String: Any], (player["readyState"] as? Int ?? 0) >= 2, player["seeking"] as? Bool == false, player["restoreReady"] as? Bool == true, (player["error"] as? Int ?? 0) == 0 { return value }
+                    if let player = value["player"] as? [String: Any] {
+                        let minimum = (player["time"] as? Double ?? 0) > 0 ? 2 : 1
+                        if (player["readyState"] as? Int ?? 0) >= minimum, (player["seekableRanges"] as? Int ?? 0) > 0,
+                           player["seeking"] as? Bool == false, player["restoreReady"] as? Bool == true, (player["error"] as? Int ?? 0) == 0 { return value }
+                    }
                     await wait(0.05)
                 }
-                throw PetError("实际视频未完成解码：" + (value["status"] as? String ?? ""))
+                let detail = String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self)
+                throw PetError("实际视频尚未就绪：" + detail)
             }
             func playback(_ record: AgentRecordWindow) async throws -> AgentVideoPlayback {
                 let state = try AgentRecordWindow.recoveryState(await record.captureWorkspaceRecovery())
