@@ -114,6 +114,8 @@ import UniformTypeIdentifiers
         readme.string = item.definition.trigger.title + (item.definition.patterns.isEmpty ? "" : " · " + item.definition.patterns.joined(separator: ", ")) + "\n" + item.source.path + "\n\n" + item.definition.body
     }
     private func updateControls() {
+        AgentSettingsStyle.listState(list, text: search.stringValue.isEmpty ? "暂无插件" : "未找到匹配插件")
+        AgentSettingsStyle.listState(components, text: selected == nil ? "选择插件查看组件" : "暂无组件")
         let idle = job == nil; scopes.isEnabled = idle; scopes.setEnabled(workspace != nil, forSegment: 1); list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
         disableAll.isHidden = scopeWorkspace == nil; disableAll.isEnabled = idle && service.hasProjectActivations(scopeWorkspace)
         settings.isEnabled = idle && selected != nil

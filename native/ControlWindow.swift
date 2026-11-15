@@ -95,7 +95,7 @@ final class FormDocumentView: NSView {
     private var settingsSourceFolders: [String: String] = [:]
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox")]
+    private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox"), ("about", "关于与更新", "info.circle")]
     private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
@@ -1318,7 +1318,7 @@ final class FormDocumentView: NSView {
         }
     }
     private func settingsNavigationGroup(_ category: String) -> String {
-        ["extensions", "agents", "teams", "hooks", "computer"].contains(category) ? "集成" : category == "worktrees" ? "编码" : ["experiments", "archived"].contains(category) ? "其他" : "个人"
+        ["extensions", "agents", "teams", "hooks", "computer"].contains(category) ? "集成" : category == "worktrees" ? "编码" : ["experiments", "archived", "about"].contains(category) ? "其他" : "个人"
     }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
@@ -1446,7 +1446,7 @@ final class FormDocumentView: NSView {
             }
             return
         }
-        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { managedSettings.contains($0.category) || ["general", "appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention"].contains($0.category) }
+        generalSettingsSave?.isHidden = matches.isEmpty || matches.allSatisfy { managedSettings.contains($0.category) || ["general", "appearance", "modes", "monitor", "shortcuts", "worktrees", "computer", "imports", "experiments", "archived", "attention", "about"].contains($0.category) }
         settingsFooter?.isHidden = generalSettingsSave?.isHidden == true
         settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
         for group in matches {
@@ -1457,6 +1457,8 @@ final class FormDocumentView: NSView {
         if matches.contains(where: { $0.category == "general" }) { generalSettingsPanel?.matchSearch(query) }
         settingsScroll.contentView.scroll(to: .zero); settingsScroll.reflectScrolledClipView(settingsScroll.contentView)
     }
+    @objc private func revealInstalledApplication() { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+    @objc private func openApplicationChanges() { if let url = URL(string: "https://github.com/flyingrtx2333/ai-girlfriend-desktop/commits/main/") { NSWorkspace.shared.open(url) } }
     private func buildChat() {
         history.hasVerticalScroller = true; history.drawsBackground = false; history.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; history.documentView = document
@@ -1692,6 +1694,15 @@ final class FormDocumentView: NSView {
             archive.onDelete = { [weak self] ids, workspaces in try await self?.deleteAgentTasks(ids, workspaceIDs: workspaces) }
             row("", archive); archive.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
+        group("about", "关于与更新", "关于 版本 源码 提交 构建 更新 签名 version build update")
+        for (title, value) in AgentAppVersion.details() {
+            let label = NSTextField(labelWithString: value); label.isSelectable = true
+            label.setAccessibilityLabel(title); label.font = .systemFont(ofSize: 13)
+            row(title, label, trailing: true)
+        }
+        let location = NSButton(title: "打开应用位置", target: self, action: #selector(revealInstalledApplication))
+        let changes = NSButton(title: "更新记录", target: self, action: #selector(openApplicationChanges))
+        row("", stack([location, changes, NSView()], spacing: 12))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
         generalSettingsSave = save

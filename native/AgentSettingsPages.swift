@@ -78,6 +78,19 @@ import AppKit
 
 @MainActor enum AgentSettingsStyle {
     static let searchRowPrefix = "settings-search-row:"
+    static func listState(_ table: NSTableView, text: String) {
+        guard let scroll = table.enclosingScrollView else { return }
+        let identifier = NSUserInterfaceItemIdentifier("settings-list-empty")
+        let label: NSTextField
+        if let existing = scroll.subviews.first(where: { $0.identifier == identifier }) as? NSTextField { label = existing }
+        else {
+            label = NSTextField(wrappingLabelWithString: text); label.identifier = identifier
+            label.font = .systemFont(ofSize: 12); label.textColor = AgentWorkbenchTheme.secondaryText; label.alignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(label)
+            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 12), label.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -12), label.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 20)])
+        }
+        label.stringValue = text; label.isHidden = table.numberOfRows > 0
+    }
     static func field(_ field: NSTextField) {
         field.font = .systemFont(ofSize: 13); field.controlSize = .large
         if field.isBezeled { field.bezelStyle = .roundedBezel; field.backgroundColor = .textBackgroundColor }

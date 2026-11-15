@@ -111,6 +111,7 @@ import UniformTypeIdentifiers
         values[i].skills = selectedSkills.isEmpty ? nil : selectedSkills.sorted(); values[i].mcpServers = selectedMCP.isEmpty ? nil : selectedMCP.sorted(); values[i].toolPermissions = toolPermissions.isEmpty ? nil : toolPermissions; values[i].mcpToolPermissions = mcpPermissions.isEmpty ? nil : mcpPermissions
     }
     private func updateControls() {
+        AgentSettingsStyle.listState(table, text: "暂无智能体")
         let hasValue = selectedID != nil, packaged = values.first { $0.id == selectedID }?.pluginSource != nil
         for item in [name, purpose, permission, tools, skills, mcp, readOnly, network, enabled] as [NSControl] { item.isEnabled = hasValue && !packaged }
         model.isEnabled = hasValue; instructions.isEditable = hasValue && !packaged; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue
