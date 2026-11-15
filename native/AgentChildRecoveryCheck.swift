@@ -27,11 +27,11 @@ import AppKit
             func child(_ record: AgentRecordWindow) async throws -> AgentVideoWindow.RecoveryState {
                 guard let value = try AgentRecordWindow.recoveryState(await record.captureWorkspaceRecovery()).videoWindow else { throw PetError("独立视频缺少恢复记录") }; return value
             }
-            func decodedChild(_ record: AgentRecordWindow) async throws -> [String: Any] {
+            func decodedVideo(_ record: AgentRecordWindow, independent: Bool = true) async throws -> [String: Any] {
                 var state: [String: Any] = [:]
                 for _ in 0..<150 {
                     state = await record.videoPreviewReadback()
-                    if let value = (state["separatePlayer"] as? [String: Any])?["player"] as? [String: Any], value["restoreReady"] as? Bool == true,
+                    if let value = (independent ? (state["separatePlayer"] as? [String: Any])?["player"] : state["player"]) as? [String: Any], value["restoreReady"] as? Bool == true,
                        (value["readyState"] as? Int ?? 0) >= ((value["time"] as? Double ?? 0) > 0 ? 2 : 1), value["seeking"] as? Bool == false, (value["error"] as? Int ?? 0) == 0 { return state }
                     await wait(0.05)
                 }
@@ -53,15 +53,19 @@ import AppKit
                 for id in [firstID, otherID] { tasks.update(id) { $0.draft = "保留任务输入 PUBLIC_CHILD_DRAFT_417" } }
                 control.showAgentTask(firstID); control.show(tab: "chat"); control.showTaskDocument(file.path)
                 let first = try record(firstID, file.path)
+                _ = try await decodedVideo(first, independent: false)
                 _ = await first.checkVideoWorkspace(time: 0.85)
+                _ = try await decodedVideo(first, independent: false)
                 _ = await first.checkVideoWorkspace(action: "new-window", childFrame: NSRect(x: 120, y: 180, width: 780, height: 540))
-                _ = try await decodedChild(first)
+                _ = try await decodedVideo(first)
                 _ = await first.checkVideoWorkspace(action: "separate", time: 2.35, rate: 1.5, volume: 0.35, muted: true)
                 control.showTaskDocument(secondFile.path)
                 let floating = try record(firstID, secondFile.path); try control.presentArtifactWindow(floating, taskID: firstID)
+                _ = try await decodedVideo(floating, independent: false)
                 _ = await floating.checkVideoWorkspace(time: 1.1)
+                _ = try await decodedVideo(floating, independent: false)
                 _ = await floating.checkVideoWorkspace(action: "new-window", childFrame: NSRect(x: 260, y: 220, width: 640, height: 480))
-                _ = try await decodedChild(floating)
+                _ = try await decodedVideo(floating)
                 _ = await floating.checkVideoWorkspace(action: "separate", time: 3.15, rate: 0.75, volume: 0.6, muted: false)
                 let browser = try tasks.browser.show(taskID: firstID, title: "子窗口标注")
                 _ = try await browser.open(URL(string: base + "form")!)
@@ -73,9 +77,11 @@ import AppKit
                 checks["rehostingBrowserKeepsAnnotationIndependent"] = browser.settingsHostWindow != nil && annotation.hasIndependentWindow && annotation.window?.isVisible == true
                 control.showAgentTask(otherID); control.showTaskDocument(file.path)
                 let other = try record(otherID, file.path)
+                _ = try await decodedVideo(other, independent: false)
                 _ = await other.checkVideoWorkspace(time: 1.25)
+                _ = try await decodedVideo(other, independent: false)
                 _ = await other.checkVideoWorkspace(action: "new-window", childFrame: NSRect(x: 500, y: 150, width: 720, height: 500))
-                _ = try await decodedChild(other)
+                _ = try await decodedVideo(other)
                 _ = await other.checkVideoWorkspace(action: "separate", time: 4.1, rate: 1.25, volume: 0.8, muted: false)
                 control.showTaskDocument(guide.path)
                 guard await flushWorkspaceWindows(), let windowID = control.workspaceSession?.id else { throw PetError("子窗口初始状态未保存") }
@@ -90,6 +96,15 @@ import AppKit
                 checks["inlineAndChildPositionsRemainIndependent"] = abs(firstInline.time - 0.85) < 0.12 && abs((fixture.first.playback?.time ?? -1) - 2.35) < 0.12 && abs(otherInline.time - 1.25) < 0.12 && abs((fixture.other.playback?.time ?? -1) - 4.1) < 0.12
                 checks["floatingParentRetainsOwnChildAndIdentity"] = fixture.floating.frame?.width == 640 && floatingTab.tab.hasIndependentChild == true
                 checks["annotationIncludesOriginalPixelsMarksNoteSelectionAndFrame"] = !fixture.annotation.image.isEmpty && fixture.annotation.marks.count == 1 && fixture.annotation.note.contains("PUBLIC_CHILD_NOTE_618") && fixture.annotation.selection?.location == 5 && fixture.annotation.frame?.width == 800
+                let source = URL(fileURLWithPath: fixture.file), held = output.appendingPathComponent("held-video-source.mp4")
+                try FileManager.default.moveItem(at: source, to: held)
+                defer { if FileManager.default.fileExists(atPath: held.path), !FileManager.default.fileExists(atPath: source.path) { try? FileManager.default.moveItem(at: held, to: source) } }
+                let unavailable = await first.checkVideoWorkspace(action: "separate-refresh")
+                let cached = try await child(first)
+                checks["unavailableChildKeepsPlaybackAndRetry"] = (unavailable["separatePlayer"] as? [String: Any])?["webPresent"] as? Bool == false && (unavailable["separatePlayer"] as? [String: Any])?["reloadEnabled"] as? Bool == true && cached.playback == fixture.first.playback
+                try FileManager.default.moveItem(at: held, to: source)
+                _ = await first.checkVideoWorkspace(action: "separate-refresh")
+                checks["availableAgainChildRestoresPositionWithoutParentReopen"] = matches(try await decodedVideo(first), fixture.first)
                 _ = await first.checkVideoWorkspace(action: "separate", time: 2.55)
                 checks["childSeekAutosavesWithoutExplicitFlush"] = await eventually {
                     let path = store.directory.appendingPathComponent("workspace-recovery/" + windowID + "/pages/" + firstTab.id + ".json")
@@ -130,18 +145,20 @@ import AppKit
                     if stage == "retry" {
                         try Data(contentsOf: output.appendingPathComponent("original-child-page.json")).write(to: path)
                         restoreFloatingWorkspaceWindows(); guard await flushWorkspaceWindows() else { throw PetError("子窗口菜单重试未完成") }
-                        let retried = try await decodedChild(record(fixture.taskID, fixture.file))
+                        let retried = try await decodedVideo(record(fixture.taskID, fixture.file))
                         checks["menuRetryRestoresChildWithoutSelectingItsParent"] = matches(retried, fixture.first) && control.agentTaskID == fixture.otherID
                     }
                 } else if stage == "closed" {
                     let saved = try layout()
                     checks["explicitlyClosedChildrenNeverResurrect"] = saved.floating.isEmpty && saved.tasks.flatMap(\.tabs).allSatisfy { $0.hasIndependentChild != true } && tasks.browser.sessions[fixture.taskID] == nil
+                    control.showAgentTask(fixture.taskID); control.showTaskDocument(fixture.file)
+                    guard await flushWorkspaceWindows() else { throw PetError("明确关闭后父页未恢复") }
                     let first = try record(fixture.taskID, fixture.file)
                     checks["inlineParentRemainsAfterItsChildWasClosed"] = !first.hasIndependentVideoWindow
                 } else {
                     let first = try record(fixture.taskID, fixture.file), other = try record(fixture.otherID, fixture.file), floating = try record(fixture.taskID, fixture.secondFile)
                     guard let browser = tasks.browser.sessions[fixture.taskID], let annotation = browser.recoveryAnnotation else { throw PetError("标注父页或独立子窗口未恢复") }
-                    let a = try await decodedChild(first), b = try await decodedChild(other), c = try await decodedChild(floating), saved = try layout()
+                    let a = try await decodedVideo(first), b = try await decodedVideo(other), c = try await decodedVideo(floating), saved = try layout()
                     if !interactive {
                         checks["eagerChildrenDoNotChangeSelectedTaskOrTab"] = control.agentTaskID == fixture.otherID && control.taskWorkspace.selectedRoot == .document(fixture.guide) && saved.tasks.first(where: { $0.taskID == fixture.otherID })?.selected == "document:" + fixture.guide
                         checks["sameFileChildrenRestoreToCorrectTasks"] = matches(a, fixture.first) && matches(b, fixture.other)
