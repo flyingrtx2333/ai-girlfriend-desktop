@@ -101,6 +101,8 @@ import AppKit
             footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
         ])
         canvas.onChange = { [weak self] in self?.updateControls() }; updateControls()
+        NotificationCenter.default.addObserver(self, selector: #selector(noteSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(restoreNoteFocusIfNeeded(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func prepareWorkspaceNavigation() -> Bool {
@@ -116,8 +118,17 @@ import AppKit
     override func close() { if canLeaveSettings() { super.close() } }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
-    func finishClose() { guard !closed else { return }; closed = true; job?.cancel(); onWorkspaceChange?() }
+    func finishClose() { guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); job?.cancel(); onWorkspaceChange?() }
     func controlTextDidChange(_ obj: Notification) { restoredNoteSelection = nil; onWorkspaceChange?() }
+    @objc private func noteSelectionChanged(_ notification: Notification) {
+        guard !closed, let editor = notification.object as? NSTextView, note.currentEditor() === editor else { return }
+        let range = editor.selectedRange(), selection = AgentBrowserRecoveryState.Selection(location: range.location, length: range.length)
+        guard selection.valid(in: editor.string) else { return }
+        restoredNoteSelection = selection; onWorkspaceChange?()
+    }
+    @objc private func restoreNoteFocusIfNeeded(_ notification: Notification) {
+        guard restoreNoteFocus, notification.object as? NSWindow === presentingWindow else { return }; settingsDidAppear()
+    }
     private func updateControls() {
         let enabled = job == nil
         canvas.isEnabled = enabled; mode.isEnabled = enabled; undo.isEnabled = enabled && !canvas.marks.isEmpty; clear.isEnabled = undo.isEnabled; copy.isEnabled = enabled; add.isEnabled = enabled; note.isEnabled = enabled
@@ -157,10 +168,14 @@ import AppKit
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         return ["closed": closed, "visible": isPageVisible, "dirty": hasPendingChanges, "working": job != nil, "note": note.stringValue, "marks": canvas.marks.count, "url": canvas.shot.source.url, "sourceTab": canvas.shot.source.tabID, "captureMethod": canvas.shot.source.method ?? "", "canvasSize": [canvas.bounds.width, canvas.bounds.height], "checks": ["annotationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "annotationHasNoFloatingWindow": window?.isVisible != true, "annotationHasUsableCanvas": canvas.bounds.width >= 400 && canvas.bounds.height >= 200 && canvas.bounds.contains(canvas.imageRect)]]
     }
-    func checkWorkspace(note text: String? = nil, mark: Bool = false, submit: Bool = false) async {
+    func checkWorkspace(note text: String? = nil, mark: Bool = false, submit: Bool = false, selection: NSRange? = nil) async {
         guard AgentTaskWorkspace.readbackEnabled else { return }
         if let text { note.stringValue = text; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: note)) }
         if mark { canvas.beginMark(at: CGPoint(x: 0.2, y: 0.2)); canvas.continueMark(at: CGPoint(x: 0.4, y: 0.4)); canvas.endMark() }
+        if let selection, selection.location <= (note.stringValue as NSString).length, selection.length <= (note.stringValue as NSString).length - selection.location {
+            presentingWindow?.makeKeyAndOrderFront(nil); presentingWindow?.makeFirstResponder(note)
+            (note.currentEditor() as? NSTextView)?.setSelectedRange(selection)
+        }
         if submit { addToTask(); await job?.value }
     }
     func captureWorkspaceRecovery() throws -> AgentBrowserRecoveryState.Annotation {
@@ -178,8 +193,9 @@ import AppKit
     override func settingsDidAppear() {
         super.settingsDidAppear()
         guard restoreNoteFocus, isPageVisible, let host = presentingWindow, host.isKeyWindow else { return }
+        let selected = restoredNoteSelection
         host.makeFirstResponder(note)
-        if let selection = restoredNoteSelection, selection.valid(in: note.stringValue), let editor = note.currentEditor() as? NSTextView { editor.setSelectedRange(NSRange(location: selection.location, length: selection.length)) }
+        if let selection = selected, selection.valid(in: note.stringValue), let editor = note.currentEditor() as? NSTextView { editor.setSelectedRange(NSRange(location: selection.location, length: selection.length)) }
         restoreNoteFocus = false
     }
 }

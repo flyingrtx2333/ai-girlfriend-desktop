@@ -85,7 +85,9 @@ import AppKit
                 layout.floating = previous?.floating ?? []
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await Task.detached(priority: .utility) { try journal.saveWindow(capturedLayout, expected: expected) }.value
-                layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision; failure = nil
+                layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision
+                if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
+                failure = nil
                 preservedEditors = Set(owner.taskWorkspace.recoveryEditors.compactMap { _, _, controller in
                     if let record = controller as? AgentRecordWindow, record.canPreserveForQuit { return ObjectIdentifier(record) }
                     if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit { return ObjectIdentifier(office) }

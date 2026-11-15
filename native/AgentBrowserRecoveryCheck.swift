@@ -21,6 +21,10 @@ import AppKit
             func load(_ f: BrowserRecoveryFixture) throws -> AgentWorkspaceRecovery.LoadedPage {
                 guard let value = try journal.loadPage(windowID: f.windowID, pageID: f.tabID, taskID: f.taskID) else { throw PetError("浏览器检查点缺失") }; return value
             }
+            func eventually(_ predicate: () -> Bool) async -> Bool {
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline { if predicate() { return true }; await wait(0.05) }; return predicate()
+            }
             func inspect(_ browser: AgentBrowserWindow) async throws -> [String: Any] {
                 try await browser.web.callAsyncJavaScript("return {url:location.href,note:document.getElementById('note')?.value,checked:document.getElementById('flag')?.checked,choice:document.getElementById('choice')?.value,password:document.getElementById('password')?.value,x:scrollX,y:scrollY,cookie:document.cookie};", arguments: [:], in: nil, contentWorld: .page) as? [String: Any] ?? [:]
             }
@@ -52,6 +56,14 @@ import AppKit
                 checks["otherAskTaskUsesIndependentNonpersistentWebsiteData"] = otherBrowser.web.configuration.websiteDataStore !== browser.web.configuration.websiteDataStore && !otherBrowser.web.configuration.websiteDataStore.isPersistent && tasks.task(other)?.workspace == nil
                 checks["cookieDoesNotCrossTasks"] = try await otherBrowser.web.evaluateJavaScript("document.cookie") as? String == ""
                 control.window?.makeKeyAndOrderFront(nil); control.showAgentTask(id); control.show(tab: "chat")
+                guard let addressWindow = control.workspaceSession?.id, let addressTab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == id })?.tabs.first(where: { $0.root == "browser" }) else { throw PetError("浏览器窗口归属不可读") }
+                browser.checkWorkspaceAddressSelection(NSRange(location: 0, length: 0))
+                guard await flushWorkspaceWindows() else { throw PetError("地址选区前的检查点未保存") }
+                browser.checkWorkspaceAddressSelection(NSRange(location: 7, length: 9))
+                checks["addressSelectionOnlyChangeAutosavesWithoutExplicitFlush"] = await eventually {
+                    guard let page = try? journal.loadPage(windowID: addressWindow, pageID: addressTab.id, taskID: id), let state = try? AgentBrowserRecoveryState.decode(page.saved.value) else { return false }
+                    return state.addressSelection == .init(location: 7, length: 9)
+                }
                 await browser.checkWorkspace("annotate")
                 guard let annotation = browser.checkAnnotation else { throw PetError("未添加标注编辑器没有打开") }
                 await annotation.checkWorkspace(note: firstNote, mark: true)
@@ -67,9 +79,25 @@ import AppKit
                 try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
                 await annotation.checkWorkspace(note: finalNote)
                 let rejected = await !flushWorkspaceWindows(), rejectedBytes = try Data(contentsOf: pageURL)
-                checks["readOnlyCheckpointFailureRetainsOriginalAndLatestInput"] = rejected && rejectedBytes == original && annotation.workspaceReadback()["note"] as? String == finalNote && control.workspaceSession?.preservedEditors.isEmpty == true
+                let failedStatus = await control.taskWorkspaceReadback()["status"] as? String ?? ""
+                checks["readOnlyCheckpointFailureRetainsOriginalAndLatestInput"] = rejected && rejectedBytes == original && annotation.workspaceReadback()["note"] as? String == finalNote && control.workspaceSession?.preservedEditors.isEmpty == true && failedStatus.hasPrefix("工作区恢复未保存：")
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pageURL.path)
                 checks["retryPersistsLatestAnnotationWithoutRecreatingIt"] = await flushWorkspaceWindows()
+                checks["successfulRetryClearsItsActualVisibleError"] = await control.taskWorkspaceReadback()["status"] as? String == ""
+                try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: pageURL.path)
+                await annotation.checkWorkspace(note: finalNote + " TEMP")
+                let anotherRejection = await !flushWorkspaceWindows()
+                control.setStatus("PUBLIC_OTHER_NOTICE_417")
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pageURL.path)
+                let anotherRetry = await flushWorkspaceWindows(), retainedStatus = await control.taskWorkspaceReadback()["status"] as? String
+                checks["recoveryRetryDoesNotEraseAnotherStatusMessage"] = anotherRejection && anotherRetry && retainedStatus == "PUBLIC_OTHER_NOTICE_417"
+                control.setStatus(""); await annotation.checkWorkspace(note: finalNote, selection: NSRange(location: 0, length: 0))
+                guard await flushWorkspaceWindows() else { throw PetError("选区检查前的标注未保存") }
+                await annotation.checkWorkspace(selection: NSRange(location: 6, length: 23))
+                checks["noteSelectionOnlyChangeAutosavesWithoutExplicitFlush"] = await eventually {
+                    guard let page = try? journal.loadPage(windowID: window, pageID: tab.id, taskID: id), let state = try? AgentBrowserRecoveryState.decode(page.saved.value) else { return false }
+                    return state.annotation?.selection == .init(location: 6, length: 23)
+                }
                 fixture = .init(taskID: id, otherID: other, windowID: window, tabID: tab.id, otherWindowID: otherWindow, base: base, imageHash: AgentFiles.hash(state.annotation!.image), note: finalNote, oldAction: action.arguments)
                 let saved = try AgentBrowserRecoveryState.decode(load(fixture).saved.value)
                 checks["retryKeepsExactCapturedImageAndLatestNote"] = saved.annotation?.note == finalNote && saved.annotation?.image == state.annotation?.image
@@ -100,6 +128,7 @@ import AppKit
                     let state = try AgentBrowserRecoveryState.decode(load(fixture).saved.value)
                     let restoredAnnotation = try annotation.captureWorkspaceRecovery()
                     checks["capturedImageMarksAndLatestNoteRestoreWithoutRecapture"] = annotation.workspaceReadback()["note"] as? String == fixture.note && annotation.canvas.marks == state.annotation?.marks && AgentFiles.hash(restoredAnnotation.image) == fixture.imageHash
+                    checks["noteSelectionRestoresAcrossProcessRestart"] = restoredAnnotation.selection == .init(location: 6, length: 23)
                     let stale = try JSONSerialization.jsonObject(with: Data(fixture.oldAction.utf8)) as! [String: Any]
                     checks["oldTabAndRevisionCannotAuthorizeRestoredPages"] = !browser.pages.contains { $0.id == stale["tab_id"] as? String }
                     do { _ = try await AgentTools(store: tasks, taskID: fixture.taskID).execute(.init(id: "old", name: "browser_action", arguments: fixture.oldAction)); checks["staleToolActionRejectedAfterRestart"] = false } catch { checks["staleToolActionRejectedAfterRestart"] = true }

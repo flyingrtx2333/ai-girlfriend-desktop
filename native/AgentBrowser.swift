@@ -143,6 +143,8 @@ import WebKit
             state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -7), state.heightAnchor.constraint(equalToConstant: 16)
         ])
         _ = try? addPage(); updateControls()
+        NotificationCenter.default.addObserver(self, selector: #selector(addressSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(restoreAddressFocusIfNeeded(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func present() throws {
@@ -240,7 +242,7 @@ import WebKit
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
     private func finishClose() {
-        guard !closed else { return }; closed = true; manualLoad?.cancel(); captureJob?.cancel(); annotationWindow?.finishClose(); for page in pages { page.close() }; onClose?(); onClose = nil
+        guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); manualLoad?.cancel(); captureJob?.cancel(); annotationWindow?.finishClose(); for page in pages { page.close() }; onClose?(); onClose = nil
     }
     @objc private func stopLoading() { manualLoad?.cancel(); current.stop() }
     @objc private func goBack() { current.manualNavigation("back") }
@@ -362,7 +364,19 @@ import WebKit
         if action == "separate" { toggleSeparateWindow() }
         if action == "annotate" { beginCapture(annotating: true); await captureJob?.value }
     }
+    func checkWorkspaceAddressSelection(_ selection: NSRange) {
+        guard AgentTaskWorkspace.readbackEnabled, selection.location <= (address.stringValue as NSString).length, selection.length <= (address.stringValue as NSString).length - selection.location else { return }
+        presentingWindow?.makeKeyAndOrderFront(nil); presentingWindow?.makeFirstResponder(address)
+        (address.currentEditor() as? NSTextView)?.setSelectedRange(selection)
+    }
     func controlTextDidChange(_ obj: Notification) { addressDraft = address.stringValue; restoredAddressSelection = nil; onWorkspaceChange?() }
+    @objc private func addressSelectionChanged(_ notification: Notification) {
+        guard !closed, let editor = notification.object as? NSTextView, address.currentEditor() === editor else { return }
+        restoredAddressSelection = nil; onWorkspaceChange?()
+    }
+    @objc private func restoreAddressFocusIfNeeded(_ notification: Notification) {
+        guard restoredAddressSelection != nil, notification.object as? NSWindow === presentingWindow else { return }; settingsDidAppear()
+    }
     override func settingsDidAppear() {
         super.settingsDidAppear()
         guard isPageVisible, let host = presentingWindow, host.isKeyWindow else { return }

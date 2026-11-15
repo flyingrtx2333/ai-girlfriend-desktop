@@ -2013,6 +2013,11 @@ final class FormDocumentView: NSView {
             savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         }
     }
+    func clearWorkspaceRecoveryStatus(_ failure: String) {
+        let message = "工作区恢复未保存：" + failure
+        if status.stringValue == message { status.stringValue = ""; status.isHidden = true }
+        if savedStatus.stringValue == message { savedStatus.stringValue = "" }
+    }
     func scheduleRender() {
         guard window?.isVisible == true, pendingRender == nil else { return }
         let job = DispatchWorkItem { [weak self] in self?.pendingRender = nil; self?.renderMessages() }
@@ -3021,6 +3026,7 @@ final class FormDocumentView: NSView {
     internal func taskWorkspaceReadback() async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         var value = gitWorkspaceReadback(), documents: [[String: Any]] = [], offices: [[String: Any]] = [], canvases: [[String: Any]] = [], browsers: [[String: Any]] = []
+        value["status"] = status.stringValue
         for page in taskWorkspace.controllers {
             if let context = page as? AgentContextWindow, context.isPageVisible { value["context"] = context.workspaceReadback() }
             if let record = page as? AgentRecordWindow { documents.append(await record.workspaceReadback()) }
