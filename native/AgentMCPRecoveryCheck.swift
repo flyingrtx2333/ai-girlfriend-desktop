@@ -79,12 +79,19 @@ import AppKit
                 checks["noWorkspaceTaskOwnsItsParameterDrafts"] = tasks.task(first)?.workspace == nil && main.workspaceHasUnsavedChanges
             } else {
                 fixture = try JSONDecoder().decode(MCPRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
+                control.show(tab: "chat"); restoreAdditionalWorkspaceWindows()
                 guard await flushWorkspaceWindows(), let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.childWindow }) else { throw PetError("MCP 窗口恢复未完成") }
                 let main = try editor(control), childPage = try editor(child)
-                checks["restoredMainArgumentsVisibleBeforeConnecting"] = (main.workspaceReadback()["fields"] as? [String: String]) == ["resourceType": "Text", "resourceId": "2"]
+                var expectedMain = ["resourceType": "Text", "resourceId": "2"]
+                let expectedFile = output.appendingPathComponent("ui-expected-arguments.json")
+                if interactive, FileManager.default.fileExists(atPath: expectedFile.path) {
+                    expectedMain = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: expectedFile))
+                    guard Set(expectedMain.keys) == ["resourceType", "resourceId"] else { throw PetError("实际窗口输入期望格式无效") }
+                }
+                checks["restoredMainArgumentsVisibleBeforeConnecting"] = (main.workspaceReadback()["fields"] as? [String: String]) == expectedMain
                 checks["restoredChildArgumentsRemainIndependent"] = (childPage.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "6"
                 checks["restartDoesNotAutomaticallyConnect"] = [main, childPage].allSatisfy { $0.workspaceReadback()["connected"] as? Bool == false }
-                checks["restoredPreviewCannotBeReusedBeforeCatalogValidation"] = [main, childPage].allSatisfy { $0.workspaceReadback()["previewText"] as? String == "" && $0.workspaceReadback()["readEnabled"] as? Bool == false && $0.workspaceReadback()["restoredSelectionPending"] as? Bool == true }
+                checks["restoredPreviewCannotBeReusedBeforeCatalogValidation"] = [main, childPage].allSatisfy { $0.workspaceReadback()["promptText"] as? String == "" && $0.workspaceReadback()["readEnabled"] as? Bool == false && $0.workspaceReadback()["restoredSelectionPending"] as? Bool == true }
                 let coldPage = try JSONDecoder().decode(AgentWorkspaceRecovery.Page.self, from: Data(contentsOf: URL(fileURLWithPath: fixture.secondPage)))
                 checks["unmaterializedTaskKeepsItsUnsavedRecoveryPage"] = control.taskWorkspace.recoveryController(taskID: fixture.second, root: .mcpContent) == nil && coldPage.dirty && coldPage.taskID == fixture.second
                 control.showAgentTask(fixture.second); control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("第二任务恢复未结束") }
