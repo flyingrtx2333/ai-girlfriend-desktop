@@ -117,11 +117,6 @@ private actor AgentWorkspaceJournal {
                     let controller = try await owner.materializeFloatingRecovery(metadata, loaded: loaded)
                     registerFloating(controller, taskID: metadata.taskID, root: metadata.tab.root, tab: metadata.tab)
                     if let old = floatingFailures.removeValue(forKey: pageID) { owner.clearWorkspaceRecoveryStatus(old, prefix: "") }
-                    if let frame = metadata.frame, let window = controller.window, let screen = window.screen ?? NSScreen.main {
-                        let visible = screen.visibleFrame
-                        let width = min(visible.width, max(window.minSize.width, frame.width)), height = min(visible.height, max(window.minSize.height, frame.height))
-                        window.setFrame(NSRect(x: max(visible.minX, min(frame.x, visible.maxX - width)), y: max(visible.minY, min(frame.y, visible.maxY - height)), width: width, height: height), display: true)
-                    }
                 } catch {
                     let message = "独立窗口未恢复，原草稿已保留；可从“窗口”菜单重试：" + error.localizedDescription
                     floatingFailures[pageID] = message; owner.setStatus(message, error: true)

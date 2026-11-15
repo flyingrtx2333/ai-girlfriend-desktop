@@ -6,6 +6,7 @@ import AppKit
         var file: String, office: String, canvasID: String, base: String
         var main: [AgentWorkspaceRecovery.FloatingPage], other: [AgentWorkspaceRecovery.FloatingPage]
         var sourceHash: String, officeHash: String
+        var officeView: String? = nil
     }
     func runFloatingRecoveryCheck(_ output: URL, interactive: Bool = false) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
@@ -28,6 +29,23 @@ import AppKit
                     await wait(0.05)
                 }; throw PetError("独立网页尚未就绪")
             }
+            func comparableOfficeView(_ text: String) throws -> String {
+                var value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as! [String: Any]
+                if var selection = value["selection"] as? [String: Any] {
+                    for key in ["anchor", "focus"] {
+                        if var point = selection[key] as? [String: Any] {
+                            for field in ["paragraphID", "storyKind", "itemID"] { point.removeValue(forKey: field) }
+                            selection[key] = point
+                        }
+                    }
+                    value["selection"] = selection
+                }
+                return String(data: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
+            }
+            func officeViewText(_ editor: AgentOfficeWindow) async throws -> String {
+                let view = try await editor.checkWorkspaceView()
+                return String(data: try JSONSerialization.data(withJSONObject: view, options: [.sortedKeys]), encoding: .utf8)!
+            }
             let fixture: FloatingRecoveryFixture
             if stage == "seed" {
                 let project = output.appendingPathComponent("workspace"), file = project.appendingPathComponent("draft.md"), officeFile = project.appendingPathComponent("sample.docx")
@@ -49,6 +67,12 @@ import AppKit
                 let actual = try await office.inspect([:])
                 guard let version = actual["version"] as? String, let paragraph = (actual["paragraphs"] as? [[String: Any]])?.first(where: { $0["text"] as? String == "审阅人：待填写" }) else { throw PetError("真实 Word 段落不可读") }
                 try await office.checkWorkspaceEdit(["expectVersion": version, "steps": [["op": "replaceText", "target": ["kind": "paragraph", "story": paragraph["story"]!, "paraId": paragraph["id"]!], "text": "审阅人：独立窗口草稿", "expect": ["text": "审阅人：待填写"]]]])
+                office.window?.setFrame(NSRect(x: 80, y: 130, width: 780, height: 540), display: true)
+                await wait(0.1)
+                var officeView = try await office.checkWorkspaceView(); officeView["zoom"] = 2.0
+                officeView["scroll"] = (officeView["scroll"] as? [[String: Any]] ?? []).map { entry in var entry = entry; entry["x"] = 30; entry["y"] = 180; return entry }
+                let actualView = try await office.checkWorkspaceView(officeView)
+                checks["narrowOfficeHasNondefaultZoomAndNonzeroScroll"] = actualView["zoom"] as? Double == 2.0 && (actualView["scroll"] as? [[String: Any]])?.contains { ($0["y"] as? Double ?? 0) > 0 } == true
                 let canvasRecord = try tasks.canvases.create(title: "独立画布", source: "export default function Canvas(){return <main>PUBLIC_FLOATING_CANVAS_ORIGINAL</main>}\n", taskID: id)
                 let canvas = try await tasks.canvases.show(canvasRecord.id, taskID: id, location: .window)
                 await canvas.checkWorkspaceSource(canvasDraft)
@@ -87,7 +111,8 @@ import AppKit
                 checks["floatingRetrySavesLatestDraftWithoutAnotherEdit"] = await flushWorkspaceWindows()
                 checks["quitPreparationPreservesEveryIndependentEditor"] = await control.prepareOwnedTaskPanels(preservingRecovery: true) && control.workspaceSession?.floatingControllers.count == 4 && child.workspaceSession?.floatingControllers.count == 1
                 fixture = .init(taskID: id, otherID: other, windowID: main.id, otherWindowID: try layout(child).id, file: file.path, office: officeFile.path, canvasID: canvasRecord.id, base: base,
-                                main: try layout(control).floating, other: try layout(child).floating, sourceHash: try AgentFiles(workspace: project.path).fileHash(file), officeHash: try AgentFiles(workspace: project.path).fileHash(officeFile))
+                                main: try layout(control).floating, other: try layout(child).floating, sourceHash: try AgentFiles(workspace: project.path).fileHash(file), officeHash: try AgentFiles(workspace: project.path).fileHash(officeFile),
+                                officeView: try await officeViewText(office))
                 try JSONEncoder().encode(fixture).write(to: fixtureURL, options: .atomic)
             } else {
                 fixture = try JSONDecoder().decode(FloatingRecoveryFixture.self, from: Data(contentsOf: fixtureURL))
@@ -126,6 +151,11 @@ import AppKit
                 report["restoration"] = taskControls.map { $0.workspaceSession?.floatingRecoveryReadback ?? [:] }
                 report["serviceAvailability"] = ["browser": tasks.browser.sessions[fixture.taskID] != nil, "office": tasks.offices.windows[fixture.office] != nil, "canvas": tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] != nil]
                 guard let browser = tasks.browser.sessions[fixture.taskID], let office = tasks.offices.windows[fixture.office], let canvas = tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] else { throw PetError("浏览器／Office／Canvas 独立窗口未恢复") }
+                if !interactive, let expected = fixture.officeView {
+                    let actual = try await officeViewText(office)
+                    checks["narrowOfficeRestoresSelectionZoomAndScroll"] = try comparableOfficeView(actual) == comparableOfficeView(expected)
+                    checks["narrowOfficeRestoresOriginalViewport"] = office.window.map { AgentWorkspaceRecovery.Frame(x: $0.frame.minX, y: $0.frame.minY, width: $0.frame.width, height: $0.frame.height) } == fixture.main.first(where: { $0.tab.root == "document:" + fixture.office })?.frame
+                }
                 if stage == "observe", interactive {
                     // The CUA run owns every edit after reopening. Only read the
                     // restored state here; the native test's continuation is separate.

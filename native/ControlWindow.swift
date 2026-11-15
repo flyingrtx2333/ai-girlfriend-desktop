@@ -3391,22 +3391,31 @@ final class FormDocumentView: NSView {
     internal func materializeFloatingRecovery(_ metadata: AgentWorkspaceRecovery.FloatingPage, loaded: AgentWorkspaceRecovery.LoadedPage) async throws -> AgentSettingsPageController {
         guard let store = companion?.agentStore, let task = store.task(metadata.taskID), task.sideTask?.retained != false,
               let root = AgentTaskWorkspace.Root(key: metadata.tab.root) else { throw PetError("独立窗口所属任务或类型暂不可用") }
+        func restoreFrame(_ controller: AgentSettingsPageController) {
+            guard let frame = metadata.frame, let window = controller.window, let screen = window.screen ?? NSScreen.main else { return }
+            let visible = screen.visibleFrame
+            let width = min(visible.width, max(window.minSize.width, frame.width)), height = min(visible.height, max(window.minSize.height, frame.height))
+            // Set the viewport before restoring editor selection, zoom and scroll.
+            // A later resize can run the editor's fit-to-width behavior again.
+            window.setFrame(NSRect(x: max(visible.minX, min(frame.x, visible.maxX - width)), y: max(visible.minY, min(frame.y, visible.maxY - height)), width: width, height: height), display: false)
+        }
         let page = loaded.saved.value
         if page.kind == "browser", root == .browser {
-            return try store.browser.restore(page, taskID: task.id, title: task.title) { $0.presentRecoveredWindow() }
+            return try store.browser.restore(page, taskID: task.id, title: task.title) { restoreFrame($0); $0.presentRecoveredWindow() }
         }
         if page.kind == "office", case .document(let path) = root {
             guard try AgentOfficeWindow.recoveryState(page).file == path else { throw PetError("恢复办公文件与独立窗口不匹配") }
-            return try await store.offices.restore(loaded, taskID: task.id) { $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
+            return try await store.offices.restore(loaded, taskID: task.id) { restoreFrame($0); $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
         }
         if page.kind == "canvas", case .canvas(let id) = root {
             guard try AgentCanvasWindow.recoveryState(page).canvasID == id else { throw PetError("恢复画布与独立窗口不匹配") }
-            return try await store.canvases.restore(page, taskID: task.id) { $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
+            return try await store.canvases.restore(page, taskID: task.id) { restoreFrame($0); $0.showWindow(nil); $0.window?.makeKeyAndOrderFront(nil) }
         }
         guard page.kind == "record", case .document(let path) = root else { throw PetError("独立窗口恢复格式暂不支持") }
         let state = try AgentRecordWindow.recoveryState(page)
         guard state.documentOnly, (state.file ?? state.selection) == path else { throw PetError("恢复文档与独立窗口不匹配") }
         let record = preparedRecord(store: store, taskID: task.id, section: state.section, taskHosted: true, documentOnly: true, memoryWorkspace: state.memoryWorkspace)
+        restoreFrame(record)
         do { try record.restoreWorkspaceRecovery(page) }
         catch { record.endSettingsHosting(); throw error }
         retainArtifactRecord(record)
