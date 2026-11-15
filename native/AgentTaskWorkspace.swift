@@ -117,7 +117,11 @@ import AppKit
         orders.keys.sorted().map { id in
             .init(taskID: id, tabs: (orders[id] ?? []).compactMap { root in
                 guard var tab = recoveryTabs[id]?[root] else { return nil }
-                tab.title = presentation(task: id, root: root).title; return tab
+                tab.title = presentation(task: id, root: root).title
+                if let controller = stacks[id]?[root]?.first?.controller {
+                    tab.hasIndependentChild = (controller as? AgentRecordWindow)?.hasIndependentVideoWindow == true || (controller as? AgentBrowserWindow)?.hasIndependentAnnotation == true ? true : nil
+                }
+                return tab
             }, selected: selected[id]?.key, opened: opened.contains(id), expanded: expandedTasks.contains(id))
         }
     }
@@ -128,6 +132,11 @@ import AppKit
         } }
     }
     func recoveryController(taskID: String, root: Root) -> AgentSettingsPageController? { stacks[taskID]?[root]?.first?.controller }
+    func restoreBackgroundRoot(taskID id: String, tab: AgentWorkspaceRecovery.Tab, controller: AgentSettingsPageController) -> Bool {
+        guard let root = Root(key: tab.root), recoveryTabs[id]?[root]?.id == tab.id, pendingRecovery.contains(tab.id), stacks[id]?[root]?.isEmpty != false else { return false }
+        push(controller, taskID: id, root: root); onRecoveryChange?()
+        return recoveryController(taskID: id, root: root) === controller
+    }
     func reuseRecoveryTab(_ tab: AgentWorkspaceRecovery.Tab, controller: AgentSettingsPageController, taskID id: String) {
         guard let root = root(for: controller, taskID: id), root.key == tab.root else { return }
         if let old = recoveryTabs[id]?[root] { recoveredDirty[old.id] = nil }

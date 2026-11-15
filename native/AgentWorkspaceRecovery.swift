@@ -12,6 +12,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var id = UUID().uuidString
         var root: String
         var title: String
+        var hasIndependentChild: Bool? = nil
     }
     struct TaskLayout: Codable, Equatable, Sendable {
         var taskID: String
@@ -127,7 +128,7 @@ struct AgentWorkspaceRecovery: Sendable {
     private func decodeWindow(_ data: Data) throws -> Window {
         let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
-        func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title"]) }
+        func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
         for value in object["tasks"] as? [Any] ?? [] {
             let task = try keys(value, ["taskID", "tabs", "selected", "opened", "expanded"])

@@ -103,6 +103,7 @@ struct AgentVideoSnapshot: Sendable {
     private var web: WKWebView?, snapshot: AgentVideoSnapshot?, opening: Task<Void, Never>?
     private var source: URL?, files: AgentFiles?, validate: (() throws -> Void)?, generation = UUID()
     private var playback: AgentVideoPlayback?
+    private var retryOpening: (() -> Void)?
     var onPlaybackChange: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -116,7 +117,7 @@ struct AgentVideoSnapshot: Sendable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func show(file: URL, files: AgentFiles, validate: (() throws -> Void)? = nil, restoring: AgentVideoPlayback? = nil) {
-        clear(); source = file; self.files = files; self.validate = validate; status.stringValue = "正在打开视频…"; reload.isEnabled = false
+        clear(); source = file; self.files = files; self.validate = validate; status.stringValue = "正在打开视频…"; reload.isEnabled = false; external.isEnabled = true
         playback = restoring
         let current = generation
         opening = Task { [weak self] in
@@ -145,7 +146,10 @@ struct AgentVideoSnapshot: Sendable {
             } catch { if generation == current, !Task.isCancelled { status.stringValue = error.localizedDescription; reload.isEnabled = true } }
         }
     }
-    @objc private func refresh() { Task { [weak self] in await self?.refreshPlayback() } }
+    @objc private func refresh() { if let retryOpening { retryOpening() } else { Task { [weak self] in await self?.refreshPlayback() } } }
+    func showUnavailable(_ message: String, retry: @escaping () -> Void) {
+        clear(); status.stringValue = message; reload.isEnabled = true; external.isEnabled = false; retryOpening = retry
+    }
     private func refreshPlayback() async {
         guard let source, let files else { return }; let current = generation
         reload.isEnabled = false; let restored = await capturePlayback()
@@ -181,7 +185,7 @@ struct AgentVideoSnapshot: Sendable {
         generation = UUID(); opening?.cancel(); opening = nil
         pause(); web?.configuration.userContentController.removeScriptMessageHandler(forName: "videoPlayback"); web?.closeAllMediaPresentations(completionHandler: nil); web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web?.removeFromSuperview(); web = nil
         if let snapshot { try? FileManager.default.removeItem(at: snapshot.folder) }; snapshot = nil
-        source = nil; files = nil; validate = nil; playback = nil; status.stringValue = ""
+        source = nil; files = nil; validate = nil; playback = nil; retryOpening = nil; status.stringValue = ""
     }
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         decisionHandler(navigationAction.targetFrame?.isMainFrame == true && navigationAction.request.url == snapshot?.document ? .allow : .cancel)
@@ -202,7 +206,7 @@ struct AgentVideoSnapshot: Sendable {
     }
     func checkWorkspace(action: String = "", time: Double? = nil, rate: Double? = nil, volume: Double? = nil, muted: Bool? = nil) async {
         guard AgentTaskWorkspace.readbackEnabled else { return }; await opening?.value
-        if action == "refresh" { await refreshPlayback() }
+        if action == "refresh" { if let retryOpening { retryOpening(); await opening?.value } else { await refreshPlayback() } }
         var values: [String: Any] = [:]
         if let time, time.isFinite, time >= 0 { values["time"] = time }
         if let rate, rate.isFinite, (0.0625...16).contains(rate) { values["rate"] = rate }
@@ -213,20 +217,74 @@ struct AgentVideoSnapshot: Sendable {
 }
 
 @MainActor final class AgentVideoWindow: AgentSettingsPageController, NSWindowDelegate {
+    struct RecoveryState: Codable, Equatable, Sendable {
+        var version = 1
+        var file: String, sourceRoot: String
+        var playback: AgentVideoPlayback?
+        var frame: AgentWorkspaceRecovery.Frame?
+        var valid: Bool {
+            version == 1 && file.hasPrefix("/") && sourceRoot.hasPrefix("/") && !file.contains("\0") && !sourceRoot.contains("\0") &&
+            file.utf8.count <= 8192 && sourceRoot.utf8.count <= 8192 &&
+            URL(fileURLWithPath: file).standardizedFileURL.path == file && URL(fileURLWithPath: sourceRoot).standardizedFileURL.path == sourceRoot &&
+            (sourceRoot == "/" || file.hasPrefix(sourceRoot + "/")) && AgentVideoSnapshot.supports(URL(fileURLWithPath: file)) &&
+            playback?.isValid != false && frame?.valid != false
+        }
+    }
     let preview = AgentVideoPreview()
-    init(file: URL, files: AgentFiles, validate: (() throws -> Void)? = nil) {
+    private let file: URL, sourceRoot: String
+    private let resolve: () throws -> (AgentFiles, URL)
+    private var lastPlayback: AgentVideoPlayback?
+    private(set) var workspaceIsClosed = false
+    var onWorkspaceChange: (() -> Void)?, onClose: (() -> Void)?
+    var hasIndependentWindow: Bool { !workspaceIsClosed && settingsHostWindow == nil }
+    convenience init(file: URL, files: AgentFiles, validate: (() throws -> Void)? = nil) {
+        self.init(file: file, sourceRoot: files.root.path, restoring: nil) { try validate?(); return (files, file) }
+    }
+    convenience init(restoring value: RecoveryState, resolve: @escaping () throws -> (AgentFiles, URL)) {
+        self.init(file: URL(fileURLWithPath: value.file), sourceRoot: value.sourceRoot, restoring: value, resolve: resolve)
+    }
+    private init(file: URL, sourceRoot: String, restoring: RecoveryState?, resolve: @escaping () throws -> (AgentFiles, URL)) {
+        self.file = file; self.sourceRoot = sourceRoot; self.resolve = resolve; lastPlayback = restoring?.playback
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = file.lastPathComponent; window.minSize = NSSize(width: 500, height: 350); window.isReleasedWhenClosed = false; window.center()
+        restoring?.frame?.apply(to: window)
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content; content.addSubview(preview); preview.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([preview.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12), preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12), preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 10), preview.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])
-        preview.show(file: file, files: files, validate: validate)
+        preview.onPlaybackChange = { [weak self] in self?.onWorkspaceChange?() }
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] { NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged(_:)), name: name, object: window) }
+        openVideo()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func settingsDidAppear() { super.settingsDidAppear(); preview.focusIfNeeded() }
     override func canLeaveSettings() -> Bool {
         guard super.canLeaveSettings() else { return false }; preview.pause(); return true
     }
-    override func settingsWillLeave() { preview.clear() }
-    func windowWillClose(_ notification: Notification) { preview.clear() }
+    private func openVideo() {
+        guard !workspaceIsClosed else { return }
+        do {
+            let (files, resolved) = try resolve()
+            guard resolved == file, files.root.path == sourceRoot else { throw PetError("视频所属任务或目录已变化，原播放记录已保留") }
+            preview.show(file: file, files: files, validate: { [weak self] in
+                guard let self, !workspaceIsClosed else { throw PetError("视频窗口已关闭") }
+                let (current, resolved) = try resolve()
+                guard current.root.path == sourceRoot, resolved == file else { throw PetError("视频来源已变化") }
+            }, restoring: lastPlayback)
+        } catch { preview.showUnavailable(error.localizedDescription) { [weak self] in self?.openVideo() } }
+    }
+    @objc private func geometryChanged(_ notification: Notification) { if !workspaceIsClosed { onWorkspaceChange?() } }
+    func captureWorkspaceRecovery() async throws -> RecoveryState? {
+        guard hasIndependentWindow else { return nil }
+        if let latest = await preview.capturePlayback() { lastPlayback = latest }
+        guard !workspaceIsClosed else { return nil }
+        let state = RecoveryState(file: file.path, sourceRoot: sourceRoot, playback: lastPlayback, frame: window.map { .init($0) })
+        guard state.valid else { throw PetError("视频子窗口恢复记录无效，原记录已保留") }; return state
+    }
+    private func finishClose() {
+        guard !workspaceIsClosed else { return }; workspaceIsClosed = true
+        NotificationCenter.default.removeObserver(self); preview.clear(); onClose?(); onClose = nil; onWorkspaceChange?()
+    }
+    override func close() { if settingsHostWindow == nil { finishClose() }; super.close() }
+    override func settingsWillLeave() { finishClose() }
+    func windowWillClose(_ notification: Notification) { finishClose() }
 }

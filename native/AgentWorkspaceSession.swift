@@ -1,5 +1,15 @@
 import AppKit
 
+extension AgentWorkspaceRecovery.Frame {
+    @MainActor init(_ window: NSWindow) { self.init(x: window.frame.minX, y: window.frame.minY, width: window.frame.width, height: window.frame.height) }
+    @MainActor func apply(to window: NSWindow?) {
+        guard valid, let window, let screen = window.screen ?? NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let width = min(visible.width, max(window.minSize.width, self.width)), height = min(visible.height, max(window.minSize.height, self.height))
+        window.setFrame(NSRect(x: max(visible.minX, min(x, visible.maxX - width)), y: max(visible.minY, min(y, visible.maxY - height)), width: width, height: height), display: false)
+    }
+}
+
 // The journal uses a nonblocking file lock to reject external writers. Keep
 // this window's own reads and writes serialized so eager restores cannot race it.
 private actor AgentWorkspaceJournal {
@@ -103,6 +113,10 @@ private actor AgentWorkspaceJournal {
     }
     func restoreFloating() {
         guard !stopped, !disabled else { return }
+        for task in owner?.taskWorkspace.recoveryLayouts ?? [] { for tab in task.tabs where tab.hasIndependentChild == true {
+            guard let root = AgentTaskWorkspace.Root(key: tab.root), owner?.taskWorkspace.recoveryController(taskID: task.taskID, root: root) == nil else { continue }
+            restore(task: task.taskID, tab: tab, activate: false)
+        } }
         for metadata in coldFloating where roots[metadata.tab.id] == nil {
             let pageID = metadata.tab.id
             roots[pageID] = Task { @MainActor [weak self] in
@@ -201,6 +215,7 @@ private actor AgentWorkspaceJournal {
                 layout.floating = coldFloating + floating.values.map { metadata, controller in
                     var value = metadata
                     value.tab.title = controller.window?.title ?? metadata.tab.title
+                    value.tab.hasIndependentChild = (controller as? AgentRecordWindow)?.hasIndependentVideoWindow == true || (controller as? AgentBrowserWindow)?.hasIndependentAnnotation == true ? true : nil
                     value.frame = controller.window.map { .init(x: $0.frame.minX, y: $0.frame.minY, width: $0.frame.width, height: $0.frame.height) }
                     return value
                 }.sorted { $0.tab.id < $1.tab.id }
@@ -256,7 +271,7 @@ private actor AgentWorkspaceJournal {
         guard revision == closingRevision else { throw PetError("关闭期间内容已变化，请重新检查后关闭") }
         stop()
     }
-    private func restore(task: String, tab: AgentWorkspaceRecovery.Tab) {
+    private func restore(task: String, tab: AgentWorkspaceRecovery.Tab, activate: Bool = true) {
         guard !stopped, !disabled, roots[tab.id] == nil else { return }
         roots[tab.id] = Task { @MainActor [weak self] in
             guard let self, let owner else { return }
@@ -264,9 +279,9 @@ private actor AgentWorkspaceJournal {
             do {
                 let journal = journal, windowID = id
                 let loaded = try await journal.loadPage(windowID: windowID, pageID: tab.id, taskID: task)
-                guard !stopped, owner.agentTaskID == task, owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
+                guard !stopped, (!activate || owner.agentTaskID == task), owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
-                try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded)
+                try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded, activate: activate)
                 changed()
             } catch { owner.setStatus("标签恢复失败，原草稿已保留：" + error.localizedDescription, error: true) }
         }

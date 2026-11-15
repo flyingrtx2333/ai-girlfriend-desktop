@@ -20,6 +20,7 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
         var marks: [AgentBrowserMark]
         var note: String, tool: Int, focusNote: Bool
         var selection: Selection?
+        var frame: AgentWorkspaceRecovery.Frame? = nil
         @MainActor func shot() throws -> AgentBrowserShot {
             guard let encoded = CGImageSourceCreateWithData(image as CFData, nil), CGImageSourceGetCount(encoded) == 1,
                   let properties = CGImageSourceCopyPropertiesAtIndex(encoded, 0, nil) as? [CFString: Any],
@@ -56,6 +57,7 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
             try require(annotation.image.count <= 8_000_000 && annotation.image.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]))
             try require(annotation.note.utf8.count <= 64_000 && !annotation.note.contains("\0") && annotation.selection?.valid(in: annotation.note) != false && AgentBrowserMark.Kind(rawValue: annotation.tool) != nil)
             try require(annotation.marks.count <= 10_000 && annotation.marks.reduce(0, { $0 + $1.points.count }) <= 200_000)
+            try require(annotation.frame?.valid != false)
             for mark in annotation.marks {
                 try require(mark.points.count >= 2 && (mark.kind == .pen || mark.points.count == 2) && mark.points.allSatisfy { $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y) })
             }
@@ -77,9 +79,10 @@ struct AgentBrowserRecoveryState: Codable, Equatable, Sendable {
             }
         }
         if let value = root["annotation"], !(value is NSNull) {
-            let a = try object(value, ["source", "image", "marks", "note", "tool", "focusNote", "selection"])
+            let a = try object(value, ["source", "image", "marks", "note", "tool", "focusNote", "selection", "frame"])
             _ = try object(a["source"] ?? NSNull(), ["tabID", "url", "title", "created", "viewportWidth", "viewportHeight", "annotations", "method"])
             try selection(a["selection"])
+            if let frame = a["frame"], !(frame is NSNull) { _ = try object(frame, ["x", "y", "width", "height"]) }
             for value in a["marks"] as? [Any] ?? [] { _ = try object(value, ["kind", "points"]) }
         }
         let state = try JSONDecoder().decode(Self.self, from: page.state); try state.validate()

@@ -3235,8 +3235,12 @@ final class FormDocumentView: NSView {
         if let runtime = companion?.agentRuntime { record.configureWikiRuntime(runtime) { [weak self] taskID in self?.selectAgentTask(taskID); self?.show(tab: "chat") } }
         return record
     }
-    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?) async throws {
-        guard agentTaskID == id, selectedTab == "chat", let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
+    internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?, activate: Bool = true) async throws {
+        guard (!activate || agentTaskID == id && selectedTab == "chat"), let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
+        if !activate { guard task.sideTask?.retained != false, let kind = loaded?.saved.value.kind, ["record", "browser"].contains(kind) else { throw PetError("此子窗口的恢复格式暂不支持，原记录已保留") } }
+        func present(_ controller: AgentSettingsPageController) -> Bool {
+            activate ? taskWorkspace.show(taskID: id, root: root, recovering: true, make: { controller }) : taskWorkspace.restoreBackgroundRoot(taskID: id, tab: tab, controller: controller)
+        }
         if let loaded, loaded.saved.value.kind == "office" {
             guard case .document(let path) = root, try AgentOfficeWindow.recoveryState(loaded.saved.value).file == path else { throw PetError("恢复的办公文件与标签不匹配") }
             var presented: AgentOfficeWindow?
@@ -3256,7 +3260,7 @@ final class FormDocumentView: NSView {
             do {
                 _ = try store.browser.restore(page, taskID: id, title: task.title) { browser in
                     presented = browser
-                    guard self.taskWorkspace.show(taskID: id, root: root, recovering: true, make: { browser }) else { throw PetError("工作区当前无法打开恢复网页") }
+                    guard present(browser) else { throw PetError("工作区当前无法打开恢复网页") }
                     browser.window?.orderOut(nil)
                 }
             } catch {
@@ -3305,7 +3309,7 @@ final class FormDocumentView: NSView {
             let editor = preparedRecord(store: store, taskID: id, section: value.section, taskHosted: true, documentOnly: value.documentOnly, memoryWorkspace: value.memoryWorkspace)
             do { try editor.restoreWorkspaceRecovery(page) }
             catch { editor.endSettingsHosting(); throw error }
-            guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开恢复内容") }
+            guard present(editor) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开恢复内容") }
             editor.window?.orderOut(nil)
         } else {
             taskWorkspace.permitRecovery(tab.id)
@@ -3392,12 +3396,9 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, let task = store.task(metadata.taskID), task.sideTask?.retained != false,
               let root = AgentTaskWorkspace.Root(key: metadata.tab.root) else { throw PetError("独立窗口所属任务或类型暂不可用") }
         func restoreFrame(_ controller: AgentSettingsPageController) {
-            guard let frame = metadata.frame, let window = controller.window, let screen = window.screen ?? NSScreen.main else { return }
-            let visible = screen.visibleFrame
-            let width = min(visible.width, max(window.minSize.width, frame.width)), height = min(visible.height, max(window.minSize.height, frame.height))
             // Set the viewport before restoring editor selection, zoom and scroll.
             // A later resize can run the editor's fit-to-width behavior again.
-            window.setFrame(NSRect(x: max(visible.minX, min(frame.x, visible.maxX - width)), y: max(visible.minY, min(frame.y, visible.maxY - height)), width: width, height: height), display: false)
+            metadata.frame?.apply(to: controller.window)
         }
         let page = loaded.saved.value
         if page.kind == "browser", root == .browser {

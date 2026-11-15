@@ -73,6 +73,7 @@ import AppKit
     private var restoreNoteFocus = false
     var onWorkspaceChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
+    var hasIndependentWindow: Bool { !closed && settingsHostWindow == nil }
     var canPreserveForQuit: Bool { !closed && job == nil && !submitted && !discardAccepted }
     var hasPendingChanges: Bool { !closed && !submitted && !discardAccepted && (!canvas.marks.isEmpty || !note.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
     init(shot: AgentBrowserShot, onSubmit: @escaping ([AgentBrowserMark], String) async throws -> Void) {
@@ -103,6 +104,7 @@ import AppKit
         canvas.onChange = { [weak self] in self?.updateControls() }; updateControls()
         NotificationCenter.default.addObserver(self, selector: #selector(noteSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(restoreNoteFocusIfNeeded(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] { NotificationCenter.default.addObserver(self, selector: #selector(geometryChanged(_:)), name: name, object: window) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func prepareWorkspaceNavigation() -> Bool {
@@ -118,7 +120,8 @@ import AppKit
     override func close() { if canLeaveSettings() { super.close() } }
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
-    func finishClose() { guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); job?.cancel(); onWorkspaceChange?() }
+    func finishClose() { guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self); job?.cancel(); onWorkspaceChange?() }
+    @objc private func geometryChanged(_ notification: Notification) { if !closed { onWorkspaceChange?() } }
     func controlTextDidChange(_ obj: Notification) { restoredNoteSelection = nil; onWorkspaceChange?() }
     @objc private func noteSelectionChanged(_ notification: Notification) {
         guard !closed, let editor = notification.object as? NSTextView, note.currentEditor() === editor else { return }
@@ -184,7 +187,8 @@ import AppKit
         let editor = note.currentEditor() as? NSTextView
         let selected = editor.map { AgentBrowserRecoveryState.Selection(location: $0.selectedRange().location, length: $0.selectedRange().length) }
         return .init(source: canvas.shot.source, image: recoveryImage!, marks: canvas.recoveryMarks(), note: editor?.string ?? note.stringValue, tool: mode.selectedSegment,
-                     focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection)
+                     focusNote: editor != nil && presentingWindow?.firstResponder === editor, selection: selected ?? restoredNoteSelection,
+                     frame: hasIndependentWindow ? window.map { .init($0) } : nil)
     }
     func restoreWorkspaceRecovery(_ value: AgentBrowserRecoveryState.Annotation) {
         recoveryImage = value.image; mode.selectedSegment = value.tool; canvas.kind = AgentBrowserMark.Kind(rawValue: value.tool) ?? .rectangle

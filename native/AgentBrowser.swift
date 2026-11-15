@@ -110,6 +110,7 @@ import WebKit
     var workspaceIsClosed: Bool { closed }
     var workspaceHasUnsavedChanges: Bool { annotationWindow?.hasPendingChanges == true }
     var recoveryAnnotation: AgentBrowserAnnotationWindow? { annotationWindow.flatMap { $0.workspaceIsClosed ? nil : $0 } }
+    var hasIndependentAnnotation: Bool { recoveryAnnotation?.hasIndependentWindow == true }
     var canPreserveForQuit: Bool { !closed && !busy && !restoringRecovery && captureJob == nil && !capturingViewport && recoveryAnnotation?.canPreserveForQuit != false }
     private var current: AgentBrowserPage { pages.first { $0.id == tabs.selectedTabViewItem?.identifier as? String } ?? pages[0] }
     var web: WKWebView { current.web }
@@ -244,7 +245,9 @@ import WebKit
     func windowShouldClose(_ sender: NSWindow) -> Bool { canLeaveSettings() }
     func windowWillClose(_ notification: Notification) { finishClose() }
     private func finishClose() {
-        guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); manualLoad?.cancel(); captureJob?.cancel(); annotationWindow?.finishClose(); for page in pages { page.close() }; onClose?(); onClose = nil
+        guard !closed else { return }; closed = true; NotificationCenter.default.removeObserver(self, name: NSTextView.didChangeSelectionNotification, object: nil); NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil); manualLoad?.cancel(); captureJob?.cancel()
+        if let annotationWindow { annotationWindow.finishClose(); if annotationWindow.settingsHostWindow == nil { annotationWindow.close() } }
+        for page in pages { page.close() }; onClose?(); onClose = nil
     }
     @objc private func stopLoading() { manualLoad?.cancel(); current.stop() }
     @objc private func goBack() { current.manualNavigation("back") }
@@ -415,7 +418,11 @@ import WebKit
         for saved in value.pages { let page = try addPage(activate: false); try page.restoreWorkspaceRecovery(saved) }
         select(pages[value.selected]); addressDraft = value.addressEdited ? value.address : nil; address.stringValue = value.address; restoredAddressSelection = value.addressSelection
         updateControls(); settingsDidAppear()
-        if let saved = value.annotation { let editor = makeAnnotation(try saved.shot()); editor.restoreWorkspaceRecovery(saved); presentSettingsChild(editor) }
+        if let saved = value.annotation {
+            let editor = makeAnnotation(try saved.shot()); saved.frame?.apply(to: editor.window); editor.restoreWorkspaceRecovery(saved)
+            if saved.frame != nil { editor.showWindow(nil); editor.window?.makeKeyAndOrderFront(nil); editor.settingsDidAppear() }
+            else { presentSettingsChild(editor) }
+        }
     }
     func cancelRecovery() { finishClose() }
 }
