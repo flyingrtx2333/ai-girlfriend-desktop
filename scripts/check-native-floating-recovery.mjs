@@ -46,7 +46,7 @@ async function run(stage,ui=false){
   if(!result.success)throw Error('独立窗口恢复阶段失败：'+stage);
 }
 try{
-  if(manual||reopen)await run(reopen?'reopen':'seed',true);
+  if(manual||reopen)await run(reopen?'observe':'seed',true);
   else{
     await run('seed');
     const fixture=JSON.parse(await readFile(path.join(output,'floating-recovery-fixture.json'),'utf8'));

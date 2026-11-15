@@ -112,7 +112,7 @@ import AppKit
                         let status = await control.taskWorkspaceReadback()["status"] as? String ?? ""
                         checks["successfulFloatingRetryClearsOnlyItsOldError"] = status.isEmpty
                     }
-                } else {
+                } else if stage != "observe" || !interactive {
                     let first = try record(control, file: fixture.file), second = try record(child, file: fixture.file)
                     let firstState = try AgentRecordWindow.recoveryState(await first.captureWorkspaceRecovery()), secondState = try AgentRecordWindow.recoveryState(await second.captureWorkspaceRecovery())
                     checks["distinctSameFileDirtyDraftsRestoreToOriginalTasks"] = firstState.text == mainDraft + "最后一笔 PUBLIC_FLOATING_LAST_832\n" && secondState.text == otherDraft && firstState.taskID == fixture.taskID && secondState.taskID == fixture.otherID
@@ -126,10 +126,24 @@ import AppKit
                 report["restoration"] = taskControls.map { $0.workspaceSession?.floatingRecoveryReadback ?? [:] }
                 report["serviceAvailability"] = ["browser": tasks.browser.sessions[fixture.taskID] != nil, "office": tasks.offices.windows[fixture.office] != nil, "canvas": tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] != nil]
                 guard let browser = tasks.browser.sessions[fixture.taskID], let office = tasks.offices.windows[fixture.office], let canvas = tasks.canvases.windows[fixture.taskID + ":" + fixture.canvasID] else { throw PetError("浏览器／Office／Canvas 独立窗口未恢复") }
-                checks["browserRestoresAsIndependentWindowAndExactForm"] = try await form(browser) == "PUBLIC_FLOATING_FORM_941" && browser.workspaceReadback()["detached"] as? Bool == true && browser.settingsHostWindow == nil && browser.window?.isVisible == true
-                let actual = try await office.inspect([:])
-                checks["fullDirtyOfficeDraftRestoresInIndependentEditor"] = office.dirty && (actual["paragraphs"] as? [[String: Any]])?.contains { $0["text"] as? String == "审阅人：独立窗口草稿" } == true && office.settingsHostWindow == nil && office.window?.isVisible == true
-                checks["canvasSourceDraftRestoresInIndependentEditor"] = canvas.workspaceReadback()["source"] as? String == canvasDraft && canvas.settingsHostWindow == nil && canvas.window?.isVisible == true
+                if stage == "observe", interactive {
+                    // The CUA run owns every edit after reopening. Only read the
+                    // restored state here; the native test's continuation is separate.
+                    let first = try record(control, file: fixture.file)
+                    report["document"] = await first.workspaceReadback()
+                    report["browser"] = browser.workspaceReadback(); report["office"] = await office.workspaceReadback(); report["canvas"] = canvas.workspaceReadback()
+                    let controllers = taskControls.flatMap { $0.workspaceSession?.floatingControllers ?? [] }
+                    checks["allExpectedIndependentWindowsAreReady"] = controllers.count == fixture.main.count + fixture.other.count && controllers.allSatisfy { $0.settingsHostWindow == nil && $0.window?.isVisible == true }
+                    checks["observerHasNoColdPagesOrRecoveryErrors"] = taskControls.allSatisfy {
+                        let state = $0.workspaceSession?.floatingRecoveryReadback ?? [:]
+                        return (state["coldRoots"] as? [String])?.isEmpty == true && (state["errors"] as? [String: String])?.isEmpty == true
+                    }
+                } else {
+                    checks["browserRestoresAsIndependentWindowAndExactForm"] = try await form(browser) == "PUBLIC_FLOATING_FORM_941" && browser.workspaceReadback()["detached"] as? Bool == true && browser.settingsHostWindow == nil && browser.window?.isVisible == true
+                    let actual = try await office.inspect([:])
+                    checks["fullDirtyOfficeDraftRestoresInIndependentEditor"] = office.dirty && (actual["paragraphs"] as? [[String: Any]])?.contains { $0["text"] as? String == "审阅人：独立窗口草稿" } == true && office.settingsHostWindow == nil && office.window?.isVisible == true
+                    checks["canvasSourceDraftRestoresInIndependentEditor"] = canvas.workspaceReadback()["source"] as? String == canvasDraft && canvas.settingsHostWindow == nil && canvas.window?.isVisible == true
+                }
                 let metadata = main.floating.first(where: { $0.tab.root == "document:" + fixture.office })!
                 if let saved = try journal.loadPage(windowID: fixture.windowID, pageID: metadata.tab.id, taskID: fixture.taskID), let asset = saved.asset {
                     try FileManager.default.copyItem(at: asset, to: output.appendingPathComponent(stage + "-recovered.docx"))
