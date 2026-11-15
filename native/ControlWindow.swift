@@ -3293,12 +3293,13 @@ final class FormDocumentView: NSView {
         } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
             switch root {
-            case .document: guard value.documentOnly else { throw PetError("恢复文件与标签页不符") }
+            case .document(let path): guard value.documentOnly, (value.file ?? value.selection) == path else { throw PetError("恢复文件与标签页不符") }
             case .records: guard !value.documentOnly else { throw PetError("恢复记录与标签页不符") }
             default: throw PetError("此标签的恢复格式尚不支持，原记录已保留")
             }
             let editor = preparedRecord(store: store, taskID: id, section: value.section, taskHosted: true, documentOnly: value.documentOnly, memoryWorkspace: value.memoryWorkspace)
-            try editor.restoreWorkspaceRecovery(page)
+            do { try editor.restoreWorkspaceRecovery(page) }
+            catch { editor.endSettingsHosting(); throw error }
             guard taskWorkspace.show(taskID: id, root: root, recovering: true, make: { editor }) else { throw PetError("工作区当前无法打开恢复内容") }
             editor.window?.orderOut(nil)
         } else {

@@ -74,6 +74,8 @@ import UniformTypeIdentifiers
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
     private var videoWindow: AgentVideoWindow?
+    private var restoringVideo: (file: String, state: AgentVideoPlayback)?
+    var hasVideoPlayback: Bool { !video.isHidden && openedFile.map(AgentVideoSnapshot.supports) == true }
     init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
         self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.memoryWorkspace = memoryWorkspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -117,6 +119,7 @@ import UniformTypeIdentifiers
         readingToolbar.heightAnchor.constraint(equalToConstant: 24).isActive = true
         video.isHidden = true
         for child in [viewer, markdown, video] { pane.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false; NSLayoutConstraint.activate([child.topAnchor.constraint(equalTo: pane.topAnchor), child.leadingAnchor.constraint(equalTo: pane.leadingAnchor), child.trailingAnchor.constraint(equalTo: pane.trailingAnchor), child.bottomAnchor.constraint(equalTo: pane.bottomAnchor)]) }
+        video.onPlaybackChange = { [weak self] in self?.onWorkspaceChange?() }
         let documentPane = NSStackView(views: [readingToolbar, pane]); documentPane.orientation = .vertical; documentPane.distribution = .fill; documentPane.spacing = 6
         for child in [readingToolbar, pane] { child.widthAnchor.constraint(equalTo: documentPane.widthAnchor).isActive = true }
         state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
@@ -214,24 +217,34 @@ import UniformTypeIdentifiers
         var bom: Bool
         var mode: Int
         var dirty: Bool
+        var video: AgentVideoPlayback?
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "record", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+        if let video = object["video"] {
+            guard let video = video as? [String: Any], Set(video.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频播放记录格式不受支持，原记录已保留") }
+        }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, (0...6).contains(value.section), [0, 1].contains(value.mode),
               value.dirty == page.dirty, AgentTextEncoding(rawValue: value.encoding) != nil,
               !value.dirty || (value.text != nil && value.openedHash?.count == 64),
               value.file.map({ $0.hasPrefix("/") && !$0.contains("\0") }) ?? true else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
+        if let video = value.video {
+            guard video.isValid, !value.dirty, value.text == nil, [1, 2, 6].contains(value.section),
+                  let file = value.file, AgentVideoSnapshot.supports(URL(fileURLWithPath: file)),
+                  value.selection == file || value.selection.flatMap(URL.init(string:))?.path == file else { throw PetError("视频播放位置或所属文件无效，原记录已保留") }
+        }
         return value
     }
-    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
+    func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
         guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
         try markdown.finishEditing()
+        let playback = hasVideoPlayback ? await video.capturePlayback() : nil
         let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
             file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
-            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty)
+            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty, asset: nil)
         _ = try Self.recoveryState(page); return page
@@ -240,10 +253,13 @@ import UniformTypeIdentifiers
         let value = try Self.recoveryState(page)
         guard value.taskID == taskID, value.documentOnly == documentOnly, let task = store.task(taskID) else { throw PetError("恢复草稿所属任务已变化") }
         let format = AgentTextFormat(encoding: AgentTextEncoding(rawValue: value.encoding)!, bom: value.bom)
+        restoringVideo = value.video.flatMap { state in value.file.map { ($0, state) } }
+        defer { restoringVideo = nil }
         sections.selectedSegment = value.section; refreshCatalog(selecting: value.selection)
         if !value.dirty {
             if documentOnly, let file = value.file { _ = try openWorkspaceDocument(file) }
             else if let selection = value.selection { selectItem(section: value.section, value: selection) }
+            if value.video != nil, openedFile?.path != value.file || video.isHidden { throw PetError("原视频暂不可访问，播放记录已保留") }
             if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }; return
         }
         guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
@@ -685,7 +701,7 @@ import UniformTypeIdentifiers
         } else {
             text.string = ""; viewer.isHidden = true; markdown.isHidden = true; video.isHidden = false; readingToolbar.isHidden = true; sourceAdd.isHidden = true
             openedFile = file; open.isHidden = false; open.title = "新窗口"; state.stringValue = files.relative(file)
-            video.show(file: file, files: files, validate: videoScope(files))
+            video.show(file: file, files: files, validate: videoScope(files), restoring: restoringVideo?.file == file.path ? restoringVideo?.state : nil)
             if documentOnly { onWorkspaceChange?() }
         }
     }
@@ -917,12 +933,12 @@ import UniformTypeIdentifiers
         if let videoWindow { result["separateWindowVisible"] = videoWindow.window?.isVisible == true; result["separatePlayer"] = await videoWindow.preview.checkState() }
         return result
     }
-    func checkVideoWorkspace(action: String = "", time: Double? = nil, link: URL? = nil) async -> [String: Any] {
+    func checkVideoWorkspace(action: String = "", time: Double? = nil, rate: Double? = nil, volume: Double? = nil, muted: Bool? = nil, link: URL? = nil) async -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         if let link { openDocumentLink(link) }
         if action == "new-window" || action == "open" { openItem() }
         if action == "refresh" { await video.checkWorkspace(action: "refresh") }
-        if let time { await video.checkWorkspace(time: time) }
+        await video.checkWorkspace(time: time, rate: rate, volume: volume, muted: muted)
         return await videoPreviewReadback()
     }
     func markdownEditingReadback() async -> [String: Any] {

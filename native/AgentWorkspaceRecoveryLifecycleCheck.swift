@@ -62,18 +62,20 @@ import AppKit
                 guard await flushWorkspaceWindows(), let child = additionalTaskWindows.first(where: { $0.workspaceSession?.id == fixture.childWindow }) else { throw PetError("持久窗口未恢复") }
                 checks["sameMainAndChildWindowIdentitiesRestore"] = control.workspaceSession?.id == fixture.mainWindow && child.taskWindowNumber == 2
                 checks["coldRecordDirtyMarkerRestoresWithoutMemoryEditor"] = (control.taskWorkspace.checkState()["tabLabels"] as? [String])?.contains("• 记录") == true && control.taskWorkspace.recoveryController(taskID: fixture.first, root: .records) == nil
-                checks["selectedMarkdownRestoresWithUnsavedText"] = try editor(control).captureWorkspaceRecovery().dirty && AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).text == fixture.firstDraft
-                checks["sourceVersionAndBOMCRLFRetained"] = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).openedHash == fixture.guideHash && AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).bom
-                checks["previewModeRestoresAcrossProcessRestart"] = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery()).mode == fixture.mode
-                checks["childWindowRestoresItsOwnDraftAndExpansion"] = try AgentRecordWindow.recoveryState(editor(child).captureWorkspaceRecovery()).text == fixture.childDraft && child.taskWorkspace.expanded
+                let firstPage = try await editor(control).captureWorkspaceRecovery(), firstState = try AgentRecordWindow.recoveryState(firstPage)
+                let childState = try AgentRecordWindow.recoveryState(await editor(child).captureWorkspaceRecovery())
+                checks["selectedMarkdownRestoresWithUnsavedText"] = firstPage.dirty && firstState.text == fixture.firstDraft
+                checks["sourceVersionAndBOMCRLFRetained"] = firstState.openedHash == fixture.guideHash && firstState.bom
+                checks["previewModeRestoresAcrossProcessRestart"] = firstState.mode == fixture.mode
+                checks["childWindowRestoresItsOwnDraftAndExpansion"] = childState.text == fixture.childDraft && child.taskWorkspace.expanded
                 control.showAgentTask(fixture.second); control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("第二任务恢复失败") }
-                var value = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery())
+                var value = try AgentRecordWindow.recoveryState(await editor(control).captureWorkspaceRecovery())
                 checks["secondTaskRestoresUTF16DraftAndOriginalVersion"] = value.text == fixture.secondDraft && value.encoding == AgentTextEncoding.utf16LE.rawValue && value.bom && value.openedHash == fixture.plainHash
                 control.showAgentTask(fixture.standalone); control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("无工作区草稿恢复失败") }
-                value = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery())
+                value = try AgentRecordWindow.recoveryState(await editor(control).captureWorkspaceRecovery())
                 checks["noWorkspaceAskRestoresGlobalMemoryDraft"] = value.text == fixture.globalDraft && value.section == 5 && value.selection == AgentMemoryScope.global.rawValue
                 control.showAgentTask(fixture.first); control.show(tab: "chat"); control.taskWorkspace.checkSelect(.records); guard await flushWorkspaceWindows() else { throw PetError("项目记忆草稿恢复失败") }
-                value = try AgentRecordWindow.recoveryState(editor(control).captureWorkspaceRecovery())
+                value = try AgentRecordWindow.recoveryState(await editor(control).captureWorkspaceRecovery())
                 checks["projectMemoryRestoresOriginalSourceAndDraft"] = value.text == fixture.memoryDraft && value.memoryWorkspace == URL(fileURLWithPath: fixture.guide).deletingLastPathComponent().path && value.openedHash == AgentFiles.hash(Data())
                 control.taskWorkspace.checkSelect(.document(fixture.guide)); guard await flushWorkspaceWindows() else { throw PetError("文件标签恢复失败") }
                 let original = try editor(control), layout = store.directory.appendingPathComponent("workspace-recovery/" + fixture.mainWindow + "/layout.json")
@@ -87,7 +89,8 @@ import AppKit
                     let file = URL(fileURLWithPath: fixture.guide), files = try AgentFiles(workspace: file.deletingLastPathComponent().path), before = try files.readData(file)
                     let external = Data("EXTERNAL_CHANGE_PUBLIC_740\n".utf8); try files.writeData(external, to: file)
                     await original.checkTaskDocument(action: "save")
-                    checks["restoredOldVersionCannotOverwriteExternalFileChange"] = try files.readData(file) == external && control.taskWorkspace.currentController is AgentFileConflictWindow && AgentRecordWindow.recoveryState(original.captureWorkspaceRecovery()).openedHash == fixture.guideHash
+                    let originalState = try AgentRecordWindow.recoveryState(await original.captureWorkspaceRecovery())
+                    checks["restoredOldVersionCannotOverwriteExternalFileChange"] = try files.readData(file) == external && control.taskWorkspace.currentController is AgentFileConflictWindow && originalState.openedHash == fixture.guideHash
                     control.taskWorkspace.checkBack(); try files.writeData(before, to: file)
                     await original.checkTaskDocument(action: "preview")
                 }

@@ -59,7 +59,7 @@ import AppKit
                 let targetRevision = revision
                 for (_, tab, controller) in owner.taskWorkspace.recoveryEditors {
                     if let record = controller as? AgentRecordWindow {
-                        let page = try record.captureWorkspaceRecovery()
+                        let page = try await record.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
                     } else if let office = controller as? AgentOfficeWindow {
                         try await office.persistWorkspaceRecovery(previous: pages[tab.id]) { page, asset in
@@ -113,6 +113,8 @@ import AppKit
     }
     func flush() async throws {
         guard !disabled else { return }
+        // Read the latest media position even between throttled time events.
+        if owner?.taskWorkspace.recoveryEditors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) == true { revision &+= 1 }
         if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }
         if savedRevision != revision { await savePending() }
@@ -156,7 +158,7 @@ import AppKit
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {
