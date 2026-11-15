@@ -108,6 +108,7 @@ import AppKit
             let callbackDeadline = Date().addingTimeInterval(2)
             while callbacks == 0, Date() < callbackDeadline { await wait(0.02) }
             checks["sheetApprovalDeliversOriginalResponseExactlyOnce"] = callbacks == 1 && response == .alertFirstButtonReturn && host.attachedSheet == nil
+            checks["destructiveConfirmationsUseSafeReturnDefault"] = dialogs.filter { ($0["destructiveButtons"] as? [String])?.isEmpty == false }.allSatisfy { !(($0["destructiveButtons"] as? [String]) ?? []).contains($0["default"] as? String ?? "") }
             checks["noModelRequestsAndOriginalConversationDraftRetained"] = requests == 0 && tasks.task(id)?.draft == "保留操作确认验收输入" && tasks.tasks.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 && $0.modelReceipts?.isEmpty != false }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["dialogs"] = dialogs; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["modelRequests"] = requests; report["appPID"] = getpid()

@@ -20,8 +20,9 @@ import AppKit
         if buttons.isEmpty { addButton(withTitle: "确定") }
         let cancel = cancellationButtonIndex ?? buttons.firstIndex { ["取消", "关闭", "继续编辑", "继续等待"].contains($0.title) } ?? 0
         let primary = primaryButtonIndex ?? buttons.indices.first { $0 != cancel } ?? cancel
-        let selected = defaultButtonIndex ?? buttons.firstIndex { $0.keyEquivalent == "\r" } ?? 0
-        precondition([cancel, primary, selected].allSatisfy { buttons.indices.contains($0) })
+        let requested = defaultButtonIndex ?? buttons.firstIndex { $0.keyEquivalent == "\r" } ?? 0
+        precondition([cancel, primary, requested].allSatisfy { buttons.indices.contains($0) })
+        let selected = buttons[requested].hasDestructiveAction && !buttons[cancel].hasDestructiveAction ? cancel : requested
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 180), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         self.panel = panel; panel.title = messageText; panel.identifier = Self.identifier; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true
         panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false; panel.isMovable = false
@@ -47,6 +48,7 @@ import AppKit
             if index == primary { button.bezelColor = button.hasDestructiveAction ? .systemRed : AgentWorkbenchTheme.accent }
             else if button.hasDestructiveAction { button.contentTintColor = .systemRed }
             if index == selected { button.keyEquivalent = "\r"; button.keyEquivalentModifierMask = [] }
+            else if button.keyEquivalent == "\r" { button.keyEquivalent = "" }
         }
         let order = (cancel == primary ? [] : [cancel]) + buttons.indices.filter { $0 != primary && $0 != cancel } + [primary]
         let footer = NSStackView(views: [NSView()] + order.map { buttons[$0] }); footer.spacing = 8; column.addArrangedSubview(footer)
