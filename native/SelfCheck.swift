@@ -43,6 +43,7 @@ import WebKit
         if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appshot-check") { await runAgentAppShotCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--code-security-check") { await runCodeSecurityCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--security-report-check") { await runSecurityReportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
