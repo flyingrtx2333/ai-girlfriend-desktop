@@ -151,13 +151,13 @@ import AppKit
     @objc private func removeItem() {
         guard let selected, let window = presentingWindow else { return }
         let alert = AgentConfirmation(); alert.messageText = "将“\(selected.name)”移到废纸篓？"; alert.informativeText = selected.source.path; alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
-        alert.beginSheetModal(for: window) { [weak self] response in
+        alert.beginModal(in: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             do { try store.rules.trash(selected, task: editingTask()); self.selected = nil; reload(); setState("已移到废纸篓") } catch { setState(error.localizedDescription) }
         }
     }
     func confirmClosing() -> Bool {
-        guard window?.attachedSheet == nil else { return false }; guard dirty else { return true }
+        guard window?.hasBlockingDialog != true else { return false }; guard dirty else { return true }
         switch AgentUnsavedChanges.saveOrDiscard("保存规则更改？") { case .alertFirstButtonReturn: return saveChanges(); case .alertSecondButtonReturn: dirty = false; if creating { clear() } else { reload(select: selected?.id) }; return true; default: return false }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmClosing() }

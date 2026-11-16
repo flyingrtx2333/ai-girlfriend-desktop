@@ -68,7 +68,8 @@ import AppKit
     var outlined = false { didSet { refreshFocus(force: true) } }
     private var windowObserver: NSObjectProtocol?, focusVisible = false
     override init(frame: NSRect) {
-        super.init(frame: frame); font = .systemFont(ofSize: 13); isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
+        super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")
+        font = .systemFont(ofSize: 13); isEditable = true; isSelectable = true; isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
         drawsBackground = true; backgroundColor = .textBackgroundColor
         wantsLayer = true; layer?.cornerRadius = 6
     }

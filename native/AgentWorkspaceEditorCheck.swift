@@ -45,17 +45,17 @@ import Darwin
         func refused(_ body:() throws -> Void) -> Bool { do { try body(); return false } catch { return true } }
         func call(_ name:String,_ object:[String:Any]) throws -> AgentToolCall { .init(id:UUID().uuidString,name:name,arguments:String(decoding:try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]),as:UTF8.self)) }
         func find<T:NSView>(_ type:T.Type,_ view:NSView?,_ predicate:(T)->Bool) -> T? { guard let view else { return nil }; if let value = view as? T, predicate(value) { return value }; for child in view.subviews { if let value = find(type,child,predicate) { return value } }; return nil }
-        func button(_ label:String,_ sheet:NSWindow) throws -> NSButton { guard let value = find(NSButton.self,sheet.contentView,{$0.title == label || $0.accessibilityLabel() == label}) else { throw PetError("缺少操作：" + label) }; return value }
+        func button(_ label:String,_ sheet:AgentDialogController) throws -> NSButton { guard let value = find(NSButton.self,sheet.view,{$0.title == label || $0.accessibilityLabel() == label}) else { throw PetError("缺少操作：" + label) }; return value }
         func fullyVisible(_ view:NSView?) -> Bool {
             guard let view, !view.isHidden else { return false }
             let content = (view as? NSTextField)?.isEditable == false ? view.alignmentRect(forFrame:view.bounds) : view.bounds
             let visible = view.visibleRect.intersection(content)
             return content.width > 0 && content.height > 0 && visible.width >= content.width-1 && visible.height >= content.height-1
         }
-        func closed(_ host:NSWindow) async throws { for _ in 0..<100 { if host.attachedSheet == nil { return }; await wait(0.02) }; throw PetError("工作区表单未关闭") }
+        func closed(_ host:NSWindow) async throws { for _ in 0..<100 { if host.agentDialog == nil { return }; await wait(0.02) }; throw PetError("工作区表单未关闭") }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务未初始化") }
-            runtime.modelRequestCheck = { attempts += 1; throw PetError("工作区编辑原生验收禁止模型请求") }; defer { runtime.stopAll(); if let sheet = host.attachedSheet { host.endSheet(sheet) } }
+            runtime.modelRequestCheck = { attempts += 1; throw PetError("工作区编辑原生验收禁止模型请求") }; defer { runtime.stopAll(); host.cancelAgentDialog() }
             let ids = try await prepareWorkspaceEditorUI(output,seed:true), alpha = ids["alpha"]!, beta = ids["beta"]!, outside = ids["outside"]!, original = tasks.task(ids["old"]!)!
             checks["independentWorkspaceCheckUsesOnlyItsOwnProfile"] = usesAgent && tasks.extensions.sharedHome?.resolvingSymlinksInPath() == output.appendingPathComponent("shared-home").resolvingSymlinksInPath()
             let oldFile = tasks.directory.appendingPathComponent(original.id + ".json"), oldBytes = try Data(contentsOf:oldFile), otherFile = tasks.directory.appendingPathComponent(ids["other"]! + ".json"), otherBytes = try Data(contentsOf:otherFile)
@@ -152,21 +152,21 @@ import Darwin
             let reopened = AgentStore(directory:store.directory,legacy:[],extensionHome:output.appendingPathComponent("shared-home"))
             checks["workspaceAppearanceSourcesAndTaskScopeReopen"] = reopened.organization.entry(alpha,mode:.coding,tasks:reopened.tasks) == configured && reopened.task(id)?.workspaceScope == scoped
             control.showAgentTask(ids["task"]!); control.checkNameEditor("directory",id:alpha)
-            guard let sheet = host.attachedSheet, let name = find(NSTextField.self,sheet.contentView,{$0.accessibilityLabel() == "工作区名称"}) else { throw PetError("完整工作区编辑表单未打开") }
-            checks["nativeEditorUsesOwnedStyledSheet"] = sheet.isVisible && sheet.contentView is AgentThemeView && NSApp.modalWindow == nil && name.currentEditor() != nil
-            sheet.contentView?.layoutSubtreeIfNeeded()
+            guard let sheet = host.agentDialog, let name = find(NSTextField.self,sheet.view,{$0.accessibilityLabel() == "工作区名称"}) else { throw PetError("完整工作区编辑表单未打开") }
+            checks["nativeEditorUsesOwnedStyledCard"] = sheet.isVisible && sheet.view.window === host && host.attachedSheet == nil && sheet.view is AgentThemeView && NSApp.modalWindow == nil && name.currentEditor() != nil
+            sheet.view.layoutSubtreeIfNeeded()
             checks["shortFormStartsAtTopAndHasUsableWidth"] = name.bounds.width >= 420 && name.superview?.superview?.isFlipped == true && abs(name.superview?.frame.minY ?? -100) < 1 && !name.hasAmbiguousLayout
             checks["parentCannotCloseOverWorkspaceEditor"] = !control.windowShouldClose(host)
             let dataBeforeCancel = try Data(contentsOf:store.directory.appendingPathComponent("organization.json"))
-            let initialHeight = sheet.contentView?.bounds.height ?? 0
-            name.stringValue = ""; try button("保存",sheet).performClick(nil); sheet.contentView?.layoutSubtreeIfNeeded()
-            let invalidStatus = find(NSTextField.self,sheet.contentView,{$0.accessibilityLabel() == "工作区保存状态"})
-            checks["validationErrorExpandsSheetAndKeepsPaletteAndActionsVisible"] = try (sheet.contentView?.bounds.height ?? 0) > initialHeight && fullyVisible(name) && fullyVisible(button("颜色：森林",sheet)) && fullyVisible(button("颜色：灰蓝",sheet)) && fullyVisible(invalidStatus) && fullyVisible(button("保存",sheet))
+            let initialHeight = sheet.view.bounds.height
+            name.stringValue = ""; try button("保存",sheet).performClick(nil); sheet.view.layoutSubtreeIfNeeded()
+            let invalidStatus = find(NSTextField.self,sheet.view,{$0.accessibilityLabel() == "工作区保存状态"})
+            checks["validationErrorExpandsCardAndKeepsPaletteAndActionsVisible"] = try (sheet.view.bounds.height) > initialHeight && fullyVisible(name) && fullyVisible(button("颜色：森林",sheet)) && fullyVisible(button("颜色：灰蓝",sheet)) && fullyVisible(invalidStatus) && fullyVisible(button("保存",sheet))
             try button("设为主文件夹：" + alpha,sheet).performClick(nil); name.stringValue = "未保存工作区"
             try button("取消",sheet).performClick(nil); try await closed(host)
             checks["cancelKeepsConfigurationAndOriginalTaskDraft"] = try Data(contentsOf:store.directory.appendingPathComponent("organization.json")) == dataBeforeCancel && tasks.task(ids["task"]!)?.draft == "保留工作区编辑输入 🧭"
             control.checkNameEditor("directory",id:alpha)
-            guard let saved = host.attachedSheet, let field = find(NSTextField.self,saved.contentView,{$0.accessibilityLabel() == "工作区名称"}) else { throw PetError("表单未能重开") }
+            guard let saved = host.agentDialog, let field = find(NSTextField.self,saved.view,{$0.accessibilityLabel() == "工作区名称"}) else { throw PetError("表单未能重开") }
             field.stringValue = "原生表单保存的工作区"; try button("图标：帆船",saved).performClick(nil); try button("颜色：橙色",saved).performClick(nil); try button("设为主文件夹：" + alpha,saved).performClick(nil)
             let profile = store.directory, profileMode = try FileManager.default.attributesOfItem(atPath:profile.path)[.posixPermissions] as! NSNumber
             let beforeFailure = try Data(contentsOf:profile.appendingPathComponent("organization.json"))
@@ -174,18 +174,18 @@ import Darwin
             do {
                 defer { try? FileManager.default.setAttributes([.posixPermissions:profileMode],ofItemAtPath:profile.path) }
                 try button("保存",saved).performClick(nil)
-                let error = find(NSTextField.self,saved.contentView,{$0.accessibilityLabel() == "工作区保存状态"})
-                checks["failedSaveKeepsEveryFieldAndOriginalConfiguration"] = try host.attachedSheet === saved && error?.stringValue.isEmpty == false && field.stringValue == "原生表单保存的工作区" && Data(contentsOf:profile.appendingPathComponent("organization.json")) == beforeFailure && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks) == configured
-                saved.contentView?.layoutSubtreeIfNeeded()
-                let note = find(NSTextField.self,saved.contentView,{$0.stringValue == "文件夹变更用于新任务。"})
+                let error = find(NSTextField.self,saved.view,{$0.accessibilityLabel() == "工作区保存状态"})
+                checks["failedSaveKeepsEveryFieldAndOriginalConfiguration"] = try host.agentDialog === saved && error?.stringValue.isEmpty == false && field.stringValue == "原生表单保存的工作区" && Data(contentsOf:profile.appendingPathComponent("organization.json")) == beforeFailure && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks) == configured
+                saved.view.layoutSubtreeIfNeeded()
+                let note = find(NSTextField.self,saved.view,{$0.stringValue == "文件夹变更用于新任务。"})
                 let lastColor = try button("颜色：灰蓝",saved), save = try button("保存",saved)
-                func visibility() -> [String:Bool] { ["input":fullyVisible(field),"lastColor":fullyVisible(lastColor),"sourceNote":fullyVisible(note),"error":fullyVisible(error),"save":fullyVisible(save),"withinOwner":(saved.contentView?.bounds.height ?? .greatestFiniteMagnitude) <= host.contentLayoutRect.height-32] }
+                func visibility() -> [String:Bool] { ["input":fullyVisible(field),"lastColor":fullyVisible(lastColor),"sourceNote":fullyVisible(note),"error":fullyVisible(error),"save":fullyVisible(save),"withinOwner":(saved.view.bounds.height) <= host.contentLayoutRect.height-32] }
                 let initial = visibility(); var settled = initial, layoutWaits = 0
                 while !settled.values.allSatisfy({$0}), layoutWaits < 100 {
-                    await wait(0.02); saved.contentView?.layoutSubtreeIfNeeded(); settled = visibility(); layoutWaits += 1
+                    await wait(0.02); saved.view.layoutSubtreeIfNeeded(); settled = visibility(); layoutWaits += 1
                 }
                 checks["saveErrorAndSourceChangeNoteKeepPaletteAndFooterVisible"] = settled.values.allSatisfy{$0}
-                report["saveErrorVisibility"] = ["initial":initial,"settled":settled,"layoutWaits":layoutWaits,"sheetHeight":saved.contentView?.bounds.height ?? 0,"ownerHeightLimit":host.contentLayoutRect.height-32,"views":[field,lastColor,note,error,save].compactMap{$0}.map{["bounds":NSStringFromRect($0.bounds),"alignmentRect":NSStringFromRect($0.alignmentRect(forFrame:$0.bounds)),"visibleRect":NSStringFromRect($0.visibleRect)]}]
+                report["saveErrorVisibility"] = ["initial":initial,"settled":settled,"layoutWaits":layoutWaits,"sheetHeight":saved.view.bounds.height,"ownerHeightLimit":host.contentLayoutRect.height-32,"views":[field,lastColor,note,error,save].compactMap{$0}.map{["bounds":NSStringFromRect($0.bounds),"alignmentRect":NSStringFromRect($0.alignmentRect(forFrame:$0.bounds)),"visibleRect":NSStringFromRect($0.visibleRect)]}]
             }
             try button("保存",saved).performClick(nil); try await closed(host)
             checks["nativeSavePersistsAllFieldsWithoutChangingOldTaskScope"] = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.icon == .sailboat && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.color == .orange && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.primary == alpha && tasks.task(id)?.workspaceScope == scoped

@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentMCPUserInputPanel: NSWindowController {
+@MainActor final class AgentMCPUserInputPanel: AgentDialogController {
     let request: AgentMCPUserInput
     private let inputs: AgentMCPUserInputs
     private let issue = NSTextField(wrappingLabelWithString: "")
@@ -14,9 +14,7 @@ import AppKit
 
     init(request: AgentMCPUserInput, inputs: AgentMCPUserInputs) {
         self.request = request; self.inputs = inputs
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 465), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.title = "连接器问询"; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
-        super.init(window: panel)
+        super.init(title: "连接器问询", size: NSSize(width: 560, height: 465))
         let name = NSTextField(labelWithString: request.serverName); name.font = .systemFont(ofSize: 15, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.toolTip = request.serverName
         let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close, title: "取消连接器问询", symbol: "xmark"); close.target = self; close.action = #selector(cancelInput)
         let header = NSStackView(views: [name, NSView(), close]); header.alignment = .centerY
@@ -41,7 +39,7 @@ import AppKit
         AgentDialogStyle.action(cancel); AgentDialogStyle.action(decline); AgentDialogStyle.action(accept, prominent: true)
         let actions = NSStackView(views: [NSView(), cancel, decline, accept]); actions.spacing = 8
         let layout = NSStackView(views: [header, origin, scroll, actions]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 12
-        let root = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
+        let root = view; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             layout.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24), layout.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
             layout.topAnchor.constraint(equalTo: root.topAnchor, constant: 18), layout.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
@@ -53,7 +51,7 @@ import AppKit
         for view in [header, origin, scroll, actions] { view.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true }
         viewportHeight = scroll.heightAnchor.constraint(equalToConstant: 320); viewportHeight?.isActive = true
         fixedHeight = 36 + 36 + 28 + 28 + ceil(origin.intrinsicContentSize.height)
-        panel.initialFirstResponder = initialControl ?? cancel
+        initialFocus = initialControl ?? cancel
         resizeToContents()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -63,11 +61,11 @@ import AppKit
         label.setContentCompressionResistancePriority(.required, for: .vertical)
     }
     private func resizeToContents() {
-        window?.contentView?.layoutSubtreeIfNeeded()
+        view.layoutSubtreeIfNeeded()
         let height = min(320, max(80, ceil(body.fittingSize.height) + 16), max(80, maximumHeight - fixedHeight))
         viewportHeight?.constant = height
-        window?.setContentSize(NSSize(width: 560, height: fixedHeight + height))
-        window?.contentView?.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(width: 560, height: fixedHeight + height)
+        view.layoutSubtreeIfNeeded()
     }
     private func makeField(_ field: AgentMCPUserInput.Field) -> NSView {
         let caption = NSTextField(wrappingLabelWithString: field.title + (field.required ? " *" : ""))
@@ -127,19 +125,15 @@ import AppKit
         return row
     }
     func present(in parent: NSWindow) {
-        guard let window else { return }
-        AgentThemeContext.inherit(window, from: parent)
-        maximumHeight = parent.contentLayoutRect.height - 32; resizeToContents()
-        parent.beginSheet(window) { [weak self] _ in
-            guard let self else { return }
+        presentDialog(in: parent) { [self] _ in
             if !ended { try? inputs.respond(taskID: request.taskID, id: request.id, action: .cancel); ended = true }
             onClose?()
         }
-        window.makeFirstResponder(window.initialFirstResponder)
     }
+    override func layoutForOwner(_ available: NSSize) { maximumHeight = available.height; resizeToContents() }
     func dismiss() {
         guard !ended else { return }; ended = true
-        if let window { if let parent = window.sheetParent { parent.endSheet(window) } else { window.orderOut(nil); onClose?() } }
+        if isVisible { endDialog(.cancel) } else { onClose?() }
     }
     private func submit(_ action: AgentMCPUserInput.Action) {
         do {
@@ -153,5 +147,6 @@ import AppKit
     }
     @objc private func acceptInput() { submit(.accept) }
     @objc private func declineInput() { submit(.decline) }
-    @objc private func cancelInput() { submit(.cancel) }
+    @objc private func cancelInput() { cancel() }
+    override func cancel() { submit(.cancel) }
 }

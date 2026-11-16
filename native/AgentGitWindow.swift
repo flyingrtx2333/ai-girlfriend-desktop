@@ -306,7 +306,7 @@ import AppKit
         catch { state.stringValue = error.localizedDescription }
     }
     private func runSecurity(mode: AgentSecurityMode) {
-        guard !busy, let git, let window = presentingWindow, window.attachedSheet == nil, AgentCodeSecurity.sources.contains(source) else { return }
+        guard !busy, let git, let window = presentingWindow, !window.hasBlockingDialog, AgentCodeSecurity.sources.contains(source) else { return }
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path }
         guard (1...50).contains(selected.count) else { state.stringValue = "请选择 1 至 50 个文件"; return }
         setBusy(true)
@@ -327,7 +327,7 @@ import AppKit
         }
     }
     private func presentSecurityReport(_ report: AgentSecurityReport, git: AgentGit) {
-        guard let window = presentingWindow, window.attachedSheet == nil else { return }
+        guard let window = presentingWindow, !window.hasBlockingDialog else { return }
         let controller = AgentCodeSecurityWindow(report: report, onLocate: { [weak self] finding in
                     self?.locateSecurityFinding(finding, report: report)
                 }, onFix: writable() && report.mode != .semantic ? { [weak self] finding in

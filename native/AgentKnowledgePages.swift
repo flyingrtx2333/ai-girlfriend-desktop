@@ -52,7 +52,7 @@ import AppKit
         push(controller, root: root)
     }
     @discardableResult private func push(_ controller: AgentSettingsPageController, root ownerRoot: String) -> Bool {
-        guard let host = window, host.attachedSheet == nil, let content = controller.settingsContent(in: host, styled: false) else { return false }
+        guard let host = window, !host.hasBlockingDialog, let content = controller.settingsContent(in: host, styled: false) else { return false }
         controller.onSettingsPush = { [weak self] child in _ = self?.push(child, root: ownerRoot) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
         let changed: () -> Void = { [weak self] in self?.updateHeader(); self?.recoveryChanged() }

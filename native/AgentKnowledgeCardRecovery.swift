@@ -56,7 +56,7 @@ import AppKit
         return value
     }
     var canPreserveForQuit: Bool { openedScope != nil && task?.sideTask?.retained != false && task != nil }
-    func prepareWorkspaceNavigation() -> Bool { !busy && reviewWindow?.hasPendingOperation != true && presentingWindow?.attachedSheet == nil }
+    func prepareWorkspaceNavigation() -> Bool { !busy && reviewWindow?.hasPendingOperation != true && presentingWindow?.hasBlockingDialog != true }
     func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page? {
         guard prepareWorkspaceNavigation() else { throw PetError("请先完成当前知识卡片操作") }
         guard let scope = openedScope else { if dirty { throw PetError("卡片原范围尚未读取，编辑已保留") }; return nil }
@@ -119,7 +119,7 @@ import AppKit
         guard !viewportScheduled, !applyingRecovery, pendingCardViewport != nil || cardFocusRequested else { return }; viewportScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }; defer { viewportScheduled = false }
-            guard isPageVisible, presentingWindow?.attachedSheet == nil else { return }
+            guard isPageVisible, presentingWindow?.hasBlockingDialog != true else { return }
             applyingRecovery = true; presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let viewport = pendingCardViewport, viewport.apply(to: preview, focus: cardFocusRequested && lastContentFocus == "body") { pendingCardViewport = nil }
             if cardFocusRequested, lastContentFocus == "body", pendingCardViewport == nil { presentingWindow?.makeFirstResponder(preview) }

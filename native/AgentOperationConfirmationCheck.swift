@@ -32,7 +32,7 @@ import AppKit
             let timer = Timer(timeInterval: 0.02, repeats: true) { timer in
                 MainActor.assumeIsolated {
                     guard !clicked else { return }
-                    if let window = NSApp.modalWindow ?? owner.attachedSheet, let selected = find(NSButton.self, window.contentView, matching: { $0.title == choice }) {
+                    if let window = owner.agentDialog, let selected = find(NSButton.self, window.view, matching: { $0.title == choice }) {
                         clicked = true; var text: [String] = [], titles: [String] = [], destructive: [String] = []
                         func collect(_ view: NSView) {
                             if let button = view as? NSButton { if !button.title.isEmpty { titles.append(button.title); if button.hasDestructiveAction { destructive.append(button.title) } } }
@@ -40,8 +40,8 @@ import AppKit
                             else if let editor = view as? NSTextView { text.append(editor.string) }
                             view.subviews.forEach(collect)
                         }
-                        if let root = window.contentView { collect(root) }
-                        dialogs.append(["choice": choice, "sheet": window.sheetParent === owner, "modal": NSApp.modalWindow === window, "buttons": titles, "destructiveButtons": destructive, "text": text.joined(separator: "\n"), "styled": window.contentView is AgentThemeView, "default": window.defaultButtonCell?.title ?? "", "width": window.frame.width, "height": window.frame.height])
+                        collect(window.view)
+                        dialogs.append(["choice": choice, "inWindow": window.view.window === owner && owner.attachedSheet == nil, "modal": NSApp.modalWindow === owner, "buttons": titles, "destructiveButtons": destructive, "text": text.joined(separator: "\n"), "styled": window.view is AgentThemeView, "default": owner.defaultButtonCell?.title ?? "", "width": window.cardFrame.width, "height": window.cardFrame.height])
                         selected.performClick(nil)
                     } else if Date() >= limit { expired = true; timer.invalidate(); NSApp.abortModal() }
                 }
@@ -49,8 +49,8 @@ import AppKit
             RunLoop.main.add(timer, forMode: .common); RunLoop.main.add(timer, forMode: .modalPanel)
             defer { timer.invalidate() }
             try await action()
-            while (!clicked || owner.attachedSheet != nil), !expired, Date() < limit { await wait(0.02) }
-            guard clicked, !expired, owner.attachedSheet == nil else { throw PetError("操作确认未完成：" + choice) }
+            while (!clicked || owner.agentDialog != nil), !expired, Date() < limit { await wait(0.02) }
+            guard clicked, !expired, owner.agentDialog == nil else { throw PetError("操作确认未完成：" + choice) }
         }
         func show(_ page: AgentSettingsPageController, _ key: String) throws {
             guard pane.show(category: key, identity: key, scope: "操作确认验收", make: { _ in page }) else { throw PetError("无法进入操作确认验收页") }; host.makeKeyAndOrderFront(nil)
@@ -72,7 +72,7 @@ import AppKit
             let rules = AgentRuleWindow(store: tasks, taskID: id); try show(rules, "rules")
             let ruleFiles = try tasks.rules.catalog(workspace: workspace).map(\.source), ruleBytes = try ruleFiles.map { try Data(contentsOf: $0) }
             try await probe("取消", owner: host) { try button("移到废纸篓", rules.pageContentView).performClick(nil) }
-            checks["asynchronousSheetCancelPreservesRuleFilesAndReleasesOwner"] = try ruleFiles.enumerated().allSatisfy { try Data(contentsOf: $0.element) == ruleBytes[$0.offset] } && host.attachedSheet == nil && dialogs.last?["sheet"] as? Bool == true && dialogs.last?["modal"] as? Bool == false
+            checks["asynchronousCardCancelPreservesRuleFilesAndReleasesOwner"] = try ruleFiles.enumerated().allSatisfy { try Data(contentsOf: $0.element) == ruleBytes[$0.offset] } && host.agentDialog == nil && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == false
             guard pane.leave() else { throw PetError("规则确认未能结束") }
             let desktop = AgentDesktopSettingsView(desktop: tasks.desktop), beforeDesktop = try tasks.desktop.configuration()
             host.contentView = desktop; host.makeKeyAndOrderFront(nil)
@@ -103,11 +103,11 @@ import AppKit
             host.makeKeyAndOrderFront(nil)
             try await probe("允许", owner: host) {
                 let alert = AgentConfirmation(); alert.messageText = "公开回调验收"; alert.addButton(withTitle: "允许"); alert.addButton(withTitle: "取消")
-                alert.beginSheetModal(for: host) { callbacks += 1; response = $0 }
+                alert.beginModal(in: host) { callbacks += 1; response = $0 }
             }
             let callbackDeadline = Date().addingTimeInterval(2)
             while callbacks == 0, Date() < callbackDeadline { await wait(0.02) }
-            checks["sheetApprovalDeliversOriginalResponseExactlyOnce"] = callbacks == 1 && response == .alertFirstButtonReturn && host.attachedSheet == nil
+            checks["cardApprovalDeliversOriginalResponseExactlyOnce"] = callbacks == 1 && response == .alertFirstButtonReturn && host.agentDialog == nil
             checks["destructiveConfirmationsUseSafeReturnDefault"] = dialogs.filter { ($0["destructiveButtons"] as? [String])?.isEmpty == false }.allSatisfy { !(($0["destructiveButtons"] as? [String]) ?? []).contains($0["default"] as? String ?? "") }
             checks["noModelRequestsAndOriginalConversationDraftRetained"] = requests == 0 && tasks.task(id)?.draft == "保留操作确认验收输入" && tasks.tasks.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 && $0.modelReceipts?.isEmpty != false }
         } catch { report["error"] = error.localizedDescription }

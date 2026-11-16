@@ -39,7 +39,7 @@ import AppKit
         return value
     }
     var canPreserveForQuit: Bool { openedRoot != nil && store.task(taskID).map { $0.sideTask?.retained != false } == true }
-    func prepareWorkspaceNavigation() -> Bool { !busy && presentingWindow?.attachedSheet == nil }
+    func prepareWorkspaceNavigation() -> Bool { !busy && presentingWindow?.hasBlockingDialog != true }
     @discardableResult func requireOriginalIndexScope() throws -> AgentFiles {
         guard let root = openedRoot, let task = store.task(taskID) else { throw PetError("项目检索原任务不可用") }
         let files = try AgentFiles(workspace: task.workspace)
@@ -91,7 +91,7 @@ import AppKit
         guard !viewportScheduled, !applyingRecovery, (!previewBlocked && pendingIndexViewport != nil) || indexFocusRequested else { return }; viewportScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }; defer { viewportScheduled = false }
-            guard isPageVisible, presentingWindow?.attachedSheet == nil else { return }
+            guard isPageVisible, presentingWindow?.hasBlockingDialog != true else { return }
             applyingRecovery = true; presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if !previewBlocked, let value = pendingIndexViewport, value.apply(to: preview, focus: indexFocusRequested && lastContentFocus == "preview") { pendingIndexViewport = nil }
             if !previewBlocked, indexFocusRequested, lastContentFocus == "preview", pendingIndexViewport == nil { presentingWindow?.makeFirstResponder(preview) }

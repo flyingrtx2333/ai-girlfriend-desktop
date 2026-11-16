@@ -545,11 +545,11 @@ import UniformTypeIdentifiers
     }
     private func presentWikiAlert(_ alert: AgentConfirmation) async throws -> NSApplication.ModalResponse {
         try Task.checkCancellation()
-        guard let window = presentingWindow, window.isVisible, window.attachedSheet == nil else { throw PetError("请先完成当前窗口操作") }
+        guard let window = presentingWindow, window.isVisible, !window.hasBlockingDialog else { throw PetError("请先完成当前窗口操作") }
         wikiSharingAlert = alert; defer { wikiSharingAlert = nil }
         window.makeKeyAndOrderFront(nil)
         return await withCheckedContinuation { continuation in
-            alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+            alert.beginModal(in: window) { continuation.resume(returning: $0) }
         }
     }
     private func presentKnowledgeReview(_ review: AgentKnowledgeReviewWindow) {
@@ -1041,7 +1041,7 @@ import UniformTypeIdentifiers
         if edited, !dirty, let selection { loadSelection(selection) }
         return true
     }
-    private func closeContent() { load?.cancel(); wikiSharingTask?.cancel(); wikiReviewWindow?.close(); wikiReviewWindow = nil; if let alert = wikiSharingAlert, let parent = alert.window.sheetParent { parent.endSheet(alert.window, returnCode: .abort) }; wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
+    private func closeContent() { load?.cancel(); wikiSharingTask?.cancel(); wikiReviewWindow?.close(); wikiReviewWindow = nil; wikiSharingAlert?.endDialog(.abort); wikiPlanWindow?.close(); wikiPlanWindow = nil; video.clear(); videoWindow?.close(); videoWindow = nil; markdown.clear(); sourceWindow?.close(); sourceWindow = nil; conflictWindow?.close(); conflictWindow = nil }
     override func settingsWillLeave() { closeContent() }
     func windowWillClose(_ notification: Notification) { closeContent(); onWindowClose?(); onWindowClose = nil }
     func windowDidResize(_ notification: Notification) { pageDidLayout() }
@@ -1096,7 +1096,7 @@ import UniformTypeIdentifiers
         var result: [String: Any] = ["draft": text.string, "encodedDraft": fileContent, "encodedDraftBase64": data?.base64EncodedString() ?? "", "draftHash": data.map(AgentFiles.hash) ?? "", "openedHash": openedHash ?? "", "dirty": dirty, "utf8BOM": fileBOM, "encoding": fileFormat.encoding.rawValue, "byteOrderMark": fileFormat.bom, "sourceEditable": text.isEditable, "preview": markdown.editingCheckState, "comparison": conflictWindow?.checkState ?? [:]]
         if CommandLine.arguments.contains("--file-conflict-check") { result["snapshotAllowsOverwrite"] = (try? conflictSnapshot().allowsOverwrite) ?? false }
         if CommandLine.arguments.contains("--text-encoding-check") { result["encodingMenuVisible"] = !encodingMenu.isHidden; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
-        if AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["wikiSharingBusy"] = wikiSharingTask != nil; result["wikiSharingConfirmation"] = wikiSharingAlert?.messageText ?? ""; result["wikiSharingSheetVisible"] = wikiSharingAlert.map { presentingWindow?.attachedSheet === $0.window } ?? false; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
+        if AgentKnowledgePageHost.readbackEnabled || CommandLine.arguments.contains("--wiki-tree-check") || CommandLine.arguments.contains("--wiki-plan-check") || CommandLine.arguments.contains("--repo-wiki-overview-check") { result["tree"] = wikiTree.checkState; result["wikiPlan"] = wikiPlanWindow?.checkState ?? [:]; result["wikiSharingBusy"] = wikiSharingTask != nil; result["wikiSharingConfirmation"] = wikiSharingAlert?.messageText ?? ""; result["wikiSharingSheetVisible"] = false; result["wikiSharingDialogVisible"] = wikiSharingAlert?.isVisible == true; result["state"] = state.stringValue; result["file"] = openedFile?.path ?? "" }
         if ["--wiki-generation-check", "--wiki-updates-check", "--project-knowledge-check"].contains(where: CommandLine.arguments.contains) { result["generation"] = ["title": generate.title, "enabled": generate.isEnabled, "taskID": wikiGeneration?.taskID ?? "", "action": wikiGeneration?.action ?? "", "includesCards": wikiGeneration?.includesCards ?? false, "problem": generate.toolTip ?? ""] }
         if CommandLine.arguments.contains("--wiki-updates-check") { result["maintenance"] = ["available": wikiMaintenance != nil, "autoUpdate": wikiMaintenance?.options.autoUpdate ?? false, "autoExport": wikiMaintenance?.options.autoExport ?? false, "notice": store.wikiMaintenance.notice(workspace: store.task(taskID)?.workspace ?? "", language: wikiTree.selectedLanguage)] }
         return result

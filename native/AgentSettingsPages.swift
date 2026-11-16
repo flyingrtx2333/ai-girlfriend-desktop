@@ -23,7 +23,7 @@ import AppKit
     }
     func pageDidLayout() {}
     func canLeaveSettings() -> Bool {
-        guard presentingWindow?.attachedSheet == nil else { return false }
+        guard presentingWindow?.hasBlockingDialog != true else { return false }
         guard let window else { return true }
         return window.delegate?.windowShouldClose?(window) ?? true
     }

@@ -112,7 +112,7 @@ import AppKit
     }
     override func canLeaveSettings() -> Bool {
         if closed || submitted || discardAccepted { return true }
-        guard prepareWorkspaceNavigation(), presentingWindow?.attachedSheet == nil else { return false }
+        guard prepareWorkspaceNavigation(), presentingWindow?.hasBlockingDialog != true else { return false }
         guard hasPendingChanges else { return true }
         discardAccepted = AgentUnsavedChanges.discard("放弃未添加的网页标注？", detail: canvas.shot.source.title, discardTitle: "放弃标注"); return discardAccepted
     }

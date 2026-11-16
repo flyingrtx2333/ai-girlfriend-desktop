@@ -101,12 +101,12 @@ import AppKit
     }
     func settle(_ host: NSWindow) async throws {
         let limit = Date().addingTimeInterval(5)
-        while host.attachedSheet != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
-        guard host.attachedSheet == nil else { throw PetError("快捷操作窗口未关闭") }
+        while host.agentDialog != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
+        guard host.agentDialog == nil else { throw PetError("快捷操作窗口未关闭") }
     }
     let host = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
     host.isReleasedWhenClosed = false; host.contentView = AgentThemeView(fill: AgentWorkbenchTheme.surface); host.makeKeyAndOrderFront(nil)
-    defer { if let sheet = host.attachedSheet { host.endSheet(sheet) }; host.orderOut(nil) }
+    defer { host.cancelAgentDialog(); host.orderOut(nil) }
     let root = output.appendingPathComponent("shortcut-panels", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     let shortcuts = AgentShortcuts(directory: root), config = root.appendingPathComponent("shortcuts.json")
@@ -115,20 +115,20 @@ import AppKit
     host.contentView = form
     let original = try Data(contentsOf: config)
     try button("搜索任务快捷键", in: form).performClick(nil)
-    guard let sheet = host.attachedSheet else { throw PetError("快捷键录入未打开") }
+    guard let sheet = host.agentDialog else { throw PetError("快捷键录入未打开") }
     try await Task.sleep(for: .milliseconds(100))
-    checks["recorderOwnedCompactSheetInMinimumWindow"] = sheet.contentView is AgentThemeView && sheet.frame.width == 384 && sheet.frame.height < host.frame.height && NSApp.modalWindow == nil
+    checks["recorderOwnedCompactCardInMinimumWindow"] = sheet.view.window === host && host.attachedSheet == nil && sheet.view is AgentThemeView && sheet.cardFrame.width == 384 && sheet.cardFrame.height < host.frame.height && NSApp.modalWindow == nil
     try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: config.path)
     defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path) }
-    try button("清除快捷键", in: sheet.contentView).performClick(nil)
-    let message = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "录入快捷键" }
-    checks["recorderWriteFailureRetainsBindingBytesAndError"] = try host.attachedSheet === sheet && Data(contentsOf: config) == original && shortcuts.binding(.searchTasks) == AgentShortcutCommand.searchTasks.defaultBinding && message?.stringValue != "按下新的快捷键" && message?.stringValue.isEmpty == false
+    try button("清除快捷键", in: sheet.view).performClick(nil)
+    let message = views(sheet.view).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "录入快捷键" }
+    checks["recorderWriteFailureRetainsBindingBytesAndError"] = try host.agentDialog === sheet && Data(contentsOf: config) == original && shortcuts.binding(.searchTasks) == AgentShortcutCommand.searchTasks.defaultBinding && message?.stringValue != "按下新的快捷键" && message?.stringValue.isEmpty == false
     if let message {
         let rect = message.alignmentRect(forFrame: message.bounds)
-        checks["recorderFailureResizesWithoutClipping"] = try message.visibleRect.intersection(rect).height >= rect.height - 1 && button("取消", in: sheet.contentView).visibleRect.height >= 27
+        checks["recorderFailureResizesWithoutClipping"] = try message.visibleRect.intersection(rect).height >= rect.height - 1 && button("取消", in: sheet.view).visibleRect.height >= 27
     }
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
-    try button("清除快捷键", in: sheet.contentView).performClick(nil); try await settle(host)
+    try button("清除快捷键", in: sheet.view).performClick(nil); try await settle(host)
     checks["recorderRetryClearsAndUpdatesActualKeycap"] = try shortcuts.binding(.searchTasks) == .cleared && button("搜索任务快捷键", in: form).title == AgentShortcutBinding.cleared.display
     try button("搜索任务恢复默认", in: form).performClick(nil)
     checks["recorderRestoreUpdatesActualKeycapAndConfig"] = shortcuts.binding(.searchTasks) == AgentShortcutCommand.searchTasks.defaultBinding && AgentShortcuts(directory: root).overrides.isEmpty
@@ -138,10 +138,10 @@ import AppKit
         var selected: String?
         let switcher = AgentTaskSwitcher(store: tasks, selected: first, onSelect: { selected = $0 }, onClose: {})
         switcher.begin(in: host); try await Task.sleep(for: .milliseconds(100))
-        guard let window = host.attachedSheet, let search = views(window.contentView).compactMap({ $0 as? NSSearchField }).first else { throw PetError("任务切换搜索未打开") }
-        checks["switcherFitsAndFocusesSearch-" + look.rawValue] = window.contentView is AgentThemeView && window.frame.width == 560 && window.frame.height <= host.contentLayoutRect.height && search.currentEditor() != nil
+        guard let window = host.agentDialog, let search = views(window.view).compactMap({ $0 as? NSSearchField }).first else { throw PetError("任务切换搜索未打开") }
+        checks["switcherFitsAndFocusesSearch-" + look.rawValue] = window.view is AgentThemeView && window.cardFrame.width == 560 && window.cardFrame.height <= host.contentLayoutRect.height && search.currentEditor() != nil
         search.stringValue = "NO_MATCH_734582"; search.sendAction(search.action, to: search.target)
-        let open = try button("打开", in: window.contentView)
+        let open = try button("打开", in: window.view)
         checks["switcherEmptyQueryDisablesOpening-" + look.rawValue] = !open.isEnabled && switcher.checkState()["selected"] as? String == ""
         search.stringValue = "readme.md"; search.sendAction(search.action, to: search.target)
         checks["switcherFilterRetainsKeyboardSelection-" + look.rawValue] = open.isEnabled && switcher.checkState()["selected"] as? String == second

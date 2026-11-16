@@ -257,7 +257,7 @@ import UniformTypeIdentifiers
         guard let item = selected, canLeave(), let window = presentingWindow else { return }
         let alert = AgentConfirmation(); alert.messageText = "移除「\(item.name)」？"; alert.informativeText = "文件会移到废纸篓，已有任务记录保留。"
         alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
-        alert.beginSheetModal(for: window) { [weak self] response in
+        alert.beginModal(in: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
             do { try store.extensions.trash(item, workspace: workspace); selected = nil; reload() } catch { state.stringValue = error.localizedDescription }
         }

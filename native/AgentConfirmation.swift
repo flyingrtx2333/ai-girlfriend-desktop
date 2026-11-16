@@ -1,31 +1,31 @@
 import AppKit
 
-@MainActor final class AgentConfirmation: NSObject {
+@MainActor final class AgentConfirmation: AgentDialogController {
     var messageText = "", informativeText = ""
     var primaryButtonIndex: Int?, cancellationButtonIndex: Int?, defaultButtonIndex: Int?
     private(set) var buttons: [NSButton] = []
-    private var panel: NSPanel?
-    private weak var owner: NSWindow?, previousResponder: NSResponder?
+    private var built = false, cancelIndex = 0
+    private var standalone: NSPanel?
     private static let identifier = NSUserInterfaceItemIdentifier("agent-confirmation")
+    init() { super.init(title: "", size: NSSize(width: 440, height: 180)) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     @discardableResult func addButton(withTitle title: String) -> NSButton {
-        precondition(panel == nil, "请在显示确认前配置按钮")
+        precondition(!built, "请在显示确认前配置按钮")
         let button = AgentDialogButton(title: title, target: self, action: #selector(choose(_:))); button.tag = buttons.count
         buttons.append(button); return button
     }
-    var window: NSWindow { build() }
-    private func build() -> NSPanel {
-        if let panel { return panel }
+    private func build() {
+        guard !built else { return }
         if buttons.isEmpty { addButton(withTitle: "确定") }
         let cancel = cancellationButtonIndex ?? buttons.firstIndex { ["取消", "关闭", "继续编辑", "继续等待"].contains($0.title) } ?? 0
         let primary = primaryButtonIndex ?? buttons.indices.first { $0 != cancel } ?? cancel
         let requested = defaultButtonIndex ?? buttons.firstIndex { $0.keyEquivalent == "\r" } ?? 0
         precondition([cancel, primary, requested].allSatisfy { buttons.indices.contains($0) })
         let selected = buttons[requested].hasDestructiveAction && !buttons[cancel].hasDestructiveAction ? cancel : requested
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 180), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        self.panel = panel; panel.title = messageText; panel.identifier = Self.identifier; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true
-        panel.isReleasedWhenClosed = false; panel.hidesOnDeactivate = false; panel.isMovable = false
-        let body = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = body
+        built = true; cancelIndex = cancel; title = messageText
+        view.identifier = Self.identifier; view.setAccessibilityLabel(messageText)
+        let body = view
         let headingHeight = (messageText as NSString).boundingRect(with: NSSize(width: 350, height: CGFloat.greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: NSFont.systemFont(ofSize: 15, weight: .semibold)]).height
         let longHeading = headingHeight > 60, detail = longHeading ? [messageText, informativeText].filter { !$0.isEmpty }.joined(separator: "\n\n") : informativeText
         let heading = NSTextField(wrappingLabelWithString: longHeading ? "确认操作" : messageText); heading.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -53,42 +53,41 @@ import AppKit
         body.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -20)])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        panel.setContentSize(NSSize(width: 440, height: max(150, column.fittingSize.height + 38)))
-        panel.initialFirstResponder = buttons[selected]; panel.defaultButtonCell = buttons[selected].cell as? NSButtonCell
-        return panel
-    }
-    private func prepare(in window: NSWindow?) { owner = window; previousResponder = window?.firstResponder }
-    private func restoreFocus() {
-        if let owner, owner.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
-            owner.makeKeyAndOrderFront(nil)
-            if let view = previousResponder as? NSView, view.window === owner, !view.isHiddenOrHasHiddenAncestor { owner.makeFirstResponder(view) }
-        }
+        preferredContentSize = NSSize(width: 440, height: max(150, column.fittingSize.height + 38))
+        initialFocus = buttons[selected]; defaultButton = buttons[selected]
     }
     @discardableResult func runModal(for requestedOwner: NSWindow? = nil) -> NSApplication.ModalResponse {
-        prepare(in: requestedOwner ?? NSApp.keyWindow ?? NSApp.mainWindow); let panel = build()
-        AgentThemeContext.inherit(panel, from: owner)
-        if let owner {
-            let area = owner.screen?.visibleFrame ?? owner.frame, size = panel.frame.size
-            panel.setFrameOrigin(NSPoint(x: max(area.minX, min(owner.frame.midX - size.width / 2, area.maxX - size.width)), y: max(area.minY, min(owner.frame.midY - size.height / 2, area.maxY - size.height))))
-        } else { panel.center() }
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(panel.initialFirstResponder)
-        let response = NSApp.runModal(for: panel); panel.orderOut(nil); restoreFocus(); return response
+        build()
+        let owner: NSWindow
+        if let existing = requestedOwner ?? NSApp.keyWindow ?? NSApp.mainWindow { owner = existing }
+        else {
+            let panel = NSPanel(contentRect: NSRect(origin: .zero, size: NSSize(width: preferredContentSize.width + 32, height: preferredContentSize.height + 32)), styleMask: [.titled], backing: .buffered, defer: false)
+            panel.title = messageText; panel.isReleasedWhenClosed = false; panel.center()
+            standalone = panel; owner = panel
+        }
+        var modalRunning = false
+        guard presentDialog(in: owner, completion: { response in if modalRunning { NSApp.stopModal(withCode: response) } }) else { standalone = nil; return .abort }
+        modalRunning = true
+        let response = NSApp.runModal(for: owner)
+        modalRunning = false
+        if isVisible { endDialog(response) }
+        standalone?.orderOut(nil); standalone = nil
+        return response
     }
-    func beginSheetModal(for owner: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) {
-        prepare(in: owner); let panel = build()
-        AgentThemeContext.inherit(panel, from: owner)
-        owner.beginSheet(panel) { [self] response in panel.orderOut(nil); restoreFocus(); completionHandler?(response) }
-        panel.makeFirstResponder(panel.initialFirstResponder)
+    func beginModal(in owner: NSWindow, completionHandler: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        build()
+        if !presentDialog(in: owner, completion: { response in completionHandler?(response) }) { completionHandler?(.abort) }
     }
     @objc private func choose(_ sender: NSButton) {
         let response = NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + sender.tag)
-        if let panel, let parent = panel.sheetParent { parent.endSheet(panel, returnCode: response) } else { NSApp.stopModal(withCode: response) }
+        endDialog(response)
     }
+    override func cancel() { if buttons.indices.contains(cancelIndex) { choose(buttons[cancelIndex]) } }
     static func checkState() -> [String: Any] {
-        guard ["--manual-ui", "--unsaved-changes-check", "--operation-confirmation-check"].contains(where: CommandLine.arguments.contains), let window = NSApp.modalWindow ?? NSApp.keyWindow, window.identifier == identifier else { return ["visible": false] }
-        return ["visible": window.isVisible, "title": window.title, "styled": window.contentView is AgentThemeView, "sheet": window.sheetParent != nil, "default": window.defaultButtonCell?.title ?? "", "size": [window.frame.width, window.frame.height], "ambiguous": window.contentView?.hasAmbiguousLayout == true]
+        guard ["--manual-ui", "--unsaved-changes-check", "--operation-confirmation-check"].contains(where: CommandLine.arguments.contains), let owner = NSApp.modalWindow ?? NSApp.keyWindow, let dialog = owner.agentDialog as? AgentConfirmation else { return ["visible": false] }
+        var result = dialog.presentationState()
+        result.merge(["styled": dialog.view is AgentThemeView, "sheet": false, "default": owner.defaultButtonCell?.title ?? "", "size": [dialog.cardFrame.width, dialog.cardFrame.height], "ambiguous": dialog.view.hasAmbiguousLayout]) { _, new in new }
+        return result
     }
 }
 

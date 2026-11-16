@@ -189,7 +189,7 @@ import AppKit
     func rootController(_ root: Root) -> AgentSettingsPageController? { taskID.flatMap { stacks[$0]?[root]?.first?.controller } }
     private func push(_ controller: AgentSettingsPageController, taskID id: String, root: Root) {
         if taskID == id, selectedRoot == root, !prepareToNavigate() { return }
-        guard let window, window.attachedSheet == nil, let content = controller.settingsContent(in: window, styled: false) else { return }
+        guard let window, !window.hasBlockingDialog, let content = controller.settingsContent(in: window, styled: false) else { return }
         controller.onSettingsPush = { [weak self] child in self?.push(child, taskID: id, root: root) }; controller.onSettingsClose = { [weak self] in self?.pop(taskID: id, root: root) }
         (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in
             guard let self else { return }; updateTabs(); updateHeader(full: headerFull ?? expanded); onRecoveryChange?()
@@ -330,7 +330,7 @@ import AppKit
         prepareToNavigate(entries)
     }
     private func prepareToNavigate(_ entries: [Entry]) -> Bool {
-        guard !closing, window?.attachedSheet == nil else { return false }
+        guard !closing, window?.hasBlockingDialog != true else { return false }
         for entry in entries {
             if let record = entry.controller as? AgentRecordWindow, !record.prepareWorkspaceNavigation() { return false }
             if let comparison = entry.controller as? AgentFileConflictWindow, !comparison.canNavigateWorkspace { return false }

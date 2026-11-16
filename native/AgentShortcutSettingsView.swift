@@ -39,23 +39,21 @@ import AppKit
     @objc private func restoreAll() { do { try shortcuts.reset(); refresh() } catch { show(error.localizedDescription) } }
     @objc private func restore(_ sender: NSButton) { do { try shortcuts.set(nil, for: AgentShortcutCommand.allCases[sender.tag]); refresh() } catch { show(error.localizedDescription) } }
     @objc private func record(_ sender: NSButton) {
-        guard let window, recorder == nil else { return }
+        guard let window, !window.hasBlockingDialog, recorder == nil else { return }
         let command = AgentShortcutCommand.allCases[sender.tag]
         recorder = AgentShortcutRecorder(command: command, shortcuts: shortcuts) { [weak self] in self?.recorder = nil; self?.refresh() }
         recorder?.begin(in: window)
     }
 }
 
-@MainActor private final class AgentShortcutRecorder: NSObject {
-    private let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 384, height: 160), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+@MainActor private final class AgentShortcutRecorder: AgentDialogController {
     private let message = NSTextField(wrappingLabelWithString: "按下新的快捷键")
     private let column = NSStackView()
     private let command: AgentShortcutCommand, shortcuts: AgentShortcuts, finish: () -> Void
-    private var monitor: Any?
     init(command: AgentShortcutCommand, shortcuts: AgentShortcuts, finish: @escaping () -> Void) {
-        self.command = command; self.shortcuts = shortcuts; self.finish = finish; super.init()
-        panel.title = command.title; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
-        let body = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = body
+        self.command = command; self.shortcuts = shortcuts; self.finish = finish
+        super.init(title: command.title, size: NSSize(width: 384, height: 160))
+        let body = view
         let title = NSTextField(labelWithString: command.title); title.font = .systemFont(ofSize: 15, weight: .semibold)
         title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close, title: "取消录入快捷键", symbol: "xmark"); close.target = self; close.action = #selector(cancel)
@@ -70,23 +68,18 @@ import AppKit
         column.orientation = .vertical; column.alignment = .leading; column.spacing = 16; column.translatesAutoresizingMaskIntoConstraints = false
         body.addSubview(column)
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -18)])
-        resizeToContents()
+        initialFocus = cancel; resizeToContents()
+        captureKey = { [weak self] event in
+            guard let self else { return false }
+            if event.keyCode == 53 { self.cancel() } else { self.save(AgentShortcutBinding.recorded(event)) }
+            return true
+        }
     }
-    private func resizeToContents() { panel.contentView?.layoutSubtreeIfNeeded(); panel.setContentSize(NSSize(width: 384, height: ceil(column.fittingSize.height) + 36)) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private func resizeToContents() { view.layoutSubtreeIfNeeded(); preferredContentSize = NSSize(width: 384, height: ceil(column.fittingSize.height) + 36) }
     func begin(in owner: NSWindow) {
-        AgentThemeContext.inherit(panel, from: owner)
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.panel.isVisible, NSApp.keyWindow === self.panel else { return event }
-            if event.keyCode == 53 { self.cancel() }
-            else { self.save(AgentShortcutBinding.recorded(event)) }
-            return nil
-        }
-        owner.beginSheet(panel) { [self] _ in
-            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
-            panel.orderOut(nil); finish()
-        }
+        presentDialog(in: owner) { [self] _ in finish() }
     }
-    @objc private func cancel() { panel.sheetParent?.endSheet(panel) }
     @objc private func clear() { save(.cleared) }
     private func save(_ value: AgentShortcutBinding) {
         do { try shortcuts.set(value, for: command); cancel() }

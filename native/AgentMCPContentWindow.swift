@@ -377,7 +377,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         presentingWindow?.makeFirstResponder(target)
     }
     override func canLeaveSettings() -> Bool {
-        guard presentingWindow?.attachedSheet == nil else { return false }
+        guard presentingWindow?.hasBlockingDialog != true else { return false }
         guard !hasPendingOperation else { state.stringValue = "请先完成操作，或点击取消。"; return false }
         guard workspaceHasUnsavedChanges else { return true }
         return AgentUnsavedChanges.discard("关闭 MCP 资料？", detail: "未加入草稿的参数将清除。任务草稿与已添加附件保留。", discardTitle: "关闭资料页", owner: presentingWindow)

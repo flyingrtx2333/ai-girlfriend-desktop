@@ -100,7 +100,7 @@ import Darwin
     }
     func persistWorkspaceRecovery(previous: AgentWorkspaceRecovery.Page?, write: (AgentWorkspaceRecovery.Page, URL?) async throws -> Void) async throws {
         if let opening { try await opening.value }
-        guard !closed, ready, !working, uiTask == nil, presentingWindow?.attachedSheet == nil else { throw PetError("请先完成办公文件的当前操作，恢复草稿尚未保存") }
+        guard !closed, ready, !working, uiTask == nil, presentingWindow?.hasBlockingDialog != true else { throw PetError("请先完成办公文件的当前操作，恢复草稿尚未保存") }
         try await verifyClean()
         guard let captured = try await evaluate("return await BlueFatFishOffice.captureView()") as? [String: Any],
               let capturedRevision = captured["revision"] as? Int, capturedRevision == editorRevision else { throw PetError("办公内容已变化，正在重新保存位置") }
@@ -365,7 +365,7 @@ import Darwin
     override func prepareForWorkspaceClose() async -> Bool {
         if closed { return true }
         if working { return opening != nil && !dirty }
-        guard uiTask == nil, presentingWindow?.attachedSheet == nil else { return false }
+        guard uiTask == nil, presentingWindow?.hasBlockingDialog != true else { return false }
         var accepted = false
         defer {
             if !accepted {

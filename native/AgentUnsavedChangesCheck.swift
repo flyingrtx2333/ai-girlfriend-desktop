@@ -34,13 +34,13 @@ import AppKit
             let timer = Timer(timeInterval: 0.02, repeats: true) { timer in
                 MainActor.assumeIsolated {
                     guard !clicked else { return }
-                    if let window = NSApp.modalWindow, let button = find(NSButton.self, in: window.contentView, matching: { $0.title == title }) {
+                    if let owner = NSApp.modalWindow, let window = owner.agentDialog, let button = find(NSButton.self, in: window.view, matching: { $0.title == title }) {
                         clicked = true
                         var titles: [String] = []
                         func collect(_ view: NSView) { if let button = view as? NSButton, !button.title.isEmpty { titles.append(button.title) }; view.subviews.forEach(collect) }
-                        if let view = window.contentView { collect(view) }
-                        let scroll = find(NSScrollView.self, in: window.contentView, matching: { $0.documentView is NSTextView }), text = scroll?.documentView as? NSTextView
-                        dialogs.append(["choice": title, "buttons": titles, "styled": window.contentView is AgentThemeView, "default": window.defaultButtonCell?.title ?? "", "ambiguous": window.contentView?.hasAmbiguousLayout == true, "width": window.frame.width, "height": window.frame.height, "detail": text?.string ?? "", "detailHeight": scroll?.bounds.height ?? 0, "documentHeight": text?.bounds.height ?? 0, "detailFits": scroll.map { window.contentView!.bounds.contains($0.convert($0.bounds, to: window.contentView)) } ?? true])
+                        collect(window.view)
+                        let scroll = find(NSScrollView.self, in: window.view, matching: { $0.documentView is NSTextView }), text = scroll?.documentView as? NSTextView
+                        dialogs.append(["choice": title, "buttons": titles, "styled": window.view is AgentThemeView, "default": owner.defaultButtonCell?.title ?? "", "ambiguous": window.view.hasAmbiguousLayout, "width": window.cardFrame.width, "height": window.cardFrame.height, "detail": text?.string ?? "", "detailHeight": scroll?.bounds.height ?? 0, "documentHeight": text?.bounds.height ?? 0, "detailFits": scroll.map { window.view.bounds.contains($0.convert($0.bounds, to: window.view)) } ?? true])
                         button.performClick(nil)
                     } else if Date() >= deadline { expired = true; timer.invalidate(); NSApp.abortModal() }
                 }

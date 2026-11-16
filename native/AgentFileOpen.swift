@@ -17,7 +17,7 @@ import AppKit
                 let urls = pendingFileOpens.removeFirst(), owner = control
                 do {
                     try AgentAttachments.validateSources(urls)
-                    guard !owner.isImportingAttachments, owner.window?.attachedSheet == nil else { throw PetError("请先完成当前对话框或附件导入，再重新打开文件") }
+                    guard !owner.isImportingAttachments, owner.window?.hasBlockingDialog != true else { throw PetError("请先完成当前对话框或附件导入，再重新打开文件") }
                     guard persistTaskDrafts() else { continue }
                     let title = urls[0].lastPathComponent + (urls.count == 1 ? "" : " 等 \(urls.count) 个文件")
                     let id = tasks.create(title: title, mode: .ask, workMode: .general)

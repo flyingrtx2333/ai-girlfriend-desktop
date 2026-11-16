@@ -1,16 +1,13 @@
 import AppKit
 
-@MainActor final class AgentNameEditor: NSWindowController, NSTextFieldDelegate {
+@MainActor final class AgentNameEditor: AgentDialogController, NSTextFieldDelegate {
     private let input = AgentDialogTextField(frame: .zero), status = NSTextField(wrappingLabelWithString: ""), column = NSStackView()
     private let saveName: (String) throws -> Void, onClose: () -> Void
-    private weak var previousResponder: NSResponder?
 
     init(title: String, label: String, value: String, actionTitle: String = "保存", note: String? = nil, statusLabel: String = "名称保存状态", save: @escaping (String) throws -> Void, onClose: @escaping () -> Void) {
         saveName = save; self.onClose = onClose
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 384, height: 160), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.title = title; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
-        super.init(window: panel)
-        let body = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = body
+        super.init(title: title, size: NSSize(width: 384, height: 160))
+        let body = view
         let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 15, weight: .semibold)
         let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close, title: "取消" + title, symbol: "xmark"); close.target = self; close.action = #selector(cancel)
         let header = NSStackView(views: [heading, NSView(), close]); header.alignment = .centerY
@@ -29,28 +26,20 @@ import AppKit
         column.translatesAutoresizingMaskIntoConstraints = false; body.addSubview(column)
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(lessThanOrEqualTo: body.bottomAnchor, constant: -20)])
         for view in fields { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        panel.initialFirstResponder = input; resizeToContents()
+        initialFocus = input; defaultButton = save; selectInitialText = true; resizeToContents()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func resizeToContents() {
-        window?.contentView?.layoutSubtreeIfNeeded()
-        window?.setContentSize(NSSize(width: 384, height: ceil(column.fittingSize.height) + 38))
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(width: 384, height: ceil(column.fittingSize.height) + 38)
     }
     func begin(in owner: NSWindow) {
-        guard let panel = window, owner.attachedSheet == nil else { return }
-        previousResponder = owner.firstResponder
-        AgentThemeContext.inherit(panel, from: owner)
-        owner.beginSheet(panel) { [self, weak owner] _ in
-            panel.orderOut(nil); onClose()
-            if let view = previousResponder as? NSView, view.window === owner { owner?.makeFirstResponder(view) }
-        }
-        panel.makeFirstResponder(input); input.selectText(nil)
+        presentDialog(in: owner) { [self] _ in onClose() }
     }
-    @objc func cancel() { if let window { window.sheetParent?.endSheet(window, returnCode: .cancel) } }
     @objc private func submit() {
         guard (input.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
-        do { try saveName(input.stringValue); if let window { window.sheetParent?.endSheet(window, returnCode: .OK) } }
-        catch { status.stringValue = error.localizedDescription; status.isHidden = false; resizeToContents(); window?.makeFirstResponder(input) }
+        do { try saveName(input.stringValue); endDialog(.OK) }
+        catch { status.stringValue = error.localizedDescription; status.isHidden = false; resizeToContents(); presentingWindow?.makeFirstResponder(input) }
     }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard !textView.hasMarkedText() else { return false }
@@ -60,6 +49,8 @@ import AppKit
     }
     func checkState() -> [String: Any] {
         guard CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--name-editor-check") else { return [:] }
-        return ["visible": window?.isVisible == true, "title": window?.title ?? "", "value": input.stringValue, "error": status.stringValue, "inputFocused": input.currentEditor().map { window?.firstResponder === $0 } ?? false, "ambiguousLayout": input.hasAmbiguousLayout || status.hasAmbiguousLayout, "inputWidth": input.bounds.width]
+        var result = presentationState()
+        result.merge(["value": input.stringValue, "error": status.stringValue, "inputFocused": input.currentEditor().map { presentingWindow?.firstResponder === $0 } ?? false, "ambiguousLayout": input.hasAmbiguousLayout || status.hasAmbiguousLayout, "inputWidth": input.bounds.width]) { _, new in new }
+        return result
     }
 }

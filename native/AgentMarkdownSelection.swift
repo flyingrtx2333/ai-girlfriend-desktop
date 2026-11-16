@@ -98,7 +98,7 @@ struct AgentMarkdownSelection {
             let selected = try selection(); popover?.close(); popover = nil; try onAdd(selected)
         } catch {
             let alert = AgentConfirmation(); alert.messageText = error.localizedDescription
-            if let window = text.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+            if let window = text.window { alert.beginModal(in: window) } else { alert.runModal() }
         }
     }
 }

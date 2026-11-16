@@ -8,9 +8,9 @@ import AppKit
     }
 }
 
-@MainActor final class AgentTaskSwitcher: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+@MainActor final class AgentTaskSwitcher: AgentDialogController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     private let store: AgentStore
-    private let search = NSSearchField(), table = AgentTaskSwitcherTable(), empty = NSTextField(labelWithString: "没有匹配的任务")
+    private let search = AgentDialogSearchField(frame: .zero), table = AgentTaskSwitcherTable(), empty = NSTextField(labelWithString: "没有匹配的任务")
     private let openButton = AgentDialogButton(title: "打开", target: nil, action: nil)
     private let onSelect: (String) -> Void, onClose: () -> Void
     private var values: [AgentTaskRecord] = [], initialSelection: String?, chosen: String?
@@ -28,10 +28,8 @@ import AppKit
     }
     init(store: AgentStore, selected: String?, onSelect: @escaping (String) -> Void, onClose: @escaping () -> Void) {
         self.store = store; initialSelection = selected; self.onSelect = onSelect; self.onClose = onClose
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 480), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.title = "切换任务"; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
-        super.init(window: panel)
-        let root = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = root
+        super.init(title: "切换任务", size: NSSize(width: 560, height: 480))
+        let root = view
         let heading = NSTextField(labelWithString: "切换任务"); heading.font = .systemFont(ofSize: 15, weight: .semibold)
         let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close, title: "取消切换任务", symbol: "xmark"); close.target = self; close.action = #selector(cancel)
         let header = NSStackView(views: [heading, NSView(), close]); header.alignment = .centerY
@@ -55,20 +53,16 @@ import AppKit
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24), content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 18), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18)])
         for view in [header, search, list, actions] { view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
         list.setContentHuggingPriority(.defaultLow, for: .vertical)
-        refresh()
+        initialFocus = search; defaultButton = openButton; restoreFocusOnAccept = false; refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func begin(in owner: NSWindow) {
-        guard let panel = window else { return }
-        AgentThemeContext.inherit(panel, from: owner)
-        panel.setContentSize(NSSize(width: 560, height: min(480, owner.contentLayoutRect.height - 32)))
-        owner.beginSheet(panel) { [self] response in
-            panel.orderOut(nil)
+        presentDialog(in: owner) { [self] response in
             if response == .OK, let chosen, Self.candidates(store: store, query: "").contains(where: { $0.id == chosen }) { onSelect(chosen) }
             onClose()
         }
-        panel.makeFirstResponder(search)
     }
+    override func layoutForOwner(_ available: NSSize) { preferredContentSize = NSSize(width: min(560, available.width), height: min(480, available.height)) }
     func refresh() {
         let selected = values.indices.contains(table.selectedRow) ? values[table.selectedRow].id : initialSelection
         initialSelection = nil; values = Self.candidates(store: store, query: search.stringValue); table.reloadData()
@@ -86,12 +80,11 @@ import AppKit
         if !values.isEmpty { table.selectRowIndexes(IndexSet(integer: min(values.count - 1, max(0, table.selectedRow + delta))), byExtendingSelection: false); table.scrollRowToVisible(table.selectedRow) }
         return true
     }
-    @objc func cancel() { if let window { window.sheetParent?.endSheet(window, returnCode: .cancel) } }
     @objc private func openSelected() {
-        guard values.indices.contains(table.selectedRow), let window else { return }
+        guard values.indices.contains(table.selectedRow) else { return }
         let id = values[table.selectedRow].id
         guard Self.candidates(store: store, query: search.stringValue).contains(where: { $0.id == id }) else { refresh(); return }
-        chosen = id; window.sheetParent?.endSheet(window, returnCode: .OK)
+        chosen = id; endDialog(.OK)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -110,5 +103,9 @@ import AppKit
         (cell.subviews.first { $0.identifier?.rawValue == "detail" } as? NSTextField)?.stringValue = task.organizationMode.title + " · " + directory + " · " + task.status.title
         return cell
     }
-    func checkState() -> [String: Any] { ["visible": window?.isVisible == true, "query": search.stringValue, "tasks": values.map(\.id), "selected": values.indices.contains(table.selectedRow) ? values[table.selectedRow].id : ""] }
+    func checkState() -> [String: Any] {
+        var result = presentationState()
+        result.merge(["query": search.stringValue, "tasks": values.map(\.id), "selected": values.indices.contains(table.selectedRow) ? values[table.selectedRow].id : ""]) { _, new in new }
+        return result
+    }
 }

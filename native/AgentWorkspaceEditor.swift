@@ -8,7 +8,7 @@ extension AgentWorkspaceColor {
     override var isFlipped:Bool { true }
 }
 
-@MainActor final class AgentWorkspaceEditor: NSWindowController, NSTextFieldDelegate {
+@MainActor final class AgentWorkspaceEditor: AgentDialogController, NSTextFieldDelegate {
     let original:AgentDirectoryEntry
     private let input = AgentDialogTextField(frame: .zero), status = NSTextField(wrappingLabelWithString:""), rangeNote = NSTextField(wrappingLabelWithString:"文件夹变更用于新任务。")
     private let folderColumn = NSStackView(), form = NSStackView(), folderScroll = NSScrollView(), viewport = NSScrollView()
@@ -17,16 +17,13 @@ extension AgentWorkspaceColor {
     private var folders:[String], primary:String, icon:AgentWorkspaceIcon, color:AgentWorkspaceColor
     private let saveWorkspace:(String,AgentWorkspaceIcon,AgentWorkspaceColor,[String],String) throws -> Void
     private let archiveWorkspace:() throws -> Void, onClose:() -> Void
-    private weak var previousResponder:NSResponder?
     private var maximumPanelSize = NSSize.zero
     init(entry:AgentDirectoryEntry, save:@escaping (String,AgentWorkspaceIcon,AgentWorkspaceColor,[String],String) throws -> Void, archive:@escaping () throws -> Void, onClose:@escaping () -> Void) {
         original = entry; folders = entry.sourceFolders; primary = entry.primary; icon = entry.icon ?? .folder; color = entry.color ?? .forest
         saveWorkspace = save; archiveWorkspace = archive; self.onClose = onClose
-        let panel = NSPanel(contentRect:NSRect(x:0,y:0,width:560,height:470),styleMask:[.titled,.fullSizeContentView],backing:.buffered,defer:false)
-        panel.title = "编辑" + entry.mode.directoryTitle; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
-        super.init(window:panel)
-        let root = AgentThemeView(fill:AgentWorkbenchTheme.surface); panel.contentView = root
-        let heading = NSTextField(labelWithString:panel.title); heading.font = .systemFont(ofSize:15,weight:.semibold)
+        super.init(title:"编辑" + entry.mode.directoryTitle,size:NSSize(width:560,height:470))
+        let root = view
+        let heading = NSTextField(labelWithString:title ?? ""); heading.font = .systemFont(ofSize:15,weight:.semibold)
         let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close,title:"取消工作区编辑",symbol:"xmark"); close.target = self; close.action = #selector(cancel)
         let header = NSStackView(views:[heading,NSView(),close]); header.alignment = .centerY
         let add = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(add,title:"添加源文件夹",symbol:"plus"); add.target = self; add.action = #selector(addFolders)
@@ -68,7 +65,7 @@ extension AgentWorkspaceColor {
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo:column.widthAnchor).isActive = true }
         viewport.setContentHuggingPriority(.defaultLow,for:.vertical)
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo:root.leadingAnchor,constant:20),column.trailingAnchor.constraint(equalTo:root.trailingAnchor,constant:-20),column.topAnchor.constraint(equalTo:root.topAnchor,constant:18),column.bottomAnchor.constraint(equalTo:root.bottomAnchor,constant:-18)])
-        panel.initialFirstResponder = input; refresh()
+        initialFocus = input; defaultButton = save; selectInitialText = true; refresh()
     }
     required init?(coder:NSCoder) { fatalError("init(coder:) is not supported") }
     private func configureScroll(_ scroll:NSScrollView, document:NSView, content:NSView) {
@@ -98,33 +95,30 @@ extension AgentWorkspaceColor {
         for button in colors { button.state = button.identifier?.rawValue == color.rawValue ? .on : .off; button.contentTintColor = color.nsColor }
         rangeNote.isHidden = folders == original.sourceFolders && primary == original.primary
         resizeForContents()
-        window?.contentView?.layoutSubtreeIfNeeded()
+        view.layoutSubtreeIfNeeded()
     }
     private func resizeForContents() {
-        guard let panel = window, maximumPanelSize.height > 0 else { return }
+        guard maximumPanelSize.height > 0 else { return }
         status.preferredMaxLayoutWidth = maximumPanelSize.width-40
         rangeNote.preferredMaxLayoutWidth = maximumPanelSize.width-40
         let errorHeight = status.isHidden ? 0 : ceil(status.fittingSize.height)+12
         let noteHeight = rangeNote.isHidden ? 0 : ceil(rangeNote.fittingSize.height)+10
         let height = min(384 + CGFloat(min(4,folders.count)-1)*32 + errorHeight + noteHeight,maximumPanelSize.height)
         let size = NSSize(width:maximumPanelSize.width,height:height)
-        if panel.contentView?.frame.size != size { panel.setContentSize(size) }
-        panel.contentView?.layoutSubtreeIfNeeded()
+        preferredContentSize = size
+        view.layoutSubtreeIfNeeded()
     }
     private func showError(_ message:String) { status.stringValue = message; status.isHidden = false; resizeForContents() }
     func begin(in owner:NSWindow) {
-        guard let panel = window, owner.attachedSheet == nil else { return }; previousResponder = owner.firstResponder; AgentThemeContext.inherit(panel,from:owner)
-        maximumPanelSize = NSSize(width:min(560,owner.contentLayoutRect.width-32),height:owner.contentLayoutRect.height-32); resizeForContents()
-        owner.beginSheet(panel) { [self,weak owner] _ in panel.orderOut(nil); onClose(); if let view = previousResponder as? NSView, view.window === owner { owner?.makeFirstResponder(view) } }
-        panel.makeFirstResponder(input); input.selectText(nil); refresh()
+        presentDialog(in:owner) { [self] _ in onClose() }; refresh()
     }
-    @objc func cancel() { if let window { window.sheetParent?.endSheet(window,returnCode:.cancel) } }
+    override func layoutForOwner(_ available:NSSize) { maximumPanelSize = NSSize(width:min(560,available.width),height:available.height); resizeForContents() }
     @objc private func selectIcon(_ sender:NSButton) { if let id = sender.identifier?.rawValue, let value = AgentWorkspaceIcon(rawValue:id) { icon = value; refresh() } }
     @objc private func selectColor(_ sender:NSButton) { if let id = sender.identifier?.rawValue, let value = AgentWorkspaceColor(rawValue:id) { color = value; refresh() } }
     @objc private func selectPrimary(_ sender:NSButton) { guard folders.indices.contains(sender.tag) else { return }; primary = folders[sender.tag]; refresh() }
     @objc private func removeFolder(_ sender:NSButton) { guard folders.count > 1, folders.indices.contains(sender.tag) else { return }; let removed = folders.remove(at:sender.tag); if removed == primary { primary = folders[0] }; refresh() }
     @objc private func addFolders() {
-        guard let window, window.attachedSheet == nil else { return }
+        guard let window = presentingWindow, window.attachedSheet == nil else { return }
         let picker = NSOpenPanel(); picker.canChooseFiles = false; picker.canChooseDirectories = true; picker.allowsMultipleSelection = true; picker.prompt = "添加"; picker.directoryURL = URL(fileURLWithPath:primary)
         picker.beginSheetModal(for:window) { [weak self] result in
             guard let self, result == .OK else { return }
@@ -134,7 +128,7 @@ extension AgentWorkspaceColor {
     }
     @objc private func submit() {
         guard (input.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
-        do { try saveWorkspace(input.stringValue,icon,color,folders,primary); if let window { window.sheetParent?.endSheet(window,returnCode:.OK) } }
+        do { try saveWorkspace(input.stringValue,icon,color,folders,primary); endDialog(.OK) }
         catch { showError(error.localizedDescription) }
     }
     @objc private func archiveEntry() {
@@ -147,6 +141,8 @@ extension AgentWorkspaceColor {
     }
     func checkState() -> [String:Any] {
         guard CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--workspace-editor-check") || CommandLine.arguments.contains("--name-editor-check") else { return [:] }
-        return ["visible":window?.isVisible == true,"title":window?.title ?? "","value":input.stringValue,"error":status.stringValue,"inputFocused":input.currentEditor().map{window?.firstResponder === $0} ?? false,"inputWidth":input.bounds.width,"ambiguousLayout":input.hasAmbiguousLayout || viewport.hasAmbiguousLayout,"folders":folders,"primary":primary,"icon":icon.rawValue,"color":color.rawValue,"formHeight":form.frame.height,"viewportHeight":viewport.contentSize.height,"formTop":form.frame.minY,"folderTop":folderColumn.frame.minY,"documentFlipped":formDocument.isFlipped]
+        var result = presentationState()
+        result.merge(["value":input.stringValue,"error":status.stringValue,"inputFocused":input.currentEditor().map{presentingWindow?.firstResponder === $0} ?? false,"inputWidth":input.bounds.width,"ambiguousLayout":input.hasAmbiguousLayout || viewport.hasAmbiguousLayout,"folders":folders,"primary":primary,"icon":icon.rawValue,"color":color.rawValue,"formHeight":form.frame.height,"viewportHeight":viewport.contentSize.height,"formTop":form.frame.minY,"folderTop":folderColumn.frame.minY,"documentFlipped":formDocument.isFlipped]) { _,new in new }
+        return result
     }
 }

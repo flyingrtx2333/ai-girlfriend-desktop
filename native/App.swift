@@ -202,6 +202,7 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationReady { return .terminateNow }
+        if let dialog = sender.windows.first(where: { $0.isVisible && $0.agentDialog != nil })?.agentDialog { dialog.focusDialog(); return .terminateCancel }
         guard !terminationPending else { return .terminateCancel }
         for window in sender.windows where window.isVisible { if let review = window.windowController as? AgentKnowledgeReviewWindow, !review.canLeaveSettings() { return .terminateCancel } }
         for window in sender.windows where window.isVisible { if let rules = window.windowController as? AgentRuleWindow, !rules.confirmClosing() { return .terminateCancel } }

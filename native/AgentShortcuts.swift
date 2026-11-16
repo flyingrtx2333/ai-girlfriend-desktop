@@ -145,7 +145,7 @@ struct AgentShortcutBinding: Codable, Equatable, Hashable {
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         guard menuItem.action == #selector(performApplicationShortcut(_:)), let raw = menuItem.representedObject as? String, let command = AgentShortcutCommand(rawValue: raw) else { return true }
-        guard NSApp.modalWindow == nil, NSApp.keyWindow?.attachedSheet == nil, NSApp.keyWindow?.sheetParent == nil else { return false }
+        guard NSApp.modalWindow == nil, NSApp.keyWindow?.hasBlockingDialog != true, NSApp.keyWindow?.sheetParent == nil else { return false }
         if command == .settings { return true }
         return (NSApp.keyWindow?.windowController as? ControlWindow)?.canPerformShortcut(command) == true
     }

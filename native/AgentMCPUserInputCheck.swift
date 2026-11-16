@@ -135,41 +135,41 @@ import AppKit
         }
         let host = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
         host.isReleasedWhenClosed = false; host.contentView = AgentThemeView(fill: AgentWorkbenchTheme.surface); host.makeKeyAndOrderFront(nil)
-        defer { if let sheet = host.attachedSheet { host.endSheet(sheet) }; host.orderOut(nil) }
+        defer { host.cancelAgentDialog(); host.orderOut(nil) }
         let controller = AgentMCPUserInputPanel(request: request, inputs: tasks.mcp.userInputs)
         controller.present(in: host)
-        guard let sheet = host.attachedSheet else { throw PetError("连接器问询未打开") }
+        guard let sheet = host.agentDialog else { throw PetError("连接器问询未打开") }
         try await Task.sleep(for: .milliseconds(100))
         let kind = request.url == nil ? "form" : "url"
         for look in [NSAppearance.Name.aqua, .darkAqua] {
-            sheet.appearance = NSAppearance(named: look); sheet.contentView?.layoutSubtreeIfNeeded()
-            let actions = try ["取消", "拒绝", request.url == nil ? "提交给连接器" : "打开网页"].map { try button($0, in: sheet.contentView) }
-            checks["actualInputPanelFitsMinimumWindow-\(kind)-\(look.rawValue)"] = sheet.contentView is AgentThemeView && sheet.frame.width == 560 && sheet.frame.height < host.contentLayoutRect.height && actions.allSatisfy { $0 is AgentDialogButton && $0.visibleRect.height >= 27 }
+            sheet.view.appearance = NSAppearance(named: look); sheet.view.layoutSubtreeIfNeeded()
+            let actions = try ["取消", "拒绝", request.url == nil ? "提交给连接器" : "打开网页"].map { try button($0, in: sheet.view) }
+            checks["actualInputPanelFitsMinimumWindow-\(kind)-\(look.rawValue)"] = sheet.view.window === host && host.attachedSheet == nil && sheet.view is AgentThemeView && sheet.cardFrame.width == 560 && sheet.cardFrame.height < host.contentLayoutRect.height && actions.allSatisfy { $0 is AgentDialogButton && $0.visibleRect.height >= 27 }
         }
-        let destination = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器地址" }
+        let destination = views(sheet.view).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器地址" }
         checks["actualInputDestinationRetainsFullAddress-" + kind] = destination?.stringValue == request.destination && destination?.toolTip == request.destination && destination.map { abs($0.alignmentRect(forFrame: $0.bounds).width - 512) < 1 } == true
         if request.url == nil {
-            guard let scroll = views(sheet.contentView).compactMap({ $0 as? NSScrollView }).first else { throw PetError("长问询缺少滚动区域") }
+            guard let scroll = views(sheet.view).compactMap({ $0 as? NSScrollView }).first else { throw PetError("长问询缺少滚动区域") }
             checks["actualThirteenFieldFormScrollsWithinFixedWidth"] = request.fields.count == 13 && (scroll.documentView?.bounds.height ?? 0) > scroll.contentView.bounds.height && scroll.bounds.height <= 320
-            let fields = views(sheet.contentView).compactMap { $0 as? AgentDialogTextField }
+            let fields = views(sheet.view).compactMap { $0 as? AgentDialogTextField }
             func field(_ key: String) throws -> AgentDialogTextField {
                 guard let schema = request.fields.first(where: { $0.key == key }), let text = fields.first(where: { $0.accessibilityLabel() == schema.title + (schema.required ? "（必填）" : "") }) else { throw PetError("缺少实际问询字段：" + key) }; return text
             }
             let name = try field("name"), number = try field("integer")
             name.stringValue = "公开表单保留输入"; number.stringValue = "invalid integer"
-            let submit = try button("提交给连接器", in: sheet.contentView); submit.performClick(nil)
-            let issue = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器问询状态" }
-            checks["actualInvalidTypedInputKeepsRequestAndEnteredValues"] = host.attachedSheet === sheet && tasks.mcp.userInputs.first(taskID: taskID)?.id == request.id && name.stringValue == "公开表单保留输入" && number.stringValue == "invalid integer" && issue?.isHidden == false && issue?.stringValue.isEmpty == false
+            let submit = try button("提交给连接器", in: sheet.view); submit.performClick(nil)
+            let issue = views(sheet.view).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器问询状态" }
+            checks["actualInvalidTypedInputKeepsRequestAndEnteredValues"] = host.agentDialog === sheet && tasks.mcp.userInputs.first(taskID: taskID)?.id == request.id && name.stringValue == "公开表单保留输入" && number.stringValue == "invalid integer" && issue?.isHidden == false && issue?.stringValue.isEmpty == false
             checks["actualValidationErrorScrollsIntoViewWithFooterAvailable"] = issue.map { $0.visibleRect.intersection($0.alignmentRect(forFrame: $0.bounds)).height >= $0.alignmentRect(forFrame: $0.bounds).height - 1 } == true && submit.visibleRect.height >= 27
             checks["actualFormTextInputsHaveBoundariesBeforeTyping"] = !fields.isEmpty && fields.allSatisfy { $0.isBezeled && ($0.layer?.borderWidth ?? 0) >= 1 && $0.bounds.height == 32 && $0.bounds.width <= 500 }
-            try button("取消", in: sheet.contentView).performClick(nil)
+            try button("取消", in: sheet.view).performClick(nil)
         } else {
-            checks["actualShortURLQuestionDoesNotReserveLongFormHeight"] = sheet.frame.height < 400
-            try button("拒绝", in: sheet.contentView).performClick(nil)
+            checks["actualShortURLQuestionDoesNotReserveLongFormHeight"] = sheet.cardFrame.height < 400
+            try button("拒绝", in: sheet.view).performClick(nil)
         }
         let limit = Date().addingTimeInterval(5)
-        while host.attachedSheet != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
-        checks["actualInputPanelEndsOwnedSheet-" + kind] = host.attachedSheet == nil
+        while host.agentDialog != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
+        checks["actualInputPanelEndsOwnedCard-" + kind] = host.agentDialog == nil
         return checks
     }
     func pollUI() {

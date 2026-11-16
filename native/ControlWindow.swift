@@ -985,7 +985,7 @@ final class FormDocumentView: NSView {
         else { presentSourceLink(id) }
     }
     private func presentSourceLink(_ id: String) {
-        guard let window, agentTaskID == id, currentAgentTask?.canAddSources == true, nameEditor == nil, window.attachedSheet == nil, saveAgentDraft() else { return }
+        guard let window, agentTaskID == id, currentAgentTask?.canAddSources == true, nameEditor == nil, !window.hasBlockingDialog, saveAgentDraft() else { return }
         nameEditor = AgentNameEditor(title: "添加链接", label: "链接地址", value: "", actionTitle: "添加", note: "HTTP／HTTPS 链接会加入草稿，发送后显示为来源。", statusLabel: "链接状态", save: { [weak self] text in
             guard let self else { throw PetError("任务窗口已关闭") }; try appendSourceLink(text, taskID: id)
         }, onClose: { [weak self] in
@@ -1022,7 +1022,7 @@ final class FormDocumentView: NSView {
         else if case .canvas(let canvas) = taskWorkspace.selectedRoot, let id = agentTaskID { openCanvasReference("canvas://" + canvas, taskID: id, location: .workspace) }
     }
     private func updateFloatingMonitor(_ content: AgentMonitorContent, state: AgentTaskMonitor.DisplayState, show: Bool) {
-        guard show, let owner = window, owner.isVisible, !owner.isMiniaturized, owner.attachedSheet == nil else { monitorPanel?.orderOut(nil); return }
+        guard show, let owner = window, owner.isVisible, !owner.isMiniaturized, !owner.hasBlockingDialog else { monitorPanel?.orderOut(nil); return }
         if monitorPanel == nil {
             let panel = AgentTaskMonitorPanel(); configureTaskMonitor(panel.inspector)
             panel.onDismiss = { [weak self] in self?.closeTaskMonitor() }
@@ -1057,7 +1057,7 @@ final class FormDocumentView: NSView {
         sidebarRequested.toggle(); updateWorkbenchLayout(); refreshShortcutControls()
     }
     private func showTaskSwitcher() {
-        guard let tasks = companion?.agentStore, let window, taskSwitcher == nil, saveAgentDraft() else { return }
+        guard let tasks = companion?.agentStore, let window, !window.hasBlockingDialog, taskSwitcher == nil, saveAgentDraft() else { return }
         show(tab: "chat")
         taskSwitcher = AgentTaskSwitcher(store: tasks, selected: agentTaskID, onSelect: { [weak self] id in self?.selectAgentTask(id) }, onClose: { [weak self] in self?.taskSwitcher = nil })
         taskSwitcher?.begin(in: window)
@@ -1084,7 +1084,7 @@ final class FormDocumentView: NSView {
         sidebarToggle.toolTip = (sidebarRequested ? "收起左侧栏" : "显示左侧栏") + (value == .cleared ? "" : " · " + value.display)
     }
     func canPerformShortcut(_ command: AgentShortcutCommand) -> Bool {
-        guard companion?.usesAgent == true, window?.attachedSheet == nil else { return false }
+        guard companion?.usesAgent == true, window?.hasBlockingDialog != true else { return false }
         switch command {
         case .settings: return true
         case .newTask, .searchTasks: return true
@@ -2076,8 +2076,8 @@ final class FormDocumentView: NSView {
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if windowCloseApproved { return true }
-        if let editor = nameEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
-        if let editor = workspaceEditor { editor.window?.makeKeyAndOrderFront(nil); return false }
+        if let dialog = sender.agentDialog { dialog.focusDialog(); return false }
+        guard sender.attachedSheet == nil else { return false }
         guard closeWindowTask == nil else { return false }
         guard generalSettingsPanel?.prepareToClose() != false, canLeaveMainPage() else { return false }
         dismissExtensionCandidates()
@@ -2163,7 +2163,7 @@ final class FormDocumentView: NSView {
         guard automationWindow?.prepareToLeave() != false else { return false }
         guard knowledgePageHost.prepareToLeave(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
-        guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
+        guard attachmentImport == nil, window?.hasBlockingDialog != true else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         if let workspaceSession {
             guard await workspaceSession.prepareFloating(preserving: preservingRecovery) else { return false }
         } else {
@@ -2220,7 +2220,7 @@ final class FormDocumentView: NSView {
         showAttentionPage()
         checks["pageReturnPreservesSelectionFilterAndReply"] = page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["query"] as? String == state["query"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
         page.showSettings()
-        checks["pageSettingsUsesSameWindowWithoutSheet"] = selectedTab == "settings" && settingsCategory == "attention" && window.attachedSheet == nil && settingsBackButton?.title == "返回需要我"
+        checks["pageSettingsUsesSameWindowWithoutSheet"] = selectedTab == "settings" && settingsCategory == "attention" && !window.hasBlockingDialog && settingsBackButton?.title == "返回需要我"
         returnToChat()
         checks["settingsReturnRestoresInbox"] = selectedTab == "attention" && page.isVisible && page.checkState()["selected"] as? String == state["selected"] as? String && page.checkState()["reply"] as? String == state["reply"] as? String
         return ["checks": checks, "frames": frames]
@@ -2613,7 +2613,7 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription,error:true) }
     }
     private func editName(title: String, label: String, value: String, save: @escaping (String) throws -> Void) {
-        guard let window, nameEditor == nil, window.attachedSheet == nil else { return }
+        guard let window, nameEditor == nil, !window.hasBlockingDialog else { return }
         nameEditor = AgentNameEditor(title: title, label: label, value: value, save: save, onClose: { [weak self] in self?.nameEditor = nil; self?.renderAgentMessages() })
         nameEditor?.begin(in: window)
     }
@@ -2631,7 +2631,7 @@ final class FormDocumentView: NSView {
                 guard NSWorkspace.shared.open(folder) else { throw PetError("主文件夹未能打开") }; return
             }
             else if action == "rename" {
-                guard let window, window.attachedSheet == nil, workspaceEditor == nil, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
+                guard let window, !window.hasBlockingDialog, workspaceEditor == nil, nameEditor == nil, saveAgentDraft(), let entry = tasks.organization.entry(path,mode:mode,tasks:tasks.tasks) else { return }
                 let revision = tasks.organization.revision
                 workspaceEditor = AgentWorkspaceEditor(entry:entry,save:{ name,icon,color,folders,primary in
                     guard tasks.organization.revision == revision else { throw PetError("任务分组已变化，请重新打开后重试") }
@@ -3215,7 +3215,7 @@ final class FormDocumentView: NSView {
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func showTaskDocument(_ path: String, location: AgentArtifactLocation = .workspace) {
-        guard window?.attachedSheet == nil, let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
+        guard window?.hasBlockingDialog != true, let store = companion?.agentStore, let id = agentTaskID, let task = store.task(id), saveAgentDraft() else { return }
         if AgentOffice.supports(path) {
             Task { @MainActor [weak self] in do { _ = try await store.offices.show(path, taskID: id, location: location) } catch { self?.setStatus(error.localizedDescription, error: true) } }; return
         }
@@ -3246,7 +3246,7 @@ final class FormDocumentView: NSView {
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     private func chooseTaskDocument() {
-        guard let window, window.attachedSheet == nil, let task = currentAgentTask else { return }
+        guard let window, !window.hasBlockingDialog, let task = currentAgentTask else { return }
         do {
             let files = try AgentFiles(workspace: task.workspace), panel = NSOpenPanel(), id = task.id
             panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.directoryURL = files.root
@@ -3405,7 +3405,7 @@ final class FormDocumentView: NSView {
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     internal func presentArtifactWindow(_ editor: AgentSettingsPageController, taskID: String, root suppliedRoot: AgentTaskWorkspace.Root? = nil) throws {
-        guard saveAgentDraft(), window?.attachedSheet == nil else { throw PetError("请先完成当前操作") }
+        guard saveAgentDraft(), window?.hasBlockingDialog != true else { throw PetError("请先完成当前操作") }
         let root: AgentTaskWorkspace.Root
         if let suppliedRoot { root = suppliedRoot }
         else if let office = editor as? AgentOfficeWindow { root = .document(office.file.path) }
@@ -3522,7 +3522,7 @@ final class FormDocumentView: NSView {
     @objc func allowAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "allow") } }
     @objc func denyAgentAction() { if let pair = visibleApproval { companion?.agentRuntime?.decide(taskID: pair.task, callID: pair.call, decision: "deny") } }
     @objc private func showMCPUserInput() {
-        guard let window, window.attachedSheet == nil, let id = agentTaskID,
+        guard let window, !window.hasBlockingDialog, let id = agentTaskID,
               let inputs = companion?.agentStore?.mcp.userInputs, let request = inputs.first(taskID: id) else { return }
         let panel = AgentMCPUserInputPanel(request: request, inputs: inputs)
         mcpInputPanel = panel
@@ -4508,7 +4508,7 @@ extension ControlWindow {
             value["workspaceEditor"] = workspaceEditor?.checkState() ?? ["visible":false]
             value["unsavedConfirmation"] = AgentUnsavedChanges.checkState()
             value["taskFind"] = taskFind.checkState()
-            value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": mcpInputPanel?.window?.isVisible == true] as [String: Any]
+            value["mcpUserInput"] = ["visible": !mcpInputRow.isHidden, "requestID": agentTaskID.flatMap { companion?.agentStore?.mcp.userInputs.first(taskID: $0)?.id } as Any? ?? NSNull(), "sheet": false, "dialog": mcpInputPanel?.presentationState() ?? ["visible": false]] as [String: Any]
             if companion?.checkDirectory != nil {
                 value["terminalPanel"] = terminalPanel?.verificationSnapshot() ?? ["shown": false, "states": []]
             }

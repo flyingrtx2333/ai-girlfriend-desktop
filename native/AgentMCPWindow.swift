@@ -268,7 +268,7 @@ import UniformTypeIdentifiers
         do { try service.remove(selected.id, revision: selected.revision); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func importJSON() {
-        guard job == nil, let window = editorWindow, window.attachedSheet == nil, canLeave() else { return }
+        guard job == nil, let window = editorWindow, !window.hasBlockingDialog, canLeave() else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.beginSheetModal(for: window) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
