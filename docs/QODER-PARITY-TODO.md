@@ -4,6 +4,7 @@
 
 ## 当前交付状态
 
+- 正在验收：卡片完整草稿、项目检索及其只读来源页的跨启动恢复，源码 `023cbb7` 已在 `main` 提交同步，日常应用暂未替换。首个优化候选 `305eda2` 通过 282 项相关原生检查及 14 项独立结果核对，但实际重开暴露标题输入焦点被搜索框覆盖，不能算最终通过；已修复并补充实际焦点／选区回归，正在构建复验。原失败目录及模型 0 的记录保留于 `evidence/agent/knowledge-reader-state-hrrv1q8b`；其他知识管理编辑器和 MCP 专项入口继续开放。
 - 日常应用：`c3048d35fb974d39e4746232f69c2cf0fbea8458`，0.9.4，构建时间 2026-11-16 09:10（北京时间）；已实际替换 `build/蓝色大肥鱼.app` 并正常重开。关于页已读回源码、时间和本地签名。本轮交付知识中心 Wiki 阅读器及其来源／直接视频／来源内视频链的退出恢复；同一优化包通过 264 项相关原生检查、21 项独立结果和 37 项实际窗口状态核对。安装包与验收包代码及全部 217 份资源一致；日常部分证明正常启动和版本，业务成绩归相同代码资源的独立包。正式资料 14 份中，13 份字节与权限完全一致；另一份仅窗口纵坐标由 223 变为 224，原始摘要匹配及其余字段保持有独立证明。模型请求 0。
 - 安装及运行证据：`evidence/agent/knowledge-wiki-recovery-_0qileco/daily-delivery-proof.json`；上一版 `ac41055` 保留于同目录 `delivery-01/previous-wKPmYg/蓝色大肥鱼.app`，原二进制和版本元数据核对通过。此前任务文档来源交付：`evidence/agent/workspace-source-chain-km4664dx/daily-delivery-proof.json`；上一版 `578736d` 保留于同目录 `delivery-01/previous-qI9xot/蓝色大肥鱼.app`，原二进制和版本元数据核对通过。此前文本位置交付：`evidence/agent/workspace-text-viewport-6216behp/daily-delivery-proof.json`；上一版 `e06595a` 保留在同目录 `delivery-01/previous-tngLmW/蓝色大肥鱼.app`，二进制和版本元数据已核对。此前 Record 子窗口安装证据 `evidence/agent/workspace-child-recovery-mt2vfb2s/daily-delivery-proof.json` 及其 `7f2c87d` 备份继续保留。此前独立窗口安装证据 `evidence/agent/workspace-floating-recovery-p3jctyi8/daily-delivery-proof.json` 及其 `delivery-04/previous-FxDc69/蓝色大肥鱼.app` 的 `b88d098` 备份继续保留。视频安装证据 `evidence/agent/workspace-video-recovery-zqkzi66u/daily-delivery-proof.json` 及其 `8db116f` 备份继续保留。此前浏览器安装证据 `evidence/agent/workspace-browser-recovery-9qthx21z/daily-delivery-proof.json` 及其 `3887169` 备份、Office 安装证据 `evidence/agent/workspace-office-view-pmkgsd3j/daily-delivery-proof.json` 及其 `c905c2f` 备份、修订标签安装证据 `evidence/agent/workspace-edit-labels-9jbw2fna/daily-delivery-proof.json` 及其 `34e369d` 备份、P0 安装证据 `evidence/agent/p0-interface-PiJm2h/final-delivery-proof.json` 及其 `3f14dfe` 备份、更早的原证书备份 `build/daily-update-AKFKyE/previous-蓝色大肥鱼.app` 均保留。按用户授权本地签名，不解锁或更改钥匙串，不预先授予系统权限。常规构建现已默认本地签名，不自动查询个人 Apple 证书；只有显式指定签名身份时才使用该身份。
 - P0 阶段从主分支 `04a56bd` 开始，界面修复、安装保护及检查均在 `main` 提交同步。冷标签保护（`7b957d8`、`44d966f`）、MCP 参数恢复（`89f5851`）和确认框所属窗口激活修复（`f27f6d8`）均保留在当前包；完整恢复能力仍按 P1-03 跟踪。
@@ -52,7 +53,7 @@ P0 完成条件：上述各项有证据，主要页面均能从正常入口连�
 
 ## 已实现的能力与仍需补齐的部分
 
-下表去除了重复的父子勾选。已实现部分有历史验收记录；当前日常源码为 `ac41055`，此前 `34e369d` 的设置逐类验收保留。不把功能源码进入日常包解释为 P1 全业务闭环通过。
+下表去除了重复的父子勾选。已实现部分有历史验收记录；当前日常源码为 `c3048d3`，此前 `34e369d` 的设置逐类验收保留。不把功能源码进入日常包解释为 P1 全业务闭环通过。
 
 | 模块 | 已实现并有证据的部分 | 剩余工作 |
 | --- | --- | --- |
