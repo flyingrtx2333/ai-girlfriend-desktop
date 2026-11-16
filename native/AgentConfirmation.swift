@@ -10,8 +10,7 @@ import AppKit
 
     @discardableResult func addButton(withTitle title: String) -> NSButton {
         precondition(panel == nil, "请在显示确认前配置按钮")
-        let button = NSButton(title: title, target: self, action: #selector(choose(_:))); button.tag = buttons.count
-        button.bezelStyle = .rounded; button.controlSize = .large; button.widthAnchor.constraint(greaterThanOrEqualToConstant: 84).isActive = true
+        let button = AgentDialogButton(title: title, target: self, action: #selector(choose(_:))); button.tag = buttons.count
         buttons.append(button); return button
     }
     var window: NSWindow { build() }
@@ -45,8 +44,7 @@ import AppKit
             scroll.heightAnchor.constraint(equalToConstant: min(160, max(20, ceil(height) + 4))).isActive = true; column.addArrangedSubview(scroll)
         }
         for (index, button) in buttons.enumerated() {
-            if index == primary { button.bezelColor = button.hasDestructiveAction ? .systemRed : AgentWorkbenchTheme.accent }
-            else if button.hasDestructiveAction { button.contentTintColor = .systemRed }
+            if let button = button as? AgentDialogButton { AgentDialogStyle.action(button, prominent: index == primary) }
             if index == selected { button.keyEquivalent = "\r"; button.keyEquivalentModifierMask = [] }
             else if button.keyEquivalent == "\r" { button.keyEquivalent = "" }
         }

@@ -63,10 +63,13 @@ import AppKit
             checks["parentCloseKeepsOpenNameEditor"] = !control.windowShouldClose(host) && host.attachedSheet === sheet
             for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 host.setContentSize(size); sheet.contentView?.layoutSubtreeIfNeeded()
-                checks["nameEditorFits-" + name] = !input.hasAmbiguousLayout && input.bounds.width >= 360 && input.bounds.height >= 30 && sheet.frame.width <= host.frame.width && sheet.contentView!.bounds.height >= 200
+                let root = sheet.contentView!, actions = ["取消", "保存"].compactMap { title in find(NSButton.self, in: root, matching: { $0.title == title }) }
+                checks["nameEditorFits-" + name] = !input.hasAmbiguousLayout && abs(sheet.frame.width - 384) < 1 && input.bounds.width >= 320 && input.bounds.height >= 30 && actions.count == 2 && ([input] + actions).allSatisfy { root.bounds.contains(root.convert($0.bounds, from: $0)) && $0.visibleRect.height >= $0.bounds.height - 1 }
             }
             input.stringValue = "   "; try click("保存", sheet)
             checks["invalidNameRetainsInputAndInlineErrorWithoutWrites"] = try host.attachedSheet === sheet && input.stringValue == "   " && field("名称保存状态", sheet).stringValue.contains("120") && Data(contentsOf: taskFile) == before && Data(contentsOf: index) == indexBefore
+            let error = try field("名称保存状态", sheet)
+            checks["inlineErrorExpandsFormWithoutClippingControls"] = !error.isHidden && error.visibleRect.height >= error.bounds.height - 1 && sheet.contentView!.bounds.contains(sheet.contentView!.convert(error.bounds, from: error))
             input.stringValue = "尚未保存的名称"; try click("取消", sheet); try await closed(host)
             checks["cancelLeavesTaskAndIndexByteIdentical"] = try Data(contentsOf: taskFile) == before && Data(contentsOf: index) == indexBefore
             control.checkNameEditor("task", id: id)

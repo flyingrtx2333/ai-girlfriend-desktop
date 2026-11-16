@@ -10,7 +10,7 @@ extension AgentWorkspaceColor {
 
 @MainActor final class AgentWorkspaceEditor: NSWindowController, NSTextFieldDelegate {
     let original:AgentDirectoryEntry
-    private let input = NSTextField(), status = NSTextField(wrappingLabelWithString:""), rangeNote = NSTextField(wrappingLabelWithString:"文件夹变更用于新任务。")
+    private let input = AgentDialogTextField(frame: .zero), status = NSTextField(wrappingLabelWithString:""), rangeNote = NSTextField(wrappingLabelWithString:"文件夹变更用于新任务。")
     private let folderColumn = NSStackView(), form = NSStackView(), folderScroll = NSScrollView(), viewport = NSScrollView()
     private let folderDocument = AgentWorkspaceEditorDocument(), formDocument = AgentWorkspaceEditorDocument()
     private var folderHeight:NSLayoutConstraint!, icons:[NSButton] = [], colors:[NSButton] = []
@@ -35,20 +35,20 @@ extension AgentWorkspaceColor {
         folderHeight = folderScroll.heightAnchor.constraint(equalToConstant:32); folderHeight.isActive = true
         input.stringValue = entry.title; input.font = .systemFont(ofSize:13); input.bezelStyle = .roundedBezel; input.delegate = self; input.setAccessibilityLabel(entry.mode.directoryTitle + "名称"); input.identifier = .init("workspace-editor-name")
         input.heightAnchor.constraint(equalToConstant:32).isActive = true
-        let iconRow = NSStackView(); iconRow.spacing = 5
+        let iconRow = NSStackView(); iconRow.spacing = 4
         for value in AgentWorkspaceIcon.allCases {
-            let button = AgentWorkbenchButton(); button.image = NSImage(systemSymbolName:value.rawValue,accessibilityDescription:nil); button.imagePosition = .imageOnly
-            button.title = ""; button.bezelStyle = .regularSquare; button.setButtonType(.toggle); button.identifier = .init(value.rawValue)
+            let button = AgentDialogButton(); button.palette = true; button.image = NSImage(systemSymbolName:value.rawValue,accessibilityDescription:nil); button.imagePosition = .imageOnly
+            button.title = ""; button.setButtonType(.toggle); button.identifier = .init(value.rawValue)
             button.setAccessibilityLabel("图标：" + value.title); button.toolTip = value.title; button.target = self; button.action = #selector(selectIcon(_:))
-            button.widthAnchor.constraint(equalToConstant:26).isActive = true; button.heightAnchor.constraint(equalToConstant:28).isActive = true
+            button.widthAnchor.constraint(equalToConstant:28).isActive = true; button.heightAnchor.constraint(equalToConstant:28).isActive = true
             icons.append(button); iconRow.addArrangedSubview(button)
         }
-        let colorRow = NSStackView(); colorRow.spacing = 5
+        let colorRow = NSStackView(); colorRow.spacing = 4
         for value in AgentWorkspaceColor.allCases {
-            let button = AgentWorkbenchButton(); button.title = ""; button.bezelStyle = .regularSquare; button.setButtonType(.toggle); button.identifier = .init(value.rawValue)
+            let button = AgentDialogButton(); button.palette = true; button.title = ""; button.setButtonType(.toggle); button.identifier = .init(value.rawValue)
             button.image = NSImage(size:NSSize(width:16,height:16),flipped:false) { bounds in value.nsColor.setFill(); NSBezierPath(ovalIn:bounds.insetBy(dx:1,dy:1)).fill(); return true }; button.imagePosition = .imageOnly
             button.setAccessibilityLabel("颜色：" + value.title); button.toolTip = value.title; button.target = self; button.action = #selector(selectColor(_:))
-            button.widthAnchor.constraint(equalToConstant:26).isActive = true; button.heightAnchor.constraint(equalToConstant:28).isActive = true
+            button.widthAnchor.constraint(equalToConstant:28).isActive = true; button.heightAnchor.constraint(equalToConstant:28).isActive = true
             colors.append(button); colorRow.addArrangedSubview(button)
         }
         rangeNote.font = .systemFont(ofSize:11); rangeNote.textColor = AgentWorkbenchTheme.secondaryText
@@ -57,11 +57,11 @@ extension AgentWorkspaceColor {
             form.addArrangedSubview(view); if view !== iconRow && view !== colorRow { view.widthAnchor.constraint(equalTo:form.widthAnchor).isActive = true }
         }
         configureScroll(viewport,document:formDocument,content:form)
-        status.font = .systemFont(ofSize:12); status.textColor = .systemRed; status.setAccessibilityLabel("工作区保存状态"); status.isHidden = true
-        let archive = NSButton(title:"归档" + entry.mode.directoryTitle,target:self,action:#selector(archiveEntry)); archive.isBordered = false; archive.contentTintColor = .systemRed
-        let cancel = NSButton(title:"取消",target:self,action:#selector(cancel)), save = NSButton(title:"保存",target:self,action:#selector(submit))
-        for button in [cancel,save] { button.bezelStyle = .rounded; button.controlSize = .large; button.widthAnchor.constraint(equalToConstant:80).isActive = true }
-        cancel.keyEquivalent = "\u{1b}"; save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; save.bezelColor = AgentWorkbenchTheme.accent
+        status.font = .systemFont(ofSize:12); status.textColor = AgentDialogStyle.error; status.setAccessibilityLabel("工作区保存状态"); status.isHidden = true
+        let archive = AgentDialogButton(title:"归档" + entry.mode.directoryTitle,target:self,action:#selector(archiveEntry)); archive.hasDestructiveAction = true
+        let cancel = AgentDialogButton(title:"取消",target:self,action:#selector(cancel)), save = AgentDialogButton(title:"保存",target:self,action:#selector(submit))
+        AgentDialogStyle.action(archive); AgentDialogStyle.action(cancel); AgentDialogStyle.action(save, prominent: true)
+        cancel.keyEquivalent = "\u{1b}"; save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let actions = NSStackView(views:[archive,NSView(),cancel,save]); actions.spacing = 8
         let column = NSStackView(views:[header,viewport,status,actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12; column.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(column)
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo:column.widthAnchor).isActive = true }
@@ -86,17 +86,21 @@ extension AgentWorkspaceColor {
             image.widthAnchor.constraint(equalToConstant:16).isActive = true
             let main = NSButton(title:path == primary ? "主要" : "设为主要",target:self,action:#selector(selectPrimary(_:))); main.tag = index; main.isEnabled = path != primary; main.bezelStyle = .inline; main.font = .systemFont(ofSize:11); main.setAccessibilityLabel((path == primary ? "主文件夹：" : "设为主文件夹：") + path)
             let remove = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(remove,title:"移除源文件夹：" + path,symbol:"xmark"); remove.tag = index; remove.target = self; remove.action = #selector(removeFolder(_:)); remove.isEnabled = folders.count > 1
-            let row = NSStackView(views:[image,name,NSView(),main,remove]); row.spacing = 8; row.heightAnchor.constraint(equalToConstant:32).isActive = true; folderColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo:folderColumn.widthAnchor).isActive = true
+            let contents = NSStackView(views:[image,name,NSView(),main,remove]); contents.spacing = 8
+            let row = AgentThemeView(fill:AgentWorkbenchTheme.subtle); row.layer?.cornerRadius = 6
+            row.addSubview(contents); contents.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([contents.leadingAnchor.constraint(equalTo:row.leadingAnchor,constant:8),contents.trailingAnchor.constraint(equalTo:row.trailingAnchor,constant:-4),contents.centerYAnchor.constraint(equalTo:row.centerYAnchor),row.heightAnchor.constraint(equalToConstant:28)])
+            folderColumn.addArrangedSubview(row); row.widthAnchor.constraint(equalTo:folderColumn.widthAnchor).isActive = true
         }
-        folderHeight.constant = CGFloat(min(4,folders.count))*36
+        folderHeight.constant = CGFloat(min(4,folders.count))*32
         for button in icons { button.state = button.identifier?.rawValue == icon.rawValue ? .on : .off; button.contentTintColor = button.state == .on ? color.nsColor : AgentWorkbenchTheme.secondaryText }
-        for button in colors { button.state = button.identifier?.rawValue == color.rawValue ? .on : .off }
+        for button in colors { button.state = button.identifier?.rawValue == color.rawValue ? .on : .off; button.contentTintColor = color.nsColor }
         rangeNote.isHidden = folders == original.sourceFolders && primary == original.primary
         window?.contentView?.layoutSubtreeIfNeeded()
     }
     func begin(in owner:NSWindow) {
         guard let panel = window, owner.attachedSheet == nil else { return }; previousResponder = owner.firstResponder; AgentThemeContext.inherit(panel,from:owner)
-        panel.setContentSize(NSSize(width:min(560,owner.contentLayoutRect.width-32),height:min(420 + CGFloat(min(4,folders.count)-1)*36,owner.contentLayoutRect.height-32)))
+        panel.setContentSize(NSSize(width:min(560,owner.contentLayoutRect.width-32),height:min(384 + CGFloat(min(4,folders.count)-1)*32,owner.contentLayoutRect.height-32)))
         owner.beginSheet(panel) { [self,weak owner] _ in panel.orderOut(nil); onClose(); if let view = previousResponder as? NSView, view.window === owner { owner?.makeFirstResponder(view) } }
         panel.makeFirstResponder(input); input.selectText(nil); refresh()
     }
