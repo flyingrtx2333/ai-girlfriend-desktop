@@ -20,7 +20,13 @@ import AppKit
             control.showAgentTask(git.taskID); control.showAgentGit()
             guard let review = control.taskWorkspace.currentController as? AgentGitWindow else { throw PetError("Git 未进入任务工作区") }
             cleanupReview = review
-            await review.checkWorkspace(path: "00-transport.js", message: "保留安全报告验收的提交说明")
+            await review.checkWorkspace(path: "00-transport.js", message: "")
+            guard let reviewContent = review.pageContentView,
+                  let commit = views(reviewContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "Git 提交说明" }),
+                  owner.makeFirstResponder(commit), let editor = commit.currentEditor() as? NSTextView else { throw PetError("提交说明编辑器不可用") }
+            editor.string = "保留安全报告验收的提交说明"
+            await review.checkWorkspace(action: "refresh")
+            checks["refreshPreservesLiveCommitFieldEditing"] = review.workspaceReadback()["draft"] as? String == "保留安全报告验收的提交说明"
             var located: AgentSecurityFinding?
             let page = AgentCodeSecurityWindow(report: report, onLocate: { located = $0 }, onFix: { _ in throw PetError("保留报告的公开写入失败") })
             review.presentSettingsChild(page)

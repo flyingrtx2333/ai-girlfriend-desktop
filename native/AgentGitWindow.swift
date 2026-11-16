@@ -145,6 +145,7 @@ import AppKit
         return !task.archived && ![.running, .waiting].contains(task.status)
     }
     private func setBusy(_ value: Bool) {
+        if value { message.validateEditing() }
         busy = value; table.isEnabled = !value; refreshButton.isEnabled = !value; filePicker.isEnabled = !value && !changes.isEmpty
         sourcePopup.isEnabled = !value; revision.isEnabled = !value
         worktreeButton.isEnabled = !value && writable() && initializeButton.isHidden
