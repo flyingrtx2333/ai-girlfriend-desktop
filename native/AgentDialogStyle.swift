@@ -29,10 +29,13 @@ import AppKit
     override var state: NSControl.StateValue { didSet { needsDisplay = true } }
     private func refreshStyle() {
         if !palette {
-            let color = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructiveText : AgentWorkbenchTheme.accentText) : hasDestructiveAction ? AgentDialogStyle.error : .labelColor
+            let token = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructiveText : AgentWorkbenchTheme.accentText) : hasDestructiveAction ? AgentDialogStyle.error : .labelColor
             font = .systemFont(ofSize: 13, weight: prominent ? .medium : .regular)
-            contentTintColor = color
-            attributedTitle = NSAttributedString(string: title, attributes: [.font: font!, .foregroundColor: color.withAlphaComponent(isEnabled ? 1 : 0.4)])
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                let color = AgentThemeContext.resolve(token, in: self).usingColorSpace(.sRGB) ?? token
+                contentTintColor = color
+                attributedTitle = NSAttributedString(string: title, attributes: [.font: font!, .foregroundColor: color.withAlphaComponent(isEnabled ? 1 : 0.4)])
+            }
         }
         needsDisplay = true
     }
@@ -74,7 +77,9 @@ import AppKit
         let focused = currentEditor().map { window?.firstResponder === $0 } ?? false
         guard force || focused != focusVisible else { return }; focusVisible = focused
         layer?.borderWidth = focused ? 1.5 : 0
-        layer?.borderColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).cgColor
+        }
     }
     override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); refreshFocus() }
     override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); refreshFocus() }

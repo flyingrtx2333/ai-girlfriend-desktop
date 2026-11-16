@@ -45,6 +45,15 @@ import AppKit
             value["title"] = nil; value["updated"] = nil
             return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
         }
+        func contrast(_ front:NSColor,_ back:NSColor,_ view:NSView) -> CGFloat {
+            var foreground:NSColor?, background:NSColor?
+            view.effectiveAppearance.performAsCurrentDrawingAppearance { foreground = front.usingColorSpace(.sRGB); background = back.usingColorSpace(.sRGB) }
+            guard let a = foreground, let b = background else { return 0 }
+            func luminance(_ values:[CGFloat]) -> CGFloat { zip(values,[CGFloat(0.2126),0.7152,0.0722]).reduce(0) { $0 + ($1.0 <= 0.04045 ? $1.0/12.92 : pow(($1.0+0.055)/1.055,2.4))*$1.1 } }
+            let alpha = a.alphaComponent, backgroundRGB = [b.redComponent,b.greenComponent,b.blueComponent]
+            let frontRGB = zip([a.redComponent,a.greenComponent,a.blueComponent],backgroundRGB).map{$0*alpha+$1*(1-alpha)}
+            let x = luminance(frontRGB), y = luminance(backgroundRGB); return (max(x,y)+0.05)/(min(x,y)+0.05)
+        }
         do {
             try prepareNameEditorUI(output, seed: true)
             guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务系统不可用") }
@@ -67,6 +76,19 @@ import AppKit
                 sheet.makeFirstResponder(input); await wait(0.05)
                 checks["nameFocusBoundaryRestoresWithoutTyping"] = input.currentEditor() != nil && (input.layer?.borderWidth ?? 0) >= 1
             }
+            let inheritedAppearance = sheet.appearance; var actionContrasts:[String:[String:CGFloat]] = [:]
+            for look in [NSAppearance.Name.aqua,.darkAqua] {
+                sheet.appearance = NSAppearance(named:look); await wait(0.05)
+                var values:[String:CGFloat] = [:]
+                for title in ["取消","保存"] {
+                    if let button = find(NSButton.self,in:sheet.contentView,matching:{$0.title == title}), let foreground = button.attributedTitle.attribute(.foregroundColor,at:0,effectiveRange:nil) as? NSColor {
+                        let fill = AgentThemeContext.resolve(title == "保存" ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.subtle,in:button)
+                        values[title] = contrast(foreground,fill,button)
+                    }
+                }
+                checks["actualDialogActionTextContrast-" + look.rawValue] = values.count == 2 && values.values.allSatisfy{$0 >= 4.5}; actionContrasts[look.rawValue] = values
+            }
+            sheet.appearance = inheritedAppearance; await wait(0.05); report["actualDialogActionContrasts"] = actionContrasts
             checks["parentCloseKeepsOpenNameEditor"] = !control.windowShouldClose(host) && host.attachedSheet === sheet
             for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 host.setContentSize(size); sheet.contentView?.layoutSubtreeIfNeeded()
