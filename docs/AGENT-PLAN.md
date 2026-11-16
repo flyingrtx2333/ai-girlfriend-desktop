@@ -6,6 +6,8 @@
 
 对标来源（2026-11-06 核对）：[桌面版功能](https://docs.qoder.com/qoder/overview)、[任务管理](https://docs.qoder.com/qoder/task-management)、[执行监控](https://docs.qoder.com/qoder/task-monitor)、[审批与隔离](https://docs.qoder.com/qoder/approval-and-sandbox)、[扩展](https://docs.qoder.com/qoder/connectors)。用户前面的界面参考作为布局依据；用户已确认对标桌面 Agent，完整 IDE 编辑器不纳入范围。
 
+2026-11-16 临时窗口精修已随 `fce3196` 更新日常应用：快捷键录入、任务切换与 MCP 问询统一主题、密度和动作；连接器长地址不再撑宽窗口，未聚焦输入边界明确，错误保留填写，短网址按内容收紧。同一最终包通过 112 项相关原生检查、普通／最小窗口明暗实窗与官方本机服务的实际表单提交；模型请求 0。原任务、草稿和正式配置保持，已在 main 提交同步。详情见 TODO 和 `docs/P0-UI-ACCEPTANCE.md`；P0-09 原七项、P0-08 物理手势及 P1／P2 开放范围保持。
+
 ## 原始基线（实施前）
 
 v0.8.2 已有原生聊天、BYOK 模型配置、MiniMax 语音、离线声学唤醒、桌宠互动、闲置屏幕评论。尚无执行任务的工具循环，不具备文件编辑、终端执行或持久任务系统。
