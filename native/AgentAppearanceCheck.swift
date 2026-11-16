@@ -90,6 +90,12 @@ import AppKit
                 let layerColor = view.layer?.backgroundColor.flatMap(NSColor.init(cgColor:)).map { resolved($0, in: look) } ?? []
                 checks[theme.rawValue + "LayerUsesActualInheritedAppearance"] = layerColor.count == 4 && zip(layerColor, colors[theme.rawValue] ?? []).allSatisfy { abs($0 - $1) < 0.0001 }
                 manager.close()
+                _ = control.showSettingsCategory("persona")
+                func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+                let save = control.window?.contentView.flatMap { root in descendants(root).compactMap { $0 as? NSButton }.first { $0.title == "保存" } }
+                let foreground = save.flatMap { $0.attributedTitle.length > 0 ? $0.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor : nil }
+                checks[theme.rawValue + "ActualSettingsSaveTextContrast"] = save.flatMap { button in foreground.flatMap { front in button.bezelColor.map { contrast(front, $0, look) >= 4.5 } } } == true
+                control.show(tab: "chat")
             }
             checks["LightAndDarkSurfacesActuallyDiffer"] = colors["light"] != colors["dark"]
             var large = appearance.settings; large.textSize = 18; try appearance.save(large)

@@ -240,8 +240,13 @@ import AppKit
     }
     static func primaryAction(_ button: NSButton) {
         button.bezelStyle = .rounded; button.controlSize = .large; button.font = .systemFont(ofSize: 13, weight: .semibold)
-        button.bezelColor = AgentWorkbenchTheme.accent; button.contentTintColor = AgentWorkbenchTheme.accentText
+        refreshPrimaryAction(button)
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
+    }
+    static func refreshPrimaryAction(_ button: NSButton) {
+        button.bezelColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: button)
+        button.contentTintColor = AgentWorkbenchTheme.accentText
+        button.attributedTitle = NSAttributedString(string: button.title, attributes: [.font: button.font ?? .systemFont(ofSize: 13, weight: .semibold), .foregroundColor: AgentWorkbenchTheme.accentText])
     }
     static func prepare(_ root: NSView) {
         func apply(_ view: NSView) {

@@ -370,8 +370,7 @@ final class FormDocumentView: NSView {
             window.backgroundColor = AgentThemeContext.resolve(AgentWorkbenchTheme.sidebar, window: window)
             sendButton.layer?.backgroundColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary, window: window).cgColor
             sendButton.contentTintColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText, window: window)
-            generalSettingsSave?.bezelColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, window: window)
-            generalSettingsSave?.contentTintColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accentText, window: window)
+            if let save = generalSettingsSave { AgentSettingsStyle.refreshPrimaryAction(save) }
             for (index, button) in categoryButtons.enumerated() {
                 let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
