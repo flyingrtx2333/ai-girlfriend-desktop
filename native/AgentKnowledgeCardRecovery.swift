@@ -132,17 +132,17 @@ import AppKit
     }
     var recoveryFields: [String: NSTextField] { ["query": search, "analysis": focus, "title": titleField] }
     func rememberControlFocus(_ field: NSTextField?) {
-        guard let field, let key = recoveryFields.first(where: { $0.value === field })?.key else { return }; lastContentFocus = key; rememberCurrentFieldSelection()
+        guard !applyingRecovery, !cardFocusRequested, let field, let key = recoveryFields.first(where: { $0.value === field })?.key else { return }; lastContentFocus = key; rememberCurrentFieldSelection()
     }
     func rememberCurrentFieldSelection() {
         for (key, field) in recoveryFields { if let editor = field.currentEditor() as? NSTextView { let range = editor.selectedRange(); fieldSelections[key] = .init(location: range.location, length: range.length) } }
         for (key, selection) in fieldSelections { if let field = recoveryFields[key], !selection.valid(in: (field.stringValue as NSString).length) { let count = (field.stringValue as NSString).length, location = min(selection.location, count); fieldSelections[key] = .init(location: location, length: min(selection.length, count - location)) } }
     }
     @objc func cardFieldSelectionChanged(_ notification: Notification) {
-        guard !applyingRecovery, let editor = notification.object as? NSTextView, editor.isFieldEditor, presentingWindow?.firstResponder === editor else { return }
+        guard !applyingRecovery, !cardFocusRequested, let editor = notification.object as? NSTextView, editor.isFieldEditor, presentingWindow?.firstResponder === editor else { return }
         for (key, field) in recoveryFields where field.currentEditor() === editor { lastContentFocus = key; rememberCurrentFieldSelection(); onWorkspaceChange?() }
     }
-    @objc func cardViewportChanged(_ notification: Notification) { if !applyingRecovery, pendingCardViewport == nil { if presentingWindow?.firstResponder === preview { lastContentFocus = "body" }; onWorkspaceChange?() } }
+    @objc func cardViewportChanged(_ notification: Notification) { if !applyingRecovery, !cardFocusRequested, pendingCardViewport == nil { if presentingWindow?.firstResponder === preview { lastContentFocus = "body" }; onWorkspaceChange?() } }
     func checkRecovery(title: String? = nil, body: String? = nil, target: String = "", y: Double? = nil, titleSelection: NSRange? = nil, action: String = "") throws {
         guard ["--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return }
         if title != nil || body != nil || !target.isEmpty {

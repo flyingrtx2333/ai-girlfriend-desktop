@@ -104,9 +104,9 @@ import AppKit
     }
     func rememberQuerySelection() { if let editor = search.currentEditor() as? NSTextView { let range = editor.selectedRange(); querySelection = .init(location: range.location, length: range.length) } }
     func controlTextDidChange(_ notification: Notification) { guard !applyingRecovery else { return }; lastContentFocus = "query"; rememberQuerySelection(); onWorkspaceChange?() }
-    func controlTextDidBeginEditing(_ notification: Notification) { if !applyingRecovery { lastContentFocus = "query"; rememberQuerySelection() } }
+    func controlTextDidBeginEditing(_ notification: Notification) { if !applyingRecovery, !indexFocusRequested { lastContentFocus = "query"; rememberQuerySelection() } }
     @objc func indexViewChanged(_ notification: Notification) {
-        guard !applyingRecovery else { return }
+        guard !applyingRecovery, !indexFocusRequested else { return }
         if let editor = notification.object as? NSTextView, editor.isFieldEditor {
             guard search.currentEditor() === editor, presentingWindow?.firstResponder === editor else { return }; lastContentFocus = "query"; rememberQuerySelection()
         } else if notification.object as? NSTextView === preview || notification.object as? NSClipView === preview.enclosingScrollView?.contentView {

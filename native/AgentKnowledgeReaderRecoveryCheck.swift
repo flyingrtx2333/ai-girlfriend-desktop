@@ -121,12 +121,17 @@ import AppKit
                         checks["otherTaskSourceAndCardDraftStayUnchanged"] = try state(indexSource) == originalIndex.source && sourceState(cards).body == input["draftBody"] && sourceState(cards).dirty
                     } else if stage == "original" {
                         checks["returnedOriginalDoesNotSilentlyAdoptDifferentHash"] = try cardSource.checkState["loaded"] as? Bool == false && (state(cardSource)).hash == fixture.changedHash
-                        try cardSource.checkView(action: "latest"); control.knowledgePageHost.checkBack(); await wait(0.05)
+                        try cardSource.checkView(action: "latest"); control.window?.makeKeyAndOrderFront(nil); control.knowledgePageHost.checkBack(); await wait(0.05)
                         checks["explicitSourceBackKeepsOnlyOriginalCardDraft"] = try cards.sourceWindow == nil && (sourceState(cards)).body == input["draftBody"] && cards.dirty
+                        checks["sourceBackRestoresActualTitleFocusAndOriginalSelection"] = await eventually { cards.lastContentFocus == "title" && cards.titleField.currentEditor() === control.window?.firstResponder && (cards.titleField.currentEditor() as? NSTextView)?.selectedRange() == originalCard.fields["title"]?.range }
                         try cards.checkRecovery(title: input["savedTitle"], body: input["savedBody"]); try cards.checkRecovery(action: "save")
                         checks["explicitSaveUsesOriginalCardAndBookAfterRepair"] = try !cards.dirty && (tasks.knowledgeCards.book(tasks.task(fixture.first)!).0?.cards.first?.body) == input["savedBody"]
-                        control.knowledgePageHost.checkBack(); let other = try child(); other.knowledgePageHost.checkBack(); await wait(0.05)
+                        control.knowledgePageHost.checkBack(); let other = try child(); other.window?.makeKeyAndOrderFront(nil); other.knowledgePageHost.checkBack(); await wait(0.05)
                         checks["explicitIndexSourceBackKeepsQueryAndParent"] = search.sourceWindow == nil && search.search.stringValue == originalIndex.query && other.knowledgePageHost.currentController === search
+                        checks["sourceBackRestoresActualQueryFocusAndOriginalSelection"] = await eventually { search.search.currentEditor() === other.window?.firstResponder && (search.search.currentEditor() as? NSTextView)?.selectedRange() == originalIndex.querySelection?.range }
+                        try search.checkRecoveryView(target: "PUBLIC_READER_LINE_150 中文😀", y: 220)
+                        other.showAgentTask(fixture.second); other.showAgentKnowledge()
+                        checks["cachedIndexRestoresActualPreviewFocus"] = await eventually { other.window?.firstResponder === search.preview && search.lastContentFocus == "preview" }
                         other.knowledgePageHost.checkBack(); try await flush()
                         checks["explicitParentBackClearsBothKnowledgeRecords"] = try snapshot(fixture.firstWindow).knowledge == nil && snapshot(fixture.secondWindow).knowledge == nil
                         other.window?.performClose(nil); checks["secondaryWindowClosesNormallyWithJournalMarkedClosed"] = await eventually { !taskControls.contains { $0.taskWindowNumber == 2 } }

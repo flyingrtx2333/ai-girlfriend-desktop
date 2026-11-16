@@ -171,5 +171,5 @@ import AppKit
     }
     func controlTextDidBeginEditing(_ notification: Notification) { if !applyingRecovery { rememberControlFocus(notification.object as? NSTextField) } }
     func textDidChange(_ notification: Notification) { if !loading && !applyingRecovery && preview.isEditable { dirty = true; lastContentFocus = "body"; onWorkspaceChange?() } }
-    func textViewDidChangeSelection(_ notification: Notification) { guard !loading, !applyingRecovery else { return }; if presentingWindow?.firstResponder === preview { lastContentFocus = "body" }; onWorkspaceChange?() }
+    func textViewDidChangeSelection(_ notification: Notification) { guard !loading, !applyingRecovery, !cardFocusRequested else { return }; if presentingWindow?.firstResponder === preview { lastContentFocus = "body" }; onWorkspaceChange?() }
 }
