@@ -26,6 +26,13 @@ struct AgentWorkspaceRecovery: Sendable {
         var tab: Tab
         var frame: Frame?
     }
+    struct Knowledge: Codable, Equatable, Sendable {
+        var version = 1
+        var identity: String
+        var root: String
+        var active: Bool
+        var readers: [Page]
+    }
     struct Window: Codable, Equatable, Sendable {
         var version = 1
         var id: String
@@ -34,6 +41,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var frame: Frame?
         var tasks: [TaskLayout]
         var floating: [FloatingPage] = []
+        var knowledge: Knowledge? = nil
         var closed = false
     }
     struct Asset: Codable, Equatable, Sendable {
@@ -115,6 +123,14 @@ struct AgentWorkspaceRecovery: Sendable {
             guard UUID(uuidString: page.taskID) != nil, page.frame?.valid != false else { throw PetError("独立编辑窗口恢复格式无效") }
             try tab(page.tab)
         }
+        if let knowledge = value.knowledge {
+            guard knowledge.version == 1, knowledge.identity == "standalone" || UUID(uuidString: knowledge.identity) != nil,
+                  ["library", "wiki"].contains(knowledge.root), !knowledge.readers.isEmpty, knowledge.readers.count <= 32 else { throw PetError("知识中心恢复格式无效或版本不受支持") }
+            for page in knowledge.readers {
+                try validate(page)
+                guard page.kind == "record", page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
+            }
+        }
     }
     private func validate(_ value: Page) throws {
         guard value.version == 1, UUID(uuidString: value.taskID) != nil, !value.kind.isEmpty, value.kind.utf8.count <= 80,
@@ -126,7 +142,7 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
@@ -137,6 +153,13 @@ struct AgentWorkspaceRecovery: Sendable {
         for value in object["floating"] as? [Any] ?? [] {
             let page = try keys(value, ["taskID", "tab", "frame"])
             if let value = page["tab"] { try tab(value) }; try frame(page["frame"])
+        }
+        if let raw = object["knowledge"], !(raw is NSNull) {
+            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers"])
+            for raw in knowledge["readers"] as? [Any] ?? [] {
+                let page = try keys(raw, ["version", "taskID", "kind", "state", "dirty", "asset"])
+                if let asset = page["asset"], !(asset is NSNull) { _ = try keys(asset, ["slot", "hash"]) }
+            }
         }
         let value = try JSONDecoder().decode(Window.self, from: data); try validate(value); return value
     }

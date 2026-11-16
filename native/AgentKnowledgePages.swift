@@ -8,11 +8,15 @@ import AppKit
     private let body = NSView(), empty = NSTextField(labelWithString: "暂无内容")
     private var stacks: [String: [Entry]] = [:], root = "library", identity = ""
     private var makeRoot: ((String) -> AgentSettingsPageController?)?
+    private var recoveryRevision = 0
     var currentController: AgentSettingsPageController? { stacks[root]?.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.map(\.controller) } }
     var selectedRoot: String { root }
-    static var readbackEnabled: Bool { ["--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    var recoveryReaders: [AgentRecordWindow] { (stacks["wiki"] ?? []).compactMap { $0.controller as? AgentRecordWindow }.filter(\.isKnowledgeWikiReader) }
+    static var readbackEnabled: Bool { ["--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
     var onRootChange: ((String) -> Void)?
+    var onRecoveryChange: (() -> Void)?
+    private func recoveryChanged() { recoveryRevision &+= 1; onRecoveryChange?() }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -41,14 +45,18 @@ import AppKit
         if self.identity != identity { finish(); self.identity = identity }
         makeRoot = make; root = next
         if stacks[root]?.isEmpty != false, let controller = make(next) { return push(controller) }
-        displayCurrent(); return true
+        displayCurrent(); recoveryChanged(); return true
     }
     @discardableResult func push(_ controller: AgentSettingsPageController) -> Bool {
+        push(controller, root: root)
+    }
+    @discardableResult private func push(_ controller: AgentSettingsPageController, root ownerRoot: String) -> Bool {
         guard let host = window, host.attachedSheet == nil, let content = controller.settingsContent(in: host, styled: false) else { return false }
-        controller.onSettingsPush = { [weak self] child in _ = self?.push(child) }
+        controller.onSettingsPush = { [weak self] child in _ = self?.push(child, root: ownerRoot) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
-        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateHeader() }
-        stacks[root, default: []].append(Entry(controller: controller, content: content)); displayCurrent(); return true
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateHeader(); self?.recoveryChanged() }
+        stacks[ownerRoot, default: []].append(Entry(controller: controller, content: content))
+        if ownerRoot == root { displayCurrent() }; recoveryChanged(); return true
     }
     private func displayCurrent() {
         for view in body.subviews where view !== empty { view.removeFromSuperview() }
@@ -79,17 +87,57 @@ import AppKit
     }
     @objc private func goBack() {
         guard let entries = stacks[root], entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
-        let entry = stacks[root]!.removeLast(); entry.controller.endSettingsHosting(); displayCurrent()
+        let entry = stacks[root]!.removeLast(); entry.controller.endSettingsHosting(); displayCurrent(); recoveryChanged()
     }
     @objc private func changeRoot() {
         let next = tabs.selectedSegment == 0 ? "library" : "wiki"
         guard let makeRoot, show(root: next, identity: identity, make: makeRoot) else { updateHeader(); return }
     }
-    func prepareToLeave() -> Bool { (stacks[root] ?? []).reversed().allSatisfy { $0.controller.canLeaveSettings() } }
+    func prepareToLeave(preserving: Set<ObjectIdentifier> = []) -> Bool {
+        for entry in (stacks[root] ?? []).reversed() {
+            if let reader = entry.controller as? AgentRecordWindow, preserving.contains(ObjectIdentifier(reader)) {
+                guard reader.prepareWorkspaceNavigation() else { return false }
+            } else if !entry.controller.canLeaveSettings() { return false }
+        }
+        return true
+    }
+    func captureWorkspaceRecovery(active: Bool) async throws -> AgentWorkspaceRecovery.Knowledge? {
+        while true {
+            let revision = recoveryRevision, identity = identity, root = root, readers = recoveryReaders
+            guard !readers.isEmpty else { return nil }
+            var pages: [AgentWorkspaceRecovery.Page] = []
+            for reader in readers { pages.append(try await reader.captureWorkspaceRecovery()) }
+            guard revision == recoveryRevision else { continue }
+            // Other knowledge managers retain their existing leave guards. This
+            // journal restores only Wiki readers and their owned source chain.
+            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow
+            return .init(identity: identity, root: root, active: active && visibleReader, readers: pages)
+        }
+    }
+    func restoreWorkspaceRecovery(_ value: AgentWorkspaceRecovery.Knowledge,
+                                  make: @escaping (String) -> AgentSettingsPageController?,
+                                  reader: (AgentWorkspaceRecovery.Page) throws -> AgentRecordWindow) throws {
+        guard controllers.isEmpty else { throw PetError("请先关闭当前知识页面，再恢复原阅读记录") }
+        var restored: [AgentRecordWindow] = []
+        do {
+            for page in value.readers { restored.append(try reader(page)) }
+            guard let catalog = make("wiki") else { throw PetError("知识目录暂不可用") }
+            identity = value.identity; root = "wiki"; makeRoot = make
+            guard push(catalog) else { throw PetError("知识目录暂不能显示") }
+            for controller in restored { guard push(controller) else { throw PetError("知识阅读器暂不能显示") } }
+            if value.root == "library" {
+                root = "library"
+                guard let catalog = make("library"), push(catalog) else { throw PetError("知识库暂不能显示") }
+            }
+            displayCurrent(); recoveryChanged()
+        } catch {
+            restored.forEach { $0.endSettingsHosting() }; finish(); throw error
+        }
+    }
     func finish() {
         for entries in stacks.values { for entry in entries.reversed() { entry.controller.endSettingsHosting() } }
         stacks = [:]; identity = ""; makeRoot = nil
-        for view in body.subviews where view !== empty { view.removeFromSuperview() }; updateHeader()
+        for view in body.subviews where view !== empty { view.removeFromSuperview() }; updateHeader(); recoveryChanged()
     }
     func checkBack() { if Self.readbackEnabled { goBack() } }
     func checkState() -> [String: Any] {

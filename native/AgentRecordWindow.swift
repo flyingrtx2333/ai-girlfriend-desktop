@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 @MainActor final class AgentRecordWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
-    private let taskHosted: Bool, documentOnly: Bool
+    private let taskHosted: Bool, documentOnly: Bool, wikiOnly: Bool
     private let memoryWorkspace: String?
     private var openedMemoryWorkspace: String?, recoveryBlockedReason: String?
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
@@ -53,6 +53,7 @@ import UniformTypeIdentifiers
     var onWorkspaceChange: (() -> Void)?
     var onWindowClose: (() -> Void)?
     var workspaceHasUnsavedChanges: Bool { dirty }
+    var isKnowledgeWikiReader: Bool { wikiOnly }
     var canPreserveForQuit: Bool { store.task(taskID).map { $0.sideTask?.retained != false } == true }
     override var minimumSettingsContentHeight: CGFloat { sections.selectedSegment == 5 ? 220 : super.minimumSettingsContentHeight }
     var workspaceDocumentURL: URL? { documentOnly ? openedFile ?? selection.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0) : nil } : nil }
@@ -74,6 +75,7 @@ import UniformTypeIdentifiers
     private var markdownFile: URL?, sourceWindow: AgentMarkdownSourceWindow?
     private var conflictWindow: AgentFileConflictWindow?
     private var videoWindow: AgentVideoWindow?
+    private var pendingWikiVideoPage = false
     private var restoringVideo: (file: String, state: AgentVideoPlayback)?
     private var pendingTextViewport: AgentTextViewport?, applyingTextViewport = false, textViewportScheduled = false
     private var rememberedTextFocus = false
@@ -83,7 +85,7 @@ import UniformTypeIdentifiers
     var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true }
     var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow || sourceWindow?.hasVideoPlayback == true }
     init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
-        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.memoryWorkspace = memoryWorkspace
+        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.wikiOnly = wikiOnly; self.memoryWorkspace = memoryWorkspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.backgroundColor = .windowBackgroundColor
@@ -267,7 +269,7 @@ import UniformTypeIdentifiers
     func captureWorkspaceRecovery() async throws -> AgentWorkspaceRecovery.Page {
         guard !saving, wikiSharingTask == nil, wikiReviewWindow?.hasPendingOperation != true else { throw PetError("请先完成当前文档操作") }
         let playback = hasInlineVideoPlayback ? await video.capturePlayback() : nil
-        let child = try await videoWindow?.captureWorkspaceRecovery()
+        let child = try await videoWindow?.captureWorkspaceRecovery(includingHosted: wikiOnly)
         var source: AgentMarkdownSourceWindow.RecoveryState?
         while let current = sourceWindow {
             let value = try await current.captureWorkspaceRecovery()
@@ -359,7 +361,7 @@ import UniformTypeIdentifiers
         videoWindow?.close(); videoWindow = next
         next.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
         next.onClose = { [weak self, weak next] in
-            guard let self, videoWindow === next else { return }; videoWindow = nil; onWorkspaceChange?()
+            guard let self, videoWindow === next else { return }; videoWindow = nil; pendingWikiVideoPage = false; onWorkspaceChange?()
         }
     }
     private func retainSourceWindow(_ next: AgentMarkdownSourceWindow) {
@@ -379,7 +381,9 @@ import UniformTypeIdentifiers
         if value.presentation == "window" { next.presentRecoveredWindow() }
     }
     private func presentPendingSourcePage() {
-        guard let sourceWindow, sourceWindow.needsHostedPresentation, onSettingsPush != nil else { return }; presentSettingsChild(sourceWindow)
+        guard onSettingsPush != nil else { return }
+        if let sourceWindow, sourceWindow.needsHostedPresentation { presentSettingsChild(sourceWindow) }
+        if pendingWikiVideoPage, let videoWindow { pendingWikiVideoPage = false; presentSettingsChild(videoWindow) }
     }
     private func restoreVideoWindow(_ value: AgentVideoWindow.RecoveryState?) {
         guard let value else { return }
@@ -389,7 +393,10 @@ import UniformTypeIdentifiers
             guard files.root.path == value.sourceRoot, file.path == value.file else { throw PetError("视频来源已变化，原播放记录已保留") }
             return (files, file)
         }
-        retainVideoWindow(next); next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil); onWorkspaceChange?()
+        retainVideoWindow(next)
+        if wikiOnly, value.frame == nil { pendingWikiVideoPage = true }
+        else { next.showWindow(nil); next.window?.makeKeyAndOrderFront(nil) }
+        onWorkspaceChange?()
     }
     @objc private func refresh() {
         refreshCatalog(selecting: nil)
@@ -1058,7 +1065,7 @@ import UniformTypeIdentifiers
         return ["raw": ["location": text.selectedRange().location, "length": text.selectedRange().length, "y": Double(viewer.contentView.bounds.minY), "focused": presentingWindow?.firstResponder === text, "pending": pendingTextViewport != nil], "markdown": markdown.viewportReadback]
     }
     func sourceForRecoveryCheck(open url: URL? = nil) -> AgentMarkdownSourceWindow? {
-        guard ["--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return nil }
+        guard ["--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) else { return nil }
         if let url { openDocumentLink(url) }; return sourceWindow
     }
     func videoPreviewReadback() async -> [String: Any] {

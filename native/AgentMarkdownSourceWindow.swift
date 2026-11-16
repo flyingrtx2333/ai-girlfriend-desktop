@@ -286,7 +286,7 @@ import AppKit
     override func close() { if settingsHostWindow == nil { finishClose() }; super.close() }
     override func settingsWillLeave() { finishClose() }
 
-    private var sourceCheckEnabled: Bool { ["--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) }
+    private var sourceCheckEnabled: Bool { ["--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui"].contains(where: CommandLine.arguments.contains) }
     var recoveryVideoForCheck: AgentVideoWindow? { sourceCheckEnabled ? videoWindow : nil }
     func checkSourceLink(_ url: URL) { if sourceCheckEnabled { follow(url) } }
     func checkSourceAction(_ action: String) {

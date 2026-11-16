@@ -79,6 +79,7 @@ final class FormDocumentView: NSView {
 @MainActor final class ControlWindow: NSWindowController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSComboBoxDelegate {
     weak var companion: AppDelegate?
     private var selectedTab = "chat"
+    var isShowingKnowledge: Bool { selectedTab == "knowledge" }
     var hasTaskFocus: Bool { selectedTab == "chat" && window?.isVisible == true && (window?.isKeyWindow == true || window?.childWindows?.contains(where: \.isKeyWindow) == true) }
     private var settingsReturnTab = "chat", settingsBackButton: NSButton?
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
@@ -1736,7 +1737,7 @@ final class FormDocumentView: NSView {
             settingsReturnTab = selectedTab
             settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : selectedTab == "automation" ? "返回自动化" : selectedTab == "knowledge" ? "返回知识中心" : "返回对话"
         }
-        selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab()
+        selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab(); workspaceSession?.changed()
         renderMessages()
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
         showWindow(nil); window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
@@ -2152,7 +2153,7 @@ final class FormDocumentView: NSView {
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
-        guard knowledgePageHost.prepareToLeave() else { return false }
+        guard knowledgePageHost.prepareToLeave(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard attachmentImport == nil, window?.attachedSheet == nil else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
         if let workspaceSession {
@@ -3078,16 +3079,37 @@ final class FormDocumentView: NSView {
     }
     @discardableResult private func showKnowledgeCenter(root: String) -> Bool {
         guard let store = companion?.agentStore, saveAgentDraft() else { return false }
+        if workspaceSession?.hasPendingKnowledge == true { workspaceSession?.restoreKnowledge(); return false }
         if selectedTab != "knowledge", !canLeaveMainPage() { return false }
         let sourceID = agentTaskID
         guard knowledgePageHost.show(root: root, identity: sourceID ?? "standalone", make: { [weak self, weak store] kind in
             guard let self, let store else { return nil }
-            if kind == "library" { let manager = AgentKnowledgeLibraryWindow(store: store, taskID: sourceID); self.knowledgeLibraryWindow = manager; return manager }
-            let manager = AgentRepoWikiWindow(store: store)
-            manager.onOpen = { [weak self] project, language, action in guard let self else { throw PetError("任务窗口已关闭") }; try self.openRepoWikiProject(project, language: language, action: action) }
-            self.repoWikiWindow = manager; return manager
+            return self.preparedKnowledgeCatalog(store: store, root: kind, sourceID: sourceID)
         }) else { return false }
         sidebarRequested = true; show(tab: "knowledge"); return true
+    }
+    private func preparedKnowledgeCatalog(store: AgentStore, root: String, sourceID: String?) -> AgentSettingsPageController {
+        if root == "library" { let manager = AgentKnowledgeLibraryWindow(store: store, taskID: sourceID); knowledgeLibraryWindow = manager; return manager }
+        let manager = AgentRepoWikiWindow(store: store)
+        manager.onOpen = { [weak self] project, language, action in guard let self else { throw PetError("任务窗口已关闭") }; try self.openRepoWikiProject(project, language: language, action: action) }
+        repoWikiWindow = manager; return manager
+    }
+    internal func materializeKnowledgeRecovery(_ value: AgentWorkspaceRecovery.Knowledge) throws {
+        guard let store = companion?.agentStore else { throw PetError("任务资料暂不可用") }
+        let sourceID = value.identity == "standalone" ? nil : value.identity
+        if let sourceID, store.task(sourceID) == nil { throw PetError("知识中心原任务暂不可用") }
+        try knowledgePageHost.restoreWorkspaceRecovery(value, make: { [weak self, weak store] kind in
+            guard let self, let store else { return nil }; return self.preparedKnowledgeCatalog(store: store, root: kind, sourceID: sourceID)
+        }, reader: { page in
+            let state = try AgentRecordWindow.recoveryState(page)
+            guard state.section == 6, !state.documentOnly, state.memoryWorkspace == nil,
+                  let task = store.task(page.taskID), task.sideTask?.retained != false else { throw PetError("知识阅读器所属任务或文档类型已变化") }
+            let reader = preparedRecord(store: store, taskID: task.id, section: 6, wikiOnly: true)
+            reader.window?.title = (task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目") + " · Repo Wiki"
+            do { try reader.restoreWorkspaceRecovery(page); return reader }
+            catch { reader.endSettingsHosting(); throw error }
+        })
+        if value.active, value.identity == (agentTaskID ?? "standalone") { sidebarRequested = true; show(tab: "knowledge") }
     }
     @objc internal func showAgentKnowledge() { _ = showKnowledgeCenter(root: "wiki") }
     private func openRepoWikiProject(_ project: AgentRepoWikiProject, language: String, action: String) throws {
