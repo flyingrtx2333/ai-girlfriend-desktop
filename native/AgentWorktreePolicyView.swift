@@ -13,6 +13,13 @@ import AppKit
         policy.onOpenManager = { [weak self] in self?.presentSettingsChild($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        guard let content = super.settingsContent(in: host, styled: styled) else { return nil }
+        for constraint in content.constraints where constraint.firstItem as? NSView === policy && constraint.secondItem as? NSView === content {
+            constraint.constant = 0
+        }
+        return content
+    }
     override func settingsDidAppear() { super.settingsDidAppear(); policy.refreshState() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { policy.prepareToLeave() }
 }
