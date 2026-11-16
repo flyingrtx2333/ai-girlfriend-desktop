@@ -2181,6 +2181,7 @@ final class FormDocumentView: NSView {
         for page in knowledgePageHost.controllers {
             if let record = page as? AgentRecordWindow { try record.requireDeletionAllowed(ids) }
             if let cards = page as? AgentKnowledgeCardWindow, ids.contains(cards.taskID), cards.dirty || cards.busy || cards.reviewWindow?.hasPendingOperation == true { throw PetError("请先保存知识卡片编辑或等待当前操作结束") }
+            if let index = page as? AgentKnowledgeWindow, ids.contains(index.taskID), index.busy { throw PetError("请先完成项目检索操作") }
             if let library = page as? AgentKnowledgeLibraryWindow, library.boundTaskID.map(ids.contains) == true, library.hasPendingChanges { throw PetError("请先保存知识库名称或等待文件操作结束") }
         }
     }
@@ -2191,7 +2192,7 @@ final class FormDocumentView: NSView {
         taskWorkspace.finish(tasks: ids)
         if let manager = settingsPageHost.currentController as? AgentWorktreeWindow, ids.contains(manager.boundTaskID) { manager.close() }
         worktreePolicyPanel?.refreshState()
-        if knowledgePageHost.controllers.contains(where: { ($0 as? AgentRecordWindow)?.belongsToTasks(ids) == true || ($0 as? AgentKnowledgeCardWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeLibraryWindow)?.boundTaskID.map(ids.contains) == true }) { knowledgePageHost.finish() }
+        if knowledgePageHost.controllers.contains(where: { ($0 as? AgentRecordWindow)?.belongsToTasks(ids) == true || ($0 as? AgentKnowledgeCardWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeWindow).map { ids.contains($0.taskID) } == true || ($0 as? AgentKnowledgeLibraryWindow)?.boundTaskID.map(ids.contains) == true }) { knowledgePageHost.finish() }
     }
     func checkAttentionNavigation() throws -> [String: Any] {
         guard CommandLine.arguments.contains("--attention-page-check"), let window, let page = attentionPageController, let tasks = companion?.agentStore, let id = agentTaskID else { throw PetError("需要我页面未初始化") }
@@ -3074,6 +3075,7 @@ final class FormDocumentView: NSView {
             if let plan = controller as? AgentWikiPlanWindow { value["wikiPlan"] = plan.checkState }
             if let review = controller as? AgentKnowledgeReviewWindow { value["knowledgeReview"] = review.checkState }
             if let source = controller as? AgentMarkdownSourceWindow { value["source"] = source.encodingCheckState }
+            if let source = controller as? AgentKnowledgeSourcePage { value["knowledgeSource"] = source.checkState }
             if let video = controller as? AgentVideoWindow { value["video"] = await video.preview.checkState() }
         }; return value
     }
@@ -3101,13 +3103,24 @@ final class FormDocumentView: NSView {
         try knowledgePageHost.restoreWorkspaceRecovery(value, make: { [weak self, weak store] kind in
             guard let self, let store else { return nil }; return self.preparedKnowledgeCatalog(store: store, root: kind, sourceID: sourceID)
         }, reader: { page in
-            let state = try AgentRecordWindow.recoveryState(page)
-            guard state.section == 6, !state.documentOnly, state.memoryWorkspace == nil,
-                  let task = store.task(page.taskID), task.sideTask?.retained != false else { throw PetError("知识阅读器所属任务或文档类型已变化") }
-            let reader = preparedRecord(store: store, taskID: task.id, section: 6, wikiOnly: true)
-            reader.window?.title = (task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目") + " · Repo Wiki"
-            do { try reader.restoreWorkspaceRecovery(page); return reader }
-            catch { reader.endSettingsHosting(); throw error }
+            guard let task = store.task(page.taskID), task.sideTask?.retained != false else { throw PetError("知识页面所属任务已变化") }
+            let reader: AgentSettingsPageController
+            switch page.kind {
+            case "record":
+                let state = try AgentRecordWindow.recoveryState(page)
+                guard state.section == 6, !state.documentOnly, state.memoryWorkspace == nil else { throw PetError("知识阅读器文档类型已变化") }
+                let record = preparedRecord(store: store, taskID: task.id, section: 6, wikiOnly: true)
+                record.window?.title = (task.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目") + " · Repo Wiki"; reader = record
+            case "knowledge-cards": reader = preparedKnowledgeCards(store: store, taskID: task.id)
+            case "knowledge-index": reader = preparedKnowledgeIndex(store: store, taskID: task.id)
+            default: throw PetError("知识页面恢复类型不受支持，原记录已保留")
+            }
+            do {
+                if let record = reader as? AgentRecordWindow { try record.restoreWorkspaceRecovery(page) }
+                else if let cards = reader as? AgentKnowledgeCardWindow { try cards.restoreWorkspaceRecovery(page) }
+                else if let index = reader as? AgentKnowledgeWindow { try index.restoreWorkspaceRecovery(page) }
+                return reader
+            } catch { reader.endSettingsHosting(); throw error }
         })
         if value.active, value.identity == (agentTaskID ?? "standalone") { sidebarRequested = true; show(tab: "knowledge") }
     }
@@ -3138,17 +3151,14 @@ final class FormDocumentView: NSView {
     }
     private func showProjectIndex(taskID id: String) {
         guard let store = companion?.agentStore, store.task(id) != nil, showKnowledgeCenter(root: "wiki") else { return }
+        let manager = preparedKnowledgeIndex(store: store, taskID: id)
+        knowledgePageHost.push(manager)
+    }
+    private func preparedKnowledgeIndex(store: AgentStore, taskID id: String) -> AgentKnowledgeWindow {
         let manager = AgentKnowledgeWindow(store: store, taskID: id)
         manager.onOpenWiki = { [weak self] in self?.pushKnowledgeWiki(taskID: id) }
         manager.onOpenCards = { [weak self] in self?.showKnowledgeCards(taskID: id) }
-        manager.onOpenSource = { [weak self, weak store] url in
-            guard let self, let store else { throw PetError("任务窗口已关闭") }
-            let files = try AgentFiles(workspace: store.task(id)?.workspace), safe = try files.resolve(url.path)
-            guard !AgentFiles.sensitive(files.relative(safe)) else { throw PetError("不能打开受保护的来源") }
-            let text = try files.read(safe.path, offset: 1, limit: 10_000)
-            knowledgePageHost.push(AgentKnowledgeSourcePage(title: files.relative(safe), text: text, file: safe))
-        }
-        knowledgeWindow = manager; knowledgePageHost.push(manager)
+        knowledgeWindow = manager; return manager
     }
     private func pushKnowledgeWiki(taskID id: String) {
         guard let store = companion?.agentStore, showKnowledgeCenter(root: "wiki") else { return }
@@ -3162,9 +3172,12 @@ final class FormDocumentView: NSView {
             do { var options = try store.knowledgeCards.options(workspace: workspace); if options.language != language { options.language = language; try store.knowledgeCards.setOptions(options, workspace: workspace, expected: store.knowledgeCards.settings().1) } }
             catch { setStatus(error.localizedDescription, error: true); return }
         }
+        knowledgePageHost.push(preparedKnowledgeCards(store: store, taskID: taskID))
+    }
+    private func preparedKnowledgeCards(store: AgentStore, taskID: String) -> AgentKnowledgeCardWindow {
         let manager = AgentKnowledgeCardWindow(store: store, taskID: taskID)
         manager.onOpenTask = { [weak self] id in self?.showAgentTask(id); self?.show(tab: "chat") }
-        knowledgeCardWindow = manager; knowledgePageHost.push(manager)
+        knowledgeCardWindow = manager; return manager
     }
     internal func refreshKnowledgeCards(workspace: String) {
         knowledgePageHost.controllers.compactMap { $0 as? AgentKnowledgeCardWindow }.forEach { $0.refresh(workspace: workspace) }; scheduleRender()

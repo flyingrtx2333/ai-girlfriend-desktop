@@ -13,7 +13,8 @@ import AppKit
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.map(\.controller) } }
     var selectedRoot: String { root }
     var recoveryReaders: [AgentRecordWindow] { (stacks["wiki"] ?? []).compactMap { $0.controller as? AgentRecordWindow }.filter(\.isKnowledgeWikiReader) }
-    static var readbackEnabled: Bool { ["--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    var recoveryEditors: [AgentSettingsPageController] { (stacks["wiki"] ?? []).map(\.controller).filter { ($0 as? AgentRecordWindow)?.isKnowledgeWikiReader == true || $0 is AgentKnowledgeCardWindow || $0 is AgentKnowledgeWindow } }
+    static var readbackEnabled: Bool { ["--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
     var onRootChange: ((String) -> Void)?
     var onRecoveryChange: (() -> Void)?
     private func recoveryChanged() { recoveryRevision &+= 1; onRecoveryChange?() }
@@ -54,7 +55,10 @@ import AppKit
         guard let host = window, host.attachedSheet == nil, let content = controller.settingsContent(in: host, styled: false) else { return false }
         controller.onSettingsPush = { [weak self] child in _ = self?.push(child, root: ownerRoot) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
-        (controller as? AgentRecordWindow)?.onWorkspaceChange = { [weak self] in self?.updateHeader(); self?.recoveryChanged() }
+        let changed: () -> Void = { [weak self] in self?.updateHeader(); self?.recoveryChanged() }
+        (controller as? AgentRecordWindow)?.onWorkspaceChange = changed
+        (controller as? AgentKnowledgeCardWindow)?.onWorkspaceChange = changed
+        (controller as? AgentKnowledgeWindow)?.onWorkspaceChange = changed
         stacks[ownerRoot, default: []].append(Entry(controller: controller, content: content))
         if ownerRoot == root { displayCurrent() }; recoveryChanged(); return true
     }
@@ -97,28 +101,37 @@ import AppKit
         for entry in (stacks[root] ?? []).reversed() {
             if let reader = entry.controller as? AgentRecordWindow, preserving.contains(ObjectIdentifier(reader)) {
                 guard reader.prepareWorkspaceNavigation() else { return false }
+            } else if let cards = entry.controller as? AgentKnowledgeCardWindow, preserving.contains(ObjectIdentifier(cards)) {
+                guard cards.prepareWorkspaceNavigation() else { return false }
+            } else if let index = entry.controller as? AgentKnowledgeWindow, preserving.contains(ObjectIdentifier(index)) {
+                guard index.prepareWorkspaceNavigation() else { return false }
             } else if !entry.controller.canLeaveSettings() { return false }
         }
         return true
     }
     func captureWorkspaceRecovery(active: Bool) async throws -> AgentWorkspaceRecovery.Knowledge? {
         while true {
-            let revision = recoveryRevision, identity = identity, root = root, readers = recoveryReaders
+            let revision = recoveryRevision, identity = identity, root = root, readers = recoveryEditors
             guard !readers.isEmpty else { return nil }
             var pages: [AgentWorkspaceRecovery.Page] = []
-            for reader in readers { pages.append(try await reader.captureWorkspaceRecovery()) }
+            for reader in readers {
+                if let reader = reader as? AgentRecordWindow { pages.append(try await reader.captureWorkspaceRecovery()) }
+                else if let reader = reader as? AgentKnowledgeCardWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
+                else if let reader = reader as? AgentKnowledgeWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
+            }
             guard revision == recoveryRevision else { continue }
+            guard !pages.isEmpty else { return nil }
             // Other knowledge managers retain their existing leave guards. This
-            // journal restores only Wiki readers and their owned source chain.
-            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow
+            // journal stores the supported Wiki-stack managers and owned pages.
+            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage
             return .init(identity: identity, root: root, active: active && visibleReader, readers: pages)
         }
     }
     func restoreWorkspaceRecovery(_ value: AgentWorkspaceRecovery.Knowledge,
                                   make: @escaping (String) -> AgentSettingsPageController?,
-                                  reader: (AgentWorkspaceRecovery.Page) throws -> AgentRecordWindow) throws {
+                                  reader: (AgentWorkspaceRecovery.Page) throws -> AgentSettingsPageController) throws {
         guard controllers.isEmpty else { throw PetError("请先关闭当前知识页面，再恢复原阅读记录") }
-        var restored: [AgentRecordWindow] = []
+        var restored: [AgentSettingsPageController] = []
         do {
             for page in value.readers { restored.append(try reader(page)) }
             guard let catalog = make("wiki") else { throw PetError("知识目录暂不可用") }
@@ -164,25 +177,4 @@ import AppKit
         let focused = window?.firstResponder as? NSView
         return ["root": root, "depth": stacks[root]?.count ?? 0, "controller": currentController.map { String(describing: type(of: $0)) } ?? "", "pageTitle": title.stringValue, "visible": !isHiddenOrHasHiddenAncestor && window?.isVisible == true, "focusInPage": currentController?.pageContentView.map { focused?.isDescendant(of: $0) == true } ?? false, "size": [bounds.width, bounds.height], "bodySize": [body.bounds.width, body.bounds.height], "backVisible": !back.isHidden, "controls": frames, "checks": checks]
     }
-}
-
-@MainActor final class AgentKnowledgeSourcePage: AgentSettingsPageController {
-    private let file: URL?
-    init(title: String, text: String, file: URL? = nil) {
-        self.file = file
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 500), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = title; window.isReleasedWhenClosed = false
-        super.init(window: window)
-        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface), view = NSTextView(), scroll = NSScrollView()
-        view.isEditable = false; view.isRichText = false; view.isVerticallyResizable = true; view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true; view.textContainerInset = NSSize(width: 12, height: 12)
-        view.string = text; view.font = .monospacedSystemFont(ofSize: 12, weight: .regular); view.textColor = .labelColor; view.drawsBackground = false; view.setAccessibilityLabel("知识来源正文")
-        scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false
-        let open = NSButton(title: "在外部打开", target: self, action: #selector(openFile)); open.isHidden = file == nil
-        let actions = NSStackView(views: [NSView(), open]), column = NSStackView(views: [scroll, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
-        window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        for child in [scroll, actions] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor), column.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func openFile() { if let file { NSWorkspace.shared.open(file) } }
 }

@@ -1,6 +1,6 @@
 import AppKit
 
-@MainActor final class AgentKnowledgeCardWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
+@MainActor final class AgentKnowledgeCardWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     let store: AgentStore, taskID: String
     let search = NSSearchField(), category = NSPopUpButton(), language = NSPopUpButton()
     let automatic = NSButton(checkboxWithTitle: "自动更新", target: nil, action: nil)
@@ -11,8 +11,15 @@ import AppKit
     let table = NSTableView(), titleField = NSTextField(string: ""), preview = NSTextView(), sources = NSPopUpButton()
     let format = NSSegmentedControl(labels: ["阅读", "编辑"], trackingMode: .selectOne, target: nil, action: nil)
     let save = NSButton(title: "保存", target: nil, action: nil), open = NSButton(title: "查看源码", target: nil, action: nil)
-    var value: AgentKnowledgeCardBook?, revision = "", rows: [AgentKnowledgeCard] = [], selected: AgentKnowledgeCard?
-    var dirty = false, loading = false, busy = false, job: Task<Void, Never>?, sourceWindow: NSWindowController?
+    var value: AgentKnowledgeCardBook?, revision = AgentFiles.hash(Data()), rows: [AgentKnowledgeCard] = [], selected: AgentKnowledgeCard?
+    var dirty = false { didSet { if dirty != oldValue { onWorkspaceChange?() } } }
+    var loading = false, busy = false, job: Task<Void, Never>?, sourceWindow: AgentKnowledgeSourcePage?
+    var sourceOwner: AgentKnowledgeCard?, openedScope: RecoveryScope?, hasRestoredSnapshot = false
+    var savedViews: [String: AgentTextViewport] = [:], pendingCardViewport: AgentTextViewport?
+    var fieldSelections: [String: AgentTextViewport.Selection] = [:], lastContentFocus = "query"
+    var applyingRecovery = false, viewportScheduled = false, cardFocusRequested = false
+    var renderedCardViewKey: String?
+    var onWorkspaceChange: (() -> Void)?
     var reviewWindow: AgentKnowledgeReviewWindow?
     var onOpenTask: ((String) -> Void)?
     var cards: AgentKnowledgeCards { store.knowledgeCards }
@@ -25,6 +32,7 @@ import AppKit
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         search.placeholderString = "搜索卡片"; search.sendsSearchStringImmediately = true; search.target = self; search.action = #selector(filterChanged)
+        search.delegate = self; focus.delegate = self
         category.addItems(withTitles: ["全部类型"] + AgentKnowledgeCardKind.allCases.map(\.title)); category.setAccessibilityLabel("卡片类型"); category.target = self; category.action = #selector(filterChanged)
         language.addItems(withTitles: ["简体中文", "English"]); language.setAccessibilityLabel("卡片语言"); language.target = self; language.action = #selector(languageChanged)
         for button in [automatic, exporting, citation] { button.target = self; button.action = #selector(optionsChanged(_:)) }
@@ -37,7 +45,10 @@ import AppKit
         titleField.target = self; titleField.action = #selector(titleChanged); titleField.delegate = self
         preview.isEditable = false; preview.isRichText = true; preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.textContainerInset = NSSize(width: 16, height: 16); preview.delegate = self; preview.setAccessibilityLabel("卡片正文")
         let viewer = NSScrollView(); viewer.documentView = preview; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
-        format.selectedSegment = 0; format.target = self; format.action = #selector(formatChanged); sources.setAccessibilityLabel("卡片源码引用")
+        viewer.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(cardViewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: viewer.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(cardFieldSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
+        format.selectedSegment = 0; format.target = self; format.action = #selector(formatChanged); sources.setAccessibilityLabel("卡片源码引用"); sources.target = self; sources.action = #selector(sourceReferenceChanged)
         let more = NSPopUpButton(frame: .zero, pullsDown: true); more.addItem(withTitle: "更多")
         for (title, action) in [("刷新", #selector(reloadCards)), ("导入项目卡片…", #selector(importCards)), ("导出到项目", #selector(exportCards)), ("恢复版本…", #selector(restoreVersion))] { let item = NSMenuItem(title: title, action: action, keyEquivalent: ""); item.target = self; more.menu?.addItem(item) }
         more.autoenablesItems = false; more.setAccessibilityLabel("知识卡片操作")
@@ -67,21 +78,37 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func row(_ views: [NSView]) -> NSStackView { let value = NSStackView(views: views); value.spacing = 8; return value }
     func windowShouldClose(_ sender: NSWindow) -> Bool { reviewWindow?.canLeaveSettings() != false && discard() }
-    func windowDidBecomeKey(_ notification: Notification) { reload() }
-    private func closeContent() { job?.cancel(); sourceWindow?.close(); reviewWindow?.close(); reviewWindow = nil }
+    func windowDidBecomeKey(_ notification: Notification) { if hasRestoredSnapshot { checkRestoredContext() } else { reload() }; scheduleCardViewport() }
+    private func closeContent() { job?.cancel(); NotificationCenter.default.removeObserver(self); sourceWindow?.onClose = nil; sourceWindow?.endSettingsHosting(); sourceWindow = nil; sourceOwner = nil; reviewWindow?.close(); reviewWindow = nil }
     func windowWillClose(_ notification: Notification) { closeContent() }
     override func settingsWillLeave() { closeContent() }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); cardFocusRequested = true
+        if let sourceWindow, sourceWindow.needsHostedPresentation, onSettingsPush != nil { presentSettingsChild(sourceWindow) }
+        scheduleCardViewport()
+    }
+    override func pageDidLayout() { scheduleCardViewport() }
     func discard() -> Bool {
         guard dirty else { return true }
         guard AgentUnsavedChanges.discard("放弃未保存的卡片编辑？", discardTitle: "放弃编辑") else { return false }; dirty = false; render(); return true
     }
     func reload() {
+        if hasRestoredSnapshot { checkRestoredContext(); return }
         guard !dirty, let task, let workspace = task.workspace else { if dirty { state.stringValue = "有未保存编辑；保存时核对当前版本" }; return }
+        rememberCardViewport()
         do {
-            let options = try cards.options(workspace: workspace), previous = selected?.id
-            language.selectItem(at: options.language == "en" ? 1 : 0); automatic.state = options.autoUpdate ? .on : .off; exporting.state = options.autoExport ? .on : .off; citation.state = options.citation ? .on : .off
             let scope = try cards.scope(task)
-            (value, revision) = try cards.book(task, language: options.language)
+            if let openedScope, openedScope.root != scope.root || openedScope.branch != scope.branch, sourceWindow != nil { state.stringValue = "工作区或分支已变化，原来源阅读记录已保留；请刷新核对"; return }
+            let options = try cards.options(workspace: workspace), previous = selected?.id
+            if openedScope == nil { openedScope = .init(root: scope.root, branch: scope.branch) }
+            let loaded = try cards.book(task, language: options.language)
+            if openedScope?.root != scope.root || openedScope?.branch != scope.branch || value?.language != options.language {
+                savedViews = [:]; pendingCardViewport = nil; renderedCardViewKey = nil; fieldSelections["title"] = nil
+            }
+            value = loaded.0; revision = loaded.1
+            let ids = Set(value?.cards.map(\.id) ?? []); savedViews = savedViews.filter { key, _ in key.split(separator: "|").first.map { ids.contains(String($0)) } == true }
+            language.selectItem(at: options.language == "en" ? 1 : 0); automatic.state = options.autoUpdate ? .on : .off; exporting.state = options.autoExport ? .on : .off; citation.state = options.citation ? .on : .off
+            openedScope = .init(root: scope.root, branch: scope.branch)
             let branch = scope.branch == "folder" ? "文件夹" : scope.branch.replacingOccurrences(of: "refs/heads/", with: "")
             scopeLabel.stringValue = URL(fileURLWithPath: scope.root).lastPathComponent + " · " + branch; scopeLabel.toolTip = scope.root
             if focus.stringValue.isEmpty { focus.stringValue = value?.focus ?? "" }
@@ -95,6 +122,7 @@ import AppKit
                 if latest.status == .stopped { state.stringValue = "生成已停止" }
             }
         } catch { state.stringValue = error.localizedDescription; generate.isEnabled = !busy }
+        onWorkspaceChange?()
     }
     var activeTask: AgentTaskRecord? {
         guard let task, let scope = try? cards.scope(task) else { return nil }
@@ -107,11 +135,12 @@ import AppKit
     func refresh(workspace: String) { if task?.workspace.map({ URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath().path }) == workspace { reload() } }
     @objc func filterChanged() { guard discard() else { return }; filter(preferred: selected?.id) }
     func filter(preferred: String?) {
+        rememberCardViewport()
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), index = category.indexOfSelectedItem - 1
         rows = (value?.cards ?? []).filter { card in (index < 0 || card.kind == AgentKnowledgeCardKind.allCases[index]) && (query.isEmpty || (card.title + "\n" + card.body).localizedCaseInsensitiveContains(query)) }
         table.delegate = nil; table.reloadData(); table.deselectAll(nil)
         if let i = rows.firstIndex(where: { $0.id == preferred }) ?? (rows.isEmpty ? nil : 0) { table.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false); selected = rows[i] } else { selected = nil }
-        table.delegate = self; render()
+        table.delegate = self; render(); onWorkspaceChange?()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -121,7 +150,7 @@ import AppKit
         title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail; detail.font = .systemFont(ofSize: 11); detail.textColor = AgentWorkbenchTheme.secondaryText
         let column = NSStackView(views: [title, detail]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 4; return column
     }
-    func tableViewSelectionDidChange(_ notification: Notification) { selected = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil; render() }
+    func tableViewSelectionDidChange(_ notification: Notification) { rememberCardViewport(); selected = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil; render(); onWorkspaceChange?() }
     func render() {
         loading = true; defer { loading = false }
         let editing = format.selectedSegment == 1 && selected != nil
@@ -130,9 +159,17 @@ import AppKit
         else { let p = NSMutableParagraphStyle(); p.lineSpacing = 5; p.paragraphSpacing = 8; preview.textStorage?.setAttributedString(NativeMarkdown.render(selected?.body ?? "", font: .systemFont(ofSize: 14), color: .labelColor, paragraph: p)) }
         sources.removeAllItems(); sources.addItems(withTitles: selected?.sources.map { $0.path + ":\($0.line)–\($0.endLine)" } ?? [])
         open.isEnabled = selected != nil; format.isEnabled = selected != nil; save.isEnabled = editing; dirty = false
+        restoreRememberedCardViewport()
     }
-    @objc func formatChanged() { guard discard() else { format.selectedSegment = 1; return }; render() }
-    @objc func titleChanged() { if !loading { dirty = true } }
-    func controlTextDidChange(_ notification: Notification) { if !loading, notification.object as? NSTextField === titleField { dirty = true } }
-    func textDidChange(_ notification: Notification) { if !loading && preview.isEditable { dirty = true } }
+    @objc func formatChanged() { defer { onWorkspaceChange?() }; rememberCardViewport(); guard discard() else { format.selectedSegment = 1; return }; render() }
+    @objc func titleChanged() { if !loading { dirty = true; onWorkspaceChange?() } }
+    @objc func sourceReferenceChanged() { onWorkspaceChange?() }
+    func controlTextDidChange(_ notification: Notification) {
+        guard !loading, !applyingRecovery else { return }
+        if notification.object as? NSTextField === titleField { dirty = true }
+        rememberControlFocus(notification.object as? NSTextField); onWorkspaceChange?()
+    }
+    func controlTextDidBeginEditing(_ notification: Notification) { if !applyingRecovery { rememberControlFocus(notification.object as? NSTextField) } }
+    func textDidChange(_ notification: Notification) { if !loading && !applyingRecovery && preview.isEditable { dirty = true; lastContentFocus = "body"; onWorkspaceChange?() } }
+    func textViewDidChangeSelection(_ notification: Notification) { guard !loading, !applyingRecovery else { return }; if presentingWindow?.firstResponder === preview { lastContentFocus = "body" }; onWorkspaceChange?() }
 }

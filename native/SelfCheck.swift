@@ -64,6 +64,8 @@ import WebKit
         if CommandLine.arguments.contains("--workspace-mcp-recovery-ui") { await runMCPRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-canvas-recovery-check") { await runCanvasRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-canvas-recovery-ui") { await runCanvasRecoveryCheck(output, interactive: true); return }
+        if CommandLine.arguments.contains("--knowledge-reader-recovery-check") { await runKnowledgeReaderRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--knowledge-reader-recovery-ui") { await runKnowledgeReaderRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--knowledge-source-recovery-check") { await runKnowledgeSourceRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--knowledge-source-recovery-ui") { await runKnowledgeSourceRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--workspace-source-recovery-check") { await runSourceRecoveryCheck(output); NSApp.terminate(nil); return }

@@ -128,7 +128,7 @@ struct AgentWorkspaceRecovery: Sendable {
                   ["library", "wiki"].contains(knowledge.root), !knowledge.readers.isEmpty, knowledge.readers.count <= 32 else { throw PetError("知识中心恢复格式无效或版本不受支持") }
             for page in knowledge.readers {
                 try validate(page)
-                guard page.kind == "record", page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
+                guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
             }
         }
     }
