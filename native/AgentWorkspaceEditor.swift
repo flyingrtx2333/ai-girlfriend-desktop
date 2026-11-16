@@ -18,6 +18,7 @@ extension AgentWorkspaceColor {
     private let saveWorkspace:(String,AgentWorkspaceIcon,AgentWorkspaceColor,[String],String) throws -> Void
     private let archiveWorkspace:() throws -> Void, onClose:() -> Void
     private weak var previousResponder:NSResponder?
+    private var maximumPanelSize = NSSize.zero
     init(entry:AgentDirectoryEntry, save:@escaping (String,AgentWorkspaceIcon,AgentWorkspaceColor,[String],String) throws -> Void, archive:@escaping () throws -> Void, onClose:@escaping () -> Void) {
         original = entry; folders = entry.sourceFolders; primary = entry.primary; icon = entry.icon ?? .folder; color = entry.color ?? .forest
         saveWorkspace = save; archiveWorkspace = archive; self.onClose = onClose
@@ -96,11 +97,24 @@ extension AgentWorkspaceColor {
         for button in icons { button.state = button.identifier?.rawValue == icon.rawValue ? .on : .off; button.contentTintColor = button.state == .on ? color.nsColor : AgentWorkbenchTheme.secondaryText }
         for button in colors { button.state = button.identifier?.rawValue == color.rawValue ? .on : .off; button.contentTintColor = color.nsColor }
         rangeNote.isHidden = folders == original.sourceFolders && primary == original.primary
+        resizeForContents()
         window?.contentView?.layoutSubtreeIfNeeded()
     }
+    private func resizeForContents() {
+        guard let panel = window, maximumPanelSize.height > 0 else { return }
+        status.preferredMaxLayoutWidth = maximumPanelSize.width-40
+        rangeNote.preferredMaxLayoutWidth = maximumPanelSize.width-40
+        let errorHeight = status.isHidden ? 0 : ceil(status.fittingSize.height)+12
+        let noteHeight = rangeNote.isHidden ? 0 : ceil(rangeNote.fittingSize.height)+10
+        let height = min(384 + CGFloat(min(4,folders.count)-1)*32 + errorHeight + noteHeight,maximumPanelSize.height)
+        let size = NSSize(width:maximumPanelSize.width,height:height)
+        if panel.contentView?.frame.size != size { panel.setContentSize(size) }
+        panel.contentView?.layoutSubtreeIfNeeded()
+    }
+    private func showError(_ message:String) { status.stringValue = message; status.isHidden = false; resizeForContents() }
     func begin(in owner:NSWindow) {
         guard let panel = window, owner.attachedSheet == nil else { return }; previousResponder = owner.firstResponder; AgentThemeContext.inherit(panel,from:owner)
-        panel.setContentSize(NSSize(width:min(560,owner.contentLayoutRect.width-32),height:min(384 + CGFloat(min(4,folders.count)-1)*32,owner.contentLayoutRect.height-32)))
+        maximumPanelSize = NSSize(width:min(560,owner.contentLayoutRect.width-32),height:owner.contentLayoutRect.height-32); resizeForContents()
         owner.beginSheet(panel) { [self,weak owner] _ in panel.orderOut(nil); onClose(); if let view = previousResponder as? NSView, view.window === owner { owner?.makeFirstResponder(view) } }
         panel.makeFirstResponder(input); input.selectText(nil); refresh()
     }
@@ -115,17 +129,17 @@ extension AgentWorkspaceColor {
         picker.beginSheetModal(for:window) { [weak self] result in
             guard let self, result == .OK else { return }
             do { let paths = folders + picker.urls.map{ $0.resolvingSymlinksInPath().path }; folders = try AgentWorkspaceScope.validateFolders(paths,primary:primary); status.isHidden = true; refresh() }
-            catch { status.stringValue = error.localizedDescription; status.isHidden = false }
+            catch { showError(error.localizedDescription) }
         }
     }
     @objc private func submit() {
         guard (input.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
         do { try saveWorkspace(input.stringValue,icon,color,folders,primary); if let window { window.sheetParent?.endSheet(window,returnCode:.OK) } }
-        catch { status.stringValue = error.localizedDescription; status.isHidden = false }
+        catch { showError(error.localizedDescription) }
     }
     @objc private func archiveEntry() {
-        guard input.stringValue == original.title, icon == (original.icon ?? .folder), color == (original.color ?? .forest), folders == original.sourceFolders, primary == original.primary else { status.stringValue = "请先保存或取消工作区修改"; status.isHidden = false; return }
-        do { try archiveWorkspace(); cancel() } catch { status.stringValue = error.localizedDescription; status.isHidden = false }
+        guard input.stringValue == original.title, icon == (original.icon ?? .folder), color == (original.color ?? .forest), folders == original.sourceFolders, primary == original.primary else { showError("请先保存或取消工作区修改"); return }
+        do { try archiveWorkspace(); cancel() } catch { showError(error.localizedDescription) }
     }
     func control(_ control:NSControl, textView:NSTextView, doCommandBy selector:Selector) -> Bool {
         guard !textView.hasMarkedText() else { return false }

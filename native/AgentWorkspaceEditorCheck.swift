@@ -46,6 +46,7 @@ import Darwin
         func call(_ name:String,_ object:[String:Any]) throws -> AgentToolCall { .init(id:UUID().uuidString,name:name,arguments:String(decoding:try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]),as:UTF8.self)) }
         func find<T:NSView>(_ type:T.Type,_ view:NSView?,_ predicate:(T)->Bool) -> T? { guard let view else { return nil }; if let value = view as? T, predicate(value) { return value }; for child in view.subviews { if let value = find(type,child,predicate) { return value } }; return nil }
         func button(_ label:String,_ sheet:NSWindow) throws -> NSButton { guard let value = find(NSButton.self,sheet.contentView,{$0.title == label || $0.accessibilityLabel() == label}) else { throw PetError("缺少操作：" + label) }; return value }
+        func fullyVisible(_ view:NSView?) -> Bool { guard let view, !view.isHidden else { return false }; return view.bounds.width > 0 && view.bounds.height > 0 && view.visibleRect.width >= view.bounds.width-1 && view.visibleRect.height >= view.bounds.height-1 }
         func closed(_ host:NSWindow) async throws { for _ in 0..<100 { if host.attachedSheet == nil { return }; await wait(0.02) }; throw PetError("工作区表单未关闭") }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务未初始化") }
@@ -152,6 +153,10 @@ import Darwin
             checks["shortFormStartsAtTopAndHasUsableWidth"] = name.bounds.width >= 420 && name.superview?.superview?.isFlipped == true && abs(name.superview?.frame.minY ?? -100) < 1 && !name.hasAmbiguousLayout
             checks["parentCannotCloseOverWorkspaceEditor"] = !control.windowShouldClose(host)
             let dataBeforeCancel = try Data(contentsOf:store.directory.appendingPathComponent("organization.json"))
+            let initialHeight = sheet.contentView?.bounds.height ?? 0
+            name.stringValue = ""; try button("保存",sheet).performClick(nil); sheet.contentView?.layoutSubtreeIfNeeded()
+            let invalidStatus = find(NSTextField.self,sheet.contentView,{$0.accessibilityLabel() == "工作区保存状态"})
+            checks["validationErrorExpandsSheetAndKeepsPaletteAndActionsVisible"] = try (sheet.contentView?.bounds.height ?? 0) > initialHeight && fullyVisible(name) && fullyVisible(button("颜色：森林",sheet)) && fullyVisible(button("颜色：灰蓝",sheet)) && fullyVisible(invalidStatus) && fullyVisible(button("保存",sheet))
             try button("设为主文件夹：" + alpha,sheet).performClick(nil); name.stringValue = "未保存工作区"
             try button("取消",sheet).performClick(nil); try await closed(host)
             checks["cancelKeepsConfigurationAndOriginalTaskDraft"] = try Data(contentsOf:store.directory.appendingPathComponent("organization.json")) == dataBeforeCancel && tasks.task(ids["task"]!)?.draft == "保留工作区编辑输入 🧭"
@@ -166,6 +171,9 @@ import Darwin
                 try button("保存",saved).performClick(nil)
                 let error = find(NSTextField.self,saved.contentView,{$0.accessibilityLabel() == "工作区保存状态"})
                 checks["failedSaveKeepsEveryFieldAndOriginalConfiguration"] = try host.attachedSheet === saved && error?.stringValue.isEmpty == false && field.stringValue == "原生表单保存的工作区" && Data(contentsOf:profile.appendingPathComponent("organization.json")) == beforeFailure && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks) == configured
+                saved.contentView?.layoutSubtreeIfNeeded()
+                let note = find(NSTextField.self,saved.contentView,{$0.stringValue == "文件夹变更用于新任务。"})
+                checks["saveErrorAndSourceChangeNoteKeepPaletteAndFooterVisible"] = try fullyVisible(field) && fullyVisible(button("颜色：灰蓝",saved)) && fullyVisible(note) && fullyVisible(error) && fullyVisible(button("保存",saved)) && (saved.contentView?.bounds.height ?? .greatestFiniteMagnitude) <= host.contentLayoutRect.height-32
             }
             try button("保存",saved).performClick(nil); try await closed(host)
             checks["nativeSavePersistsAllFieldsWithoutChangingOldTaskScope"] = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.icon == .sailboat && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.color == .orange && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.primary == alpha && tasks.task(id)?.workspaceScope == scoped
