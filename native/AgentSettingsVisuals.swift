@@ -67,6 +67,7 @@ import AppKit
         case "回顾模型", "模型", "视觉理解", "思考程度": symbol = "cpu"
         case "计划": symbol = "checklist"
         case "子智能体": symbol = "person.2"
+        case "可恢复侧任务": symbol = "arrow.uturn.backward"
         case "后台进程": symbol = "terminal"
         case "网页查阅", "来源", "接口", "MCP": symbol = "globe"
         case "Token": symbol = "key"

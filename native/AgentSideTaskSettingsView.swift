@@ -6,10 +6,11 @@ import AppKit
     init(service: AgentSideTasks) {
         self.service = service; super.init(frame: .zero)
         enabled.setAccessibilityLabel("可恢复侧任务")
-        let line = NSStackView(views: [NSTextField(labelWithString: "可恢复侧任务"), NSView(), enabled]); line.spacing = 12
+        let line = AgentSettingsStyle.formRow("可恢复侧任务", enabled, trailing: true)
         let note = NSTextField(wrappingLabelWithString: "仅影响新建的侧任务；保留后可从主任务记录中重新打开。")
         note.font = .systemFont(ofSize: 12); note.textColor = AgentWorkbenchTheme.secondaryText
         let apply = NSButton(title: "应用设置", target: self, action: #selector(save)), reload = NSButton(title: "重新载入", target: self, action: #selector(load))
+        AgentSettingsStyle.primaryAction(apply)
         let buttons = NSStackView(views: [apply, reload, NSView()]); buttons.spacing = 8
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
         let column = NSStackView(views: [line, note, buttons, state]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
