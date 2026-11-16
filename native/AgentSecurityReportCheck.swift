@@ -3,6 +3,7 @@ import AppKit
 @MainActor extension AppDelegate {
     func runSecurityReportCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], result: [String: Any] = [:], requests = 0
+        var cleanupReview: AgentGitWindow?
         func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(views) }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime, let owner = control.window else { throw PetError("任务窗口不可用") }
@@ -18,6 +19,7 @@ import AppKit
             tasks.update(git.taskID) { $0.draft = "保留安全报告验收的任务草稿。" }
             control.showAgentTask(git.taskID); control.showAgentGit()
             guard let review = control.taskWorkspace.currentController as? AgentGitWindow else { throw PetError("Git 未进入任务工作区") }
+            cleanupReview = review
             await review.checkWorkspace(path: "00-transport.js", message: "保留安全报告验收的提交说明")
             var located: AgentSecurityFinding?
             let page = AgentCodeSecurityWindow(report: report, onLocate: { located = $0 }, onFix: { _ in throw PetError("保留报告的公开写入失败") })
@@ -88,6 +90,7 @@ import AppKit
             checks["cleanReportDisablesLocationActions"] = try !button("定位差异", in: cleanPage).isEnabled && !button("复制位置", in: cleanPage).isEnabled
             checks["noModelRequestsOrReceipts"] = requests == 0 && tasks.tasks.allSatisfy { $0.modelReceipts?.isEmpty != false && $0.inputTokens == 0 && $0.outputTokens == 0 }
         } catch { result["error"] = error.localizedDescription }
+        if let cleanupReview { await cleanupReview.checkWorkspace(message: "") }
         agentRuntime?.stopAll()
         result["checks"] = checks; result["modelRequests"] = requests; result["appPID"] = getpid()
         result["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 } && result["error"] == nil
