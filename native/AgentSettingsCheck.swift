@@ -107,6 +107,11 @@ import Darwin
                 if let scroll = view as? NSScrollView, scroll.accessibilityLabel() == "设置内容" { return scroll }
                 for child in view.subviews { if let scroll = settingsViewport(child) { return scroll } }; return nil
             }
+            func catalog(_ view: NSView?) -> AgentSettingsCatalogTable? {
+                guard let view else { return nil }
+                return (view as? AgentSettingsCatalogTable) ?? view.subviews.lazy.compactMap(catalog).first
+            }
+            var catalogChecks: [String: Bool] = [:]
             var actualTexts = true, narrowPagesStartAtTop = true, childPID: pid_t?
             for (key, manager, expected) in managers {
                 guard pane.show(category: key, identity: key, scope: "设置项目", make: { _ in manager }) else { throw PetError("设置页未载入：" + key) }
@@ -114,12 +119,22 @@ import Darwin
                 let viewport = settingsViewport(pane)
                 narrowPagesStartAtTop = narrowPagesStartAtTop && viewport?.documentView?.isFlipped == true && abs(viewport?.contentView.bounds.minY ?? -1) < 0.5
                 checks["embedded-" + key] = manager.presentingWindow === host && manager.pageContentView?.window === host && manager.window?.isVisible == false
+                let list = catalog(manager.pageContentView)
+                if let list {
+                    catalogChecks[key + "CatalogOpensWithoutConfigurationForm"] = !text(manager.pageContentView!).contains(expected) && list.numberOfRows > 0 && list.bounds.width >= (manager.pageContentView?.bounds.width ?? 0) - 2
+                    list.onOpen?(); pane.layoutSubtreeIfNeeded()
+                    catalogChecks[key + "CatalogKeyboardOpensHostedDetail"] = pane.currentController is AgentSettingsDetailPage && pane.currentController?.presentingWindow === host && pane.currentController?.pageContentView?.window === host
+                }
                 if let hooks = manager as? AgentHookWindow, let first = try tasks.hooks.catalog(workspace: workspace).first { hooks.selectHook(first.id) }
                 for _ in 0..<30 {
-                    if manager.pageContentView.map({ text($0).contains(expected) }) == true { break }
+                    if pane.currentController?.pageContentView.map({ text($0).contains(expected) }) == true { break }
                     await wait(0.05)
                 }
-                actualTexts = actualTexts && manager.pageContentView.map { text($0).contains(expected) } == true
+                actualTexts = actualTexts && pane.currentController?.pageContentView.map { text($0).contains(expected) } == true
+                if let list {
+                    pane.currentController?.close(); pane.layoutSubtreeIfNeeded()
+                    catalogChecks[key + "DetailBackRestoresCatalogSelectionAndFocus"] = pane.currentController === manager && list.selectedRow >= 0 && host.firstResponder === list
+                }
                 if key == "mcp" {
                     childPID = try await mcp.connectForSettingsCheck()
                     checks["localMCPConnectsFromHostedManager"] = childPID.map { kill($0, 0) == 0 } == true
@@ -152,6 +167,8 @@ import Darwin
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
             guard checks.count == managers.count + 11 else { throw PetError("设置页面基础检查缺失") }
+            guard catalogChecks.count == 15 else { throw PetError("设置列表与详情检查缺失") }
+            checks.merge(catalogChecks) { _, next in next }
             checks.merge(memoryChecks) { _, value in value }
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }

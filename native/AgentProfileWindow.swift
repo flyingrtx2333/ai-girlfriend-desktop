@@ -8,13 +8,17 @@ import UniformTypeIdentifiers
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
     var onSaved: ((String) throws -> Void)?
-    private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), model = NSTextField(), instructions = NSTextView()
+    private let table = AgentSettingsCatalogTable(), name = NSTextField(), purpose = NSTextField(), model = NSTextField(), instructions = NSTextView()
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?
+    private var catalogLayout: (toolbar: NSView, detail: NSView)?
+    private var detailPage: AgentSettingsDetailPage?
+    private let catalogState = AgentSettingsStatusField("智能体列表状态")
+    private var requestedDetail = false
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
     override var minimumSettingsContentHeight: CGFloat { 220 }
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil, taskID: String? = nil) {
@@ -53,6 +57,7 @@ import UniformTypeIdentifiers
         use.target = self; use.action = #selector(useProfile)
         let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
         let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        catalogLayout = (listActions, detail)
         for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
         for view in [list, listActions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -73,6 +78,33 @@ import UniformTypeIdentifiers
         return store.mcp.availableServers(workspace: workspace)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
+            AgentSettingsCatalog.detach(content)
+            let page = AgentSettingsDetailPage(title: "智能体配置", content: AgentSettingsCatalog.detail(layout.detail))
+            page.onCanLeave = { [weak self] in
+                guard let self, let window, windowShouldClose(window) else { return false }
+                if dirty { dirty = false; reload() }; return true
+            }
+            page.onAppear = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(name) }
+            detailPage = page; catalogLayout = nil
+            state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
+            table.target = self; table.action = #selector(openSelectedProfile); table.onOpen = { [weak self] in self?.showDetail() }
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData()
+        }
+        return super.settingsContent(in: host, styled: styled)
+    }
+    override var usesInternalScrolling: Bool { detailPage != nil }
+    override func canLeaveSettings() -> Bool { detailPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        if requestedDetail { requestedDetail = false; showDetail() } else { presentingWindow?.makeFirstResponder(table) }
+    }
+    @objc private func openSelectedProfile() { showDetail() }
+    private func showDetail() {
+        guard selectedID != nil, let detailPage else { return }
+        if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
+    }
     private static func toolTitle(_ name: String) -> String {
         let names = ["list_directory": "浏览文件", "read_file": "读取文件", "search_files": "搜索文件", "write_file": "写入文件", "edit_file": "编辑文件", "run_command": "终端命令", "web_search": "联网搜索", "fetch_url": "读取网页", "list_agents": "查找 Agent", "delegate_task": "委派子任务", "draft_agent": "生成 Agent 草稿", "update_plan": "执行计划", "ask_user": "向用户提问", "read_task_history": "读取本任务历史", "read_memory": "读取记忆", "write_memory": "保存记忆", "search_project": "项目检索", "index_project": "更新项目索引", "project_wiki": "读取项目 Wiki", "git_status": "Git 状态", "git_diff": "Git 差异", "git_commit": "Git 提交", "git_init": "初始化 Git", "git_create_worktree": "创建工作树", "list_attachments": "列出附件", "read_attachment": "读取附件", "search_attachment": "搜索附件", "browser_open": "打开网页", "browser_tabs": "浏览器标签页", "browser_read": "读取页面", "browser_screenshot": "网页截图", "browser_action": "网页操作", "browser_close": "关闭浏览器", "load_tools": "按需载入工具", "list_skills": "查找 Skills", "read_skill": "载入 Skill", "read_skill_resource": "读取 Skill 资源", "unload_skill": "移出 Skill", "list_mcp_servers": "列出 MCP", "connect_mcp": "连接 MCP", "list_mcp_tools": "MCP 工具目录", "call_mcp_tool": "调用 MCP 工具", "disconnect_mcp": "断开 MCP"]
         let desktopNames = ["desktop_status": "电脑操作状态", "desktop_windows": "查找应用窗口", "desktop_connect": "连接指定窗口", "desktop_read": "读取指定窗口", "desktop_screenshot": "截取指定窗口", "desktop_action": "操作指定窗口", "desktop_disconnect": "断开窗口连接"]
@@ -82,7 +114,13 @@ import UniformTypeIdentifiers
     }
     func numberOfRows(in tableView: NSTableView) -> Int { values.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let value = values[row], text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名智能体" : value.name) + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
+        let value = values[row]
+        if detailPage != nil {
+            let title = value.name.isEmpty ? "未命名智能体" : AgentProfiles.title(value, task: try? sourceTask())
+            let source = value.pluginSource.map { "插件 · " + ((try? AgentPlugins.scope($0.name).name) ?? $0.name) } ?? ""
+            return AgentSettingsCatalogCell(title: title, summary: [value.description, source].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "person.crop.square", status: value.enabled ? "已启用" : "已停用") { [weak self] in self?.selectProfile(value.id) }
+        }
+        let text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名智能体" : value.name) + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !loading, values.indices.contains(table.selectedRow) else { return }
@@ -116,7 +154,7 @@ import UniformTypeIdentifiers
         for item in [name, purpose, permission, tools, skills, mcp, readOnly, network, enabled] as [NSControl] { item.isEnabled = hasValue && !packaged }
         model.isEnabled = hasValue; instructions.isEditable = hasValue && !packaged; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue
     }
-    func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload() }
+    func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload(); if settingsHostWindow != nil { showDetail() } else { requestedDetail = true } }
     func configureDraft(_ draft: AgentProfileDraft) throws {
         _ = try AgentProfileDrafts.checked(draft, taskID: draft.taskID, agents: store.agents)
         if dirty { guard selectedID == draft.profile.id else { throw PetError("请先保存或关闭已打开的 Agent 更改") }; return }
@@ -126,6 +164,7 @@ import UniformTypeIdentifiers
         openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current
         if existing == nil { values.append(draft.profile) }
         loading = true; table.reloadData(); loading = false; open(draft.profile.id)
+        requestedDetail = true
         if existing == nil { changed(); presentingWindow?.makeFirstResponder(name) }
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
@@ -189,7 +228,7 @@ import UniformTypeIdentifiers
         page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(mcp) }
         presentSettingsChild(page)
     }
-    @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name) }
+    @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name) }
     @objc private func chooseTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let menu = NSMenu()
@@ -201,7 +240,7 @@ import UniformTypeIdentifiers
         var value = AgentTemplates.profiles[sender.tag]
         let base = value.name; var suffix = 2
         while values.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { value.name = base + " \(suffix)"; suffix += 1 }
-        values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name)
+        values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name)
     }
     @objc private func saveProfile() {
         do {
@@ -219,7 +258,7 @@ import UniformTypeIdentifiers
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); guard data.count <= 512_000, let text = String(data: data, encoding: .utf8) else { throw PetError("请选择不超过512KB的 UTF-8 JSON") }; let imported = try store.agents.decode(text, importing: true); guard !imported.isEmpty else { throw PetError("没有可导入的 Agent") }; values += imported; table.reloadData(); open(imported.first?.id); changed(); state.stringValue = "导入待保存，默认停用" }
+        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); guard data.count <= 512_000, let text = String(data: data, encoding: .utf8) else { throw PetError("请选择不超过512KB的 UTF-8 JSON") }; let imported = try store.agents.decode(text, importing: true); guard !imported.isEmpty else { throw PetError("没有可导入的 Agent") }; values += imported; table.reloadData(); open(imported.first?.id); changed(); state.stringValue = "导入待保存，默认停用"; showDetail() }
         catch { state.stringValue = error.localizedDescription }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {

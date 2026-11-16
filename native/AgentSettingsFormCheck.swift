@@ -57,7 +57,9 @@ import AppKit
             let actual = try created.map { try tasks.extensions.document($0).0 }
             let expected = kind == .skill ? tasks.extensions.profile.appendingPathComponent("extensions/skills/" + name + "/SKILL.md") : URL(fileURLWithPath: workspace!).appendingPathComponent(".bluefatfish/commands/" + name.replacingOccurrences(of: ":", with: "/") + ".md")
             checks[key + "CreationWritesRequestedScope"] = created?.file.standardizedFileURL == expected.standardizedFileURL && FileManager.default.fileExists(atPath: expected.path)
-            checks[key + "CreationReturnsToActualEditor"] = pane.currentController === manager && find(NSTextView.self, in: manager.pageContentView, matching: { $0.accessibilityLabel() == "扩展说明" })?.string == actual && host.firstResponder is NSTextView
+            guard let editor = pane.currentController as? AgentSettingsDetailPage else { throw PetError("扩展创建后未进入配置页") }
+            checks[key + "CreationReturnsToActualEditor"] = editor.presentingWindow === host && find(NSTextView.self, in: editor.pageContentView, matching: { $0.accessibilityLabel() == "扩展说明" })?.string == actual && host.firstResponder is NSTextView
+            editor.close()
             try press("新建", in: manager)
             guard let cancelled = pane.currentController as? AgentExtensionCreationPage else { throw PetError("缺少取消创建页") }
             let afterCreate = try tasks.extensions.catalog(workspace: workspace).map(\.id); try press("取消", in: cancelled)
@@ -68,10 +70,11 @@ import AppKit
         let manager = AgentProfileWindow(store: tasks, workspace: workspace)
         guard pane.show(category: "agents", identity: "inline-agent-forms", scope: "设置项目", make: { _ in manager }), let role = try tasks.agents.list(workspace: workspace).first(where: { $0.name == "设置审阅员" }), let connector = tasks.mcp.availableServers(workspace: workspace).first else { throw PetError("缺少智能体配置检查资料") }
         manager.selectProfile(role.id)
+        guard let profile = pane.currentController as? AgentSettingsDetailPage else { throw PetError("智能体未进入配置页") }
         let selection = NSMenuItem(); selection.representedObject = connector.id
         NSApp.sendAction(NSSelectorFromString("toggleMCP:"), to: manager, from: selection)
         for (title, value) in [("只读项目", NSControl.StateValue.off), ("允许联网与外部连接", .on)] {
-            guard let button = find(NSButton.self, in: manager.pageContentView, matching: { $0.title == title }) else { throw PetError("缺少权限选项") }
+            guard let button = find(NSButton.self, in: profile.pageContentView, matching: { $0.title == title }) else { throw PetError("缺少权限选项") }
             button.state = value; NSApp.sendAction(button.action!, to: button.target, from: button)
         }
         let beforeRule = try tasks.agents.document().1
@@ -85,16 +88,16 @@ import AppKit
         checks["MCPRuleOversizedInputKeepsDraft"] = try pane.currentController === page && field("MCP 工具名", in: page).stringValue.count == 129
         try edit("MCP 工具名", "echo", in: page); try menu("MCP 工具权限", in: page).selectItem(at: AgentToolPermission.allCases.firstIndex(of: .deny)!)
         try press("应用", in: page)
-        checks["MCPRuleReturnsToUnsavedParent"] = try pane.currentController === manager && tasks.agents.document().1 == beforeRule
-        checks["MCPRulePreservesParentFieldsAndFocus"] = try field("Agent 名称", in: manager).stringValue == role.name && text(manager.pageContentView).contains(role.instructions) && host.firstResponder === menu("Agent MCP", in: manager)
-        try press("保存", in: manager)
+        checks["MCPRuleReturnsToUnsavedParent"] = try pane.currentController === profile && tasks.agents.document().1 == beforeRule
+        checks["MCPRulePreservesParentFieldsAndFocus"] = try field("Agent 名称", in: profile).stringValue == role.name && text(profile.pageContentView).contains(role.instructions) && host.firstResponder === menu("Agent MCP", in: profile)
+        try press("保存", in: profile)
         let saved = try tasks.agents.list(workspace: workspace).first { $0.id == role.id }
         checks["MCPRuleParentSavePersistsExactRule"] = saved?.mcpToolPermissions == [AgentMCPToolPermission(serverID: connector.id, tool: "echo", permission: .deny)] && saved?.readOnly == false && saved?.network == true
         let beforeTemplate = try tasks.agents.document().1, template = AgentTemplates.profiles[0], item = NSMenuItem(); item.tag = 0
         NSApp.sendAction(NSSelectorFromString("useTemplate:"), to: manager, from: item)
-        checks["TemplateOpensEditableParentWithoutModal"] = try pane.currentController === manager && host.attachedSheet == nil && field("Agent 名称", in: manager).stringValue == template.name && text(manager.pageContentView).contains(template.instructions)
+        checks["TemplateOpensEditableParentWithoutModal"] = try pane.currentController === profile && host.attachedSheet == nil && field("Agent 名称", in: profile).stringValue == template.name && text(profile.pageContentView).contains(template.instructions)
         checks["TemplateRemainsUnsavedUntilSave"] = try tasks.agents.document().1 == beforeTemplate
-        try press("保存", in: manager)
+        try press("保存", in: profile)
         checks["TemplateSavePersistsOriginalInstructions"] = try tasks.agents.list(workspace: workspace).contains { $0.name == template.name && $0.instructions == template.instructions }
         checks["InlineFormsCreateNoVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visibleWindows
         checks["InlineFormsLeaveNormallyAfterSave"] = pane.leave()

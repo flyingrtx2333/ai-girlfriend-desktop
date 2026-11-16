@@ -4,12 +4,16 @@ import UniformTypeIdentifiers
 @MainActor final class AgentExtensionWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let kinds = NSSegmentedControl(labels: ["Skills", "命令"], trackingMode: .selectOne, target: nil, action: nil)
-    private let search = NSSearchField(), table = NSTableView(), editor = NSTextView()
+    private let search = NSSearchField(), table = AgentSettingsCatalogTable(), editor = NSTextView()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let add = NSButton(title: "新建", target: nil, action: nil), importButton = NSButton(title: "导入", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let use = NSButton(title: "在任务中使用", target: nil, action: nil), reveal = NSButton(title: "打开来源", target: nil, action: nil)
-    private let location = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
+    private let location = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("扩展保存状态")
+    private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, header: NSStackView, viewer: NSScrollView, footer: NSStackView)?
+    private var detailPage: AgentSettingsDetailPage?
+    private let catalogState = AgentSettingsStatusField("扩展列表状态")
+    private var requestedDetail = false
     private var items: [AgentExtensionItem] = [], selected: AgentExtensionItem?, openedHash: String?, dirty = false, selectedKind = 0
     private var availableInTask = false
     private var job: Task<Void, Never>?
@@ -61,6 +65,7 @@ import UniformTypeIdentifiers
         let rules = NSButton(title: "规则", target: self, action: #selector(showRules))
         let listActions = NSStackView(views: [add, importButton, rules, NSView()]); listActions.spacing = 8
         let footer = NSStackView(views: [state, NSView(), reveal, remove, save]); footer.spacing = 8
+        catalogLayout = (header, listActions, detailHeader, viewer, footer)
         for view in [header, list, viewer, detailHeader, listActions, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), header.heightAnchor.constraint(equalToConstant: 28),
@@ -73,8 +78,38 @@ import UniformTypeIdentifiers
         reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
+            AgentSettingsCatalog.detach(content)
+            for view in layout.actions.arrangedSubviews { layout.actions.removeArrangedSubview(view); view.removeFromSuperview(); layout.toolbar.addArrangedSubview(view) }
+            search.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let detail = NSStackView(views: [layout.header, layout.viewer, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+            for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+            layout.header.heightAnchor.constraint(equalToConstant: 28).isActive = true; layout.footer.heightAnchor.constraint(equalToConstant: 28).isActive = true
+            let page = AgentSettingsDetailPage(title: kind == .skill ? "技能配置" : "指令配置", content: AgentSettingsCatalog.detail(detail))
+            page.onCanLeave = { [weak self] in
+                guard let self else { return true }; let wasDirty = dirty
+                guard canLeave() else { return false }; if wasDirty { reload(select: selected?.id) }; return true
+            }
+            page.onAppear = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(editor) }
+            detailPage = page; catalogLayout = nil
+            state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
+            table.target = self; table.action = #selector(openSelectedItem); table.onOpen = { [weak self] in self?.showDetail() }
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData()
+        }
+        return super.settingsContent(in: host, styled: styled)
+    }
+    override var usesInternalScrolling: Bool { detailPage != nil }
+    override var minimumSettingsContentHeight: CGFloat { detailPage == nil ? super.minimumSettingsContentHeight : 220 }
+    override func canLeaveSettings() -> Bool { detailPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
+    @objc private func openSelectedItem() { showDetail() }
+    private func showDetail() {
+        guard selected != nil, let detailPage else { return }
+        if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
+    }
     override func settingsDidAppear() {
         super.settingsDidAppear()
+        if requestedDetail { requestedDetail = false; showDetail(); return }
         guard isPageVisible, let content = pageContentView, let host = presentingWindow else { return }
         if let focused = host.firstResponder as? NSView, focused.isDescendant(of: content) { return }
         host.makeFirstResponder(table)
@@ -89,7 +124,7 @@ import UniformTypeIdentifiers
         }
         reload()
     }
-    func selectItem(_ id:String) { if canLeave() { reload(select:id) } }
+    func selectItem(_ id:String) { if canLeave() { reload(select:id); if settingsHostWindow != nil { showDetail() } else { requestedDetail = true } } }
     @objc private func showRules() {
         guard canLeave() else { return }
         if let window = ruleWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
@@ -136,7 +171,11 @@ import UniformTypeIdentifiers
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let item = items[row], name = NSTextField(labelWithString: item.name + (item.enabled ? "" : " · 已停用"))
+        let item = items[row]
+        if detailPage != nil {
+            return AgentSettingsCatalogCell(title: item.name, summary: [item.scope, item.description].filter { !$0.isEmpty }.joined(separator: " · "), symbol: item.kind == .skill ? "sparkles" : "command", status: item.enabled ? "" : "已停用") { [weak self] in self?.selectItem(item.id) }
+        }
+        let name = NSTextField(labelWithString: item.name + (item.enabled ? "" : " · 已停用"))
         name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
         let source = NSTextField(labelWithString: item.scope + (item.manualOnly ? " · 手动" : "")); source.font = .systemFont(ofSize: 11); source.textColor = AgentWorkbenchTheme.secondaryText
         let stack = NSStackView(views: [name, source]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = item.description; return stack
@@ -230,7 +269,7 @@ import UniformTypeIdentifiers
         let page = AgentExtensionCreationPage(service: store.extensions, kind: kind, workspace: workspace)
         page.onCreated = { [weak self] item in
             guard let self else { return }
-            search.stringValue = ""; reload(select: item.id); state.stringValue = "已创建"; presentingWindow?.makeFirstResponder(editor)
+            search.stringValue = ""; reload(select: item.id); state.stringValue = "已创建"; showDetail(); presentingWindow?.makeFirstResponder(editor)
         }
         presentSettingsChild(page)
     }
@@ -247,7 +286,7 @@ import UniformTypeIdentifiers
                 guard let self else { return }; defer { job = nil; updateControls() }
                 do {
                     let item = try await store.extensions.importItem(url, kind: chosen, project: scope.indexOfSelectedItem == 1, workspace: workspace)
-                    try Task.checkCancellation(); search.stringValue = ""; reload(select: item.id); state.stringValue = "已导入"
+                    try Task.checkCancellation(); search.stringValue = ""; reload(select: item.id); state.stringValue = "已导入"; showDetail()
                 } catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
             }; updateControls()
         }

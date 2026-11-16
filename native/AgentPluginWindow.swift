@@ -5,8 +5,11 @@ import UniformTypeIdentifiers
     private let store: AgentStore, workspace: String?
     private let scopes = NSSegmentedControl(labels: ["用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private var scopeWorkspace: String? { scopes.selectedSegment == 1 ? workspace : nil }
-    private let list = NSTableView(), components = NSTableView(), search = NSSearchField(), readme = NSTextView()
-    private let title = NSTextField(labelWithString: ""), metadata = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
+    private let list = AgentSettingsCatalogTable(), components = NSTableView(), search = NSSearchField(), readme = NSTextView()
+    private let title = NSTextField(labelWithString: ""), metadata = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("插件状态")
+    private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, components: NSScrollView, document: NSScrollView, footer: NSStackView)?
+    private var detailPage: AgentSettingsDetailPage?
+    private let catalogState = AgentSettingsStatusField("插件列表状态")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = NSButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
@@ -49,6 +52,7 @@ import UniformTypeIdentifiers
         let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
         let actions = NSStackView(views: [enabled, NSView(), use]); actions.spacing = 8
         let footer = NSStackView(views: [state, NSView(), disableAll, history, update, source, remove]); footer.spacing = 8
+        catalogLayout = (header, actions, scrolls[1], document, footer)
         for view in [header, scrolls[0], title, metadata, actions, scrolls[1], document, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.heightAnchor.constraint(equalToConstant: 28),
@@ -62,9 +66,41 @@ import UniformTypeIdentifiers
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
+            AgentSettingsCatalog.detach(content)
+            layout.toolbar.removeArrangedSubview(settings); settings.removeFromSuperview(); layout.actions.insertArrangedSubview(settings, at: 1)
+            layout.footer.removeArrangedSubview(disableAll); disableAll.removeFromSuperview(); layout.toolbar.insertArrangedSubview(disableAll, at: max(0, layout.toolbar.arrangedSubviews.count - 1))
+            search.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
+            for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+            for constraint in layout.components.constraints where constraint.firstAttribute == .height && constraint.secondItem == nil { constraint.priority = .defaultHigh }
+            layout.components.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+            let page = AgentSettingsDetailPage(title: "插件详情", content: AgentSettingsCatalog.detail(detail))
+            page.onAppear = { [weak self] in guard let self else { return }; reload(select: selected?.id); presentingWindow?.makeFirstResponder(components) }
+            detailPage = page; catalogLayout = nil
+            state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
+            list.target = self; list.action = #selector(openSelectedPlugin); list.onOpen = { [weak self] in self?.showDetail() }
+            window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState); list.reloadData()
+        }
+        return super.settingsContent(in: host, styled: styled)
+    }
+    override var usesInternalScrolling: Bool { detailPage != nil }
+    override var minimumSettingsContentHeight: CGFloat { detailPage == nil ? super.minimumSettingsContentHeight : 220 }
+    @objc private func openSelectedPlugin() { showDetail() }
+    private func showDetail() {
+        guard selected != nil, let detailPage else { return }
+        if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
+    }
     override func settingsDidAppear() { super.settingsDidAppear(); reload(select: selected?.id); presentingWindow?.makeFirstResponder(list) }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? items.count : entries.count + connectors.count + agents.count + hooks.count + rules.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === list, detailPage != nil, items.indices.contains(row) {
+            let item = items[row]
+            return AgentSettingsCatalogCell(title: item.metadata.title, summary: item.metadata.description, symbol: "puzzlepiece.extension", status: item.enabled ? "已启用" : "已停用") { [weak self] in
+                guard let self, let index = items.firstIndex(where: { $0.id == item.id }) else { return }; open(index); showDetail()
+            }
+        }
         let label = NSTextField(labelWithString: ""); label.font = .systemFont(ofSize: 12); label.lineBreakMode = .byTruncatingTail
         if tableView === list, items.indices.contains(row) { let item = items[row]; label.stringValue = (item.enabled ? "● " : "○ ") + item.metadata.title; label.toolTip = item.metadata.name + (item.workspace.map { "\n" + $0 } ?? "") }
         else if entries.indices.contains(row) { let item = entries[row]; label.stringValue = (item.kind == .skill ? "Skill · " : "命令 · ") + item.name; label.toolTip = "/" + item.invocation }
@@ -194,7 +230,7 @@ import UniformTypeIdentifiers
             page.onApplied = { [weak self] item in
                 guard let self else { return }
                 let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
-                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?(); presentingWindow?.makeFirstResponder(list)
+                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?(); presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list)
             }
             presentSettingsChild(page)
         } catch { state.stringValue = error.localizedDescription }

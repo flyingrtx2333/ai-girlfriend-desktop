@@ -88,7 +88,10 @@ import AppKit
         try press("恢复并停用", page: stale)
         checks["pluginStaleReviewKeepsPageAndRefusesPublication"] = try pane.currentController === stale && text(stale.pageContentView).contains("插件已被其他操作修改") && plugins.installation(current.id).receiptHash == externallyChanged.receiptHash
         try press("取消", page: stale)
-        checks["pluginReviewReturnRefreshesExternallyChangedState"] = find(NSButton.self, in: manager.pageContentView, matching: { $0.title == "启用插件" })?.state == .on
+        let catalog = try control(AgentSettingsCatalogTable.self, "插件列表", page: manager); catalog.onOpen?()
+        guard let pluginEditor = pane.currentController as? AgentSettingsDetailPage else { throw PetError("插件未进入详情页") }
+        checks["pluginReviewReturnRefreshesExternallyChangedState"] = find(NSButton.self, in: pluginEditor.pageContentView, matching: { $0.title == "启用插件" })?.state == .on
+        pluginEditor.close()
         try plugins.setEnabled(externallyChanged, false); current = try plugins.installation(current.id)
         manager.review(try plugins.package(revision, of: current), replacing: current, restoring: true)
         guard let restoration = pane.currentController as? AgentPluginReviewPage else { throw PetError("缺少恢复审阅") }; try press("恢复并停用", page: restoration)
@@ -101,11 +104,13 @@ import AppKit
         let projectID = AgentPlugins.scopedID(first.metadata.name, workspace: workspace)
         current = try plugins.installation(projectID)
         checks["pluginReviewProjectInstallUsesActualProjectScope"] = current.workspace == workspace && !current.enabled && text(manager.pageContentView).contains("已安装")
-        try press("启用插件", page: manager)
+        catalog.onOpen?()
+        guard let projectEditor = pane.currentController as? AgentSettingsDetailPage else { throw PetError("项目插件未进入详情页") }
+        try press("启用插件", page: projectEditor)
         guard let activation = pane.currentController as? AgentPluginReviewPage else { throw PetError("项目启用未进入审阅子页") }
         checks["pluginReviewActivationShowsActualComponentCount"] = try control(NSTableView.self, "插件审阅列表", page: activation).numberOfRows == 6
         try press("审阅并启用", page: activation); current = try plugins.installation(projectID)
-        checks["pluginReviewActivationPreservesLocalApprovalGuard"] = current.enabled && current.locallyApproved && pane.currentController === manager
+        checks["pluginReviewActivationPreservesLocalApprovalGuard"] = current.enabled && current.locallyApproved && pane.currentController === projectEditor
         checks["pluginReviewCreatesNoVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visible
         checks["pluginReviewLeavesNormally"] = pane.leave()
         return checks

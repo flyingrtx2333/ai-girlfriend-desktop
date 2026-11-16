@@ -51,7 +51,8 @@ import AppKit
         if let onSettingsClose { onSettingsClose() } else { super.close() }
     }
     @objc func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        settingsHostWindow == nil ? nil : AgentSettingsTableRow()
+        if tableView.identifier?.rawValue == "settings-catalog" { return AgentSettingsCatalogRow() }
+        return settingsHostWindow == nil ? nil : AgentSettingsTableRow()
     }
 }
 
@@ -65,7 +66,8 @@ import AppKit
 }
 
 @MainActor final class AgentSettingsStatusField: NSTextField {
-    override var stringValue: String { didSet { isHidden = stringValue.isEmpty; toolTip = stringValue } }
+    var onChange: ((String) -> Void)?
+    override var stringValue: String { didSet { isHidden = stringValue.isEmpty; toolTip = stringValue; onChange?(stringValue) } }
     init(_ label: String) {
         super.init(frame: .zero)
         isEditable = false; isSelectable = true; isBezeled = false; drawsBackground = false
@@ -74,6 +76,92 @@ import AppKit
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal); setContentCompressionResistancePriority(.required, for: .vertical)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
+@MainActor final class AgentSettingsDetailPage: AgentSettingsPageController, NSWindowDelegate {
+    var onCanLeave: (() -> Bool)?
+    var onAppear: (() -> Void)?
+    override var minimumSettingsContentHeight: CGFloat { 220 }
+    override var usesInternalScrolling: Bool { true }
+    init(title: String, content: NSView) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = title; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false
+        super.init(window: window); window.contentView = content; window.delegate = self
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { onCanLeave?() ?? true }
+    override func settingsDidAppear() { onAppear?() }
+}
+
+@MainActor final class AgentSettingsCatalogTable: NSTableView {
+    var onOpen: (() -> Void)?
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty, [36, 76, 124].contains(event.keyCode), selectedRow >= 0, let onOpen { onOpen(); return }
+        super.keyDown(with: event)
+    }
+}
+
+@MainActor final class AgentSettingsCatalogRow: NSTableRowView {
+    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
+    override func drawBackground(in dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 4), xRadius: 10, yRadius: 10)
+        AgentThemeContext.resolve(AgentWorkbenchTheme.surface, in: self).setFill(); path.fill()
+        AgentThemeContext.resolve(isSelected ? AgentWorkbenchTheme.accent.withAlphaComponent(0.5) : AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke()
+    }
+    override func drawSelection(in dirtyRect: NSRect) {}
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+}
+
+@MainActor final class AgentSettingsCatalogCell: NSTableCellView {
+    private let open = NSButton()
+    var onOpen: (() -> Void)?
+    init(title: String, summary: String, symbol: String, status: String, onOpen: @escaping () -> Void) {
+        super.init(frame: .zero); self.onOpen = onOpen
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage()); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
+        let name = NSTextField(labelWithString: title); name.font = .systemFont(ofSize: 13); name.lineBreakMode = .byTruncatingTail
+        let description = NSTextField(labelWithString: summary); description.font = .systemFont(ofSize: 12); description.textColor = AgentWorkbenchTheme.secondaryText; description.lineBreakMode = .byTruncatingTail; description.isHidden = summary.isEmpty
+        let labels = NSStackView(views: [name, description]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
+        let state = NSTextField(labelWithString: status); state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.isHidden = status.isEmpty
+        open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.isBordered = false; open.target = self; open.action = #selector(showDetails); open.setAccessibilityLabel("配置 " + title); open.toolTip = "配置 " + title
+        imageView = icon; textField = name; toolTip = summary
+        for view in [icon, labels, state, open] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        state.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: centerYAnchor), labels.trailingAnchor.constraint(lessThanOrEqualTo: state.leadingAnchor, constant: -12),
+            name.widthAnchor.constraint(equalTo: labels.widthAnchor), description.widthAnchor.constraint(equalTo: labels.widthAnchor),
+            state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: -10), state.centerYAnchor.constraint(equalTo: centerYAnchor),
+            open.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: centerYAnchor), open.widthAnchor.constraint(equalToConstant: 24), open.heightAnchor.constraint(equalToConstant: 28)
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    @objc private func showDetails() { onOpen?() }
+}
+
+@MainActor enum AgentSettingsCatalog {
+    // Reuse each manager's controls after removing only its old split layout.
+    static func detach(_ content: NSView) {
+        NSLayoutConstraint.deactivate(content.constraints)
+        for view in content.subviews { view.removeFromSuperview() }
+    }
+    static func detail(_ content: NSView) -> NSView {
+        let root = NSView(); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
+        return root
+    }
+    static func content(table: AgentSettingsCatalogTable, toolbar: NSView, status: AgentSettingsStatusField) -> NSView {
+        let root = NSView(), scroll = table.enclosingScrollView ?? NSScrollView()
+        table.identifier = .init("settings-catalog"); table.rowHeight = 72; table.intercellSpacing = .zero; table.selectionHighlightStyle = .regular
+        scroll.identifier = .init("settings-catalog-scroll"); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
+        for view in [toolbar, scroll, status] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([
+            toolbar.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), toolbar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), toolbar.heightAnchor.constraint(equalToConstant: 28),
+            scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 14), scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8),
+            status.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor), status.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor), status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
+        ])
+        return root
+    }
 }
 
 @MainActor enum AgentSettingsStyle {
@@ -149,14 +237,18 @@ import AppKit
     }
     static func prepare(_ root: NSView) {
         func apply(_ view: NSView) {
-            if let table = view as? NSTableView { table.style = .inset; table.backgroundColor = .clear; table.rowHeight = max(32, table.rowHeight); table.intercellSpacing.height = 4 }
+            if let table = view as? NSTableView {
+                let catalog = table.identifier?.rawValue == "settings-catalog"
+                table.style = catalog ? .fullWidth : .inset; table.backgroundColor = .clear; table.rowHeight = max(32, table.rowHeight); table.intercellSpacing.height = catalog ? 0 : 4
+            }
             if let label = view as? NSTextField, view.superview is NSTableCellView { label.font = .systemFont(ofSize: 13) }
             if let scroll = view as? NSScrollView {
                 scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder
                 scroll.wantsLayer = true; scroll.layer?.cornerRadius = 9
-                scroll.layer?.borderWidth = ["hook-event-groups", "form-input"].contains(scroll.identifier?.rawValue ?? "") ? 0 : 1; scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
-                scroll.backgroundColor = .textBackgroundColor
+                scroll.layer?.borderWidth = ["hook-event-groups", "form-input", "settings-catalog-scroll"].contains(scroll.identifier?.rawValue ?? "") ? 0 : 1; scroll.layer?.borderColor = AgentWorkbenchTheme.line.cgColor
+                scroll.drawsBackground = false
             }
+            if let text = view as? NSTextView { text.drawsBackground = false; text.textColor = .labelColor }
             if let button = view as? NSButton, !(button is NSPopUpButton) { button.font = .systemFont(ofSize: 13) }
             if let popup = view as? NSPopUpButton { popup.font = .systemFont(ofSize: 13); popup.bezelColor = .textBackgroundColor }
             if let tabs = view as? NSSegmentedControl { tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent }
@@ -237,11 +329,11 @@ import AppKit
         // Short pages fill the viewport; longer pages keep their own minimum
         // height and scroll without imposing that height on the window.
         let preferredHeight = document.heightAnchor.constraint(equalTo: viewport.contentView.heightAnchor); preferredHeight.priority = .defaultLow
-        let column = NSStackView(views: [sourceRow, header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14; column.distribution = .fill
+        let column = NSStackView(views: [sourceRow, header, viewport]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10; column.distribution = .fill
         for view in [column, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor),
-            sourceRow.widthAnchor.constraint(equalTo:column.widthAnchor),sourceFolder.widthAnchor.constraint(lessThanOrEqualTo:column.widthAnchor,multiplier:0.8),sourceRow.heightAnchor.constraint(equalToConstant:30),header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 30), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
+            sourceRow.widthAnchor.constraint(equalTo:column.widthAnchor),sourceFolder.widthAnchor.constraint(lessThanOrEqualTo:column.widthAnchor,multiplier:0.8),sourceRow.heightAnchor.constraint(equalToConstant:30),header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 26), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
             document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor), preferredHeight,
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])

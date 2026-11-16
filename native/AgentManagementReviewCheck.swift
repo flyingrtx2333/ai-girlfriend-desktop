@@ -145,7 +145,7 @@ import AppKit
         checks["hookReadOnlyGrantKeepsSourceRuntimeAndCatalogUsable"] = try bytes(source) == sourceBeforeGrantFailure && service.enabled(currentHook) == wasEnabled && service.catalog(workspace: workspace).contains(where: { $0.id == currentHook.id })
         let teams = AgentTeamWindow(store: tasks, workspace: workspace)
         guard pane.show(category: "teams", identity: "inline-team-template", scope: "设置项目", make: { _ in teams }) else { throw PetError("无法进入团队模板") }
-        let originalAgents = try tasks.agents.document(), originalTeams = try tasks.teams.document(), previousName = try control(NSTextField.self, "团队名称", page: teams).stringValue
+        let originalAgents = try tasks.agents.document(), originalTeams = try tasks.teams.document(), previousSelection = try control(NSTableView.self, "Agent 团队列表", page: teams).selectedRow
         try press("审阅模板", page: teams)
         guard let template = pane.currentController as? AgentSettingsReviewPage else { throw PetError("团队模板未进入审阅子页") }
         let roles = try control(NSTableView.self, "设置审阅列表", page: template), content = try control(NSTextView.self, "设置审阅正文", page: template)
@@ -154,7 +154,7 @@ import AppKit
         for index in 0..<4 { roles.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); checks["teamTemplateCompleteInstructions-\(index)"] = content.string.contains(expectedBody[index]) && (index == 0 || content.string.contains("只读项目") && content.string.contains("不联网") && content.string.contains("跟随任务")) }
         checks["teamTemplateReviewExplainsMemberCreation"] = try control(NSTextField.self, "审阅操作影响", page: template).stringValue.contains("保存时创建三个 Agent")
         try layout(template, key: "teamTemplate", multiple: true); try press("取消", page: template)
-        checks["teamTemplateCancelWritesNothing"] = try pane.currentController === teams && tasks.agents.document().1 == originalAgents.1 && tasks.teams.document().1 == originalTeams.1 && control(NSTextField.self, "团队名称", page: teams).stringValue == previousName
+        checks["teamTemplateCancelWritesNothing"] = try pane.currentController === teams && tasks.agents.document().1 == originalAgents.1 && tasks.teams.document().1 == originalTeams.1 && control(NSTableView.self, "Agent 团队列表", page: teams).selectedRow == previousSelection
         checks["teamTemplateCancelRestoresListFocus"] = try host.firstResponder === control(NSTableView.self, "Agent 团队列表", page: teams)
         try press("审阅模板", page: teams); guard let staleTeam = pane.currentController as? AgentSettingsReviewPage else { throw PetError("缺少过期团队预览") }
         let added = AgentProfile(name: "并发新增角色", description: "独立公开验收", instructions: "只读公开资料。", tools: ["read_file"])
@@ -163,15 +163,16 @@ import AppKit
         checks["teamStaleTemplateKeepsReviewAndExternalRecord"] = try pane.currentController === staleTeam && control(NSTextField.self, "审阅操作错误", page: staleTeam).stringValue.contains("角色或团队配置已改变") && tasks.agents.document().1 == externalAgents.1 && tasks.teams.document().1 == originalTeams.1
         try press("取消", page: staleTeam); try press("审阅模板", page: teams)
         guard let accepted = pane.currentController as? AgentSettingsReviewPage else { throw PetError("缺少可载入的团队模板") }; try press("载入草稿", page: accepted)
-        let nameField = try control(NSTextField.self, "团队名称", page: teams), fieldEditor = nameField.currentEditor()
+        guard let teamEditor = pane.currentController as? AgentSettingsDetailPage else { throw PetError("团队草稿未进入配置页") }
+        let nameField = try control(NSTextField.self, "团队名称", page: teamEditor), fieldEditor = nameField.currentEditor()
         let nameFocused = host.firstResponder === nameField || (fieldEditor != nil && host.firstResponder === fieldEditor)
         let sameRoles = try tasks.agents.document().1 == externalAgents.1, sameTeams = try tasks.teams.document().1 == originalTeams.1
-        checks["teamTemplateLoadLeavesAllWritesForParentSave"] = pane.currentController === teams && sameRoles && sameTeams && nameFocused
-        let transition: [String: Any] = ["parentDisplayed": pane.currentController === teams, "roleFileUnchanged": sameRoles, "teamFileUnchanged": sameTeams, "nameFocused": nameFocused, "firstResponder": host.firstResponder.map { String(describing: type(of: $0)) } ?? "nil", "fieldEditor": fieldEditor.map { String(describing: type(of: $0)) } ?? "nil"]
+        checks["teamTemplateLoadLeavesAllWritesForParentSave"] = pane.currentController === teamEditor && sameRoles && sameTeams && nameFocused
+        let transition: [String: Any] = ["parentDisplayed": pane.currentController === teamEditor, "roleFileUnchanged": sameRoles, "teamFileUnchanged": sameTeams, "nameFocused": nameFocused, "firstResponder": host.firstResponder.map { String(describing: type(of: $0)) } ?? "nil", "fieldEditor": fieldEditor.map { String(describing: type(of: $0)) } ?? "nil"]
         try JSONSerialization.data(withJSONObject: transition, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("management-review-transitions.json"))
-        try edit("团队名称", "", page: teams); try press("保存", page: teams)
+        try edit("团队名称", "", page: teamEditor); try press("保存", page: teamEditor)
         checks["teamTemplateInvalidSaveDoesNotCreateRoles"] = try tasks.agents.document().1 == externalAgents.1 && tasks.teams.document().1 == originalTeams.1
-        try edit("团队名称", "页内团队验收", page: teams); try edit("团队职责", "保留审阅后编辑的职责", page: teams); try press("保存", page: teams)
+        try edit("团队名称", "页内团队验收", page: teamEditor); try edit("团队职责", "保留审阅后编辑的职责", page: teamEditor); try press("保存", page: teamEditor)
         guard let saved = try tasks.teams.list().first(where: { $0.name == "页内团队验收" }) else { throw PetError("模板团队未保存") }
         let all = try tasks.agents.decode(tasks.agents.document().0), members = all.filter { Set([saved.leaderID] + saved.memberIDs).contains($0.id) }
         checks["teamTemplateParentSaveCreatesExactThreeDisabledRoles"] = members.count == 3 && members.allSatisfy { $0.readOnly && !$0.network && !$0.enabled } && !saved.enabled && saved.description == "保留审阅后编辑的职责"

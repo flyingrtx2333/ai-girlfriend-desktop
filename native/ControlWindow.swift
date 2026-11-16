@@ -535,9 +535,9 @@ final class FormDocumentView: NSView {
         field.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
     }
     private func styleNavigation(_ button: NSButton, symbol: String, compact: Bool = false) {
-        button.isBordered = false; button.font = .systemFont(ofSize: compact ? 13 : 14, weight: .medium); button.alignment = .left
+        button.isBordered = false; button.font = .systemFont(ofSize: compact ? 13 : 14, weight: compact ? .regular : .medium); button.alignment = .left
         button.imagePosition = .imageLeading; button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        button.image?.size = NSSize(width: compact ? 14 : 17, height: compact ? 14 : 17); button.contentTintColor = .labelColor
+        button.image?.size = NSSize(width: compact ? 13 : 17, height: compact ? 13 : 17); button.contentTintColor = .labelColor
         button.wantsLayer = true; button.layer?.cornerRadius = compact ? 6 : 9; button.heightAnchor.constraint(equalToConstant: compact ? 30 : 38).isActive = true
     }
     private func build() {
@@ -1722,7 +1722,7 @@ final class FormDocumentView: NSView {
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
         settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.translatesAutoresizingMaskIntoConstraints = false; title.addSubview(settingsHeading)
         NSLayoutConstraint.activate([title.heightAnchor.constraint(equalToConstant: 28), settingsHeading.leadingAnchor.constraint(equalTo: title.leadingAnchor, constant: 16), settingsHeading.trailingAnchor.constraint(lessThanOrEqualTo: title.trailingAnchor, constant: -16), settingsHeading.centerYAnchor.constraint(equalTo: title.centerYAnchor)])
-        let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 24)
+        let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
         title.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true

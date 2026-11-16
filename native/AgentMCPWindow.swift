@@ -40,16 +40,17 @@ import UniformTypeIdentifiers
         search.placeholderString = "搜索连接器"; search.setAccessibilityLabel("搜索连接器"); search.target = self; search.action = #selector(filterCatalog); search.sendsSearchStringImmediately = true
         let actions = NSStackView(views: [search, NSView(), add, importButton]); actions.spacing = 8
         table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("mcp"))); table.headerView = nil
-        table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 连接器列表")
+        table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 连接器列表"); table.identifier = .init("settings-catalog")
         table.target = self; table.action = #selector(openSelectedServer); table.doubleAction = #selector(openSelectedServer)
         table.onOpen = { [weak self] in self?.openSelectedServer() }
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.drawsBackground = false; list.identifier = .init("form-input")
         empty.font = .systemFont(ofSize: 13); empty.textColor = AgentWorkbenchTheme.secondaryText
-        let index = NSStackView(views: [actions, listState, list]); index.orientation = .vertical; index.alignment = .leading; index.spacing = 12
+        let index = NSStackView(views: [actions, listState, list]); index.orientation = .vertical; index.alignment = .centerX; index.spacing = 12
         content.addSubview(index); index.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(empty); empty.translatesAutoresizingMaskIntoConstraints = false
-        for view in [actions, listState, list] { view.widthAnchor.constraint(equalTo: index.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([index.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), index.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), index.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), index.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), actions.heightAnchor.constraint(equalToConstant: 28), search.widthAnchor.constraint(lessThanOrEqualToConstant: 260), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 140), list.heightAnchor.constraint(greaterThanOrEqualToConstant: 100), empty.centerXAnchor.constraint(equalTo: list.centerXAnchor), empty.centerYAnchor.constraint(equalTo: list.centerYAnchor)])
+        for view in [actions, listState] { view.widthAnchor.constraint(equalTo: index.widthAnchor, constant: -32).isActive = true }
+        list.widthAnchor.constraint(equalTo: index.widthAnchor).isActive = true
+        NSLayoutConstraint.activate([index.leadingAnchor.constraint(equalTo: content.leadingAnchor), index.trailingAnchor.constraint(equalTo: content.trailingAnchor), index.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), index.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8), actions.heightAnchor.constraint(equalToConstant: 28), search.widthAnchor.constraint(lessThanOrEqualToConstant: 260), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 140), list.heightAnchor.constraint(greaterThanOrEqualToConstant: 100), empty.centerXAnchor.constraint(equalTo: list.centerXAnchor), empty.centerYAnchor.constraint(equalTo: list.centerYAnchor)])
 
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
@@ -145,18 +146,18 @@ import UniformTypeIdentifiers
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 80 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 72 }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { catalogRows[row].server == nil }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { catalogRows[row].server != nil }
-    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { catalogRows[row].server == nil ? NSTableRowView() : AgentMCPSettingsRow() }
+    override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { catalogRows[row].server == nil ? NSTableRowView() : AgentSettingsCatalogRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard catalogRows.indices.contains(row) else { return nil }
         guard let server = catalogRows[row].server else {
             let label = NSTextField(labelWithString: catalogRows[row].heading ?? ""); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; return label
         }
-        let name = NSTextField(labelWithString: server.name); name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingTail
-        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : server.type == "sse" ? "SSE" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 11); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
-        let labels = NSStackView(views: [name, type]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 6
+        let name = NSTextField(labelWithString: server.name); name.font = .systemFont(ofSize: 13); name.lineBreakMode = .byTruncatingTail
+        let type = NSTextField(labelWithString: (server.type == "stdio" ? "本机程序" : server.type == "sse" ? "SSE" : "HTTP") + (server.plugin.map { " · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? "")); type.font = .systemFont(ofSize: 12); type.textColor = AgentWorkbenchTheme.secondaryText; type.lineBreakMode = .byTruncatingTail
+        let labels = NSStackView(views: [name, type]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
         let status = NSTextField(labelWithString: service.status(server.id, owner: sessionOwner, workspace: workspace)); status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail; status.toolTip = status.stringValue
         let toggle = NSSwitch(); toggle.target = self; toggle.action = #selector(toggleListedServer(_:)); toggle.identifier = .init(server.id); toggle.state = server.enabled ? .on : .off; toggle.isEnabled = server.configured != false && server.pluginEnabled != false && job == nil; toggle.setAccessibilityLabel("启用连接器 " + server.name)
         let open = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)!, target: self, action: #selector(openListedServer(_:))); open.isBordered = false; open.identifier = .init(server.id); open.setAccessibilityLabel("配置连接器 " + server.name)
@@ -324,16 +325,4 @@ import UniformTypeIdentifiers
         if [36, 76, 124].contains(event.keyCode), event.modifierFlags.intersection([.command, .control, .option]).isEmpty { onOpen?(); return }
         super.keyDown(with: event)
     }
-}
-
-@MainActor private final class AgentMCPSettingsRow: NSTableRowView {
-    override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
-    override func drawBackground(in dirtyRect: NSRect) { drawCard(AgentWorkbenchTheme.surface) }
-    override func drawSelection(in dirtyRect: NSRect) { drawCard(AgentWorkbenchTheme.selection) }
-    private func drawCard(_ color: NSColor) {
-        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 4), xRadius: 12, yRadius: 12)
-        AgentThemeContext.resolve(color, in: self).setFill(); path.fill()
-        AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke()
-    }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }

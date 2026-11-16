@@ -6,7 +6,7 @@ import AppKit
     private let taskID: String?
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
-    private let table = NSTableView(), name = NSTextField(), purpose = NSTextField(), instructions = NSTextView()
+    private let table = AgentSettingsCatalogTable(), name = NSTextField(), purpose = NSTextField(), instructions = NSTextView()
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
     private let enabled = NSButton(checkboxWithTitle: "启用团队及成员", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
@@ -14,6 +14,9 @@ import AppKit
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
     private var reviewPage: AgentSettingsReviewPage?
+    private var catalogLayout: (toolbar: NSView, detail: NSView)?
+    private var detailPage: AgentSettingsDetailPage?
+    private let catalogState = AgentSettingsStatusField("团队列表状态")
     override var minimumSettingsContentHeight: CGFloat { 220 }
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil, taskID: String? = nil) {
         self.store = store; self.workspace = workspace; self.taskID = taskID; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
@@ -44,6 +47,7 @@ import AppKit
         AgentSettingsStyle.primaryAction(save)
         let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
         let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        catalogLayout = (actions, detail)
         for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
         for view in [list, actions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -53,6 +57,29 @@ import AppKit
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
+        if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
+            AgentSettingsCatalog.detach(content)
+            let page = AgentSettingsDetailPage(title: "团队配置", content: AgentSettingsCatalog.detail(layout.detail))
+            page.onCanLeave = { [weak self] in
+                guard let self, let window, windowShouldClose(window) else { return false }
+                if dirty { dirty = false; pendingAgents = []; reload() }; return true
+            }
+            page.onAppear = { [weak self] in guard let self else { return }; windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification)); presentingWindow?.makeFirstResponder(name) }
+            detailPage = page; catalogLayout = nil
+            state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
+            table.target = self; table.action = #selector(openSelectedTeam); table.onOpen = { [weak self] in self?.showDetail() }
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData()
+        }
+        return super.settingsContent(in: host, styled: styled)
+    }
+    override var usesInternalScrolling: Bool { detailPage != nil }
+    override func canLeaveSettings() -> Bool { detailPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
+    @objc private func openSelectedTeam() { showDetail() }
+    private func showDetail() {
+        guard selectedID != nil, let detailPage else { return }
+        if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
+    }
     private func sourceTask() throws -> AgentTaskRecord? { try AgentWorkspaceScope.settingsSourceTask(taskID, workspace: workspace, store: store) }
     private func availableAgents() throws -> [AgentProfile] {
         if let task = try sourceTask() { return try store.agents.list(task: task) }
@@ -66,6 +93,11 @@ import AppKit
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let value = values[row], sources = (try? store.teams.sourceWorkspaces(value).sorted()) ?? []
         let suffix = value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? (sources.count > 1 ? " · \(sources.count) 个来源" : "")
+        if detailPage != nil {
+            return AgentSettingsCatalogCell(title: (value.name.isEmpty ? "未命名团队" : value.name) + suffix, summary: value.description, symbol: "person.2", status: value.enabled ? "已启用" : "已停用") { [weak self] in
+                guard let self, !dirty else { return }; open(value.id); showDetail()
+            }
+        }
         let text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名团队" : value.name) + suffix + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = ([value.description] + sources).joined(separator: "\n"); return text
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -114,7 +146,7 @@ import AppKit
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
     @objc private func create() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
-        do { agents = try availableAgents(); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); presentingWindow?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
+        do { agents = try availableAgents(); pendingAgents = []; let value = AgentTeam(name: "", description: "", instructions: "", leaderID: agents.first?.id ?? UUID().uuidString, memberIDs: []); values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name) } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func createTemplate() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
@@ -143,7 +175,7 @@ import AppKit
                 guard !dirty, try store.agents.document().1 == originalAgents.1, try store.teams.document().1 == originalTeams.1 else { throw PetError("角色或团队配置已改变，请返回重新审阅") }
                 agents = available; pendingAgents = profiles; values.append(team); table.reloadData(); open(team.id); changed(); state.stringValue = "待保存 · 将创建 3 个 Agent"
             }
-            page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(name) }
+            page.onApplied = { [weak self] in guard let self else { return }; showDetail(); presentingWindow?.makeFirstResponder(name) }
             reviewPage = page; presentSettingsChild(page)
         } catch { state.stringValue = error.localizedDescription }
     }
