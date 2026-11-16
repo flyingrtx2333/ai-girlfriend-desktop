@@ -225,8 +225,15 @@ import WebKit
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
+                if let size = ProcessInfo.processInfo.environment["BLUEFATFISH_CHECK_WINDOW_SIZE"] {
+                    let parts = size.split(separator: "x").compactMap { Double($0) }.map { CGFloat($0) }
+                    guard parts.count == 2, let window = control.window, let screen = window.screen ?? NSScreen.main,
+                          (780...screen.visibleFrame.width).contains(parts[0]), (540...screen.visibleFrame.height).contains(parts[1]) else { throw PetError("窗口验收尺寸无效") }
+                    let visible = screen.visibleFrame
+                    window.setFrame(NSRect(x: visible.midX - parts[0] / 2, y: visible.maxY - parts[1], width: parts[0], height: parts[1]), display: true)
+                }
                 gitRemoteWindow?.showWindow(nil); gitRemoteWindow?.window?.makeKeyAndOrderFront(nil)
-                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests], "manual-ui-process-" + pid + ".json")
+                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests, "windowSize": control.window.map { [Double($0.frame.width), Double($0.frame.height)] } ?? []], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
                     mcpInput?.pollUI()
