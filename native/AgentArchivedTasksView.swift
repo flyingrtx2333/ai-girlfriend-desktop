@@ -86,6 +86,7 @@ import AppKit
             do { operationIssue = try await action(ids, archives) } catch { operationIssue = error.localizedDescription }
         }
     }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }; let item = rows[row]
         let title = NSTextField(labelWithString: item.title), detail = NSTextField(labelWithString: item.mode.title + " · " + (item.path ?? "无工作区"))
