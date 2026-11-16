@@ -49,10 +49,14 @@ import AppKit
 
 @MainActor private final class AgentDialogFieldEditor: NSTextView {
     private let editingUndo = UndoManager()
+    private let editingStorage: NSTextStorage
     override var undoManager: UndoManager? { editingUndo }
-    init() {
-        super.init(frame: .zero)
-        isFieldEditor = true; isRichText = false; allowsUndo = true
+    override init(frame: NSRect, textContainer: NSTextContainer?) {
+        editingStorage = textContainer?.layoutManager?.textStorage ?? NSTextStorage()
+        let container = textContainer ?? NSTextContainer(containerSize: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+        if textContainer == nil { let layout = NSLayoutManager(); editingStorage.addLayoutManager(layout); layout.addTextContainer(container) }
+        super.init(frame: frame, textContainer: container)
+        isFieldEditor = true; isRichText = false; allowsUndo = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
@@ -95,20 +99,22 @@ import AppKit
     let controller: AgentDialogController
     weak var owner: NSWindow?
     let overlay: NSView
-    private let fieldEditor = AgentDialogFieldEditor()
+    private let fieldEditor = AgentDialogFieldEditor(frame: .zero, textContainer: nil)
     private weak var originalView: NSView?, originalText: NSTextView?
     private var originalString: String?, originalSelection: [NSValue]?, originalScroll: NSPoint?
     private weak var originalDefault: NSButtonCell?
+    private let closeEnabled: Bool?
     private var hiddenViews: [(NSView, Bool)] = []
     private var monitor: Any?, observers: [NSObjectProtocol] = []
     private var width: NSLayoutConstraint!, height: NSLayoutConstraint!
     private var completion: ((NSApplication.ModalResponse) -> Void)?
-    private var resizing = false, finished = false
+    private var resizing = false, finished = false, focusedOnce = false
 
     init(controller: AgentDialogController, owner: NSWindow, content: NSView, completion: @escaping (NSApplication.ModalResponse) -> Void) {
         self.controller = controller; self.owner = owner; self.completion = completion
         overlay = AgentDialogBackdrop(frame: content.bounds); overlay.autoresizingMask = [.width, .height]
         originalDefault = owner.defaultButtonCell
+        closeEnabled = owner.standardWindowButton(.closeButton)?.isEnabled
         if let editor = owner.firstResponder as? NSTextView {
             originalText = editor; originalString = editor.string; originalSelection = editor.selectedRanges
             originalScroll = editor.enclosingScrollView?.contentView.bounds.origin
@@ -131,6 +137,7 @@ import AppKit
         NSLayoutConstraint.activate([card.centerXAnchor.constraint(equalTo: overlay.centerXAnchor), card.centerYAnchor.constraint(equalTo: overlay.centerYAnchor), width, height,
             card.widthAnchor.constraint(lessThanOrEqualTo: overlay.widthAnchor, constant: -32), card.heightAnchor.constraint(lessThanOrEqualTo: overlay.heightAnchor, constant: -32)])
         owner.defaultButtonCell = controller.defaultButton?.cell as? NSButtonCell
+        owner.standardWindowButton(.closeButton)?.isEnabled = false
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }; return self.keyDown(event)
         }
@@ -149,6 +156,15 @@ import AppKit
                 if let current = self.focusedView(), !current.isDescendant(of: self.controller.view) { self.focus() }
             }
         })
+        for name in [NSControl.textDidBeginEditingNotification, NSControl.textDidEndEditingNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let control = note.object as? NSControl, control.isDescendant(of: self.controller.view) else { return }
+                    if note.name == NSControl.textDidBeginEditingNotification { self.prepareFieldUndo() }
+                    else { self.fieldEditor.allowsUndo = false }
+                }
+            })
+        }
         resize(); NSApp.activate(ignoringOtherApps: true); owner.makeKeyAndOrderFront(nil); focus()
         NSAccessibility.post(element: card, notification: .layoutChanged)
     }
@@ -160,8 +176,15 @@ import AppKit
     }
     func focus() {
         guard let owner, owner.attachedSheet == nil, !finished else { return }
-        if let focus = controller.initialFocus { owner.makeFirstResponder(focus); if controller.selectInitialText { (focus as? NSTextField)?.selectText(nil) } }
+        if let current = focusedView(), current.isDescendant(of: controller.view) { return }
+        if let focus = controller.initialFocus { owner.makeFirstResponder(focus); if controller.selectInitialText && !focusedOnce { (focus as? NSTextField)?.selectText(nil) } }
         else { owner.makeFirstResponder(controller.defaultButton ?? controller.view) }
+        focusedOnce = true
+        if owner.firstResponder === fieldEditor { prepareFieldUndo() }
+    }
+    private func prepareFieldUndo() {
+        guard !fieldEditor.allowsUndo else { return }
+        fieldEditor.undoManager?.removeAllActions(); fieldEditor.allowsUndo = true
     }
     private func focusedView() -> NSView? {
         if let editor = owner?.firstResponder as? NSTextView, editor.isFieldEditor { return editor.delegate as? NSView }
@@ -216,6 +239,7 @@ import AppKit
             controller.view.removeFromSuperview(); overlay.removeFromSuperview()
             hiddenViews.forEach { $0.0.setAccessibilityHidden($0.1) }; hiddenViews.removeAll()
             owner.defaultButtonCell = originalDefault; controller.detached()
+            if let closeEnabled { owner.standardWindowButton(.closeButton)?.isEnabled = closeEnabled }
             if owner.isVisible, response != .abort, response != .OK || controller.restoreFocusOnAccept {
                 owner.makeKeyAndOrderFront(nil)
                 if let originalView, originalView.window === owner, !originalView.isHiddenOrHasHiddenAncestor {

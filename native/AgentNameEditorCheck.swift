@@ -182,15 +182,15 @@ import AppKit
 
 @MainActor private func checkDialogEditingIsolation() async throws -> [String: Bool] {
     var checks: [String: Bool] = [:], closed = 0
-    let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     owner.isReleasedWhenClosed = false
-    let root = AgentThemeView(fill: AgentWorkbenchTheme.surface), original = NSTextField(frame: NSRect(x: 20, y: 20, width: 400, height: 32))
-    original.stringValue = "原输入：中文 🧭"; root.addSubview(original)
+    let root = AgentThemeView(fill: AgentWorkbenchTheme.surface), original = NSTextView(frame: NSRect(x: 20, y: 20, width: 400, height: 100))
+    original.isRichText = false; original.string = "原输入：中文 🧭"; root.addSubview(original)
     let backgroundDefault = NSButton(title: "背景默认操作", target: nil, action: nil); root.addSubview(backgroundDefault)
     owner.contentView = root; owner.defaultButtonCell = backgroundDefault.cell as? NSButtonCell
-    owner.makeKeyAndOrderFront(nil); owner.makeFirstResponder(original); original.selectText(nil)
+    owner.makeKeyAndOrderFront(nil); owner.makeFirstResponder(original)
     defer { owner.cancelAgentDialog(); owner.close() }
-    guard let beforeEditor = original.currentEditor() as? NSTextView else { throw PetError("原输入未获得字段编辑器") }
+    let beforeEditor = original
     beforeEditor.allowsUndo = true; beforeEditor.setSelectedRange(NSRange(location: (beforeEditor.string as NSString).length, length: 0))
     beforeEditor.insertText("继续", replacementRange: beforeEditor.selectedRange()); beforeEditor.breakUndoCoalescing()
     try await Task.sleep(for: .milliseconds(50))
@@ -199,21 +199,35 @@ import AppKit
     let editor = AgentNameEditor(title: "公开隔离检查", label: "隔离名称", value: "原名称", save: { _ in }, onClose: { closed += 1 })
     editor.begin(in: owner)
     guard let dialogEditor = owner.firstResponder as? NSTextView else { throw PetError("弹窗输入未获得字段编辑器") }
+    checks["dialogStartsWithActualInitialTextAndTextContainer"] = dialogEditor.textContainer != nil && dialogEditor.string == "原名称"
     checks["dialogUsesSeparateFieldEditorAndUndoManager"] = dialogEditor !== beforeEditor && dialogEditor.undoManager !== originalUndo && originalUndo?.canUndo == true
     checks["dialogHidesBackgroundFromAccessibility"] = original.isAccessibilityHidden() && editor.view.isAccessibilityModal() && owner.agentDialog === editor && owner.attachedSheet == nil
     checks["dialogReplacesBackgroundDefaultButton"] = owner.defaultButtonCell !== backgroundDefault.cell && owner.defaultButtonCell?.title == "保存"
+    checks["dialogDisablesOwnerCloseButton"] = owner.standardWindowButton(.closeButton)?.isEnabled == false
     dialogEditor.insertText("仅弹窗修改", replacementRange: dialogEditor.selectedRange()); dialogEditor.breakUndoCoalescing()
     try await Task.sleep(for: .milliseconds(50))
     dialogEditor.undoManager?.undo()
-    checks["dialogUndoCannotChangeOriginalText"] = dialogEditor.string == "原名称" && beforeEditor.string == expected && original.stringValue == expected
+    checks["dialogUndoCannotChangeOriginalText"] = dialogEditor.string == "原名称" && beforeEditor.string == expected
+    let dialogSelection = NSRange(location: 1, length: 1); dialogEditor.setSelectedRange(dialogSelection); editor.focusDialog()
+    checks["refocusingDialogDoesNotResetCurrentSelection"] = owner.firstResponder === dialogEditor && dialogEditor.selectedRange() == dialogSelection && dialogEditor.string == "原名称"
     let other = AgentNameEditor(title: "不会嵌套", label: "第二名称", value: "", save: { _ in }, onClose: {})
     other.begin(in: owner)
     checks["secondDialogCannotReplaceActiveForm"] = owner.agentDialog === editor && !other.isVisible
     if let delegate = NSApp.delegate as? AppDelegate { checks["applicationQuitKeepsActiveDialog"] = delegate.applicationShouldTerminate(NSApp) == .terminateCancel }
     editor.cancel()
-    checks["cancelRestoresOriginalTextAndSelection"] = original.currentEditor() === beforeEditor && owner.firstResponder === beforeEditor && beforeEditor.string == expected && beforeEditor.selectedRange() == selection
+    checks["cancelRestoresOriginalTextAndSelection"] = owner.firstResponder === beforeEditor && beforeEditor.string == expected && beforeEditor.selectedRange() == selection
     checks["cancelRestoresBackgroundAccessibilityAndDefault"] = !original.isAccessibilityHidden() && owner.defaultButtonCell === backgroundDefault.cell && !owner.hasBlockingDialog && closed == 1
+    checks["cancelRestoresOwnerCloseButton"] = owner.standardWindowButton(.closeButton)?.isEnabled == true
     originalUndo?.undo()
     checks["originalUndoStillWorksAfterDialogCancellation"] = beforeEditor.string == "原输入：中文 🧭"
+    // A standard single-line field ends its native edit when focus leaves it.
+    // Preserve its value and caret; the composer above keeps its full undo stack.
+    let field = NSTextField(frame: NSRect(x: 20, y: 140, width: 400, height: 32)); field.stringValue = "保留设置字段 🧭"; root.addSubview(field)
+    owner.makeFirstResponder(field); field.selectText(nil)
+    guard let fieldEditor = field.currentEditor() as? NSTextView else { throw PetError("设置字段未获得编辑焦点") }
+    fieldEditor.setSelectedRange(selection)
+    let second = AgentNameEditor(title: "设置字段焦点", label: "临时名称", value: "临时输入", save: { _ in }, onClose: {})
+    second.begin(in: owner); second.cancel()
+    checks["stockTextFieldRetainsValueCaretAndNativeFieldEditor"] = field.currentEditor() === fieldEditor && owner.firstResponder === fieldEditor && field.stringValue == "保留设置字段 🧭" && fieldEditor.selectedRange() == selection
     return checks
 }
