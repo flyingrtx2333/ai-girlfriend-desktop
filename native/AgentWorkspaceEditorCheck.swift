@@ -173,7 +173,14 @@ import Darwin
                 checks["failedSaveKeepsEveryFieldAndOriginalConfiguration"] = try host.attachedSheet === saved && error?.stringValue.isEmpty == false && field.stringValue == "原生表单保存的工作区" && Data(contentsOf:profile.appendingPathComponent("organization.json")) == beforeFailure && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks) == configured
                 saved.contentView?.layoutSubtreeIfNeeded()
                 let note = find(NSTextField.self,saved.contentView,{$0.stringValue == "文件夹变更用于新任务。"})
-                checks["saveErrorAndSourceChangeNoteKeepPaletteAndFooterVisible"] = try fullyVisible(field) && fullyVisible(button("颜色：灰蓝",saved)) && fullyVisible(note) && fullyVisible(error) && fullyVisible(button("保存",saved)) && (saved.contentView?.bounds.height ?? .greatestFiniteMagnitude) <= host.contentLayoutRect.height-32
+                let lastColor = try button("颜色：灰蓝",saved), save = try button("保存",saved)
+                func visibility() -> [String:Bool] { ["input":fullyVisible(field),"lastColor":fullyVisible(lastColor),"sourceNote":fullyVisible(note),"error":fullyVisible(error),"save":fullyVisible(save),"withinOwner":(saved.contentView?.bounds.height ?? .greatestFiniteMagnitude) <= host.contentLayoutRect.height-32] }
+                let initial = visibility(); var settled = initial, layoutWaits = 0
+                while !settled.values.allSatisfy({$0}), layoutWaits < 100 {
+                    await wait(0.02); saved.contentView?.layoutSubtreeIfNeeded(); settled = visibility(); layoutWaits += 1
+                }
+                checks["saveErrorAndSourceChangeNoteKeepPaletteAndFooterVisible"] = settled.values.allSatisfy{$0}
+                report["saveErrorVisibility"] = ["initial":initial,"settled":settled,"layoutWaits":layoutWaits,"sheetHeight":saved.contentView?.bounds.height ?? 0,"ownerHeightLimit":host.contentLayoutRect.height-32,"views":[field,lastColor,note,error,save].compactMap{$0}.map{["bounds":NSStringFromRect($0.bounds),"visibleRect":NSStringFromRect($0.visibleRect)]}]
             }
             try button("保存",saved).performClick(nil); try await closed(host)
             checks["nativeSavePersistsAllFieldsWithoutChangingOldTaskScope"] = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.icon == .sailboat && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.color == .orange && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.primary == alpha && tasks.task(id)?.workspaceScope == scoped
