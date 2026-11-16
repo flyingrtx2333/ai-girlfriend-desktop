@@ -72,6 +72,12 @@ import AppKit
                     control.showAgentKnowledge(); try await flush()
                     checks["retryKeepsUnsupportedSourceStateExactly"] = before == (try saved().knowledge) && control.workspaceSession?.hasPendingKnowledge == true
                     checks["unsupportedKnowledgeDoesNotChangeSelectedTask"] = control.agentTaskID == fixture.first
+                } else if stage == "observe" {
+                    // A manual run may have changed selections, playback and
+                    // the unsent draft. Observe its journal without reseeding
+                    // or comparing it to the initial synthetic positions.
+                    checks["observeUsesOriginalWindowWithoutResettingUserState"] = try saved().id == fixture.window
+                    checks["observeRetainsColdOrMaterializedKnowledge"] = try saved().knowledge == nil || control.workspaceSession?.hasPendingKnowledge == true || !host.recoveryReaders.isEmpty
                 } else if stage == "direct-seed" {
                     guard let page = fixture.saved.readers.first, let selection = try AgentRecordWindow.recoveryState(page).selection else { throw PetError("缺少 Wiki 原页") }
                     control.showAgentTask(fixture.first); control.openAgentRecordItem(section: 6, value: selection)
@@ -125,7 +131,7 @@ import AppKit
                     report["video"] = media
                 }
             }
-            checks["originalUnsentDraftsRetainTheirTaskOwners"] = fixture.drafts.allSatisfy { tasks.task($0.key)?.draft == $0.value }
+            if stage != "observe" { checks["originalUnsentDraftsRetainTheirTaskOwners"] = fixture.drafts.allSatisfy { tasks.task($0.key)?.draft == $0.value } }
             checks["allPublicSourceBytesStayExact"] = fixture.hashes.allSatisfy { path, hash in (try? AgentFiles(workspace: URL(fileURLWithPath: path).deletingLastPathComponent().path).fileHash(URL(fileURLWithPath: path))) == hash }
             try await flush(); report["knowledge"] = host.checkState(); report["stage"] = stage
             report["window"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(saved()))
