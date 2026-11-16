@@ -8,6 +8,7 @@ import AppKit
     private let locate = AgentDialogButton(title: "定位差异", target: nil, action: nil)
     private let copy = AgentDialogButton(title: "复制位置", target: nil, action: nil)
     private let flow = NSPopUpButton()
+    private lazy var flowFrame = AgentSettingsPopupFrame(flow)
     private let fix = AgentDialogButton(title: "启用证书校验…", target: nil, action: nil)
     private let done = AgentDialogButton(title: "关闭", target: nil, action: nil)
     private var detailHeight: NSLayoutConstraint!
@@ -69,9 +70,9 @@ import AppKit
         flow.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); flow.cell?.lineBreakMode = .byTruncatingMiddle
         for button in [locate, copy, fix, done] { AgentDialogStyle.action(button, prominent: button === done) }
         let actions = NSStackView(views: [locate, copy, fix, NSView(), done]); actions.spacing = 8
-        let buttons = NSStackView(views: [flow, state, actions]); buttons.orientation = .vertical; buttons.alignment = .leading; buttons.spacing = 8
+        let buttons = NSStackView(views: [flowFrame, state, actions]); buttons.orientation = .vertical; buttons.alignment = .leading; buttons.spacing = 8
         actions.widthAnchor.constraint(equalTo: buttons.widthAnchor).isActive = true
-        flow.widthAnchor.constraint(lessThanOrEqualTo: buttons.widthAnchor).isActive = true
+        flowFrame.widthAnchor.constraint(lessThanOrEqualTo: buttons.widthAnchor).isActive = true
 
         let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
         window.contentView = content
@@ -94,7 +95,16 @@ import AppKit
         table.reloadData()
         if numberOfRows(in: table) > 0 { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
         updateSelection()
-        AgentSettingsStyle.listState(table, text: report.scannedFiles == 0 ? "没有可检查的文本文件" : "未发现匹配项")
+        let empty = NSTextField(wrappingLabelWithString: report.scannedFiles == 0 ? "没有可检查的文本文件" : "未发现匹配项")
+        empty.identifier = .init("settings-list-empty")
+        empty.font = .systemFont(ofSize: 13); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.alignment = .center
+        empty.isHidden = numberOfRows(in: table) > 0
+        empty.translatesAutoresizingMaskIntoConstraints = false; list.addSubview(empty)
+        NSLayoutConstraint.activate([
+            empty.leadingAnchor.constraint(equalTo: list.contentView.leadingAnchor, constant: 12),
+            empty.trailingAnchor.constraint(equalTo: list.contentView.trailingAnchor, constant: -12),
+            empty.centerYAnchor.constraint(equalTo: list.contentView.centerYAnchor)
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -149,7 +159,7 @@ import AppKit
         fix.isHidden = !(finding.map { report.canFix($0) } ?? false) || onFix == nil
         flow.removeAllItems()
         let trace = finding?.trace ?? []
-        flow.isHidden = trace.isEmpty
+        flowFrame.isHidden = trace.isEmpty
         flow.addItems(withTitles: trace.map { "\($0.label) · \($0.path):\($0.line)" })
         if !trace.isEmpty { flow.selectItem(at: trace.count - 1) }
         updateDetails()
@@ -219,7 +229,7 @@ import AppKit
             "detail": detail.string, "detailViewport": [Double(detailScroll.contentSize.width), Double(detailScroll.contentSize.height)],
             "detailDocument": [Double(detail.bounds.width), Double(detail.bounds.height)],
             "detailOrigin": [Double(detailScroll.contentView.bounds.origin.x), Double(detailScroll.contentView.bounds.origin.y)],
-            "flowVisible": !flow.isHidden, "flowValue": flow.titleOfSelectedItem ?? "",
+            "flowVisible": !flowFrame.isHidden, "flowValue": flow.titleOfSelectedItem ?? "",
             "state": state.stringValue,
             "actions": [locate, copy, fix, done].filter { !$0.isHidden }.map { button -> [String: Any] in
                 let frame = button.convert(button.bounds, to: content)

@@ -87,8 +87,13 @@ import AppKit
             review.presentSettingsChild(cleanPage); owner.contentView?.layoutSubtreeIfNeeded(); cleanPage.pageDidLayout()
             let empty = cleanPage.pageContentView.map(views)?.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "settings-list-empty" }
             checks["cleanReportHasVisibleResultInsteadOfBlankTable"] = clean.findings.isEmpty && clean.skipped.isEmpty && empty?.stringValue == "未发现匹配项" && empty?.isHidden == false
+            if let empty, let list = empty.superview as? NSScrollView, let header = (list.documentView as? NSTableView)?.headerView {
+                let frame = empty.convert(empty.bounds, to: list)
+                checks["cleanResultFitsBelowTableHeader"] = list.contentView.frame.contains(frame) && !header.convert(header.bounds, to: list).intersects(frame)
+            } else { checks["cleanResultFitsBelowTableHeader"] = false }
             checks["cleanReportDisablesLocationActions"] = try !button("定位差异", in: cleanPage).isEnabled && !button("复制位置", in: cleanPage).isEnabled
             checks["noModelRequestsOrReceipts"] = requests == 0 && tasks.tasks.allSatisfy { $0.modelReceipts?.isEmpty != false && $0.inputTokens == 0 && $0.outputTokens == 0 }
+            try button("返回审阅", in: cleanPage).performClick(nil)
         } catch { result["error"] = error.localizedDescription }
         if let cleanupReview { await cleanupReview.checkWorkspace(message: "") }
         agentRuntime?.stopAll()
