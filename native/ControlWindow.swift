@@ -370,8 +370,8 @@ final class FormDocumentView: NSView {
             window.backgroundColor = AgentThemeContext.resolve(AgentWorkbenchTheme.sidebar, window: window)
             sendButton.layer?.backgroundColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.primary, window: window).cgColor
             sendButton.contentTintColor = AgentThemeContext.resolve(companion?.usesAgent == true ? AgentWorkbenchTheme.accentText : AgentWorkbenchTheme.primaryText, window: window)
-            generalSettingsSave?.layer?.backgroundColor = AgentWorkbenchTheme.primary.cgColor
-            generalSettingsSave?.contentTintColor = AgentWorkbenchTheme.primaryText
+            generalSettingsSave?.bezelColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, window: window)
+            generalSettingsSave?.contentTintColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accentText, window: window)
             for (index, button) in categoryButtons.enumerated() {
                 let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
@@ -602,7 +602,7 @@ final class FormDocumentView: NSView {
         window.isMovableByWindowBackground = true
         let content = SidebarBackground(); content.wantsLayer = true; window.contentView = content
         workbenchSidebar.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(workbenchSidebar)
-        workbenchSidebarWidth = workbenchSidebar.widthAnchor.constraint(equalToConstant: 231)
+        workbenchSidebarWidth = workbenchSidebar.widthAnchor.constraint(equalToConstant: 252)
         NSLayoutConstraint.activate([workbenchSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), workbenchSidebar.topAnchor.constraint(equalTo: content.topAnchor), workbenchSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor), workbenchSidebarWidth])
         let icon = NSImageView(image: NSImage(systemSymbolName: "fish", accessibilityDescription: "小鲸")!)
         icon.contentTintColor = AgentWorkbenchTheme.accent; icon.imageScaling = .scaleProportionallyUpOrDown; icon.widthAnchor.constraint(equalToConstant: 33).isActive = true; icon.heightAnchor.constraint(equalToConstant: 25).isActive = true
@@ -654,11 +654,10 @@ final class FormDocumentView: NSView {
         let footer = stack([AgentWorkbenchTheme.rule(), sidebarLower, sidebarMore, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
         for view in [sidebarLower as NSView, sidebarMore, settingsNav] { view.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         chatSidebarViews = [workbenchSidebar]
-        let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 0
+        let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 16; main.layer?.masksToBounds = true; main.layer?.borderWidth = 1
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
-        sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 231)
-        let leftRule = AgentThemeView(fill: AgentWorkbenchTheme.line); content.addSubview(leftRule); leftRule.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor), main.topAnchor.constraint(equalTo: content.topAnchor), main.bottomAnchor.constraint(equalTo: content.bottomAnchor), leftRule.leadingAnchor.constraint(equalTo: main.leadingAnchor), leftRule.widthAnchor.constraint(equalToConstant: 1), leftRule.topAnchor.constraint(equalTo: content.topAnchor), leftRule.bottomAnchor.constraint(equalTo: content.bottomAnchor), brand.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: workbenchSidebar.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: workbenchSidebar.trailingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: workbenchSidebar.bottomAnchor, constant: -24)])
+        sidebarWidth = main.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 252)
+        NSLayoutConstraint.activate([sidebarWidth, main.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -4), main.topAnchor.constraint(equalTo: content.topAnchor, constant: 4), main.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -4), brand.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 20), brand.topAnchor.constraint(equalTo: workbenchSidebar.topAnchor, constant: 55), taskSidebar.leadingAnchor.constraint(equalTo: workbenchSidebar.leadingAnchor, constant: 16), taskSidebar.trailingAnchor.constraint(equalTo: workbenchSidebar.trailingAnchor, constant: -15), taskSidebar.topAnchor.constraint(equalTo: brand.bottomAnchor, constant: 22), taskSidebar.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12), footer.leadingAnchor.constraint(equalTo: taskSidebar.leadingAnchor), footer.trailingAnchor.constraint(equalTo: taskSidebar.trailingAnchor), footer.bottomAnchor.constraint(equalTo: workbenchSidebar.bottomAnchor, constant: -24)])
         for (button, label, symbol, action) in [(taskBack, "上一个任务", "chevron.left", #selector(previousAgentTask)), (taskForward, "下一个任务", "chevron.right", #selector(nextAgentTask)), (taskMore, "任务操作", "ellipsis", #selector(showTaskMenu(_:)))] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol); button.target = self; button.action = action
         }
@@ -810,11 +809,11 @@ final class FormDocumentView: NSView {
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty || task.skillEvolutionJob != nil
         let monitorContent = makeMonitorContent(task), monitorState = taskMonitorState(task.id)
         let hasRecords = monitorContent.hasContent
-        workbenchSidebarWidth.constant = width < 900 ? 218 : 231
+        workbenchSidebarWidth.constant = width < 900 ? 218 : 252
         let settingsWidth: CGFloat = width < 980 ? 180 : 252
         sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
         taskWorkspace.selectTask(task.id)
-        let showWorkspace = chatting && taskWorkspace.requested, remaining = width - sidebarWidth.constant
+        let showWorkspace = chatting && taskWorkspace.requested, remaining = max(0, width - sidebarWidth.constant - 4)
         let fullWorkspace = showWorkspace && (taskWorkspace.expanded || remaining < 920)
         let showInspector = chatting && !showWorkspace && monitorState.presentation == .fixed && monitorState.visible && (hasRecords || monitorState.explicitVisibility) && (width >= 1080 || monitorState.explicitVisibility)
         let fullMonitor = showInspector && width < 1080
@@ -835,7 +834,7 @@ final class FormDocumentView: NSView {
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
         sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
         let maximum = companion?.contentAppearance.settings.contentWidth.maximum ?? AgentContentWidth.standard.maximum
-        let columnInset = max(18, (width - sidebarWidth.constant - (fullWorkspace || fullMonitor ? 0 : target) - maximum) / 2)
+        let columnInset = max(18, (remaining - (fullWorkspace || fullMonitor ? 0 : target) - maximum) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
@@ -870,7 +869,7 @@ final class FormDocumentView: NSView {
         let hasMCP = (try? companion?.agentStore?.mcp.availableServers(task: task))?.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
         taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
         let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
-        let available = width - sidebarWidth.constant - target - columnInset * 2 - 22
+        let available = remaining - target - columnInset * 2 - 22
         entryToolbarHeight.constant = available < preferred ? 64 : 34
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target; self.inspectorPreferredWidth.constant = target }

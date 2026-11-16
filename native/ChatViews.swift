@@ -17,6 +17,7 @@ final class ContentSurface: NSView {
     var usesWorkbenchSurface = false { didSet { needsDisplay = true } }
     override func draw(_ dirtyRect: NSRect) {
         AgentThemeContext.resolve(showsSettings ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface, in: self).setFill(); bounds.fill()
+        if usesWorkbenchSurface { layer?.borderColor = AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).withAlphaComponent(0.6).cgColor }
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true; onAppearanceChange?() }
 }

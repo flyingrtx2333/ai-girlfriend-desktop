@@ -30,7 +30,7 @@ import AppKit
         board.onClick = { [weak self] in guard let self, kind != nil else { return }; if !running && !ended { activate() } }
         for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification] { NotificationCenter.default.addObserver(self, selector: #selector(inactive), name: name, object: nil) }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentHomeGames.changed, object: service)
-        heightAnchor.constraint(equalToConstant: 178).isActive = true; refresh()
+        heightAnchor.constraint(equalToConstant: 194).isActive = true; refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { timer?.invalidate(); dwell?.invalidate(); NotificationCenter.default.removeObserver(self) }
@@ -68,11 +68,11 @@ import AppKit
         if kind != nil { detail.frame = .init(x:122,y:10,width:max(0,width - 172),height:20); detail.font = .systemFont(ofSize:10) } else { detail.font = .systemFont(ofSize:11) }
         back.frame = .init(x: 12,y: 8,width: 100,height: 24); sound.frame = .init(x: width - 42,y: 8,width: 26,height: 24)
         board.frame = .init(x: 16,y: 36,width: max(0,width - 32),height: 100)
-        footer.frame = .init(x: 16,y: 146,width: max(0,width - 140),height: 18)
-        action.frame = .init(x: max(16,width - 116),y: 143,width: 100,height: 24)
+        footer.frame = .init(x: 16,y: 164,width: max(0,width - 140),height: 18)
+        action.frame = .init(x: max(16,width - 116),y: 161,width: 100,height: 24)
         issue.frame = .init(x: 122,y: 10,width: max(0,width - (reload.isHidden ? 172 : 260)),height: 20)
         reload.frame = .init(x: width - 132,y: 8,width: 88,height: 24)
-        if invitation == nil { entry.frame = .init(x: max(16,width - 100),y:143,width:84,height:24) }
+        if invitation == nil { entry.frame = .init(x: max(16,width - 100),y:161,width:84,height:24) }
         else { let cell = board.rect(.init(x: 45,y: 3)); entry.frame = cell.offsetBy(dx: board.frame.minX - 3,dy: board.frame.minY - 3).insetBy(dx: -3,dy: -3) }
         let limited = width < 360
         if narrow != limited { narrow = limited; if narrow { pause() }; refresh() }
@@ -86,6 +86,18 @@ import AppKit
         }
     }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); applyColors(); board.needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard kind == nil else { return }
+        let formatter = DateFormatter(); formatter.setLocalizedDateFormatFromTemplate("MMM")
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: AgentThemeContext.resolve(AgentWorkbenchTheme.secondaryText, in: self)]
+        let calendar = Calendar.current, today = Date()
+        for (index, date) in dates.enumerated() where date <= today && calendar.component(.day, from: date) == 1 {
+            let text = formatter.string(from: date) as NSString, size = text.size(withAttributes: attributes)
+            let x = min(bounds.width - size.width - 16, board.frame.minX + board.rect(.init(x: index / 7, y: 0)).minX)
+            text.draw(at: NSPoint(x: x, y: 138), withAttributes: attributes)
+        }
+    }
     private var score: Int { snake?.score ?? blocks?.score ?? 0 }
     private func rewards() -> [AgentGamePoint: Int] {
         var value: [AgentGamePoint:Int] = [:]
@@ -161,10 +173,11 @@ import AppKit
         } else {
             board.game = nil; board.overlay = nil; board.values = dates.map { $0 > today ? -1 : service.activity[$0,default:0] }
             header.stringValue = "活动"; detail.stringValue = "\(dates.filter { $0 <= today && service.activity[$0,default:0] > 0 }.count) 个活跃日"
-            footer.stringValue = service.activityLoading ? "正在读取活动…" : "已记录的活跃任务"; footer.toolTip = nil
+            footer.stringValue = service.activityLoading ? "正在读取活动…" : ""; footer.toolTip = nil
             board.setAccessibilityLabel("任务活动热力图"); board.setAccessibilityValue(detail.stringValue); board.toolTip = nil
         }
-        action.toolTip = kind?.instruction; board.needsDisplay = true; needsLayout = true; refreshTooltips()
+        footer.isHidden = footer.stringValue.isEmpty
+        action.toolTip = kind?.instruction; board.needsDisplay = true; needsDisplay = true; needsLayout = true; refreshTooltips()
     }
     private func refreshTooltips() {
         board.removeAllToolTips(); guard kind == nil else { return }
