@@ -85,6 +85,7 @@ import AppKit
             checks["inlineStageUsesActualIndex"] = try await rawGit(["show", ":stage-only.txt"]) == "stage-this-file\n"
             await git.checkWorkspace(source: .staged, path: "stage-only.txt", action: "unstage")
             checks["inlineUnstagePreservesWorkingBytes"] = try await rawGit(["show", ":stage-only.txt"]) == "original-stage\n" && String(contentsOf: fixture.workspace.appendingPathComponent("stage-only.txt"), encoding: .utf8) == "stage-this-file\n"
+            checks.merge(try await checkGitRestorePermissions(fixture, tasks: tasks)) { _, value in value }
             await git.checkWorkspace(source: .staged, path: "review.txt", message: "")
             guard let reviewContent = git.pageContentView,
                   let commitMessage = gitReviewSubviews(reviewContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "Git 提交说明" }),
@@ -124,6 +125,40 @@ import AppKit
     }
 
     private func gitReviewSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(gitReviewSubviews) }
+
+    private func checkGitRestorePermissions(_ fixture: GitWorkspaceFixture, tasks: AgentStore) async throws -> [String: Bool] {
+        let git = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.workspace.path))
+        let path = "stage-only.txt", file = fixture.workspace.appendingPathComponent(path)
+        let original = try git.files.readData(file), originalMode = try git.files.entryMetadata(file).permissions
+        let index = try await git.output(["ls-files", "--stage", "-z", "--", path])
+        var checks: [String: Bool] = [:]
+        func undo(_ result: AgentGitFileResult) throws {
+            guard let checkpoint = tasks.task(fixture.taskID)?.changes.first(where: { $0.id == result.checkpointID }) else { throw PetError("权限恢复检查点不存在") }
+            try AgentChanges.restore(checkpoint, taskID: fixture.taskID, store: tasks)
+        }
+        for mode in [0o600, 0o700] {
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+            let result = try await git.apply(.restore, inspection: git.inspect(source: .unstaged, revision: "", requested: [path]))
+            let restoredMode = try git.files.entryMetadata(file).permissions
+            let actualIndex = try await git.output(["ls-files", "--stage", "-z", "--", path])
+            checks["restoreMode\(mode)KeepsPrivacyAndIndexExecutableState"] = try restoredMode == 0o600 && git.files.readData(file) == Data("original-stage\n".utf8) && actualIndex == index
+            try undo(result)
+            checks["undoRestoreMode\(mode)RecoversOriginalBytesAndPermissions"] = try git.files.readData(file) == original && git.files.entryMetadata(file).permissions == mode
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
+        _ = try await git.apply(.stage, inspection: git.inspect(source: .unstaged, revision: "", requested: [path]))
+        let privateWorking = Data("private executable working version\n".utf8)
+        try git.files.writeData(privateWorking, to: file, permissions: 0o600)
+        let executable = try await git.apply(.restore, inspection: git.inspect(source: .unstaged, revision: "", requested: [path]))
+        checks["restoreExecutableIndexAddsOnlyPrivateExecuteBit"] = try git.files.entryMetadata(file).permissions == 0o700 && git.files.readData(file) == original
+        try undo(executable)
+        checks["undoExecutableRestoreRecoversPrivateNonExecutableVersion"] = try git.files.entryMetadata(file).permissions == 0o600 && git.files.readData(file) == privateWorking
+        _ = try await git.apply(.unstage, inspection: git.inspect(source: .staged, revision: "", requested: [path]))
+        try git.files.writeData(original, to: file, permissions: originalMode ?? 0o644)
+        let finalIndex = try await git.output(["ls-files", "--stage", "-z", "--", path])
+        checks["permissionCasesPreserveOriginalIndexAndWorkingFile"] = try finalIndex == index && git.files.readData(file) == original && git.files.entryMetadata(file).permissions == originalMode
+        return checks
+    }
 
     private func checkGitReviewVisuals(_ page: AgentGitWindow, workspace: URL, output: URL) async throws -> [String: Bool] {
         guard let owner = control.window, let content = page.pageContentView else { throw PetError("Git 实际任务窗口不可用") }

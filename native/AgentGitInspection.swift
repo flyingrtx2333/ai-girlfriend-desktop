@@ -150,9 +150,26 @@ struct AgentGitFileResult { var checkpointID: String?; var trashedPath: String? 
                 throw error
             }
             guard !result.failed else { throw PetError(result.text) }
+            let restored = try files.entryMetadata(url)
             checkpoint.afterHash = AgentFiles.hash(try files.readData(url))
+            checkpoint.afterPermissions = restored.permissions
             store.update(taskID) { record in if let i = record.changes.firstIndex(where: { $0.id == checkpoint.id }) { record.changes[i] = checkpoint } }
             guard store.writeError == nil else { throw PetError("文件已恢复，检查点保存失败：" + (store.writeError ?? "")) }
+            if let previous = checkpoint.permissions, let current = restored.permissions {
+                // Git tracks the owner's executable bit, not the file's read/write
+                // access. Keep private modes while honoring an executable change.
+                var permissions = previous
+                if (previous & 0o100) != (current & 0o100) {
+                    permissions = current & 0o100 == 0 ? previous & ~0o111 : previous | ((previous & 0o444) >> 2)
+                }
+                if permissions != current {
+                    try files.copyFile(url, from: files, to: url, permissions: permissions,
+                        expectedHash: checkpoint.afterHash, expectedTarget: restored.signature)
+                    checkpoint.afterPermissions = permissions
+                    store.update(taskID) { record in if let i = record.changes.firstIndex(where: { $0.id == checkpoint.id }) { record.changes[i] = checkpoint } }
+                    guard store.writeError == nil else { throw PetError("文件权限已保留，检查点保存失败：" + (store.writeError ?? "")) }
+                }
+            }
             return AgentGitFileResult(checkpointID: checkpoint.id)
         }
         guard !result.failed else { throw PetError(result.text) }
