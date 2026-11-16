@@ -3037,6 +3037,7 @@ final class FormDocumentView: NSView {
             if let git = page as? AgentGitWindow { value["git-" + git.boundTaskID] = git.workspaceReadback() }
             if let push = page as? AgentGitPushWindow, push.isPageVisible { value["push"] = push.workspaceReadback() }
             if let security = page as? AgentCodeSecurityWindow, security.isPageVisible { value["security"] = security.workspaceReadback() }
+            if let dependency = page as? AgentDependencyWindow, dependency.isPageVisible { value["dependency"] = dependency.workspaceReadback() }
         }
         return value
     }

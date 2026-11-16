@@ -45,6 +45,7 @@ import WebKit
         if CommandLine.arguments.contains("--code-security-check") { await runCodeSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--security-report-check") { await runSecurityReportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--dependency-security-check") { await runDependencySecurityCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--dependency-report-check") { await runDependencyReportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
