@@ -2096,7 +2096,7 @@ final class FormDocumentView: NSView {
             let alert = AgentConfirmation(); alert.messageText = unsafe ? "保留这个侧任务后再关闭？" : "关闭临时侧任务？"
             alert.informativeText = unsafe ? "文件记录尚未完成，请保留任务以便检查和恢复。" : "这份侧任务及其子任务的对话、草稿、附件不会保留。项目文件保持当前状态。"
             if !unsafe { alert.addButton(withTitle: "关闭并移除").hasDestructiveAction = true }; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "保留为任务")
-            let answer = alert.runModal()
+            let answer = alert.runModal(for: window)
             if answer == (unsafe ? .alertSecondButtonReturn : .alertThirdButtonReturn) {
                 do { try companion?.agentStore?.sideTasks.keepAsTask(id); sideTaskTabID = nil; return await finishPreparedOwnedTaskPanels() } catch { setStatus(error.localizedDescription, error: true); return false }
             }
@@ -2653,7 +2653,7 @@ final class FormDocumentView: NSView {
             if action == "remove", let id {
                 let alert = AgentConfirmation(); alert.addButton(withTitle: "删除分组").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
                 alert.messageText = "删除“\(existing!.name)”分组？"; alert.informativeText = "任务会保留在未分组会话中。"
-                guard alert.runModal() == .alertFirstButtonReturn else { return }; try tasks.organization.removeCustomGroup(id, mode: mode)
+                guard alert.runModal(for: window) == .alertFirstButtonReturn else { return }; try tasks.organization.removeCustomGroup(id, mode: mode)
             } else {
                 let revision = tasks.organization.revision
                 editName(title: id == nil ? "新建分组" : "重命名分组", label: "分组名称", value: existing?.name ?? "") { name in
@@ -2808,7 +2808,7 @@ final class FormDocumentView: NSView {
             let alert = AgentConfirmation(); alert.messageText = origin.source.title + "导入记录"
             alert.informativeText = "原工作目录：" + (origin.originalWorkspace ?? "无") + "\n来源：" + origin.sourceFile + (origin.warnings.isEmpty ? "" : "\n" + origin.warnings.joined(separator: "\n"))
             alert.addButton(withTitle: "来源副本"); alert.addButton(withTitle: "关闭")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if alert.runModal(for: window) == .alertFirstButtonReturn {
                 do { NSWorkspace.shared.activateFileViewerSelecting([try tasks.dataImport.sourceURL(id)]) } catch { setStatus(error.localizedDescription, error: true) }
             }
         case "fork":
@@ -2841,7 +2841,7 @@ final class FormDocumentView: NSView {
         let names = plan.workspaceTitles + plan.titles
         alert.informativeText = names.joined(separator: "\n") + "\n\n对话、草稿、任务附件和检查点将不可恢复。项目文件和 Git 工作树保留。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "永久删除"); alert.buttons[1].hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return nil }
+        guard alert.runModal(for: window) == .alertSecondButtonReturn else { return nil }
         try companion?.requireTaskDeletionAllowed(plan.ids)
         let issue = try await store.permanentlyDelete(plan)
         companion?.closeDeletedTaskWindows(plan.ids)
@@ -2957,7 +2957,7 @@ final class FormDocumentView: NSView {
             let directory = try AgentGit.metadata(workspace: source.workspace)
             if !directory.path.hasPrefix((source.workspace ?? "") + "/"), source.gitDirectory != directory.path {
                 let alert = AgentConfirmation(); alert.messageText = "连接 Git 仓库元数据？"; alert.informativeText = directory.path; alert.addButton(withTitle: "连接"); alert.addButton(withTitle: "取消")
-                guard alert.runModal() == .alertFirstButtonReturn else { return }; tasks.update(source.id) { $0.gitDirectory = directory.path }
+                guard alert.runModal(for: window) == .alertFirstButtonReturn else { return }; tasks.update(source.id) { $0.gitDirectory = directory.path }
             }
             showAgentGit()
             guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(), let parent = taskWorkspace.currentController else { return }

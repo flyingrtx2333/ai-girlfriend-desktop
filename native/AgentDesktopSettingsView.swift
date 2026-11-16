@@ -35,7 +35,7 @@ import ApplicationServices
         let next = enabled.state == .on
         if next {
             let alert = AgentConfirmation(); alert.messageText = "启用电脑操作？"; alert.informativeText = "连接窗口时仍需确认。批准后，指定窗口的截图和文字会进入当前模型上下文，点击与输入会直接影响该应用。"; alert.addButton(withTitle: "启用"); alert.addButton(withTitle: "取消")
-            guard alert.runModal() == .alertFirstButtonReturn else { enabled.state = .off; return }
+            guard alert.runModal(for: window) == .alertFirstButtonReturn else { enabled.state = .off; return }
         }
         do { try desktop.configure(enabled: next, expectedHash: configurationHash); refreshState() } catch { status.stringValue = error.localizedDescription }
     }

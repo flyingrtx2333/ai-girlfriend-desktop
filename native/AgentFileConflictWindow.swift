@@ -118,7 +118,7 @@ struct AgentFileConflictSnapshot {
         let alert = AgentConfirmation(); alert.messageText = resolution == .disk ? "采用磁盘版本并放弃草稿？" : "用我的草稿覆盖磁盘文件？"
         alert.informativeText = resolution == .disk ? "当前未保存的修改会丢失。" : "磁盘版本会保留在任务的修改检查点中。"
         alert.addButton(withTitle: "取消"); alert.addButton(withTitle: resolution == .disk ? "采用磁盘版本" : "覆盖文件").hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard alert.runModal(for: presentingWindow) == .alertSecondButtonReturn else { return }
         resolving = true; updateActions(); state.stringValue = resolution == .disk ? "正在采用磁盘版本…" : "正在保存…"
         job = Task { [weak self] in
             guard let self else { return }

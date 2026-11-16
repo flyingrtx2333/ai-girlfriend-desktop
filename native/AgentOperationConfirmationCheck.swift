@@ -14,7 +14,7 @@ import AppKit
         control.showAgentTask(id)
     }
     func runOperationConfirmationCheck(_ output: URL) async {
-        var checks: [String: Bool] = [:], report: [String: Any] = [:], dialogs: [[String: Any]] = [], requests = 0
+        var checks: [String: Bool] = [:], report: [String: Any] = [:], dialogs: [[String: Any]] = [], observedOwners: [[String: Any]] = [], requests = 0
         let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false), pane = AgentSettingsPageHost()
         host.contentView = pane; host.isReleasedWhenClosed = false
         var comparison: AgentFileConflictWindow?
@@ -28,10 +28,16 @@ import AppKit
         }
         func probe(_ choice: String, owner: NSWindow, _ action: () async throws -> Void) async throws {
             var clicked = false, expired = false
+            var observed = Set<Int>()
             let limit = Date().addingTimeInterval(8)
             let timer = Timer(timeInterval: 0.02, repeats: true) { timer in
                 MainActor.assumeIsolated {
                     guard !clicked else { return }
+                    for actualOwner in NSApp.windows {
+                        if let dialog = actualOwner.agentDialog, observed.insert(actualOwner.windowNumber).inserted {
+                            observedOwners.append(["choice": choice, "expectedWindow": owner.windowNumber, "actualWindow": actualOwner.windowNumber, "actualTitle": actualOwner.title, "dialogTitle": dialog.title ?? "", "modal": NSApp.modalWindow === actualOwner])
+                        }
+                    }
                     if let window = owner.agentDialog, let selected = find(NSButton.self, window.view, matching: { $0.title == choice }) {
                         clicked = true; var text: [String] = [], titles: [String] = [], destructive: [String] = []
                         func collect(_ view: NSView) {
@@ -66,7 +72,10 @@ import AppKit
             mcp.selectServer(server.id)
             guard let detail = pane.currentController, detail !== mcp else { throw PetError("未进入连接器详情") }
             checks["removeUsesInlineConnectorDetail"] = detail.settingsHostWindow === host && detail.window?.isVisible != true
+            control.window?.makeKeyAndOrderFront(nil); await wait(0.05)
+            let anotherWindowWasKey = NSApp.keyWindow === control.window && NSApp.keyWindow !== host
             try await probe("取消", owner: host) { try button("移除", detail.pageContentView).performClick(nil) }
+            checks["confirmationUsesTriggerWindowWhenAnotherWindowWasKey"] = anotherWindowWasKey && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == true
             checks["synchronousRemoveCancelPreservesActualMCPConfiguration"] = try Data(contentsOf: config) == configBytes && tasks.mcp.availableServers(workspace: workspace).map(\.id) == serverIDs
             guard pane.leave() else { throw PetError("连接器确认未能结束") }
             let rules = AgentRuleWindow(store: tasks, taskID: id); try show(rules, "rules")
@@ -111,7 +120,7 @@ import AppKit
             checks["destructiveConfirmationsUseSafeReturnDefault"] = dialogs.filter { ($0["destructiveButtons"] as? [String])?.isEmpty == false }.allSatisfy { !(($0["destructiveButtons"] as? [String]) ?? []).contains($0["default"] as? String ?? "") }
             checks["noModelRequestsAndOriginalConversationDraftRetained"] = requests == 0 && tasks.task(id)?.draft == "保留操作确认验收输入" && tasks.tasks.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 && $0.modelReceipts?.isEmpty != false }
         } catch { report["error"] = error.localizedDescription }
-        report["checks"] = checks; report["dialogs"] = dialogs; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["modelRequests"] = requests; report["appPID"] = getpid()
+        report["checks"] = checks; report["dialogs"] = dialogs; report["observedOwners"] = observedOwners; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("operation-confirmation-report.json"))
     }
 }
