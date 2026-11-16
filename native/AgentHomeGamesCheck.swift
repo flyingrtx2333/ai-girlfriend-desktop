@@ -100,7 +100,7 @@ import Darwin
             checks["nativeChoiceSavesWithoutModal"] = generalSettings.settings.homeGame == .snake && control.window?.attachedSheet == nil
             checks["gamePreferenceDoesNotModifyTasks"] = try [coding,general,history].enumerated().allSatisfy { try Data(contentsOf:tasks.directory.appendingPathComponent($0.element + ".json")) == original[$0.offset] }
             control.showAgentTask(coding); control.show(tab:"chat")
-            for (label,size) in [("normal",NSSize(width:1200,height:774)),("narrow",NSSize(width:780,height:540))] {
+            for (label,size) in [("normal",NSSize(width:1200,height:774)),("narrow",NSSize(width:780,height:540)),("short",NSSize(width:1320,height:540))] {
                 control.window?.setContentSize(size); control.window?.contentView?.layoutSubtreeIfNeeded(); await wait(0.03)
                 let state = control.homeGamesReadback(), board = state["board"] as? [CGFloat] ?? []
                 checks[label + "HeatmapFitsWindow"] = board.count == 2 && board[0] >= 400 && board[1] >= 60 && board[1] <= 100 && state["visible"] as? Bool == true && control.window?.contentView?.bounds.size == size

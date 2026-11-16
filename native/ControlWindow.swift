@@ -769,6 +769,7 @@ final class FormDocumentView: NSView {
         NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
         heading.setContentCompressionResistancePriority(.required, for: .vertical)
+        heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         heading.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil); heading.imagePosition = .imageTrailing; heading.target = self; heading.action = #selector(chooseExecutor); heading.setAccessibilityLabel("任务执行者")
         emptyProject.title = "选择项目"; emptyProject.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); emptyProject.imagePosition = .imageLeading; emptyProject.isBordered = false; emptyProject.target = self; emptyProject.action = #selector(chooseProject); emptyProject.font = .systemFont(ofSize: 13)
         let add = AgentWorkbenchButton(title: "添加附件", target: self, action: #selector(addAttachments)); add.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil); add.imagePosition = .imageLeading; add.isBordered = false; add.font = .systemFont(ofSize: 13)
@@ -841,9 +842,10 @@ final class FormDocumentView: NSView {
         workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
-        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
+        let compactHeight = (window?.contentView?.bounds.height ?? 800) < 650
+        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages || compactHeight; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
-        entryInputHeight.constant = (window?.contentView?.bounds.height ?? 800) < 650 ? 44 : 60
+        entryInputHeight.constant = compactHeight ? 44 : 60
         let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
