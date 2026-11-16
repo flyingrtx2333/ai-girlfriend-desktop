@@ -72,8 +72,14 @@ import AppKit
             mcp.selectServer(server.id)
             guard let detail = pane.currentController, detail !== mcp else { throw PetError("未进入连接器详情") }
             checks["removeUsesInlineConnectorDetail"] = detail.settingsHostWindow === host && detail.window?.isVisible != true
-            control.window?.makeKeyAndOrderFront(nil); await wait(0.05)
-            let anotherWindowWasKey = NSApp.keyWindow === control.window && NSApp.keyWindow !== host
+            let other = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 460, height: 260), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            other.title = "确认验收：另一窗口"; other.isReleasedWhenClosed = false
+            defer { other.close() }
+            NSApp.activate(ignoringOtherApps: true); other.makeKeyAndOrderFront(nil)
+            for _ in 0..<100 { if NSApp.isActive && NSApp.keyWindow === other { break }; await wait(0.02) }
+            let anotherWindowWasKey = NSApp.isActive && NSApp.keyWindow === other && other !== host
+            report["confirmationPrecondition"] = ["applicationActive": NSApp.isActive, "expectedKeyWindow": other.windowNumber, "actualKeyWindow": NSApp.keyWindow?.windowNumber ?? -1, "triggerWindow": host.windowNumber]
+            guard anotherWindowWasKey else { throw PetError("跨窗口验收未建立前台窗口状态") }
             try await probe("取消", owner: host) { try button("移除", detail.pageContentView).performClick(nil) }
             checks["confirmationUsesTriggerWindowWhenAnotherWindowWasKey"] = anotherWindowWasKey && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == true
             checks["synchronousRemoveCancelPreservesActualMCPConfiguration"] = try Data(contentsOf: config) == configBytes && tasks.mcp.availableServers(workspace: workspace).map(\.id) == serverIDs
