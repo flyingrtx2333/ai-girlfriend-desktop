@@ -74,6 +74,14 @@ import AppKit
     func focusCurrentPage() {
         guard !isHiddenOrHasHiddenAncestor, let window, window.isVisible, let content = currentController?.pageContentView else { return }
         if let focused = window.firstResponder as? NSView, focused.isDescendant(of: content), focused.canBecomeKeyView { return }
+        if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
+            func ownsEditor(_ view: NSView) -> Bool {
+                guard !view.isHidden else { return false }
+                if let field = view as? NSTextField, field.currentEditor() === editor { return field.canBecomeKeyView }
+                return view.subviews.contains(where: ownsEditor)
+            }
+            if ownsEditor(content) { return }
+        }
         func firstKeyView(_ view: NSView) -> NSView? {
             guard !view.isHidden else { return nil }
             if view.canBecomeKeyView { return view }
