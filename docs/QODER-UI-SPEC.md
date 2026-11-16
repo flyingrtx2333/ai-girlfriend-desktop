@@ -49,6 +49,8 @@
 | 行内图标 | 28×28 pt 容器、14 pt 图形、8 pt 圆角；图标与标签间距 12 pt |
 | 设置选择器 | 28 pt 高、6 pt 圆角、单下箭头；按内容取宽，通常为 68–260 pt；箭头和边缘均可打开原生菜单 |
 | 工作台模式与审批 | 复用选择器的无外框样式，28 pt 高、13 pt 字和单下箭头；等待／归档／受管任务锁定时，原生文字与箭头同步变淡；保留原菜单、键盘及草稿 |
+| 短表单动作与输入 | 动作 28 pt 高、至少 84 pt 宽、6 pt 圆角；普通、主要和危险动作分层，文字在所属窗口明暗下解析，启用状态对比度至少 4.5:1；输入保留原生边框和 1.5 pt 焦点边界 |
+| 短表单布局 | 名称标准宽 384 pt、高度随内容扩展；工作区标准宽 560 pt，图标／颜色为 28 pt，源目录以低对比底色分组；错误和目录变更提示增加相应高度，达到所属窗口上限后滚动，底部动作可达 |
 | 设置开关与分隔 | 原生紧凑开关；行间使用轻虚线，保留卡片边界 |
 | 首页 | 标题至少 28 pt 高、快捷操作至少 24 pt 高；活动区按宽度收紧，矮窗口收起顶部空白占位，标题、操作和输入区完整显示且互不重叠 |
 | 输入区 | 输入框靠近内容底部；正文区普通高度 60 pt，矮窗口 44 pt；工具栏按可用宽度换行 |
@@ -85,6 +87,8 @@
 
 每个新增或修改的页面按其实际入口检查：浅深色、正常／窄窗口、键盘、范围切换、保存反馈、未保存保护和同版重开；涉及写入时核对实际文件和原任务。只读、冲突、权限和取消覆盖相关分支。
 
+布局检查按实际内容边界判断：原生只读标签使用排版边界，输入、图标／颜色及动作控件仍检查完整可见区域。
+
 原生检查、实际窗口、模型结果和日常发布分别记录。独立验收应用不等于日常应用已更新；模型效果使用对应任务授权和独立记录。规范已建立不等于全部页面已经套用，统一控件和逐页验收继续保留在 TODO。
 
 ## 固定参考与源码
@@ -97,6 +101,7 @@
 | 设置搜索与记忆分组 | `settings-memory-rules-q7m3v8p2/cua-qoder-memory-reference/original-1.jpg`、`original-2.jpg` |
 | 管理列表、创建入口与分组编辑 | `settings-role-cards-z4p7m2n8/cua-qoder-reference/original-1.jpg`、`original-2.jpg`、`original-3.jpg` |
 | 连接器工具目录 | `settings-mcp-cards-r8m4v2p7/cua-qoder-tools/original-1.jpg` |
+| 短表单与确认深色参考 | `short-form-polish-dymhw9gu/cua-qoder-short-dark/`：工作区、任务名、删除预览及恢复浅色；原始资料仅本地保留 |
 | 工作区短表单、任务名称编辑 | `sidebar-rename-v5m2r9k6/cua-qoder-reference/original-1.jpg`、`original-2.jpg` |
 
-主要实现位于 `native/AgentWorkbenchViews.swift`、`AgentThemeStyles.swift`、`AgentThemeStyleViews.swift`、`AgentSettingsPages.swift`、`ControlWindow.swift`、`AgentConfirmation.swift` 及各页控制器。修改公共组件时核对实际受影响的入口，不默认重复全量回归。
+主要实现位于 `native/AgentWorkbenchViews.swift`、`AgentThemeStyles.swift`、`AgentThemeStyleViews.swift`、`AgentSettingsPages.swift`、`ControlWindow.swift`、`AgentConfirmation.swift`、`AgentDialogStyle.swift` 及各页控制器。修改公共组件时核对实际受影响的入口，不默认重复全量回归。
