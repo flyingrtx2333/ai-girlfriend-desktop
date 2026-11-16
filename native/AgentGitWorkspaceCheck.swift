@@ -46,6 +46,7 @@ import AppKit
             let fixture = try await prepareGitWorkspaceUI(output), host = control.taskWorkspace
             guard let git = host.currentController as? AgentGitWindow else { throw PetError("Git 未进入任务工作区") }
             await git.checkWorkspace(path: "review.txt")
+            checks.merge(try await checkGitReviewVisuals(git, workspace: fixture.workspace, output: output)) { _, value in value }
             func rawGit(_ args: [String]) async throws -> String {
                 let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 20, gitDirectory: fixture.workspace.appendingPathComponent(".git"), protectedData: store.directory, arguments: ["-C", fixture.workspace.path] + args)
                 guard !result.failed else { throw PetError(result.text) }; return result.stdout ?? ""
@@ -84,7 +85,15 @@ import AppKit
             checks["inlineStageUsesActualIndex"] = try await rawGit(["show", ":stage-only.txt"]) == "stage-this-file\n"
             await git.checkWorkspace(source: .staged, path: "stage-only.txt", action: "unstage")
             checks["inlineUnstagePreservesWorkingBytes"] = try await rawGit(["show", ":stage-only.txt"]) == "original-stage\n" && String(contentsOf: fixture.workspace.appendingPathComponent("stage-only.txt"), encoding: .utf8) == "stage-this-file\n"
-            await git.checkWorkspace(source: .staged, path: "review.txt", message: "Review task workspace snapshot", action: "commit")
+            await git.checkWorkspace(source: .staged, path: "review.txt", message: "")
+            guard let reviewContent = git.pageContentView,
+                  let commitMessage = gitReviewSubviews(reviewContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "Git 提交说明" }),
+                  control.window?.makeFirstResponder(commitMessage) == true,
+                  let editor = commitMessage.currentEditor() as? NSTextView,
+                  let commitAction = gitReviewSubviews(reviewContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == "提交已暂存" }) else { throw PetError("实际提交输入框或按钮不可用") }
+            editor.string = "Review task workspace snapshot"
+            commitAction.performClick(nil); await git.checkWorkspace()
+            checks["inlineCommitReadsLiveEditorSubject"] = try await rawGit(["log", "-1", "--format=%s"]) == "Review task workspace snapshot\n"
             let head = try await rawGit(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
             checks["inlineCommitUsesReviewedStagedVersion"] = try await rawGit(["show", "HEAD:review.txt"]) == "selected-staged\n" && String(contentsOf: fixture.workspace.appendingPathComponent("review.txt"), encoding: .utf8) == "selected-working-preserved\n"
             let otherIndex = try await rawGit(["show", ":other.txt"]), otherCommit = try await rawGit(["show", "HEAD:other.txt"])
@@ -112,5 +121,85 @@ import AppKit
             report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["scope"] = "Actual task window, independent Git repository/index/commit objects and loopback remote preparation; no model requests. Publishing remains an explicit UI confirmation."
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("git-workspace-report.json"))
         } catch { report["success"] = false; report["checks"] = checks; report["error"] = error.localizedDescription; try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("git-workspace-report.json")) }
+    }
+
+    private func gitReviewSubviews(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(gitReviewSubviews) }
+
+    private func checkGitReviewVisuals(_ page: AgentGitWindow, workspace: URL, output: URL) async throws -> [String: Bool] {
+        guard let owner = control.window, let content = page.pageContentView else { throw PetError("Git 实际任务窗口不可用") }
+        var checks: [String: Bool] = [:], frames: [String: Any] = [:]
+        let all = gitReviewSubviews(content)
+        guard let source = all.compactMap({ $0 as? NSPopUpButton }).first(where: { $0.accessibilityLabel() == "Git 改动来源" }),
+              let picker = all.compactMap({ $0 as? NSPopUpButton }).first(where: { $0.accessibilityLabel() == "Git 所选文件" }),
+              let message = all.compactMap({ $0 as? AgentDialogTextField }).first(where: { $0.accessibilityLabel() == "Git 提交说明" }),
+              let revision = all.compactMap({ $0 as? AgentDialogTextField }).first(where: { $0.accessibilityLabel() == "Git 比较修订" }),
+              let display = all.compactMap({ $0 as? NSSegmentedControl }).first,
+              let wrap = all.compactMap({ $0 as? NSButton }).first(where: { $0.title == "换行" }),
+              let viewer = all.compactMap({ $0 as? AgentGitDiffView }).first,
+              let fileList = all.compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "Git 变更文件" }) else { throw PetError("Git 统一控件未载入") }
+        func settle() async {
+            owner.contentView?.layoutSubtreeIfNeeded(); page.pageDidLayout(); owner.contentView?.layoutSubtreeIfNeeded()
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+        checks["visualSourceMenuRetainsAllSixChoices"] = source.itemTitles == ["本轮修改", "未提交", "未暂存", "已暂存", "已提交", "分支"]
+        for (name, size) in [("wide", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] {
+            owner.setContentSize(size)
+            for look in [NSAppearance.Name.aqua, .darkAqua] {
+                owner.appearance = NSAppearance(named: look)
+                await page.checkWorkspace(source: .uncommitted, path: "review.txt")
+                if page.workspaceReadback()["fileListVisible"] as? Bool != true { await page.checkWorkspace(action: "files") }
+                await settle()
+                let r = page.workspaceReadback(), key = "visual-" + name + "-" + look.rawValue
+                let sourceRect = r["sourceFrame"] as? [Double] ?? [], fileRect = r["fileFrame"] as? [Double] ?? []
+                let actions = gitReviewSubviews(content).compactMap { $0 as? AgentDialogButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
+                checks[key + "-sharedPopupsAndFullFileWidth"] = source.superview is AgentSettingsPopupFrame && picker.superview is AgentSettingsPopupFrame && sourceRect.count == 4 && fileRect.count == 4 && sourceRect[3] == 28 && fileRect[3] == 28 && abs(fileRect[2] - Double(content.bounds.width - 68)) < 1 && source.font?.pointSize == 13 && picker.font?.pointSize == 13
+                checks[key + "-sharedActionsFitAt28Points"] = actions.count == 6 && actions.allSatisfy { $0.bounds.height == 28 && $0.font?.pointSize == 13 } && (r["checks"] as? [String: Bool])?["gitActionsFitWorkspace"] == true
+                let visibleLabel = fileList.view(atColumn: 0, row: fileList.selectedRow, makeIfNecessary: true) as? NSTextField
+                checks[key + "-readableDiffAndVisibleFileList"] = viewer.bounds.height >= 80 && viewer.bounds.width >= 230 && fileList.enclosingScrollView?.bounds.height ?? 0 >= 32 && viewer.patch.contains("+selected-working-preserved") && visibleLabel?.font?.pointSize == 13
+                checks[key + "-outlinedCommitInputFits"] = message.outlined && message.bounds.height == 32 && !message.hasAmbiguousLayout
+                let patch = viewer.patch
+                display.selectedSegment = 1; display.sendAction(display.action, to: display.target)
+                wrap.performClick(nil); await settle()
+                checks[key + "-actualSplitAndWrapActionsWork"] = viewer.splitMode && !viewer.wraps && viewer.patch == patch && viewer.checkSplitLayout().values.allSatisfy { $0 }
+                display.selectedSegment = 0; display.sendAction(display.action, to: display.target); wrap.performClick(nil)
+                await page.checkWorkspace(source: .committed, path: "review.txt"); await settle()
+                let committed = page.workspaceReadback()
+                checks[key + "-revisionControlsAndDiffFit"] = !revision.isHidden && revision.outlined && revision.bounds.height == 28 && (committed["checks"] as? [String: Bool])?.values.allSatisfy { $0 } == true && viewer.patch.contains("+original-review")
+                frames[key] = ["working": r, "committed": committed]
+            }
+        }
+        await page.checkWorkspace(source: .uncommitted, path: "review.txt")
+        guard owner.makeFirstResponder(message), let editor = message.currentEditor() as? NSTextView else { throw PetError("Git 草稿实际编辑器不可用") }
+        editor.string = "保留正在输入的提交说明。"
+        await page.checkWorkspace(source: .staged, path: "review.txt")
+        checks["visualSourceChangePreservesLiveCommitEditor"] = page.workspaceReadback()["draft"] as? String == "保留正在输入的提交说明。"
+        owner.makeFirstResponder(nil); message.stringValue = ""
+        guard let commit = gitReviewSubviews(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "提交已暂存" }),
+              let refresh = gitReviewSubviews(content).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == "刷新 Git" }) else { throw PetError("Git 原生动作不可用") }
+        commit.performClick(nil); await settle()
+        checks["visualEmptyCommitErrorKeepsReadableReview"] = page.workspaceReadback()["state"] as? String == "请填写提交说明" && page.workspaceReadback()["stateIsError"] as? Bool == true && viewer.patch.contains("+selected-staged")
+        refresh.performClick(nil)
+        checks["visualBusyScopesDisableAndRestore"] = page.workspaceReadback()["busy"] as? Bool == true && !source.isEnabled && !picker.isEnabled
+        await page.checkWorkspace()
+        checks["visualReadyScopesRestoreAfterRealRefresh"] = source.isEnabled && picker.isEnabled && page.workspaceReadback()["stateIsError"] as? Bool == false
+        let longPath = (0..<3).map { String($0) + "-" + String(repeating: "长目录", count: 10) }.joined(separator: "/") + "/review-change.txt"
+        let longFile = workspace.appendingPathComponent(longPath)
+        try FileManager.default.createDirectory(at: longFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("公开长路径 Git 审阅样例\n".utf8).write(to: longFile)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: longFile.path)
+        await page.checkWorkspace(source: .uncommitted, path: longPath)
+        checks["visualLongFileMenuKeepsFullPathAndActualDiff"] = picker.selectedItem?.toolTip == longPath && page.workspaceReadback()["paths"] as? [String] == [longPath] && viewer.patch.contains("+公开长路径 Git 审阅样例")
+        await page.checkWorkspace(source: .lastTurn)
+        checks["visualEmptySourceDisablesFilePicker"] = !picker.isEnabled && picker.titleOfSelectedItem == "暂无变更" && viewer.patch == "本轮尚无文件修改记录"
+        await page.checkWorkspace(source: .branch)
+        checks["visualInvalidRevisionErrorKeepsControlsAndDraft"] = page.workspaceReadback()["stateIsError"] as? Bool == true && source.isEnabled && !picker.isEnabled && !revision.isHidden && message.stringValue.isEmpty
+        owner.makeFirstResponder(nil); revision.stringValue = "HEAD"; revision.sendAction(revision.action, to: revision.target)
+        await page.checkWorkspace()
+        checks["visualValidRevisionRetryUsesRealGit"] = page.workspaceReadback()["stateIsError"] as? Bool == false && viewer.patch == "此来源没有变更" && revision.stringValue == "HEAD"
+        await page.checkWorkspace(source: .uncommitted, path: "review.txt", message: "")
+        if page.workspaceReadback()["fileListVisible"] as? Bool == true { await page.checkWorkspace(action: "files") }
+        owner.setContentSize(NSSize(width: 1200, height: 774)); await settle()
+        try JSONSerialization.data(withJSONObject: ["checks": checks, "frames": frames, "longPath": longPath], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("git-review-visual-details.json"))
+        return checks
     }
 }

@@ -8,7 +8,7 @@ import AppKit
     private let popup: NSPopUpButton
     private let chevron = AgentSettingsGlyph(image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil) ?? NSImage())
     convenience init(_ popup: NSPopUpButton) { self.init(popup, outlined: true) }
-    init(_ popup: NSPopUpButton, outlined: Bool) {
+    init(_ popup: NSPopUpButton, outlined: Bool, maximumWidth: CGFloat? = 260) {
         self.popup = popup
         super.init(frame: .zero)
         fill = .clear; stroke = outlined ? AgentWorkbenchTheme.line : .clear
@@ -18,9 +18,11 @@ import AppKit
         popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         chevron.contentTintColor = AgentWorkbenchTheme.secondaryText; chevron.setAccessibilityElement(false)
         for view in [popup, chevron] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        let limit = widthAnchor.constraint(lessThanOrEqualToConstant: 260); limit.priority = .defaultHigh
+        if let maximumWidth {
+            let limit = widthAnchor.constraint(lessThanOrEqualToConstant: maximumWidth); limit.priority = .defaultHigh; limit.isActive = true
+        }
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 28), widthAnchor.constraint(greaterThanOrEqualToConstant: 68), limit,
+            heightAnchor.constraint(equalToConstant: 28), widthAnchor.constraint(greaterThanOrEqualToConstant: 68),
             popup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6), popup.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             popup.topAnchor.constraint(equalTo: topAnchor), popup.bottomAnchor.constraint(equalTo: bottomAnchor),
             chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
