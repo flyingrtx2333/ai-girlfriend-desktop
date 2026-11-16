@@ -757,7 +757,7 @@ final class FormDocumentView: NSView {
         executionLocation.isBordered = false; executionLocation.font = .systemFont(ofSize: 13); executionLocation.target = self; executionLocation.action = #selector(showExecutionLocation); executionLocation.imagePosition = .imageTrailing; executionLocation.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
         executionLocation.setAccessibilityLabel("执行位置")
         branchControl.isBordered = false; branchControl.font = .systemFont(ofSize: 12); branchControl.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: nil); branchControl.imagePosition = .imageLeading; branchControl.target = self; branchControl.action = #selector(showAgentGit); branchControl.setAccessibilityLabel("当前分支"); branchControl.cell?.lineBreakMode = .byTruncatingMiddle; branchControl.widthAnchor.constraint(lessThanOrEqualToConstant: 155).isActive = true
-        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(branchControl); entryLeading.addArrangedSubview(modePopup); entryLeading.addArrangedSubview(permissionPopup)
+        entryLeading.orientation = .horizontal; entryLeading.spacing = 8; entryLeading.addArrangedSubview(attachmentButton); entryLeading.addArrangedSubview(taskMCPContext); entryLeading.addArrangedSubview(executionLocation); entryLeading.addArrangedSubview(branchControl); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(modePopup, outlined: false)); entryLeading.addArrangedSubview(AgentSettingsPopupFrame(permissionPopup, outlined: false))
         voiceInput.target = self; voiceInput.action = #selector(toggleWorkbenchVoice); AgentWorkbenchTheme.toolbar(voiceInput, title: "语音输入", symbol: "mic")
         entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -3639,6 +3639,7 @@ final class FormDocumentView: NSView {
         refreshBranch(task)
         executionLocation.toolTip = task.workspace ?? "终端使用当前任务目录"; executionLocation.isEnabled = task.canChooseEnvironment && !running
         for view in [projectButton, modePopup, permissionPopup] as [NSControl] { view.isEnabled = !locked && !task.archived && !managed && !delegated }
+        for popup in [modePopup, permissionPopup] { (popup.superview as? AgentSettingsPopupFrame)?.refreshEnabledState() }
         projectButton.isEnabled = (!locked || task.workspace == nil) && !task.archived && !managed && !delegated
         gitButton.isEnabled = task.workspace != nil && !managed
         browserButton.isEnabled = !managed
@@ -4579,6 +4580,42 @@ extension ControlWindow {
         result["checks"] = checks; result["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 }
         result["scope"] = "Actual NSWorkspace setting, live workbench layers, inspector actions and tool expansion; system setting is never overridden by this check."
         return result
+    }
+    func checkWorkbenchOptions() throws -> [String: Bool] {
+        guard let tasks = companion?.agentStore, let window else { throw PetError("工作台选择器不可用") }
+        let previous = agentTaskID, size = window.contentView?.bounds.size ?? NSSize(width: 1200, height: 774)
+        defer { if let previous { selectAgentTask(previous) }; window.setContentSize(size); updateWorkbenchLayout() }
+        let id = tasks.create(title: "工作台选择器原生验收", mode: .ask)
+        let draft = "选择模式和审批后保留的未发送草稿。"
+        tasks.update(id) { $0.draft = draft }
+        showAgentTask(id); show(tab: "chat")
+        var checks: [String: Bool] = [:]
+        for (index, mode) in AgentMode.allCases.enumerated() {
+            modePopup.selectItem(at: index); _ = modePopup.sendAction(modePopup.action, to: modePopup.target)
+            let stored = try JSONDecoder().decode(AgentTaskRecord.self, from: Data(contentsOf: tasks.directory.appendingPathComponent(id + ".json")))
+            checks["mode-" + mode.rawValue] = stored.mode == mode && stored.draft == draft && stored.messages.isEmpty
+        }
+        for (index, permission) in AgentPermissionMode.allCases.enumerated() {
+            permissionPopup.selectItem(at: index); _ = permissionPopup.sendAction(permissionPopup.action, to: permissionPopup.target)
+            let stored = try JSONDecoder().decode(AgentTaskRecord.self, from: Data(contentsOf: tasks.directory.appendingPathComponent(id + ".json")))
+            checks["permission-" + permission.rawValue] = stored.permission == permission && stored.draft == draft && stored.messages.isEmpty
+        }
+        for (label, state, archived, kind) in [("waiting", AgentTaskStatus.waiting, false, nil as String?), ("archived", .ready, true, nil), ("managed", .ready, false, "hook"), ("restored", .ready, false, nil)] {
+            tasks.update(id) { $0.status = state; $0.archived = archived; $0.kind = kind }; renderAgentMessages()
+            checks[label + "OptionsAvailability"] = [modePopup, permissionPopup].allSatisfy { $0.isEnabled == (label == "restored") }
+        }
+        modePopup.selectItem(at: 2); permissionPopup.selectItem(at: 1); _ = modePopup.sendAction(modePopup.action, to: modePopup.target)
+        for (label, dimensions) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540)), ("short", NSSize(width: 1320, height: 540))] {
+            window.setContentSize(dimensions); updateWorkbenchLayout(); window.contentView?.layoutSubtreeIfNeeded()
+            checks[label + "OptionsAreReadableAndInsideToolbar"] = [modePopup, permissionPopup].allSatisfy { popup in
+                let frame = entryToolbar.convert(popup.bounds, from: popup)
+                let width = popup.title.size(withAttributes: [.font: popup.font!]).width
+                return !popup.hasAmbiguousLayout && popup.bounds.width >= width && popup.bounds.height >= 20 && entryToolbar.bounds.insetBy(dx: -1, dy: -1).contains(frame)
+            }
+            checks[label + "OptionsDoNotOverlapModelAndSend"] = !entryLeading.convert(entryLeading.bounds, to: entryToolbar).intersects(entryTrailing.convert(entryTrailing.bounds, to: entryToolbar))
+        }
+        checks["optionsKeepDraftWithoutMessagesOrUsage"] = tasks.task(id)?.draft == draft && tasks.task(id)?.messages.isEmpty == true && (tasks.task(id)?.modelReceipts ?? []).isEmpty && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
+        return checks
     }
     func checkWorkbench(_ output: URL, actualTask: String, stoppedTask: String?) async -> [String: Any] {
         guard let tasks = companion?.agentStore, let window else { return ["success": false, "error": "原生窗口不可用"] }

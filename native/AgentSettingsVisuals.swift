@@ -6,15 +6,16 @@ import AppKit
 
 @MainActor final class AgentSettingsPopupFrame: AgentThemeView {
     private let popup: NSPopUpButton
-    init(_ popup: NSPopUpButton) {
+    private let chevron = AgentSettingsGlyph(image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil) ?? NSImage())
+    convenience init(_ popup: NSPopUpButton) { self.init(popup, outlined: true) }
+    init(_ popup: NSPopUpButton, outlined: Bool) {
         self.popup = popup
         super.init(frame: .zero)
-        fill = .clear; stroke = AgentWorkbenchTheme.line
-        layer?.cornerRadius = 6; layer?.borderWidth = 1
+        fill = .clear; stroke = outlined ? AgentWorkbenchTheme.line : .clear
+        layer?.cornerRadius = 6; layer?.borderWidth = outlined ? 1 : 0
         popup.isBordered = false; popup.controlSize = .regular; popup.font = .systemFont(ofSize: 13)
         (popup.cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
         popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let chevron = AgentSettingsGlyph(image: NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil) ?? NSImage())
         chevron.contentTintColor = AgentWorkbenchTheme.secondaryText; chevron.setAccessibilityElement(false)
         for view in [popup, chevron] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         let limit = widthAnchor.constraint(lessThanOrEqualToConstant: 260); limit.priority = .defaultHigh
@@ -25,8 +26,10 @@ import AppKit
             chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 10), chevron.heightAnchor.constraint(equalToConstant: 10)
         ])
+        refreshEnabledState()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func refreshEnabledState() { chevron.alphaValue = popup.isEnabled ? 1 : 0.4 }
     override func mouseDown(with event: NSEvent) { if popup.isEnabled { popup.performClick(nil) } }
 }
 

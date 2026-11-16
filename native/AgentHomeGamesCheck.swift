@@ -108,6 +108,7 @@ import Darwin
                 for key in ["headingVisible", "shortcutsVisible", "activityVisible", "composerVisible", "noOverlap"] { checks[label + "Home-" + key] = layout[key] == true }
                 report[label + "HomeReadback"] = state
             }
+            for (key, value) in try control.checkWorkbenchOptions() { checks["workbenchOptions-" + key] = value }
             checks["noProviderRequestsOrForgedUsage"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["success"] = !checks.isEmpty && checks.values.allSatisfy { $0 } && report["error"] == nil; report["appPID"] = getpid(); report["modelRequests"] = 0; report["blockedModelAttempts"] = attempts
