@@ -811,7 +811,7 @@ final class FormDocumentView: NSView {
         let monitorContent = makeMonitorContent(task), monitorState = taskMonitorState(task.id)
         let hasRecords = monitorContent.hasContent
         workbenchSidebarWidth.constant = width < 900 ? 218 : 231
-        let settingsWidth: CGFloat = width < 980 ? 180 : 231
+        let settingsWidth: CGFloat = width < 980 ? 180 : 252
         sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
         taskWorkspace.selectTask(task.id)
         let showWorkspace = chatting && taskWorkspace.requested, remaining = width - sidebarWidth.constant
@@ -1327,7 +1327,7 @@ final class FormDocumentView: NSView {
     }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
-        settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 231 : 200)
+        settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 252 : 200)
         NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebarWidth, settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
         let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
         settingsBackButton = back

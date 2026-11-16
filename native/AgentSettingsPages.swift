@@ -129,7 +129,7 @@ import AppKit
         state.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
-            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: centerYAnchor), labels.trailingAnchor.constraint(lessThanOrEqualTo: state.leadingAnchor, constant: -12),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: centerYAnchor), labels.trailingAnchor.constraint(equalTo: state.leadingAnchor, constant: -12),
             name.widthAnchor.constraint(equalTo: labels.widthAnchor), description.widthAnchor.constraint(equalTo: labels.widthAnchor),
             state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: -10), state.centerYAnchor.constraint(equalTo: centerYAnchor),
             open.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: centerYAnchor), open.widthAnchor.constraint(equalToConstant: 24), open.heightAnchor.constraint(equalToConstant: 28)

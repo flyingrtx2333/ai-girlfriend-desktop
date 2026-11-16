@@ -111,6 +111,10 @@ import Darwin
                 guard let view else { return nil }
                 return (view as? AgentSettingsCatalogTable) ?? view.subviews.lazy.compactMap(catalog).first
             }
+            func labelsFit(_ view: NSView) -> Bool {
+                if let label = view as? NSTextField, !label.isHidden { return label.bounds.width + 1 >= min(360, label.intrinsicContentSize.width) }
+                return view.subviews.allSatisfy(labelsFit)
+            }
             var catalogChecks: [String: Bool] = [:]
             var actualTexts = true, narrowPagesStartAtTop = true, childPID: pid_t?
             for (key, manager, expected) in managers {
@@ -122,6 +126,7 @@ import Darwin
                 let list = catalog(manager.pageContentView)
                 if let list {
                     catalogChecks[key + "CatalogOpensWithoutConfigurationForm"] = !text(manager.pageContentView!).contains(expected) && list.numberOfRows > 0 && list.bounds.width >= (manager.pageContentView?.bounds.width ?? 0) - 2
+                    if let cell = list.view(atColumn: 0, row: list.selectedRow, makeIfNecessary: true) { cell.layoutSubtreeIfNeeded(); catalogChecks[key + "CatalogPublicTitlesAndDescriptionsFitAvailableSpace"] = cell.bounds.width >= 500 && labelsFit(cell) }
                     if let action = list.action { NSApp.sendAction(action, to: list.target, from: list) }; pane.layoutSubtreeIfNeeded()
                     catalogChecks[key + "CatalogActionOpensHostedDetail"] = list.selectedRow >= 0 && pane.currentController is AgentSettingsDetailPage && pane.currentController?.presentingWindow === host && pane.currentController?.pageContentView?.window === host
                 }
@@ -167,7 +172,7 @@ import Darwin
             checks["narrowPagesInitiallyShowTopFields"] = narrowPagesStartAtTop
             if let childPID { report["localMCPProcess"] = childPID }
             guard checks.count == managers.count + 11 else { throw PetError("设置页面基础检查缺失") }
-            guard catalogChecks.count == 15 else { throw PetError("设置列表与详情检查缺失") }
+            guard catalogChecks.count == 20 else { throw PetError("设置列表与详情检查缺失") }
             checks.merge(catalogChecks) { _, next in next }
             checks.merge(memoryChecks) { _, value in value }
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }

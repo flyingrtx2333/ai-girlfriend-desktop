@@ -26,6 +26,7 @@ import AppKit
     private let state = AgentSettingsStatusField("工作树回收状态"), history = NSTextView()
     private var periods: [Double] = [], roots: [AgentWorktreeRoot] = [], revision: String?, savedRevision: String?
     private var hasEdits = false
+    private var historyHeight: NSLayoutConstraint?
     init(store: AgentStore, onOpenTask: @escaping (String) -> Void) {
         self.store = store; self.onOpenTask = onOpenTask; super.init(frame: .zero)
         enabled.setAccessibilityLabel("自动回收工作树"); scope.setAccessibilityLabel("自动回收范围"); period.setAccessibilityLabel("工作树保留期"); projects.setAccessibilityLabel("工作树项目")
@@ -44,12 +45,13 @@ import AppKit
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
         history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 13); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true
-        let scroll = NSScrollView(); scroll.documentView = history; scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
+        let scroll = NSScrollView(); scroll.documentView = history; scroll.hasVerticalScroller = true; scroll.identifier = .init("form-input")
         let policy = AgentSettingsStyle.section("自动回收", id: "worktree-policy", rows: [AgentSettingsStyle.formRow("启用", enabled, trailing: true), AgentSettingsStyle.formRow("回收范围", scope, trailing: true), AgentSettingsStyle.formRow("保留期", period, trailing: true), AgentSettingsStyle.formRow("备份", backup, trailing: true), actions])
         let records = AgentSettingsStyle.section("工作树与记录", id: "worktree-history", rows: [project, state, scroll])
         let column = NSStackView(views: [policy, records]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 24
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), scroll.heightAnchor.constraint(equalToConstant: 150)])
+        let historyHeight = scroll.heightAnchor.constraint(equalToConstant: 150); self.historyHeight = historyHeight
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), historyHeight])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         loadControls()
     }
@@ -84,11 +86,12 @@ import AppKit
         state.stringValue = (savedRevision != nil && savedRevision == service.revision ? "已保存 · " : "") + service.status + (service.nextCheck.map { "\n下次检查：" + $0.formatted(date: .numeric, time: .shortened) } ?? "")
         do {
             let values = try service.receipts()
+            historyHeight?.constant = values.isEmpty ? 56 : 150
             history.string = values.isEmpty ? "暂无自动回收记录" : values.prefix(10).map { receipt in
                 let task = store.tasks.first { $0.workspace == receipt.path }
                 return receipt.created.formatted(date: .abbreviated, time: .shortened) + " · " + (task?.title ?? URL(fileURLWithPath: receipt.root).lastPathComponent) + "\n" + (receipt.error ?? "已备份并回收")
             }.joined(separator: "\n\n")
-        } catch { history.string = error.localizedDescription }
+        } catch { historyHeight?.constant = 150; history.string = error.localizedDescription }
     }
     @objc private func policyEdited() { hasEdits = true; savedRevision = nil }
     @objc private func save() {

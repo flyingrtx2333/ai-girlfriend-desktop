@@ -31,7 +31,7 @@ import UniformTypeIdentifiers
         table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("自定义 Agent 列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
         let add = NSButton(title: "新建", target: self, action: #selector(create)), importButton = NSButton(title: "导入", target: self, action: #selector(importProfiles))
-        let template = NSButton(title: "模板", target: self, action: #selector(chooseTemplate))
+        let template = NSButton(title: "模板", target: self, action: #selector(chooseTemplate(_:)))
         let listActions = NSStackView(views: [add, template, importButton]); listActions.spacing = 6
         name.placeholderString = "名称"; purpose.placeholderString = "职责"; model.placeholderString = "跟随当前模型"
         for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] { field.delegate = self; field.font = .systemFont(ofSize: 13); field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
@@ -229,11 +229,11 @@ import UniformTypeIdentifiers
         presentSettingsChild(page)
     }
     @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name) }
-    @objc private func chooseTemplate() {
+    @objc private func chooseTemplate(_ sender: NSButton) {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let menu = NSMenu()
         for (index, value) in AgentTemplates.profiles.enumerated() { let item = NSMenuItem(title: value.name, action: #selector(useTemplate(_:)), keyEquivalent: ""); item.target = self; item.tag = index; menu.addItem(item) }
-        menu.popUp(positioning: nil, at: NSPoint(x: 14, y: 55), in: pageContentView)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.minY), in: sender)
     }
     @objc private func useTemplate(_ sender: NSMenuItem) {
         guard !dirty, AgentTemplates.profiles.indices.contains(sender.tag) else { return }
