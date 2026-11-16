@@ -109,6 +109,7 @@ import AppKit
                         try cards.checkRecovery(action: "save"); try cardSource.checkView(action: "retry")
                         checks["identicalFileHashCannotBypassChangedTaskRoot"] = try cardSource.checkState["loaded"] as? Bool == false && (state(cardSource)) == originalCard.source && cards.state.stringValue.contains("工作区")
                         tasks.update(fixture.first) { $0.workspace = fixture.rootA }; try tasks.save(fixture.first); try cardSource.checkView(action: "retry")
+                        checks["liveScopeFailureThenRetryRestoresOriginalPosition"] = try state(cardSource) == originalCard.source && cardSource.checkState["loaded"] as? Bool == true
                         var options = try tasks.knowledgeCards.options(workspace: fixture.rootA); options.language = "en"; try tasks.knowledgeCards.setOptions(options, workspace: fixture.rootA, expected: tasks.knowledgeCards.settings().1)
                         try cards.checkRecovery(action: "save"); checks["changedLanguageCannotRedirectOldDraft"] = try cards.state.stringValue.contains("语言") && (sourceState(cards)).body == input["draftBody"]
                         options.language = "zh"; try tasks.knowledgeCards.setOptions(options, workspace: fixture.rootA, expected: tasks.knowledgeCards.settings().1)

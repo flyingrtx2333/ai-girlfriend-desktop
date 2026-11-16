@@ -75,6 +75,10 @@ import AppKit
     private func restoreSource(adopting: Bool = false) {
         applying = true; defer { applying = false; scheduleViewport(); onWorkspaceChange?() }
         do {
+            if loaded {
+                var viewport = try pending ?? AgentTextViewport(text); viewport.focused = rememberedFocus
+                saved.viewport = viewport; pending = viewport
+            }
             let (body, hash, _) = try Self.read(saved, store: store)
             guard adopting || hash == saved.hash else { throw PetError("来源已变化，原阅读位置已保留") }
             text.string = body
