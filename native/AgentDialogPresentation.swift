@@ -18,7 +18,7 @@ import AppKit
         view = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line)
         view.frame.size = size; view.wantsLayer = true
         view.layer?.cornerRadius = 12; view.layer?.borderWidth = 1
-        view.setAccessibilityRole(.sheet); view.setAccessibilityLabel(title); view.setAccessibilityModal(true)
+        view.setAccessibilityElement(true); view.setAccessibilityRole(.sheet); view.setAccessibilityLabel(title); view.setAccessibilityModal(true)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func layoutForOwner(_ available: NSSize) {}

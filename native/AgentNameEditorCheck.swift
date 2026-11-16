@@ -202,6 +202,7 @@ import AppKit
     checks["dialogStartsWithActualInitialTextAndTextContainer"] = dialogEditor.textContainer != nil && dialogEditor.string == "原名称"
     checks["dialogUsesSeparateFieldEditorAndUndoManager"] = dialogEditor !== beforeEditor && dialogEditor.undoManager !== originalUndo && originalUndo?.canUndo == true
     checks["dialogHidesBackgroundFromAccessibility"] = original.isAccessibilityHidden() && editor.view.isAccessibilityModal() && owner.agentDialog === editor && owner.attachedSheet == nil
+    checks["dialogExposesActualModalAccessibilityElement"] = editor.view.isAccessibilityElement() && editor.view.accessibilityRole() == .sheet && editor.view.isAccessibilityModal()
     checks["dialogReplacesBackgroundDefaultButton"] = owner.defaultButtonCell !== backgroundDefault.cell && owner.defaultButtonCell?.title == "保存"
     checks["dialogDisablesOwnerCloseButton"] = owner.standardWindowButton(.closeButton)?.isEnabled == false
     dialogEditor.insertText("仅弹窗修改", replacementRange: dialogEditor.selectedRange()); dialogEditor.breakUndoCoalescing()
