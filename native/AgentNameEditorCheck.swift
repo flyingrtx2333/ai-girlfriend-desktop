@@ -230,5 +230,16 @@ import AppKit
     let second = AgentNameEditor(title: "设置字段焦点", label: "临时名称", value: "临时输入", save: { _ in }, onClose: {})
     second.begin(in: owner); second.cancel()
     checks["stockTextFieldRetainsValueCaretAndNativeFieldEditor"] = field.currentEditor() === fieldEditor && owner.firstResponder === fieldEditor && field.stringValue == "保留设置字段 🧭" && fieldEditor.selectedRange() == selection
+    var savedByKey: [String] = [], shortcutCloses = 0
+    let shortcutEditor = AgentNameEditor(title: "快捷保存验收", label: "快捷保存名称", value: "快捷保存原名称", save: { savedByKey.append($0) }, onClose: { shortcutCloses += 1 })
+    for round in 1...2 {
+        shortcutEditor.begin(in: owner)
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.windowNumber, context: nil, characters: "s", charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1) else { throw PetError("无法创建快捷保存验收事件") }
+        NSApp.postEvent(event, atStart: true)
+        let deadline = Date().addingTimeInterval(3)
+        while shortcutEditor.isVisible, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        checks["commandSaveInvokesActualActionAfterDefaultCellSetup-\(round)"] = !shortcutEditor.isVisible && shortcutCloses == round && savedByKey == Array(repeating: "快捷保存原名称", count: round)
+        if shortcutEditor.isVisible { shortcutEditor.cancel() }
+    }
     return checks
 }

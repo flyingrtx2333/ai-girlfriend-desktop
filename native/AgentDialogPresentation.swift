@@ -3,7 +3,17 @@ import AppKit
 // Short forms share a card inside their owning window. System file pickers
 // remain native sheets and can temporarily take focus above this presentation.
 @MainActor class AgentDialogController: NSViewController {
-    weak var initialFocus: NSView?, defaultButton: NSButton?
+    weak var initialFocus: NSView?
+    weak var defaultButton: NSButton? {
+        didSet {
+            declaredDefaultKey = defaultButton?.keyEquivalent ?? ""
+            declaredDefaultModifiers = defaultButton?.keyEquivalentModifierMask.intersection([.command, .control, .option, .shift]) ?? []
+        }
+    }
+    // AppKit replaces the default cell's key equivalent with Return. Keep its
+    // declared command shortcut independently, including after presentation reuse.
+    fileprivate var declaredDefaultKey = ""
+    fileprivate var declaredDefaultModifiers: NSEvent.ModifierFlags = []
     var selectInitialText = false, restoreFocusOnAccept = true
     var captureKey: ((NSEvent) -> Bool)?
     private weak var presentation: AgentDialogPresentation?
@@ -201,6 +211,10 @@ import AppKit
             if let current = focusedView(), current.isDescendant(of: controller.view), editor != nil,
                (["a", "c", "v", "x", "z"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "") || [51, 117, 123, 124, 125, 126].contains(event.keyCode)) { return event }
             if editor?.hasMarkedText() != true {
+                if let button = controller.defaultButton, button.isEnabled,
+                   controller.declaredDefaultKey.lowercased() == event.charactersIgnoringModifiers?.lowercased(), controller.declaredDefaultModifiers == modifiers {
+                    button.performClick(nil); return nil
+                }
                 func button(in view: NSView) -> NSButton? {
                     if let button = view as? NSButton, button.isEnabled, !button.isHiddenOrHasHiddenAncestor,
                        button.keyEquivalent == event.charactersIgnoringModifiers, button.keyEquivalentModifierMask.intersection([.command, .control, .option, .shift]) == modifiers { return button }
