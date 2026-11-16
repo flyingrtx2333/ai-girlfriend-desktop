@@ -25,7 +25,8 @@ function assertUnused(application) {
     // The system's shared-volume service retains read caches for files inspected
     // by development tools. It does not execute this Mac application. Keep all
     // executable mappings, write handles and other readers protected.
-    const readCache = descriptors.length > 0 && descriptors.every(value => /^\d+\nar\ntREG\n?$/.test(value));
+    // macOS lsof renders high descriptor numbers as e.g. "*072".
+    const readCache = descriptors.length > 0 && descriptors.every(value => /^(?:\d+|\*\d{3})\nar\ntREG\n?$/.test(value));
     const service = pid && readCache ? run('/bin/ps', ['-p', pid, '-o', 'comm=']).trim() : '';
     if (service !== '/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine') {
       throw new Error('应用文件仍在使用，请正常退出应用后再安装；候选已保留。');
