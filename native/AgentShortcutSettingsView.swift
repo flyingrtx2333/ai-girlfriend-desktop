@@ -8,21 +8,25 @@ import AppKit
     init(shortcuts: AgentShortcuts) {
         self.shortcuts = shortcuts; super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 12
-        let restore = NSButton(title: "恢复全部默认", target: self, action: #selector(restoreAll)), reload = NSButton(title: "重新载入", target: self, action: #selector(reloadSettings))
+        let restore = AgentDialogButton(title: "恢复全部默认", target: self, action: #selector(restoreAll)), reload = AgentDialogButton(title: "重新载入", target: self, action: #selector(reloadSettings))
+        AgentDialogStyle.action(restore); AgentDialogStyle.action(reload)
         let toolbar = NSStackView(views: [restore, reload, NSView()]); toolbar.spacing = 8; addArrangedSubview(toolbar)
         var rows: [NSView] = []
         for command in AgentShortcutCommand.allCases {
-            let button = NSButton(title: "", target: self, action: #selector(record(_:))), reset = NSButton(title: "恢复默认", target: self, action: #selector(restore(_:)))
+            let button = AgentWorkbenchButton(title: "", target: self, action: #selector(record(_:))), reset = NSButton(title: "恢复默认", target: self, action: #selector(restore(_:)))
             button.tag = AgentShortcutCommand.allCases.firstIndex(of: command)!; reset.tag = button.tag
-            button.bezelStyle = .rounded; button.font = .monospacedSystemFont(ofSize: 13, weight: .medium); button.widthAnchor.constraint(equalToConstant: 106).isActive = true
+            button.isBordered = false; button.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+            let key = AgentThemeView(fill: AgentWorkbenchTheme.subtle, stroke: AgentWorkbenchTheme.line); key.layer?.cornerRadius = 6; key.layer?.borderWidth = 1
+            key.addSubview(button); button.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([key.widthAnchor.constraint(equalToConstant: 106), key.heightAnchor.constraint(equalToConstant: 28), button.leadingAnchor.constraint(equalTo: key.leadingAnchor), button.trailingAnchor.constraint(equalTo: key.trailingAnchor), button.topAnchor.constraint(equalTo: key.topAnchor), button.bottomAnchor.constraint(equalTo: key.bottomAnchor)])
             button.setAccessibilityLabel(command.title + "快捷键"); reset.setAccessibilityLabel(command.title + "恢复默认"); reset.bezelStyle = .inline; reset.font = .systemFont(ofSize: 11)
-            let actions = NSStackView(views: [button, reset]); actions.spacing = 10; actions.alignment = .centerY
+            let actions = NSStackView(views: [key, reset]); actions.spacing = 10; actions.alignment = .centerY
             rows.append(AgentSettingsStyle.formRow(command.title, actions, trailing: true))
             buttons[command] = button; resets[command] = reset
         }
         let section = AgentSettingsStyle.section("应用快捷键", id: "shortcut-bindings", rows: rows)
         addArrangedSubview(section); section.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        message.font = .systemFont(ofSize: 12); message.textColor = .systemRed; message.setAccessibilityLabel("快捷键状态"); addArrangedSubview(message); message.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        message.font = .systemFont(ofSize: 12); message.textColor = AgentDialogStyle.error; message.setAccessibilityLabel("快捷键状态"); addArrangedSubview(message); message.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -43,22 +47,34 @@ import AppKit
 }
 
 @MainActor private final class AgentShortcutRecorder: NSObject {
-    private let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 170), styleMask: [.titled], backing: .buffered, defer: false)
+    private let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 384, height: 160), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
     private let message = NSTextField(wrappingLabelWithString: "按下新的快捷键")
+    private let column = NSStackView()
     private let command: AgentShortcutCommand, shortcuts: AgentShortcuts, finish: () -> Void
     private var monitor: Any?
     init(command: AgentShortcutCommand, shortcuts: AgentShortcuts, finish: @escaping () -> Void) {
         self.command = command; self.shortcuts = shortcuts; self.finish = finish; super.init()
-        panel.title = command.title; panel.isReleasedWhenClosed = false
+        panel.title = command.title; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true; panel.isReleasedWhenClosed = false
+        let body = AgentThemeView(fill: AgentWorkbenchTheme.surface); panel.contentView = body
         let title = NSTextField(labelWithString: command.title); title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let close = AgentWorkbenchButton(); AgentWorkbenchTheme.toolbar(close, title: "取消录入快捷键", symbol: "xmark"); close.target = self; close.action = #selector(cancel)
+        let header = NSStackView(views: [title, NSView(), close]); header.alignment = .centerY
         message.font = .systemFont(ofSize: 13); message.setAccessibilityLabel("录入快捷键")
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancel)), clear = NSButton(title: "清除快捷键", target: self, action: #selector(clear))
-        let actions = NSStackView(views: [clear, NSView(), cancel]), column = NSStackView(views: [title, message, actions])
-        column.orientation = .vertical; column.alignment = .leading; column.spacing = 20; column.translatesAutoresizingMaskIntoConstraints = false
-        panel.contentView!.addSubview(column)
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: panel.contentView!.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: panel.contentView!.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: panel.contentView!.topAnchor, constant: 22), actions.widthAnchor.constraint(equalTo: column.widthAnchor), message.widthAnchor.constraint(equalTo: column.widthAnchor)])
+        message.preferredMaxLayoutWidth = 336; message.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        message.setContentCompressionResistancePriority(.required, for: .vertical)
+        let cancel = AgentDialogButton(title: "取消", target: self, action: #selector(cancel)), clear = AgentDialogButton(title: "清除快捷键", target: self, action: #selector(clear))
+        AgentDialogStyle.action(cancel); AgentDialogStyle.action(clear)
+        let actions = NSStackView(views: [clear, NSView(), cancel]); actions.spacing = 8
+        for view in [header, message, actions] { column.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        column.orientation = .vertical; column.alignment = .leading; column.spacing = 16; column.translatesAutoresizingMaskIntoConstraints = false
+        body.addSubview(column)
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -24), column.topAnchor.constraint(equalTo: body.topAnchor, constant: 18), column.bottomAnchor.constraint(equalTo: body.bottomAnchor, constant: -18)])
+        resizeToContents()
     }
+    private func resizeToContents() { panel.contentView?.layoutSubtreeIfNeeded(); panel.setContentSize(NSSize(width: 384, height: ceil(column.fittingSize.height) + 36)) }
     func begin(in owner: NSWindow) {
+        AgentThemeContext.inherit(panel, from: owner)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel.isVisible, NSApp.keyWindow === self.panel else { return event }
             if event.keyCode == 53 { self.cancel() }
@@ -74,6 +90,6 @@ import AppKit
     @objc private func clear() { save(.cleared) }
     private func save(_ value: AgentShortcutBinding) {
         do { try shortcuts.set(value, for: command); cancel() }
-        catch { message.stringValue = error.localizedDescription; message.textColor = .systemRed }
+        catch { message.stringValue = error.localizedDescription; message.textColor = AgentDialogStyle.error; resizeToContents() }
     }
 }

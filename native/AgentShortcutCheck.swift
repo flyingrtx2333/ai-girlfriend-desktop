@@ -85,9 +85,70 @@ import AppKit
             checks["quickSwitcherIncludesBothWorkModesAndExcludesArchived"] = candidates.contains { $0.id == first } && candidates.contains { $0.id == second } && !candidates.contains { $0.id == archived }
             checks["quickSwitcherFindsActualUnicodeTitle"] = AgentTaskSwitcher.candidates(store: tasks, query: "小鲸").contains { $0.id == first }
             checks["quickSwitcherFindsFileNameAcrossWorkModes"] = AgentTaskSwitcher.candidates(store: tasks, query: "readme.md").map(\.id) == [second]
+            checks.merge(try await checkShortcutPanels(tasks: tasks, first: first, second: second, output: output), uniquingKeysWith: { _, new in new })
             try write(["publicTaskID": first, "generalTaskID": second, "archivedTaskID": archived, "sourceHash": AgentFiles.hash(Data(source.utf8))], "navigation-created.json")
             checks["zeroModelRepliesReceiptsAndJobs"] = requests == 0 && agentStore?.tasks.compactMap { agentStore?.task($0.id) }.allSatisfy { $0.messages.isEmpty && $0.modelReceipts?.isEmpty != false && agentRuntime?.isRunning($0.id) != true } == true
             try write(["appPID": getpid(), "binaryHash": hash, "checks": checks, "blockedModelAttempts": requests, "success": checks.values.allSatisfy { $0 }], "shortcut-result.json")
         } catch { try? write(["appPID": getpid(), "binaryHash": hash, "checks": checks, "blockedModelAttempts": requests, "success": false, "error": error.localizedDescription], "shortcut-result.json") }
     }
+}
+
+@MainActor private func checkShortcutPanels(tasks: AgentStore, first: String, second: String, output: URL) async throws -> [String: Bool] {
+    var checks: [String: Bool] = [:]
+    func views(_ root: NSView?) -> [NSView] { guard let root else { return [] }; return [root] + root.subviews.flatMap { views($0) } }
+    func button(_ title: String, in root: NSView?) throws -> NSButton {
+        guard let value = views(root).compactMap({ $0 as? NSButton }).first(where: { $0.title == title || $0.accessibilityLabel() == title }) else { throw PetError("缺少快捷操作：" + title) }; return value
+    }
+    func settle(_ host: NSWindow) async throws {
+        let limit = Date().addingTimeInterval(5)
+        while host.attachedSheet != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
+        guard host.attachedSheet == nil else { throw PetError("快捷操作窗口未关闭") }
+    }
+    let host = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+    host.isReleasedWhenClosed = false; host.contentView = AgentThemeView(fill: AgentWorkbenchTheme.surface); host.makeKeyAndOrderFront(nil)
+    defer { if let sheet = host.attachedSheet { host.endSheet(sheet) }; host.orderOut(nil) }
+    let root = output.appendingPathComponent("shortcut-panels", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+    let shortcuts = AgentShortcuts(directory: root), config = root.appendingPathComponent("shortcuts.json")
+    try shortcuts.reset()
+    let settings = AgentShortcutSettingsView(shortcuts: shortcuts), form = AgentSettingsStyle.form([settings], label: "快捷键")
+    host.contentView = form
+    let original = try Data(contentsOf: config)
+    try button("搜索任务快捷键", in: form).performClick(nil)
+    guard let sheet = host.attachedSheet else { throw PetError("快捷键录入未打开") }
+    try await Task.sleep(for: .milliseconds(100))
+    checks["recorderOwnedCompactSheetInMinimumWindow"] = sheet.contentView is AgentThemeView && sheet.frame.width == 384 && sheet.frame.height < host.frame.height && NSApp.modalWindow == nil
+    try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: config.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path) }
+    try button("清除快捷键", in: sheet.contentView).performClick(nil)
+    let message = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "录入快捷键" }
+    checks["recorderWriteFailureRetainsBindingBytesAndError"] = try host.attachedSheet === sheet && Data(contentsOf: config) == original && shortcuts.binding(.searchTasks) == AgentShortcutCommand.searchTasks.defaultBinding && message?.stringValue != "按下新的快捷键" && message?.stringValue.isEmpty == false
+    if let message {
+        let rect = message.alignmentRect(forFrame: message.bounds)
+        checks["recorderFailureResizesWithoutClipping"] = try message.visibleRect.intersection(rect).height >= rect.height - 1 && button("取消", in: sheet.contentView).visibleRect.height >= 27
+    }
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: config.path)
+    try button("清除快捷键", in: sheet.contentView).performClick(nil); try await settle(host)
+    checks["recorderRetryClearsAndUpdatesActualKeycap"] = try shortcuts.binding(.searchTasks) == .cleared && button("搜索任务快捷键", in: form).title == AgentShortcutBinding.cleared.display
+    try button("搜索任务恢复默认", in: form).performClick(nil)
+    checks["recorderRestoreUpdatesActualKeycapAndConfig"] = shortcuts.binding(.searchTasks) == AgentShortcutCommand.searchTasks.defaultBinding && AgentShortcuts(directory: root).overrides.isEmpty
+    let records = try [first, second].map { try Data(contentsOf: tasks.directory.appendingPathComponent($0 + ".json")) }
+    for look in [NSAppearance.Name.aqua, .darkAqua] {
+        host.appearance = NSAppearance(named: look)
+        var selected: String?
+        let switcher = AgentTaskSwitcher(store: tasks, selected: first, onSelect: { selected = $0 }, onClose: {})
+        switcher.begin(in: host); try await Task.sleep(for: .milliseconds(100))
+        guard let window = host.attachedSheet, let search = views(window.contentView).compactMap({ $0 as? NSSearchField }).first else { throw PetError("任务切换搜索未打开") }
+        checks["switcherFitsAndFocusesSearch-" + look.rawValue] = window.contentView is AgentThemeView && window.frame.width == 560 && window.frame.height <= host.contentLayoutRect.height && search.currentEditor() != nil
+        search.stringValue = "NO_MATCH_734582"; search.sendAction(search.action, to: search.target)
+        let open = try button("打开", in: window.contentView)
+        checks["switcherEmptyQueryDisablesOpening-" + look.rawValue] = !open.isEnabled && switcher.checkState()["selected"] as? String == ""
+        search.stringValue = "readme.md"; search.sendAction(search.action, to: search.target)
+        checks["switcherFilterRetainsKeyboardSelection-" + look.rawValue] = open.isEnabled && switcher.checkState()["selected"] as? String == second
+        if look == .aqua { open.performClick(nil) } else { switcher.cancel() }
+        try await settle(host)
+        checks["switcherSelectOrCancelCallback-" + look.rawValue] = look == .aqua ? selected == second : selected == nil
+    }
+    checks["switcherLeavesBothTaskRecordsAndDraftsByteIdentical"] = try [first, second].enumerated().allSatisfy { try Data(contentsOf: tasks.directory.appendingPathComponent($0.element + ".json")) == records[$0.offset] }
+    return checks
 }

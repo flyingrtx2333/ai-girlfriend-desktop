@@ -57,6 +57,10 @@ import AppKit
     func run() async throws -> [String: Any] {
         var checks: [String: Bool] = [:], actual: [String: Any] = [:]
         let mcp = tasks.mcp, inputs = mcp.userInputs
+        let panelJob = begin(), panelRequest = try await question()
+        checks.merge(try await checkInputPanel(panelRequest), uniquingKeysWith: { _, new in new })
+        let panelReply = try raw(try await panelJob.value); actual["panelCancel"] = panelReply
+        checks["actualPanelCancelReturnsNoContent"] = panelReply["action"] as? String == "cancel" && panelReply["content"] == nil
         let job = begin(), request = try await question()
         checks["realOfficialFormAndTaskScope"] = request.fields.count == 13 && request.taskID == taskID && inputs.first(taskID: otherID) == nil
         var values = Dictionary(uniqueKeysWithValues: request.fields.compactMap { field in field.initial.map { (field.key, $0) } })
@@ -101,7 +105,7 @@ import AppKit
         tasks.update(taskID) { $0.mode = .agent }
         let urlWork = begin("trigger-url-elicitation", arguments: ["url": url, "message": "查看本机公开 README"]), urlItem = try await question()
         checks["actualURLHasHostAndNoFormValues"] = urlItem.url?.absoluteString == url && urlItem.fields.isEmpty && urlItem.urlID != nil
-        try inputs.respond(taskID: taskID, id: urlItem.id, action: .decline)
+        checks.merge(try await checkInputPanel(urlItem), uniquingKeysWith: { _, new in new })
         let urlResult = try raw(try await urlWork.value); actual["urlDecline"] = urlResult
         checks["declinedURLNoNavigationOrContent"] = urlResult["action"] as? String == "decline" && urlResult["content"] == nil
         let prereq = begin("trigger-url-elicitation", arguments: ["url": url, "message": "查看公开 README", "errorPath": true]), prereqItem = try await question()
@@ -122,6 +126,51 @@ import AppKit
         catch { checks["oldRequestCannotBeReplayed"] = true }
         checks["bothDraftsAndNoNewAssistantOrReceipt"] = tasks.task(taskID)?.draft == "这份草稿不发送给连接器。" && tasks.task(otherID)?.draft == "另一项任务的草稿。" && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty }
         return ["checks": checks, "actual": actual, "expectedAcceptedContent": values, "sourceHash": sourceHash, "success": checks.values.allSatisfy { $0 }]
+    }
+    private func checkInputPanel(_ request: AgentMCPUserInput) async throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        func views(_ root: NSView?) -> [NSView] { guard let root else { return [] }; return [root] + root.subviews.flatMap { views($0) } }
+        func button(_ title: String, in root: NSView?) throws -> NSButton {
+            guard let value = views(root).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else { throw PetError("缺少问询操作：" + title) }; return value
+        }
+        let host = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 780, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
+        host.isReleasedWhenClosed = false; host.contentView = AgentThemeView(fill: AgentWorkbenchTheme.surface); host.makeKeyAndOrderFront(nil)
+        defer { if let sheet = host.attachedSheet { host.endSheet(sheet) }; host.orderOut(nil) }
+        let controller = AgentMCPUserInputPanel(request: request, inputs: tasks.mcp.userInputs)
+        controller.present(in: host)
+        guard let sheet = host.attachedSheet else { throw PetError("连接器问询未打开") }
+        try await Task.sleep(for: .milliseconds(100))
+        let kind = request.url == nil ? "form" : "url"
+        for look in [NSAppearance.Name.aqua, .darkAqua] {
+            sheet.appearance = NSAppearance(named: look); sheet.contentView?.layoutSubtreeIfNeeded()
+            let actions = try ["取消", "拒绝", request.url == nil ? "提交给连接器" : "打开网页"].map { try button($0, in: sheet.contentView) }
+            checks["actualInputPanelFitsMinimumWindow-\(kind)-\(look.rawValue)"] = sheet.contentView is AgentThemeView && sheet.frame.width == 560 && sheet.frame.height < host.contentLayoutRect.height && actions.allSatisfy { $0 is AgentDialogButton && $0.visibleRect.height >= 27 }
+        }
+        let destination = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器地址" }
+        checks["actualInputDestinationRetainsFullAddress-" + kind] = destination?.stringValue == request.destination && destination?.toolTip == request.destination && destination.map { abs($0.alignmentRect(forFrame: $0.bounds).width - 512) < 1 } == true
+        if request.url == nil {
+            guard let scroll = views(sheet.contentView).compactMap({ $0 as? NSScrollView }).first else { throw PetError("长问询缺少滚动区域") }
+            checks["actualThirteenFieldFormScrollsWithinFixedWidth"] = request.fields.count == 13 && (scroll.documentView?.bounds.height ?? 0) > scroll.contentView.bounds.height && scroll.bounds.height <= 320
+            let fields = views(sheet.contentView).compactMap { $0 as? AgentDialogTextField }
+            func field(_ key: String) throws -> AgentDialogTextField {
+                guard let schema = request.fields.first(where: { $0.key == key }), let text = fields.first(where: { $0.accessibilityLabel() == schema.title + (schema.required ? "（必填）" : "") }) else { throw PetError("缺少实际问询字段：" + key) }; return text
+            }
+            let name = try field("name"), number = try field("integer")
+            name.stringValue = "公开表单保留输入"; number.stringValue = "invalid integer"
+            let submit = try button("提交给连接器", in: sheet.contentView); submit.performClick(nil)
+            let issue = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器问询状态" }
+            checks["actualInvalidTypedInputKeepsRequestAndEnteredValues"] = host.attachedSheet === sheet && tasks.mcp.userInputs.first(taskID: taskID)?.id == request.id && name.stringValue == "公开表单保留输入" && number.stringValue == "invalid integer" && issue?.isHidden == false && issue?.stringValue.isEmpty == false
+            checks["actualValidationErrorScrollsIntoViewWithFooterAvailable"] = issue.map { $0.visibleRect.intersection($0.alignmentRect(forFrame: $0.bounds)).height >= $0.alignmentRect(forFrame: $0.bounds).height - 1 } == true && submit.visibleRect.height >= 27
+            checks["actualFormTextInputsHaveBoundariesBeforeTyping"] = !fields.isEmpty && fields.allSatisfy { $0.isBezeled && $0.bounds.height == 32 && $0.bounds.width <= 500 }
+            try button("取消", in: sheet.contentView).performClick(nil)
+        } else {
+            checks["actualShortURLQuestionDoesNotReserveLongFormHeight"] = sheet.frame.height < 400
+            try button("拒绝", in: sheet.contentView).performClick(nil)
+        }
+        let limit = Date().addingTimeInterval(5)
+        while host.attachedSheet != nil, Date() < limit { try await Task.sleep(for: .milliseconds(20)) }
+        checks["actualInputPanelEndsOwnedSheet-" + kind] = host.attachedSheet == nil
+        return checks
     }
     func pollUI() {
         guard uiJob == nil, let data = try? Data(contentsOf: output.appendingPathComponent("mcp-input-ui-command.json")),
