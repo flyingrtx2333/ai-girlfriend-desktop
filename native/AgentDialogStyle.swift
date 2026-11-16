@@ -73,6 +73,11 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) } }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.refreshFocus() } }
+        return accepted
+    }
     private func refreshFocus(force: Bool = false) {
         let focused = currentEditor().map { window?.firstResponder === $0 } ?? false
         guard force || focused != focusVisible else { return }; focusVisible = focused

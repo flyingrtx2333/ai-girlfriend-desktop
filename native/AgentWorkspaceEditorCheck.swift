@@ -46,7 +46,12 @@ import Darwin
         func call(_ name:String,_ object:[String:Any]) throws -> AgentToolCall { .init(id:UUID().uuidString,name:name,arguments:String(decoding:try JSONSerialization.data(withJSONObject:object,options:[.sortedKeys]),as:UTF8.self)) }
         func find<T:NSView>(_ type:T.Type,_ view:NSView?,_ predicate:(T)->Bool) -> T? { guard let view else { return nil }; if let value = view as? T, predicate(value) { return value }; for child in view.subviews { if let value = find(type,child,predicate) { return value } }; return nil }
         func button(_ label:String,_ sheet:NSWindow) throws -> NSButton { guard let value = find(NSButton.self,sheet.contentView,{$0.title == label || $0.accessibilityLabel() == label}) else { throw PetError("缺少操作：" + label) }; return value }
-        func fullyVisible(_ view:NSView?) -> Bool { guard let view, !view.isHidden else { return false }; return view.bounds.width > 0 && view.bounds.height > 0 && view.visibleRect.width >= view.bounds.width-1 && view.visibleRect.height >= view.bounds.height-1 }
+        func fullyVisible(_ view:NSView?) -> Bool {
+            guard let view, !view.isHidden else { return false }
+            let content = (view as? NSTextField)?.isEditable == false ? view.alignmentRect(forFrame:view.bounds) : view.bounds
+            let visible = view.visibleRect.intersection(content)
+            return content.width > 0 && content.height > 0 && visible.width >= content.width-1 && visible.height >= content.height-1
+        }
         func closed(_ host:NSWindow) async throws { for _ in 0..<100 { if host.attachedSheet == nil { return }; await wait(0.02) }; throw PetError("工作区表单未关闭") }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("任务未初始化") }
@@ -180,7 +185,7 @@ import Darwin
                     await wait(0.02); saved.contentView?.layoutSubtreeIfNeeded(); settled = visibility(); layoutWaits += 1
                 }
                 checks["saveErrorAndSourceChangeNoteKeepPaletteAndFooterVisible"] = settled.values.allSatisfy{$0}
-                report["saveErrorVisibility"] = ["initial":initial,"settled":settled,"layoutWaits":layoutWaits,"sheetHeight":saved.contentView?.bounds.height ?? 0,"ownerHeightLimit":host.contentLayoutRect.height-32,"views":[field,lastColor,note,error,save].compactMap{$0}.map{["bounds":NSStringFromRect($0.bounds),"visibleRect":NSStringFromRect($0.visibleRect)]}]
+                report["saveErrorVisibility"] = ["initial":initial,"settled":settled,"layoutWaits":layoutWaits,"sheetHeight":saved.contentView?.bounds.height ?? 0,"ownerHeightLimit":host.contentLayoutRect.height-32,"views":[field,lastColor,note,error,save].compactMap{$0}.map{["bounds":NSStringFromRect($0.bounds),"alignmentRect":NSStringFromRect($0.alignmentRect(forFrame:$0.bounds)),"visibleRect":NSStringFromRect($0.visibleRect)]}]
             }
             try button("保存",saved).performClick(nil); try await closed(host)
             checks["nativeSavePersistsAllFieldsWithoutChangingOldTaskScope"] = tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.icon == .sailboat && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.color == .orange && tasks.organization.entry(alpha,mode:.coding,tasks:tasks.tasks)?.primary == alpha && tasks.task(id)?.workspaceScope == scoped
