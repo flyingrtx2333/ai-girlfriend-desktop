@@ -65,6 +65,7 @@ import AppKit
 }
 
 @MainActor final class AgentDialogTextField: NSTextField {
+    var outlined = false { didSet { refreshFocus(force: true) } }
     private var windowObserver: NSObjectProtocol?, focusVisible = false
     override init(frame: NSRect) {
         super.init(frame: frame); font = .systemFont(ofSize: 13); isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
@@ -81,9 +82,9 @@ import AppKit
     private func refreshFocus(force: Bool = false) {
         let focused = currentEditor().map { window?.firstResponder === $0 } ?? false
         guard force || focused != focusVisible else { return }; focusVisible = focused
-        layer?.borderWidth = focused ? 1.5 : 0
+        layer?.borderWidth = focused ? 1.5 : outlined ? 1 : 0
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.borderColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).cgColor
+            layer?.borderColor = AgentThemeContext.resolve(focused ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.line, in: self).cgColor
         }
     }
     override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); refreshFocus() }

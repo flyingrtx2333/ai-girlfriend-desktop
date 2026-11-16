@@ -161,7 +161,7 @@ import AppKit
             let issue = views(sheet.contentView).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "连接器问询状态" }
             checks["actualInvalidTypedInputKeepsRequestAndEnteredValues"] = host.attachedSheet === sheet && tasks.mcp.userInputs.first(taskID: taskID)?.id == request.id && name.stringValue == "公开表单保留输入" && number.stringValue == "invalid integer" && issue?.isHidden == false && issue?.stringValue.isEmpty == false
             checks["actualValidationErrorScrollsIntoViewWithFooterAvailable"] = issue.map { $0.visibleRect.intersection($0.alignmentRect(forFrame: $0.bounds)).height >= $0.alignmentRect(forFrame: $0.bounds).height - 1 } == true && submit.visibleRect.height >= 27
-            checks["actualFormTextInputsHaveBoundariesBeforeTyping"] = !fields.isEmpty && fields.allSatisfy { $0.isBezeled && $0.bounds.height == 32 && $0.bounds.width <= 500 }
+            checks["actualFormTextInputsHaveBoundariesBeforeTyping"] = !fields.isEmpty && fields.allSatisfy { $0.isBezeled && ($0.layer?.borderWidth ?? 0) >= 1 && $0.bounds.height == 32 && $0.bounds.width <= 500 }
             try button("取消", in: sheet.contentView).performClick(nil)
         } else {
             checks["actualShortURLQuestionDoesNotReserveLongFormHeight"] = sheet.frame.height < 400

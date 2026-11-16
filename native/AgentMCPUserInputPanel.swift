@@ -111,7 +111,7 @@ import AppKit
             if initialControl == nil { initialControl = popup }
             getters[field.key] = { popup.selectedItem?.representedObject }
         } else {
-            let text = AgentDialogTextField(frame: .zero); text.setAccessibilityLabel(label); text.isAutomaticTextCompletionEnabled = false
+            let text = AgentDialogTextField(frame: .zero); text.outlined = true; text.setAccessibilityLabel(label); text.isAutomaticTextCompletionEnabled = false
             text.heightAnchor.constraint(equalToConstant: 32).isActive = true
             if initialControl == nil { initialControl = text }
             if let value = field.initial as? String { text.stringValue = value }
