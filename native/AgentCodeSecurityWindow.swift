@@ -99,11 +99,11 @@ import AppKit
         empty.identifier = .init("settings-list-empty")
         empty.font = .systemFont(ofSize: 13); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.alignment = .center
         empty.isHidden = numberOfRows(in: table) > 0
-        empty.translatesAutoresizingMaskIntoConstraints = false; list.addSubview(empty)
+        empty.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(empty)
         NSLayoutConstraint.activate([
-            empty.leadingAnchor.constraint(equalTo: list.contentView.leadingAnchor, constant: 12),
-            empty.trailingAnchor.constraint(equalTo: list.contentView.trailingAnchor, constant: -12),
-            empty.centerYAnchor.constraint(equalTo: list.contentView.centerYAnchor)
+            empty.leadingAnchor.constraint(equalTo: list.leadingAnchor, constant: 12),
+            empty.trailingAnchor.constraint(equalTo: list.trailingAnchor, constant: -12),
+            empty.centerYAnchor.constraint(equalTo: list.centerYAnchor, constant: 10)
         ])
     }
 

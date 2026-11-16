@@ -87,7 +87,10 @@ import AppKit
             review.presentSettingsChild(cleanPage); owner.contentView?.layoutSubtreeIfNeeded(); cleanPage.pageDidLayout()
             let empty = cleanPage.pageContentView.map(views)?.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "settings-list-empty" }
             checks["cleanReportHasVisibleResultInsteadOfBlankTable"] = clean.findings.isEmpty && clean.skipped.isEmpty && empty?.stringValue == "未发现匹配项" && empty?.isHidden == false
-            if let empty, let list = empty.superview as? NSScrollView, let header = (list.documentView as? NSTableView)?.headerView {
+            if let empty, let root = cleanPage.pageContentView,
+               let table = views(root).compactMap({ $0 as? NSTableView }).first,
+               let list = table.enclosingScrollView, let header = table.headerView {
+                root.layoutSubtreeIfNeeded()
                 let frame = empty.convert(empty.bounds, to: list)
                 checks["cleanResultFitsBelowTableHeader"] = list.contentView.frame.contains(frame) && !header.convert(header.bounds, to: list).intersects(frame)
             } else { checks["cleanResultFitsBelowTableHeader"] = false }
