@@ -80,6 +80,7 @@ import AppKit
         let toolbar = NSStackView(views: [branch, NSView(), initializeButton, pushButton, moreButton, refreshButton]); toolbar.spacing = 8; toolbar.alignment = .centerY
         let sources = NSStackView(views: [sourceFrame, revision, NSView(), displayMode, wrap]); sources.spacing = 8; sources.alignment = .centerY
         let files = NSStackView(views: [fileFrame, filesButton]); files.spacing = 8; files.alignment = .centerY
+        fileFrame.widthAnchor.constraint(equalTo: files.widthAnchor, constant: -36).isActive = true
         let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView()]); actions.spacing = 6
         let commitActions = NSStackView(views: [statistics, NSView(), commitButton, commitPushButton]); commitActions.spacing = 8
         let composer = NSStackView(views: [message, commitActions]); composer.orientation = .vertical; composer.alignment = .leading; composer.spacing = 8
