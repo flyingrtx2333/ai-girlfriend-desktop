@@ -223,7 +223,7 @@ final class FormDocumentView: NSView {
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchLower = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
-    private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
+    private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, entryInputHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var workbenchSidebarWidth: NSLayoutConstraint!, navigationLeading: NSLayoutConstraint!, sidebarRequested = true
     private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
     private var workbenchChrome: [NSView] = [], inspectorRequested = true
@@ -765,13 +765,16 @@ final class FormDocumentView: NSView {
         NSLayoutConstraint.activate([entryToolbarHeight, entryLeading.leadingAnchor.constraint(equalTo: entryToolbar.leadingAnchor), entryLeading.topAnchor.constraint(equalTo: entryToolbar.topAnchor), entryTrailing.trailingAnchor.constraint(equalTo: entryToolbar.trailingAnchor), entryTrailing.bottomAnchor.constraint(equalTo: entryToolbar.bottomAnchor)])
         let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1
         for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), input.heightAnchor.constraint(equalToConstant: 44), entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
+        entryInputHeight = input.heightAnchor.constraint(equalToConstant: 60)
+        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
+        heading.setContentCompressionResistancePriority(.required, for: .vertical)
         heading.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil); heading.imagePosition = .imageTrailing; heading.target = self; heading.action = #selector(chooseExecutor); heading.setAccessibilityLabel("任务执行者")
         emptyProject.title = "选择项目"; emptyProject.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); emptyProject.imagePosition = .imageLeading; emptyProject.isBordered = false; emptyProject.target = self; emptyProject.action = #selector(chooseProject); emptyProject.font = .systemFont(ofSize: 12)
         let add = AgentWorkbenchButton(title: "添加附件", target: self, action: #selector(addAttachments)); add.image = NSImage(systemSymbolName: "paperclip", accessibilityDescription: nil); add.imagePosition = .imageLeading; add.isBordered = false; add.font = .systemFont(ofSize: 12)
         let browse = AgentWorkbenchButton(title: "浏览器", target: self, action: #selector(showAgentBrowser)); browse.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil); browse.imagePosition = .imageLeading; browse.isBordered = false; browse.font = .systemFont(ofSize: 12)
-        let shortcuts = stack([emptyProject, add, browse], spacing: 22); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
+        for button in [emptyProject, add, browse] { button.setContentCompressionResistancePriority(.required, for: .vertical) }
+        let shortcuts = stack([emptyProject, add, browse], spacing: 22); shortcuts.setContentCompressionResistancePriority(.required, for: .vertical); workbenchEmpty.orientation = .vertical; workbenchEmpty.alignment = .centerX; workbenchEmpty.spacing = 18; workbenchEmpty.addArrangedSubview(heading); workbenchEmpty.addArrangedSubview(shortcuts)
         if let companion {
             let games = AgentHomeGamesView(service: companion.homeGames, choice: { [weak companion] in companion?.generalSettings.settings.homeGame ?? .random })
             homeGamesView = games; workbenchEmpty.addArrangedSubview(games); games.widthAnchor.constraint(equalTo: workbenchEmpty.widthAnchor).isActive = true
@@ -840,6 +843,7 @@ final class FormDocumentView: NSView {
         workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
+        entryInputHeight.constant = (window?.contentView?.bounds.height ?? 800) < 650 ? 44 : 60
         let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
@@ -3948,7 +3952,20 @@ final class FormDocumentView: NSView {
     }
     private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
     func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates(); homeGamesView?.pause() }
-    internal func homeGamesReadback() -> [String:Any] { homeGamesView?.readback() ?? [:] }
+    internal func homeGamesReadback() -> [String:Any] {
+        var value = homeGamesView?.readback() ?? [:]
+        guard let root = window?.contentView, let games = homeGamesView, let entry = composer.enclosingScrollView?.superview,
+              let shortcuts = workbenchEmpty.arrangedSubviews.dropFirst().first else { return value }
+        func frame(_ view: NSView) -> NSRect { root.convert(view.bounds, from: view) }
+        func visible(_ view: NSView, minimum: CGFloat) -> Bool {
+            !view.isHiddenOrHasHiddenAncestor && view.bounds.height >= minimum && view.visibleRect.height >= view.bounds.height - 0.5 && root.bounds.insetBy(dx: -1, dy: -1).contains(frame(view))
+        }
+        let title = frame(workbenchEmptyTitle), actions = frame(shortcuts), activity = frame(games), input = frame(entry)
+        value["layout"] = ["headingVisible": visible(workbenchEmptyTitle, minimum: 24), "shortcutsVisible": visible(shortcuts, minimum: 16), "activityVisible": visible(games, minimum: 150), "composerVisible": visible(entry, minimum: 100) && composer.visibleRect.height >= 40,
+                           "noOverlap": !title.intersects(activity) && !actions.intersects(activity) && !activity.intersects(input)]
+        value["layoutFrames"] = ["heading": title, "shortcuts": actions, "activity": activity, "composer": input].mapValues { [$0.minX, $0.minY, $0.width, $0.height] }
+        return value
+    }
     private func refreshBranch(_ task: AgentTaskRecord, force: Bool = false) {
         branchControl.isHidden = companion?.modePresentation.settings[task.organizationMode].inputEnvironment != true || task.workspace == nil
         guard !branchControl.isHidden, let tasks = companion?.agentStore, let workspace = task.workspace else { branchTask?.cancel(); branchTask = nil; branchKey = nil; return }

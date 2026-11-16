@@ -12,6 +12,7 @@ import AppKit
     private var localError: String?, soundPlayer: NSSound?
     private var tracking: NSTrackingArea?, dates: [Date] = []
     private var lastSize = NSSize.zero
+    private var cardHeight: NSLayoutConstraint!
     init(service: AgentHomeGames, choice: @escaping () -> AgentHomeGameChoice) {
         self.service = service; self.choice = choice; super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true; layer?.cornerRadius = 10; layer?.borderWidth = 1
@@ -30,7 +31,7 @@ import AppKit
         board.onClick = { [weak self] in guard let self, kind != nil else { return }; if !running && !ended { activate() } }
         for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification, NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification] { NotificationCenter.default.addObserver(self, selector: #selector(inactive), name: name, object: nil) }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentHomeGames.changed, object: service)
-        heightAnchor.constraint(equalToConstant: 194).isActive = true; refresh()
+        cardHeight = heightAnchor.constraint(equalToConstant: 194); cardHeight.isActive = true; refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { timer?.invalidate(); dwell?.invalidate(); NotificationCenter.default.removeObserver(self) }
@@ -64,15 +65,17 @@ import AppKit
     override func mouseExited(with event: NSEvent) { dwell?.invalidate(); dwell = nil }
     override func layout() {
         super.layout(); let width = bounds.width
+        let boardHeight: CGFloat = width < 600 ? max(60, min(100, floor((width - 32) * 7 / 53))) : 100
+        if cardHeight.constant != boardHeight + 94 { cardHeight.constant = boardHeight + 94 }
         header.frame = .init(x: 16,y: 10,width: max(0,width - 140),height: 20); detail.frame = .init(x: max(16,width - 180),y: 10,width: 164,height: 20); detail.alignment = .right
         if kind != nil { detail.frame = .init(x:122,y:10,width:max(0,width - 172),height:20); detail.font = .systemFont(ofSize:10) } else { detail.font = .systemFont(ofSize:11) }
         back.frame = .init(x: 12,y: 8,width: 100,height: 24); sound.frame = .init(x: width - 42,y: 8,width: 26,height: 24)
-        board.frame = .init(x: 16,y: 36,width: max(0,width - 32),height: 100)
-        footer.frame = .init(x: 16,y: 164,width: max(0,width - 140),height: 18)
-        action.frame = .init(x: max(16,width - 116),y: 161,width: 100,height: 24)
+        board.frame = .init(x: 16,y: 36,width: max(0,width - 32),height: boardHeight)
+        footer.frame = .init(x: 16,y: board.frame.maxY + 28,width: max(0,width - 140),height: 18)
+        action.frame = .init(x: max(16,width - 116),y: board.frame.maxY + 25,width: 100,height: 24)
         issue.frame = .init(x: 122,y: 10,width: max(0,width - (reload.isHidden ? 172 : 260)),height: 20)
         reload.frame = .init(x: width - 132,y: 8,width: 88,height: 24)
-        if invitation == nil { entry.frame = .init(x: max(16,width - 100),y:161,width:84,height:24) }
+        if invitation == nil { entry.frame = .init(x: max(16,width - 100),y:board.frame.maxY + 25,width:84,height:24) }
         else { let cell = board.rect(.init(x: 45,y: 3)); entry.frame = cell.offsetBy(dx: board.frame.minX - 3,dy: board.frame.minY - 3).insetBy(dx: -3,dy: -3) }
         let limited = width < 360
         if narrow != limited { narrow = limited; if narrow { pause() }; refresh() }
@@ -95,7 +98,7 @@ import AppKit
         for (index, date) in dates.enumerated() where date <= today && calendar.component(.day, from: date) == 1 {
             let text = formatter.string(from: date) as NSString, size = text.size(withAttributes: attributes)
             let x = min(bounds.width - size.width - 16, board.frame.minX + board.rect(.init(x: index / 7, y: 0)).minX)
-            text.draw(at: NSPoint(x: x, y: 138), withAttributes: attributes)
+            text.draw(at: NSPoint(x: x, y: board.frame.maxY + 2), withAttributes: attributes)
         }
     }
     private var score: Int { snake?.score ?? blocks?.score ?? 0 }

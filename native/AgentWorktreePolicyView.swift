@@ -46,9 +46,8 @@ import AppKit
         projects.target = self; projects.action = #selector(projectChanged)
         AgentSettingsStyle.primaryAction(apply); apply.keyEquivalent = "s"; apply.keyEquivalentModifierMask = .command
         let actions = NSStackView(views: [check, NSView(), reload, apply]); actions.spacing = 10
-        let project = NSStackView(views: [projects, manage, backups]); project.spacing = 10
+        let project = NSStackView(views: [AgentSettingsPopupFrame(projects), NSView(), manage, backups]); project.spacing = 10
         projects.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        projects.font = .systemFont(ofSize: 13); projects.controlSize = .large
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
         history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 13); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true

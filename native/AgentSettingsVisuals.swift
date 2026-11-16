@@ -69,6 +69,8 @@ import AppKit
         case "子智能体": symbol = "person.2"
         case "后台进程": symbol = "terminal"
         case "网页查阅", "来源", "接口", "MCP": symbol = "globe"
+        case "Token": symbol = "key"
+        case "状态": symbol = "info.circle"
         case "知识", "记忆更新", "全局记忆", "项目记忆": symbol = "brain.head.profile"
         case "绑定主题", "明暗模式", "字体风格": symbol = "paintpalette"
         case "项目选择入口", "窗口连接": symbol = "folder"

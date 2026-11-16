@@ -10,9 +10,11 @@ import AppKit
         orientation = .vertical; alignment = .leading; spacing = 12
         shortcut.addItems(withTitles: AgentAppShot.Shortcut.allCases.map(\.title)); shortcut.target = self; shortcut.action = #selector(changeShortcut); shortcut.setAccessibilityLabel("AppShot 全局快捷键")
         capture.target = self; capture.action = #selector(captureWindow)
-        let reload = NSButton(title: "重新载入", target: self, action: #selector(reloadSettings)), label = NSTextField(labelWithString: "全局快捷键")
-        let line = NSStackView(views: [label, shortcut, NSView(), capture, reload]); line.spacing = 10; line.alignment = .centerY
+        let reload = NSButton(title: "重新载入", target: self, action: #selector(reloadSettings))
+        let line = AgentSettingsStyle.formRow("全局快捷键", shortcut, trailing: true)
         addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        let actions = NSStackView(views: [NSView(), capture, reload]); actions.spacing = 10; actions.alignment = .centerY
+        addArrangedSubview(actions); actions.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.setAccessibilityLabel("AppShot 状态"); addArrangedSubview(state); state.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         observer = NotificationCenter.default.addObserver(forName: AgentAppShot.changed, object: service, queue: .main) { [weak self] _ in Task { @MainActor in self?.refresh() } }
         activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak service] _ in Task { @MainActor in service?.refreshPermissions() } }

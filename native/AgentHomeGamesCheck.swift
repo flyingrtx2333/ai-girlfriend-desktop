@@ -103,7 +103,10 @@ import Darwin
             for (label,size) in [("normal",NSSize(width:1200,height:774)),("narrow",NSSize(width:780,height:540))] {
                 control.window?.setContentSize(size); control.window?.contentView?.layoutSubtreeIfNeeded(); await wait(0.03)
                 let state = control.homeGamesReadback(), board = state["board"] as? [CGFloat] ?? []
-                checks[label + "HeatmapFitsWindow"] = board.count == 2 && board[0] >= 400 && board[1] == 100 && state["visible"] as? Bool == true && control.window?.contentView?.bounds.size == size
+                checks[label + "HeatmapFitsWindow"] = board.count == 2 && board[0] >= 400 && board[1] >= 60 && board[1] <= 100 && state["visible"] as? Bool == true && control.window?.contentView?.bounds.size == size
+                let layout = state["layout"] as? [String:Bool] ?? [:]
+                for key in ["headingVisible", "shortcutsVisible", "activityVisible", "composerVisible", "noOverlap"] { checks[label + "Home-" + key] = layout[key] == true }
+                report[label + "HomeReadback"] = state
             }
             checks["noProviderRequestsOrForgedUsage"] = attempts == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
         } catch { report["error"] = error.localizedDescription }

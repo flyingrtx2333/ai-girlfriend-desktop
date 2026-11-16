@@ -209,7 +209,7 @@ import AppKit
         return row
     }
     static func sectionHeading(_ title: String) -> NSView {
-        let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
+        let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
         let view = NSView(); view.addSubview(heading); heading.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([heading.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16), heading.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16), heading.topAnchor.constraint(equalTo: view.topAnchor), heading.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
         return view
