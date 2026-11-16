@@ -10,16 +10,18 @@ import AppKit
         orientation = .vertical; alignment = .leading; spacing = 12
         let restore = NSButton(title: "恢复全部默认", target: self, action: #selector(restoreAll)), reload = NSButton(title: "重新载入", target: self, action: #selector(reloadSettings))
         let toolbar = NSStackView(views: [restore, reload, NSView()]); toolbar.spacing = 8; addArrangedSubview(toolbar)
+        var rows: [NSView] = []
         for command in AgentShortcutCommand.allCases {
-            let title = NSTextField(labelWithString: command.title), button = NSButton(title: "", target: self, action: #selector(record(_:))), reset = NSButton(title: "恢复默认", target: self, action: #selector(restore(_:)))
-            title.font = .systemFont(ofSize: 13); title.widthAnchor.constraint(equalToConstant: 148).isActive = true
+            let button = NSButton(title: "", target: self, action: #selector(record(_:))), reset = NSButton(title: "恢复默认", target: self, action: #selector(restore(_:)))
             button.tag = AgentShortcutCommand.allCases.firstIndex(of: command)!; reset.tag = button.tag
             button.bezelStyle = .rounded; button.font = .monospacedSystemFont(ofSize: 13, weight: .medium); button.widthAnchor.constraint(equalToConstant: 106).isActive = true
             button.setAccessibilityLabel(command.title + "快捷键"); reset.setAccessibilityLabel(command.title + "恢复默认"); reset.bezelStyle = .inline; reset.font = .systemFont(ofSize: 11)
-            let line = NSStackView(views: [title, button, reset, NSView()]); line.spacing = 12; line.alignment = .centerY
-            addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            let actions = NSStackView(views: [button, reset]); actions.spacing = 10; actions.alignment = .centerY
+            rows.append(AgentSettingsStyle.formRow(command.title, actions, trailing: true))
             buttons[command] = button; resets[command] = reset
         }
+        let section = AgentSettingsStyle.section("应用快捷键", id: "shortcut-bindings", rows: rows)
+        addArrangedSubview(section); section.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         message.font = .systemFont(ofSize: 12); message.textColor = .systemRed; message.setAccessibilityLabel("快捷键状态"); addArrangedSubview(message); message.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         refresh()
     }

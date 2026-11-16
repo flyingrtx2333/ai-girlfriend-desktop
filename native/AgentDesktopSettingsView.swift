@@ -3,21 +3,24 @@ import ApplicationServices
 
 @MainActor final class AgentDesktopSettingsView: NSStackView {
     private let desktop: AgentDesktop
-    private let enabled = NSSwitch(), accessibility = NSTextField(labelWithString: ""), recording = NSTextField(labelWithString: ""), connections = NSTextField(labelWithString: ""), status = NSTextField(wrappingLabelWithString: "")
+    private let enabled = NSSwitch(), accessibility = NSTextField(labelWithString: ""), recording = NSTextField(labelWithString: ""), connections = NSTextField(labelWithString: "")
+    private let status = AgentSettingsStatusField("电脑操作状态")
     private var configurationHash: String?, observer: NSObjectProtocol?
     init(desktop: AgentDesktop) {
         self.desktop = desktop
-        super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 14
+        super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 10
         enabled.target = self; enabled.action = #selector(toggle); enabled.setAccessibilityLabel("启用电脑操作")
         func row(_ title: String, _ items: [NSView]) {
-            let label = NSTextField(labelWithString: title); label.widthAnchor.constraint(equalToConstant: 104).isActive = true
-            let line = NSStackView(views: [label] + items); line.spacing = 10; line.alignment = .centerY; addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            let controls = NSStackView(views: items); controls.spacing = 10; controls.alignment = .centerY
+            let line = AgentSettingsStyle.formRow(title, controls, trailing: true); addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         let ax = NSButton(title: "打开系统设置", target: self, action: #selector(requestAccessibility)), screen = NSButton(title: "打开系统设置", target: self, action: #selector(requestRecording))
         ax.setAccessibilityLabel("授权辅助功能"); screen.setAccessibilityLabel("授权屏幕录制")
         let refresh = NSButton(title: "刷新权限", target: self, action: #selector(refreshState)), disconnect = NSButton(title: "断开全部窗口", target: self, action: #selector(disconnectAll))
+        for button in [ax, screen, refresh, disconnect] { button.bezelStyle = .rounded; button.font = .systemFont(ofSize: 13) }
         row("启用电脑操作", [NSView(), enabled]); row("辅助功能", [accessibility, NSView(), ax]); row("屏幕录制", [recording, NSView(), screen]); row("窗口连接", [connections, NSView(), disconnect])
-        addArrangedSubview(refresh); status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(status); status.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        row("", [NSView(), refresh]); status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(status); status.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.refreshState() } }
         refreshState()
     }

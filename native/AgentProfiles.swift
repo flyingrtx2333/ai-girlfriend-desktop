@@ -137,11 +137,15 @@ struct AgentProfileAssignment: Codable {
             merged.merge(entry) { _, new in new }
             if importing { merged["id"] = UUID().uuidString; merged["enabled"] = false }
             let value = try JSONDecoder().decode(AgentProfile.self, from: JSONSerialization.data(withJSONObject: merged))
-            guard UUID(uuidString: value.id) != nil, ids.insert(value.id).inserted,
-                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 60,
-                  names.insert(name.lowercased()).inserted, description.count <= 500,
-                  !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, instructions.utf8.count <= 24_000,
-                  value.model.count <= 200, value.tools.count <= 64,
+            guard UUID(uuidString: value.id) != nil, ids.insert(value.id).inserted else { throw PetError("Agent 标识无效或重复") }
+            guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError("请输入 Agent 名称") }
+            guard name.count <= 60 else { throw PetError("Agent 名称不能超过 60 个字符") }
+            guard names.insert(name.lowercased()).inserted else { throw PetError("Agent 名称已存在：" + name) }
+            guard description.count <= 500 else { throw PetError("Agent 职责不能超过 500 个字符") }
+            guard !instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw PetError("请输入 Agent 工作指令") }
+            guard instructions.utf8.count <= 24_000 else { throw PetError("Agent 工作指令过长，请缩短后重试") }
+            guard value.model.count <= 200 else { throw PetError("Agent 模型名称不能超过 200 个字符") }
+            guard value.tools.count <= 64,
                   Set(value.tools).count == value.tools.count, Set(value.tools).isSubset(of: Self.toolNames),
                   !value.tools.contains(where: AgentMCP.isModelToolName),
                   (value.skills ?? []).count <= 16, Set(value.skills ?? []).count == (value.skills ?? []).count,
@@ -149,7 +153,7 @@ struct AgentProfileAssignment: Codable {
                   (value.mcpServers ?? []).count <= 16, Set(value.mcpServers ?? []).count == (value.mcpServers ?? []).count,
                   (value.mcpServers ?? []).allSatisfy({ UUID(uuidString: $0) != nil }),
                   (value.toolPermissions ?? [:]).count <= 64, Set(value.toolPermissions?.keys.map { $0 } ?? []).isSubset(of: Self.toolNames),
-                  (value.mcpToolPermissions ?? []).count <= 128 else { throw PetError("Agent 名称重复、字段超限或工具范围无效") }
+                  (value.mcpToolPermissions ?? []).count <= 128 else { throw PetError("Agent 工具或扩展范围无效") }
             var mcpKeys = Set<String>()
             if let rules = entry["mcpToolPermissions"] as? [[String: Any]], rules.contains(where: { Set($0.keys) != ["serverID", "tool", "permission"] }) { throw PetError("MCP 工具规则包含不支持的字段") }
             for rule in value.mcpToolPermissions ?? [] {

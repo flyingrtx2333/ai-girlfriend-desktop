@@ -76,7 +76,7 @@ enum AgentMonitorSection: String, Codable, CaseIterable, Hashable {
     private var switches: [AgentMonitorSection: NSSwitch] = [:]
     private let status = NSTextField(wrappingLabelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
     init(service: AgentTaskMonitor, models: @escaping () -> [String]) {
-        self.service = service; self.modelChoices = models; super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 18
+        self.service = service; self.modelChoices = models; super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 24
         presentation.addItems(withTitles: AgentMonitorPresentation.allCases.map(\.title)); presentation.setAccessibilityLabel("任务监控形式"); presentation.identifier = NSUserInterfaceItemIdentifier("monitor-presentation")
         visible.addItems(withTitles: ["默认展示", "默认隐藏"]); visible.setAccessibilityLabel("固定模式默认展示"); visible.identifier = NSUserInterfaceItemIdentifier("monitor-default-visible")
         for choice in [presentation, visible] { choice.target = self; choice.action = #selector(change); choice.widthAnchor.constraint(equalToConstant: 170).isActive = true }
@@ -98,11 +98,8 @@ enum AgentMonitorSection: String, Codable, CaseIterable, Hashable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func group(_ title: String, rows: [NSView]) {
-        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(label)
-        for (index, row) in rows.enumerated() {
-            if index > 0 { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
-            addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
+        let section = AgentSettingsStyle.section(title, id: "monitor-" + title, rows: rows)
+        addArrangedSubview(section); section.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
     @objc private func refresh() {
         presentation.selectItem(at: AgentMonitorPresentation.allCases.firstIndex(of: service.settings.presentation) ?? 0); visible.selectItem(at: service.settings.dockedDefaultVisible ? 0 : 1)

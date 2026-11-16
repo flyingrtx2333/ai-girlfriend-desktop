@@ -27,6 +27,16 @@ import AppKit
             checks["importsAreDisabledWithNewIdentities"] = imported.allSatisfy { !$0.enabled && ![audit.id, writer.id, slow.id].contains($0.id) }
             rejected("staleEditorSaveRejected") { try tasks.agents.save(before.0, expectedHash: "stale") }
             rejected("unknownConfigFieldsRejected") { _ = try tasks.agents.decode("{\"agents\":[],\"futurePermission\":true}") }
+            let validConfiguration = try tasks.agents.document()
+            for (label, name, instructions, expected) in [
+                ("emptyNameReportsRequiredField", " \n", audit.instructions, "请输入 Agent 名称"),
+                ("duplicateNameReportsActualName", writer.name, audit.instructions, "Agent 名称已存在：" + writer.name),
+                ("emptyInstructionsReportRequiredField", audit.name, " \n", "请输入 Agent 工作指令")
+            ] {
+                var invalid = audit; invalid.name = name; invalid.instructions = instructions
+                do { try tasks.agents.save(tasks.agents.encode([writer, invalid]), expectedHash: validConfiguration.1); checks[label] = false }
+                catch { let after = try tasks.agents.document(); checks[label] = error.localizedDescription == expected && after.0 == validConfiguration.0 }
+            }
             let owner = tasks.create(title: "独立权限检查", workspace: workspace.path)
             tasks.update(owner) { $0.permission = .review }
             let readonly = try tasks.agents.createTask(audit.id, store: tasks, workspace: workspace.path, owner: tasks.task(owner))

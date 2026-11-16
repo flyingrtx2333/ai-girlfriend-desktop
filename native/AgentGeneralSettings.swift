@@ -108,9 +108,9 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     private var authorization = UNAuthorizationStatus.notDetermined, updatingPermission = false
     init(service: AgentGeneralSettings, thinking: AgentThinkingStatus, notifications: AgentAutomationNotifications, taskID: @escaping () -> String?) {
         self.service = service; self.notifications = notifications; self.taskID = taskID; thinkingService = thinking; super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 22
+        orientation = .vertical; alignment = .leading; spacing = 24
         for page in [overview, conversationPage, thinkingPage] {
-            page.orientation = .vertical; page.alignment = .leading; page.spacing = 22; addArrangedSubview(page); page.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            page.orientation = .vertical; page.alignment = .leading; page.spacing = 24; addArrangedSubview(page); page.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         conversationPage.isHidden = true; thinkingPage.isHidden = true
         thinkingButton.bezelStyle = .rounded; thinkingButton.identifier = NSUserInterfaceItemIdentifier("general-thinking-status"); thinkingButton.setAccessibilityLabel("思考状态设置"); thinkingButton.target = self; thinkingButton.action = #selector(openThinking)
@@ -163,17 +163,8 @@ enum AgentRunningInput: String, Codable, CaseIterable {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func group(_ title: String, rows: [(String, NSView)], in page: NSStackView? = nil) {
-        let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
-        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
-        for (title, control) in rows {
-            if !body.arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); body.addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
-            let row = AgentSettingsStyle.formRow(title, control, trailing: true); body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-        }
-        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: .separatorColor); card.layer?.cornerRadius = 9; card.layer?.borderWidth = 1
-        body.translatesAutoresizingMaskIntoConstraints = false; card.addSubview(body)
-        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 12), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)])
-        let column = NSStackView(views: [heading, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
-        (page ?? overview).addArrangedSubview(column); column.widthAnchor.constraint(equalTo: widthAnchor).isActive = true; card.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        let column = AgentSettingsStyle.section(title, id: "general-" + title, rows: rows.map { AgentSettingsStyle.formRow($0.0, $0.1, trailing: true) })
+        (page ?? overview).addArrangedSubview(column); column.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
     @objc private func refresh() {
         let value = service.settings; completion.selectItem(at: AgentCompletionNotification.allCases.firstIndex(of: value.completionNotifications) ?? 1)

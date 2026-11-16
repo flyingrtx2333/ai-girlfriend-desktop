@@ -206,9 +206,15 @@ import AppKit
         field.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
         return row
     }
-    static func section(_ title: String, id: String, rows: [NSView]) -> NSStackView {
+    static func sectionHeading(_ title: String) -> NSView {
         let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 12, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
-        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 12
+        let view = NSView(); view.addSubview(heading); heading.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([heading.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16), heading.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16), heading.topAnchor.constraint(equalTo: view.topAnchor), heading.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
+        return view
+    }
+    static func section(_ title: String, id: String, rows: [NSView]) -> NSStackView {
+        let heading = sectionHeading(title)
+        let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
         for row in rows {
             if !body.arrangedSubviews.isEmpty { let line = AgentWorkbenchTheme.rule(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
             body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
@@ -216,9 +222,9 @@ import AppKit
         let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line)
         card.identifier = .init("settings-card-" + id); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 16), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)])
+        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 10), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)])
         let column = NSStackView(views: [heading, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
-        column.identifier = .init("settings-section-" + id); card.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        column.identifier = .init("settings-section-" + id); heading.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true; card.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         return column
     }
     static func form(_ sections: [NSView], label: String) -> NSScrollView {

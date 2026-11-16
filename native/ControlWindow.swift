@@ -1536,22 +1536,29 @@ final class FormDocumentView: NSView {
     private func buildSettings() {
         settingsScroll.hasVerticalScroller = true; settingsScroll.drawsBackground = false; settingsScroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false
-        settingsForm.orientation = .vertical; settingsForm.alignment = .leading; settingsForm.spacing = 22
-        document.addSubview(settingsForm); pin(settingsForm, to: document, inset: 4); settingsScroll.documentView = document
+        settingsForm.orientation = .vertical; settingsForm.alignment = .leading; settingsForm.spacing = 24
+        document.addSubview(settingsForm); pin(settingsForm, to: document); settingsScroll.documentView = document
         document.widthAnchor.constraint(equalTo: settingsScroll.contentView.widthAnchor).isActive = true
         var body: NSStackView!
+        var panelOnly = false
         func group(_ category: String, _ title: String, _ keywords: String, key: String? = nil) {
-            let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 13, weight: .medium); heading.textColor = AgentWorkbenchTheme.secondaryText
-            let framed = category != "general"
-            let card = AgentThemeView(fill: framed ? .textBackgroundColor : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
+            let heading = AgentSettingsStyle.sectionHeading(title)
+            panelOnly = ["general", "monitor", "shortcuts"].contains(category)
+            let framed = !panelOnly
+            let card = AgentThemeView(fill: framed ? AgentWorkbenchTheme.surface : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
             card.layer?.cornerRadius = 12; card.layer?.borderWidth = framed ? 1 : 0
             body = stack([], vertical: true, spacing: 0); body.alignment = .centerX
             card.addSubview(body); pin(body, to: card)
-            let section = stack([heading, card], vertical: true, spacing: 9)
+            let section = stack([heading, card], vertical: true, spacing: 10)
+            heading.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             card.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             settingGroups.append((category, title, keywords, section, key))
         }
         func row(_ text: String, _ control: NSView, trailing: Bool = false) {
+            if panelOnly && text.isEmpty {
+                body.addArrangedSubview(control); control.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+                return
+            }
             if !body.arrangedSubviews.isEmpty {
                 let rule = NSBox(); rule.boxType = .separator; body.addArrangedSubview(rule)
                 rule.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
@@ -1576,9 +1583,8 @@ final class FormDocumentView: NSView {
         for value in [endpoint, model, persona, apiKey, voiceKey, voiceEndpoint, voiceID, voiceModel, wakePhrase] { field(value) }
         for (control, label) in [(voiceEnabled, "语音回复"), (wakeEnabled, "启用语音唤醒"), (onTop, "窗口置顶")] { control.setAccessibilityLabel(label) }
         if let shortcuts = companion?.shortcuts {
-            group("shortcuts", "键盘快捷键", "快捷键 键盘 shortcuts keyboard 按键 组合 导航 新建 搜索 计划")
+            group("shortcuts", "快捷键", "快捷键 键盘 shortcuts keyboard 按键 组合 导航 新建 搜索 计划")
             let panel = AgentShortcutSettingsView(shortcuts: shortcuts); shortcutSettings = panel; row("", panel)
-            panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
         }
         group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
@@ -1642,7 +1648,7 @@ final class FormDocumentView: NSView {
                     guard let self, selectedTab == "settings", settingsCategory == "general", settingsSearch.stringValue.isEmpty else { return }
                     settingsHeading.stringValue = title; pageTitle.stringValue = title
                 }
-                row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+                row("", panel)
             }
             if companion.usesAgent {
                 for mode in AgentWorkMode.allCases {
@@ -1656,7 +1662,7 @@ final class FormDocumentView: NSView {
             if companion.usesAgent {
                 group("monitor", "任务监控", "任务监控 固定 浮动 浮层 默认展示 默认隐藏 回顾 模型 目标 计划 子智能体 后台进程 侧边聊天 Skill MCP 产出 网页 来源 知识 记忆更新 演示画面 Task Monitor Recap")
                 let panel = AgentTaskMonitorSettingsView(service: companion.taskMonitor, models: { [weak self] in guard let self, let id = agentTaskID else { return [] }; return companion.agentRuntime?.modelChoices(id) ?? [] })
-                row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+                row("", panel)
             }
             group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
             let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
@@ -1686,7 +1692,7 @@ final class FormDocumentView: NSView {
             group("computer", "AppShot", "AppShot 窗口快照 前台 截图 可访问文字 全局 快捷键")
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
-            let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel)
+            let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel); desktopPanel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("imports", "本机任务", "数据 导入 Codex Qoder 历史 来源")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
@@ -1709,11 +1715,9 @@ final class FormDocumentView: NSView {
         let changes = NSButton(title: "更新记录", target: self, action: #selector(openApplicationChanges))
         row("", stack([location, changes, NSView()], spacing: 12))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
-        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings)); save.isBordered = false
+        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings))
         generalSettingsSave = save
-        save.wantsLayer = true; save.layer?.cornerRadius = 9; save.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
-        save.contentTintColor = .white; save.font = .systemFont(ofSize: 13, weight: .medium)
-        save.widthAnchor.constraint(equalToConstant: 76).isActive = true; save.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        AgentSettingsStyle.primaryAction(save)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }

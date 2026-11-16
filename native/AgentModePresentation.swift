@@ -63,7 +63,7 @@ import AppKit
     private let status = NSTextField(wrappingLabelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
     init(service: AgentModePresentation, mode: AgentWorkMode) {
         self.service = service; self.mode = mode; super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 0
+        orientation = .vertical; alignment = .leading; spacing = 10
         for (index, pair) in [("项目选择入口", project), ("输入区运行环境", environment), ("变更审阅", changes)].enumerated() {
             let (title, control) = pair
             control.tag = index; control.target = self; control.action = #selector(change(_:))

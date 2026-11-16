@@ -14,6 +14,7 @@ import AppKit
     private let remove = NSButton(title: "永久删除…", target: nil, action: nil), clear = NSButton(title: "清空当前列表…", target: nil, action: nil)
     private var rows: [Item] = [], signature = "", projectPath: String?
     private var busy = false, operationIssue: String?
+    private var listHeight: NSLayoutConstraint?
     var onWillChange: (() -> Void)?
     var onChange: (() -> Void)?
     var onDelete: (([String], [String]) async throws -> String?)? { didSet { updateAction() } }
@@ -24,7 +25,7 @@ import AppKit
         project.target = self; project.action = #selector(changeProject); project.setAccessibilityLabel("筛选归档项目"); project.cell?.lineBreakMode = .byTruncatingMiddle
         let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item")); table.addTableColumn(name)
         table.headerView = nil; table.rowHeight = 53; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("归档列表")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true; list.drawsBackground = false; list.borderType = .noBorder; table.backgroundColor = .clear
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3; state.setAccessibilityLabel("归档状态")
         restore.target = self; restore.action = #selector(restoreSelection); restore.bezelStyle = .rounded
         remove.target = self; remove.action = #selector(deleteSelection); clear.target = self; clear.action = #selector(deleteVisible)
@@ -33,7 +34,8 @@ import AppKit
         let actions = NSStackView(views: [state, NSView(), clear, remove, restore]); actions.spacing = 8
         let column = NSStackView(views: [tabs, filters, list, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), list.heightAnchor.constraint(equalToConstant: 318), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 160), project.widthAnchor.constraint(lessThanOrEqualToConstant: 210)])
+        let height = list.heightAnchor.constraint(equalToConstant: 318); listHeight = height
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), height, search.widthAnchor.constraint(greaterThanOrEqualToConstant: 160), project.widthAnchor.constraint(lessThanOrEqualToConstant: 210)])
         for view in [filters, list, actions] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         search.setContentHuggingPriority(.defaultLow, for: .horizontal); state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refresh()
@@ -60,7 +62,9 @@ import AppKit
         } else { rows = store.tasks.filter { $0.archived && (projectPath == nil || $0.organizationWorkspace == projectPath) }.map(Item.task) }
         rows = rows.filter { query.isEmpty || ($0.title + "\n" + ($0.path ?? "")).localizedCaseInsensitiveContains(query) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         table.reloadData(); table.deselectAll(nil); if let selection, let row = rows.firstIndex(where: { $0.id == selection }) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-        state.textColor = operationIssue == nil ? AgentWorkbenchTheme.secondaryText : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "没有匹配的归档" : "\(rows.count) 项"); updateAction()
+        listHeight?.constant = rows.isEmpty ? 96 : CGFloat(min(318, rows.count * 53))
+        AgentSettingsStyle.listState(table, text: query.isEmpty ? (tabs.selectedSegment == 0 ? "暂无归档的工作区" : "暂无归档的任务") : "没有匹配的归档")
+        state.textColor = operationIssue == nil ? AgentWorkbenchTheme.secondaryText : .systemRed; state.stringValue = operationIssue ?? (busy ? "正在删除…" : rows.isEmpty ? "" : "\(rows.count) 项"); updateAction()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableViewSelectionDidChange(_ notification: Notification) { updateAction() }
