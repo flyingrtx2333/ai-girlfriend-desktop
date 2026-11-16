@@ -62,18 +62,31 @@ import AppKit
 }
 
 @MainActor final class AgentDialogTextField: NSTextField {
+    private var windowObserver: NSObjectProtocol?, focusVisible = false
     override init(frame: NSRect) {
-        super.init(frame: frame); font = .systemFont(ofSize: 13); bezelStyle = .roundedBezel; focusRingType = .none
+        super.init(frame: frame); font = .systemFont(ofSize: 13); isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
+        drawsBackground = true; backgroundColor = .textBackgroundColor
         wantsLayer = true; layer?.cornerRadius = 6
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    private func refreshFocus() {
+    deinit { if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) } }
+    private func refreshFocus(force: Bool = false) {
         let focused = currentEditor().map { window?.firstResponder === $0 } ?? false
+        guard force || focused != focusVisible else { return }; focusVisible = focused
         layer?.borderWidth = focused ? 1.5 : 0
         layer?.borderColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).cgColor
     }
     override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); refreshFocus() }
     override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); refreshFocus() }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshFocus() }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); refreshFocus() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshFocus(force: true) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }; windowObserver = nil
+        if let window {
+            windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didUpdateNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshFocus() }
+            }
+        }
+        refreshFocus(force: true)
+    }
 }

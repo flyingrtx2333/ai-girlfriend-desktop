@@ -60,6 +60,13 @@ import AppKit
             await wait(0.05)
             let input = try field("任务名称", sheet), originalFocus = input.currentEditor()
             checks["renameUsesStyledOwnedSheetWithSelectedInput"] = host.isVisible && sheet.isVisible && sheet.contentView is AgentThemeView && NSApp.modalWindow == nil && originalFocus != nil && input.stringValue == "项目说明"
+            checks["nameInputBoundaryVisibleBeforeTyping"] = input.isBezeled && (input.layer?.borderWidth ?? 0) >= 1
+            if let cancel = find(NSButton.self, in: sheet.contentView, matching: { $0.title == "取消" }) {
+                sheet.makeFirstResponder(cancel); await wait(0.05)
+                checks["nameFocusBoundaryClearsWhenFocusMoves"] = input.layer?.borderWidth == 0
+                sheet.makeFirstResponder(input); await wait(0.05)
+                checks["nameFocusBoundaryRestoresWithoutTyping"] = input.currentEditor() != nil && (input.layer?.borderWidth ?? 0) >= 1
+            }
             checks["parentCloseKeepsOpenNameEditor"] = !control.windowShouldClose(host) && host.attachedSheet === sheet
             for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 780, height: 540))] {
                 host.setContentSize(size); sheet.contentView?.layoutSubtreeIfNeeded()
