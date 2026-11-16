@@ -191,9 +191,11 @@ struct AgentExtensionDocument: Sendable {
             guard Self.validName(name), !name.contains(":") else { throw PetError("Skill 名称使用文字、数字、连字符或下划线") }
             guard try !catalog(workspace: workspace).contains(where: { $0.id != current.id && $0.kind == .skill && $0.name.lowercased() == name.lowercased() }) else { throw PetError("同名 Skill 已存在") }
         }
-        let files = try AgentFiles(workspace: current.root.path), data = try files.readData(files.resolve(current.file.path), maximum: 65_536)
-        guard AgentFiles.hash(data) == expectedHash else { throw PetError("扩展已被其他程序修改，请刷新后重新编辑") }
-        try files.writeData(Data(text.utf8), to: files.resolve(current.file.path), permissions: 0o600)
+        let files = try AgentFiles(workspace: current.root.path), data = Data(text.utf8)
+        let write = try AgentKnowledgeFileWrite(files: files, path: current.file.path, data: data, expectedHash: expectedHash, label: "扩展")
+        guard write.before != nil else { throw PetError("扩展已被移除，请刷新后重新编辑") }
+        try write.requireCurrent()
+        try files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         guard let saved = try catalog(workspace: workspace).first(where: { $0.file == current.file }) else { throw PetError("文件已保存，但名称无效，请打开源文件修正") }
         return saved
     }

@@ -64,6 +64,22 @@ import AppKit
             guard let cancelled = pane.currentController as? AgentExtensionCreationPage else { throw PetError("缺少取消创建页") }
             let afterCreate = try tasks.extensions.catalog(workspace: workspace).map(\.id); try press("取消", in: cancelled)
             checks[key + "CancelReturnsWithoutCreatingFile"] = try pane.currentController === manager && tasks.extensions.catalog(workspace: workspace).map(\.id) == afterCreate
+            guard let created, let actual else { throw PetError("缺少扩展保存保护原件") }
+            let fm = FileManager.default, originalData = try Data(contentsOf: expected), oldHash = AgentFiles.hash(originalData)
+            let originalMode = (try fm.attributesOfItem(atPath: expected.path)[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
+            defer { try? fm.setAttributes([.posixPermissions: originalMode], ofItemAtPath: expected.path) }
+            let changedText = actual + "\n公开的权限保护验收。\n"
+            try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: expected.path)
+            var denied = false
+            do { _ = try tasks.extensions.save(created, text: changedText, expectedHash: oldHash, workspace: workspace) }
+            catch { denied = error.localizedDescription.contains("只读") }
+            checks[key + "ReadOnlySaveKeepsOriginalBytesAndMode"] = try denied && Data(contentsOf: expected) == originalData && (fm.attributesOfItem(atPath: expected.path)[.posixPermissions] as? NSNumber)?.intValue == 0o400
+            try fm.setAttributes([.posixPermissions: 0o640], ofItemAtPath: expected.path)
+            let saved = try tasks.extensions.save(created, text: changedText, expectedHash: oldHash, workspace: workspace), changedData = Data(changedText.utf8)
+            checks[key + "WritableSaveKeepsExactBodyAndOriginalMode"] = try Data(contentsOf: expected) == changedData && (fm.attributesOfItem(atPath: expected.path)[.posixPermissions] as? NSNumber)?.intValue == 0o640
+            var stale = false
+            do { _ = try tasks.extensions.save(saved, text: actual, expectedHash: oldHash, workspace: workspace) } catch { stale = true }
+            checks[key + "StaleSaveKeepsCurrentBytesAndMode"] = try stale && Data(contentsOf: expected) == changedData && (fm.attributesOfItem(atPath: expected.path)[.posixPermissions] as? NSNumber)?.intValue == 0o640
         }
         let noProject = AgentExtensionCreationPage(service: tasks.extensions, kind: .skill, workspace: nil)
         checks["CreationWithoutWorkspaceDisablesProjectScope"] = try menu("扩展范围", in: noProject).item(at: 1)?.isEnabled == false
