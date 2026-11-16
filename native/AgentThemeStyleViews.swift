@@ -53,7 +53,7 @@ import AppKit
         } else {
             popup.addItems(withTitles: AgentThemeStyle.allCases.map(\.title)); popup.target = self; popup.action = #selector(selectPopup)
             popup.identifier = NSUserInterfaceItemIdentifier("theme-binding-" + mode().rawValue)
-            popup.setAccessibilityLabel(mode().title + "：绑定主题"); popup.widthAnchor.constraint(equalToConstant: 160).isActive = true
+            popup.setAccessibilityLabel(mode().title + "：绑定主题")
             let row = AgentSettingsStyle.formRow("绑定主题", popup, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText

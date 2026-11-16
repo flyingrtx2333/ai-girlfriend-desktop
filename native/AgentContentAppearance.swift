@@ -61,8 +61,8 @@ enum AgentContentWidth: String, Codable, CaseIterable {
         fontStyle.addItems(withTitles: AgentContentFont.allCases.map(\.title)); fontStyle.setAccessibilityLabel("字体风格"); fontStyle.identifier = NSUserInterfaceItemIdentifier("content-font-style")
         width.addItems(withTitles: AgentContentWidth.allCases.map(\.title)); width.setAccessibilityLabel("内容宽度"); width.identifier = NSUserInterfaceItemIdentifier("content-width")
         for (title, control) in [("字体风格", fontStyle), ("内容宽度", width)] {
-            control.target = self; control.action = #selector(change); control.widthAnchor.constraint(equalToConstant: 160).isActive = true
-            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            control.target = self; control.action = #selector(change)
+            if !arrangedSubviews.isEmpty { let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
             let row = AgentSettingsStyle.formRow(title, control, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText

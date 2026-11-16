@@ -11,7 +11,7 @@ import ApplicationServices
         super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 10
         enabled.target = self; enabled.action = #selector(toggle); enabled.setAccessibilityLabel("启用电脑操作")
         func row(_ title: String, _ items: [NSView]) {
-            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            if !arrangedSubviews.isEmpty { let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
             let controls = NSStackView(views: items); controls.spacing = 10; controls.alignment = .centerY
             let line = AgentSettingsStyle.formRow(title, controls, trailing: true); addArrangedSubview(line); line.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }

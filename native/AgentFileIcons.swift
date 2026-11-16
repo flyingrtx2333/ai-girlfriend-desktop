@@ -152,7 +152,7 @@ enum AgentFileIconStyle: String, Codable, CaseIterable {
     init(service: AgentFileIcons) {
         self.service = service; super.init(frame: .zero); orientation = .vertical; alignment = .leading; spacing = 10
         choice.addItems(withTitles: AgentFileIconStyle.allCases.map(\.title)); choice.setAccessibilityLabel("文件图标"); choice.identifier = NSUserInterfaceItemIdentifier("file-icon-style")
-        choice.target = self; choice.action = #selector(change); choice.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        choice.target = self; choice.action = #selector(change)
         let row = AgentSettingsStyle.formRow("文件图标", choice, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; reload.target = self; reload.action = #selector(reloadSettings)
         let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true

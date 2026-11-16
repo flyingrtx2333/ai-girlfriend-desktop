@@ -69,7 +69,7 @@ import AppKit
             control.tag = index; control.target = self; control.action = #selector(change(_:))
             control.setAccessibilityLabel(mode.title + "：" + title)
             control.identifier = NSUserInterfaceItemIdentifier("mode-\(mode.rawValue)-\(index)")
-            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            if !arrangedSubviews.isEmpty { let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
             let row = AgentSettingsStyle.formRow(title, control, trailing: true)
             addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }

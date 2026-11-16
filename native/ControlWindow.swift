@@ -788,7 +788,7 @@ final class FormDocumentView: NSView {
         mcpInputRow.orientation = .horizontal; mcpInputRow.addArrangedSubview(mcpInputButton); mcpInputRow.addArrangedSubview(NSView()); mcpInputRow.isHidden = true
         mcpInputButton.target = self; mcpInputButton.action = #selector(showMCPUserInput); mcpInputButton.setAccessibilityLabel("回答连接器问询")
         mcpInputButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, status, entry, lower, emptyAfter], vertical: true, spacing: 14)
+        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, status, emptyAfter, entry, lower], vertical: true, spacing: 14)
         conversation.addSubview(column)
         workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
         workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
@@ -839,7 +839,7 @@ final class FormDocumentView: NSView {
         pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
-        emptyBeforeHeight.constant = max(0, min(80, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.18))
+        emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
         let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
@@ -1558,7 +1558,7 @@ final class FormDocumentView: NSView {
                 return
             }
             if !body.arrangedSubviews.isEmpty {
-                let rule = NSBox(); rule.boxType = .separator; body.addArrangedSubview(rule)
+                let rule = AgentSettingsStyle.divider(); body.addArrangedSubview(rule)
                 rule.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             }
             let line = AgentSettingsStyle.formRow(text, control, trailing: trailing || control is NSSwitch || control is NSPopUpButton), wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false

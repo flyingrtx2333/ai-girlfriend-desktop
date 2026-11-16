@@ -186,14 +186,16 @@ import AppKit
         if field.isBezeled { field.bezelStyle = .roundedBezel; field.backgroundColor = .textBackgroundColor }
     }
     static func formRow(_ title: String, _ control: NSView, trailing: Bool) -> NSStackView {
-        if let popup = control as? NSPopUpButton {
-            popup.font = .systemFont(ofSize: 13); popup.controlSize = .large; popup.bezelColor = .textBackgroundColor
-            popup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
+        func compact(_ view: NSView) {
+            if let toggle = view as? NSSwitch { toggle.controlSize = .mini }
+            view.subviews.forEach(compact)
         }
-        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13); label.textColor = .labelColor
+        compact(control)
+        let accessory: NSView = (control as? NSPopUpButton).map(AgentSettingsPopupFrame.init) ?? control
+        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 14); label.textColor = .labelColor
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
         if !trailing { label.widthAnchor.constraint(equalToConstant: 88).isActive = true }
-        let views: [NSView] = title.isEmpty ? [control] : trailing ? [label, NSView(), control] : [label, control]
+        let views: [NSView] = title.isEmpty ? [accessory] : trailing ? [rowIcon(title), label, NSView(), accessory] : [rowIcon(title), label, accessory]
         let row = NSStackView(views: views); row.alignment = .centerY; row.spacing = 12; row.translatesAutoresizingMaskIntoConstraints = false
         if !title.isEmpty { row.identifier = .init(searchRowPrefix + title) }
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
@@ -201,7 +203,7 @@ import AppKit
     }
     static func labeledField(_ title: String, _ field: NSTextField) -> NSStackView {
         self.field(field); field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
-        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13)
+        let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 14)
         let row = NSStackView(views: [label, field]); row.orientation = .vertical; row.alignment = .leading; row.spacing = 8
         field.widthAnchor.constraint(equalTo: row.widthAnchor).isActive = true
         return row
@@ -216,7 +218,7 @@ import AppKit
         let heading = sectionHeading(title)
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
         for row in rows {
-            if !body.arrangedSubviews.isEmpty { let line = AgentWorkbenchTheme.rule(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+            if !body.arrangedSubviews.isEmpty { let line = divider(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
             body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
         let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line)

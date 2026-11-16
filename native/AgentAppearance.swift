@@ -77,8 +77,8 @@ enum AgentTheme: String, Codable, CaseIterable {
         theme.addItems(withTitles: AgentTheme.allCases.map(\.title)); theme.setAccessibilityLabel("界面主题")
         size.addItems(withTitles: AgentAppearance.textSizes.map { "\($0)" }); size.setAccessibilityLabel("对话字号")
         for (title, control) in [("明暗模式", theme), ("对话字号", size)] {
-            control.target = self; control.action = #selector(change); control.widthAnchor.constraint(equalToConstant: 160).isActive = true
-            if !arrangedSubviews.isEmpty { let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+            control.target = self; control.action = #selector(change)
+            if !arrangedSubviews.isEmpty { let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
             let row = AgentSettingsStyle.formRow(title, control, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             if control === theme, let styles {
                 let editor = AgentThemeStyleSelectionView(service: styles, gallery: true, mode: mode)
@@ -89,15 +89,15 @@ enum AgentTheme: String, Codable, CaseIterable {
         reload.target = self; reload.action = #selector(reloadSettings)
         let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         if let content {
-            let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             let editor = AgentContentAppearanceSettingsView(service: content); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         if let fileIcons {
-            let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             let editor = AgentFileIconsSettingsView(service: fileIcons); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         if let sidebar {
-            let rule = AgentWorkbenchTheme.rule(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             let editor = AgentSidebarLayoutSettingsView(service: sidebar); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentAppearance.changed, object: service)
