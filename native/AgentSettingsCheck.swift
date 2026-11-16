@@ -122,8 +122,8 @@ import Darwin
                 let list = catalog(manager.pageContentView)
                 if let list {
                     catalogChecks[key + "CatalogOpensWithoutConfigurationForm"] = !text(manager.pageContentView!).contains(expected) && list.numberOfRows > 0 && list.bounds.width >= (manager.pageContentView?.bounds.width ?? 0) - 2
-                    list.onOpen?(); pane.layoutSubtreeIfNeeded()
-                    catalogChecks[key + "CatalogKeyboardOpensHostedDetail"] = pane.currentController is AgentSettingsDetailPage && pane.currentController?.presentingWindow === host && pane.currentController?.pageContentView?.window === host
+                    if let action = list.action { NSApp.sendAction(action, to: list.target, from: list) }; pane.layoutSubtreeIfNeeded()
+                    catalogChecks[key + "CatalogActionOpensHostedDetail"] = list.selectedRow >= 0 && pane.currentController is AgentSettingsDetailPage && pane.currentController?.presentingWindow === host && pane.currentController?.pageContentView?.window === host
                 }
                 if let hooks = manager as? AgentHookWindow, let first = try tasks.hooks.catalog(workspace: workspace).first { hooks.selectHook(first.id) }
                 for _ in 0..<30 {

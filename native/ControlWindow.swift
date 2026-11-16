@@ -2697,7 +2697,8 @@ final class FormDocumentView: NSView {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开 Agent 草稿") }
         let draft = try AgentProfileDrafts.load(id, taskID: taskID, store: store)
         let manager: AgentProfileWindow
-        if let existing = settingsPageHost.currentController as? AgentProfileWindow, selectedTab == "settings" {
+        let existing = (settingsPageHost.currentController as? AgentProfileWindow) ?? (settingsPageHost.currentController is AgentSettingsDetailPage ? settingsPageHost.controllers.dropLast().last as? AgentProfileWindow : nil)
+        if let existing, selectedTab == "settings" {
             if existing.workspace != store.task(taskID)?.workspace {
                 guard existing.taskID == taskID else { throw PetError("请先完成已打开项目的 Agent 配置") }
                 _ = try AgentWorkspaceScope.settingsSourceTask(taskID, workspace: existing.workspace, store: store)

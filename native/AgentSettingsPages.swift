@@ -152,6 +152,7 @@ import AppKit
     }
     static func content(table: AgentSettingsCatalogTable, toolbar: NSView, status: AgentSettingsStatusField) -> NSView {
         let root = NSView(), scroll = table.enclosingScrollView ?? NSScrollView()
+        NSLayoutConstraint.deactivate(scroll.constraints.filter { ($0.firstItem as? NSView) === scroll && $0.firstAttribute == .width && $0.relation == .equal && $0.secondItem == nil })
         table.identifier = .init("settings-catalog"); table.rowHeight = 72; table.intercellSpacing = .zero; table.selectionHighlightStyle = .regular
         scroll.identifier = .init("settings-catalog-scroll"); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
         for view in [toolbar, scroll, status] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }

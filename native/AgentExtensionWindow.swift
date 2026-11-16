@@ -95,7 +95,7 @@ import UniformTypeIdentifiers
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedItem); table.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData()
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData(); selectRow(selected?.id); updateControls()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -216,6 +216,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     private func updateControls() {
+        if detailPage != nil { AgentSettingsStyle.listState(table, text: search.stringValue.isEmpty ? (kind == .skill ? "暂无技能" : "暂无指令") : "未找到匹配项") }
         let idle = job == nil, managed = selected?.managed == true
         kinds.isEnabled = idle; search.isEnabled = idle; table.isEnabled = idle; add.isEnabled = idle; importButton.isEnabled = idle
         enabled.isEnabled = idle && selected != nil && selected?.pluginName == nil

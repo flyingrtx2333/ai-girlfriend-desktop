@@ -90,7 +90,7 @@ import UniformTypeIdentifiers
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedProfile); table.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData()
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData(); selectRow(selectedID); updateControls()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -157,15 +157,15 @@ import UniformTypeIdentifiers
     func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload(); if settingsHostWindow != nil { showDetail() } else { requestedDetail = true } }
     func configureDraft(_ draft: AgentProfileDraft) throws {
         _ = try AgentProfileDrafts.checked(draft, taskID: draft.taskID, agents: store.agents)
-        if dirty { guard selectedID == draft.profile.id else { throw PetError("请先保存或关闭已打开的 Agent 更改") }; return }
+        if dirty { guard selectedID == draft.profile.id else { throw PetError("请先保存或关闭已打开的 Agent 更改") }; if detailPage?.isPageVisible != true { showDetail() }; return }
         let document = try store.agents.document(), current = try store.agents.list(workspace: workspace)
         let existing = current.first { $0.id == draft.profile.id && $0.pluginSource == nil }
         guard draft.savedAt == nil || existing != nil else { throw PetError("此草稿保存的 Agent 已移除，原草稿保留") }
         openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current
         if existing == nil { values.append(draft.profile) }
         loading = true; table.reloadData(); loading = false; open(draft.profile.id)
-        requestedDetail = true
         if existing == nil { changed(); presentingWindow?.makeFirstResponder(name) }
+        if settingsHostWindow != nil { showDetail() } else { requestedDetail = true }
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }

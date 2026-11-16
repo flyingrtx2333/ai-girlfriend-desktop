@@ -101,6 +101,33 @@ import AppKit
         checks["TemplateSavePersistsOriginalInstructions"] = try tasks.agents.list(workspace: workspace).contains { $0.name == template.name && $0.instructions == template.instructions }
         checks["InlineFormsCreateNoVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visibleWindows
         checks["InlineFormsLeaveNormallyAfterSave"] = pane.leave()
+        let draftManager = AgentProfileWindow(store: tasks, workspace: workspace)
+        guard pane.show(category: "agents", identity: "already-hosted-agent-draft", scope: "设置项目", make: { _ in draftManager }) else { throw PetError("无法进入已有 Agent 草稿检查") }
+        let profileBefore = try tasks.agents.document().1
+        let draft = AgentProfileDraft(taskID: taskID, callID: "public-hosted-draft", profile: AgentProfile(name: "页内草稿核对员", description: "核对公开文档", instructions: "完整保留的公开草稿指令。"))
+        try draftManager.configureDraft(draft)
+        guard let draftPage = pane.currentController as? AgentSettingsDetailPage else { throw PetError("已有草稿未直接进入配置页") }
+        let draftName = try field("Agent 名称", in: draftPage)
+        checks["AlreadyHostedAgentDraftOpensActualFullWidthEditor"] = try draftPage.presentingWindow === host && draftName.stringValue == draft.profile.name && text(draftPage.pageContentView).contains(draft.profile.instructions) && tasks.agents.document().1 == profileBefore
+        try edit("Agent 名称", "页内草稿核对员修改", in: draftPage); try draftManager.configureDraft(draft)
+        checks["ReopeningSameAgentDraftKeepsUnsavedInput"] = pane.currentController === draftPage && draftName.stringValue == "页内草稿核对员修改"
+        try press("保存", in: draftPage)
+        let savedDraft = try tasks.agents.list(workspace: workspace).first { $0.id == draft.profile.id }
+        checks["HostedDraftSavePreservesInstructionsAndDisabledPermissions"] = savedDraft?.name == "页内草稿核对员修改" && savedDraft?.instructions == draft.profile.instructions && savedDraft?.enabled == false && savedDraft?.readOnly == true && savedDraft?.network == false
+        checks["HostedDraftLeavesNormallyAfterSave"] = pane.leave()
+        let emptyRoot = tasks.directory.appendingPathComponent("empty-catalog"), home = emptyRoot.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        let emptyStore = AgentStore(directory: emptyRoot.appendingPathComponent("profile"), legacy: [], extensionHome: home), emptyTask = emptyStore.create(title: "空列表验收")
+        let emptySkill = AgentExtensionWindow(store: emptyStore, taskID: emptyTask); emptySkill.prepareSettings(kind: .skill)
+        let emptyCommand = AgentExtensionWindow(store: emptyStore, taskID: emptyTask); emptyCommand.prepareSettings(kind: .command)
+        let emptyManagers: [(String, AgentSettingsPageController)] = [("agents", AgentProfileWindow(store: emptyStore, workspace: nil)), ("teams", AgentTeamWindow(store: emptyStore, workspace: nil)), ("skills", emptySkill), ("commands", emptyCommand), ("plugins", AgentPluginWindow(store: emptyStore, workspace: nil))]
+        for (key, manager) in emptyManagers {
+            guard pane.show(category: key, identity: "empty-" + key, scope: "用户设置", make: { _ in manager }) else { throw PetError("无法进入空列表：" + key) }
+            pane.layoutSubtreeIfNeeded()
+            let table = find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true }), empty = find(NSTextField.self, in: manager.pageContentView, matching: { $0.identifier?.rawValue == "settings-list-empty" })
+            checks[key + "EmptyCatalogShowsMessageAndCreationWithoutEditor"] = table?.numberOfRows == 0 && empty?.isHidden == false && !(empty?.stringValue.isEmpty ?? true) && pane.currentController === manager && manager.isPageVisible
+            guard pane.leave() else { throw PetError("空列表未正常退出：" + key) }
+        }
         return checks
     }
 }
