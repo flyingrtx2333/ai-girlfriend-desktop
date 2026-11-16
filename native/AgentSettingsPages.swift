@@ -126,6 +126,7 @@ import AppKit
         imageView = icon; textField = name; toolTip = summary
         for view in [icon, labels, state, open] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        labels.setContentHuggingPriority(.defaultLow, for: .horizontal); state.setContentHuggingPriority(.required, for: .horizontal)
         state.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
