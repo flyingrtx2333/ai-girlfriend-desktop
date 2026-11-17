@@ -177,7 +177,8 @@ import Darwin
             control.showAgentTask(createID); control.show(tab:"chat")
             guard let open = find(NSButton.self,control.window?.contentView,{$0.title == "查看技能"}), open.isEnabled else { throw PetError("缺少实际查看技能入口") }; open.performClick(nil)
             let readback = control.settingsSourceReadback()
-            checks["actualSavedSkillActionOpensItsSecondaryManagementSource"] = readback["source"] as? String == alpha && readback["primary"] as? String == beta && readback["controller"] as? String == "AgentExtensionWindow"
+            report["savedSkillSettingsReadback"] = readback
+            checks["actualSavedSkillActionOpensItsSecondaryManagementSource"] = readback["source"] as? String == alpha && readback["primary"] as? String == beta && readback["controller"] as? String == "AgentSettingsDetailPage"
             checks["actualSavedSkillEditorSelectsExactSecondaryDocument"] = find(NSTextView.self,control.window?.contentView,{$0.string.contains("NEW_ALPHA_DOCUMENT")}) != nil && find(NSTextView.self,control.window?.contentView,{$0.string.contains("BETA_CONFLICT_UNCHANGED")}) == nil
             checks["noModelsReceiptsOrUsageWereCreated"] = attempts == 0 && tasks.tasks.compactMap{tasks.task($0.id)}.allSatisfy{$0.inputTokens == 0 && $0.outputTokens == 0 && ($0.modelReceipts ?? []).isEmpty}
             checks["twoActualScriptProcessesExit"] = pids.count == 2 && pids.allSatisfy{kill($0,0) != 0}

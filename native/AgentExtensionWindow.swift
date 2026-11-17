@@ -278,7 +278,8 @@ import UniformTypeIdentifiers
     @objc private func createItem() {
         guard canLeave() else { return }
         if let menu = creationMenu() {
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: add.bounds.height + 4), in: add)
+            menu.update()
+            menu.popUp(positioning: nil, at: NSPoint(x: add.bounds.maxX - menu.size.width, y: add.bounds.height + 4), in: add)
         } else { createManually() }
     }
     func creationMenu() -> NSMenu? {

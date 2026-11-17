@@ -51,6 +51,17 @@ import AppKit
             func refused(_ body: () throws -> Void) -> Bool { do { try body(); return false } catch { return true } }
             func descendants(_ root: NSView?) -> [NSView] { guard let root else { return [] }; return [root] + root.subviews.flatMap { descendants($0) } }
             func taskNames() throws -> Set<String> { Set(try FileManager.default.contentsOfDirectory(atPath: tasks.directory.path).filter { $0.hasSuffix(".json") }) }
+            checks["nativeEntryHasIsolatedHomeWorkbenchAndNoSystemDelivery"] = usesAgent && tasks.hooks.sharedHome == output.appendingPathComponent("shared-home") && !automationNotifications.allowsSystemDelivery
+            let negative = output.appendingPathComponent("live-authorization-negative"); try FileManager.default.createDirectory(at: negative, withIntermediateDirectories: false)
+            var preferences = PetPreferences(); preferences.model = "deepseek-flash"; preferences.contextTokens = 8192; preferences.replyTokens = 512
+            let authorization = negative.appendingPathComponent("skill-creation-authorization.json"), ledger = negative.appendingPathComponent("skill-creation-request-ledger.json")
+            try Data("{}".utf8).write(to: negative.appendingPathComponent("input-hashes.json"))
+            checks["missingLiveAuthorizationCreatesNoLedger"] = refused { _ = try AgentSkillCreationLiveBudget(output: negative, preferences: preferences) } && !FileManager.default.fileExists(atPath: ledger.path)
+            let invalid = Data("{\"scope\":\"native-negative-only\",\"maximumRequests\":0}".utf8); try invalid.write(to: authorization)
+            checks["wrongLiveScopeCreatesNoLedger"] = refused { _ = try AgentSkillCreationLiveBudget(output: negative, preferences: preferences) } && !FileManager.default.fileExists(atPath: ledger.path)
+            let retained = negative.appendingPathComponent("retained-invalid-authorization.json"); try FileManager.default.moveItem(at: authorization, to: retained); try FileManager.default.createSymbolicLink(at: authorization, withDestinationURL: retained)
+            checks["linkedLiveAuthorizationIsRejectedAndRetained"] = try refused { _ = try AgentSkillCreationLiveBudget(output: negative, preferences: preferences) } && Data(contentsOf: retained) == invalid && !FileManager.default.fileExists(atPath: ledger.path)
+            checks["liveAllowanceHasItsOwnTwentyRequestLimit"] = AgentSkillCreationLiveBudget.maximum == 20 && attempts == 0
             let source = tasks.create(title: "独立创建来源", workMode: .general)
             tasks.update(source) { $0.draft = "保持来源草稿，不能复制为新会话 🧭" }
             let sourceFile = tasks.directory.appendingPathComponent(source + ".json"), sourceBytes = try Data(contentsOf: sourceFile)

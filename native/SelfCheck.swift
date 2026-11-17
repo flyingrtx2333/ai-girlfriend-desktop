@@ -39,6 +39,8 @@ import WebKit
         if CommandLine.arguments.contains("--question-auto-skip-check") { await runQuestionAutoSkipCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--general-settings-check") { await runGeneralSettingsCheck(output); NSApp.terminate(nil); return }
         let attentionLiveUI = CommandLine.arguments.contains("--attention-live-ui")
+        let skillCreationLiveUI = CommandLine.arguments.contains("--skill-creation-live-ui")
+        let boundedLiveUI = attentionLiveUI || skillCreationLiveUI
         if CommandLine.arguments.contains("--mcp-input-check") { await runAgentMCPUserInputCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-find-check") { await runAgentTaskFindCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--shortcut-check") { await runAgentShortcutCheck(output); NSApp.terminate(nil); return }
@@ -101,13 +103,17 @@ import WebKit
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-sse-check") { await runMCPSSECheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
-        if CommandLine.arguments.contains("--manual-ui") || attentionLiveUI {
-            // Normal manual acceptance blocks transmission; live attention requires its separate bounded authorization and ledger.
+        if CommandLine.arguments.contains("--manual-ui") || boundedLiveUI {
+            // Manual fixtures block transmission; each live workflow requires its own bounded authorization and ledger.
             var requests = 0
             do {
                 ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务未初始化") }
                 var gitRemoteWindow: AgentGitPushWindow?
-                if attentionLiveUI {
+                if skillCreationLiveUI {
+                    let budget = try prepareSkillCreationLiveUI(output); requests = budget.used
+                    guard let scopeCheck = runtime.modelRequestCheck else { throw PetError("缺少 Skill 创建范围检查") }
+                    runtime.modelRequestCheck = { try scopeCheck(); requests = budget.used }
+                } else if attentionLiveUI {
                     let budget = try prepareAttentionLiveUI(output); requests = budget.used
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
@@ -237,7 +243,7 @@ import WebKit
                     window.setFrame(NSRect(x: visible.midX - parts[0] / 2, y: visible.maxY - parts[1], width: parts[0], height: parts[1]), display: true)
                 }
                 gitRemoteWindow?.showWindow(nil); gitRemoteWindow?.window?.makeKeyAndOrderFront(nil)
-                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !attentionLiveUI, "boundedAttentionLive": attentionLiveUI, "modelRequestsAtStart": requests, "windowSize": control.window.map { [Double($0.frame.width), Double($0.frame.height)] } ?? []], "manual-ui-process-" + pid + ".json")
+                try write(["appPID": getpid(), "binaryHash": hash, "modelTransmissionBlocked": !boundedLiveUI, "boundedAttentionLive": attentionLiveUI, "boundedSkillCreationLive": skillCreationLiveUI, "modelRequestsAtStart": requests, "windowSize": control.window.map { [Double($0.frame.width), Double($0.frame.height)] } ?? []], "manual-ui-process-" + pid + ".json")
                 let deadline = Date().addingTimeInterval(3600); var capture = ""
                 while Date() < deadline && !FileManager.default.fileExists(atPath: output.appendingPathComponent("finish-manual-ui-" + pid).path) {
                     mcpInput?.pollUI()
