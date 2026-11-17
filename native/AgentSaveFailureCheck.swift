@@ -146,6 +146,67 @@ import AppKit
         guard pane.leave() else { throw PetError("插件保存后未能返回") }
         try pluginDocument.files.writeData(pluginBytes, to: pluginDocument.file, permissions: pluginMode)
         checks["PluginAcceptanceRestoresItsOriginalBytesAndTask"] = try Data(contentsOf: pluginDocument.file) == pluginBytes && encoder.encode(tasks.task(taskID)!) == taskBefore
+
+        guard let task = tasks.task(taskID), let rule = try tasks.rules.catalog(workspace: workspace).first(where: { $0.name == "settings-rule" }) else { throw PetError("缺少公开只读规则") }
+        let ruleOriginal = try Data(contentsOf: rule.source), ruleMode = (try fm.attributesOfItem(atPath: rule.source.path)[.posixPermissions] as! NSNumber).intValue
+        let ruleFiles = try AgentFiles(workspace: rule.owner.path)
+        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: rule.source.path)
+        defer { try? fm.setAttributes([.posixPermissions: ruleMode], ofItemAtPath: rule.source.path) }
+        let readOnlyRule = try tasks.rules.current(rule.id, task: task, enabledOnly: false)
+        let draftBody = "应在失败后保留的公开规则草稿 🐋\n第二行。"
+        let draftRule = try AgentRuleDocument.text(name: rule.name, trigger: .always, description: "", patterns: [], body: draftBody)
+        let ruleError = capture { _ = try tasks.rules.save(readOnlyRule, text: draftRule, task: task) }
+        checks["AlreadyReadOnlyRuleCannotBeAtomicallyReplaced"] = try (ruleError as? AgentSaveFailure)?.reason == .readOnly && Data(contentsOf: rule.source) == ruleOriginal && (fm.attributesOfItem(atPath: rule.source.path)[.posixPermissions] as? NSNumber)?.intValue == 0o400
+        func openRule(_ identity: String) throws -> (AgentRuleWindow, NSTextView, NSButton, AgentSettingsStatusField) {
+            let page = AgentRuleWindow(store: tasks, taskID: taskID)
+            guard pane.show(category: "rules", identity: identity, scope: "公开规则保存验收", make: { _ in page }),
+                  let body = find(NSTextView.self, in: page.pageContentView, matching: { $0.accessibilityLabel() == "规则正文" }),
+                  let save = find(NSButton.self, in: page.pageContentView, matching: { $0.title == "保存" }),
+                  let state = find(AgentSettingsStatusField.self, in: page.pageContentView, matching: { $0.accessibilityLabel() == "规则保存状态" }) else { throw PetError("缺少规则实际保存控件") }
+            body.string = draftBody; page.textDidChange(Notification(name: NSText.didChangeNotification, object: body)); save.performClick(nil)
+            return (page, body, save, state)
+        }
+        let (rulePage, ruleBody, ruleSave, ruleState) = try openRule("readonly-rule-retry")
+        checks["ActualReadOnlyRuleFailureKeepsBodyRetryAndOriginalBytes"] = try ruleState.stringValue.contains("文件为只读") && ruleState.toolTip?.contains(rule.source.path) == true && ruleBody.string == draftBody && ruleSave.isEnabled && Data(contentsOf: rule.source) == ruleOriginal
+        for (label, size) in [("normal", NSSize(width: 1000, height: 660)), ("narrow", NSSize(width: 520, height: 540))] {
+            for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+                host.appearance = NSAppearance(named: appearance); host.setContentSize(size); pane.layoutSubtreeIfNeeded()
+                let needed = ruleState.attributedStringValue.boundingRect(with: NSSize(width: ruleState.bounds.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
+                checks[label + "-" + appearance.rawValue + "RuleErrorWrapsAboveActions"] = !ruleState.isHiddenOrHasHiddenAncestor && !ruleState.hasAmbiguousLayout && ruleState.bounds.width == ruleBody.enclosingScrollView?.bounds.width && needed.height <= ruleState.bounds.height + 2 && ruleState.lineBreakMode == .byWordWrapping
+            }
+        }
+        try fm.setAttributes([.posixPermissions: ruleMode], ofItemAtPath: rule.source.path)
+        ruleSave.performClick(nil)
+        checks["SameRuleSaveRetriesAfterPermissionChangeWithoutReenteringBody"] = try ruleState.stringValue == "已保存" && !ruleSave.isEnabled && ruleBody.string == draftBody && tasks.rules.current(rule.id, task: task, enabledOnly: false).definition?.body == draftBody && (fm.attributesOfItem(atPath: rule.source.path)[.posixPermissions] as? NSNumber)?.intValue == ruleMode
+        guard pane.leave() else { throw PetError("规则重试保存后未能返回") }
+        try ruleFiles.writeData(ruleOriginal, to: rule.source, permissions: ruleMode)
+        let openedRule = try tasks.rules.current(rule.id, task: task, enabledOnly: false)
+        try ruleFiles.writeData(ruleOriginal, to: rule.source, permissions: ruleMode)
+        let identicalReplacement = capture { _ = try tasks.rules.save(openedRule, text: draftRule, task: task) }
+        checks["StrictRuleVersionGuardStillRejectsIdenticalContentReplacement"] = try identicalReplacement != nil && Data(contentsOf: rule.source) == ruleOriginal
+
+        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: rule.source.path)
+        let (_, conflictBody, conflictSave, conflictState) = try openRule("readonly-rule-external-conflict")
+        try fm.setAttributes([.posixPermissions: ruleMode], ofItemAtPath: rule.source.path)
+        let externalRule = try AgentRuleDocument.text(name: rule.name, trigger: .always, description: "", patterns: [], body: "另一编辑器保留的公开规则。")
+        try ruleFiles.writeData(Data(externalRule.utf8), to: rule.source, permissions: ruleMode)
+        conflictSave.performClick(nil)
+        checks["ReadOnlyRetryCannotRebaseOverAnActualExternalRuleEdit"] = try conflictState.stringValue.contains("其他编辑器") && conflictBody.string == draftBody && conflictSave.isEnabled && Data(contentsOf: rule.source) == Data(externalRule.utf8)
+        observations["retainedPublicRuleConflict"] = ["draft": conflictBody.string, "external": externalRule, "diagnostic": conflictState.toolTip ?? ""]
+        var discarded = false
+        let deadline = Date().addingTimeInterval(5)
+        let timer = Timer(timeInterval: 0.02, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                if let dialog = NSApp.modalWindow?.agentDialog, let button = find(NSButton.self, in: dialog.view, matching: { $0.title == "放弃更改" }) { discarded = true; button.performClick(nil); timer.invalidate() }
+                else if Date() >= deadline { timer.invalidate(); NSApp.abortModal() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common); RunLoop.main.add(timer, forMode: .modalPanel)
+        let left = pane.leave(); timer.invalidate()
+        guard left && discarded else { throw PetError("公开冲突草稿留存后未能关闭验收页") }
+        try ruleFiles.writeData(ruleOriginal, to: rule.source, permissions: ruleMode)
+        checks["RuleAcceptanceRestoresExactOriginalFilePermissionsAndTask"] = try Data(contentsOf: rule.source) == ruleOriginal && (fm.attributesOfItem(atPath: rule.source.path)[.posixPermissions] as? NSNumber)?.intValue == ruleMode && encoder.encode(tasks.task(taskID)!) == taskBefore
+        _ = rulePage
         host.appearance = nil; host.setContentSize(NSSize(width: 800, height: 540))
         observations["geometry"] = geometry
         try JSONSerialization.data(withJSONObject: ["checks": checks, "observations": observations, "success": checks.values.allSatisfy { $0 }, "modelRequests": 0], options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("save-feedback-report.json"))

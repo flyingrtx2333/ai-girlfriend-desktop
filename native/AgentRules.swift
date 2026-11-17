@@ -118,6 +118,7 @@ struct AgentLocalRuleItem: Identifiable {
     @discardableResult func save(_ item: AgentLocalRuleItem, text: String, task: AgentTaskRecord) throws -> AgentLocalRuleItem {
         let old = try unchanged(item, task: task), definition = try AgentRuleDocument.parse(text, path: item.relative, fallback: item.name)
         guard text.utf8.count <= 80_000 else { throw PetError("规则文件超过大小上限") }
+        guard (old.permissions ?? 0) & 0o222 != 0 else { throw AgentSaveFailure(reason: .readOnly, diagnostic: "规则文件只读，未保存：" + old.source.path) }
         let files = try AgentFiles(workspace: old.owner.path)
         try files.writeData(Data(text.utf8), to: old.source, permissions: old.permissions ?? 0o600, expectedTarget: old.signature)
         let value = try current(item.id, task: task, enabledOnly: false)

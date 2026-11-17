@@ -13,6 +13,7 @@ import AppKit
     private var descriptionRow = NSStackView(), patternsRow = NSStackView(), scopeRow = NSStackView()
     private let triggers: [AgentRuleTrigger] = [.always, .manual, .decision, .glob]
     private var items: [AgentLocalRuleItem] = [], selected: AgentLocalRuleItem?, creating = false, dirty = false, loading = false, selectedScope = 0
+    private var readOnlySaveFailed = false
     var onInsert: ((AgentLocalRuleItem) throws -> Void)? { didSet { updateControls() } }
     private var task: AgentTaskRecord? { try? editingTask() }
     private func editingTask() throws -> AgentTaskRecord {
@@ -50,18 +51,19 @@ import AppKit
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("规则正文")
         let viewer = NSScrollView(); viewer.documentView = editor; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
-        for label in [location, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        location.font = .systemFont(ofSize: 11); location.textColor = AgentWorkbenchTheme.secondaryText; location.lineBreakMode = .byTruncatingMiddle; location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(save, #selector(saveItem)), (use, #selector(useItem)), (remove, #selector(removeItem)), (reveal, #selector(revealItem))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         let sourceRow = NSStackView(views: [location, NSView(), use]); sourceRow.spacing = 8
-        let footer = NSStackView(views: [state, NSView(), reveal, remove, save]); footer.spacing = 8
-        for view in [header, list, form, viewer, sourceRow, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let footer = NSStackView(views: [NSView(), reveal, remove, save]); footer.spacing = 8
+        for view in [header, list, form, viewer, sourceRow, state, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), header.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: header.leadingAnchor), list.widthAnchor.constraint(equalToConstant: 230), list.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 14), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
             form.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 14), form.trailingAnchor.constraint(equalTo: header.trailingAnchor), form.topAnchor.constraint(equalTo: list.topAnchor),
             sourceRow.leadingAnchor.constraint(equalTo: form.leadingAnchor), sourceRow.trailingAnchor.constraint(equalTo: form.trailingAnchor), sourceRow.topAnchor.constraint(equalTo: form.bottomAnchor, constant: 10), sourceRow.heightAnchor.constraint(equalToConstant: 28),
-            viewer.leadingAnchor.constraint(equalTo: form.leadingAnchor), viewer.trailingAnchor.constraint(equalTo: form.trailingAnchor), viewer.topAnchor.constraint(equalTo: sourceRow.bottomAnchor, constant: 10), viewer.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
+            viewer.leadingAnchor.constraint(equalTo: form.leadingAnchor), viewer.trailingAnchor.constraint(equalTo: form.trailingAnchor), viewer.topAnchor.constraint(equalTo: sourceRow.bottomAnchor, constant: 10), viewer.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -10),
+            state.leadingAnchor.constraint(equalTo: form.leadingAnchor), state.trailingAnchor.constraint(equalTo: form.trailingAnchor), state.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -10),
             footer.leadingAnchor.constraint(equalTo: form.leadingAnchor), footer.trailingAnchor.constraint(equalTo: form.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), viewer.heightAnchor.constraint(greaterThanOrEqualToConstant: 140)
         ])
         reload()
@@ -93,10 +95,10 @@ import AppKit
         } catch { setState(error.localizedDescription); updateControls() }
     }
     private func clear() {
-        loading = true; selected = nil; creating = false; name.stringValue = ""; descriptionField.stringValue = ""; patterns.stringValue = ""; editor.string = ""; location.stringValue = ""; dirty = false; loading = false; updateControls()
+        loading = true; selected = nil; creating = false; readOnlySaveFailed = false; name.stringValue = ""; descriptionField.stringValue = ""; patterns.stringValue = ""; editor.string = ""; location.stringValue = ""; dirty = false; loading = false; updateControls()
     }
     private func open(_ item: AgentLocalRuleItem) {
-        loading = true; selected = item; creating = false
+        loading = true; selected = item; creating = false; readOnlySaveFailed = false
         name.stringValue = item.name; descriptionField.stringValue = item.definition?.description ?? ""; patterns.stringValue = item.definition?.patterns.joined(separator: "\n") ?? ""
         trigger.selectItem(at: triggers.firstIndex(of: item.definition?.trigger ?? .always) ?? 0)
         editor.string = item.definition?.body ?? item.text ?? ""; editor.setAccessibilityLabel(item.definition == nil ? "规则源文件" : "规则正文"); editor.undoManager?.removeAllActions()
@@ -131,6 +133,11 @@ import AppKit
     @discardableResult private func saveChanges() -> Bool {
         do {
             let task = try editingTask()
+            if readOnlySaveFailed, let opened = selected, !creating {
+                let current = try store.rules.current(opened.id, task: task, enabledOnly: false)
+                guard current.owner == opened.owner, current.source == opened.source, current.sha256 == opened.sha256 else { throw PetError("规则已被其他编辑器修改，请刷新后再编辑；未覆盖外部改动") }
+                selected = current
+            }
             let text: String
             if !creating, selected?.definition == nil { text = editor.string }
             else { text = try AgentRuleDocument.text(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), trigger: triggers[trigger.indexOfSelectedItem], description: descriptionField.stringValue, patterns: patterns.stringValue.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }, body: editor.string) }
@@ -138,7 +145,7 @@ import AppKit
             if creating { value = try store.rules.create(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), text: text, project: createScope.indexOfSelectedItem == 1, task: task) }
             else if let selected { value = try store.rules.save(selected, text: text, task: task) } else { return false }
             dirty = false; search.stringValue = ""; scopes.selectedSegment = 0; selectedScope = 0; reload(select: value.id); setState("已保存"); return true
-        } catch { state.showSaveFailure(error); return false }
+        } catch { readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly; state.showSaveFailure(error); return false }
     }
     @objc private func saveItem() { _ = saveChanges() }
     @objc private func toggleEnabled() {
