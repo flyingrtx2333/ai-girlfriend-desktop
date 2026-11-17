@@ -218,6 +218,10 @@ Git 操作需要已安装的 Xcode 命令行工具。仓库初始化、模型预
 
 「扩展」管理本机 Skills 与自定义命令，可搜索、新建、导入、编辑、启停和移到废纸篓。Skill 支持 `SKILL.md`、资源文件夹、ZIP 与 `.skill`；命令使用 Markdown。输入 `/` 可筛选候选，用上下键和 Enter／Tab 选择，再补充要求并发送；从管理窗口使用扩展也只会加入草稿。命令支持 `$ARGUMENTS`，子目录以冒号分组，如 `audit/handoff.md` 对应 `/audit:handoff`；候选会加上 `skill:` 或 `command:` 前缀区分类型。
 
+「设置 → 扩展管理 → 技能 → 新建」提供「通过小鲸创建」和「手动创建」。任务式创建打开独立计划会话，保留来源任务和未发送草稿；确认方案后审阅各文件，选择用户或原项目目录保存。无工作区可保存用户 Skill。界面与本地保存流程已验，真实模型闭环继续跟踪 [TODO](docs/QODER-PARITY-TODO.md)。
+
+<img src="docs/media/skill-creation-menu.jpg" width="1000" alt="实际应用的 Skill 创建菜单：通过小鲸创建或手动创建">
+
 「设置 → 扩展管理 → 插件」可导入一个本地插件 ZIP，审阅作者、版本与组件后安装，再启用插件。支持 `.qoder-plugin/plugin.json` 或 `.claude-plugin/plugin.json`、Skills、命令、MCP 与参考资料；组件使用插件名前缀，例如 `/skill:sales-workbench:review-sales`。从插件窗口使用 Skill／命令只加入原任务草稿，发送后才调用模型。组件随父插件统一启停和移除，源码只读；停用后拒绝继续载入或读取该插件的 Skill 资源，已有任务记录保留。
 
 插件 MCP 支持 manifest 内的 `mcpServers` 对象、相对 JSON 路径或路径数组；未声明时读取 `.mcp.json`，其次 `mcp.json`。可安装只有连接器的插件。从组件列表选择 MCP 后点击「配置连接器」，在现有管理器保存配置并单独启用，再明确连接；安装与父插件启用不会启动程序。支持 stdio、`http`／`streamable-http`、环境变量、HTTP 请求头、`cwd` 与以毫秒计的 `timeout`。`${QODER_PLUGIN_ROOT}`、`${CLAUDE_PLUGIN_ROOT}`、`${PLUGIN_ROOT}` 展开为已安装资源目录；其他变量由用户在本机配置中填写，不读取应用进程的环境凭据，也不自动安装依赖。自定义 Agent 可像选择独立 MCP 一样分配插件连接器。停用、移除或修改配置会断开相关连接，重新启用后须重新连接；旧确认和旧工具引用不会恢复。移除保留本机连接配置与钥匙串凭据，便于从废纸篓恢复插件。
