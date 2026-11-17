@@ -65,7 +65,7 @@ import AppKit
 }
 
 @MainActor final class AgentDialogTextField: NSTextField {
-    var outlined = true { didSet { refreshFocus(force: true) } }
+    var outlined = false { didSet { refreshFocus(force: true) } }
     private var windowObserver: NSObjectProtocol?, focusVisible = false
     override init(frame: NSRect) {
         super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")

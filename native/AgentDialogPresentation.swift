@@ -78,6 +78,11 @@ import AppKit
         field.effectiveAppearance.performAsCurrentDrawingAppearance {
             AgentThemeContext.resolve(field.backgroundColor ?? AgentWorkbenchTheme.card, in: field).setFill()
             NSBezierPath(roundedRect: cellFrame, xRadius: 6, yRadius: 6).fill()
+            if !field.outlined {
+                AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: field).setStroke()
+                let border = NSBezierPath(roundedRect: cellFrame.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+                border.lineWidth = 1; border.stroke()
+            }
         }
         super.drawInterior(withFrame: cellFrame, in: controlView)
     }
