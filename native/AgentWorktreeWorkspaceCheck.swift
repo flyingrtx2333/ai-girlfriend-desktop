@@ -191,6 +191,45 @@ import AppKit
         checks["globalManagerOpensAssociatedTaskAndLeavesSettings"] = control.agentTaskID == fixture.childID && selected["mainPage"] as? String == "chat" && reopened.settingsHostWindow == nil && nextManager.settingsHostWindow == nil
         checks["globalSettingsPreserveOriginalTaskInput"] = tasks.task(fixture.taskID)?.draft == "保留工作树任务输入。" && tasks.task(fixture.secondID)?.draft == "保留另一任务输入。"
         checks["globalSettingsKeepAutomaticRecycleDisabled"] = !tasks.worktreeRetention.policy.enabled
+        let service = tasks.worktreeRetention, beforeHistoryPolicy = service.policy
+        defer { if service.policy != beforeHistoryPolicy { try? service.save(beforeHistoryPolicy, expectedRevision: service.revision) } }
+        let helper = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.workspace.path))
+        let historyChild = try await helper.createWorktree(branch: "acceptance/history-record"), historyPath = URL(fileURLWithPath: historyChild.workspace)
+        let historyTree = try AgentWorktreeSnapshot.read(historyPath)
+        func historyIndex() async throws -> Data {
+            let output = fixture.workspace.deletingLastPathComponent()
+            let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 10, gitDirectory: AgentGit.metadata(workspace: historyChild.workspace), protectedData: store.directory, arguments: ["-C", historyChild.workspace, "rev-parse", "--absolute-git-dir"])
+            guard !result.failed, let path = result.stdout?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else { throw PetError(result.text) }
+            return try Data(contentsOf: URL(fileURLWithPath: path).appendingPathComponent("index"))
+        }
+        let historyOriginalIndex = try await historyIndex()
+        tasks.update(historyChild.taskID) { $0.archived = true }; tasks.selectedID = fixture.childID
+        var historyPolicy = beforeHistoryPolicy; historyPolicy.enabled = true; historyPolicy.idleSeconds = 1; historyPolicy.archivedOnly = true
+        try service.save(historyPolicy, expectedRevision: service.revision, consent: true)
+        let historyDeadline = Date().addingTimeInterval(15)
+        while Date() < historyDeadline {
+            if try service.receipts().contains(where: { $0.path == historyChild.workspace && $0.backupID != nil }), !FileManager.default.fileExists(atPath: historyChild.workspace) { break }
+            await wait(0.05)
+        }
+        try service.save(beforeHistoryPolicy, expectedRevision: service.revision)
+        guard let receipt = try service.receipts().first(where: { $0.path == historyChild.workspace && $0.backupID != nil }), let backupID = receipt.backupID else { throw PetError("历史布局验收未产生真实回收记录：" + service.status) }
+        checks["historyUsesActualAutomaticRecycleReceipt"] = !FileManager.default.fileExists(atPath: historyChild.workspace) && tasks.task(historyChild.taskID)?.archived == true
+        _ = try await helper.restoreWorktree(backupID: backupID)
+        let historyRestoredIndex = try await historyIndex()
+        checks["historyReceiptBackupRestoresActualFilesAndIndex"] = try AgentWorktreeSnapshot.read(historyPath).hash == historyTree.hash && historyRestoredIndex == historyOriginalIndex
+        guard let recordsSettings = control.checkWorktreeSettingsPage() as? AgentWorktreeSettingsWindow else { throw PetError("回收记录设置页未显示") }
+        recordsSettings.policy.refreshState()
+        for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            window.appearance = NSAppearance(named: theme)
+            for (kind, size) in [("normal", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] {
+                window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
+                let value = recordsSettings.policy.workspaceReadback(), historySize = value["historySize"] as? [CGFloat] ?? []
+                checks["actualHistory-" + appearance + "-" + kind] = (value["historyCount"] as? Int ?? 0) > 0 && historySize.count == 2 && historySize[1] >= 150 && (value["history"] as? String)?.contains("已备份并回收") == true && (value["checks"] as? [String: Bool])?.values.allSatisfy({ $0 }) == true
+                report["actualHistory-" + appearance + "-" + kind] = value
+            }
+        }
+        checks["historyCheckRestoresDisabledPolicyAndOriginalTaskInput"] = service.policy == beforeHistoryPolicy && !service.policy.enabled && tasks.task(fixture.taskID)?.draft == "保留工作树任务输入。"
+        report["actualHistoryReceipt"] = ["id": receipt.id, "workspace": historyChild.workspace, "backupID": backupID, "restoredExactIndexSHA256": AgentFiles.hash(historyRestoredIndex), "automaticPolicyFinallyDisabled": !service.policy.enabled]
         window.appearance = nil; window.setContentSize(NSSize(width: 1200, height: 774))
         return (checks, report)
     }

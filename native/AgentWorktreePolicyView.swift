@@ -130,9 +130,12 @@ import AppKit
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         let controls: [NSView] = [enabled, scope, period, projects, apply, reload, check, manage, backups]
+        let records = try? store.worktreeRetention.receipts(), historySize = history.enclosingScrollView?.bounds.size ?? .zero
+        let empty = records?.isEmpty == true
+        let historyFits = empty ? abs(historySize.height - 56) < 1 && history.string == "暂无自动回收记录" : historySize.height >= 150 && !history.string.isEmpty
         return ["enabled": enabled.state == .on, "archivedOnly": scope.indexOfSelectedItem == 0, "idleSeconds": draftPolicy.idleSeconds, "pendingChanges": hasPendingChanges,
-                "selectedProject": roots.indices.contains(projects.indexOfSelectedItem) ? roots[projects.indexOfSelectedItem].path : "", "projects": roots.map(\.path), "manageEnabled": manage.isEnabled, "state": state.stringValue,
-                "checks": ["policyControlsFit": controls.allSatisfy { bounds.insetBy(dx: -1, dy: -1).contains(convert($0.bounds, from: $0)) }, "policyHistoryHasUsableSpace": history.enclosingScrollView?.bounds.height ?? 0 >= 100]]
+                "selectedProject": roots.indices.contains(projects.indexOfSelectedItem) ? roots[projects.indexOfSelectedItem].path : "", "projects": roots.map(\.path), "manageEnabled": manage.isEnabled, "state": state.stringValue, "history": history.string, "historyCount": records?.count ?? -1, "historySize": [historySize.width, historySize.height],
+                "checks": ["policyControlsFit": controls.allSatisfy { bounds.insetBy(dx: -1, dy: -1).contains(convert($0.bounds, from: $0)) }, "policyHistoryHasUsableSpace": historyFits]]
     }
     func checkWorkspace(project: String? = nil, idleSeconds: Double? = nil, action: String = "") {
         guard AgentTaskWorkspace.readbackEnabled else { return }
