@@ -17,7 +17,9 @@ enum AgentSettingsNavigation {
     private let navigation: Bool
     private var tracking: NSTrackingArea?
     private var hovered = false
+    private var keyboardFocused = false
     override var isFlipped: Bool { true }
+    override var alignmentRectInsets: NSEdgeInsets { NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
     override var acceptsFirstResponder: Bool { true }
     override var title: String { didSet { setAccessibilityLabel(title); needsDisplay = true } }
     override var state: NSControl.StateValue { didSet { needsDisplay = true } }
@@ -40,12 +42,14 @@ enum AgentSettingsNavigation {
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
-    override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); needsDisplay = true; return accepted }
+    override func mouseDown(with event: NSEvent) { keyboardFocused = false; super.mouseDown(with: event); needsDisplay = true }
+    override func keyDown(with event: NSEvent) { keyboardFocused = true; super.keyDown(with: event); needsDisplay = true }
+    override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); keyboardFocused = NSApp.currentEvent?.type == .keyDown; needsDisplay = true; return accepted }
     override func resignFirstResponder() -> Bool { let accepted = super.resignFirstResponder(); needsDisplay = true; return accepted }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         let selected = navigation && state == .on
-        let fill = selected ? AgentWorkbenchTheme.navigationSelection : hovered ? AgentWorkbenchTheme.hover : .clear
+        let fill = selected ? AgentWorkbenchTheme.navigationSelection : hovered && window?.isKeyWindow == true ? AgentWorkbenchTheme.hover : .clear
         AgentThemeContext.resolve(fill, in: self).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
         let color = AgentThemeContext.resolve(selected ? .labelColor : AgentWorkbenchTheme.secondaryText, in: self)
@@ -55,7 +59,7 @@ enum AgentSettingsNavigation {
         let value = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: selected ? .medium : .regular), .foregroundColor: color, .paragraphStyle: paragraph])
         let x: CGFloat = navigation ? 32 : 28
         value.draw(in: NSRect(x: x, y: floor((bounds.height - value.size().height) / 2), width: max(0, bounds.width - x - 10), height: value.size().height))
-        if window?.firstResponder === self {
+        if keyboardFocused && window?.isKeyWindow == true && window?.firstResponder === self {
             AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: self).setStroke()
             let focus = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5); focus.lineWidth = 1.5; focus.stroke()
         }
