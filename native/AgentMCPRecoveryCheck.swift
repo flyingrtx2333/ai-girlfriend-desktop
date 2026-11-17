@@ -53,6 +53,10 @@ import AppKit
                 let main = try editor(control); main.checkAction("connect"); try await idle(main)
                 try await select(main, kind: 1, key: "uriTemplate", contains: "/text/")
                 main.checkAction("", resourceURI: "demo://resource/dynamic/text/3")
+                if !interactive {
+                    _ = main.checkFieldView("uri", selection: ("demo://resource/dynamic/text/3" as NSString).range(of: "dynamic"))
+                    main.checkAction("focus-preview")
+                }
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 main.checkAction("", values: ["resourceType": "Text", "resourceId": "2"])
                 if !interactive { _ = main.checkInputView("resourceType", selection: NSRange(location: 1, length: 2)) }
@@ -63,11 +67,15 @@ import AppKit
                 main.selectRequestedServer(a.id); try await idle(main)
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 checks["sameWindowRetainsThreeIndependentForms"] = try AgentMCPContentWindow.recoveryState(main.captureWorkspaceRecovery()).drafts.count == 3
+                if !interactive {
+                    let saved = try AgentMCPContentWindow.recoveryState(main.captureWorkspaceRecovery()).view?.forms.first(where: { $0.key.contains("\ntemplates\n") })?.value.uriSelection
+                    checks["fastFieldResignKeepsTemplateURISelection"] = saved?.range == ("demo://resource/dynamic/text/3" as NSString).range(of: "dynamic")
+                }
                 checks["connectorSwitchRestoresOriginalArguments"] = (main.workspaceReadback()["fields"] as? [String: String]) == ["resourceType": "Text", "resourceId": "2"]
                 if !interactive {
                     await wait(0.05); checks["connectorSwitchRestoresOwnSelectionAndFocus"] = position(main, field: "resourceType", location: 1, length: 2)
-                    main.checkAction("", query: "resource"); _ = main.checkSearchView(selection: NSRange(location: 2, length: 3)); try await idle(main); await wait(0.05)
-                    let query = main.checkSearchView(); report["refreshedSearchView"] = query
+                    main.checkAction("", query: "resource"); _ = main.checkFieldView("search", selection: NSRange(location: 2, length: 3)); try await idle(main); await wait(0.05)
+                    let query = main.checkFieldView("search"); report["refreshedSearchView"] = query
                     checks["catalogRefreshKeepsSearchFocusAndSelection"] = query["focused"] as? Bool == true && query["location"] as? Int == 2 && query["length"] as? Int == 3
                     _ = main.checkInputView("resourceType", selection: NSRange(location: 1, length: 2))
                 }
@@ -171,6 +179,9 @@ import AppKit
                     checks["actualProtocolPreviewUsesRestoredArguments"] = (protocolReadback["previewText"] as? String)?.contains("Resource 2:") == true && (protocolReadback["promptText"] as? String)?.contains("demo://resource/dynamic/text/2") == true
                     try await select(main, kind: 1, key: "uriTemplate", contains: "/text/")
                     checks["otherKindRetainsExpandedTemplateURI"] = main.workspaceReadback()["uri"] as? String == "demo://resource/dynamic/text/3"
+                    await wait(0.05)
+                    let uriView = main.checkFieldView("uri")
+                    checks["coldTemplateRestoresURISelectionAndFocus"] = uriView["focused"] as? Bool == true && uriView["location"] as? Int == ("demo://resource/dynamic/text/3" as NSString).range(of: "dynamic").location && uriView["length"] as? Int == 7
                     main.selectRequestedServer(fixture.serverB); main.checkAction("connect"); try await idle(main)
                     try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                     checks["otherConnectorRetainsOwnArgumentDraft"] = (main.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "5"

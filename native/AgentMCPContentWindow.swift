@@ -16,7 +16,9 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     @objc func fieldSelectionChanged(_ notification: Notification) {
         guard !applyingViews, let editor = notification.object as? NSTextView,
               editor === search.currentEditor() || editor === uri.currentEditor() else { return }
-        rememberInputFocus(); onWorkspaceChange?()
+        rememberInputFocus()
+        if editor === uri.currentEditor(), let key = selectedFormKey, !pendingFormViews.contains(key), let value = try? currentFormView() { formViews[key] = value }
+        onWorkspaceChange?()
     }
     func fieldSelection(_ field: NSTextField) -> AgentTextViewport.Selection? {
         guard let editor = field.currentEditor() as? NSTextView else { return nil }
@@ -587,13 +589,14 @@ extension AgentMCPContentWindow {
         guard let text = fields[name], let view = try? AgentTextViewport(text) else { return [:] }
         return ["location": text.selectedRange().location, "length": text.selectedRange().length, "focused": presentingWindow?.firstResponder === text, "y": view.y, "anchor": view.anchor, "plannedFocus": contentFocus, "focusPending": focusPending, "canBecomeKeyView": text.canBecomeKeyView, "visible": !text.isHiddenOrHasHiddenAncestor]
     }
-    func checkSearchView(selection: NSRange? = nil) -> [String: Any] {
-        guard ["--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return [:] }
-        if let selection, AgentTextViewport.Selection(location: selection.location, length: selection.length).valid(in: (search.stringValue as NSString).length) {
-            focusPending = false; presentingWindow?.makeFirstResponder(search)
-            (search.currentEditor() as? NSTextView)?.setSelectedRange(selection); rememberInputFocus(); onWorkspaceChange?()
+    func checkFieldView(_ name: String, selection: NSRange? = nil) -> [String: Any] {
+        guard ["search", "uri"].contains(name), ["--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return [:] }
+        let field: NSTextField = name == "search" ? search : uri
+        if let selection, AgentTextViewport.Selection(location: selection.location, length: selection.length).valid(in: (field.stringValue as NSString).length) {
+            focusPending = false; presentingWindow?.makeFirstResponder(field)
+            (field.currentEditor() as? NSTextView)?.setSelectedRange(selection); rememberInputFocus(); onWorkspaceChange?()
         }
-        let editor = search.currentEditor() as? NSTextView
-        return ["query": search.stringValue, "location": editor?.selectedRange().location ?? -1, "length": editor?.selectedRange().length ?? -1, "focused": editor != nil && presentingWindow?.firstResponder === editor]
+        let editor = field.currentEditor() as? NSTextView
+        return ["value": field.stringValue, "location": editor?.selectedRange().location ?? -1, "length": editor?.selectedRange().length ?? -1, "focused": editor != nil && presentingWindow?.firstResponder === editor]
     }
 }
