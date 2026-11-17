@@ -207,7 +207,15 @@ import AppKit
     checks["dialogDisablesOwnerCloseButton"] = owner.standardWindowButton(.closeButton)?.isEnabled == false
     dialogEditor.insertText("仅弹窗修改", replacementRange: dialogEditor.selectedRange()); dialogEditor.breakUndoCoalescing()
     try await Task.sleep(for: .milliseconds(50))
-    dialogEditor.undoManager?.undo()
+    let undoItem = NSMenuItem(title: "撤销", action: Selector("undo:"), keyEquivalent: "z")
+    let redoItem = NSMenuItem(title: "重做", action: Selector("redo:"), keyEquivalent: "z")
+    checks["dialogMenuUndoTargetsIsolatedEditor"] = (NSApp.target(forAction: undoItem.action!) as? NSTextView) === dialogEditor && dialogEditor.validateUserInterfaceItem(undoItem)
+    let undoSent = NSApp.sendAction(undoItem.action!, to: nil, from: undoItem)
+    checks["dialogMenuUndoRestoresNameWithoutChangingDraft"] = undoSent && dialogEditor.string == "原名称" && beforeEditor.string == expected
+    checks["dialogMenuRedoTargetsIsolatedEditor"] = (NSApp.target(forAction: redoItem.action!) as? NSTextView) === dialogEditor && dialogEditor.validateUserInterfaceItem(redoItem) && !dialogEditor.validateUserInterfaceItem(undoItem)
+    let redoSent = NSApp.sendAction(redoItem.action!, to: nil, from: redoItem)
+    checks["dialogMenuRedoRestoresOnlyNameEdit"] = redoSent && dialogEditor.string == "仅弹窗修改" && beforeEditor.string == expected
+    _ = NSApp.sendAction(undoItem.action!, to: nil, from: undoItem)
     checks["dialogUndoCannotChangeOriginalText"] = dialogEditor.string == "原名称" && beforeEditor.string == expected
     let dialogSelection = NSRange(location: 1, length: 1); dialogEditor.setSelectedRange(dialogSelection); editor.focusDialog()
     checks["refocusingDialogDoesNotResetCurrentSelection"] = owner.firstResponder === dialogEditor && dialogEditor.selectedRange() == dialogSelection && dialogEditor.string == "原名称"

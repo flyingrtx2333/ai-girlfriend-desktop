@@ -61,6 +61,13 @@ import AppKit
     private let editingUndo = UndoManager()
     private let editingStorage: NSTextStorage
     override var undoManager: UndoManager? { editingUndo }
+    @objc func undo(_ sender: Any?) { if editingUndo.canUndo { editingUndo.undo() } }
+    @objc func redo(_ sender: Any?) { if editingUndo.canRedo { editingUndo.redo() } }
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(undo(_:)) { return editingUndo.canUndo }
+        if item.action == #selector(redo(_:)) { return editingUndo.canRedo }
+        return super.validateUserInterfaceItem(item)
+    }
     override init(frame: NSRect, textContainer: NSTextContainer?) {
         editingStorage = textContainer?.layoutManager?.textStorage ?? NSTextStorage()
         let container = textContainer ?? NSTextContainer(containerSize: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
