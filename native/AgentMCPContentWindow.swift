@@ -347,8 +347,8 @@ extension AgentMCPContentWindow {
         else { formDrafts[key] = nil; if inserted { formViews[key] = nil; pendingFormViews.remove(key) } }
     }
     private func resetList() { rows = []; nextOffset = nil; catalog = ""; table.reloadData(); clearSelection() }
-    @objc private func changeServer() { restoredSelection = nil; resetList(); refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
-    @objc private func changeKind() { restoredSelection = nil; search.stringValue = ""; querySelection = nil; resetList(); refreshState(); loadList() }
+    @objc private func changeServer() { restoredSelection = nil; resetList(); pendingListY = nil; contentFocus = "catalog"; refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
+    @objc private func changeKind() { restoredSelection = nil; search.stringValue = ""; querySelection = nil; resetList(); pendingListY = nil; contentFocus = "catalog"; refreshState(); loadList() }
     @objc private func start() {
         guard job == nil, let id = serverID else { return }
         launch {
@@ -373,7 +373,7 @@ extension AgentMCPContentWindow {
         try Task.checkCancellation(); guard !closed, search.stringValue == query else { return }
         let values = result["items"] as? [[String: Any]] ?? []
         rows = append ? rows + values : values; nextOffset = result["next_offset"] as? Int; catalog = result["catalog"] as? String ?? ""
-        let restore = restoredSelection
+        let restore = restoredSelection, restoredFocus = contentFocus
         clearSelection(); table.reloadData()
         state.stringValue = result["supported"] as? Bool == false ? "连接器未提供此类内容" : rows.isEmpty ? "没有匹配内容" : ""
         if let restore {
@@ -383,6 +383,7 @@ extension AgentMCPContentWindow {
                 table.deselectAll(nil); restoredSelection = restore; showSelection(restore)
                 state.stringValue = "原资料暂不在当前目录，参数已保留。"
             }
+            contentFocus = restoredFocus; focusPending = true
         } else if !rows.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
     }
     private func launch(revealPreview: Bool = false, _ action: @escaping () async throws -> Void) {
@@ -412,14 +413,14 @@ extension AgentMCPContentWindow {
     func controlTextDidChange(_ obj: Notification) {
         if !applyingViews { if let key = selectedFormKey { pendingFormViews.remove(key) }; rememberInputFocus() }
         if obj.object as? NSSearchField === search {
-            restoredSelection = nil; clearSelection()
+            restoredSelection = nil; pendingListY = nil; clearSelection()
             if job != nil { pendingSearch = true } else { loadList() }
         }
         else { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
     }
     func textDidChange(_ notification: Notification) { if let key = selectedFormKey { pendingFormViews.remove(key) }; rememberInputFocus(); preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
     func textViewDidChangeSelection(_ notification: Notification) { guard !applyingViews else { return }; rememberInputFocus(); onWorkspaceChange?() }
-    func controlTextDidBeginEditing(_ notification: Notification) { rememberInputFocus(); onWorkspaceChange?() }
+    func controlTextDidBeginEditing(_ notification: Notification) { if !applyingViews { focusPending = false; rememberInputFocus(); onWorkspaceChange?() } }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }
@@ -458,7 +459,10 @@ extension AgentMCPContentWindow {
             for (name, value) in draft.fields { fields[name]?.string = value }
             if let value = draft.uri { uri.stringValue = value }
         }
-        if let key = selectedFormKey, let view = formViews[key] { pendingFormViews.insert(key); contentFocus = view.active; focusPending = true }
+        if let key = selectedFormKey, let view = formViews[key] {
+            pendingFormViews.insert(key)
+            if contentFocus != "search" { contentFocus = view.active; focusPending = true }
+        }
         argumentHeight.constant = min(164, CGFloat(parameters.count) * 64); argumentScroll.isHidden = parameters.isEmpty; refreshState()
     }
     @objc private func readContent() {
@@ -582,5 +586,14 @@ extension AgentMCPContentWindow {
         }
         guard let text = fields[name], let view = try? AgentTextViewport(text) else { return [:] }
         return ["location": text.selectedRange().location, "length": text.selectedRange().length, "focused": presentingWindow?.firstResponder === text, "y": view.y, "anchor": view.anchor, "plannedFocus": contentFocus, "focusPending": focusPending, "canBecomeKeyView": text.canBecomeKeyView, "visible": !text.isHiddenOrHasHiddenAncestor]
+    }
+    func checkSearchView(selection: NSRange? = nil) -> [String: Any] {
+        guard ["--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return [:] }
+        if let selection, AgentTextViewport.Selection(location: selection.location, length: selection.length).valid(in: (search.stringValue as NSString).length) {
+            focusPending = false; presentingWindow?.makeFirstResponder(search)
+            (search.currentEditor() as? NSTextView)?.setSelectedRange(selection); rememberInputFocus(); onWorkspaceChange?()
+        }
+        let editor = search.currentEditor() as? NSTextView
+        return ["query": search.stringValue, "location": editor?.selectedRange().location ?? -1, "length": editor?.selectedRange().length ?? -1, "focused": editor != nil && presentingWindow?.firstResponder === editor]
     }
 }

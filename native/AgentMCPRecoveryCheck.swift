@@ -64,7 +64,13 @@ import AppKit
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 checks["sameWindowRetainsThreeIndependentForms"] = try AgentMCPContentWindow.recoveryState(main.captureWorkspaceRecovery()).drafts.count == 3
                 checks["connectorSwitchRestoresOriginalArguments"] = (main.workspaceReadback()["fields"] as? [String: String]) == ["resourceType": "Text", "resourceId": "2"]
-                if !interactive { await wait(0.05); checks["connectorSwitchRestoresOwnSelectionAndFocus"] = position(main, field: "resourceType", location: 1, length: 2) }
+                if !interactive {
+                    await wait(0.05); checks["connectorSwitchRestoresOwnSelectionAndFocus"] = position(main, field: "resourceType", location: 1, length: 2)
+                    main.checkAction("", query: "resource"); _ = main.checkSearchView(selection: NSRange(location: 2, length: 3)); try await idle(main); await wait(0.05)
+                    let query = main.checkSearchView(); report["refreshedSearchView"] = query
+                    checks["catalogRefreshKeepsSearchFocusAndSelection"] = query["focused"] as? Bool == true && query["location"] as? Int == 2 && query["length"] as? Int == 3
+                    _ = main.checkInputView("resourceType", selection: NSRange(location: 1, length: 2))
+                }
                 control.showAgentTask(second); control.presentMCPContent(taskID: second, serverID: b.id)
                 let other = try editor(control); other.checkAction("connect"); try await idle(other)
                 try await select(other, kind: 2, key: "name", contains: "resource-prompt")
