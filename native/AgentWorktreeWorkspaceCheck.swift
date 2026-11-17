@@ -60,10 +60,17 @@ import AppKit
             func inspectLayout(_ name: String) async {
                 for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                     control.window?.appearance = NSAppearance(named: theme)
-                    for (kind, size) in [("split", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+                    for (kind, size) in [("split", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] {
                         control.window?.setContentSize(size); control.window?.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
                         let page = (host.currentController as? AgentWorktreeCreationWindow)?.workspaceReadback() ?? (host.currentController as? AgentWorktreeWindow)?.workspaceReadback() ?? [:]
                         for (key, pass) in page["checks"] as? [String: Bool] ?? [:] { checks[name + "-" + appearance + "-" + kind + "-" + key] = pass }
+                        if host.currentController is AgentWorktreeCreationWindow {
+                            let inputs = page["inputFrames"] as? [[CGFloat]] ?? [], actions = page["actionFrames"] as? [[CGFloat]] ?? []
+                            checks[name + "-" + appearance + "-" + kind + "-sharedControlProportions"] = inputs.count == 2 && inputs[0].count == 4 && inputs[0][3] == 28 && inputs[1].count == 4 && inputs[1][3] == 32 && actions.count == 2 && actions.allSatisfy { $0.count == 4 && $0[3] == 28 }
+                        } else {
+                            let controls = page["controls"] as? [[String: Any]] ?? []
+                            checks[name + "-" + appearance + "-" + kind + "-sharedControlProportions"] = controls.count >= 4 && controls.allSatisfy { let frame = $0["frame"] as? [CGFloat] ?? []; return frame.count == 4 && frame[3] == 28 } && page["rowHeight"] as? CGFloat == 56
+                        }
                         let state = await control.taskWorkspaceReadback(); report[name + "-" + appearance + "-" + kind] = state
                         checks[name + "-" + appearance + "-" + kind + "-taskAndInputPreserved"] = state["selectedTask"] as? String == fixture.taskID && state["draft"] as? String == "保留工作树任务输入。" && state["conversationVisible"] as? Bool == (kind == "split" && !host.expanded)
                     }
@@ -72,7 +79,11 @@ import AppKit
             }
             control.createTaskWorktree()
             guard let creation = host.currentController as? AgentWorktreeCreationWindow else { throw PetError("输入区工作树入口未进入页内") }
-            await creation.checkWorkspace(branch: "acceptance/page-carry", startPoint: "refs/heads/release", includeChanges: true, action: "preview")
+            await creation.checkWorkspace(startPoint: "refs/heads/release", includeChanges: true)
+            func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(views) }
+            guard let content = creation.pageContentView, let branchField = views(content).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "新分支" }), let previewButton = views(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "预览" }), control.window?.makeFirstResponder(branchField) == true, let editor = branchField.currentEditor() as? NSTextView else { throw PetError("新分支实际输入编辑器不可用") }
+            editor.string = "acceptance/page-carry"; previewButton.performClick(nil); await creation.checkWorkspace()
+            checks["previewReadsActualBranchFieldEditor"] = creation.workspaceReadback()["branch"] as? String == "acceptance/page-carry" && creation.workspaceReadback()["createEnabled"] as? Bool == true
             await inspectLayout("creation")
             checks["previewUsesActualWorkingBytes"] = (creation.workspaceReadback()["patch"] as? String)?.contains("working-public") == true && creation.workspaceReadback()["createEnabled"] as? Bool == true
             do { try control.requireTaskDeletionAllowed([fixture.taskID]); checks["creationDraftBlocksTaskDeletion"] = false } catch { checks["creationDraftBlocksTaskDeletion"] = true }

@@ -80,7 +80,8 @@ import AppKit
             checks["remoteSaveSupportsCommandS"] = try button("添加远端", in: window.contentView).keyEquivalent == "s"
             for (key, size) in [("normal", NSSize(width: 860, height: 650)), ("narrow", NSSize(width: 640, height: 460))] {
                 window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
-                checks["standaloneRemoteLayout-" + key] = !address.hasAmbiguousLayout && address.bounds.width > 300 && address.bounds.height >= 20 && abs((window.contentView?.bounds.width ?? 0) - size.width) < 0.5 && abs((window.contentView?.bounds.height ?? 0) - size.height) < 0.5
+                let saveAction = try button("添加远端", in: window.contentView)
+                checks["standaloneRemoteLayout-" + key] = !address.hasAmbiguousLayout && address.bounds.width > 300 && address.bounds.height == 32 && name.bounds.height == 32 && saveAction.bounds.height == 28 && abs((window.contentView?.bounds.width ?? 0) - size.width) < 0.5 && abs((window.contentView?.bounds.height ?? 0) - size.height) < 0.5
             }
             try button("返回推送", in: window.contentView).performClick(nil)
             checks["cleanBackRestoresOriginalPushContentAndFocus"] = try window.contentView === root && window.firstResponder === button("添加远端", in: root)
@@ -94,12 +95,15 @@ import AppKit
                 try await until { (try? button("添加远端", in: window.contentView).isEnabled) == true }
                 checks["remoteFailureKeepsFieldsAndInlineError-" + key] = try window.contentView !== root && currentName.stringValue == remote && currentAddress.stringValue == url && field("远端保存状态", in: window.contentView).stringValue.contains(errorText) && Data(contentsOf: config) == originalConfig
             }
-            currentName.stringValue = "page-review"; currentAddress.stringValue = fixture.receiver.path
+            currentName.stringValue = "page-review"
+            guard window.makeFirstResponder(currentAddress), let liveAddress = currentAddress.currentEditor() as? NSTextView else { throw PetError("远端实际输入编辑器不可用") }
+            liveAddress.string = fixture.receiver.path
             checks["remoteDraftMarksParentPending"] = manager.hasPendingOperation
             try button("添加远端", in: window.contentView).performClick(nil)
             try await until { window.contentView === root && manager.workspaceReadback()["busy"] as? Bool == false }
             let remotes = try await git.remotes()
             checks["remoteSaveWritesActualConfigAndPreservesOriginalRemote"] = remotes.count == 2 && remotes.contains { $0.name == "origin" && $0.urls == [fixture.receiver.path] } && remotes.contains { $0.name == "page-review" && $0.urls == [fixture.receiver.path] }
+            checks["remoteSaveReadsActualAddressFieldEditor"] = remotes.contains { $0.name == "page-review" && $0.urls == [fixture.receiver.path] }
             checks["remoteSaveReturnsToOriginalWindowAndRemoteFocus"] = window.contentView === root && (window.firstResponder as? NSPopUpButton)?.accessibilityLabel() == "推送远端" && !manager.hasPendingOperation
             checks["remoteSavePreservesConfigPermissionsAndProjectBytes"] = try FileManager.default.attributesOfItem(atPath: config.path)[.posixPermissions] as? NSNumber == configMode && Data(contentsOf: readme) == originalReadme && Data(contentsOf: index) == originalIndex
             try button("添加远端", in: root).performClick(nil)
@@ -110,6 +114,35 @@ import AppKit
             guard let embedded = control.taskWorkspace.currentController as? AgentGitPushWindow, let host = control.window else { throw PetError("任务推送页面未载入") }
             try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
             checks["taskRemoteUsesAnActuallyVisibleWindow"] = host.isVisible && embedded.isPageVisible
+            for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                host.appearance = NSAppearance(named: theme)
+                for (kind, size) in [("normal", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] {
+                    host.setContentSize(size); host.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
+                    let state = embedded.workspaceReadback(), frames = state["popupFrames"] as? [[CGFloat]] ?? [], branchFrame = state["branchFrame"] as? [CGFloat] ?? [], diffFrame = state["diffFrame"] as? [CGFloat] ?? []
+                    let controls = state["controls"] as? [[String: Any]] ?? []
+                    checks["pushActualControlsFit-" + appearance + "-" + kind] = controls.count >= 8 && controls.allSatisfy { $0["inside"] as? Bool == true } && frames.count == 3 && frames.allSatisfy { $0.count == 4 && $0[3] == 28 } && branchFrame.count == 4 && branchFrame[2] >= 100 && branchFrame[3] == 32 && diffFrame.count == 4 && diffFrame[3] >= 80
+                    report["push-" + appearance + "-" + kind] = state
+                }
+            }
+            host.appearance = nil; host.setContentSize(NSSize(width: 1320, height: 800)); host.contentView?.layoutSubtreeIfNeeded()
+            let targetBranch = try field("推送目标分支", in: embedded.pageContentView)
+            guard host.makeFirstResponder(targetBranch), let invalidEditor = targetBranch.currentEditor() as? NSTextView else { throw PetError("推送分支编辑器不可用") }
+            invalidEditor.string = "bad branch"
+            try button("检查远端", in: embedded.pageContentView).performClick(nil)
+            checks["pushPreparingDisablesPublication"] = embedded.workspaceReadback()["busy"] as? Bool == true && embedded.workspaceReadback()["pushEnabled"] as? Bool == false
+            try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
+            checks["invalidLiveBranchKeepsEditorAndInlineError"] = targetBranch.stringValue == "bad branch" && embedded.workspaceReadback()["stateIsError"] as? Bool == true && embedded.workspaceReadback()["reviewHash"] as? String == "" && embedded.workspaceReadback()["pushEnabled"] as? Bool == false
+            guard host.makeFirstResponder(targetBranch), let validEditor = targetBranch.currentEditor() as? NSTextView else { throw PetError("推送重试编辑器不可用") }
+            validEditor.string = "main"
+            try button("检查远端", in: embedded.pageContentView).performClick(nil)
+            try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
+            let prepared = embedded.workspaceReadback()
+            checks["validLiveBranchRetryReadsActualLocalRemote"] = prepared["branch"] as? String == "main" && prepared["pushEnabled"] as? Bool == true && prepared["stateIsError"] as? Bool == false && (prepared["diff"] as? String)?.contains("保留公开项目正文") == true && !FileManager.default.fileExists(atPath: fixture.receiver.appendingPathComponent("refs/heads/main").path)
+            guard let commits = find(NSPopUpButton.self, embedded.pageContentView, where: { $0.accessibilityLabel() == "待推送提交" }), commits.numberOfItems == 2, let selectCommit = commits.action else { throw PetError("实际待推送提交列表不可用") }
+            commits.selectItem(at: 1); NSApp.sendAction(selectCommit, to: commits.target, from: commits)
+            try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
+            checks["selectPendingCommitReadsActualCommitDiff"] = (embedded.workspaceReadback()["diff"] as? String)?.contains("public remote page baseline") == true && (embedded.workspaceReadback()["diff"] as? String)?.contains("README.md") == true
+            report["actualPreparedPush"] = embedded.workspaceReadback()
             try button("添加远端", in: embedded.pageContentView).performClick(nil)
             guard let page = control.taskWorkspace.currentController as? AgentGitRemotePage else { throw PetError("任务远端表单未载入") }
             checks["taskRemoteKeepsExistingTaskWorkspaceNavigation"] = page.presentingWindow === host && page.window?.isVisible == false && host.attachedSheet == nil
