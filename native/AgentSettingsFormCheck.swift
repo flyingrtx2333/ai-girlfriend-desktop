@@ -18,6 +18,10 @@ import AppKit
         value.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: value))
     }
     private static func press(_ title: String, in page: AgentSettingsPageController) throws {
+        if title == "新建", let menu = (page as? AgentExtensionWindow)?.creationMenu(),
+           let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "skill-create-manual" }) {
+            menu.performActionForItem(at: index); return
+        }
         guard let value = find(NSButton.self, in: page.pageContentView, matching: { $0.title == title && $0.isEnabled }) else { throw PetError("缺少可用按钮：" + title) }; value.performClick(nil)
     }
     private static func text(_ view: NSView?) -> String {

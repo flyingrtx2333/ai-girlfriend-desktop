@@ -18,11 +18,12 @@ struct AgentSkillEvolutionSet: Codable {
     var items: [AgentSkillEvolutionSuggestion]
 }
 struct AgentSkillEvolutionJob: Codable {
-    var sourceTaskID: String, sourceMessageID: String, sourceTitle: String, sourceHash: String
-    var suggestionID: String, title: String, goal: String, brief: String
+    var sourceTaskID: String?, sourceMessageID: String?, sourceTitle: String, sourceHash: String?
+    var suggestionID: String?, title: String, goal: String, brief: String
     var workspace: String?
     var target: AgentSkillEvolutionTarget?
     var approvedPlan: String?
+    var creation: AgentSkillCreationContext?
 }
 struct AgentSkillDraft: Codable {
     var id = UUID().uuidString

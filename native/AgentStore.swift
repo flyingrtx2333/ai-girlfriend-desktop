@@ -517,6 +517,25 @@ import Foundation
     }
     func installRelatedRecord(_ record: AgentTaskRecord, sourceID: String, expectedHash: String, label: String) throws {
         guard refreshDeletedRecords(), UUID(uuidString: record.id) != nil, record.id != sourceID, record.parentID == sourceID, !tasks.contains(where: { $0.id == record.id }), !deletions.taskIDs.contains(record.id), try recordVersion(sourceID) == expectedHash else { throw PetError("原任务已变化，未创建新任务") }
+        try installNewRecord(record, label: label) {
+            guard self.refreshDeletedRecords(), try self.recordVersion(sourceID) == expectedHash else { throw PetError("原任务已变化，未创建新任务") }
+        }
+    }
+    func installSkillCreationRecord(_ record: AgentTaskRecord, validating: () throws -> Void = {}) throws {
+        guard record.skillEvolutionJob?.creation != nil, record.parentID == nil, record.status == .ready,
+              record.mode == .plan, record.permission == .review, record.messages.isEmpty, record.events.isEmpty,
+              record.pendingCalls.isEmpty, record.approvals.isEmpty,
+              organization.archiveID(record.organizationWorkspace, mode: record.organizationMode) == nil else { throw PetError("请从可用工作区创建新的 Skill 任务") }
+        _ = try AgentSkillDrafts.job(record, store: self)
+        try installNewRecord(record, label: "创建 Skill 任务") {
+            guard organization.archiveID(record.organizationWorkspace, mode: record.organizationMode) == nil else { throw PetError("工作区已归档，请先恢复") }
+            _ = try AgentSkillDrafts.job(record, store: self)
+            try validating()
+        }
+    }
+    private func installNewRecord(_ record: AgentTaskRecord, label: String, validating: () throws -> Void) throws {
+        guard refreshDeletedRecords(), UUID(uuidString: record.id) != nil,
+              !tasks.contains(where: { $0.id == record.id }), !deletions.taskIDs.contains(record.id) else { throw PetError("新任务标识已存在或不可用") }
         let files = try AgentFiles(workspace: directory.path), data = try encoder.encode(record)
         guard data.count <= 20_000_000 else { throw PetError("任务记录过大") }
         var next = tasks; next.insert(Self.metadata(record), at: 0)
@@ -524,9 +543,7 @@ import Foundation
         var writes = [try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, missing: true, permissions: 0o600, label: label),
                       try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, missing: indexHash == nil, permissions: 0o600, label: label)]
         let selection = try organization.prepareSelection(record); if let selection { writes.append(selection.write) }
-        try AgentKnowledgeFileBatch.commit(writes, backup: directory.deletingLastPathComponent().appendingPathComponent("branch-transactions/" + record.id), label: label) {
-            guard self.refreshDeletedRecords(), try self.recordVersion(sourceID) == expectedHash else { throw PetError("原任务已变化，未创建新任务") }
-        }
+        try AgentKnowledgeFileBatch.commit(writes, backup: directory.deletingLastPathComponent().appendingPathComponent("branch-transactions/" + record.id), label: label, validate: validating)
         tasks = next; cache[record.id] = record; taskHashes[record.id] = AgentFiles.hash(data); indexHash = AgentFiles.hash(index); selection?.accept()
         taskSearchRevision &+= 1; taskSearchRevisions[record.id] = taskSearchRevision
         applyingArchive = true; selectedID = record.id; applyingArchive = false; writeError = nil

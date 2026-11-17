@@ -66,6 +66,7 @@ import AppKit
         super.init(frame:.zero); orientation = .vertical; alignment = .leading; spacing = 9; identifier = .init("skill-evolution-job")
         let title = NSTextField(labelWithString:task.skillEvolutionJob?.target.map { "Skill · " + (targetTitle ?? $0.name) } ?? "创建 Skill"); title.font = .systemFont(ofSize:14,weight:.semibold); title.lineBreakMode = .byTruncatingTail; title.setContentCompressionResistancePriority(.defaultLow,for:.horizontal); title.toolTip = targetTitle
         let source = NSButton(title:"来源任务",target:self,action:#selector(openSource)); source.isBordered = false; source.font = .systemFont(ofSize:11); source.toolTip = task.skillEvolutionJob?.sourceTitle
+        source.isHidden = task.skillEvolutionJob?.creation != nil
         let header = NSStackView(views:[title,NSView(),source]); header.spacing = 8; addArrangedSubview(header); header.widthAnchor.constraint(equalTo:widthAnchor).isActive = true
         let state: String
         if let issue { state = issue }
@@ -94,10 +95,10 @@ import AppKit
         guard let task = store.task(taskID), let draft = task.skillDraft, draft.savedAt == nil else { throw PetError("没有可审阅的 Skill 草稿") }
         self.store = store; self.taskID = taskID; self.draft = draft
         let job = try AgentSkillDrafts.job(task,store:store), revision = AgentSkillDrafts.revision(draft); self.job = job; self.revision = revision
-        let name = NSTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope
+        let name = AgentDialogTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope
         let resources = try AgentSkillDrafts.proposed(draft,job:job,store:store,task:task), document = try AgentExtensionDocument(String(decoding:resources["SKILL.md"]!,as:UTF8.self))
         let initialName = job.target?.name ?? document.metadata["name"] ?? ""; self.initialName = initialName; name.stringValue = initialName; name.setAccessibilityLabel("Skill 名称"); name.identifier = .init("skill-review-name"); name.isEditable = job.target == nil
-        scope.addItem(withTitle:"用户"); scope.setAccessibilityLabel("Skill 保存范围"); scope.identifier = .init("skill-review-scope")
+        scope.addItem(withTitle:"用户"); scope.menu?.autoenablesItems = false; scope.setAccessibilityLabel("Skill 保存范围"); scope.identifier = .init("skill-review-scope")
         if task.workspaceScope != nil {
             for root in try AgentWorkspaceScope.roots(task) {
                 let path = root.root.path, name = root.root.lastPathComponent
@@ -108,6 +109,7 @@ import AppKit
         } else { scope.addItem(withTitle:"项目"); scope.lastItem?.representedObject = try task.workspace.map { try AgentFiles(workspace:$0).root.path }; scope.lastItem?.isEnabled = task.workspace != nil }
         let destination:String?
         if let target = job.target { destination = try AgentSkillDrafts.projectWorkspace(store.extensions.item(target.id,task:task),task:task) }
+        else if job.creation != nil { destination = nil }
         else { destination = try task.workspace.map { try AgentFiles(workspace:$0).root.path } }
         self.initialDestination = destination
         if let destination, let item = scope.itemArray.first(where:{$0.representedObject as? String == destination}) { scope.select(item) } else { scope.selectItem(at:0) }

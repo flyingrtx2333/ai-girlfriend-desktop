@@ -17,12 +17,23 @@ import Foundation
     }
     static func job(_ task:AgentTaskRecord, store:AgentStore) throws -> AgentSkillEvolutionJob {
         guard task.kind == AgentSkillEvolution.kind, let job = task.skillEvolutionJob, !task.archived, task.workspace == job.workspace,
-              task.agent == nil, task.team == nil, task.automation == nil, UUID(uuidString:job.sourceTaskID) != nil, UUID(uuidString:job.suggestionID) != nil else { throw PetError("Skill 改进任务的范围已变化，请从原建议重新创建") }
-        guard let parent = store.task(job.sourceTaskID), let source = parent.messages.first(where: { $0.id == job.sourceMessageID && $0.isReply }),
+              task.agent == nil, task.team == nil, task.automation == nil else { throw PetError("Skill 任务的范围已变化，请重新打开原任务") }
+        if let creation = job.creation {
+            guard creation.taskID == task.id, UUID(uuidString: creation.taskID) != nil, task.parentID == nil,
+                  creation.workspaceScope == task.workspaceScope, creation.workMode == task.organizationMode,
+                  job.sourceTaskID == nil, job.sourceMessageID == nil, job.sourceHash == nil, job.suggestionID == nil,
+                  job.sourceTitle.isEmpty, job.brief.isEmpty else { throw PetError("Skill 创建任务的来源范围已变化，请重新创建任务") }
+            _ = try AgentWorkspaceScope.roots(task)
+            if let target = job.target { _ = try currentTarget(target, task: task, store: store) }
+            return job
+        }
+        guard let sourceTaskID = job.sourceTaskID, let sourceHash = job.sourceHash, let suggestionID = job.suggestionID,
+              UUID(uuidString: sourceTaskID) != nil, UUID(uuidString: suggestionID) != nil,
+              let parent = store.task(sourceTaskID), let source = parent.messages.first(where: { $0.id == job.sourceMessageID && $0.isReply }),
               ([source.skillEvolution].compactMap { $0 } + (source.skillEvolutionHistory ?? [])).contains(where: { set in
                   set.source == job.sourceHash && set.items.contains { $0.id == job.suggestionID && $0.taskID == task.id && $0.state == .adopted }
               }) else { throw PetError("原建议已不可用，请从原任务重新生成") }
-        if task.workspaceScope != nil || job.sourceHash.hasPrefix(AgentSkillEvolution.workspaceSourcePrefix) {
+        if task.workspaceScope != nil || sourceHash.hasPrefix(AgentSkillEvolution.workspaceSourcePrefix) {
             _ = try AgentWorkspaceScope.roots(task)
             guard task.workspaceScope != nil, task.workspaceScope == parent.workspaceScope, task.workspace == parent.workspace else { throw PetError("Skill 改进任务的源文件夹范围已变化，请从原任务重新创建") }
         }
@@ -68,7 +79,8 @@ import Foundation
     }
     static func base(_ job:AgentSkillEvolutionJob, store:AgentStore, task:AgentTaskRecord? = nil) throws -> [String:Data] {
         if let task {
-            guard task.workspace == job.workspace, task.skillEvolutionJob?.suggestionID == job.suggestionID else { throw PetError("Skill 草稿与任务来源不匹配") }
+            guard task.workspace == job.workspace, task.skillEvolutionJob?.suggestionID == job.suggestionID,
+                  task.skillEvolutionJob?.creation == job.creation else { throw PetError("Skill 草稿与任务来源不匹配") }
             return try job.target.map { try currentTarget($0,task:task,store:store).files } ?? [:]
         }
         return try job.target.map { try currentTarget($0,workspace:job.workspace,store:store).files } ?? [:]

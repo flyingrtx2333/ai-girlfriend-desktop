@@ -23,7 +23,7 @@ import UniformTypeIdentifiers
     private var teamWindow: AgentTeamWindow?
     private var pluginWindow: AgentPluginWindow?
     private var ruleWindow: AgentRuleWindow?
-    var onStartAgent: ((String) -> Void)?
+    var onStartTask: ((String) -> Void)?
     var onBrowseMCP: ((String?) -> Void)?
     var onInsert: ((AgentExtensionItem) throws -> Void)? { didSet { updateControls() } }
     var onInsertRule: ((AgentPluginRuleItem) throws -> Void)?
@@ -169,11 +169,11 @@ import UniformTypeIdentifiers
             if manager.scopeWorkspace == workspace { if let id { manager.selectProfile(id) }; window.makeKeyAndOrderFront(nil); return }
             window.performClose(nil); if window.isVisible { window.makeKeyAndOrderFront(nil); return }
         }
-        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartAgent; agentWindow = manager; if let id { manager.selectProfile(id) }; presentSettingsChild(manager)
+        let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartTask; agentWindow = manager; if let id { manager.selectProfile(id) }; presentSettingsChild(manager)
     }
     @objc private func showTeams() {
         if let window = teamWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
-        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartAgent; teamWindow = manager; presentSettingsChild(manager)
+        let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: store.task(taskID)?.organizationMode, taskID: taskID.isEmpty ? nil : taskID); manager.onUse = onStartTask; teamWindow = manager; presentSettingsChild(manager)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -276,6 +276,26 @@ import UniformTypeIdentifiers
         let scope = NSPopUpButton(); scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; return scope
     }
     @objc private func createItem() {
+        guard canLeave() else { return }
+        if let menu = creationMenu() {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: add.bounds.height + 4), in: add)
+        } else { createManually() }
+    }
+    func creationMenu() -> NSMenu? {
+        guard kind == .skill else { return nil }
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let task = NSMenuItem(title: "通过小鲸创建", action: #selector(createSkillTask), keyEquivalent: "")
+        task.target = self; task.isEnabled = onStartTask != nil; task.identifier = .init("skill-create-task")
+        let manual = NSMenuItem(title: "手动创建", action: #selector(createManually), keyEquivalent: "")
+        manual.target = self; manual.identifier = .init("skill-create-manual")
+        menu.addItem(task); menu.addItem(manual); return menu
+    }
+    @objc private func createSkillTask() {
+        guard kind == .skill, let open = onStartTask, canLeave() else { return }
+        do { open(try AgentSkillCreation.create(store: store, sourceTaskID: taskID.isEmpty ? nil : taskID, workspace: workspace)) }
+        catch { state.showSaveFailure(error) }
+    }
+    @objc private func createManually() {
         guard canLeave() else { return }
         let page = AgentExtensionCreationPage(service: store.extensions, kind: kind, workspace: workspace)
         page.onCreated = { [weak self] item in

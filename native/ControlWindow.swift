@@ -523,7 +523,10 @@ final class FormDocumentView: NSView {
             let manager = settingsPageHost.currentController
             let originalActions = settingsWindowActions.arrangedSubviews
             let create = originalActions.compactMap { $0 as? NSButton }.first { $0.title == "新建" }
-            create?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
+            if let menu = (manager as? AgentExtensionWindow)?.creationMenu(), let index = menu.items.firstIndex(where: { $0.identifier?.rawValue == "skill-create-manual" }) {
+                menu.performActionForItem(at: index)
+            } else { create?.performClick(nil) }
+            window.contentView?.layoutSubtreeIfNeeded()
             let formActions = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
             checks["GlobalCreationKeepsOriginalFormActionsInHeader"] = create != nil && settingsPageHost.currentController is AgentExtensionCreationPage && !settingsWindowActions.isHidden && formActions.map(\.title) == ["取消", "创建"] && formActions.allSatisfy { $0.target as AnyObject? === settingsPageHost.currentController } && formActions.last?.keyEquivalent == "s"
             settingsPageHost.currentController?.close(); window.contentView?.layoutSubtreeIfNeeded()
@@ -920,7 +923,7 @@ final class FormDocumentView: NSView {
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
         emptyProject.title = companion?.agentStore?.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
         if let entry = companion?.agentStore?.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:companion?.agentStore?.tasks ?? []) { emptyProject.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); emptyProject.contentTintColor = (entry.color ?? .forest).nsColor } else { emptyProject.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); emptyProject.contentTintColor = AgentWorkbenchTheme.secondaryText }
-        composer.placeholder = hasMessages ? "添加要求…" : "描述任务…"
+        composer.placeholder = task.skillEvolutionJob?.creation != nil && task.messages.isEmpty ? "描述要创建的 Skill…" : hasMessages ? "添加要求…" : "描述任务…"
         let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
         projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
         executionLocation.isHidden = !presentation.inputEnvironment; gitButton.isHidden = !presentation.changeReview
@@ -1362,7 +1365,7 @@ final class FormDocumentView: NSView {
             return manager
         case "skills", "commands":
             let manager = AgentExtensionWindow(store: store, taskID: taskID ?? "", managementWorkspace: workspace)
-            manager.prepareSettings(kind: key == "commands" ? .command : .skill); manager.onStartAgent = use
+            manager.prepareSettings(kind: key == "commands" ? .command : .skill); manager.onStartTask = use
             if let taskID {
                 manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
                 manager.onInsertRule = { [weak self] in try self?.insertRule($0, taskID: taskID) }
@@ -3845,7 +3848,7 @@ final class FormDocumentView: NSView {
                 row.onConfirm = { [weak self] in guard let source = plan else { return }; do { try self?.confirmSkillPlan(taskID:task.id,source:source) } catch { self?.setStatus(error.localizedDescription,error:true) } }
                 row.onReview = { [weak self] in do { try self?.reviewSkillDraft(taskID:task.id) } catch { self?.setStatus(error.localizedDescription,error:true) } }
                 row.onOpen = { [weak self] in do { try self?.openSavedSkill(taskID:task.id) } catch { self?.setStatus(error.localizedDescription,error:true) } }
-                row.onSource = { [weak self] in guard let self, agentTaskID == task.id, tasks.tasks.contains(where:{$0.id == job.sourceTaskID}) else { return }; selectAgentTask(job.sourceTaskID) }
+                row.onSource = { [weak self] in guard let self, let source = job.sourceTaskID, agentTaskID == task.id, tasks.tasks.contains(where:{$0.id == source}) else { return }; selectAgentTask(source) }
                 append(row,to:messageColumn)
             }
             if !suggestionItems.isEmpty || suggestionError != nil || suggesting {
