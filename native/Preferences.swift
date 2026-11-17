@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Darwin
 
 struct PetPreferences: Codable {
     var endpoint = "https://api.deepseek.com"
@@ -42,8 +43,12 @@ struct PetError: LocalizedError {
 struct PetKeychain {
     let service: String
     let legacyService: String?
-    init(service: String, legacyService: String? = nil) {
+    let configurationFile: URL?
+    let migrateLegacy: Bool
+    init(service: String, legacyService: String? = nil, configurationFile: URL? = nil, migrateLegacy: Bool = true) {
         self.service = service; self.legacyService = legacyService
+        self.configurationFile = configurationFile ?? (service == "com.xjs.bluefatfish.credentials" ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("BlueFatFish/credentials.json") : nil)
+        self.migrateLegacy = migrateLegacy
         // The file-based macOS keychain needs this process-local guard; it can
         // otherwise open SecurityAgent before returning an ACL/locked error.
         SecKeychainSetUserInteractionAllowed(false)
@@ -60,8 +65,14 @@ struct PetKeychain {
         return result as? [String: Any]
     }
     func contains(_ account: String) -> Bool { preview(account) != nil }
-    // Only metadata, never password bytes, is read while refreshing the form.
+    // File previews stay masked; legacy Keychain previews read metadata only.
     func preview(_ account: String) -> String? {
+        if let configurationFile {
+            do {
+                if let value = try PetCredentialConfig(file: configurationFile).value(account) { return value.isEmpty ? nil : TokenPreview.mask(value) }
+            } catch { return "配置读取失败" }
+            guard migrateLegacy else { return nil }
+        }
         if let item = attributes(account) {
             if let data = item[kSecAttrGeneric as String] as? Data, let text = String(data: data, encoding: .utf8) { return text }
             return "已保存"
@@ -70,13 +81,19 @@ struct PetKeychain {
         return nil
     }
     func read(_ account: String) throws -> String {
+        if let configurationFile {
+            return try PetCredentialConfig(file: configurationFile).read(account) { migrateLegacy ? try readKeychain(account) : "" }
+        }
+        return try readKeychain(account)
+    }
+    private func readKeychain(_ account: String) throws -> String {
         if let value = try secret(account) { return value }
         if let legacyService {
             do {
                 if let value = try secret(account, service: legacyService) {
                     // Copy only when macOS already permits access. Never alter
                     // the old item's ACL or delete it during migration.
-                    try? write(value, account: account); return value
+                    if configurationFile == nil { try? write(value, account: account) }; return value
                 }
             } catch { throw PetError("旧 Token 需重新粘贴保存一次。") }
         }
@@ -95,6 +112,7 @@ struct PetKeychain {
         return value
     }
     func write(_ value: String, account: String) throws {
+        if let configurationFile { try PetCredentialConfig(file: configurationFile).write(value, account: account); return }
         let q = query(account)
         let status: OSStatus
         if value.isEmpty {
@@ -119,6 +137,58 @@ struct PetKeychain {
     }
 }
 
+// Model/voice credentials use a separate plaintext configuration so ordinary
+// preference saves and model request serialization never carry API keys.
+struct PetCredentialConfig {
+    let file: URL
+    private struct Document: Codable { var version = 1; var tokens: [String: String] = [:] }
+    private func bytes() throws -> (Data?, mode_t?) {
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        if fd < 0 && errno == ENOENT { return (nil, nil) }
+        guard fd >= 0 else { throw PetError("API Key 配置无法读取，请检查 credentials.json。") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= 131_072 else { throw PetError("API Key 配置不是有效的普通文件。") }
+        let data = try handle.read(upToCount: 131_073) ?? Data()
+        guard data.count <= 131_072 else { throw PetError("API Key 配置过大。") }
+        return (data, info.st_mode)
+    }
+    private func document(_ data: Data?) throws -> Document {
+        guard let data else { return Document() }
+        guard let value = try? JSONDecoder().decode(Document.self, from: data), value.version == 1 else { throw PetError("API Key 配置格式无效，原文件已保留。") }
+        return value
+    }
+    func value(_ account: String) throws -> String? { try document(bytes().0).tokens[account] }
+    func read(_ account: String, legacy: () throws -> String) throws -> String {
+        if let saved = try value(account) { return saved }
+        let old: String
+        do { old = try legacy() }
+        catch { throw PetError("旧 API Key 无法读取，请在设置中重新填写并保存。") }
+        if !old.isEmpty { try write(old, account: account) }
+        return old
+    }
+    func write(_ value: String, account: String) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let (before, mode) = try bytes()
+        guard mode == nil || mode! & 0o200 != 0 else { throw PetError("API Key 配置为只读，未保存。") }
+        var next = try document(before)
+        // Empty entries intentionally prevent a removed key being re-imported.
+        next.tokens[account] = value
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(next)
+        guard data.count <= 131_072 else { throw PetError("API Key 配置过大，未保存。") }
+        let temporary = file.deletingLastPathComponent().appendingPathComponent(".credentials-" + UUID().uuidString + ".tmp")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw PetError("API Key 配置无法写入。") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close(); try? FileManager.default.removeItem(at: temporary) }
+        try handle.write(contentsOf: data); try handle.synchronize()
+        guard try bytes().0 == before else { throw PetError("API Key 配置已被修改，请重试。") }
+        guard rename(temporary.path, file.path) == 0 else { throw PetError("API Key 配置未保存，请检查目录权限。") }
+    }
+}
+
 final class PreferencesStore {
     let directory: URL
     let keychain: PetKeychain
@@ -127,9 +197,10 @@ final class PreferencesStore {
     init(directory: URL, testing: Bool = false) {
         self.directory = directory
         keychain = PetKeychain(service: testing ? "com.xjs.bluefatfish.check.credentials" : "com.xjs.bluefatfish.credentials",
-                               legacyService: testing ? nil : "com.xjs.bluefatfish")
+                               legacyService: testing ? nil : "com.xjs.bluefatfish", configurationFile: directory.appendingPathComponent("credentials.json"), migrateLegacy: !testing)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
+        if !testing { for account in ["chat", "voice"] { _ = try? keychain.read(account) } }
         // Merge defaults so a later version can add fields without losing settings.
         if let data = try? Data(contentsOf: directory.appendingPathComponent("settings.json")),
            let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
