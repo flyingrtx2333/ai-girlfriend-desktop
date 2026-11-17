@@ -81,8 +81,12 @@ import UniformTypeIdentifiers
     override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
-            for view in layout.actions.arrangedSubviews { layout.actions.removeArrangedSubview(view); view.removeFromSuperview(); layout.toolbar.addArrangedSubview(view) }
+            for view in layout.actions.arrangedSubviews {
+                layout.actions.removeArrangedSubview(view); view.removeFromSuperview()
+                if view is NSControl { layout.toolbar.addArrangedSubview(view) }
+            }
             search.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            search.widthAnchor.constraint(greaterThanOrEqualToConstant: 140).isActive = true
             let detail = NSStackView(views: [layout.header, layout.viewer, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             layout.header.heightAnchor.constraint(equalToConstant: 28).isActive = true; layout.footer.heightAnchor.constraint(equalToConstant: 28).isActive = true

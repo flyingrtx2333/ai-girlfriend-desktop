@@ -142,6 +142,17 @@ import AppKit
             pane.layoutSubtreeIfNeeded()
             let table = find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true }), empty = find(NSTextField.self, in: manager.pageContentView, matching: { $0.identifier?.rawValue == "settings-list-empty" })
             checks[key + "EmptyCatalogShowsMessageAndCreationWithoutEditor"] = table?.numberOfRows == 0 && empty?.isHidden == false && !(empty?.stringValue.isEmpty ?? true) && pane.currentController === manager && manager.isPageVisible
+            if ["skills", "commands"].contains(key) {
+                for width: CGFloat in [800, 528] {
+                    host.setContentSize(NSSize(width: width, height: 540)); pane.layoutSubtreeIfNeeded()
+                    let search = find(NSSearchField.self, in: manager.pageContentView, matching: { _ in true })
+                    checks[key + "SearchRemainsWritableAtWidth" + String(Int(width))] = search.map { field in
+                        guard let root = manager.pageContentView else { return false }
+                        return field.bounds.width >= 120 && !field.hasAmbiguousLayout && root.bounds.contains(field.convert(field.bounds, to: root))
+                    } ?? false
+                }
+                host.setContentSize(NSSize(width: 800, height: 540))
+            }
             guard pane.leave() else { throw PetError("空列表未正常退出：" + key) }
         }
         return checks
