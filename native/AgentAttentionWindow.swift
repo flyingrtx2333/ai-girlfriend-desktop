@@ -6,13 +6,14 @@ import AppKit
     private let attention: AgentAttention, runtime: AgentRuntime
     private let tabs = NSSegmentedControl(labels: ["待关注", "历史"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), kind = NSPopUpButton(), source = NSPopUpButton(), time = NSPopUpButton(), sender = NSPopUpButton()
-    private let table = NSTableView(), status = NSTextField(labelWithString: ""), more = NSButton(title: "加载更多", target: nil, action: nil)
+    private let table = NSTableView(), status = NSTextField(wrappingLabelWithString: ""), more = AgentDialogButton(title: "加载更多", target: nil, action: nil)
     private let detailTitle = NSTextField(wrappingLabelWithString: ""), metadata = NSTextField(labelWithString: ""), body = NSTextView()
     private let reply = NSTextView(), replyScroll = NSScrollView(), replyCaption = NSTextField(labelWithString: "答复")
     private let replyField = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line)
-    private let open = NSButton(title: "打开任务", target: nil, action: nil), mark = NSButton(title: "标记已处理", target: nil, action: nil)
-    private let answer = NSButton(title: "回复并继续", target: nil, action: nil), allow = NSButton(title: "允许一次", target: nil, action: nil), deny = NSButton(title: "拒绝", target: nil, action: nil)
-    private let execute = NSButton(title: "采纳计划并执行", target: nil, action: nil)
+    private let open = AgentDialogButton(title: "打开任务", target: nil, action: nil), mark = AgentDialogButton(title: "标记已处理", target: nil, action: nil)
+    private let answer = AgentDialogButton(title: "回复并继续", target: nil, action: nil), allow = AgentDialogButton(title: "允许一次", target: nil, action: nil), deny = AgentDialogButton(title: "拒绝", target: nil, action: nil)
+    private let execute = AgentDialogButton(title: "采纳计划并执行", target: nil, action: nil)
+    private var filterBar: AgentAttentionFilterBar!
     private var states = [ListState(), ListState()], activeTab = 0, rows: [AgentAttentionItem] = [], selected: AgentAttentionItem?
     private var suppressSelection = false, draftSave: DispatchWorkItem?, operationIssue: String?
     private var replySavedText = "", replyLoaded = true
@@ -39,10 +40,12 @@ import AppKit
         AgentWorkbenchTheme.toolbar(settings, title: "需要我设置", symbol: "gearshape")
         AgentWorkbenchTheme.toolbar(reload, title: "刷新", symbol: "arrow.clockwise")
         let title = NSTextField(labelWithString: "需要我"); title.font = .systemFont(ofSize: 20, weight: .semibold)
-        let heading = NSStackView(views: [title, NSView(), reload, settings]); heading.spacing = 8
+        let heading = NSStackView(views: [title, tabs, NSView(), reload, settings]); heading.spacing = 16; heading.alignment = .centerY
         tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("需要我列表")
+        tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
+        tabs.widthAnchor.constraint(equalToConstant: 128).isActive = true; tabs.heightAnchor.constraint(equalToConstant: 28).isActive = true
         search.placeholderString = "搜索当前列表"; search.setAccessibilityLabel("搜索需要我当前列表"); search.delegate = self
-        let navigation = NSStackView(views: [tabs, NSView(), search]); search.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        search.font = .systemFont(ofSize: 13)
         for (menu, label) in [(kind, "筛选待办类型"), (source, "筛选待办来源"), (time, "筛选处理时间"), (sender, "筛选发起者")] {
             menu.target = self; menu.action = #selector(changeFilters); menu.setAccessibilityLabel(label); menu.cell?.lineBreakMode = .byTruncatingTail
             menu.widthAnchor.constraint(lessThanOrEqualToConstant: 210).isActive = true
@@ -50,11 +53,12 @@ import AppKit
         kind.addItem(withTitle: "全部类型"); for value in AgentAttentionKind.allCases { kind.addItem(withTitle: value.title); kind.lastItem?.representedObject = value.rawValue }
         source.addItem(withTitle: "全部来源"); for value in AgentAttentionSource.allCases { source.addItem(withTitle: value.title); source.lastItem?.representedObject = value.rawValue }
         for (label, days) in [("全部时间", 0), ("今天", 1), ("最近7天", 7), ("最近30天", 30)] { time.addItem(withTitle: label); time.lastItem?.representedObject = days }
-        let filters = NSStackView(views: [kind, source, time, sender, NSView()]); filters.spacing = 8
-        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("attention"))); table.headerView = nil; table.rowHeight = 77
+        filterBar = AgentAttentionFilterBar(kind: kind, source: source, time: time, sender: sender, search: search)
+        table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("attention"))); table.headerView = nil; table.rowHeight = 76
+        table.autoresizingMask = [.width]; table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openTask); table.setAccessibilityLabel("需要我事项列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        table.style = .inset; table.backgroundColor = .clear
+        table.style = .fullWidth; table.backgroundColor = .clear; table.intercellSpacing = .zero
         detailTitle.font = .systemFont(ofSize: 16, weight: .semibold); detailTitle.maximumNumberOfLines = 3
         metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText; metadata.lineBreakMode = .byTruncatingTail
         for text in [body, reply] {
@@ -62,25 +66,36 @@ import AppKit
             text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true
         }
         body.isEditable = false; body.setAccessibilityLabel("需要我事项详情")
+        body.textContainerInset = NSSize(width: 0, height: 4); body.textContainer?.lineFragmentPadding = 0
         let document = NSScrollView(); document.documentView = body; document.hasVerticalScroller = true
         reply.delegate = self; reply.allowsUndo = true; reply.setAccessibilityLabel("答复此问题"); replyScroll.documentView = reply; replyScroll.hasVerticalScroller = true; replyScroll.borderType = .bezelBorder
         replyField.addSubview(replyScroll); replyScroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([replyScroll.leadingAnchor.constraint(equalTo: replyField.leadingAnchor, constant: 1), replyScroll.trailingAnchor.constraint(equalTo: replyField.trailingAnchor, constant: -1), replyScroll.topAnchor.constraint(equalTo: replyField.topAnchor, constant: 1), replyScroll.bottomAnchor.constraint(equalTo: replyField.bottomAnchor, constant: -1), replyField.heightAnchor.constraint(equalToConstant: 88)])
         replyCaption.font = .systemFont(ofSize: 12, weight: .medium)
-        for (button, action) in [(open, #selector(openTask)), (mark, #selector(markHandled)), (answer, #selector(answerQuestion)), (allow, #selector(allowRequest)), (deny, #selector(denyRequest)), (execute, #selector(executePlan))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        let actions = NSStackView(views: [open, NSView(), mark, deny, allow, execute, answer]); actions.spacing = 6
-        let details = NSStackView(views: [detailTitle, metadata, document, replyCaption, replyField, actions]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 10
+        for (button, action) in [(open, #selector(openTask)), (mark, #selector(markHandled)), (answer, #selector(answerQuestion)), (allow, #selector(allowRequest)), (deny, #selector(denyRequest)), (execute, #selector(executePlan))] {
+            button.target = self; button.action = action
+            AgentDialogStyle.action(button, prominent: button === answer || button === allow || button === execute)
+        }
+        detailTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        detailTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let detailHeading = NSStackView(views: [detailTitle, open]); detailHeading.spacing = 12; detailHeading.alignment = .top
+        let actions = NSStackView(views: [NSView(), mark, deny, allow, execute, answer]); actions.spacing = 8
+        let details = NSStackView(views: [detailHeading, metadata, document, replyCaption, replyField, actions]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 12
         for child in details.arrangedSubviews { child.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
         for view in [list, details, empty] { panes.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let divider = NSBox(); divider.boxType = .separator; divider.identifier = .init("attention-pane-divider"); panes.addSubview(divider); divider.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([divider.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 15), divider.widthAnchor.constraint(equalToConstant: 1), divider.topAnchor.constraint(equalTo: panes.topAnchor), divider.bottomAnchor.constraint(equalTo: panes.bottomAnchor)])
         let listWidth = list.widthAnchor.constraint(equalToConstant: 260); listWidth.priority = .init(499)
         empty.font = .systemFont(ofSize: 14); empty.textColor = AgentWorkbenchTheme.secondaryText
-        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: panes.leadingAnchor), list.topAnchor.constraint(equalTo: panes.topAnchor), list.bottomAnchor.constraint(equalTo: panes.bottomAnchor), list.widthAnchor.constraint(greaterThanOrEqualToConstant: 180), list.widthAnchor.constraint(lessThanOrEqualTo: panes.widthAnchor, multiplier: 0.4), listWidth, details.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 20), details.trailingAnchor.constraint(equalTo: panes.trailingAnchor), details.topAnchor.constraint(equalTo: panes.topAnchor), details.bottomAnchor.constraint(equalTo: panes.bottomAnchor), empty.centerXAnchor.constraint(equalTo: panes.centerXAnchor), empty.centerYAnchor.constraint(equalTo: panes.centerYAnchor)])
+        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: panes.leadingAnchor), list.topAnchor.constraint(equalTo: panes.topAnchor), list.bottomAnchor.constraint(equalTo: panes.bottomAnchor), list.widthAnchor.constraint(greaterThanOrEqualToConstant: 180), list.widthAnchor.constraint(lessThanOrEqualTo: panes.widthAnchor, multiplier: 0.4), listWidth, details.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 32), details.trailingAnchor.constraint(equalTo: panes.trailingAnchor), details.topAnchor.constraint(equalTo: panes.topAnchor, constant: 10), details.bottomAnchor.constraint(equalTo: panes.bottomAnchor), empty.centerXAnchor.constraint(equalTo: panes.centerXAnchor), empty.centerYAnchor.constraint(equalTo: panes.centerYAnchor)])
         for scroll in [list, document, replyScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
         replyField.layer?.cornerRadius = 8; replyField.layer?.masksToBounds = true; replyField.layer?.borderWidth = 1
-        status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byWordWrapping; status.maximumNumberOfLines = 2; status.setAccessibilityLabel("需要我状态")
+        status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byWordWrapping; status.maximumNumberOfLines = 0; status.isSelectable = true; status.setAccessibilityLabel("需要我状态")
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        more.target = self; more.action = #selector(loadMore); let footer = NSStackView(views: [status, NSView(), more]); footer.spacing = 8
-        let content = NSStackView(views: [heading, navigation, filters, panes, footer]); content.orientation = .vertical; content.alignment = .leading; content.spacing = 13
+        more.target = self; more.action = #selector(loadMore); AgentDialogStyle.action(more)
+        let footer = NSStackView(views: [status, NSView(), more]); footer.spacing = 8
+        let rule = NSBox(); rule.boxType = .separator
+        let content = NSStackView(views: [heading, filterBar, rule, panes, footer]); content.orientation = .vertical; content.alignment = .leading; content.spacing = 16
         let root = AgentThemeView(fill: AgentWorkbenchTheme.surface); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false; window.contentView = root
         root.setAccessibilityLabel("需要我主页面")
         contentTop = content.topAnchor.constraint(equalTo: root.topAnchor, constant: 18)
@@ -105,7 +120,7 @@ import AppKit
     private func renderFilters() {
         let value = states[activeTab]; search.stringValue = value.query; select(kind, value: value.kind); select(source, value: value.source)
         time.selectItem(at: time.itemArray.firstIndex { $0.representedObject as? Int == value.days } ?? 0)
-        time.isHidden = activeTab == 0; sender.isHidden = activeTab == 0
+        filterBar.showsHistory = activeTab == 1
         sender.removeAllItems(); sender.addItem(withTitle: "全部发起者")
         var senders = Set(attention.items.filter { $0.handled == (activeTab == 1) }.map(\.sender)); if let selected = value.sender { senders.insert(selected) }
         for name in senders.sorted() { sender.addItem(withTitle: name); sender.lastItem?.representedObject = name }; select(sender, value: value.sender)
@@ -146,13 +161,22 @@ import AppKit
         status.stringValue = operationIssue ?? attention.issue ?? (!attention.settings.enabled ? "需要我已关闭" : attention.loading ? "正在载入…" : matching.isEmpty ? "" : "\(rows.count) 项 · 已加载 \(loaded.count)／\(matching.count)")
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
     func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }; let item = rows[row]
         let title = NSTextField(labelWithString: item.title), summary = NSTextField(labelWithString: item.summary.replacingOccurrences(of: "\n", with: " "))
         title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
-        summary.font = .systemFont(ofSize: 11); summary.textColor = AgentWorkbenchTheme.secondaryText; summary.lineBreakMode = .byTruncatingTail
-        let info = NSTextField(labelWithString: item.kind.title + " · " + item.source.title + " · " + item.sender); info.font = .systemFont(ofSize: 10); info.textColor = .tertiaryLabelColor; info.lineBreakMode = .byTruncatingTail
-        let view = NSStackView(views: [title, summary, info]); view.orientation = .vertical; view.alignment = .leading; view.spacing = 5
+        summary.font = .systemFont(ofSize: 12); summary.textColor = AgentWorkbenchTheme.secondaryText; summary.lineBreakMode = .byTruncatingTail
+        let info = NSTextField(labelWithString: item.kind.title + " · " + item.source.title); info.font = .systemFont(ofSize: 11); info.textColor = AgentWorkbenchTheme.secondaryText; info.lineBreakMode = .byTruncatingTail
+        let view = NSTableCellView(); view.textField = title
+        let labels = [title, summary, info]
+        for (index, label) in labels.enumerated() {
+            view.addSubview(label); label.translatesAutoresizingMaskIntoConstraints = false
+            label.maximumNumberOfLines = 1; label.toolTip = label.stringValue
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12), label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12), label.heightAnchor.constraint(equalToConstant: index == 2 ? 14 : 16)])
+            label.topAnchor.constraint(equalTo: index == 0 ? view.topAnchor : labels[index - 1].bottomAnchor, constant: index == 0 ? 10 : 4).isActive = true
+        }
         view.setAccessibilityLabel(item.title + "，" + item.kind.title + "，" + (item.handled ? "已处理" : "待处理") + "，" + String(item.summary.prefix(80))); return view
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -281,7 +305,7 @@ import AppKit
         root.layoutSubtreeIfNeeded()
         let detail = panes.subviews[1], bounds = root.bounds, panel = panes.convert(panes.bounds, to: root)
         let actionView = (detail as? NSStackView)?.arrangedSubviews.last
-        let checks = ["contentIsHostedByOwner": root.window === hostWindow && window?.isVisible == false, "bothPanesFitPage": panel.minX >= 27.5 && panel.maxX <= bounds.maxX - 27.5 && list.bounds.width >= 179.5 && detail.bounds.width >= 259, "detailFillsAvailableWidth": abs(detail.frame.maxX - panes.bounds.maxX) < 0.5 && abs(detail.frame.minX - list.frame.maxX - 20) < 0.5, "textUsesDetailWidth": body.bounds.width >= detail.bounds.width - 24, "replyFieldFitsAndHasVisibleBorder": replyField.isHidden || bounds.contains(replyField.convert(replyField.bounds, to: root)) && replyField.layer?.borderWidth == 1 && replyScroll.frame.minX >= 1, "actionsFitHeight": actionView.map { bounds.contains($0.convert($0.bounds, to: root)) } ?? false]
+        let checks = ["contentIsHostedByOwner": root.window === hostWindow && window?.isVisible == false, "bothPanesFitPage": panel.minX >= 27.5 && panel.maxX <= bounds.maxX - 27.5 && list.bounds.width >= 179.5 && detail.bounds.width >= 259, "detailFillsAvailableWidth": abs(detail.frame.maxX - panes.bounds.maxX) < 0.5 && abs(detail.frame.minX - list.frame.maxX - 32) < 0.5, "textUsesDetailWidth": body.bounds.width >= detail.bounds.width - 24, "replyFieldFitsAndHasVisibleBorder": replyField.isHidden || bounds.contains(replyField.convert(replyField.bounds, to: root)) && replyField.layer?.borderWidth == 1 && replyScroll.frame.minX >= 1, "actionsFitHeight": actionView.map { bounds.contains($0.convert($0.bounds, to: root)) } ?? false, "filterControlsFitWithoutOverlap": filterBar.controlsFit]
         return ["checks": checks, "pageWidth": bounds.width, "listWidth": list.bounds.width, "detailWidth": detail.bounds.width, "bodyWidth": body.bounds.width]
     }
     func checkState() -> [String: Any] {
