@@ -521,7 +521,8 @@ final class FormDocumentView: NSView {
             let originalActions = settingsWindowActions.arrangedSubviews
             let create = originalActions.compactMap { $0 as? NSButton }.first { $0.title == "新建" }
             create?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
-            checks["GlobalCreationOpensExistingChildAndHidesHeaderActions"] = create != nil && settingsPageHost.currentController is AgentExtensionCreationPage && settingsWindowActions.isHidden
+            let formActions = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
+            checks["GlobalCreationKeepsOriginalFormActionsInHeader"] = create != nil && settingsPageHost.currentController is AgentExtensionCreationPage && !settingsWindowActions.isHidden && formActions.map(\.title) == ["取消", "创建"] && formActions.allSatisfy { $0.target as AnyObject? === settingsPageHost.currentController } && formActions.last?.keyEquivalent == "s"
             settingsPageHost.currentController?.close(); window.contentView?.layoutSubtreeIfNeeded()
             checks["CancelReturnsSameManagerAndOriginalActionTargets"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 }) && create?.target as AnyObject? === manager
             settingsSearch.stringValue = "模型"; updateSettingsSections()
