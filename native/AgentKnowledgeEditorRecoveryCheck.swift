@@ -3,7 +3,7 @@ import AppKit
 @MainActor extension AppDelegate {
     struct KnowledgeEditorFixture: Codable {
         var taskID: String, root: String, otherRoot: String, baseID: String, libraryWindow: String, wikiWindow: String
-        var plan: AgentWikiPlanWindow.RecoveryState, library: AgentWorkspaceRecovery.KnowledgeLibrary, catalogHash: String, sourceHash: String
+        var plan: AgentWikiPlanWindow.RecoveryState, library: AgentWorkspaceRecovery.KnowledgeLibrary, catalogHash: String, sourceHash: String, originalTaskIDs: Set<String>
     }
     func runKnowledgeEditorRecoveryCheck(_ output: URL, interactive: Bool = false) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
@@ -29,7 +29,9 @@ import AppKit
                 let sourceData = try AgentTextFormat(encoding: .utf16LE, bom: true).encode(source)
                 try files.writeData(sourceData, to: files.literalURL(AgentWikiPlan.compatiblePath))
                 let base = try tasks.knowledge.create(name: "PUBLIC_ORIGINAL_LIBRARY 中文", workspace: nil), catalogHash = try tasks.knowledge.document().1, taskIDs = Set(tasks.tasks.map(\.id))
-                control.showKnowledgeLibrary(); let library = try library()
+                control.showKnowledgeLibrary()
+                guard control.knowledgePageHost.show(root: "library", identity: "standalone", make: { _ in AgentKnowledgeLibraryWindow(store: tasks, taskID: nil) }) else { throw PetError("无任务知识库未进入正常知识承载区") }
+                let library = try library()
                 checks["tasklessLibraryUsesNoInventedTask"] = library.boundTaskID == nil && Set(tasks.tasks.map(\.id)) == taskIDs
                 let name = String(repeating: "待恢复的名称中文😀", count: 18)
                 try library.checkRecovery(action: "new", name: name, selection: NSRange(location: 3, length: 5)); try library.checkRecovery(action: "save")
@@ -45,7 +47,7 @@ import AppKit
                 checks["invalidYAMLDraftKeepsSourceVersionAndEncoding"] = try plan.hasUnsavedChanges && Data(contentsOf: files.literalURL(AgentWikiPlan.compatiblePath)) == sourceData && !fm.fileExists(atPath: root.appendingPathComponent(AgentWikiPlan.configurationPath).path)
                 try await flush(); let savedPlan = try planState(plan), savedLibrary = try libraryState(library)
                 guard let first = control.workspaceSession?.id, let second = other.workspaceSession?.id else { throw PetError("恢复窗口编号缺失") }
-                fixture = .init(taskID: id, root: root.path, otherRoot: otherRoot.path, baseID: base.id, libraryWindow: first, wikiWindow: second, plan: savedPlan, library: savedLibrary, catalogHash: catalogHash, sourceHash: AgentFiles.hash(sourceData))
+                fixture = .init(taskID: id, root: root.path, otherRoot: otherRoot.path, baseID: base.id, libraryWindow: first, wikiWindow: second, plan: savedPlan, library: savedLibrary, catalogHash: catalogHash, sourceHash: AgentFiles.hash(sourceData), originalTaskIDs: taskIDs)
                 checks["journalStoresTasklessNameAndOwnedPlan"] = try journal.loadWindow(first)?.value.knowledge?.library == savedLibrary && journal.loadWindow(second)?.value.knowledge?.readers.contains(where: { (try? AgentRecordWindow.recoveryState($0).wikiPlan?.draft) == draft }) == true
                 checks["quitProtectionRequiresSavedEditors"] = control.workspaceSession?.preservedEditors.contains(ObjectIdentifier(library)) == true && other.workspaceSession?.preservedEditors.contains(ObjectIdentifier(plan)) == true
                 checks["planPositionIsNonzeroAndExactSelection"] = savedPlan.viewport?.selections.first?.range == range && (savedPlan.viewport?.y ?? 0) > 0
@@ -71,7 +73,8 @@ import AppKit
                     checks["coldReopenRestoresTasklessNameAndScope"] = name.name == originalName.name && name.taskID == nil && name.openedWorkspace == nil && !name.project && library.hasPendingChanges && library.boundTaskID == nil
                     checks["coldReopenRestoresNameSelectionAndFocus"] = name.selection == originalName.selection && name.focus == originalName.focus
                     checks["reopeningDoesNotSaveProjectOrCatalog"] = try tasks.knowledge.document().1 == fixture.catalogHash && AgentFiles.hash(Data(contentsOf: sourceURL)) == fixture.sourceHash
-                    checks["ownersAndWindowIdentitiesRemainSeparate"] = control.workspaceSession?.id == fixture.libraryWindow && other.workspaceSession?.id == fixture.wikiWindow && other.agentTaskID == fixture.taskID && tasks.tasks.count == 1
+                    checks["ownersAndWindowIdentitiesRemainSeparate"] = control.workspaceSession?.id == fixture.libraryWindow && other.workspaceSession?.id == fixture.wikiWindow && other.agentTaskID == fixture.taskID && Set(tasks.tasks.map(\.id)) == fixture.originalTaskIDs.union([fixture.taskID])
+                    checks["tasklessNameAndOwnedPlanAreActuallyVisibleAfterReopen"] = library.isPageVisible && plan.isPageVisible
                     if stage == "reopen" && !interactive {
                         let originalData = try Data(contentsOf: sourceURL), validDraft = fixture.plan.source + "# PUBLIC_EXPLICIT_PLAN_SAVE 中文😀\n"
                         try plan.checkRecovery(text: validDraft)

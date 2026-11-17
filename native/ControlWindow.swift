@@ -3232,7 +3232,8 @@ final class FormDocumentView: NSView {
                 return reader
             } catch { reader.endSettingsHosting(); throw error }
         })
-        if value.active, value.identity == (agentTaskID ?? "standalone") { sidebarRequested = true; show(tab: "knowledge") }
+        let standaloneLibrary = value.identity == "standalone" && value.root == "library" && value.library != nil
+        if value.active, value.identity == (agentTaskID ?? "standalone") || standaloneLibrary { sidebarRequested = true; show(tab: "knowledge") }
     }
     @objc internal func showAgentKnowledge() { _ = showKnowledgeCenter(root: "wiki") }
     private func openRepoWikiProject(_ project: AgentRepoWikiProject, language: String, action: String) throws {
