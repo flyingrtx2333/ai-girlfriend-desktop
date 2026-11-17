@@ -28,6 +28,18 @@ import AppKit
         var checks: [String: Bool] = [:]
         let workspace = tasks.task(taskID)?.workspace
         let visibleWindows = NSApp.windows.filter(\.isVisible).count
+        func headerActions(_ page: AgentSettingsFormPage, submit title: String) throws -> Bool {
+            guard let root = page.pageContentView,
+                  let submit = find(NSButton.self, in: root, matching: { $0.title == title }),
+                  let cancel = find(NSButton.self, in: root, matching: { $0.title == "取消" }) else { return false }
+            let destination = NSStackView(), original = submit.superview
+            page.setSettingsActionsHost(destination); page.setSettingsActionsHost(destination)
+            let attached = destination.arrangedSubviews.count == 2 && submit.superview === destination && cancel.superview === destination && submit.target === page && cancel.target === page && submit.keyEquivalent == "s" && submit.keyEquivalentModifierMask.contains(.command)
+            submit.performClick(nil)
+            let rejected = pane.currentController === page && find(AgentSettingsStatusField.self, in: root, matching: { !$0.stringValue.isEmpty }) != nil
+            page.setSettingsActionsHost(nil); page.setSettingsActionsHost(nil)
+            return attached && rejected && destination.arrangedSubviews.isEmpty && submit.superview === original && cancel.superview === original
+        }
         func layout(_ page: AgentSettingsPageController, fields: [String]) throws -> Bool {
             var fits = true
             for size in [NSSize(width: 680, height: 420), NSSize(width: 360, height: 360)] {
@@ -54,6 +66,7 @@ import AppKit
             guard let page = pane.currentController as? AgentExtensionCreationPage else { throw PetError("新建扩展未进入设置子页") }
             checks[key + "CreationHostedWithoutModal"] = page.presentingWindow === host && page.window?.isVisible == false && host.attachedSheet == nil
             checks[key + "CreationNormalAndNarrowLayout"] = try layout(page, fields: ["扩展名称", "扩展范围"])
+            checks[key + "HeaderActionsKeepOriginalDispatchAndReturn"] = try headerActions(page, submit: "创建") && tasks.extensions.catalog(workspace: workspace).filter { $0.kind == kind }.map(\.id) == before.map(\.id)
             try edit("扩展名称", kind == .skill ? "settings-skill" : "settings-command", in: page); try press("创建", in: page)
             checks[key + "DuplicateKeepsFormAndOriginalFile"] = try pane.currentController === page && text(page.pageContentView).contains("同名扩展已存在") && tasks.extensions.catalog(workspace: workspace).filter { $0.kind == kind }.map(\.id) == before.map(\.id)
             let name = kind == .skill ? "inline-settings-skill" : "inline:settings-command"
@@ -105,6 +118,7 @@ import AppKit
         guard let page = pane.currentController as? AgentMCPToolRulePage else { throw PetError("MCP 规则未进入设置子页") }
         checks["MCPRuleHostedWithoutModal"] = page.presentingWindow === host && page.window?.isVisible == false && host.attachedSheet == nil
         checks["MCPRuleNormalAndNarrowLayout"] = try layout(page, fields: ["MCP 连接器", "MCP 工具名", "MCP 工具权限"])
+        checks["MCPRuleHeaderActionsKeepOriginalDispatchAndReturn"] = try headerActions(page, submit: "应用") && tasks.agents.document().1 == beforeRule
         try press("应用", in: page)
         checks["MCPRuleEmptyInputKeepsForm"] = try pane.currentController === page && text(page.pageContentView).contains("请输入有效的实际工具名") && tasks.agents.document().1 == beforeRule
         try edit("MCP 工具名", String(repeating: "x", count: 129), in: page); try press("应用", in: page)

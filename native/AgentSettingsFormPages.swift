@@ -4,34 +4,52 @@ import AppKit
     private let status = AgentSettingsStatusField("设置保存状态")
     private var dirty = false
     private weak var firstInput: NSView?
+    private weak var actionsHost: NSStackView?
+    private let footer = NSStackView()
+    private var actions: [NSView] = []
+    private var footerHeight: NSLayoutConstraint!
 
     init(title: String, rows: [[NSView]], submitTitle: String) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 380), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 300); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 18, weight: .semibold)
-        let grid = NSGridView(views: rows); grid.columnSpacing = 14; grid.rowSpacing = 16
-        grid.column(at: 0).width = 76; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill
         firstInput = rows.first?.last
+        var fields: [NSView] = []
         for row in rows {
-            if let input = row.last as? NSTextField { input.delegate = self; input.font = .systemFont(ofSize: 13) }
-            if let input = row.last as? NSPopUpButton { input.target = self; input.action = #selector(changed) }
+            let label = (row.first as? NSTextField)?.stringValue ?? ""
+            if let input = row.last as? NSTextField {
+                input.delegate = self; fields.append(AgentSettingsStyle.labeledField(label, input))
+            } else if let input = row.last as? NSPopUpButton {
+                input.target = self; input.action = #selector(changed)
+                fields.append(AgentSettingsStyle.formRow(label, input, trailing: true))
+            }
         }
+        let section = AgentSettingsStyle.section(title, id: "short-form", rows: fields)
         status.font = .systemFont(ofSize: 12); status.textColor = .systemRed
-        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelForm))
-        let submit = NSButton(title: submitTitle, target: self, action: #selector(submitForm))
+        let cancel = AgentDialogButton(title: "取消", target: self, action: #selector(cancelForm))
+        let submit = AgentDialogButton(title: submitTitle, target: self, action: #selector(submitForm))
+        AgentDialogStyle.action(cancel); AgentDialogStyle.action(submit, prominent: true)
         submit.keyEquivalent = "s"; submit.keyEquivalentModifierMask = .command
-        let footer = NSStackView(views: [NSView(), cancel, submit]); footer.spacing = 10
+        actions = [cancel, submit]
+        for view in [NSView(), cancel, submit] { footer.addArrangedSubview(view) }; footer.spacing = 10
+        footerHeight = footer.heightAnchor.constraint(equalToConstant: 28)
         let content = AgentThemeView(); window.contentView = content
-        for view in [heading, grid, status, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [section, status, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            heading.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), heading.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), heading.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -18),
-            grid.leadingAnchor.constraint(equalTo: heading.leadingAnchor), grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18), grid.topAnchor.constraint(equalTo: heading.bottomAnchor, constant: 24),
-            status.leadingAnchor.constraint(equalTo: grid.leadingAnchor), status.trailingAnchor.constraint(equalTo: grid.trailingAnchor), status.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14), status.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -12),
-            footer.leadingAnchor.constraint(equalTo: grid.leadingAnchor), footer.trailingAnchor.constraint(equalTo: grid.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18)
+            section.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18), section.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), section.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            status.leadingAnchor.constraint(equalTo: section.leadingAnchor), status.trailingAnchor.constraint(equalTo: section.trailingAnchor), status.topAnchor.constraint(equalTo: section.bottomAnchor, constant: 14),
+            footer.leadingAnchor.constraint(equalTo: section.leadingAnchor), footer.trailingAnchor.constraint(equalTo: section.trailingAnchor), footer.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 12), footer.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -18), footerHeight
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func setSettingsActionsHost(_ host: NSStackView?) {
+        guard actionsHost !== host else { return }
+        for view in actions {
+            if let stack = view.superview as? NSStackView, stack.arrangedSubviews.contains(where: { $0 === view }) { stack.removeArrangedSubview(view) }
+            view.removeFromSuperview(); (host ?? footer).addArrangedSubview(view)
+        }
+        actionsHost = host; footer.isHidden = host != nil; footerHeight.constant = host == nil ? 28 : 0
+    }
     override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(firstInput) }
     func controlTextDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { dirty = true; status.stringValue = "" }
@@ -53,7 +71,7 @@ import AppKit
 
     init(service: AgentExtensions, kind: AgentExtensionKind, workspace: String?) {
         self.service = service; self.kind = kind; self.workspace = workspace
-        let name = NSTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope
+        let name = AgentDialogTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope; name.outlined = true
         name.placeholderString = "名称"; name.setAccessibilityLabel("扩展名称")
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.menu?.autoenablesItems = false; scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("扩展范围")
         super.init(title: kind == .skill ? "新建 Skill" : "新建命令", rows: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "范围"), scope]], submitTitle: "创建")
@@ -77,7 +95,7 @@ import AppKit
 
     init(servers: [AgentMCPServer]) {
         self.servers = servers
-        let server = NSPopUpButton(), tool = NSTextField(), permission = NSPopUpButton(); self.server = server; self.tool = tool; self.permission = permission
+        let server = NSPopUpButton(), tool = AgentDialogTextField(), permission = NSPopUpButton(); self.server = server; self.tool = tool; self.permission = permission; tool.outlined = true
         for item in servers {
             let duplicate = servers.filter { $0.name == item.name }.count > 1
             let title = duplicate ? AgentMCPSelection.title(item) : item.name

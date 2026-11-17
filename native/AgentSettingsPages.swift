@@ -22,6 +22,7 @@ import AppKit
         return content
     }
     func pageDidLayout() {}
+    func setSettingsActionsHost(_ host: NSStackView?) { (pageContentView as? AgentSettingsCatalogPage)?.setActionsHost(host) }
     func canLeaveSettings() -> Bool {
         guard presentingWindow?.hasBlockingDialog != true else { return false }
         guard let window else { return true }
@@ -644,16 +645,16 @@ struct AgentSettingsCatalogGroup {
         updateActions()
     }
     private func updateActions() {
-        let current = actionsEnabled ? entries.last?.view as? AgentSettingsCatalogPage : nil
+        let current = actionsEnabled ? entries.last?.controller : nil
         // Return hidden pages' actual controls before attaching the visible page.
-        for entry in entries where entry.view !== current { (entry.view as? AgentSettingsCatalogPage)?.setActionsHost(nil) }
-        current?.setActionsHost(actionsHost)
+        for entry in entries where entry.controller !== current { entry.controller.setSettingsActionsHost(nil) }
+        current?.setSettingsActionsHost(actionsHost)
         actionsHost?.isHidden = !actionsEnabled || current == nil || actionsHost?.arrangedSubviews.isEmpty == true
         if let actionsHost { AgentThemeContext.refresh(actionsHost, invalidate: true) }
     }
     @objc private func goBack() {
         guard entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
-        let entry = entries.removeLast(); (entry.view as? AgentSettingsCatalogPage)?.setActionsHost(nil); entry.controller.endSettingsHosting(); displayCurrent()
+        let entry = entries.removeLast(); entry.controller.setSettingsActionsHost(nil); entry.controller.endSettingsHosting(); displayCurrent()
     }
     @objc private func changeTab() {
         let next = tabs.selectedSegment
@@ -667,7 +668,7 @@ struct AgentSettingsCatalogGroup {
     private func clearEntries() {
         stopScrollMonitor()
         pageHeight?.isActive = false; pageHeight = nil
-        for entry in entries.reversed() { (entry.view as? AgentSettingsCatalogPage)?.setActionsHost(nil); entry.controller.endSettingsHosting() }
+        for entry in entries.reversed() { entry.controller.setSettingsActionsHost(nil); entry.controller.endSettingsHosting() }
         entries = []; updateHeader()
     }
     @discardableResult func leave() -> Bool {
