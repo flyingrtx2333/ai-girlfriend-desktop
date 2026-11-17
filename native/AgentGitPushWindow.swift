@@ -46,7 +46,7 @@ import AppKit
         displayMode.selectedSegment = 0; displayMode.target = self; displayMode.action = #selector(changeDisplay); displayMode.segmentStyle = .roundRect; displayMode.font = .systemFont(ofSize: 13); displayMode.setAccessibilityLabel("待推送差异视图")
         wrap.state = .on; wrap.target = self; wrap.action = #selector(changeDisplay); wrap.font = .systemFont(ofSize: 13)
         for view in [displayMode, wrap] { view.heightAnchor.constraint(equalToConstant: 28).isActive = true; view.setContentHuggingPriority(.required, for: .horizontal); view.setContentCompressionResistancePriority(.required, for: .horizontal) }
-        let reading = NSStackView(views: [commitFrame, displayMode, wrap]); reading.spacing = 8; reading.alignment = .centerY
+        let reading = NSStackView(views: [commitFrame, displayMode, wrap]); reading.spacing = 8; reading.alignment = .centerY; reading.distribution = .fill
         let top = NSStackView(views: [header, destination, target, count, reading]); top.orientation = .vertical; top.alignment = .leading; top.spacing = 10
         for row in top.arrangedSubviews { row.widthAnchor.constraint(equalTo: top.widthAnchor).isActive = true }
         inspectCommit.addItem(withTitle: "待推送整体变更")

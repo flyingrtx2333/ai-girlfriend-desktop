@@ -196,7 +196,9 @@ import AppKit
                     let key = appearance + "-" + kind
                     let state = embedded.workspaceReadback(), controls = state["controls"] as? [[String: Any]] ?? [], frames = state["popupFrames"] as? [[CGFloat]] ?? [], diff = state["diffFrame"] as? [CGFloat] ?? []
                     let read = reader.readingReadback()
-                    checks["pushNumberedReaderAndControlsFit-" + key] = controls.allSatisfy { $0["inside"] as? Bool == true } && frames.count == 3 && frames[2][2] > 160 && frames[2][3] == 28 && diff.count == 4 && diff[3] >= 80 && read["gutterVisible"] as? Bool == true && abs((read["textWidth"] as? CGFloat ?? 0) - (read["viewportWidth"] as? CGFloat ?? 1)) < 0.5 && reader.patch == expected
+                    let wrapFrame = controls.first { $0["label"] as? String == "换行" }?["frame"] as? [CGFloat] ?? [], contentSize = state["contentSize"] as? [CGFloat] ?? []
+                    let alignedRight = wrapFrame.count == 4 && contentSize.count == 2 && abs(wrapFrame[0] + wrapFrame[2] - contentSize[0] + 16) < 0.5
+                    checks["pushNumberedReaderAndControlsFit-" + key] = controls.allSatisfy { $0["inside"] as? Bool == true } && alignedRight && frames.count == 3 && frames[2][2] > 160 && frames[2][3] == 28 && diff.count == 4 && diff[3] >= 80 && read["gutterVisible"] as? Bool == true && abs((read["textWidth"] as? CGFloat ?? 0) - (read["viewportWidth"] as? CGFloat ?? 1)) < 0.5 && reader.patch == expected
                     mode.selectedSegment = 1; NSApp.sendAction(display, to: mode.target, from: mode); host.contentView?.layoutSubtreeIfNeeded()
                     checks["pushSplitUsesSameActualCommit-" + key] = reader.splitMode && reader.patch == expected && !mode.isHidden && mode.isEnabled && wrap.isEnabled
                     mode.selectedSegment = 0; NSApp.sendAction(display, to: mode.target, from: mode)
@@ -207,8 +209,9 @@ import AppKit
                     report["numbered-push-" + key] = embedded.workspaceReadback()
                 }
             }
-            picker.selectItem(at: 0); NSApp.sendAction(choose, to: picker.target, from: picker)
-            checks["pushOverallSelectionRestoresExactPreparedPatch"] = reader.patch == overall
+            let modeOrigin = mode.convert(NSPoint.zero, to: embedded.pageContentView)
+            picker.selectItem(at: 0); NSApp.sendAction(choose, to: picker.target, from: picker); host.contentView?.layoutSubtreeIfNeeded()
+            checks["pushOverallSelectionRestoresExactPreparedPatch"] = reader.patch == overall && abs(mode.convert(NSPoint.zero, to: embedded.pageContentView).x - modeOrigin.x) < 0.5
             host.appearance = nil; host.setContentSize(NSSize(width: 1320, height: 800)); host.contentView?.layoutSubtreeIfNeeded()
             let largeFile = fixture.workspace.appendingPathComponent("large-public.txt")
             try Data((1...3000).map { "公开截取验收行 \($0) " + String(repeating: "public-content ", count: 8) + "\n" }.joined().utf8).write(to: largeFile)
