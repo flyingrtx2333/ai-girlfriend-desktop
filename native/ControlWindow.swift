@@ -2210,6 +2210,7 @@ final class FormDocumentView: NSView {
             window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
             let geometry = page.checkPageGeometry(); frames[name] = geometry
             for (key, value) in geometry["checks"] as? [String: Bool] ?? [:] { checks[name + "-" + key] = value }
+            checks[name + "-historyFiltersFitWithoutOverlap"] = page.checkHistoryFilterGeometry()
             checks[name + "-actualWindowSize"] = abs(window.contentView!.bounds.width - size.width) < 0.5 && abs(window.contentView!.bounds.height - size.height) < 0.5
         }
         window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()

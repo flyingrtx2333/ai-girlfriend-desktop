@@ -308,6 +308,14 @@ import AppKit
         let checks = ["contentIsHostedByOwner": root.window === hostWindow && window?.isVisible == false, "bothPanesFitPage": panel.minX >= 27.5 && panel.maxX <= bounds.maxX - 27.5 && list.bounds.width >= 179.5 && detail.bounds.width >= 259, "detailFillsAvailableWidth": abs(detail.frame.maxX - panes.bounds.maxX) < 0.5 && abs(detail.frame.minX - list.frame.maxX - 32) < 0.5, "textUsesDetailWidth": body.bounds.width >= detail.bounds.width - 24, "replyFieldFitsAndHasVisibleBorder": replyField.isHidden || bounds.contains(replyField.convert(replyField.bounds, to: root)) && replyField.layer?.borderWidth == 1 && replyScroll.frame.minX >= 1, "actionsFitHeight": actionView.map { bounds.contains($0.convert($0.bounds, to: root)) } ?? false, "filterControlsFitWithoutOverlap": filterBar.controlsFit]
         return ["checks": checks, "pageWidth": bounds.width, "listWidth": list.bounds.width, "detailWidth": detail.bounds.width, "bodyWidth": body.bounds.width]
     }
+    func checkHistoryFilterGeometry() -> Bool {
+        guard CommandLine.arguments.contains("--attention-page-check") else { return false }
+        let previous = activeTab
+        tabs.selectedSegment = 1; changeTab(); hostedContent?.layoutSubtreeIfNeeded()
+        let fits = filterBar.controlsFit && !time.isHidden && !sender.isHidden
+        tabs.selectedSegment = previous; changeTab(); hostedContent?.layoutSubtreeIfNeeded()
+        return fits
+    }
     func checkState() -> [String: Any] {
         guard CommandLine.arguments.contains("--manual-ui") || CommandLine.arguments.contains("--attention-live-ui") || CommandLine.arguments.contains("--attention-page-check") else { return [:] }
         let state = states[activeTab]
