@@ -4,7 +4,8 @@ import AppKit
     private static func find<T: NSView>(_ type: T.Type, in root: NSView?, matching: (T) -> Bool) -> T? {
         guard let root else { return nil }
         if let value = root as? T, matching(value) { return value }
-        return root.subviews.lazy.compactMap { find(type, in: $0, matching: matching) }.first
+        for child in root.subviews { if let value = find(type, in: child, matching: matching) { return value } }
+        return nil
     }
     private static func capture(_ action: () throws -> Void) -> Error? {
         do { try action(); return nil } catch { return error }
