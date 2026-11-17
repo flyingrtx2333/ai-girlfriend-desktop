@@ -194,8 +194,9 @@ import AppKit
                 checks[key + "-outlinedCommitInputFits"] = message.outlined && message.bounds.height == 32 && !message.hasAmbiguousLayout
                 let patch = viewer.patch
                 let actualReader = viewer.readingReadback()
-                checks[key + "-unifiedNumbersMatchActualGitPatch"] = actualReader["rulerVisible"] as? Bool == true && viewer.text.records.contains { $0.old == 1 && $0.kind == .removed } && viewer.text.records.contains { $0.new == 1 && $0.kind == .added }
-                if let ruler = viewer.text.enclosingScrollView?.verticalRulerView {
+                checks[key + "-unifiedNumbersMatchActualGitPatch"] = actualReader["gutterVisible"] as? Bool == true && viewer.text.records.contains { $0.old == 1 && $0.kind == .removed } && viewer.text.records.contains { $0.new == 1 && $0.kind == .added }
+                do {
+                    let ruler = viewer.lineNumberGutter
                     let width = Int(ceil(ruler.bounds.width)) + 40, height = Int(ceil(ruler.bounds.height)) + 40
                     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
                     NSGraphicsContext.saveGraphicsState()
@@ -216,13 +217,22 @@ import AppKit
                             else { insidePainted = insidePainted || changed }
                         }
                     }
-                    checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = outsideUnchanged && insidePainted
-                    try bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(key + "-ruler-paint-bounds.png"))
-                } else { checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = false }
+                    checks[key + "-actualGutterDrawingCannotPaintOutsideItsBounds"] = outsideUnchanged && insidePainted
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(key + "-gutter-paint-bounds.png"))
+                }
                 let longText = String(repeating: "完整中文 🐋 and public content ", count: 16)
                 let readerPatch = "diff --git a/public.txt b/public.txt\n--- a/public.txt\n+++ b/public.txt\n@@ -99999,3 +100001,4 @@\n unchanged 🐋\r\n-old value\r\n+" + longText + "\r\n+extra value\r\n last value\r\n\\ No newline at end of file\n"
                 viewer.show(readerPatch, oldTitle: "原版本", newTitle: "新版本"); await settle()
                 let records = viewer.text.records, reading = viewer.readingReadback(), fragments = viewer.text.fragments(in: viewer.text.bounds)
+                var glyphsFit = true
+                if let manager = viewer.text.layoutManager {
+                    manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, _ in
+                        let right = used.maxX + viewer.text.textContainerOrigin.x
+                        glyphsFit = glyphsFit && right <= viewer.text.visibleRect.maxX + 0.5
+                    }
+                } else { glyphsFit = false }
+                let gutterFrame = viewer.lineNumberGutter.frame, scrollFrame = viewer.text.enclosingScrollView!.frame
+                checks[key + "-wrappedGlyphsUseActualViewportAfterGutter"] = glyphsFit && gutterFrame.maxX <= scrollFrame.minX + 0.5 && abs(viewer.text.enclosingScrollView!.contentView.bounds.minX) < 0.5
                 let longRange = (readerPatch as NSString).range(of: "+" + longText + "\r")
                 let longFragments = fragments.filter { $0.record.range.location == longRange.location }
                 checks[key + "-unifiedLargeNumbersAndUTF16ContentStayExact"] = viewer.patch == readerPatch && records.contains { $0.old == 100000 && $0.new == nil && $0.kind == .removed } && records.contains { $0.new == 100002 && $0.old == nil && $0.kind == .added } && records.contains { $0.old == 100001 && $0.new == 100004 } && (reading["gutterWidth"] as? CGFloat ?? 0) > 64
@@ -237,7 +247,7 @@ import AppKit
                 viewer.splitMode = true; viewer.wraps = true; await settle()
                 checks[key + "-largeSplitNumbersFitAndRowsStayAligned"] = (viewer.readingReadback()["splitNumberWidth"] as? CGFloat ?? 0) >= ceil(("100004" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)]).width) + 12 && viewer.checkSplitLayout().values.allSatisfy { $0 }
                 viewer.splitMode = false; viewer.show("此来源没有变更", oldTitle: "HEAD", newTitle: "工作区"); await settle()
-                checks[key + "-plainStatusDoesNotShowPhantomLineNumbers"] = viewer.readingReadback()["rulerVisible"] as? Bool == false && viewer.patch == "此来源没有变更"
+                checks[key + "-plainStatusDoesNotShowPhantomLineNumbers"] = viewer.readingReadback()["gutterVisible"] as? Bool == false && viewer.patch == "此来源没有变更"
                 viewer.show(patch, oldTitle: "HEAD", newTitle: "工作区"); await settle()
                 display.selectedSegment = 1; display.sendAction(display.action, to: display.target)
                 wrap.performClick(nil); await settle()

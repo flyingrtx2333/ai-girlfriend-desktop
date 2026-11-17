@@ -52,28 +52,26 @@ struct AgentGitDiffRecord {
     }
 }
 
-@MainActor private final class AgentGitDiffRuler: NSRulerView {
+@MainActor private final class AgentGitDiffGutter: NSView {
     private weak var text: AgentGitDiffTextView?
     let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     override var isFlipped: Bool { true }
-    init(scrollView: NSScrollView, text: AgentGitDiffTextView) {
+    init(text: AgentGitDiffTextView) {
         self.text = text
-        super.init(scrollView: scrollView, orientation: .verticalRuler)
-        clientView = text
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
     }
-    required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func draw(_ rect: NSRect) {
-        drawHashMarksAndLabels(in: rect.intersection(bounds))
-    }
-    override func drawHashMarksAndLabels(in rect: NSRect) {
         NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
         NSBezierPath(rect: bounds).addClip()
+        let rect = rect.intersection(bounds)
         AgentWorkbenchTheme.subtle.setFill(); rect.fill()
         guard let text else { return }
-        let column = (ruleThickness - 8) / 2
+        let column = (bounds.width - 8) / 2
         for fragment in text.fragments(in: text.visibleRect) {
             let top = convert(fragment.rect.origin, from: text).y
-            let row = NSRect(x: 0, y: top, width: ruleThickness, height: fragment.rect.height)
+            let row = NSRect(x: 0, y: top, width: bounds.width, height: fragment.rect.height)
             if fragment.record.kind == .added || fragment.record.kind == .removed {
                 AgentGitDiffTextView.background(fragment.record.kind).setFill(); row.intersection(rect).fill()
             }
@@ -159,12 +157,14 @@ enum AgentGitDiffRows {
 
 @MainActor final class AgentGitDiffView: AgentThemeView, NSTableViewDataSource, NSTableViewDelegate {
     let text = AgentGitDiffTextView()
-    private let unified = NSScrollView(), oldScroll = NSScrollView(), newScroll = NSScrollView(), split = NSView()
-    private lazy var ruler = AgentGitDiffRuler(scrollView: unified, text: text)
+    private let unified = NSScrollView(), unifiedHost = NSView(), oldScroll = NSScrollView(), newScroll = NSScrollView(), split = NSView()
+    private lazy var gutter = AgentGitDiffGutter(text: text)
+    private var gutterWidth: NSLayoutConstraint!
+    var lineNumberGutter: NSView { gutter }
     private let oldTable = NSTableView(), newTable = NSTableView(), measuringCell = NSTextFieldCell(textCell: ""), font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var rows: [AgentGitDiffRow] = [], heights: [Int: CGFloat] = [:], widths = NSSize.zero, longest = NSSize.zero, synchronizing = false
     private var numberWidth: CGFloat = 44
-    var splitMode = false { didSet { unified.isHidden = splitMode; split.isHidden = !splitMode; needsLayout = true } }
+    var splitMode = false { didSet { unifiedHost.isHidden = splitMode; split.isHidden = !splitMode; needsLayout = true } }
     var wraps = true { didSet { widths = .zero; heights.removeAll(); configureUnified(); needsLayout = true } }
     var patch: String { text.string }
     override init(frame: NSRect) {
@@ -174,7 +174,10 @@ enum AgentGitDiffRows {
         text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = font; text.textContainerInset = NSSize(width: 12, height: 12)
         text.isVerticallyResizable = true; text.backgroundColor = AgentWorkbenchTheme.surface; text.setAccessibilityLabel("Git 实际差异")
         unified.documentView = text; unified.hasVerticalScroller = true
-        unified.hasVerticalRuler = true; unified.verticalRulerView = ruler
+        for view in [gutter, unified] { unifiedHost.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        gutterWidth = gutter.widthAnchor.constraint(equalToConstant: 0); gutter.isHidden = true
+        NSLayoutConstraint.activate([gutter.leadingAnchor.constraint(equalTo: unifiedHost.leadingAnchor), gutter.topAnchor.constraint(equalTo: unifiedHost.topAnchor), gutter.bottomAnchor.constraint(equalTo: unifiedHost.bottomAnchor), gutterWidth,
+            unified.leadingAnchor.constraint(equalTo: gutter.trailingAnchor), unified.trailingAnchor.constraint(equalTo: unifiedHost.trailingAnchor), unified.topAnchor.constraint(equalTo: unifiedHost.topAnchor), unified.bottomAnchor.constraint(equalTo: unifiedHost.bottomAnchor)])
         unified.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: unified.contentView)
         for (table, scroll, title) in [(oldTable, oldScroll, "旧版本"), (newTable, newScroll, "新版本")] {
@@ -191,14 +194,14 @@ enum AgentGitDiffRows {
         }
         for scroll in [unified, oldScroll, newScroll] { scroll.borderType = .noBorder; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false }
         NSLayoutConstraint.activate([oldScroll.leadingAnchor.constraint(equalTo: split.leadingAnchor), newScroll.leadingAnchor.constraint(equalTo: oldScroll.trailingAnchor, constant: 1), newScroll.trailingAnchor.constraint(equalTo: split.trailingAnchor), oldScroll.widthAnchor.constraint(equalTo: newScroll.widthAnchor)])
-        for view in [unified, split] {
+        for view in [unifiedHost, split] {
             addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor), view.topAnchor.constraint(equalTo: topAnchor), view.bottomAnchor.constraint(equalTo: bottomAnchor)])
         }
         split.isHidden = true; configureUnified()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); text.needsDisplay = true; ruler.needsDisplay = true; oldTable.headerView?.needsDisplay = true; newTable.headerView?.needsDisplay = true; oldTable.reloadData(); newTable.reloadData() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); text.needsDisplay = true; gutter.needsDisplay = true; oldTable.headerView?.needsDisplay = true; newTable.headerView?.needsDisplay = true; oldTable.reloadData(); newTable.reloadData() }
     deinit { NotificationCenter.default.removeObserver(self) }
     private func display(_ line: String) -> String { line.replacingOccurrences(of: "\r", with: "␍") }
     func show(_ patch: String, oldTitle: String, newTitle: String, accessibilityContext: String = "Git") {
@@ -224,8 +227,8 @@ enum AgentGitDiffRows {
         let largest = records.flatMap { [$0.old, $0.new].compactMap { $0 } }.max() ?? 0
         numberWidth = max(44, ceil((String(largest) as NSString).size(withAttributes: [.font: font]).width) + 12)
         for table in [oldTable, newTable] { table.tableColumns[0].width = numberWidth }
-        ruler.ruleThickness = 8 + 2 * max(28, ceil((String(largest) as NSString).size(withAttributes: [.font: ruler.numberFont]).width) + 12)
-        unified.rulersVisible = largest > 0; ruler.needsDisplay = true; unified.tile()
+        gutterWidth.constant = largest > 0 ? 8 + 2 * max(28, ceil((String(largest) as NSString).size(withAttributes: [.font: gutter.numberFont]).width) + 12) : 0
+        gutter.isHidden = largest == 0; gutter.needsDisplay = true
         oldTable.tableColumns[1].title = oldTitle; newTable.tableColumns[1].title = newTitle
         text.setAccessibilityLabel(accessibilityContext + " 实际差异")
         oldTable.setAccessibilityLabel(accessibilityContext + " " + oldTitle + "差异"); newTable.setAccessibilityLabel(accessibilityContext + " " + newTitle + "差异")
@@ -274,7 +277,7 @@ enum AgentGitDiffRows {
         }
     }
     override func layout() {
-        super.layout(); configureUnified()
+        super.layout(); unifiedHost.layoutSubtreeIfNeeded(); configureUnified()
         let next = NSSize(width: oldScroll.contentSize.width, height: newScroll.contentSize.width)
         guard widths != next else { return }; widths = next; heights.removeAll()
         let previousY = oldScroll.contentView.bounds.origin.y
@@ -325,15 +328,16 @@ enum AgentGitDiffRows {
         return cell
     }
     @objc private func scrolled(_ notification: Notification) {
-        if notification.object as? NSClipView === unified.contentView { ruler.needsDisplay = true; return }
+        if notification.object as? NSClipView === unified.contentView { gutter.needsDisplay = true; return }
         if abs(widths.width - oldScroll.contentSize.width) > 0.5 || abs(widths.height - newScroll.contentSize.width) > 0.5 { needsLayout = true }
         guard splitMode, !synchronizing, let clip = notification.object as? NSClipView else { return }
         let other = clip === oldScroll.contentView ? newScroll : oldScroll
         synchronizing = true; other.contentView.scroll(to: NSPoint(x: other.contentView.bounds.origin.x, y: clip.bounds.origin.y)); other.reflectScrolledClipView(other.contentView); synchronizing = false
     }
     func readingReadback() -> [String: Any] {
-        ["split": splitMode, "wraps": wraps, "rulerVisible": unified.rulersVisible, "gutterWidth": ruler.ruleThickness, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,
+        ["split": splitMode, "wraps": wraps, "gutterVisible": !gutter.isHidden, "gutterWidth": gutterWidth.constant, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,
          "textWidth": text.bounds.width, "viewportWidth": unified.contentSize.width, "unifiedScroll": [unified.contentView.bounds.minX, unified.contentView.bounds.minY],
+         "gutterFrame": [gutter.frame.minX, gutter.frame.minY, gutter.frame.width, gutter.frame.height], "scrollFrame": [unified.frame.minX, unified.frame.minY, unified.frame.width, unified.frame.height],
          "selectedRange": [text.selectedRange().location, text.selectedRange().length],
          "records": text.records.map { ["range": [$0.range.location, $0.range.length], "old": $0.old as Any? ?? NSNull(), "new": $0.new as Any? ?? NSNull(), "kind": String(describing: $0.kind)] }]
     }
