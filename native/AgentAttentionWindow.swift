@@ -78,7 +78,7 @@ import AppKit
         }
         detailTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let detailHeading = NSStackView(views: [detailTitle, open]); detailHeading.spacing = 12; detailHeading.alignment = .top
+        let detailHeading = NSStackView(views: [detailTitle, NSView(), open]); detailHeading.spacing = 12; detailHeading.alignment = .top
         let actions = NSStackView(views: [NSView(), mark, deny, allow, execute, answer]); actions.spacing = 8
         let details = NSStackView(views: [detailHeading, metadata, document, replyCaption, replyField, actions]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 12
         for child in details.arrangedSubviews { child.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
@@ -200,6 +200,7 @@ import AppKit
         }
         let date = DateFormatter.localizedString(from: item.date, dateStyle: .medium, timeStyle: .short)
         metadata.stringValue = item.kind.title + " · " + item.source.title + " · " + item.sender + " · " + date
+        metadata.toolTip = metadata.stringValue
         let text = item.body + (item.handled ? "\n\n" + outcome(item) : "") + (!item.handled && item.kind == .question && item.mcpInputID == nil ? runtime.questionSkipError(item.taskID).map { "\n\n" + $0 } ?? "" : "")
         if body.string != text { body.string = text }; open.isHidden = false
         let question = item.kind == .question && item.mcpInputID == nil
