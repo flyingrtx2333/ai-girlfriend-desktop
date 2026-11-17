@@ -211,17 +211,22 @@ import AppKit
     static let searchRowPrefix = "settings-search-row:"
     static func listState(_ table: NSTableView, text: String) {
         guard let scroll = table.enclosingScrollView else { return }
+        let catalog = scroll.identifier?.rawValue == "settings-catalog-scroll"
+        let container = catalog ? (scroll.superview ?? scroll) : scroll
         let identifier = NSUserInterfaceItemIdentifier("settings-list-empty")
         let label: NSTextField
-        if let existing = scroll.subviews.first(where: { $0.identifier == identifier }) as? NSTextField { label = existing }
+        if let existing = (container.subviews + scroll.subviews).first(where: { $0.identifier == identifier }) as? NSTextField { label = existing }
         else {
             label = NSTextField(wrappingLabelWithString: text); label.identifier = identifier
-            label.font = .systemFont(ofSize: 12); label.textColor = AgentWorkbenchTheme.secondaryText; label.alignment = .center
-            label.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(label)
-            let catalog = scroll.identifier?.rawValue == "settings-catalog-scroll"
-            label.font = .systemFont(ofSize: catalog ? 13 : 12)
-            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 16), label.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -16), label.topAnchor.constraint(equalTo: scroll.topAnchor, constant: catalog ? 64 : 20)])
+            label.translatesAutoresizingMaskIntoConstraints = false
         }
+        // NSScrollView tiles its own subviews. Catalog feedback belongs to the
+        // page layer so changing the message cannot retain an old clip width.
+        if label.superview !== container {
+            label.removeFromSuperview(); container.addSubview(label)
+            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 16), label.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -16), label.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 20)])
+        }
+        label.font = .systemFont(ofSize: catalog ? 13 : 12); label.textColor = AgentWorkbenchTheme.secondaryText; label.alignment = catalog ? .left : .center
         label.stringValue = text; label.isHidden = table.numberOfRows > 0
     }
     static func field(_ field: NSTextField) {
