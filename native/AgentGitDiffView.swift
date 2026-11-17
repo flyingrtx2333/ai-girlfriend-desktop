@@ -6,6 +6,94 @@ struct AgentGitDiffLine {
 }
 struct AgentGitDiffRow { var old: AgentGitDiffLine; var new: AgentGitDiffLine }
 
+struct AgentGitDiffRecord {
+    let range: NSRange, old: Int?, new: Int?, kind: AgentGitDiffLine.Kind
+}
+
+@MainActor final class AgentGitDiffTextView: NSTextView {
+    var records: [AgentGitDiffRecord] = []
+    func record(at location: Int) -> AgentGitDiffRecord? {
+        var low = 0, high = records.count
+        while low < high {
+            let middle = (low + high) / 2
+            if records[middle].range.location <= location { low = middle + 1 } else { high = middle }
+        }
+        guard low > 0, NSLocationInRange(location, records[low - 1].range) else { return nil }
+        return records[low - 1]
+    }
+    func fragments(in rect: NSRect) -> [(record: AgentGitDiffRecord, rect: NSRect, first: Bool)] {
+        guard let manager = layoutManager, let container = textContainer, !string.isEmpty else { return [] }
+        let origin = textContainerOrigin
+        let glyphs = manager.glyphRange(forBoundingRect: rect.offsetBy(dx: -origin.x, dy: -origin.y), in: container)
+        var result: [(AgentGitDiffRecord, NSRect, Bool)] = []
+        manager.enumerateLineFragments(forGlyphRange: glyphs) { line, _, _, range, _ in
+            let location = manager.characterIndexForGlyph(at: range.location)
+            guard let record = self.record(at: location) else { return }
+            result.append((record, line.offsetBy(dx: origin.x, dy: origin.y), location == record.range.location))
+        }
+        return result
+    }
+    static func background(_ kind: AgentGitDiffLine.Kind) -> NSColor {
+        switch kind {
+        case .added: AgentWorkbenchTheme.added
+        case .removed: AgentWorkbenchTheme.removed
+        case .metadata, .empty: AgentWorkbenchTheme.subtle
+        case .context: AgentWorkbenchTheme.surface
+        }
+    }
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        for fragment in fragments(in: rect) where fragment.record.kind != .context {
+            Self.background(fragment.record.kind).setFill()
+            NSRect(x: bounds.minX, y: fragment.rect.minY, width: bounds.width, height: fragment.rect.height).intersection(rect).fill()
+        }
+    }
+}
+
+@MainActor private final class AgentGitDiffRuler: NSRulerView {
+    private weak var text: AgentGitDiffTextView?
+    let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    override var isFlipped: Bool { true }
+    init(scrollView: NSScrollView, text: AgentGitDiffTextView) {
+        self.text = text
+        super.init(scrollView: scrollView, orientation: .verticalRuler)
+        clientView = text
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        AgentWorkbenchTheme.subtle.setFill(); rect.fill()
+        guard let text else { return }
+        let column = (ruleThickness - 8) / 2
+        for fragment in text.fragments(in: text.visibleRect) {
+            let top = convert(fragment.rect.origin, from: text).y
+            let row = NSRect(x: 0, y: top, width: ruleThickness, height: fragment.rect.height)
+            if fragment.record.kind == .added || fragment.record.kind == .removed {
+                AgentGitDiffTextView.background(fragment.record.kind).setFill(); row.intersection(rect).fill()
+            }
+            guard fragment.first else { continue }
+            for (index, number) in [fragment.record.old, fragment.record.new].enumerated() {
+                guard let number else { continue }
+                let value = NSAttributedString(string: String(number), attributes: [.font: numberFont, .foregroundColor: AgentWorkbenchTheme.secondaryText])
+                let size = value.size()
+                value.draw(at: NSPoint(x: 4 + CGFloat(index + 1) * column - size.width, y: top + (row.height - size.height) / 2))
+            }
+        }
+        AgentWorkbenchTheme.line.setFill(); NSRect(x: bounds.maxX - 1, y: rect.minY, width: 1, height: rect.height).fill()
+    }
+}
+
+@MainActor private final class AgentGitDiffHeader: NSTableHeaderView {
+    override func draw(_ rect: NSRect) {
+        AgentWorkbenchTheme.subtle.setFill(); rect.fill()
+        for (index, column) in (tableView?.tableColumns ?? []).enumerated() where !column.title.isEmpty {
+            let frame = headerRect(ofColumn: index)
+            let value = NSAttributedString(string: column.title, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: AgentWorkbenchTheme.secondaryText])
+            value.draw(at: NSPoint(x: frame.minX + 6, y: frame.midY - value.size().height / 2))
+        }
+        AgentWorkbenchTheme.line.setFill(); NSRect(x: rect.minX, y: bounds.maxY - 1, width: rect.width, height: 1).fill()
+    }
+}
+
 enum AgentGitDiffRows {
     static func parse(_ patch: String) -> [AgentGitDiffRow] {
         let empty = AgentGitDiffLine(text: "", kind: .empty)
@@ -61,10 +149,12 @@ enum AgentGitDiffRows {
 }
 
 @MainActor final class AgentGitDiffView: AgentThemeView, NSTableViewDataSource, NSTableViewDelegate {
-    let text = NSTextView()
+    let text = AgentGitDiffTextView()
     private let unified = NSScrollView(), oldScroll = NSScrollView(), newScroll = NSScrollView(), split = NSView()
+    private lazy var ruler = AgentGitDiffRuler(scrollView: unified, text: text)
     private let oldTable = NSTableView(), newTable = NSTableView(), measuringCell = NSTextFieldCell(textCell: ""), font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var rows: [AgentGitDiffRow] = [], heights: [Int: CGFloat] = [:], widths = NSSize.zero, longest = NSSize.zero, synchronizing = false
+    private var numberWidth: CGFloat = 44
     var splitMode = false { didSet { unified.isHidden = splitMode; split.isHidden = !splitMode; needsLayout = true } }
     var wraps = true { didSet { widths = .zero; heights.removeAll(); configureUnified(); needsLayout = true } }
     var patch: String { text.string }
@@ -73,20 +163,24 @@ enum AgentGitDiffRows {
         fill = AgentWorkbenchTheme.line
         measuringCell.font = font; measuringCell.wraps = true; measuringCell.isScrollable = false; measuringCell.usesSingleLineMode = false; measuringCell.lineBreakMode = .byCharWrapping
         text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = font; text.textContainerInset = NSSize(width: 12, height: 12)
-        text.isVerticallyResizable = true; text.backgroundColor = .textBackgroundColor; text.setAccessibilityLabel("Git 实际差异")
+        text.isVerticallyResizable = true; text.backgroundColor = AgentWorkbenchTheme.surface; text.setAccessibilityLabel("Git 实际差异")
         unified.documentView = text; unified.hasVerticalScroller = true
+        unified.hasVerticalRuler = true; unified.verticalRulerView = ruler
+        unified.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: unified.contentView)
         for (table, scroll, title) in [(oldTable, oldScroll, "旧版本"), (newTable, newScroll, "新版本")] {
             let number = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("number")); number.title = ""; number.width = 44; number.resizingMask = []
             let line = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("line")); line.title = title; line.resizingMask = []
-            table.addTableColumn(number); table.addTableColumn(line); table.headerView = NSTableHeaderView(frame: NSRect(x: 0, y: 0, width: 100, height: 23)); table.delegate = self; table.dataSource = self
+            table.addTableColumn(number); table.addTableColumn(line); table.headerView = AgentGitDiffHeader(frame: NSRect(x: 0, y: 0, width: 100, height: 28)); table.delegate = self; table.dataSource = self
             table.columnAutoresizingStyle = .noColumnAutoresizing; table.allowsColumnReordering = false; table.intercellSpacing = .zero; table.selectionHighlightStyle = .none
-            table.style = .plain; table.backgroundColor = .textBackgroundColor
+            table.style = .plain; table.backgroundColor = AgentWorkbenchTheme.surface
             table.setAccessibilityLabel("Git " + title + "差异"); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
             scroll.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
             split.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([scroll.topAnchor.constraint(equalTo: split.topAnchor), scroll.bottomAnchor.constraint(equalTo: split.bottomAnchor)])
         }
+        for scroll in [unified, oldScroll, newScroll] { scroll.borderType = .noBorder; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false }
         NSLayoutConstraint.activate([oldScroll.leadingAnchor.constraint(equalTo: split.leadingAnchor), newScroll.leadingAnchor.constraint(equalTo: oldScroll.trailingAnchor, constant: 1), newScroll.trailingAnchor.constraint(equalTo: split.trailingAnchor), oldScroll.widthAnchor.constraint(equalTo: newScroll.widthAnchor)])
         for view in [unified, split] {
             addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
@@ -95,18 +189,34 @@ enum AgentGitDiffRows {
         split.isHidden = true; configureUnified()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); oldTable.reloadData(); newTable.reloadData() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); text.needsDisplay = true; ruler.needsDisplay = true; oldTable.headerView?.needsDisplay = true; newTable.headerView?.needsDisplay = true; oldTable.reloadData(); newTable.reloadData() }
     deinit { NotificationCenter.default.removeObserver(self) }
     private func display(_ line: String) -> String { line.replacingOccurrences(of: "\r", with: "␍") }
     func show(_ patch: String, oldTitle: String, newTitle: String, accessibilityContext: String = "Git") {
         let content = NSMutableAttributedString(string: patch, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
-        var offset = 0, inHunk = false
-        for line in patch.components(separatedBy: "\n") {
-            if line.hasPrefix("diff --git ") { inHunk = false }; if line.hasPrefix("@@") { inHunk = true }
-            let color: NSColor = inHunk && line.hasPrefix("+") ? .systemGreen : inHunk && line.hasPrefix("-") ? .systemRed : line.hasPrefix("@@") || line.hasPrefix("diff --git ") ? AgentWorkbenchTheme.secondaryText : .labelColor
-            content.addAttribute(.foregroundColor, value: color, range: NSRange(location: offset, length: (line as NSString).length)); offset += (line as NSString).length + 1
+        var offset = 0, old = 0, new = 0, inHunk = false, records: [AgentGitDiffRecord] = []
+        for line in patch.components(separatedBy: "\n").dropLast(patch.utf8.last == 10 ? 1 : 0) {
+            var kind = AgentGitDiffLine.Kind.context, oldNumber: Int?, newNumber: Int?
+            if line.hasPrefix("diff --git ") { inHunk = false; kind = .metadata }
+            if line.hasPrefix("@@ "), let range = line.range(of: "^@@ -[0-9]+(,[0-9]+)? \\+[0-9]+(,[0-9]+)? @@", options: .regularExpression) {
+                let pieces = line[range].split(separator: " ")
+                old = Int(pieces[1].dropFirst().split(separator: ",")[0]) ?? 0; new = Int(pieces[2].dropFirst().split(separator: ",")[0]) ?? 0
+                inHunk = true; kind = .metadata
+            } else if inHunk, line.hasPrefix("-") { oldNumber = old; old += 1; kind = .removed }
+            else if inHunk, line.hasPrefix("+") { newNumber = new; new += 1; kind = .added }
+            else if inHunk, line.hasPrefix(" ") { oldNumber = old; newNumber = new; old += 1; new += 1 }
+            let length = (line as NSString).length
+            records.append(AgentGitDiffRecord(range: NSRange(location: offset, length: min(length + 1, content.length - offset)), old: oldNumber, new: newNumber, kind: kind))
+            if kind == .metadata { content.addAttribute(.foregroundColor, value: AgentWorkbenchTheme.secondaryText, range: NSRange(location: offset, length: length)) }
+            offset += length + 1
         }
+        text.records = records
         text.textStorage?.setAttributedString(content); rows = AgentGitDiffRows.parse(patch); heights.removeAll(); widths = .zero
+        let largest = records.flatMap { [$0.old, $0.new].compactMap { $0 } }.max() ?? 0
+        numberWidth = max(44, ceil((String(largest) as NSString).size(withAttributes: [.font: font]).width) + 12)
+        for table in [oldTable, newTable] { table.tableColumns[0].width = numberWidth }
+        ruler.ruleThickness = 8 + 2 * max(28, ceil((String(largest) as NSString).size(withAttributes: [.font: ruler.numberFont]).width) + 12)
+        unified.rulersVisible = largest > 0; ruler.needsDisplay = true; unified.tile()
         oldTable.tableColumns[1].title = oldTitle; newTable.tableColumns[1].title = newTitle
         text.setAccessibilityLabel(accessibilityContext + " 实际差异")
         oldTable.setAccessibilityLabel(accessibilityContext + " " + oldTitle + "差异"); newTable.setAccessibilityLabel(accessibilityContext + " " + newTitle + "差异")
@@ -162,8 +272,8 @@ enum AgentGitDiffRows {
         synchronizing = true
         NSAnimationContext.beginGrouping(); NSAnimationContext.current.duration = 0
         for (table, available, length) in [(oldTable, next.width, longest.width), (newTable, next.height, longest.height)] {
-            table.tableColumns[1].width = wraps ? max(50, available - 44) : max(max(50, available - 44), length + 12)
-            table.setFrameOrigin(.zero); table.setFrameSize(NSSize(width: 44 + table.tableColumns[1].width, height: table.frame.height)); table.reloadData()
+            table.tableColumns[1].width = wraps ? max(50, available - numberWidth) : max(max(50, available - numberWidth), length + 12)
+            table.setFrameOrigin(.zero); table.setFrameSize(NSSize(width: numberWidth + table.tableColumns[1].width, height: table.frame.height)); table.reloadData()
             if !rows.isEmpty { table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count)) }
             table.sizeToFit(); table.layoutSubtreeIfNeeded()
         }
@@ -176,7 +286,7 @@ enum AgentGitDiffRows {
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         if let value = heights[row] { return value }
         guard wraps, rows.indices.contains(row) else { return 20 }
-        let values = [(rows[row].old, max(1, widths.width - 56)), (rows[row].new, max(1, widths.height - 56))]
+        let values = [(rows[row].old, max(1, widths.width - numberWidth - 12)), (rows[row].new, max(1, widths.height - numberWidth - 12))]
         let height = values.map { line, width in
             let string = display(line.text); measuringCell.stringValue = string.isEmpty ? " " : string
             return measuringCell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: CGFloat.greatestFiniteMagnitude)).height
@@ -201,15 +311,22 @@ enum AgentGitDiffRows {
         cell.textField?.alignment = number ? .right : .left
         cell.wantsLayer = true
         tableView.effectiveAppearance.performAsCurrentDrawingAppearance {
-            cell.layer?.backgroundColor = (item.kind == .removed ? AgentWorkbenchTheme.removed : item.kind == .added ? AgentWorkbenchTheme.added : item.kind == .empty ? AgentWorkbenchTheme.subtle : .textBackgroundColor).cgColor
+            cell.layer?.backgroundColor = (number && item.kind == .context ? AgentWorkbenchTheme.subtle : AgentGitDiffTextView.background(item.kind)).cgColor
         }
         return cell
     }
     @objc private func scrolled(_ notification: Notification) {
+        if notification.object as? NSClipView === unified.contentView { ruler.needsDisplay = true; return }
         if abs(widths.width - oldScroll.contentSize.width) > 0.5 || abs(widths.height - newScroll.contentSize.width) > 0.5 { needsLayout = true }
         guard splitMode, !synchronizing, let clip = notification.object as? NSClipView else { return }
         let other = clip === oldScroll.contentView ? newScroll : oldScroll
         synchronizing = true; other.contentView.scroll(to: NSPoint(x: other.contentView.bounds.origin.x, y: clip.bounds.origin.y)); other.reflectScrolledClipView(other.contentView); synchronizing = false
+    }
+    func readingReadback() -> [String: Any] {
+        ["split": splitMode, "wraps": wraps, "rulerVisible": unified.rulersVisible, "gutterWidth": ruler.ruleThickness, "splitNumberWidth": numberWidth, "horizontalScroller": unified.hasHorizontalScroller,
+         "textWidth": text.bounds.width, "viewportWidth": unified.contentSize.width, "unifiedScroll": [unified.contentView.bounds.minX, unified.contentView.bounds.minY],
+         "selectedRange": [text.selectedRange().location, text.selectedRange().length],
+         "records": text.records.map { ["range": [$0.range.location, $0.range.length], "old": $0.old as Any? ?? NSNull(), "new": $0.new as Any? ?? NSNull(), "kind": String(describing: $0.kind)] }]
     }
     func checkSplitLayout() -> [String: Bool] {
         splitMode = true; layoutSubtreeIfNeeded()

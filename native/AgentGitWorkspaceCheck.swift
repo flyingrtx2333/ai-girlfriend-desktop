@@ -193,6 +193,28 @@ import AppKit
                 checks[key + "-readableDiffAndVisibleFileList"] = viewer.bounds.height >= 80 && viewer.bounds.width >= 230 && fileList.enclosingScrollView?.bounds.height ?? 0 >= 32 && viewer.patch.contains("+selected-working-preserved") && visibleLabel?.font?.pointSize == 13
                 checks[key + "-outlinedCommitInputFits"] = message.outlined && message.bounds.height == 32 && !message.hasAmbiguousLayout
                 let patch = viewer.patch
+                let actualReader = viewer.readingReadback()
+                checks[key + "-unifiedNumbersMatchActualGitPatch"] = actualReader["rulerVisible"] as? Bool == true && viewer.text.records.contains { $0.old == 1 && $0.kind == .removed } && viewer.text.records.contains { $0.new == 1 && $0.kind == .added }
+                let longText = String(repeating: "完整中文 🐋 and public content ", count: 16)
+                let readerPatch = "diff --git a/public.txt b/public.txt\n--- a/public.txt\n+++ b/public.txt\n@@ -99999,3 +100001,4 @@\n unchanged 🐋\r\n-old value\r\n+" + longText + "\r\n+extra value\r\n last value\r\n\\ No newline at end of file\n"
+                viewer.show(readerPatch, oldTitle: "原版本", newTitle: "新版本"); await settle()
+                let records = viewer.text.records, reading = viewer.readingReadback(), fragments = viewer.text.fragments(in: viewer.text.bounds)
+                let longRange = (readerPatch as NSString).range(of: "+" + longText + "\r")
+                let longFragments = fragments.filter { $0.record.range.location == longRange.location }
+                checks[key + "-unifiedLargeNumbersAndUTF16ContentStayExact"] = viewer.patch == readerPatch && records.contains { $0.old == 100000 && $0.new == nil && $0.kind == .removed } && records.contains { $0.new == 100002 && $0.old == nil && $0.kind == .added } && records.contains { $0.old == 100001 && $0.new == 100004 } && (reading["gutterWidth"] as? CGFloat ?? 0) > 64
+                checks[key + "-wrappedFragmentsKeepOneNumberPerSourceLine"] = longFragments.count > 1 && longFragments.filter(\.first).count == 1 && longFragments.allSatisfy { $0.record.new == 100002 } && zip(longFragments, longFragments.dropFirst()).allSatisfy { $0.0.rect.maxY <= $0.1.rect.minY + 0.5 }
+                let focused = viewer.focusNewLine(100002)
+                checks[key + "-newLineFocusKeepsFullOriginalUnicodeAndCR"] = focused && viewer.text.selectedRange() == longRange && (viewer.text.string as NSString).substring(with: viewer.text.selectedRange()) == "+" + longText + "\r"
+                viewer.wraps = false; await settle()
+                let scroll = viewer.text.enclosingScrollView!
+                scroll.contentView.scroll(to: NSPoint(x: 120, y: scroll.contentView.bounds.minY)); scroll.reflectScrolledClipView(scroll.contentView)
+                let unwrapped = viewer.readingReadback()
+                checks[key + "-unwrappedContentScrollsWithNumberGutter"] = unwrapped["horizontalScroller"] as? Bool == true && (unwrapped["textWidth"] as? CGFloat ?? 0) > (unwrapped["viewportWidth"] as? CGFloat ?? 0) && scroll.contentView.bounds.minX > 0 && viewer.text.fragments(in: viewer.text.visibleRect).contains { $0.first && $0.record.new == 100002 }
+                viewer.splitMode = true; viewer.wraps = true; await settle()
+                checks[key + "-largeSplitNumbersFitAndRowsStayAligned"] = (viewer.readingReadback()["splitNumberWidth"] as? CGFloat ?? 0) >= ceil(("100004" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)]).width) + 12 && viewer.checkSplitLayout().values.allSatisfy { $0 }
+                viewer.splitMode = false; viewer.show("此来源没有变更", oldTitle: "HEAD", newTitle: "工作区"); await settle()
+                checks[key + "-plainStatusDoesNotShowPhantomLineNumbers"] = viewer.readingReadback()["rulerVisible"] as? Bool == false && viewer.patch == "此来源没有变更"
+                viewer.show(patch, oldTitle: "HEAD", newTitle: "工作区"); await settle()
                 display.selectedSegment = 1; display.sendAction(display.action, to: display.target)
                 wrap.performClick(nil); await settle()
                 checks[key + "-actualSplitAndWrapActionsWork"] = viewer.splitMode && !viewer.wraps && viewer.patch == patch && viewer.checkSplitLayout().values.allSatisfy { $0 }
