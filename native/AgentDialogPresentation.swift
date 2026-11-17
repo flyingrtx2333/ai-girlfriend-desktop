@@ -73,6 +73,14 @@ import AppKit
 
 @MainActor final class AgentDialogFieldCell: NSTextFieldCell {
     override func fieldEditor(for controlView: NSView) -> NSTextView? { AgentDialogPresentation.editor(for: controlView) }
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        guard let field = controlView as? AgentDialogTextField else { super.draw(withFrame: cellFrame, in: controlView); return }
+        field.effectiveAppearance.performAsCurrentDrawingAppearance {
+            AgentThemeContext.resolve(field.backgroundColor ?? AgentWorkbenchTheme.card, in: field).setFill()
+            NSBezierPath(roundedRect: cellFrame, xRadius: 6, yRadius: 6).fill()
+        }
+        super.drawInterior(withFrame: cellFrame, in: controlView)
+    }
 }
 
 @MainActor private final class AgentDialogSearchCell: NSSearchFieldCell {

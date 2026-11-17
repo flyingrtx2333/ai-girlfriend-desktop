@@ -65,13 +65,13 @@ import AppKit
 }
 
 @MainActor final class AgentDialogTextField: NSTextField {
-    var outlined = false { didSet { refreshFocus(force: true) } }
+    var outlined = true { didSet { refreshFocus(force: true) } }
     private var windowObserver: NSObjectProtocol?, focusVisible = false
     override init(frame: NSRect) {
         super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")
         font = .systemFont(ofSize: 13); isEditable = true; isSelectable = true; isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
         usesSingleLineMode = true; cell?.wraps = false; cell?.isScrollable = true
-        drawsBackground = true; backgroundColor = .textBackgroundColor
+        drawsBackground = false; backgroundColor = AgentWorkbenchTheme.card; isAutomaticTextCompletionEnabled = false
         wantsLayer = true; layer?.cornerRadius = 6
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

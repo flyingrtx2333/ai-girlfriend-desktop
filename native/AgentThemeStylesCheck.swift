@@ -29,7 +29,42 @@ import AppKit
                 let a = luminance((0..<3).map { f[$0] * f[3] + b[$0] * (1 - f[3]) }), z = luminance(b)
                 return (max(a, z) + 0.05) / (min(a, z) + 0.05)
             }
-            var captures: [String: Any] = [:], ratios: [String: [String: CGFloat]] = [:]
+            func inputSurface(in root: NSView, look: NSAppearance) throws -> (fill: Bool, geometry: Bool, readback: [String: Any]) {
+                let probe = NSView(frame: NSRect(x: 300, y: 200, width: 240, height: 112))
+                let input = AgentDialogTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 32))
+                let native = NSTextField(frame: NSRect(x: 0, y: 40, width: 240, height: 32))
+                let card = AgentThemeView(fill: AgentWorkbenchTheme.card); card.frame = NSRect(x: 0, y: 80, width: 240, height: 32)
+                for field in [input, native] {
+                    field.stringValue = "Surface Aa界9"; field.font = .systemFont(ofSize: 13); field.controlSize = .large
+                    field.isBezeled = true; field.bezelStyle = .roundedBezel; field.usesSingleLineMode = true
+                    field.cell?.wraps = false; field.cell?.isScrollable = true; field.textColor = .magenta
+                }
+                for view in [input, native, card] { probe.addSubview(view) }
+                root.addSubview(probe); defer { probe.removeFromSuperview() }
+                AgentThemeContext.refresh(probe, invalidate: true); probe.layoutSubtreeIfNeeded()
+                func bitmap(_ view: NSView) throws -> NSBitmapImageRep {
+                    guard let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw PetError("无法绘制输入框验收样本") }
+                    look.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: image) }; return image
+                }
+                func sample(_ image: NSBitmapImageRep) -> [CGFloat] {
+                    guard let color = image.colorAt(x: image.pixelsWide * 9 / 10, y: image.pixelsHigh / 2)?.usingColorSpace(.sRGB) else { return [] }
+                    return [color.redComponent, color.greenComponent, color.blueComponent, color.alphaComponent]
+                }
+                func glyphBounds(_ image: NSBitmapImageRep) -> NSRect? {
+                    var left = image.pixelsWide, top = image.pixelsHigh, right = -1, bottom = -1
+                    for y in 0..<image.pixelsHigh { for x in 0..<image.pixelsWide {
+                        guard let color = image.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), color.alphaComponent > 0.5,
+                              color.redComponent - color.greenComponent > 0.25, color.blueComponent - color.greenComponent > 0.25 else { continue }
+                        left = min(left, x); top = min(top, y); right = max(right, x); bottom = max(bottom, y)
+                    } }
+                    return right < 0 ? nil : NSRect(x: left, y: top, width: right - left + 1, height: bottom - top + 1)
+                }
+                let rendered = try bitmap(input), expected = try bitmap(card), original = try bitmap(native)
+                let fill = sample(rendered), reference = sample(expected), a = glyphBounds(rendered), b = glyphBounds(original)
+                let geometry = a.map { box in b.map { baseline in abs(box.minX - baseline.minX) <= 1 && abs(box.minY - baseline.minY) <= 1 && abs(box.maxX - baseline.maxX) <= 1 && abs(box.maxY - baseline.maxY) <= 1 } ?? false } ?? false
+                return (close(fill, reference), geometry, ["inputColor": fill, "cardColor": reference, "inputGlyphBounds": a.map(NSStringFromRect) ?? "missing", "nativeGlyphBounds": b.map(NSStringFromRect) ?? "missing"])
+            }
+            var captures: [String: Any] = [:], ratios: [String: [String: CGFloat]] = [:], inputSurfaces: [String: Any] = [:]
             for theme in [AgentTheme.light, .dark] {
                 var brightness = appearance.settings; brightness.theme = theme; try appearance.save(brightness)
                 for style in AgentThemeStyle.allCases {
@@ -47,6 +82,10 @@ import AppKit
                     ratios[key] = valuesByRole; checks[key + "TextAndActionContrast"] = valuesByRole.values.allSatisfy { $0 >= 4.5 }
                     let card = AgentThemePalette.literal(.card, style: style, dark: dark), settings = AgentThemePalette.literal(.settings, style: style, dark: dark)
                     checks[key + "SettingsCardLayersRemainDistinctOnlyForForest"] = style == .forest ? !close(rgba(card, look: look), rgba(settings, look: look)) : close(rgba(card, look: look), rgba(AgentThemePalette.literal(.surface, style: style, dark: dark), look: look))
+                    let surface = try inputSurface(in: control.window!.contentView!, look: look)
+                    checks[key + "InputPaintMatchesActualCardSurface"] = surface.fill
+                    checks[key + "InputPaintKeepsNativeTextGeometry"] = surface.geometry
+                    inputSurfaces[key] = surface.readback
                 }
             }
             let brightnessBeforeStyleActions = try Data(contentsOf: store.directory.appendingPathComponent("appearance.json"))
@@ -112,7 +151,7 @@ import AppKit
             checks["legacyAppearanceSchemaRemainsUnchanged"] = Set(brightnessKeys.keys) == ["version", "theme", "textSize"]
             checks["styleActionsKeepBrightnessFileByteIdentical"] = brightnessBytes == brightnessBeforeStyleActions
             checks["allOriginalTasksAndModelPreferencesPreserved"] = try [coding, general].map { try encoder.encode(tasks.task($0)!) } == originals && encoder.encode(store.preferences) == preferences
-            report["windowColors"] = captures; report["contrastRatios"] = ratios
+            report["windowColors"] = captures; report["contrastRatios"] = ratios; report["inputSurfaces"] = inputSurfaces
             report["success"] = checks.count >= 45 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()

@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor final class AgentMCPConfigForm: NSObject, NSTextFieldDelegate {
     private(set) var view = NSScrollView()
-    private let name = NSTextField(), transport = NSPopUpButton(), command = NSTextField(), directory = NSTextField(), address = NSTextField(), bearer = NSSecureTextField(), timeout = NSTextField()
+    private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = NSSecureTextField(), timeout = AgentDialogTextField()
     private let arguments = AgentMCPConfigRows(title: "参数", paired: false, secure: false, limit: 100)
     private let environment = AgentMCPConfigRows(title: "环境变量", paired: true, secure: true, limit: 64)
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
@@ -85,8 +85,8 @@ import AppKit
     func load(_ values: [String]) throws { guard values.count <= limit else { throw PetError(title + "数量超过限制") }; for value in values { insert(nil, value) } }
     func load(_ values: [String: String]) throws { guard values.count <= limit else { throw PetError(title + "数量超过限制") }; for key in values.keys.sorted() { insert(key, values[key]!) } }
     private func insert(_ key: String?, _ value: String) {
-        let input: NSTextField = secure ? NSSecureTextField() : NSTextField(); input.stringValue = value
-        let name: NSTextField? = paired ? NSTextField() : nil; name?.stringValue = key ?? ""; name?.placeholderString = "名称"
+        let input: NSTextField = secure ? NSSecureTextField() : AgentDialogTextField(); input.stringValue = value
+        let name: NSTextField? = paired ? AgentDialogTextField() : nil; name?.stringValue = key ?? ""; name?.placeholderString = "名称"
         input.placeholderString = "值"
         for field in [name, input].compactMap({ $0 }) { AgentSettingsStyle.field(field); field.delegate = self; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let remove = NSButton(image: NSImage(systemSymbolName: "minus.circle", accessibilityDescription: nil)!, target: self, action: #selector(removeRow(_:))); remove.isBordered = false; remove.setAccessibilityLabel("移除 MCP " + title + "行")

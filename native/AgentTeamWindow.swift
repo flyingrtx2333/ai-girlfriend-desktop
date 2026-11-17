@@ -6,7 +6,7 @@ import AppKit
     private let taskID: String?
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
-    private let table = AgentSettingsCatalogTable(), name = NSTextField(), purpose = NSTextField(), instructions = NSTextView()
+    private let table = AgentSettingsCatalogTable(), name = AgentDialogTextField(), purpose = AgentDialogTextField(), instructions = NSTextView()
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
     private let enabled = NSButton(checkboxWithTitle: "启用团队及成员", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")

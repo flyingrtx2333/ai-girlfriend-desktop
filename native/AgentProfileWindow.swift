@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
     private let workMode: AgentWorkMode
     var onUse: ((String) -> Void)?
     var onSaved: ((String) throws -> Void)?
-    private let table = AgentSettingsCatalogTable(), name = NSTextField(), purpose = NSTextField(), model = NSTextField(), instructions = NSTextView()
+    private let table = AgentSettingsCatalogTable(), name = AgentDialogTextField(), purpose = AgentDialogTextField(), model = AgentDialogTextField(), instructions = NSTextView()
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
