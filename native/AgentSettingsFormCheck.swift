@@ -143,7 +143,7 @@ import AppKit
             let table = find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true }), empty = find(NSTextField.self, in: manager.pageContentView, matching: { $0.identifier?.rawValue == "settings-list-empty" })
             checks[key + "EmptyCatalogShowsMessageAndCreationWithoutEditor"] = table?.numberOfRows == 0 && empty?.isHidden == false && !(empty?.stringValue.isEmpty ?? true) && pane.currentController === manager && manager.isPageVisible
             if ["skills", "commands"].contains(key) {
-                for width: CGFloat in [800, 528] {
+                for width in [CGFloat(800), CGFloat(528)] {
                     host.setContentSize(NSSize(width: width, height: 540)); pane.layoutSubtreeIfNeeded()
                     let search = find(NSSearchField.self, in: manager.pageContentView, matching: { _ in true })
                     checks[key + "SearchRemainsWritableAtWidth" + String(Int(width))] = search.map { field in
