@@ -6,9 +6,10 @@ import AppKit
     func prepareGitRemotePageFixture(_ output: URL) async throws -> GitRemotePageFixture {
         guard !CommandLine.arguments.contains("--live-agent"), !CommandLine.arguments.contains("--attention-live-ui") else { throw PetError("Git 远端页面验收不调用模型") }
         ensureAgent(); guard let tasks = agentStore else { throw PetError("任务系统不可用") }
-        let project = output.appendingPathComponent("workspace"), receiver = output.appendingPathComponent("receiver.git"), scratch = output.appendingPathComponent("tmp")
+        let project = output.appendingPathComponent("workspace"), receiver = output.appendingPathComponent(String(repeating: "公开接收目录", count: 10)).appendingPathComponent("receiver.git"), scratch = output.appendingPathComponent("tmp")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: receiver.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("# Git 远端页面验收\n保留公开项目正文。\n".utf8).write(to: project.appendingPathComponent("README.md"))
         func setup(_ args: [String]) async throws {
             let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: scratch, network: false, timeout: 20, gitDirectory: project.appendingPathComponent(".git"), gitWrite: true, protectedData: store.directory, arguments: ["-C", project.path] + args)
@@ -47,6 +48,12 @@ import AppKit
         }
         func button(_ title: String, in view: NSView?) throws -> NSButton {
             guard let value = find(NSButton.self, view, where: { $0.title == title && $0.isEnabled }) else { throw PetError("缺少远端操作：" + title) }; return value
+        }
+        func editingLines(_ editor: NSTextView) -> Int {
+            guard let layout = editor.layoutManager, let container = editor.textContainer else { return -1 }
+            layout.ensureLayout(for: container); var lines = 0
+            layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { _, _, _, _, _ in lines += 1 }
+            return lines
         }
         func until(_ predicate: () -> Bool) async throws {
             let limit = Date().addingTimeInterval(20)
@@ -98,6 +105,7 @@ import AppKit
             currentName.stringValue = "page-review"
             guard window.makeFirstResponder(currentAddress), let liveAddress = currentAddress.currentEditor() as? NSTextView else { throw PetError("远端实际输入编辑器不可用") }
             liveAddress.string = fixture.receiver.path
+            checks["longRemoteAddressUsesOneVisibleEditingLine"] = fixture.receiver.path.utf8.count > 250 && editingLines(liveAddress) == 1 && liveAddress.string == fixture.receiver.path
             checks["remoteDraftMarksParentPending"] = manager.hasPendingOperation
             try button("添加远端", in: window.contentView).performClick(nil)
             try await until { window.contentView === root && manager.workspaceReadback()["busy"] as? Bool == false }
@@ -127,6 +135,9 @@ import AppKit
             host.appearance = nil; host.setContentSize(NSSize(width: 1320, height: 800)); host.contentView?.layoutSubtreeIfNeeded()
             let targetBranch = try field("推送目标分支", in: embedded.pageContentView)
             guard host.makeFirstResponder(targetBranch), let invalidEditor = targetBranch.currentEditor() as? NSTextView else { throw PetError("推送分支编辑器不可用") }
+            let longBranch = "acceptance/" + String(repeating: "review-", count: 30)
+            invalidEditor.string = longBranch
+            checks["longPushBranchUsesOneVisibleEditingLine"] = editingLines(invalidEditor) == 1 && invalidEditor.string == longBranch
             invalidEditor.string = "bad branch"
             try button("检查远端", in: embedded.pageContentView).performClick(nil)
             checks["pushPreparingDisablesPublication"] = embedded.workspaceReadback()["busy"] as? Bool == true && embedded.workspaceReadback()["pushEnabled"] as? Bool == false

@@ -70,6 +70,7 @@ import AppKit
     override init(frame: NSRect) {
         super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")
         font = .systemFont(ofSize: 13); isEditable = true; isSelectable = true; isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
+        usesSingleLineMode = true; cell?.wraps = false; cell?.isScrollable = true
         drawsBackground = true; backgroundColor = .textBackgroundColor
         wantsLayer = true; layer?.cornerRadius = 6
     }

@@ -82,6 +82,12 @@ import AppKit
             await creation.checkWorkspace(startPoint: "refs/heads/release", includeChanges: true)
             func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(views) }
             guard let content = creation.pageContentView, let branchField = views(content).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "新分支" }), let previewButton = views(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "预览" }), control.window?.makeFirstResponder(branchField) == true, let editor = branchField.currentEditor() as? NSTextView else { throw PetError("新分支实际输入编辑器不可用") }
+            let longBranch = "acceptance/" + String(repeating: "worktree-", count: 30)
+            editor.string = longBranch
+            guard let layout = editor.layoutManager, let container = editor.textContainer else { throw PetError("新分支文字布局不可用") }
+            layout.ensureLayout(for: container); var editingLines = 0
+            layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { _, _, _, _, _ in editingLines += 1 }
+            checks["longWorktreeBranchUsesOneVisibleEditingLine"] = editingLines == 1 && editor.string == longBranch
             editor.string = "acceptance/page-carry"; previewButton.performClick(nil); await creation.checkWorkspace()
             checks["previewReadsActualBranchFieldEditor"] = creation.workspaceReadback()["branch"] as? String == "acceptance/page-carry" && creation.workspaceReadback()["createEnabled"] as? Bool == true
             await inspectLayout("creation")
