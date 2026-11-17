@@ -171,8 +171,15 @@ import AppKit
         for (label, size) in [("normal", NSSize(width: 1000, height: 660)), ("narrow", NSSize(width: 520, height: 540))] {
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 host.appearance = NSAppearance(named: appearance); host.setContentSize(size); pane.layoutSubtreeIfNeeded()
-                let needed = ruleState.attributedStringValue.boundingRect(with: NSSize(width: ruleState.bounds.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
-                checks[label + "-" + appearance.rawValue + "RuleErrorWrapsAboveActions"] = !ruleState.isHiddenOrHasHiddenAncestor && !ruleState.hasAmbiguousLayout && ruleState.bounds.width == ruleBody.enclosingScrollView?.bounds.width && needed.height <= ruleState.bounds.height + 2 && ruleState.lineBreakMode == .byWordWrapping
+                // AppKit positions text fields by their alignment rectangle;
+                // the transparent control frame extends beyond that rectangle.
+                let aligned = ruleState.alignmentRect(forFrame: ruleState.frame)
+                let viewer = ruleBody.enclosingScrollView.map { $0.convert($0.bounds, to: ruleState.superview) } ?? .zero
+                let action = ruleSave.convert(ruleSave.bounds, to: ruleState.superview)
+                let above = ruleState.superview?.isFlipped == true ? aligned.maxY <= action.minY : aligned.minY >= action.maxY
+                let needed = ruleState.attributedStringValue.boundingRect(with: NSSize(width: aligned.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
+                checks[label + "-" + appearance.rawValue + "RuleErrorWrapsAboveActions"] = !ruleState.isHiddenOrHasHiddenAncestor && !ruleState.hasAmbiguousLayout && aligned.width > 80 && aligned.minX == viewer.minX && aligned.maxX == viewer.maxX && above && needed.height <= aligned.height + 2 && ruleState.lineBreakMode == .byWordWrapping
+                geometry.append(["case": "rule-" + label + "-" + appearance.rawValue, "frameWidth": ruleState.bounds.width, "alignmentWidth": aligned.width, "viewerWidth": viewer.width, "height": aligned.height, "neededHeight": needed.height, "aboveActions": above, "ambiguous": ruleState.hasAmbiguousLayout, "wordWrapping": ruleState.lineBreakMode == .byWordWrapping])
             }
         }
         try fm.setAttributes([.posixPermissions: ruleMode], ofItemAtPath: rule.source.path)
