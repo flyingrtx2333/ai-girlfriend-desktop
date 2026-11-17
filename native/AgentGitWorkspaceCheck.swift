@@ -195,6 +195,21 @@ import AppKit
                 let patch = viewer.patch
                 let actualReader = viewer.readingReadback()
                 checks[key + "-unifiedNumbersMatchActualGitPatch"] = actualReader["rulerVisible"] as? Bool == true && viewer.text.records.contains { $0.old == 1 && $0.kind == .removed } && viewer.text.records.contains { $0.new == 1 && $0.kind == .added }
+                if let ruler = viewer.text.enclosingScrollView?.verticalRulerView {
+                    let width = Int(ceil(ruler.bounds.width)) + 40
+                    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 80, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+                    NSColor.magenta.setFill(); NSRect(x: 0, y: 0, width: width, height: 80).fill()
+                    let offset = NSAffineTransform(); offset.translateX(by: 20, yBy: 20); offset.concat()
+                    ruler.drawHashMarksAndLabels(in: ruler.bounds.insetBy(dx: -20, dy: -20))
+                    NSGraphicsContext.restoreGraphicsState()
+                    func sentinel(_ x: Int) -> Bool {
+                        guard let color = bitmap.colorAt(x: x, y: 40)?.usingColorSpace(.deviceRGB) else { return false }
+                        return color.redComponent > 0.99 && color.greenComponent < 0.01 && color.blueComponent > 0.99
+                    }
+                    checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = sentinel(8) && sentinel(width - 8) && !sentinel(24)
+                } else { checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = false }
                 let longText = String(repeating: "完整中文 🐋 and public content ", count: 16)
                 let readerPatch = "diff --git a/public.txt b/public.txt\n--- a/public.txt\n+++ b/public.txt\n@@ -99999,3 +100001,4 @@\n unchanged 🐋\r\n-old value\r\n+" + longText + "\r\n+extra value\r\n last value\r\n\\ No newline at end of file\n"
                 viewer.show(readerPatch, oldTitle: "原版本", newTitle: "新版本"); await settle()

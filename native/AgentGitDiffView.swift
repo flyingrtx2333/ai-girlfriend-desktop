@@ -42,6 +42,8 @@ struct AgentGitDiffRecord {
         }
     }
     override func drawBackground(in rect: NSRect) {
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         super.drawBackground(in: rect)
         for fragment in fragments(in: rect) where fragment.record.kind != .context {
             Self.background(fragment.record.kind).setFill()
@@ -61,6 +63,8 @@ struct AgentGitDiffRecord {
     }
     required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         AgentWorkbenchTheme.subtle.setFill(); rect.fill()
         guard let text else { return }
         let column = (ruleThickness - 8) / 2
@@ -84,6 +88,8 @@ struct AgentGitDiffRecord {
 
 @MainActor private final class AgentGitDiffHeader: NSTableHeaderView {
     override func draw(_ rect: NSRect) {
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         AgentWorkbenchTheme.subtle.setFill(); rect.fill()
         for (index, column) in (tableView?.tableColumns ?? []).enumerated() where !column.title.isEmpty {
             let frame = headerRect(ofColumn: index)
