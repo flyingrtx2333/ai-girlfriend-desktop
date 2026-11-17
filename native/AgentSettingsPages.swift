@@ -125,7 +125,7 @@ import AppKit
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func drawBackground(in dirtyRect: NSRect) {
         if isSelected || hovered {
-            AgentThemeContext.resolve(isSelected ? AgentWorkbenchTheme.selection : AgentWorkbenchTheme.surface, in: self).setFill()
+            AgentThemeContext.resolve(isSelected ? AgentWorkbenchTheme.selection : AgentWorkbenchTheme.hover, in: self).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 7, yRadius: 7).fill()
         }
         AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setFill()
@@ -181,6 +181,13 @@ import AppKit
         count.identifier = .init("settings-catalog-count"); count.setAccessibilityLabel("列表数量")
         count.setContentCompressionResistancePriority(.required, for: .horizontal)
         table.onCountChanged = { [weak count] in count?.stringValue = "\($0) 项" }
+        // Catalogs already expose the count above the list. Keep the footer for
+        // actual feedback, including warnings and save failures.
+        status.onChange = { [weak status, weak table] value in
+            guard let status, let table else { return }
+            status.isHidden = value.isEmpty || value == "\(table.numberOfRows) 项" || value == "暂无扩展"
+        }
+        status.onChange?(status.stringValue)
         let searchable = toolbar.subviews.contains { $0 is NSSearchField }
         let bar = NSStackView(views: searchable ? [count, toolbar] : [count, NSView(), toolbar]); bar.alignment = .centerY; bar.spacing = 12
         if searchable { toolbar.setContentHuggingPriority(.defaultLow, for: .horizontal) }
