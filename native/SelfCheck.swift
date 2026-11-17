@@ -24,6 +24,7 @@ import WebKit
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if CommandLine.arguments.contains("--skill-creation-check") { await runSkillCreationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-skill-evolution-check") { await runWorkspaceSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-roles-check") { await runWorkspaceRolesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-capabilities-check") { await runWorkspaceCapabilitiesCheck(output); NSApp.terminate(nil); return }
@@ -122,6 +123,7 @@ import WebKit
                 if CommandLine.arguments.contains("--prompt-suggestions-fixtures") || CommandLine.arguments.contains("--prompt-suggestions-reopen") { try preparePromptSuggestionsUI(output, seed: CommandLine.arguments.contains("--prompt-suggestions-fixtures")) }
                 if CommandLine.arguments.contains("--home-games-fixtures") || CommandLine.arguments.contains("--home-games-reopen") { try prepareHomeGamesUI(output, seed: CommandLine.arguments.contains("--home-games-fixtures")) }
                 if CommandLine.arguments.contains("--skill-evolution-fixtures") || CommandLine.arguments.contains("--skill-evolution-reopen") { try prepareSkillEvolutionUI(output,seed:CommandLine.arguments.contains("--skill-evolution-fixtures")) }
+                if CommandLine.arguments.contains("--skill-creation-fixtures") || CommandLine.arguments.contains("--skill-creation-reopen") { try prepareSkillCreationUI(output, seed: CommandLine.arguments.contains("--skill-creation-fixtures")) }
                 if CommandLine.arguments.contains("--slash-connectors-fixtures") || CommandLine.arguments.contains("--slash-connectors-reopen") { try await prepareSlashConnectorsUI(output,seed:CommandLine.arguments.contains("--slash-connectors-fixtures")) }
                 if CommandLine.arguments.contains("--workspace-editor-fixtures") || CommandLine.arguments.contains("--workspace-editor-reopen") { try await prepareWorkspaceEditorUI(output,seed:CommandLine.arguments.contains("--workspace-editor-fixtures")) }
                 if CommandLine.arguments.contains("--workspace-extensions-fixtures") || CommandLine.arguments.contains("--workspace-extensions-reopen") { try await prepareWorkspaceExtensionsUI(output, seed: CommandLine.arguments.contains("--workspace-extensions-fixtures")) }
