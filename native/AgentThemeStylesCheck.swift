@@ -29,15 +29,22 @@ import AppKit
                 let a = luminance((0..<3).map { f[$0] * f[3] + b[$0] * (1 - f[3]) }), z = luminance(b)
                 return (max(a, z) + 0.05) / (min(a, z) + 0.05)
             }
-            func inputSurface(in root: NSView, look: NSAppearance) throws -> (fill: Bool, geometry: Bool, readback: [String: Any]) {
+            func inputSurface(in root: NSView, look: NSAppearance, kind: String = "text") throws -> (fill: Bool, geometry: Bool, arrow: Bool, readback: [String: Any]) {
                 let probe = NSView(frame: NSRect(x: 300, y: 200, width: 240, height: 112))
-                let input = AgentDialogTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 32))
-                let native = NSTextField(frame: NSRect(x: 0, y: 40, width: 240, height: 32))
+                let input: NSTextField, native: NSTextField
+                switch kind {
+                case "secure": input = AgentSecureTextField(); native = NSSecureTextField()
+                case "combo": input = AgentComboBox(); native = NSComboBox()
+                default: input = AgentDialogTextField(); native = NSTextField()
+                }
+                input.frame = NSRect(x: 0, y: 0, width: 240, height: 32)
+                native.frame = NSRect(x: 0, y: 40, width: 240, height: 32)
                 let card = AgentThemeView(fill: AgentWorkbenchTheme.card); card.frame = NSRect(x: 0, y: 80, width: 240, height: 32)
                 for field in [input, native] {
                     field.stringValue = "Surface Aa界9"; field.font = .systemFont(ofSize: 13); field.controlSize = .large
                     field.isBezeled = true; field.bezelStyle = .roundedBezel; field.usesSingleLineMode = true
                     field.cell?.wraps = false; field.cell?.isScrollable = true; field.textColor = .magenta
+                    if let combo = field as? NSComboBox { combo.addItems(withObjectValues: ["Surface Aa界9", "Other model"]); combo.selectItem(at: 0) }
                 }
                 for view in [input, native, card] { probe.addSubview(view) }
                 root.addSubview(probe); defer { probe.removeFromSuperview() }
@@ -62,9 +69,21 @@ import AppKit
                 let rendered = try bitmap(input), expected = try bitmap(card), original = try bitmap(native)
                 let fill = sample(rendered), reference = sample(expected), a = glyphBounds(rendered), b = glyphBounds(original)
                 let geometry = a.map { box in b.map { baseline in abs(box.minX - baseline.minX) <= 1 && abs(box.minY - baseline.minY) <= 1 && abs(box.maxX - baseline.maxX) <= 1 && abs(box.maxY - baseline.maxY) <= 1 } ?? false } ?? false
-                return (close(fill, reference), geometry, ["inputColor": fill, "cardColor": reference, "inputGlyphBounds": a.map(NSStringFromRect) ?? "missing", "nativeGlyphBounds": b.map(NSStringFromRect) ?? "missing"])
+                var arrowPixels = 0
+                if kind == "combo" {
+                    let scale = CGFloat(rendered.pixelsWide) / input.bounds.width
+                    let left = Int((input.bounds.width - 21) * scale), right = Int((input.bounds.width - 9) * scale)
+                    let top = rendered.pixelsHigh / 2 - Int(5 * scale), bottom = rendered.pixelsHigh / 2 + Int(5 * scale)
+                    for y in top...bottom { for x in left...right {
+                        if let color = rendered.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), reference.count == 4,
+                           max(abs(color.redComponent - reference[0]), abs(color.greenComponent - reference[1]), abs(color.blueComponent - reference[2])) > 0.08 { arrowPixels += 1 }
+                    } }
+                }
+                let secureTraits = kind != "secure" || (input is NSSecureTextField && input.cell is NSSecureTextFieldCell && input.accessibilitySubrole() == native.accessibilitySubrole())
+                return (close(fill, reference), geometry && secureTraits, kind != "combo" || arrowPixels > 4,
+                        ["inputColor": fill, "cardColor": reference, "inputGlyphBounds": a.map(NSStringFromRect) ?? "missing", "nativeGlyphBounds": b.map(NSStringFromRect) ?? "missing", "cellType": String(describing: type(of: input.cell!)), "nativeCellType": String(describing: type(of: native.cell!)), "nativeSecureTraitsKept": secureTraits, "arrowPixels": arrowPixels])
             }
-            var captures: [String: Any] = [:], ratios: [String: [String: CGFloat]] = [:], inputSurfaces: [String: Any] = [:]
+            var captures: [String: Any] = [:], ratios: [String: [String: CGFloat]] = [:], inputSurfaces: [String: Any] = [:], secureSurfaces: [String: Any] = [:], comboSurfaces: [String: Any] = [:]
             for theme in [AgentTheme.light, .dark] {
                 var brightness = appearance.settings; brightness.theme = theme; try appearance.save(brightness)
                 for style in AgentThemeStyle.allCases {
@@ -86,6 +105,15 @@ import AppKit
                     checks[key + "InputPaintMatchesActualCardSurface"] = surface.fill
                     checks[key + "InputPaintKeepsNativeTextGeometry"] = surface.geometry
                     inputSurfaces[key] = surface.readback
+                    let secure = try inputSurface(in: control.window!.contentView!, look: look, kind: "secure")
+                    checks[key + "SecurePaintMatchesActualCardSurface"] = secure.fill
+                    checks[key + "SecurePaintKeepsNativeMaskedTextGeometry"] = secure.geometry
+                    secureSurfaces[key] = secure.readback
+                    let combo = try inputSurface(in: control.window!.contentView!, look: look, kind: "combo")
+                    checks[key + "ComboPaintMatchesActualCardSurface"] = combo.fill
+                    checks[key + "ComboPaintKeepsNativeTextGeometry"] = combo.geometry
+                    checks[key + "ComboHasVisibleMenuArrow"] = combo.arrow
+                    comboSurfaces[key] = combo.readback
                 }
             }
             let brightnessBeforeStyleActions = try Data(contentsOf: store.directory.appendingPathComponent("appearance.json"))
@@ -151,7 +179,7 @@ import AppKit
             checks["legacyAppearanceSchemaRemainsUnchanged"] = Set(brightnessKeys.keys) == ["version", "theme", "textSize"]
             checks["styleActionsKeepBrightnessFileByteIdentical"] = brightnessBytes == brightnessBeforeStyleActions
             checks["allOriginalTasksAndModelPreferencesPreserved"] = try [coding, general].map { try encoder.encode(tasks.task($0)!) } == originals && encoder.encode(store.preferences) == preferences
-            report["windowColors"] = captures; report["contrastRatios"] = ratios; report["inputSurfaces"] = inputSurfaces
+            report["windowColors"] = captures; report["contrastRatios"] = ratios; report["inputSurfaces"] = inputSurfaces; report["secureInputSurfaces"] = secureSurfaces; report["comboInputSurfaces"] = comboSurfaces
             report["success"] = checks.count >= 45 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()

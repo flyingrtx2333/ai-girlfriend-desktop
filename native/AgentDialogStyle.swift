@@ -64,42 +64,127 @@ import AppKit
     override func drawFocusRingMask() { NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() }
 }
 
-@MainActor final class AgentDialogTextField: NSTextField {
-    var outlined = false { didSet { refreshFocus(force: true) } }
+@MainActor final class AgentInputAppearance {
+    private weak var field: NSTextField?
     private var windowObserver: NSObjectProtocol?, focusVisible = false
-    override init(frame: NSRect) {
-        super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")
-        font = .systemFont(ofSize: 13); isEditable = true; isSelectable = true; isBezeled = true; bezelStyle = .roundedBezel; focusRingType = .none
-        usesSingleLineMode = true; cell?.wraps = false; cell?.isScrollable = true
-        drawsBackground = false; backgroundColor = AgentWorkbenchTheme.card; isAutomaticTextCompletionEnabled = false
-        wantsLayer = true; layer?.cornerRadius = 6
+    var outlined = false { didSet { refresh(force: true) } }
+    init(_ field: NSTextField, outlined: Bool = false) {
+        self.field = field; self.outlined = outlined
+        field.font = .systemFont(ofSize: 13); field.isEditable = true; field.isSelectable = true
+        field.isBezeled = true; field.bezelStyle = .roundedBezel; field.focusRingType = .none
+        field.usesSingleLineMode = true; field.cell?.wraps = false; field.cell?.isScrollable = true
+        field.drawsBackground = false; field.backgroundColor = AgentWorkbenchTheme.card
+        field.isAutomaticTextCompletionEnabled = false; field.wantsLayer = true; field.layer?.cornerRadius = 6
+        refresh(force: true)
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) } }
-    override func becomeFirstResponder() -> Bool {
-        let accepted = super.becomeFirstResponder()
-        if accepted { DispatchQueue.main.async { [weak self] in self?.refreshFocus() } }
-        return accepted
-    }
-    private func refreshFocus(force: Bool = false) {
-        let focused = currentEditor().map { window?.firstResponder === $0 } ?? false
-        guard force || focused != focusVisible else { return }; focusVisible = focused
-        layer?.borderWidth = focused ? 1.5 : outlined ? 1 : 0
-        effectiveAppearance.performAsCurrentDrawingAppearance {
-            layer?.borderColor = AgentThemeContext.resolve(focused ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.line, in: self).cgColor
-        }
-    }
-    override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); refreshFocus() }
-    override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); refreshFocus() }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refreshFocus(force: true) }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
+    func movedToWindow() {
         if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }; windowObserver = nil
-        if let window {
+        if let window = field?.window {
             windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didUpdateNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshFocus() }
+                MainActor.assumeIsolated { self?.refresh() }
             }
         }
-        refreshFocus(force: true)
+        refresh(force: true)
+    }
+    func refresh(force: Bool = false) {
+        guard let field else { return }
+        let focused = field.currentEditor().map { field.window?.firstResponder === $0 } ?? false
+        guard force || focused != focusVisible else { return }; focusVisible = focused
+        field.layer?.borderWidth = focused ? 1.5 : outlined ? 1 : 0
+        field.effectiveAppearance.performAsCurrentDrawingAppearance {
+            field.layer?.borderColor = AgentThemeContext.resolve(focused ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.line, in: field).cgColor
+        }
+    }
+    static func paint(_ frame: NSRect, in field: NSTextField, outlined: Bool) {
+        field.effectiveAppearance.performAsCurrentDrawingAppearance {
+            AgentThemeContext.resolve(field.backgroundColor ?? AgentWorkbenchTheme.card, in: field).setFill()
+            NSBezierPath(roundedRect: frame, xRadius: 6, yRadius: 6).fill()
+            if !outlined {
+                AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: field).setStroke()
+                let border = NSBezierPath(roundedRect: frame.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+                border.lineWidth = 1; border.stroke()
+            }
+        }
+    }
+}
+
+@MainActor final class AgentDialogTextField: NSTextField {
+    private var inputStyle: AgentInputAppearance?
+    var outlined: Bool {
+        get { inputStyle?.outlined ?? false }
+        set { inputStyle?.outlined = newValue }
+    }
+    override init(frame: NSRect) {
+        super.init(frame: frame); cell = AgentDialogFieldCell(textCell: "")
+        inputStyle = AgentInputAppearance(self)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.inputStyle?.refresh() } }
+        return accepted
+    }
+    override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); inputStyle?.refresh() }
+    override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); inputStyle?.refresh() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); inputStyle?.refresh(force: true) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); inputStyle?.movedToWindow() }
+}
+
+@MainActor final class AgentSecureTextField: NSSecureTextField {
+    private var inputStyle: AgentInputAppearance?
+    override init(frame: NSRect) {
+        super.init(frame: frame); cell = AgentSecureFieldCell(textCell: "")
+        inputStyle = AgentInputAppearance(self, outlined: true)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.inputStyle?.refresh() } }
+        return accepted
+    }
+    override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); inputStyle?.refresh() }
+    override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); inputStyle?.refresh() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); inputStyle?.refresh(force: true) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); inputStyle?.movedToWindow() }
+}
+
+@MainActor final class AgentComboBox: NSComboBox {
+    private var inputStyle: AgentInputAppearance?
+    override init(frame: NSRect) {
+        super.init(frame: frame); cell = AgentComboBoxCell(textCell: "")
+        inputStyle = AgentInputAppearance(self, outlined: true)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { DispatchQueue.main.async { [weak self] in self?.inputStyle?.refresh() } }
+        return accepted
+    }
+    override func textDidBeginEditing(_ notification: Notification) { super.textDidBeginEditing(notification); inputStyle?.refresh() }
+    override func textDidEndEditing(_ notification: Notification) { super.textDidEndEditing(notification); inputStyle?.refresh() }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); inputStyle?.refresh(force: true) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); inputStyle?.movedToWindow() }
+}
+
+@MainActor private final class AgentSecureFieldCell: NSSecureTextFieldCell {
+    override func draw(withFrame frame: NSRect, in controlView: NSView) {
+        guard let field = controlView as? AgentSecureTextField else { super.draw(withFrame: frame, in: controlView); return }
+        AgentInputAppearance.paint(frame, in: field, outlined: true)
+        super.drawInterior(withFrame: frame, in: controlView)
+    }
+}
+
+@MainActor private final class AgentComboBoxCell: NSComboBoxCell {
+    override func draw(withFrame frame: NSRect, in controlView: NSView) {
+        guard let field = controlView as? AgentComboBox else { super.draw(withFrame: frame, in: controlView); return }
+        AgentInputAppearance.paint(frame, in: field, outlined: true)
+        // Combo cells position their text in titleRect, unlike ordinary fields.
+        super.drawInterior(withFrame: super.titleRect(forBounds: frame), in: controlView)
+        let x = frame.maxX - 15, y = frame.midY, down: CGFloat = controlView.isFlipped ? 1 : -1
+        let arrow = NSBezierPath(); arrow.move(to: NSPoint(x: x - 4, y: y - 2 * down))
+        arrow.line(to: NSPoint(x: x, y: y + 2 * down)); arrow.line(to: NSPoint(x: x + 4, y: y - 2 * down))
+        arrow.lineWidth = 1.2; arrow.lineCapStyle = .round; arrow.lineJoinStyle = .round
+        AgentThemeContext.resolve(AgentWorkbenchTheme.secondaryText, in: field).withAlphaComponent(field.isEnabled ? 1 : 0.4).setStroke(); arrow.stroke()
     }
 }

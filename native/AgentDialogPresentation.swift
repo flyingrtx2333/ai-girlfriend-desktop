@@ -82,15 +82,7 @@ import AppKit
     override func fieldEditor(for controlView: NSView) -> NSTextView? { AgentDialogPresentation.editor(for: controlView) }
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
         guard let field = controlView as? AgentDialogTextField else { super.draw(withFrame: cellFrame, in: controlView); return }
-        field.effectiveAppearance.performAsCurrentDrawingAppearance {
-            AgentThemeContext.resolve(field.backgroundColor ?? AgentWorkbenchTheme.card, in: field).setFill()
-            NSBezierPath(roundedRect: cellFrame, xRadius: 6, yRadius: 6).fill()
-            if !field.outlined {
-                AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: field).setStroke()
-                let border = NSBezierPath(roundedRect: cellFrame.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-                border.lineWidth = 1; border.stroke()
-            }
-        }
+        AgentInputAppearance.paint(cellFrame, in: field, outlined: field.outlined)
         super.drawInterior(withFrame: cellFrame, in: controlView)
     }
 }

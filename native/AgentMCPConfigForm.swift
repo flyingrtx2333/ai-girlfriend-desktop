@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor final class AgentMCPConfigForm: NSObject, NSTextFieldDelegate {
     private(set) var view = NSScrollView()
-    private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = NSSecureTextField(), timeout = AgentDialogTextField()
+    private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = AgentSecureTextField(), timeout = AgentDialogTextField()
     private let arguments = AgentMCPConfigRows(title: "参数", paired: false, secure: false, limit: 100)
     private let environment = AgentMCPConfigRows(title: "环境变量", paired: true, secure: true, limit: 64)
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
@@ -85,7 +85,7 @@ import AppKit
     func load(_ values: [String]) throws { guard values.count <= limit else { throw PetError(title + "数量超过限制") }; for value in values { insert(nil, value) } }
     func load(_ values: [String: String]) throws { guard values.count <= limit else { throw PetError(title + "数量超过限制") }; for key in values.keys.sorted() { insert(key, values[key]!) } }
     private func insert(_ key: String?, _ value: String) {
-        let input: NSTextField = secure ? NSSecureTextField() : AgentDialogTextField(); input.stringValue = value
+        let input: NSTextField = secure ? AgentSecureTextField() : AgentDialogTextField(); input.stringValue = value
         let name: NSTextField? = paired ? AgentDialogTextField() : nil; name?.stringValue = key ?? ""; name?.placeholderString = "名称"
         input.placeholderString = "值"
         for field in [name, input].compactMap({ $0 }) { AgentSettingsStyle.field(field); field.delegate = self; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }

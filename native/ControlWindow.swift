@@ -128,21 +128,21 @@ final class FormDocumentView: NSView {
     private let savedStatus = AgentSettingsStatusField("设置保存状态")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let clearButton = NSButton(title: "清空", target: nil, action: nil)
-    private let endpoint = NSTextField(), persona = NSTextField(), model = NSComboBox()
-    private let apiKey = NSSecureTextField(), voiceKey = NSSecureTextField()
+    private let endpoint = AgentDialogTextField(), persona = AgentDialogTextField(), model = AgentComboBox()
+    private let apiKey = AgentSecureTextField(), voiceKey = AgentSecureTextField()
     private let apiPreview = NSButton(), voicePreview = NSButton(), apiReplace = NSButton(), voiceReplace = NSButton()
     private let checkModelButton = NSButton(title: "检测", target: nil, action: nil)
     private let modelStatus = NSTextField(labelWithString: "未检测")
     private let vision = NSPopUpButton(), reasoning = NSPopUpButton()
-    private let contextTokens = NSComboBox(), replyTokens = NSComboBox()
+    private let contextTokens = AgentComboBox(), replyTokens = AgentComboBox()
     private let contextMaximum = NSTextField(labelWithString: ""), replyMaximum = NSTextField(labelWithString: "")
     private var modelCatalog: [ModelInfo] = [], storedModelInfo: ModelInfo?
     private var modelCheck: Task<Void, Never>?, modelCheckGeneration = 0
     private var updatingModelChoices = false
     private let effortValues = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
-    private let voiceEndpoint = NSTextField(), voiceID = NSTextField(), voiceModel = NSTextField()
+    private let voiceEndpoint = AgentDialogTextField(), voiceID = AgentDialogTextField(), voiceModel = AgentDialogTextField()
     private let voiceEnabled = NSSwitch(), onTop = NSSwitch(), wakeEnabled = NSSwitch()
-    private let wakePhrase = NSTextField(), wakeStatus = NSTextField(labelWithString: "未开启")
+    private let wakePhrase = AgentDialogTextField(), wakeStatus = NSTextField(labelWithString: "未开启")
     private let pauseWait = NSPopUpButton()
     private let screenEnabled = NSSwitch(), screenInterval = NSPopUpButton()
     private let screenStatus = NSTextField(labelWithString: ""), screenTarget = NSTextField(labelWithString: "")
