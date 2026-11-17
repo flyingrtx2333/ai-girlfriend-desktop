@@ -27,7 +27,7 @@
 
 ## 先让她住到桌面上
 
-已构建的 `.app` 可以直接运行。源码构建需要 Node.js/npm 和含 Swift 6.1 及以上的 Xcode 工具链；日常安装包还需要本机有效的 Apple Development 或 Developer ID Application 签名证书。
+已构建的 `.app` 可以直接运行。源码构建需要 Node.js/npm 和含 Swift 6.1 及以上的 Xcode 工具链；默认使用本地签名，不需要解锁钥匙串；需要个人证书签名时，可另行指定 Apple Development 或 Developer ID Application 证书。
 
 ```sh
 npm ci
@@ -36,7 +36,7 @@ npm run native:build
 
 默认的 `npm run native:build` 用于开发验收，无需证书私钥或解锁钥匙串；`npm run native:build-check` 保留同样行为。它生成独立标识与 `BlueFatFishAcceptanceOnly=true` 的本地签名应用，输出在本次 `build/native-staging-*` 目录，不安装到日常入口。启动时必须指定独立目录：`open -n /绝对路径/蓝色大肥鱼验收.app --args --check /绝对路径/独立验收目录 --manual-ui`；直接打开会退出，不读取日常资料。已有独立验收包仍可用 `npm run native:sign-check -- /绝对路径/独立验收.app` 签名；它仅接受 `BlueFatFishAcceptanceOnly=true` 与独立 `com.xjs.bluefatfish.*` 标识，拒绝日常包。
 
-更新日常应用时显式运行 `npm run native:release`。正式构建先放在独立的 `build/native-staging-*` 目录，完整签名检查通过、证书与原应用一致且应用文件未被使用时，才替换 `build/蓝色大肥鱼.app`；旧版保留在候选目录中的 `previous-*`。构建或签名失败会保留现有应用。应用尚未退出时，可正常退出后用 `npm run native:install -- /绝对路径/正式候选.app` 安装已签名候选。有多个有效证书时，通过 `BLUEFATFISH_SIGN_IDENTITY` 指定证书名称或 SHA-1；日常包不会退回临时签名。`npm run native:open` 打开已安装的日常包，不打开开发验收包。
+更新日常应用时显式运行 `npm run native:release`。候选先放在独立的 `build/native-staging-*` 目录，完整签名检查通过且旧应用退出后才替换 `build/蓝色大肥鱼.app`；旧版保留在候选目录中的 `previous-*`。构建或签名失败会保留现有应用。默认本地签名，无需个人钥匙串；已有本地签名候选可用 `npm run native:install -- --local /绝对路径/正式候选.app` 安装。需要个人证书时才设置 `BLUEFATFISH_SIGN_IDENTITY`；`npm run native:open` 打开已安装的日常包。
 
 首次构建会下载固定版本的 sherpa-onnx 原生库和唤醒模型，并校验 SHA-256；MCP 使用固定版本的官方 Swift SDK，传递依赖由 `native-mcp/Package.resolved` 固定。应用运行不再下载这些库。当前角色素材、动画和示例音频已在仓库中，无需调用 Tripo 或重新生成。
 
@@ -84,13 +84,13 @@ npm run dev
 
 ⌘G 打开快速任务切换，可按任务名或工作区筛选未归档任务，跨「编程／通用」选择，用上下键预选、回车打开、Esc 取消。⌘B 或顶部侧栏按钮收起／展开当前窗口的左侧栏；收起后按 ⌘K 搜索会重新展开。两项都可在「设置 → 快捷键」修改、清除或恢复默认，各窗口独立切换任务和侧栏。
 
-设置按「个人、集成、编码、其他」分组，搜索可直接进入连接器等具体页面。插件、Skills、指令、MCP、Hooks、智能体、团队、记忆与规则在居中的右侧内容列中查看、编辑和保存；子配置在页内进入与返回。Hooks 按事件分组，显示实际处理器数量、来源和启用状态。未保存的配置会在离开前提示，返回对话保留任务草稿，小窗口可滚动查看。
+设置按「个人、陪伴、集成、编码、其他」分组，搜索可直接进入连接器等具体页面。插件、Skills、指令、MCP、Hooks、智能体、团队、记忆与规则在居中的右侧内容列中查看、编辑和保存；子配置在页内进入与返回。Hooks 按事件分组，显示实际处理器数量、来源和启用状态。未保存的配置会在离开前提示，返回对话保留任务草稿，小窗口可滚动查看。
 
-「设置 → 外观」可选择跟随系统、浅色或深色，以及 12／14／16／18 号对话字体，即时保存并更新已打开的窗口。设置侧栏的返回与搜索固定在顶部；插件启用配置支持 ⌘S，并分别保存用户、项目和本机范围。目录的创建／导入及新建 Skill／指令、工具规则的原操作位于窗口右上，详情沿右侧逐级进入；卡片空态、森林明暗层次与保存保护已接入日常版。当前安装版本和完整差距见 [Qoder TODO](docs/QODER-PARITY-TODO.md)。
+「设置 → 外观」可选择跟随系统、浅色或深色，以及 12／14／16／18 号对话字体，即时保存并更新已打开的窗口。设置侧栏的返回与搜索固定在顶部；插件启用配置支持 ⌘S，并分别保存用户、项目和本机范围。目录的创建／导入及新建 Skill／指令、工具规则的原操作位于窗口右上，详情沿右侧逐级进入；卡片空态、森林明暗层次与保存保护已接入日常版。普通字段已统一主题底色、边框与焦点，名称卡片支持独立撤销和重做；安全字段与模型组合框仍需精修。当前安装版本和完整差距见 [Qoder TODO](docs/QODER-PARITY-TODO.md)。
 
 <img src="docs/media/settings-catalog-dark.jpg" width="900" alt="日常应用实际窗口：目录操作位于窗口右上，空态与森林深色分层；原用户设置保持">
 
-<img src="docs/media/settings-form-controls.jpg" width="900" alt="实际设置短表单：分组字段、共享选择器和右上角取消与主操作">
+<img src="docs/media/settings-form-controls.jpg" width="900" alt="日常应用实际设置表单：统一主题输入框、分组字段及右上角取消与主操作">
 
 <img src="docs/media/settings-appearance-dark.jpg" width="900" alt="实际深色验收窗口：固定设置侧栏、居中内容列与 Hooks 事件分组">
 
