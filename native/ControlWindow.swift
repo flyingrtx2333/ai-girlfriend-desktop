@@ -1435,7 +1435,12 @@ final class FormDocumentView: NSView {
     }
     @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
-        guard leaveSettingsPage() else { return }
+        guard leaveSettingsPage() else {
+            for (index, button) in categoryButtons.enumerated() {
+                button.state = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory ? .on : .off
+            }
+            return
+        }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections()
     }
@@ -2420,6 +2425,8 @@ final class FormDocumentView: NSView {
         _ = try rulesResult()
         guard let memory = settingsCategories.firstIndex(where: { $0.0 == "memory" }) else { throw PetError("缺少记忆与规则分类") }
         checks["cancelCategoryNavigationRevealsSameEditor"] = try !choose("继续编辑", { selectSettingsCategory(categoryButtons[memory]); return settingsCategory == "memory" }) && settingsCategory == "extensions" && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController === detail && !settingsPageHost.isHidden
+        checks["cancelActualSidebarClickKeepsEditor"] = try !choose("继续编辑", { categoryButtons[memory].performClick(nil); return settingsCategory == "memory" }) && settingsCategory == "extensions" && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
+        checks["cancelActualSidebarClickRestoresSingleSelection"] = categoryButtons.filter { $0.state == .on }.map { settingsCategories[$0.tag].0 } == ["extensions"]
         checks["allCancelledNavigationPreservesStoredConnectorAndDraft"] = try Data(contentsOf: file) == before && name.stringValue == "设置搜索未保存草稿 🧭"
         let accepted = try rulesResult()
         checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openSettingsSearchResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
