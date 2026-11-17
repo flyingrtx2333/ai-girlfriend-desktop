@@ -2,10 +2,12 @@ import AppKit
 
 @MainActor final class AgentWorktreeCreationWindow: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate {
     private let store: AgentStore, taskID: String, git: AgentGit, onCreated: (String) -> Void
-    private let start = NSPopUpButton(), branch = NSTextField(string: "agent/" + String(UUID().uuidString.lowercased().prefix(8)))
+    private let start = NSPopUpButton(), branch = AgentDialogTextField(string: "agent/" + String(UUID().uuidString.lowercased().prefix(8)))
     private let include = NSButton(checkboxWithTitle: "带入当前修改", target: nil, action: nil)
-    private let preview = NSButton(title: "预览", target: nil, action: nil), create = NSButton(title: "创建任务", target: nil, action: nil)
-    private let state = NSTextField(wrappingLabelWithString: ""), diff = AgentGitDiffView()
+    private let preview = AgentDialogButton(title: "预览", target: nil, action: nil), create = AgentDialogButton(title: "创建任务", target: nil, action: nil)
+    private let state = AgentSettingsStatusField("工作树创建状态"), diff = AgentGitDiffView()
+    private lazy var startFrame = AgentSettingsPopupFrame(start, outlined: true, maximumWidth: nil)
+    private var sourceFrames: [AgentSettingsPopupFrame] = []
     private var points: [AgentWorktreeStart] = [], review: AgentWorktreeCreationReview?, job: Task<Void, Never>?
     private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private let sourceOptions = NSStackView(), optionsScroll = NSScrollView()
@@ -26,13 +28,16 @@ import AppKit
         originalBranch = branch.stringValue; originalInclude = include.state == .on
         let root = NSTextField(labelWithString: git.files.root.path); root.font = .systemFont(ofSize: 11); root.textColor = AgentWorkbenchTheme.secondaryText; root.lineBreakMode = .byTruncatingMiddle; root.toolTip = git.files.root.path
         start.setAccessibilityLabel("起点分支"); branch.setAccessibilityLabel("新分支"); branch.delegate = self
+        branch.outlined = true; branch.heightAnchor.constraint(equalToConstant: 32).isActive = true
         for control in [start, branch] { control.font = .systemFont(ofSize: 13); control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         start.cell?.lineBreakMode = .byTruncatingMiddle
         start.target = self; start.action = #selector(changed); include.target = self; include.action = #selector(changed)
         include.toolTip = "忽略文件不带入"
         preview.target = self; preview.action = #selector(previewCreation); create.target = self; create.action = #selector(confirm)
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.isSelectable = true; state.maximumNumberOfLines = 0; diff.text.setAccessibilityLabel("待带入修改")
-        let options = NSGridView(views: [[NSTextField(labelWithString: "起点分支"), start], [NSTextField(labelWithString: "新分支"), branch]])
+        include.font = .systemFont(ofSize: 13); include.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        let labels = [NSTextField(labelWithString: "起点分支"), NSTextField(labelWithString: "新分支")]; for label in labels { label.font = .systemFont(ofSize: 13) }
+        let options = NSGridView(views: [[labels[0], startFrame], [labels[1], branch]])
         options.rowSpacing = 10; options.columnSpacing = 12; options.column(at: 0).xPlacement = .trailing; options.column(at: 1).xPlacement = .fill
         options.column(at: 0).width = 72
         sourceOptions.orientation = .vertical; sourceOptions.alignment = .leading; sourceOptions.spacing = 10
@@ -40,8 +45,8 @@ import AppKit
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; optionsScroll.documentView = document; optionsScroll.hasVerticalScroller = true; optionsScroll.drawsBackground = false; optionsScroll.identifier = .init("form-input"); optionsScroll.setAccessibilityLabel("各源起点配置")
         document.addSubview(sourceOptions); sourceOptions.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: optionsScroll.contentView.widthAnchor), sourceOptions.leadingAnchor.constraint(equalTo: document.leadingAnchor), sourceOptions.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -12), sourceOptions.topAnchor.constraint(equalTo: document.topAnchor, constant: 2), sourceOptions.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -2), optionsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 52), optionsScroll.heightAnchor.constraint(lessThanOrEqualToConstant: 150)])
-        let preferred = optionsScroll.heightAnchor.constraint(equalToConstant: CGFloat(min(148, 68 + 40 * max(0, (store.task(taskID)?.workspacePaths.count ?? 1) - 1)))); preferred.priority = .defaultHigh; preferred.isActive = true
-        AgentSettingsStyle.primaryAction(create)
+        let preferred = optionsScroll.heightAnchor.constraint(equalToConstant: CGFloat(min(148, 84 + 40 * max(0, (store.task(taskID)?.workspacePaths.count ?? 1) - 1)))); preferred.priority = .defaultHigh; preferred.isActive = true
+        AgentDialogStyle.action(preview); AgentDialogStyle.action(create, prominent: true)
         let actions = NSStackView(views: [NSView(), preview, create]); actions.spacing = 10
         for view in [root, optionsScroll, include, state, diff, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -66,8 +71,9 @@ import AppKit
                     if index == 0 { points = value.points }
                     else {
                         popup.setAccessibilityLabel("起点分支 · " + value.root)
-                        let label = NSTextField(labelWithString: URL(fileURLWithPath: value.root).lastPathComponent); label.toolTip = value.root; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                        let row = NSStackView(views: [label, popup]); row.spacing = 12; row.alignment = .centerY; popup.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: 0.65).isActive = true
+                        let label = NSTextField(labelWithString: URL(fileURLWithPath: value.root).lastPathComponent); label.font = .systemFont(ofSize: 13); label.toolTip = value.root; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                        let frame = AgentSettingsPopupFrame(popup, outlined: true, maximumWidth: nil); sourceFrames.append(frame)
+                        let row = NSStackView(views: [label, frame]); row.spacing = 12; row.alignment = .centerY; frame.widthAnchor.constraint(equalTo: row.widthAnchor, multiplier: 0.65).isActive = true
                         sourceOptions.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: sourceOptions.widthAnchor).isActive = true
                     }
                 }
@@ -95,11 +101,13 @@ import AppKit
     @objc private func changed() { review = nil; create.isEnabled = false; state.stringValue = ""; diff.show("", oldTitle: "起点", newTitle: "当前修改") }
     private func setBusy(_ value: Bool) {
         busy = value; start.isEnabled = !value && !points.isEmpty; branch.isEnabled = !value && !points.isEmpty && resumeTaskID == nil; include.isEnabled = !value && !points.isEmpty
+        if value { state.textColor = AgentWorkbenchTheme.secondaryText }
         for (root, popup) in sourceStarts { popup.isEnabled = !value && !retainedRoots.contains(root) }
         preview.isEnabled = !value && !points.isEmpty; create.isEnabled = !value && review != nil
+        for frame in [startFrame] + sourceFrames { frame.refreshEnabledState() }
     }
     private func showFailure(_ message: String, title: String) {
-        state.stringValue = title; state.toolTip = message
+        state.textColor = AgentDialogStyle.error; state.stringValue = title; state.toolTip = message
         diff.show(message, oldTitle: "工作树", newTitle: "错误详情")
     }
     private func checkTask() throws {
@@ -112,6 +120,7 @@ import AppKit
     }
     @objc private func previewCreation() {
         guard !busy, points.indices.contains(start.indexOfSelectedItem) else { return }
+        branch.validateEditing()
         let name = branch.stringValue, base = points[start.indexOfSelectedItem].ref, carry = include.state == .on, starts = selectedStarts
         review = nil; setBusy(true); state.stringValue = "正在预览…"
         job = Task { [weak self] in
@@ -128,6 +137,7 @@ import AppKit
     }
     @objc private func confirm() {
         guard !busy, let review else { return }
+        branch.validateEditing()
         guard matchesInputs(review) else {
             self.review = nil; showFailure("创建选项已变化，请重新预览", title: "预览已失效"); setBusy(false); return
         }
@@ -155,7 +165,8 @@ import AppKit
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         let frames = [start, branch, include, preview, create].map { content.convert($0.bounds, from: $0) }
-        return ["taskID": taskID, "resumeTaskID": resumeTaskID ?? "", "sources": sourceRoots, "sourceStartPoints": selectedStarts, "retainedRoots": retainedRoots.sorted(), "branch": branch.stringValue, "startPoint": points.indices.contains(start.indexOfSelectedItem) ? points[start.indexOfSelectedItem].ref : "", "includeChanges": include.state == .on, "reviewHash": review?.hash ?? "", "patch": diff.patch, "state": state.stringValue, "busy": busy, "hasPendingChanges": hasPendingChanges, "createEnabled": create.isEnabled,
+        func frame(_ view: NSView) -> [CGFloat] { let r = content.convert(view.bounds, from: view); return [r.minX, r.minY, r.width, r.height] }
+        return ["taskID": taskID, "resumeTaskID": resumeTaskID ?? "", "sources": sourceRoots, "sourceStartPoints": selectedStarts, "retainedRoots": retainedRoots.sorted(), "branch": branch.stringValue, "startPoint": points.indices.contains(start.indexOfSelectedItem) ? points[start.indexOfSelectedItem].ref : "", "includeChanges": include.state == .on, "reviewHash": review?.hash ?? "", "patch": diff.patch, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "busy": busy, "hasPendingChanges": hasPendingChanges, "createEnabled": create.isEnabled, "inputFrames": [frame(startFrame), frame(branch)], "actionFrames": [frame(preview), frame(create)], "diffFrame": frame(diff),
                 "checks": ["creationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "creationHasNoFloatingWindow": window?.isVisible != true, "creationControlsFit": frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "creationPreviewHasUsableHeight": diff.bounds.height >= 120]]
     }
     func checkWorkspace(branch name: String? = nil, startPoint: String? = nil, includeChanges: Bool? = nil, action: String = "") async {

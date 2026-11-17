@@ -2,11 +2,11 @@ import AppKit
 
 @MainActor final class AgentWorktreeWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     private let git: AgentGit, store: AgentStore, onSelectTask: (String) -> Void
-    private let table = NSTableView(), detail = NSTextView(), state = NSTextField(labelWithString: "")
+    private let table = NSTableView(), detail = NSTextView(), state = AgentSettingsStatusField("工作树状态")
     private let scope = NSSegmentedControl(labels: ["工作树", "回收记录"], trackingMode: .selectOne, target: nil, action: nil)
-    private let refreshButton = NSButton(title: "刷新", target: nil, action: nil), openButton = NSButton(title: "打开任务", target: nil, action: nil)
-    private let revealButton = NSButton(title: "在访达中显示", target: nil, action: nil), recycleButton = NSButton(title: "回收…", target: nil, action: nil), restoreButton = NSButton(title: "恢复…", target: nil, action: nil)
-    private let cancelButton = NSButton(title: "取消", target: nil, action: nil)
+    private let refreshButton = AgentDialogButton(title: "刷新", target: nil, action: nil), openButton = AgentDialogButton(title: "打开任务", target: nil, action: nil)
+    private let revealButton = AgentDialogButton(title: "在访达中显示", target: nil, action: nil), recycleButton = AgentDialogButton(title: "回收…", target: nil, action: nil), restoreButton = AgentDialogButton(title: "恢复…", target: nil, action: nil)
+    private let cancelButton = AgentDialogButton(title: "取消", target: nil, action: nil)
     private var recycleReview: AgentWorktreeRecycleReview?, restoreReviewID: String?
     private var entries: [AgentWorktreeEntry] = [], backups: [AgentWorktreeBackup] = [], job: Task<Void, Never>?
     private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface), list = NSScrollView(), viewer = NSScrollView()
@@ -23,17 +23,19 @@ import AppKit
         window.contentView = content
         let title = NSTextField(labelWithString: git.files.root.lastPathComponent); title.font = .systemFont(ofSize: 15, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle; title.toolTip = git.files.root.path
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("worktree")); table.addTableColumn(column)
-        table.headerView = nil; table.rowHeight = 55; table.style = .plain; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("项目工作树")
+        table.headerView = nil; table.rowHeight = 56; table.style = .plain; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("项目工作树")
         list.documentView = table; list.hasVerticalScroller = true; table.backgroundColor = .clear
-        detail.isEditable = false; detail.isSelectable = true; detail.font = .systemFont(ofSize: 12); detail.textContainerInset = NSSize(width: 14, height: 14); detail.setAccessibilityLabel("工作树详情")
+        detail.isEditable = false; detail.isSelectable = true; detail.font = .systemFont(ofSize: 13); detail.textContainerInset = NSSize(width: 12, height: 12); detail.setAccessibilityLabel("工作树详情")
         detail.autoresizingMask = [.width]; detail.textContainer?.widthTracksTextView = true
         viewer.documentView = detail; viewer.hasVerticalScroller = true; detail.isRichText = false; detail.drawsBackground = false; detail.textColor = .labelColor
         for scroll in [list, viewer] { scroll.drawsBackground = false; scroll.scrollerStyle = .overlay }
         scope.selectedSegment = 0; scope.target = self; scope.action = #selector(changeScope)
-        for button in [refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton] { button.target = self }
+        scope.controlSize = .regular; scope.font = .systemFont(ofSize: 13); scope.segmentStyle = .roundRect; scope.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        for button in [refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton] { button.target = self; AgentDialogStyle.action(button, prominent: button === restoreButton) }
+        recycleButton.hasDestructiveAction = true
         refreshButton.action = #selector(refresh); openButton.action = #selector(openTask); revealButton.action = #selector(reveal); recycleButton.action = #selector(recycle); restoreButton.action = #selector(restore)
         cancelButton.action = #selector(cancelReview)
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingMiddle
+        state.font = .systemFont(ofSize: 12)
         let header = NSStackView(views: [title, NSView(), scope, refreshButton]); header.spacing = 10
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [openButton, revealButton, NSView(), cancelButton, recycleButton, restoreButton]); actions.spacing = 8
@@ -75,7 +77,7 @@ import AppKit
             path = item.path
         }
         let cell = NSTableCellView(), first = NSTextField(labelWithString: name), second = NSTextField(labelWithString: path.replacingOccurrences(of: "\n", with: "↵").replacingOccurrences(of: "\r", with: "↵"))
-        first.font = .systemFont(ofSize: 12, weight: .medium); second.font = .systemFont(ofSize: 10); second.textColor = AgentWorkbenchTheme.secondaryText
+        first.font = .systemFont(ofSize: 13, weight: .medium); second.font = .systemFont(ofSize: 11.5); second.textColor = AgentWorkbenchTheme.secondaryText
         for label in [first, second] { label.lineBreakMode = .byTruncatingMiddle; label.translatesAutoresizingMaskIntoConstraints = false; cell.addSubview(label); label.toolTip = path }
         cell.textField = first
         NSLayoutConstraint.activate([first.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8), first.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8), first.topAnchor.constraint(equalTo: cell.topAnchor, constant: 9), second.leadingAnchor.constraint(equalTo: first.leadingAnchor), second.trailingAnchor.constraint(equalTo: first.trailingAnchor), second.topAnchor.constraint(equalTo: first.bottomAnchor, constant: 4)])
@@ -107,7 +109,8 @@ import AppKit
         recycleButton.isEnabled = !busy && entry?.unavailable == nil && entry != nil
         restoreButton.isEnabled = !busy && backup.map { ["prepared", "recycled"].contains($0.state) } == true
     }
-    private func setBusy(_ value: Bool) { busy = value; showSelection() }
+    private func setBusy(_ value: Bool) { busy = value; if value { state.textColor = AgentWorkbenchTheme.secondaryText }; showSelection() }
+    private func showError(_ error: Error) { state.textColor = AgentDialogStyle.error; state.stringValue = error.localizedDescription }
     @objc private func cancelReview() { guard !busy else { return }; recycleReview = nil; restoreReviewID = nil; state.stringValue = ""; showSelection() }
     private func reloadRows() {
         let row = showingBackups ? backups.firstIndex { $0.id == selectedBackupID } : entries.firstIndex { $0.path == selectedEntryPath }
@@ -119,7 +122,7 @@ import AppKit
         job = Task { [weak self] in
             guard let self else { return }
             do { entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows(); state.stringValue = "\(entries.count) 个工作树 · \(backups.count) 条回收记录" }
-            catch { entries = []; backups = []; table.reloadData(); state.stringValue = error.localizedDescription }
+            catch { entries = []; backups = []; table.reloadData(); showError(error) }
             setBusy(false)
         }
     }
@@ -137,7 +140,7 @@ import AppKit
             recycleReview = nil; setBusy(true)
             job = Task { [weak self] in
                 guard let self else { return }
-                do { try await recycleReviewed(review) } catch { state.stringValue = error.localizedDescription }
+                do { try await recycleReviewed(review) } catch { showError(error) }
                 setBusy(false)
             }; return
         }
@@ -148,7 +151,7 @@ import AppKit
                 let review = try await git.prepareWorktreeRecycle(path: item.path)
                 try Task.checkCancellation()
                 recycleReview = review; state.stringValue = ""
-            } catch { state.stringValue = error.localizedDescription }
+            } catch { showError(error) }
             setBusy(false)
         }
     }
@@ -165,7 +168,7 @@ import AppKit
         job = Task { [weak self] in
             guard let self else { return }
             do { try await restoreReviewed(item.id) }
-            catch { state.stringValue = error.localizedDescription }
+            catch { showError(error) }
             setBusy(false)
         }
     }
@@ -179,7 +182,11 @@ import AppKit
         let controls = [scope, refreshButton, openButton, revealButton, recycleButton, restoreButton, cancelButton].filter { !$0.isHiddenOrHasHiddenAncestor }
         let listFrame = content.convert(list.bounds, from: list), detailFrame = content.convert(viewer.bounds, from: viewer)
         let usesCompact = compact == true, layoutMatches = usesCompact ? abs(listFrame.minX - detailFrame.minX) < 1 && abs(listFrame.width - detailFrame.width) < 1 && !listFrame.intersects(detailFrame) : listFrame.maxX <= detailFrame.minX + 1
-        return ["taskID": git.taskID, "busy": busy, "scope": showingBackups ? "backups" : "worktrees", "selectedPath": entry?.path ?? "", "selectedBackupID": backup?.id ?? "", "detail": detail.string, "state": state.stringValue, "recycleEnabled": recycleButton.isEnabled, "restoreEnabled": restoreButton.isEnabled, "recycleReviewHash": recycleReview?.hash ?? "", "restoreReviewID": restoreReviewID ?? "", "selectionEnabled": table.isEnabled,
+        let controlFrames = controls.map { view in
+            let rect = content.convert(view.bounds, from: view)
+            return ["label": (view as? NSButton)?.title ?? "工作树范围", "frame": [rect.minX, rect.minY, rect.width, rect.height]] as [String: Any]
+        }
+        return ["taskID": git.taskID, "busy": busy, "scope": showingBackups ? "backups" : "worktrees", "selectedPath": entry?.path ?? "", "selectedBackupID": backup?.id ?? "", "detail": detail.string, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "controls": controlFrames, "stateFrame": NSStringFromRect(content.convert(state.bounds, from: state)), "rowHeight": table.rowHeight, "recycleEnabled": recycleButton.isEnabled, "restoreEnabled": restoreButton.isEnabled, "recycleReviewHash": recycleReview?.hash ?? "", "restoreReviewID": restoreReviewID ?? "", "selectionEnabled": table.isEnabled,
                 "entries": entries.map { ["path": $0.path, "branch": $0.branch ?? "", "owned": $0.owned, "unavailable": $0.unavailable ?? ""] as [String: Any] }, "backups": backups.map { ["id": $0.id, "state": $0.state, "path": $0.origin.path] }, "compact": usesCompact, "contentSize": [content.bounds.width, content.bounds.height], "listFrame": NSStringFromRect(listFrame), "detailFrame": NSStringFromRect(detailFrame),
                 "checks": ["managerUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "managerHasNoFloatingWindow": window?.isVisible != true, "managerControlsFit": controls.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains(content.convert($0.bounds, from: $0)) }, "managerListHasUsableSpace": list.bounds.width >= 180 && list.bounds.height >= 100, "managerDetailHasUsableSpace": viewer.bounds.width >= 200 && viewer.bounds.height >= 80, "managerLayoutMatchesAvailableWidth": usesCompact == (content.bounds.width < 700) && layoutMatches]]
     }
