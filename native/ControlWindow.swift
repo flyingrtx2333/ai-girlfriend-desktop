@@ -560,6 +560,9 @@ final class FormDocumentView: NSView {
         window?.contentView?.layoutSubtreeIfNeeded()
         settingsSearch.stringValue = ""; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
         let clearingRevealsSelection = last.convert(last.bounds, to: scroll.contentView).intersection(scroll.contentView.bounds).height >= 29.5
+        settingsSearch.stringValue = "关于"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        window?.contentView?.layoutSubtreeIfNeeded(); last.performClick(nil)
+        let filteredClickRevealsSelection = settingsCategory == "about" && settingsSearch.stringValue.isEmpty && last.convert(last.bounds, to: scroll.contentView).intersection(scroll.contentView.bounds).height >= 29.5
         _ = showSettingsCategory(selected)
         scroll.contentView.scroll(to: originalScroll); scroll.reflectScrolledClipView(scroll.contentView)
         return [
@@ -570,7 +573,8 @@ final class FormDocumentView: NSView {
             "SettingsSidebarSearchStaysPinnedWhileCategoriesScroll": before == after && settingsSidebar.bounds.contains(after) && !after.intersects(scroll.frame) && after.height >= 29.5,
             "SettingsSidebarBottomRouteCanBeRevealed": bottomVisible,
             "SettingsSidebarNavigationRevealsSelectedRoute": navigationRevealsSelection,
-            "SettingsSidebarClearingSearchRevealsOriginalSelection": clearingRevealsSelection
+            "SettingsSidebarClearingSearchRevealsOriginalSelection": clearingRevealsSelection,
+            "SettingsSidebarFilteredClickRevealsSelectedRoute": filteredClickRevealsSelection
         ]
     }
 
@@ -1290,7 +1294,7 @@ final class FormDocumentView: NSView {
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
             let input = settingsEditingInput, selection = settingsEditingSelection
             settingsSearch.stringValue = ""; updateSettingsSections()
-            window?.contentView?.layoutSubtreeIfNeeded()
+            revealSettingsCategory()
             settingsPageHost.currentController?.settingsDidAppear()
             if let input, input.window === window, input.isDescendant(of: settingsPageHost), !input.isHiddenOrHasHiddenAncestor,
                window?.makeFirstResponder(input) == true, let selection, let editor = window?.firstResponder as? NSTextView,
@@ -1439,10 +1443,11 @@ final class FormDocumentView: NSView {
             for (index, button) in categoryButtons.enumerated() {
                 button.state = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory ? .on : .off
             }
+            revealSettingsCategory()
             return
         }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
-        settingsSearch.stringValue = ""; updateSettingsSections()
+        settingsSearch.stringValue = ""; updateSettingsSections(); revealSettingsCategory()
     }
     private func settingsSearchMatches(_ query: String) -> [SettingsSearchResult] {
         func children(_ view: NSView) -> [NSView] { (view as? NSStackView)?.arrangedSubviews ?? view.subviews }
@@ -2427,6 +2432,7 @@ final class FormDocumentView: NSView {
         checks["cancelCategoryNavigationRevealsSameEditor"] = try !choose("继续编辑", { selectSettingsCategory(categoryButtons[memory]); return settingsCategory == "memory" }) && settingsCategory == "extensions" && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController === detail && !settingsPageHost.isHidden
         checks["cancelActualSidebarClickKeepsEditor"] = try !choose("继续编辑", { categoryButtons[memory].performClick(nil); return settingsCategory == "memory" }) && settingsCategory == "extensions" && settingsPageHost.currentController === detail && name.stringValue == "设置搜索未保存草稿 🧭"
         checks["cancelActualSidebarClickRestoresSingleSelection"] = categoryButtons.filter { $0.state == .on }.map { settingsCategories[$0.tag].0 } == ["extensions"]
+        checks["cancelActualSidebarClickRevealsOriginalSelection"] = categoryButtons.first(where: { settingsCategories[$0.tag].0 == "extensions" }).map { $0.visibleRect.height >= 29.5 } == true
         checks["allCancelledNavigationPreservesStoredConnectorAndDraft"] = try Data(contentsOf: file) == before && name.stringValue == "设置搜索未保存草稿 🧭"
         let accepted = try rulesResult()
         checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openSettingsSearchResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
