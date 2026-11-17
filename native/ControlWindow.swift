@@ -90,7 +90,7 @@ final class FormDocumentView: NSView {
     private(set) var knowledgePageHost = AgentKnowledgePageHost()
     private let libraryButton = AgentWorkbenchButton(title: "知识库", target: nil, action: nil), projectKnowledgeButton = AgentWorkbenchButton(title: "项目知识", target: nil, action: nil)
     private(set) var attentionPageController: AgentAttentionWindow?
-    private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
+    private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = AgentSettingsSidebarSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
@@ -108,7 +108,7 @@ final class FormDocumentView: NSView {
         let target: NSView
     }
     private var settingsResults: [SettingsSearchResult] = []
-    private var settingsGroupLabels: [(String, NSTextField)] = []
+    private var settingsGroupLabels: [(String, NSView)] = []
     private weak var settingsEditingInput: NSView?
     private var settingsEditingSelection: NSRange?
     private var titleLeading: NSLayoutConstraint!
@@ -374,7 +374,7 @@ final class FormDocumentView: NSView {
             if let save = generalSettingsSave { AgentSettingsStyle.refreshPrimaryAction(save) }
             for (index, button) in categoryButtons.enumerated() {
                 let active = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory
-                button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
+                button.state = active ? .on : .off; button.needsDisplay = true
             }
             for (button, active) in [(chatNav, selectedTab == "chat"), (settingsNav, selectedTab == "settings"), (automationButton, selectedTab == "automation"), (libraryButton, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "library"), (projectKnowledgeButton, selectedTab == "knowledge" && knowledgePageHost.selectedRoot == "wiki")] {
                 button.layer?.backgroundColor = (active ? AgentWorkbenchTheme.navigationSelection : .clear).cgColor
@@ -476,6 +476,9 @@ final class FormDocumentView: NSView {
                 let alignment = settingsHeading.alignmentRect(forFrame: settingsHeading.frame)
                 let heading = settingsHeading.superview!.convert(alignment, to: contentSurface)
                 let key = name + "-" + category, centerError = abs(column.midX - contentSurface.bounds.midX)
+                if category == "model" {
+                    for (key, value) in checkSettingsSidebarGeometry() { checks[name + "-" + key] = value }
+                }
                 let actualWidth = window.contentView?.bounds.width ?? 0
                 frames[key] = ["width": column.width, "windowWidth": actualWidth, "windowHeight": Double(window.contentView?.bounds.height ?? 0), "inspectorWidth": workbenchInspector.bounds.width, "centerError": centerError, "headingX": heading.minX - column.minX, "headingTop": contentSurface.bounds.height - heading.maxY, "bodyGap": heading.minY - body.maxY, "leadingGutter": column.minX, "trailingGutter": contentSurface.bounds.width - column.maxX]
                 // AppKit snaps view frames to the pixel grid and gives labels
@@ -535,6 +538,29 @@ final class FormDocumentView: NSView {
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
         checks["settingsDoNotReserveHiddenInspectorWidth"] = frames.values.allSatisfy { $0["inspectorWidth"] == 0 }
         return ["checks": checks, "frames": frames]
+    }
+    private func checkSettingsSidebarGeometry() -> [String: Bool] {
+        guard let scroll = settingsSidebar.subviews.compactMap({ $0 as? NSScrollView }).first,
+              let navigation = categoryButtons.first?.superview as? NSStackView,
+              let last = categoryButtons.last else { return ["SettingsSidebarExists": false] }
+        let displayed = navigation.arrangedSubviews.compactMap { $0 as? NSButton }
+        let ids = displayed.map { settingsCategories[$0.tag].0 }
+        let expected = ["general", "attention", "modes", "monitor", "shortcuts", "appearance", "model", "memory", "imports", "persona", "voice", "screen", "desktop", "extensions", "agents", "teams", "hooks", "computer", "worktrees", "experiments", "archived", "about"]
+        let originalScroll = scroll.contentView.bounds.origin
+        let before = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+        last.scrollToVisible(last.bounds); scroll.reflectScrolledClipView(scroll.contentView)
+        let bottom = last.convert(last.bounds, to: scroll.contentView)
+        let after = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
+        let bottomVisible = bottom.intersection(scroll.contentView.bounds).height >= 29.5
+        scroll.contentView.scroll(to: originalScroll); scroll.reflectScrolledClipView(scroll.contentView)
+        return [
+            "SettingsSidebarPreservesEveryRouteOnce": ids == expected && Set(ids).count == settingsCategories.count,
+            "SettingsSidebarGroupsCompanionFeaturesTogether": settingsGroupLabels.map(\.0) == ["个人", "陪伴", "集成", "编码", "其他"],
+            "SettingsSidebarIconsAndTargetsFit": displayed.allSatisfy { $0.image != nil && abs($0.bounds.height - 30) < 0.5 && $0.bounds.width >= 150 && $0.frame.minX >= 0 },
+            "SettingsSidebarUsesOneSelectionAndKeyboardTargets": displayed.filter { $0.state == .on }.count == 1 && displayed.allSatisfy { $0 is AgentSettingsNavigationButton && $0.acceptsFirstResponder },
+            "SettingsSidebarSearchStaysPinnedWhileCategoriesScroll": before == after && settingsSidebar.bounds.contains(after) && !after.intersects(scroll.frame) && after.height >= 29.5,
+            "SettingsSidebarBottomRouteCanBeRevealed": bottomVisible
+        ]
     }
 
     private func stack(_ views: [NSView], vertical: Bool = false, spacing: CGFloat = 12) -> NSStackView {
@@ -1353,38 +1379,43 @@ final class FormDocumentView: NSView {
         }
     }
     private func settingsNavigationGroup(_ category: String) -> String {
-        ["extensions", "agents", "teams", "hooks", "computer"].contains(category) ? "集成" : category == "worktrees" ? "编码" : ["experiments", "archived", "about"].contains(category) ? "其他" : "个人"
+        AgentSettingsNavigation.group(for: category)
     }
     private func buildSettingsSidebar(in content: NSView) {
         content.addSubview(settingsSidebar); settingsSidebar.translatesAutoresizingMaskIntoConstraints = false
         settingsSidebarWidth = settingsSidebar.widthAnchor.constraint(equalToConstant: companion?.usesAgent == true ? 252 : 200)
         NSLayoutConstraint.activate([settingsSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor), settingsSidebarWidth, settingsSidebar.topAnchor.constraint(equalTo: content.topAnchor), settingsSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
-        let back = NSButton(title: "返回对话", target: self, action: #selector(returnToChat))
+        let back = AgentSettingsNavigationButton(title: "返回对话", symbol: "arrow.left", navigation: false, target: self, action: #selector(returnToChat))
         settingsBackButton = back
-        back.isBordered = false; back.alignment = .left; back.font = .systemFont(ofSize: 13)
-        back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
-        back.contentTintColor = AgentWorkbenchTheme.secondaryText
         settingsSearch.placeholderString = "搜索设置…"; settingsSearch.setAccessibilityLabel("搜索设置"); settingsSearch.delegate = self
-        var previousGroup = ""
-        let navigation = stack([], vertical: true, spacing: 0); navigation.detachesHiddenViews = true
+        let navigation = stack([], vertical: true, spacing: 2); navigation.detachesHiddenViews = true
+        // Keep stable category indices for existing routes and stored scope;
+        // arrange the same buttons in the visual order defined by the groups.
         for (index, item) in settingsCategories.enumerated() {
-            let group = settingsNavigationGroup(item.0)
-            if group != previousGroup {
-                if let previous = navigation.arrangedSubviews.last { navigation.setCustomSpacing(12, after: previous) }
-                let label = NSTextField(labelWithString: group); label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText
-                settingsGroupLabels.append((group, label))
-                navigation.addArrangedSubview(label); navigation.setCustomSpacing(4, after: label); previousGroup = group
-            }
-            let button = NSButton(title: item.1, target: self, action: #selector(selectSettingsCategory(_:)))
-            button.tag = index; styleNavigation(button, symbol: item.2, compact: true); navigation.addArrangedSubview(button)
-            button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true; categoryButtons.append(button)
+            let symbol = AgentSettingsNavigation.symbol(for: item.0, fallback: item.2)
+            let button = AgentSettingsNavigationButton(title: item.1, symbol: symbol, target: self, action: #selector(selectSettingsCategory(_:)))
+            button.tag = index; button.identifier = .init("settings-category-" + item.0); categoryButtons.append(button)
         }
-        let fixed = stack([back, settingsSearch], vertical: true, spacing: 18)
+        for (group, ids) in AgentSettingsNavigation.groups {
+            if let previous = navigation.arrangedSubviews.last { navigation.setCustomSpacing(14, after: previous) }
+            let header = NSView(), label = NSTextField(labelWithString: group)
+            label.font = .systemFont(ofSize: 11, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText
+            header.addSubview(label); label.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([header.heightAnchor.constraint(equalToConstant: 22), label.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8), label.centerYAnchor.constraint(equalTo: header.centerYAnchor)])
+            settingsGroupLabels.append((group, header)); navigation.addArrangedSubview(header)
+            header.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true
+            for id in ids {
+                guard let index = settingsCategories.firstIndex(where: { $0.0 == id }) else { continue }
+                let button = categoryButtons[index]; navigation.addArrangedSubview(button)
+                button.widthAnchor.constraint(equalTo: navigation.widthAnchor).isActive = true
+            }
+        }
+        let fixed = stack([back, settingsSearch], vertical: true, spacing: 14)
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(navigation)
         settingsSidebar.addSubview(fixed); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.setAccessibilityLabel("设置分类")
-        NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 58), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 16), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 28), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 18), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 16), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 50), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 12), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), back.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 30), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 8), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
     }
     @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
@@ -1446,7 +1477,7 @@ final class FormDocumentView: NSView {
         for (index, button) in categoryButtons.enumerated() {
             button.isHidden = !query.isEmpty && !categories.contains(settingsCategories[index].0)
             let active = query.isEmpty && settingsCategories[index].0 == settingsCategory
-            button.state = active ? .on : .off; AgentWorkbenchTheme.color(button.layer, active ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
+            button.state = active ? .on : .off; button.needsDisplay = true
         }
         for (group, label) in settingsGroupLabels { label.isHidden = !query.isEmpty && !groups.contains(group) }
         if !query.isEmpty {
