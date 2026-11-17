@@ -125,7 +125,7 @@ import Darwin
                 checks["embedded-" + key] = manager.presentingWindow === host && manager.pageContentView?.window === host && manager.window?.isVisible == false
                 let list = catalog(manager.pageContentView)
                 if let list {
-                    catalogChecks[key + "CatalogOpensWithoutConfigurationForm"] = !text(manager.pageContentView!).contains(expected) && list.numberOfRows > 0 && abs(list.bounds.width - ((manager.pageContentView?.bounds.width ?? 0) - 32)) < 2
+                    catalogChecks[key + "CatalogOpensWithoutConfigurationForm"] = !text(manager.pageContentView!).contains(expected) && list.numberOfRows > 0 && list.bounds.width >= (manager.pageContentView?.bounds.width ?? 0) - 2
                     if let cell = list.view(atColumn: 0, row: list.selectedRow, makeIfNecessary: true) { cell.layoutSubtreeIfNeeded(); catalogChecks[key + "CatalogPublicTitlesAndDescriptionsFitAvailableSpace"] = cell.bounds.width >= 500 && labelsFit(cell) }
                     if let action = list.action { NSApp.sendAction(action, to: list.target, from: list) }; pane.layoutSubtreeIfNeeded()
                     catalogChecks[key + "CatalogActionOpensHostedDetail"] = list.selectedRow >= 0 && pane.currentController is AgentSettingsDetailPage && pane.currentController?.presentingWindow === host && pane.currentController?.pageContentView?.window === host

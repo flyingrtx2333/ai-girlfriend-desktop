@@ -284,7 +284,7 @@ struct AgentSettingsCatalogGroup {
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: root.topAnchor, constant: 4), bar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), bar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), bar.heightAnchor.constraint(equalToConstant: 28),
             filters.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: hasFilters ? 12 : 0), filters.leadingAnchor.constraint(equalTo: bar.leadingAnchor), filters.trailingAnchor.constraint(equalTo: bar.trailingAnchor), filters.heightAnchor.constraint(equalToConstant: hasFilters ? 28 : 0),
-            scroll.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8),
+            scroll.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8),
             status.leadingAnchor.constraint(equalTo: bar.leadingAnchor), status.trailingAnchor.constraint(equalTo: bar.trailingAnchor), status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
             empty.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 1), empty.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -1), empty.topAnchor.constraint(equalTo: scroll.topAnchor)
         ])
