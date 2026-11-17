@@ -1845,7 +1845,7 @@ final class FormDocumentView: NSView {
         companion?.updatePetWorkspaceOcclusion()
     }
     private func focusTaskInput() {
-        if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow { page.settingsDidAppear() }
+        if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow || page is AgentMCPContentWindow { page.settingsDidAppear() }
         else { window?.makeFirstResponder(composer) }
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }

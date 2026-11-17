@@ -26,6 +26,10 @@ import AppKit
         func rejected(_ name: String, _ action: () throws -> Void) {
             do { try action(); checks[name] = false } catch { checks[name] = true }
         }
+        func position(_ page: AgentMCPContentWindow, field: String, location: Int, length: Int) -> Bool {
+            let value = page.checkInputView(field)
+            return value["location"] as? Int == location && value["length"] as? Int == length && value["focused"] as? Bool == true
+        }
         do {
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统不可用") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("参数恢复验收禁止模型请求") }
@@ -50,17 +54,21 @@ import AppKit
                 main.checkAction("", resourceURI: "demo://resource/dynamic/text/3")
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 main.checkAction("", values: ["resourceType": "Text", "resourceId": "2"])
+                if !interactive { _ = main.checkInputView("resourceType", selection: NSRange(location: 1, length: 2)) }
                 main.selectRequestedServer(b.id); main.checkAction("connect"); try await idle(main)
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 main.checkAction("", values: ["resourceType": "Text", "resourceId": "5"])
+                if !interactive { _ = main.checkInputView("resourceId", selection: NSRange(location: 0, length: 1)) }
                 main.selectRequestedServer(a.id); try await idle(main)
                 try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                 checks["sameWindowRetainsThreeIndependentForms"] = try AgentMCPContentWindow.recoveryState(main.captureWorkspaceRecovery()).drafts.count == 3
                 checks["connectorSwitchRestoresOriginalArguments"] = (main.workspaceReadback()["fields"] as? [String: String]) == ["resourceType": "Text", "resourceId": "2"]
+                if !interactive { await wait(0.05); checks["connectorSwitchRestoresOwnSelectionAndFocus"] = position(main, field: "resourceType", location: 1, length: 2) }
                 control.showAgentTask(second); control.presentMCPContent(taskID: second, serverID: b.id)
                 let other = try editor(control); other.checkAction("connect"); try await idle(other)
                 try await select(other, kind: 2, key: "name", contains: "resource-prompt")
                 other.checkAction("", values: ["resourceType": "Text", "resourceId": "4"])
+                if !interactive { _ = other.checkInputView("resourceId", selection: NSRange(location: 0, length: 1)) }
                 control.showAgentTask(first); control.show(tab: "chat")
                 openTaskWindow(first, from: control)
                 guard let child = additionalTaskWindows.last else { throw PetError("独立任务窗口未创建") }
@@ -68,6 +76,7 @@ import AppKit
                 let childPage = try editor(child); childPage.checkAction("connect"); try await idle(childPage)
                 try await select(childPage, kind: 2, key: "name", contains: "resource-prompt")
                 childPage.checkAction("", values: ["resourceType": "Text", "resourceId": "6"])
+                if !interactive { _ = childPage.checkInputView("resourceType", selection: NSRange(location: 0, length: 4)) }
                 guard await flushWorkspaceWindows(), let mainID = control.workspaceSession?.id, let childID = child.workspaceSession?.id,
                       let secondTab = control.taskWorkspace.recoveryLayouts.first(where: { $0.taskID == second })?.tabs.first(where: { $0.root == "mcp" }) else { throw PetError("MCP 参数恢复记录未保存") }
                 let secondPage = store.directory.appendingPathComponent("workspace-recovery/" + mainID + "/pages/" + secondTab.id + ".json")
@@ -90,6 +99,11 @@ import AppKit
                 }
                 checks["restoredMainArgumentsVisibleBeforeConnecting"] = (main.workspaceReadback()["fields"] as? [String: String]) == expectedMain
                 checks["restoredChildArgumentsRemainIndependent"] = (childPage.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "6"
+                if !interactive {
+                    await wait(0.05)
+                    checks["coldMainRestoresSelectionAndInputFocus"] = position(main, field: "resourceType", location: 1, length: 2)
+                    checks["coldChildRestoresIndependentSelectionAndInputFocus"] = position(childPage, field: "resourceType", location: 0, length: 4)
+                }
                 checks["restartDoesNotAutomaticallyConnect"] = [main, childPage].allSatisfy { $0.workspaceReadback()["connected"] as? Bool == false }
                 checks["restoredPreviewCannotBeReusedBeforeCatalogValidation"] = [main, childPage].allSatisfy { $0.workspaceReadback()["promptText"] as? String == "" && $0.workspaceReadback()["readEnabled"] as? Bool == false && $0.workspaceReadback()["restoredSelectionPending"] as? Bool == true }
                 let coldPage = try JSONDecoder().decode(AgentWorkspaceRecovery.Page.self, from: Data(contentsOf: URL(fileURLWithPath: fixture.secondPage)))
@@ -103,6 +117,8 @@ import AppKit
                     checks["secondTaskRestoresOwnConnectorAndArguments"] = other.workspaceReadback()["serverID"] as? String == fixture.serverB && (other.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "4"
                     checks["secondTaskRemainsDisconnected"] = other.workspaceReadback()["connected"] as? Bool == false
                     if !interactive {
+                        await wait(0.05)
+                        checks["secondTaskRestoresIndependentSelectionAndInputFocus"] = position(other, field: "resourceId", location: 0, length: 1)
                         let original = try other.captureWorkspaceRecovery()
                         func altered(_ change: (inout [String: Any]) -> Void) throws -> AgentWorkspaceRecovery.Page {
                             var page = original, value = try JSONSerialization.jsonObject(with: page.state) as! [String: Any]
@@ -112,12 +128,35 @@ import AppKit
                         rejected("unknownStateFieldRejected") { _ = try AgentMCPContentWindow.recoveryState(altered { $0["future"] = true }) }
                         rejected("wrongTaskCannotRestoreParameters") { var page = original; page.taskID = fixture.first; try other.restoreWorkspaceRecovery(page) }
                         rejected("changedConnectorRevisionCannotRestoreParameters") { try other.restoreWorkspaceRecovery(altered { $0["serverRevision"] = UUID().uuidString }) }
+                        checks["oldDraftWithoutViewRemainsReadable"] = try AgentMCPContentWindow.recoveryState(altered { $0["view"] = nil }).view == nil
+                        func changedView(_ change: (inout [String: Any]) -> Void) throws -> AgentWorkspaceRecovery.Page {
+                            try altered { state in var view = state["view"] as! [String: Any]; change(&view); state["view"] = view }
+                        }
+                        rejected("futureInputViewVersionRejected") { _ = try AgentMCPContentWindow.recoveryState(changedView { $0["version"] = 2 }) }
+                        rejected("unknownInputViewFieldRejected") { _ = try AgentMCPContentWindow.recoveryState(changedView { $0["future"] = true }) }
+                        rejected("negativeCatalogPositionRejected") { _ = try AgentMCPContentWindow.recoveryState(changedView { $0["listY"] = -1 }) }
+                        rejected("unknownFocusedParameterRejected") { try other.restoreWorkspaceRecovery(changedView { $0["focus"] = "field:missing" }) }
+                        func changedTextView(_ change: (inout [String: Any]) -> Void) throws -> AgentWorkspaceRecovery.Page {
+                            try changedView { view in
+                                var forms = view["forms"] as! [String: Any], form = forms.values.first as! [String: Any], fields = form["fields"] as! [String: Any], text = fields["resourceId"] as! [String: Any]
+                                change(&text); fields["resourceId"] = text; form["fields"] = fields; forms[forms.keys.first!] = form; view["forms"] = forms
+                            }
+                        }
+                        rejected("changedInputHashRejected") { try other.restoreWorkspaceRecovery(changedTextView { $0["hash"] = String(repeating: "0", count: 64) }) }
+                        rejected("changedInputLengthRejected") { _ = try AgentMCPContentWindow.recoveryState(changedTextView { $0["count"] = 100 }) }
+                        rejected("overflowInputSelectionRejected") { _ = try AgentMCPContentWindow.recoveryState(changedTextView { $0["selections"] = [["location": 100, "length": 1]] }) }
+                        rejected("unknownTextViewFieldRejected") { _ = try AgentMCPContentWindow.recoveryState(changedTextView { $0["future"] = true }) }
+                        checks["rejectedInputPositionLeavesCurrentFocusAndSelection"] = position(other, field: "resourceId", location: 0, length: 1)
                         checks["rejectedRestoreKeepsCurrentArguments"] = (other.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "4"
                     }
                 }
                 control.showAgentTask(fixture.first); control.show(tab: "chat"); guard await flushWorkspaceWindows() else { throw PetError("原参数页恢复未结束") }
                 if stage != "unavailable", !interactive {
+                    await wait(0.05)
+                    checks["returningToTaskRestoresOriginalInputFocus"] = position(main, field: "resourceType", location: 1, length: 2)
                     main.checkAction("connect"); try await idle(main)
+                    await wait(0.05)
+                    checks["manualReconnectRetainsInputSelectionAndFocus"] = position(main, field: "resourceType", location: 1, length: 2)
                     checks["manualConnectValidatesAndRestoresSelectedPrompt"] = main.workspaceReadback()["restoredSelectionPending"] as? Bool == false && main.workspaceReadback()["selectedName"] as? String == "resource-prompt" && (main.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "2"
                     main.checkAction("read"); try await idle(main)
                     let protocolReadback = main.workspaceReadback()

@@ -103,7 +103,14 @@ for (const stage of ['seed', 'unavailable', 'reopen']) {
     const key = [serverID, state.serverRevision, 'prompts', 'resource-prompt'].join('\n');
     independent[label + 'ActualPrivateDraftAndOwnership'] = page.kind === 'mcp-content' && page.taskID === owner && page.dirty === true && page.asset == null && state.taskID === owner && state.serverID === serverID && state.kind === 'prompts' && selected.name === 'resource-prompt' && state.drafts[key].fields.resourceId === resourceId && state.drafts[key].fields.resourceType === 'Text' && Object.keys(state.drafts).length === count;
     independent[label + 'PrivateFilePermission'] = (await stat(file)).mode % 0o1000 === 0o600;
-    independent[label + 'NoPersistedConnectionOrPreview'] = Object.keys(state).every(key => ['version', 'taskID', 'serverID', 'serverRevision', 'kind', 'query', 'selected', 'drafts', 'dirty'].includes(key));
+    independent[label + 'NoPersistedConnectionOrPreview'] = Object.keys(state).every(key => ['version', 'taskID', 'serverID', 'serverRevision', 'kind', 'query', 'selected', 'drafts', 'dirty', 'view'].includes(key));
+    const formView = state.view?.forms?.[key], field = label === 'second' ? 'resourceId' : 'resourceType';
+    const location = label === 'main' ? 1 : 0, length = label === 'main' ? 2 : label === 'second' ? 1 : 4;
+    independent[label + 'PrivateSelectionAndFocusExact'] = state.view?.version === 1 && state.view.focus === 'field:' + field && formView?.fields?.[field]?.selections?.[0]?.location === location && formView.fields[field].selections[0].length === length;
+    independent[label + 'PrivateViewMatchesActualInput'] = Object.entries(state.view?.forms ?? {}).every(([formKey, form]) => Object.entries(form.fields).every(([name, view]) => {
+      const text = state.drafts[formKey]?.fields[name] ?? '';
+      return view.hash === hash(Buffer.from(text)) && view.count === text.length && view.selections.every(range => range.location >= 0 && range.length >= 0 && range.location + range.length <= text.length);
+    }));
     if (stage === 'unavailable' && label === 'second') independent.disabledSourcePageBytesExact = hash(await readFile(file)) === fixture.secondPageHash;
   }
   const tasks = await Promise.all([fixture.first, fixture.second].map(id => readFile(path.join(output, 'profile/agent', id + '.json'))));

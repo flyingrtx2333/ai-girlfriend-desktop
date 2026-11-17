@@ -2,6 +2,140 @@ import AppKit
 import ImageIO
 
 private final class AgentMCPContentDocument: NSView { override var isFlipped: Bool { true } }
+@MainActor private final class AgentMCPParameterTextView: NSTextView {
+    var onFocus: (() -> Void)?
+    override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); if accepted { onFocus?() }; return accepted }
+}
+
+@MainActor private extension AgentMCPContentWindow {
+    func observeViewBounds(_ clip: NSClipView) {
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(viewBoundsChanged), name: NSView.boundsDidChangeNotification, object: clip)
+    }
+    @objc func viewBoundsChanged(_ notification: Notification) { if !applyingViews { onWorkspaceChange?() } }
+    @objc func fieldSelectionChanged(_ notification: Notification) {
+        guard !applyingViews, let editor = notification.object as? NSTextView,
+              editor === search.currentEditor() || editor === uri.currentEditor() else { return }
+        rememberInputFocus(); onWorkspaceChange?()
+    }
+    func fieldSelection(_ field: NSTextField) -> AgentTextViewport.Selection? {
+        guard let editor = field.currentEditor() as? NSTextView else { return nil }
+        let range = editor.selectedRange(), value = AgentTextViewport.Selection(location: range.location, length: range.length)
+        return value.valid(in: (field.stringValue as NSString).length) ? value : nil
+    }
+    func rememberInputFocus() {
+        guard !applyingViews, let focus = presentingWindow?.firstResponder else { return }
+        if let name = fields.first(where: { $0.value === focus })?.key { contentFocus = "field:" + name }
+        else if search.currentEditor() === focus { contentFocus = "search"; querySelection = fieldSelection(search) }
+        else if uri.currentEditor() === focus { contentFocus = "uri" }
+        else if focus === viewer { contentFocus = "preview" }
+        else if focus === table { contentFocus = "catalog" }
+        if querySelection?.valid(in: (search.stringValue as NSString).length) == false { querySelection = nil }
+    }
+    func currentFormView() throws -> FormView {
+        let active = contentFocus.hasPrefix("field:") || contentFocus == "uri" ? contentFocus : selectedFormKey.flatMap { formViews[$0]?.active } ?? "catalog"
+        var views: [String: AgentTextViewport] = [:]
+        for (name, text) in fields { var view = try AgentTextViewport(text); view.focused = active == "field:" + name; views[name] = view }
+        let previous = selectedFormKey.flatMap { formViews[$0] }
+        let selection = fieldSelection(uri) ?? (previous.map { Data($0.uri.utf8) == Data(uri.stringValue.utf8) } == true ? previous?.uriSelection : nil)
+        return FormView(fields: views, uri: uri.stringValue, uriSelection: selection, active: active,
+            argumentY: max(0, argumentScroll.contentView.bounds.minY), detailY: max(0, detailViewport.contentView.bounds.minY))
+    }
+    func captureViewState() throws -> ViewState {
+        rememberInputFocus()
+        if let key = selectedFormKey, !pendingFormViews.contains(key), !inserted { formViews[key] = try currentFormView() }
+        let keys = Set(formDrafts.keys).union([selectedFormKey].compactMap { $0 })
+        let views = formViews.filter { keys.contains($0.key) }
+        let focus = contentFocus.hasPrefix("field:") && selectedFormKey.flatMap({ views[$0]?.fields[String(contentFocus.dropFirst(6))] }) == nil ? "catalog" : contentFocus
+        return ViewState(focus: focus, querySelection: querySelection, forms: views, listY: pendingListY ?? max(0, catalogList.contentView.bounds.minY))
+    }
+    func inputFocusTarget() -> NSView? {
+        if contentFocus.hasPrefix("field:"), let field = fields[String(contentFocus.dropFirst(6))], field.isEditable, !field.isHiddenOrHasHiddenAncestor { return field }
+        if contentFocus == "uri", uri.isEnabled, !uri.isHiddenOrHasHiddenAncestor { return uri }
+        if contentFocus == "search", search.isEnabled, !search.isHiddenOrHasHiddenAncestor { return search }
+        if contentFocus == "preview", !viewer.isHiddenOrHasHiddenAncestor { return viewer }
+        return contentFocus == "catalog" && table.isEnabled ? table : nil
+    }
+    func scheduleViews() {
+        guard !closed, !hasPendingOperation, !applyingViews, !viewsScheduled, isPageVisible,
+              focusPending || selectedFormKey.map(pendingFormViews.contains) == true || pendingListY != nil else { return }
+        viewsScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { viewsScheduled = false }
+            guard !closed, !hasPendingOperation, isPageVisible, presentingWindow?.hasBlockingDialog != true else { return }
+            applyingViews = true; defer { applyingViews = false }
+            pageContentView?.layoutSubtreeIfNeeded()
+            if let key = selectedFormKey, pendingFormViews.contains(key), let value = formViews[key] {
+                var applied = true
+                for (name, view) in value.fields {
+                    guard let text = fields[name] else { continue }
+                    if !view.apply(to: text, focus: false) { applied = false }
+                }
+                argumentScroll.contentView.scroll(to: NSPoint(x: 0, y: value.argumentY)); argumentScroll.reflectScrolledClipView(argumentScroll.contentView)
+                detailViewport.contentView.scroll(to: NSPoint(x: 0, y: value.detailY)); detailViewport.reflectScrolledClipView(detailViewport.contentView)
+                if applied { pendingFormViews.remove(key) }
+            }
+            if let y = pendingListY, !rows.isEmpty { catalogList.contentView.scroll(to: NSPoint(x: 0, y: y)); catalogList.reflectScrolledClipView(catalogList.contentView); pendingListY = nil }
+            if focusPending, let target = inputFocusTarget(), target.canBecomeKeyView, presentingWindow?.makeFirstResponder(target) == true {
+                if target === search, let selection = querySelection { (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
+                if target === uri, let key = selectedFormKey, let value = formViews[key], Data(value.uri.utf8) == Data(uri.stringValue.utf8), let selection = value.uriSelection { (uri.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
+                if let key = selectedFormKey, let name = fields.first(where: { $0.value === target })?.key, let view = formViews[key]?.fields[name], let text = target as? NSTextView { view.apply(to: text, focus: false) }
+                focusPending = false
+            }
+        }
+    }
+}
+
+extension AgentMCPContentWindow {
+    struct FormView: Codable, Equatable {
+        var fields: [String: AgentTextViewport], uri: String, uriSelection: AgentTextViewport.Selection?, active: String
+        var argumentY: Double, detailY: Double
+    }
+    struct ViewState: Codable, Equatable {
+        var version = 1
+        var focus: String, querySelection: AgentTextViewport.Selection?, forms: [String: FormView], listY: Double
+        func valid(for state: RecoveryState) -> Bool {
+            var currentKey: String?
+            if let data = state.selected, let id = state.serverID, let revision = state.serverRevision,
+               let item = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let identity = item[state.kind == "resources" ? "uri" : state.kind == "templates" ? "uriTemplate" : "name"] as? String {
+                currentKey = [id, revision, state.kind, identity].joined(separator: "\n")
+            }
+            func allowedFocus(_ value: String, fields: [String: AgentTextViewport], uri: Bool) -> Bool {
+                ["catalog", "search", "preview"].contains(value) || value == "uri" && uri || value.hasPrefix("field:") && fields[String(value.dropFirst(6))] != nil
+            }
+            guard version == 1, forms.count <= 1024, listY.isFinite, (0...1_000_000_000).contains(listY),
+                  querySelection?.valid(in: (state.query as NSString).length) != false,
+                  allowedFocus(focus, fields: currentKey.flatMap { forms[$0]?.fields } ?? [:], uri: currentKey != nil && state.kind != "prompts") else { return false }
+            let allowed = Set(state.drafts.keys).union([currentKey].compactMap { $0 })
+            for (key, value) in forms {
+                let parts = key.split(separator: "\n", maxSplits: 3, omittingEmptySubsequences: false)
+                guard allowed.contains(key), key.utf8.count <= 16_384, !key.contains("\0"), parts.count == 4, ["resources", "templates", "prompts"].contains(String(parts[2])), value.fields.count <= 256,
+                      value.uri.utf8.count <= 20_000_000, value.uriSelection?.valid(in: (value.uri as NSString).length) != false,
+                      [value.argumentY, value.detailY].allSatisfy({ $0.isFinite && (0...1_000_000_000).contains($0) }),
+                      allowedFocus(value.active, fields: value.fields, uri: parts[2] != "prompts") else { return false }
+                let expectedURI = parts[2] == "prompts" ? "" : state.drafts[key]?.uri ?? String(parts[3])
+                guard Data(expectedURI.utf8) == Data(value.uri.utf8) else { return false }
+                for (name, view) in value.fields {
+                    let text = state.drafts[key]?.fields[name] ?? ""
+                    guard name.utf8.count <= 4096, !name.contains("\0"), view.valid, view.hash == AgentFiles.hash(Data(text.utf8)), view.count == (text as NSString).length else { return false }
+                }
+            }
+            return true
+        }
+        static func validateObject(_ raw: Any) throws {
+            func selection(_ raw: Any?) throws {
+                if let raw, !(raw is NSNull) { guard let value = raw as? [String: Any], Set(value.keys).isSubset(of: ["location", "length"]) else { throw PetError("MCP 输入选区格式不受支持") } }
+            }
+            guard let raw = raw as? [String: Any], Set(raw.keys).isSubset(of: ["version", "focus", "querySelection", "forms", "listY"]), let forms = raw["forms"] as? [String: Any] else { throw PetError("MCP 输入位置格式不受支持，原草稿已保留") }
+            try selection(raw["querySelection"])
+            for raw in forms.values {
+                guard let form = raw as? [String: Any], Set(form.keys).isSubset(of: ["fields", "uri", "uriSelection", "active", "argumentY", "detailY"]), let fields = form["fields"] as? [String: Any] else { throw PetError("MCP 表单位置格式不受支持，原草稿已保留") }
+                try selection(form["uriSelection"]); for view in fields.values { try AgentTextViewport.validateObject(view) }
+            }
+        }
+    }
+}
 @MainActor private final class AgentMCPContentPage: AgentThemeView {
     var onLayout: (() -> Void)?
     override func layout() { super.layout(); onLayout?() }
@@ -29,10 +163,14 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private var job: Task<Void, Never>?, observer: UUID?, closed = false
     private var loadingList = false, pendingSearch = false
     private let main = NSStackView(), listColumn = NSStackView(), detailViewport = NSScrollView()
+    private let catalogList = NSScrollView()
     private var wideLayout: [NSLayoutConstraint] = [], narrowLayout: [NSLayoutConstraint] = [], narrow: Bool?
     struct FormDraft: Codable { let fields: [String: String]; let uri: String? }
     private var formDrafts: [String: FormDraft] = [:], selectedFormKey: String?
     private var restoredSelection: [String: Any]?
+    private var formViews: [String: FormView] = [:], pendingFormViews = Set<String>()
+    private var contentFocus = "catalog", querySelection: AgentTextViewport.Selection?, pendingListY: Double?
+    private var applyingViews = false, viewsScheduled = false, focusPending = false
     var onWorkspaceChange: (() -> Void)?
     var hasPendingOperation: Bool { job != nil }
     var workspaceHasUnsavedChanges: Bool {
@@ -60,7 +198,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         let header = NSStackView(views: [servers, destination, NSView(), disconnect, connect]); header.spacing = 10
         let filters = NSStackView(views: [kinds, search, refresh]); filters.spacing = 10
         table.addTableColumn(NSTableColumn(identifier: .init("mcp-content"))); table.headerView = nil; table.rowHeight = 46; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("MCP 资源与提示词目录")
-        let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
+        let list = catalogList; list.documentView = table; list.hasVerticalScroller = true
         for view in [list, more] { listColumn.addArrangedSubview(view) }; listColumn.orientation = .vertical; listColumn.alignment = .leading; listColumn.spacing = 8
         list.widthAnchor.constraint(equalTo: listColumn.widthAnchor).isActive = true
         title.font = .systemFont(ofSize: 16, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -88,6 +226,8 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         for view in [header, filters, main, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([header.topAnchor.constraint(equalTo: content.topAnchor, constant: 16), header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), filters.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), filters.leadingAnchor.constraint(equalTo: header.leadingAnchor), filters.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.leadingAnchor.constraint(equalTo: header.leadingAnchor), main.trailingAnchor.constraint(equalTo: header.trailingAnchor), main.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 14), main.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -14), footer.leadingAnchor.constraint(equalTo: header.leadingAnchor), footer.trailingAnchor.constraint(equalTo: header.trailingAnchor), footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16)])
         content.onLayout = { [weak self] in self?.pageDidLayout() }; AgentSettingsStyle.prepare(content)
+        for clip in [catalogList.contentView, argumentScroll.contentView, detailViewport.contentView] { observeViewBounds(clip) }
+        NotificationCenter.default.addObserver(self, selector: #selector(fieldSelectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
         populateServers(); if let serverID, let item = servers.itemArray.first(where: { $0.representedObject as? String == serverID }) { servers.select(item) }
         observer = store.mcp.observeContent { [weak self] in self?.refreshState() }; clearSelection(); state.stringValue = "未连接"; refreshState()
     }
@@ -102,13 +242,15 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         var selected: Data?
         var drafts: [String: FormDraft]
         var dirty: Bool
+        var view: ViewState? = nil
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "mcp-content", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "serverID", "serverRevision", "kind", "query", "selected", "drafts", "dirty"]),
+              Set(object.keys).isSubset(of: ["version", "taskID", "serverID", "serverRevision", "kind", "query", "selected", "drafts", "dirty", "view"]),
               let drafts = object["drafts"] as? [String: [String: Any]],
               drafts.values.allSatisfy({ Set($0.keys).isSubset(of: ["fields", "uri"]) }) else { throw PetError("MCP 参数恢复格式不受支持，原草稿已保留") }
+        if let view = object["view"], !(view is NSNull) { try ViewState.validateObject(view) }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, ["resources", "templates", "prompts"].contains(value.kind),
               value.dirty == page.dirty, value.dirty == !value.drafts.isEmpty,
@@ -117,6 +259,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             guard let item = try JSONSerialization.jsonObject(with: selected) as? [String: Any],
                   selectionIdentity(item, kind: value.kind) != nil else { throw PetError("MCP 资料恢复对象无效，原草稿已保留") }
         }
+        guard value.view?.valid(for: value) != false else { throw PetError("MCP 输入位置与原参数不符，原草稿已保留") }
         return value
     }
     private static func selectionIdentity(_ item: [String: Any], kind: String) -> String? {
@@ -133,7 +276,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         if let selected, let server, selectedFormKey != formKey(selected, server: server) { throw PetError("连接器版本已变化，原参数已保留，请重新检查") }
         let selectedData = try selected.map { try JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }
         let value = RecoveryState(taskID: taskID, serverID: serverID, serverRevision: server?.revision, kind: kind,
-            query: search.stringValue, selected: selectedData, drafts: formDrafts, dirty: !formDrafts.isEmpty)
+            query: search.stringValue, selected: selectedData, drafts: formDrafts, dirty: !formDrafts.isEmpty, view: try captureViewState())
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "mcp-content", state: try encoder.encode(value), dirty: value.dirty, asset: nil)
         _ = try Self.recoveryState(page); return page
@@ -147,11 +290,15 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
                   try currentServer(id).revision == value.serverRevision else { throw PetError("原连接器已改变或不可用，原参数已保留") }
             servers.select(item)
         } else { servers.select(nil) }
+        applyingViews = true; defer { applyingViews = false; scheduleViews() }
         kinds.selectedSegment = ["resources", "templates", "prompts"].firstIndex(of: value.kind)!
         search.stringValue = value.query; clearSelection(); formDrafts = value.drafts
+        formViews = value.view?.forms ?? [:]; pendingFormViews = Set(formViews.keys)
+        querySelection = value.view?.querySelection; pendingListY = value.view?.listY
         if let data = value.selected, let item = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             restoredSelection = item; showSelection(item)
         }
+        contentFocus = value.view?.focus ?? "catalog"; focusPending = value.view != nil
         // Restoring a form never opens a connector or reuses a live preview.
         refreshState(); if restoredSelection != nil { state.stringValue = "参数已恢复，连接后核对原资料。" }
     }
@@ -186,18 +333,22 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     private func clearSelection() {
         retainForm(); selectedFormKey = nil
         selected = nil; preview = nil; inserted = false; viewer.string = ""; title.stringValue = ""; uri.stringValue = ""; uri.isHidden = true; image.image = nil; image.isHidden = true; imageHeight.constant = 0
+        for field in fields.values { if let clip = field.enclosingScrollView?.contentView { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip) } }
         fields = [:]; for view in arguments.arrangedSubviews { arguments.removeArrangedSubview(view); view.removeFromSuperview() }; argumentHeight.constant = 0; argumentScroll.isHidden = true
+        if contentFocus.hasPrefix("field:") || contentFocus == "uri" { contentFocus = "catalog" }
     }
     private func retainForm() {
         guard let key = selectedFormKey else { return }
+        rememberInputFocus()
+        if !applyingViews, !pendingFormViews.contains(key), let view = try? currentFormView() { formViews[key] = view }
         let values = fields.mapValues(\.string).filter { !$0.value.isEmpty }
         let editedURI = (selected?["uriTemplate"] as? String).flatMap { $0 == uri.stringValue ? nil : uri.stringValue }
         if !inserted && (!values.isEmpty || editedURI != nil) { formDrafts[key] = FormDraft(fields: values, uri: editedURI) }
-        else { formDrafts[key] = nil }
+        else { formDrafts[key] = nil; if inserted { formViews[key] = nil; pendingFormViews.remove(key) } }
     }
     private func resetList() { rows = []; nextOffset = nil; catalog = ""; table.reloadData(); clearSelection() }
     @objc private func changeServer() { restoredSelection = nil; resetList(); refreshState(); if let id = serverID, store.mcp.connected(id, owner: sessionOwner) { loadList() } }
-    @objc private func changeKind() { restoredSelection = nil; search.stringValue = ""; resetList(); refreshState(); loadList() }
+    @objc private func changeKind() { restoredSelection = nil; search.stringValue = ""; querySelection = nil; resetList(); refreshState(); loadList() }
     @objc private func start() {
         guard job == nil, let id = serverID else { return }
         launch {
@@ -259,13 +410,16 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         detailViewport.reflectScrolledClipView(clip)
     }
     func controlTextDidChange(_ obj: Notification) {
+        if !applyingViews { if let key = selectedFormKey { pendingFormViews.remove(key) }; rememberInputFocus() }
         if obj.object as? NSSearchField === search {
             restoredSelection = nil; clearSelection()
             if job != nil { pendingSearch = true } else { loadList() }
         }
         else { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
     }
-    func textDidChange(_ notification: Notification) { preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
+    func textDidChange(_ notification: Notification) { if let key = selectedFormKey { pendingFormViews.remove(key) }; rememberInputFocus(); preview = nil; inserted = false; viewer.string = ""; image.image = nil; image.isHidden = true; imageHeight.constant = 0; retainForm(); refreshState() }
+    func textViewDidChangeSelection(_ notification: Notification) { guard !applyingViews else { return }; rememberInputFocus(); onWorkspaceChange?() }
+    func controlTextDidBeginEditing(_ notification: Notification) { rememberInputFocus(); onWorkspaceChange?() }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard rows.indices.contains(row) else { return nil }
@@ -276,6 +430,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         let cell = NSStackView(views: [name, detail]); cell.orientation = .vertical; cell.alignment = .leading; cell.spacing = 4; cell.toolTip = item["description"] as? String; return cell
     }
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if !applyingViews, presentingWindow?.firstResponder === table { contentFocus = "catalog" }
         guard rows.indices.contains(table.selectedRow) else { clearSelection(); refreshState(); return }
         restoredSelection = nil; showSelection(rows[table.selectedRow])
     }
@@ -288,11 +443,13 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         for field in parameters {
             guard let name = field["name"] as? String else { continue }
             let label = NSTextField(labelWithString: (field["title"] as? String ?? name) + (field["required"] as? Bool == true ? " *" : "")); label.font = .systemFont(ofSize: 12, weight: .medium); label.lineBreakMode = .byTruncatingTail; label.toolTip = field["description"] as? String; label.widthAnchor.constraint(equalToConstant: 100).isActive = true
-            let text = NSTextView(); text.isRichText = false; text.font = .systemFont(ofSize: 12); text.textContainerInset = NSSize(width: 6, height: 6); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.delegate = self; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false; text.setAccessibilityLabel("提示词参数 " + name)
+            let text = AgentMCPParameterTextView(); text.isRichText = false; text.font = .systemFont(ofSize: 12); text.textContainerInset = NSSize(width: 6, height: 6); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.delegate = self; text.isAutomaticQuoteSubstitutionEnabled = false; text.isAutomaticTextReplacementEnabled = false; text.setAccessibilityLabel("提示词参数 " + name)
+            text.onFocus = { [weak self] in guard let self, !applyingViews else { return }; contentFocus = "field:" + name; onWorkspaceChange?() }
             let input = AgentThemeView(fill: AgentWorkbenchTheme.subtle, stroke: AgentWorkbenchTheme.line)
             input.wantsLayer = true; input.layer?.cornerRadius = 6; input.layer?.borderWidth = 1; input.layer?.masksToBounds = true
             text.drawsBackground = false
             let scroll = NSScrollView(); scroll.documentView = text; scroll.hasVerticalScroller = true; scroll.borderType = .noBorder; scroll.drawsBackground = false; scroll.identifier = .init("form-input")
+            observeViewBounds(scroll.contentView)
             input.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([input.heightAnchor.constraint(equalToConstant: 54), scroll.leadingAnchor.constraint(equalTo: input.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: input.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: input.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: input.bottomAnchor, constant: -1)])
             let row = NSStackView(views: [label, input]); row.spacing = 8; arguments.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: arguments.widthAnchor).isActive = true; fields[name] = text
@@ -301,6 +458,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
             for (name, value) in draft.fields { fields[name]?.string = value }
             if let value = draft.uri { uri.stringValue = value }
         }
+        if let key = selectedFormKey, let view = formViews[key] { pendingFormViews.insert(key); contentFocus = view.active; focusPending = true }
         argumentHeight.constant = min(164, CGFloat(parameters.count) * 64); argumentScroll.isHidden = parameters.isEmpty; refreshState()
     }
     @objc private func readContent() {
@@ -356,24 +514,28 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         state.toolTip = state.stringValue
         onWorkspaceChange?()
         if !busy, isPageVisible, let host = presentingWindow, host.firstResponder === host { focusContent() }
+        scheduleViews()
     }
     override func pageDidLayout() {
         guard let content = pageContentView, content.bounds.width > 0 else { return }
         let next = content.bounds.width < 740
-        guard narrow != next else { return }; narrow = next
-        NSLayoutConstraint.deactivate(wideLayout + narrowLayout)
-        main.orientation = next ? .vertical : .horizontal; main.alignment = next ? .leading : .top
-        NSLayoutConstraint.activate(next ? narrowLayout : wideLayout)
+        if narrow != next {
+            narrow = next; NSLayoutConstraint.deactivate(wideLayout + narrowLayout)
+            main.orientation = next ? .vertical : .horizontal; main.alignment = next ? .leading : .top
+            NSLayoutConstraint.activate(next ? narrowLayout : wideLayout)
+        }
+        scheduleViews()
     }
     override func settingsDidAppear() {
         super.settingsDidAppear(); pageDidLayout()
         if let content = pageContentView { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
+        focusPending = true; scheduleViews()
         if let content = pageContentView, let focused = presentingWindow?.firstResponder as? NSView, focused.isDescendant(of: content) { return }
         focusContent()
     }
     private func focusContent() {
         guard isPageVisible else { return }
-        let target: NSView = table.isEnabled ? table : viewer
+        let target: NSView = inputFocusTarget() ?? (table.isEnabled ? table : viewer)
         presentingWindow?.makeFirstResponder(target)
     }
     override func canLeaveSettings() -> Bool {
@@ -387,6 +549,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
     func windowWillClose(_ notification: Notification) { finishContent() }
     private func finishContent() {
         guard !closed else { return }; closed = true; job?.cancel(); onWorkspaceChange = nil
+        NotificationCenter.default.removeObserver(self)
         if let observer { store.mcp.removeContentObserver(observer); self.observer = nil }; store.mcp.disconnect(owner: sessionOwner)
     }
     func workspaceReadback() -> [String: Any] {
@@ -408,5 +571,16 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         if let values { for (name, value) in values { fields[name]?.string = value }; textDidChange(Notification(name: NSText.didChangeNotification)) }
         if let resourceURI { uri.stringValue = resourceURI; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: uri)) }
         switch action { case "connect": start(); case "disconnect": stop(); case "read": readContent(); case "add": addContent(); case "focus-preview": presentingWindow?.makeFirstResponder(viewer); default: break }
+    }
+    func checkInputView(_ name: String, selection: NSRange? = nil, y: Double? = nil) -> [String: Any] {
+        guard ["--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { return [:] }
+        if let selection, let text = fields[name], AgentTextViewport.Selection(location: selection.location, length: selection.length).valid(in: (text.string as NSString).length) {
+            pendingFormViews.remove(selectedFormKey ?? ""); focusPending = false
+            presentingWindow?.makeFirstResponder(text); text.setSelectedRange(selection)
+            if let y, let scroll = text.enclosingScrollView { text.layoutManager?.ensureLayout(for: text.textContainer!); scroll.contentView.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(scroll.contentView) }
+            rememberInputFocus(); onWorkspaceChange?()
+        }
+        guard let text = fields[name], let view = try? AgentTextViewport(text) else { return [:] }
+        return ["location": text.selectedRange().location, "length": text.selectedRange().length, "focused": presentingWindow?.firstResponder === text, "y": view.y, "anchor": view.anchor]
     }
 }

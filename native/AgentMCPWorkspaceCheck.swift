@@ -55,6 +55,7 @@ import AppKit
         page.checkAction("add"); try await settled(page)
         checks["resourceAddedOnlyToOriginalTask"] = tasks.task(taskID)?.draft == "保留 MCP 任务输入。" && !(tasks.task(taskID)?.draftAttachmentIDs ?? []).isEmpty && tasks.task(other)?.draftAttachmentIDs?.isEmpty != false
         checks["completedAddKeepsKeyboardInPage"] = state(page)["focusInPage"] as? Bool == true
+        checks["addedResourceRemainsRecoverableWithoutDraft"] = try !AgentMCPContentWindow.recoveryState(page.captureWorkspaceRecovery()).dirty
 
         try await select(page, kind: 1, query: "text")
         page.checkAction("", resourceURI: "demo://resource/dynamic/text/3")
@@ -66,6 +67,7 @@ import AppKit
         checks["actualExpandedTemplateResourceInPreview"] = (state(page)["previewText"] as? String)?.contains("Resource 3: This is a plaintext resource created at ") == true
         page.checkAction("add"); try await settled(page)
         checks["templateAddClearsParameterDraft"] = state(page)["inserted"] as? Bool == true && !page.workspaceHasUnsavedChanges
+        checks["addedTemplateRemainsRecoverableWithoutDraft"] = try !AgentMCPContentWindow.recoveryState(page.captureWorkspaceRecovery()).dirty
 
         try await select(page, kind: 2, query: "resource-prompt")
         page.checkAction("", values: ["resourceType": "Text", "resourceId": "2"])
@@ -96,6 +98,7 @@ import AppKit
         let promptText = state(page)["promptText"] as? String ?? ""
         page.checkAction("add"); try await settled(page)
         checks["promptAddedToOriginalDraftAndMarksSaved"] = !promptText.isEmpty && tasks.task(taskID)?.draft?.hasPrefix("保留 MCP 任务输入。") == true && tasks.task(taskID)?.draft?.hasSuffix(promptText) == true && !page.workspaceHasUnsavedChanges
+        checks["addedPromptRemainsRecoverableWithoutDraft"] = try !AgentMCPContentWindow.recoveryState(page.captureWorkspaceRecovery()).dirty
         checks["otherTaskDraftAndAttachmentsUnaffected"] = tasks.task(other)?.draft == "保留另一任务输入。" && tasks.task(other)?.draftAttachmentIDs?.isEmpty != false
         let files = tasks.task(taskID)?.draftAttachmentIDs ?? []; report["attachmentIDs"] = files
         host.checkClose(.mcpContent); await wait(0.1)
