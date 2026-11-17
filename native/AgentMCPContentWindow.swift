@@ -542,7 +542,8 @@ extension AgentMCPContentWindow {
     private func focusContent() {
         guard isPageVisible else { return }
         let target: NSView = inputFocusTarget() ?? (table.isEnabled ? table : viewer)
-        presentingWindow?.makeFirstResponder(target)
+        let previous = applyingViews; applyingViews = true
+        presentingWindow?.makeFirstResponder(target); applyingViews = previous
     }
     override func canLeaveSettings() -> Bool {
         guard presentingWindow?.hasBlockingDialog != true else { return false }

@@ -182,6 +182,10 @@ import AppKit
                     await wait(0.05)
                     let uriView = main.checkFieldView("uri")
                     checks["coldTemplateRestoresURISelectionAndFocus"] = uriView["focused"] as? Bool == true && uriView["location"] as? Int == ("demo://resource/dynamic/text/3" as NSString).range(of: "dynamic").location && uriView["length"] as? Int == 7
+                    let uriPage = try main.captureWorkspaceRecovery()
+                    try main.restoreWorkspaceRecovery(uriPage); main.settingsDidAppear(); await wait(0.05)
+                    let hostedURI = main.checkFieldView("uri")
+                    checks["hostedURIRestoreKeepsSelectionDuringInitialFocus"] = hostedURI["focused"] as? Bool == true && hostedURI["location"] as? Int == ("demo://resource/dynamic/text/3" as NSString).range(of: "dynamic").location && hostedURI["length"] as? Int == 7
                     main.selectRequestedServer(fixture.serverB); main.checkAction("connect"); try await idle(main)
                     try await select(main, kind: 2, key: "name", contains: "resource-prompt")
                     checks["otherConnectorRetainsOwnArgumentDraft"] = (main.workspaceReadback()["fields"] as? [String: String])?["resourceId"] == "5"
