@@ -28,6 +28,7 @@ import AppKit
         }
         func position(_ page: AgentMCPContentWindow, field: String, location: Int, length: Int) -> Bool {
             let value = page.checkInputView(field)
+            var positions = report["inputPositions"] as? [[String: Any]] ?? []; positions.append(["field": field, "actual": value, "expectedLocation": location, "expectedLength": length]); report["inputPositions"] = positions
             return value["location"] as? Int == location && value["length"] as? Int == length && value["focused"] as? Bool == true
         }
         do {

@@ -24,7 +24,7 @@ private final class AgentMCPContentDocument: NSView { override var isFlipped: Bo
         return value.valid(in: (field.stringValue as NSString).length) ? value : nil
     }
     func rememberInputFocus() {
-        guard !applyingViews, let focus = presentingWindow?.firstResponder else { return }
+        guard !applyingViews, !focusPending, let focus = presentingWindow?.firstResponder else { return }
         if let name = fields.first(where: { $0.value === focus })?.key { contentFocus = "field:" + name }
         else if search.currentEditor() === focus { contentFocus = "search"; querySelection = fieldSelection(search) }
         else if uri.currentEditor() === focus { contentFocus = "uri" }
@@ -581,6 +581,6 @@ extension AgentMCPContentWindow {
             rememberInputFocus(); onWorkspaceChange?()
         }
         guard let text = fields[name], let view = try? AgentTextViewport(text) else { return [:] }
-        return ["location": text.selectedRange().location, "length": text.selectedRange().length, "focused": presentingWindow?.firstResponder === text, "y": view.y, "anchor": view.anchor]
+        return ["location": text.selectedRange().location, "length": text.selectedRange().length, "focused": presentingWindow?.firstResponder === text, "y": view.y, "anchor": view.anchor, "plannedFocus": contentFocus, "focusPending": focusPending, "canBecomeKeyView": text.canBecomeKeyView, "visible": !text.isHiddenOrHasHiddenAncestor]
     }
 }
