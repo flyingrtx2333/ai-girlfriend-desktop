@@ -152,7 +152,7 @@ import AppKit
                     } ?? false
                     if let search {
                         search.stringValue = "no-matching-public-extension"
-                        if let action = search.action { NSApp.sendAction(action, to: search.target, from: search) }
+                        search.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: search))
                         pane.layoutSubtreeIfNeeded()
                         let message = find(NSTextField.self, in: manager.pageContentView, matching: { $0.identifier?.rawValue == "settings-list-empty" })
                         checks[key + "LongEmptyMessageFitsAtWidth" + String(Int(width))] = message.map { label in
@@ -160,7 +160,7 @@ import AppKit
                             return !label.isHidden && label.stringValue == "未找到匹配项" && label.bounds.width >= label.intrinsicContentSize.width && root.bounds.contains(label.convert(label.bounds, to: root))
                         } ?? false
                         search.stringValue = ""
-                        if let action = search.action { NSApp.sendAction(action, to: search.target, from: search) }
+                        search.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: search))
                     }
                 }
                 host.setContentSize(NSSize(width: 800, height: 540))
