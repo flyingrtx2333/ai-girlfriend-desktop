@@ -26,7 +26,8 @@ import AppKit
         let content = NSView(); window.contentView = content
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("teams")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42; table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("Agent 团队列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        let add = NSButton(title: "新建", target: self, action: #selector(create)), template = NSButton(title: "审阅模板", target: self, action: #selector(createTemplate))
+        let add = AgentDialogButton(title: "新建", target: self, action: #selector(create)), template = AgentDialogButton(title: "审阅模板", target: self, action: #selector(createTemplate))
+        for button in [add, template] { AgentDialogStyle.action(button, prominent: button === add) }
         let actions = NSStackView(views: [add, template]); actions.spacing = 8
         name.placeholderString = "名称"; purpose.placeholderString = "职责"
         for (field, label) in [(name, "团队名称"), (purpose, "团队职责")] { field.delegate = self; field.setAccessibilityLabel(label); field.font = .systemFont(ofSize: 13); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }

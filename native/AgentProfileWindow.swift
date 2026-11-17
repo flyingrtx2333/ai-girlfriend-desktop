@@ -30,8 +30,9 @@ import UniformTypeIdentifiers
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("agents")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 42
         table.dataSource = self; table.delegate = self; table.setAccessibilityLabel("自定义 Agent 列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        let add = NSButton(title: "新建", target: self, action: #selector(create)), importButton = NSButton(title: "导入", target: self, action: #selector(importProfiles))
-        let template = NSButton(title: "模板", target: self, action: #selector(chooseTemplate(_:)))
+        let add = AgentDialogButton(title: "新建", target: self, action: #selector(create)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importProfiles))
+        let template = AgentDialogButton(title: "模板", target: self, action: #selector(chooseTemplate(_:)))
+        for button in [add, template, importButton] { AgentDialogStyle.action(button, prominent: button === add) }
         let listActions = NSStackView(views: [add, template, importButton]); listActions.spacing = 6
         name.placeholderString = "名称"; purpose.placeholderString = "职责"; model.placeholderString = "跟随当前模型"
         for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] { field.delegate = self; field.font = .systemFont(ofSize: 13); field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
