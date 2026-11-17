@@ -196,19 +196,28 @@ import AppKit
                 let actualReader = viewer.readingReadback()
                 checks[key + "-unifiedNumbersMatchActualGitPatch"] = actualReader["rulerVisible"] as? Bool == true && viewer.text.records.contains { $0.old == 1 && $0.kind == .removed } && viewer.text.records.contains { $0.new == 1 && $0.kind == .added }
                 if let ruler = viewer.text.enclosingScrollView?.verticalRulerView {
-                    let width = Int(ceil(ruler.bounds.width)) + 40
-                    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 80, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                    let width = Int(ceil(ruler.bounds.width)) + 40, height = Int(ceil(ruler.bounds.height)) + 40
+                    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
                     NSGraphicsContext.saveGraphicsState()
                     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-                    NSColor.magenta.setFill(); NSRect(x: 0, y: 0, width: width, height: 80).fill()
-                    let offset = NSAffineTransform(); offset.translateX(by: 20, yBy: 20); offset.concat()
-                    ruler.drawHashMarksAndLabels(in: ruler.bounds.insetBy(dx: -20, dy: -20))
+                    NSColor.magenta.setFill(); NSRect(x: 0, y: 0, width: width, height: height).fill()
+                    let byteCount = bitmap.bytesPerRow * height
+                    let beforePaint = Data(bytes: bitmap.bitmapData!, count: byteCount)
+                    let offset = NSAffineTransform(); offset.translateX(by: 20 - ruler.bounds.minX, yBy: 20 - ruler.bounds.minY); offset.concat()
+                    ruler.draw(ruler.bounds.insetBy(dx: -20, dy: -20))
+                    let afterPaint = Data(bytes: bitmap.bitmapData!, count: byteCount)
                     NSGraphicsContext.restoreGraphicsState()
-                    func sentinel(_ x: Int) -> Bool {
-                        guard let color = bitmap.colorAt(x: x, y: 40)?.usingColorSpace(.deviceRGB) else { return false }
-                        return color.redComponent > 0.99 && color.greenComponent < 0.01 && color.blueComponent > 0.99
+                    var outsideUnchanged = true, insidePainted = false
+                    for y in 0..<height {
+                        for x in 0..<width {
+                            let byte = y * bitmap.bytesPerRow + x * 4
+                            let changed = (0..<4).contains { beforePaint[byte + $0] != afterPaint[byte + $0] }
+                            if x < 20 || x >= width - 20 || y < 20 || y >= height - 20 { outsideUnchanged = outsideUnchanged && !changed }
+                            else { insidePainted = insidePainted || changed }
+                        }
                     }
-                    checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = sentinel(8) && sentinel(width - 8) && !sentinel(24)
+                    checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = outsideUnchanged && insidePainted
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent(key + "-ruler-paint-bounds.png"))
                 } else { checks[key + "-actualRulerDrawingCannotPaintOutsideItsBounds"] = false }
                 let longText = String(repeating: "完整中文 🐋 and public content ", count: 16)
                 let readerPatch = "diff --git a/public.txt b/public.txt\n--- a/public.txt\n+++ b/public.txt\n@@ -99999,3 +100001,4 @@\n unchanged 🐋\r\n-old value\r\n+" + longText + "\r\n+extra value\r\n last value\r\n\\ No newline at end of file\n"

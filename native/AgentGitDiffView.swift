@@ -62,6 +62,9 @@ struct AgentGitDiffRecord {
         clientView = text
     }
     required init(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func draw(_ rect: NSRect) {
+        drawHashMarksAndLabels(in: rect.intersection(bounds))
+    }
     override func drawHashMarksAndLabels(in rect: NSRect) {
         NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
         NSBezierPath(rect: bounds).addClip()
