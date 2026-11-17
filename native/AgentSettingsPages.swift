@@ -311,7 +311,7 @@ struct AgentSettingsCatalogGroup {
             (view.superview as? NSStackView)?.removeArrangedSubview(view); view.removeFromSuperview(); (host ?? actionRow).addArrangedSubview(view)
         }
         (count.superview as? NSStackView)?.removeArrangedSubview(count); count.removeFromSuperview()
-        filters.removeArrangedSubview(filterSpacer); filterSpacer.removeFromSuperview()
+        if filters.arrangedSubviews.contains(where: { $0 === filterSpacer }) { filters.removeArrangedSubview(filterSpacer) }; filterSpacer.removeFromSuperview()
         let external = host != nil
         if external { filters.insertArrangedSubview(count, at: 0); if !hasFilters { filters.addArrangedSubview(filterSpacer) } }
         else { bar.insertArrangedSubview(count, at: 0) }
