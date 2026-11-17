@@ -49,7 +49,7 @@ enum AgentThemeStyle: String, Codable, CaseIterable {
     func publish() { onChange?(); NotificationCenter.default.post(name: Self.changed, object: self) }
 }
 
-enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settings, line, accent, accentText, selection, navigationSelection, hover, subtle, secondaryText, primary, primaryText, added, removed }
+enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settings, card, line, accent, accentText, selection, navigationSelection, hover, subtle, secondaryText, primary, primaryText, added, removed }
 
 // Keep semantic colors immutable. Each style gets its own dynamic light/dark
 // colors; two task windows never compete for an application-wide palette.
@@ -57,7 +57,7 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
     private struct Key: Hashable { var style: AgentThemeStyle; var role: AgentThemeColorRole }
     private static var colors: [Key: NSColor] = [:], roles: [ObjectIdentifier: AgentThemeColorRole] = [:]
     private static var tokens: [(AgentThemeColorRole, NSColor)] {
-        [(.sidebar, AgentWorkbenchTheme.sidebar), (.surface, AgentWorkbenchTheme.surface), (.settings, AgentWorkbenchTheme.settings), (.line, AgentWorkbenchTheme.line),
+        [(.sidebar, AgentWorkbenchTheme.sidebar), (.surface, AgentWorkbenchTheme.surface), (.settings, AgentWorkbenchTheme.settings), (.card, AgentWorkbenchTheme.card), (.line, AgentWorkbenchTheme.line),
          (.accent, AgentWorkbenchTheme.accent), (.accentText, AgentWorkbenchTheme.accentText), (.selection, AgentWorkbenchTheme.selection), (.navigationSelection, AgentWorkbenchTheme.navigationSelection),
          (.hover, AgentWorkbenchTheme.hover), (.subtle, AgentWorkbenchTheme.subtle), (.secondaryText, AgentWorkbenchTheme.secondaryText), (.primary, AgentWorkbenchTheme.primary), (.primaryText, AgentWorkbenchTheme.primaryText), (.added, AgentWorkbenchTheme.added), (.removed, AgentWorkbenchTheme.removed)]
     }
@@ -73,14 +73,15 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
         var hex: UInt32, alpha: CGFloat = 1
         switch role {
         case .sidebar:
-            switch style { case .forest: hex = dark ? 0x1c2420 : 0xedf2ee; case .mint: hex = dark ? 0x182723 : 0xeaf6f0; case .bee: hex = dark ? 0x28281d : 0xf3efcd; case .parchment: hex = dark ? 0x29221e : 0xf1eae0 }
+            switch style { case .forest: hex = dark ? 0x242623 : 0xf0f2f1; case .mint: hex = dark ? 0x182723 : 0xeaf6f0; case .bee: hex = dark ? 0x28281d : 0xf3efcd; case .parchment: hex = dark ? 0x29221e : 0xf1eae0 }
         case .accent:
             switch style { case .forest: hex = dark ? 0x99c5ad : 0x4b715c; case .mint: hex = dark ? 0x6bd4b6 : 0x14775f; case .bee: hex = dark ? 0xdfcd72 : 0x88700b; case .parchment: hex = dark ? 0xe8ad91 : 0xb15937 }
         case .accentText: hex = dark ? (style == .bee ? 0x332c0e : style == .parchment ? 0x382219 : 0x10352b) : 0xffffff
         case .selection:
             switch style { case .forest: hex = dark ? 0x2b4336 : 0xd4e5d9; case .mint: hex = dark ? 0x28453f : 0xd1e4e2; case .bee: hex = dark ? 0x494124 : 0xe9dfb6; case .parchment: hex = dark ? 0x48342a : 0xecdccd }
-        case .surface: hex = dark ? 0x242629 : 0xfefefe
-        case .settings: hex = dark ? 0x242629 : 0xfcfcfc
+        case .surface: hex = dark ? (style == .forest ? 0x1e231f : 0x242629) : 0xfefefe
+        case .settings: hex = style == .forest ? (dark ? 0x1e231f : 0xfafafa) : (dark ? 0x242629 : 0xfcfcfc)
+        case .card: hex = style == .forest ? (dark ? 0x191b1a : 0xffffff) : (dark ? 0x242629 : 0xfefefe)
         case .line: hex = dark ? 0x3a3d42 : 0xd6dbe0
         case .navigationSelection: hex = dark ? 0xffffff : 0x000000; alpha = 0.07
         case .hover: hex = dark ? 0xffffff : 0x000000; alpha = 0.045
@@ -145,6 +146,7 @@ enum AgentThemeColorRole: CaseIterable, Hashable { case sidebar, surface, settin
             if let control = view as? NSButton, let old = control.bezelColor, let next = color(old), old !== next { control.bezelColor = next }
             if let image = view as? NSImageView, let old = image.contentTintColor, let next = color(old), old !== next { image.contentTintColor = next }
             if let text = view as? NSTextField, let old = text.textColor, let next = color(old), old !== next { text.textColor = next }
+            if let field = view as? NSTextField, let next = color(field.backgroundColor), field.backgroundColor !== next { field.backgroundColor = next }
             if let tabs = view as? NSSegmentedControl, let old = tabs.selectedSegmentBezelColor, let next = color(old), old !== next { tabs.selectedSegmentBezelColor = next }
             if let layer = view.layer, let token = layerColors.object(forKey: layer) {
                 view.effectiveAppearance.performAsCurrentDrawingAppearance {

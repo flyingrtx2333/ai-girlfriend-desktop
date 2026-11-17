@@ -92,6 +92,7 @@ final class FormDocumentView: NSView {
     private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = NSSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
+    private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var settingsSourceFolders: [String: String] = [:]
     private var settingsSidebarWidth: NSLayoutConstraint!
@@ -483,6 +484,10 @@ final class FormDocumentView: NSView {
                 let aligned = centerError <= 0.5 && abs(heading.minX - column.minX - 16) < 0.5 && (50...64).contains(contentSurface.bounds.height - heading.maxY) && heading.minY > body.maxY
                 checks[key + "CenteredColumnAndContentHeading"] = fitsWindow && aligned && settingsHeading.stringValue == settingsCategories[index].1 && pageTitle.isHidden && workbenchChrome.allSatisfy(\.isHidden)
                 checks[key + "VisibleWindowRetainsRequestedSize"] = window.isVisible && window.contentView?.bounds.size == size
+                let catalog = settingsPageHost.currentController?.pageContentView as? AgentSettingsCatalogPage
+                let shouldShowActions = !settingsPageHost.isHidden && catalog != nil
+                let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
+                checks[key + "CatalogActionsStayInWindowHeader"] = shouldShowActions ? (!settingsWindowActions.isHidden && !settingsWindowActions.arrangedSubviews.isEmpty && abs(contentSurface.bounds.maxY - actionFrame.maxY - 6) < 0.5 && abs(contentSurface.bounds.maxX - actionFrame.maxX - 12) < 0.5 && actionFrame.minX >= 12 && actionFrame.minY > column.maxY) : settingsWindowActions.isHidden
                 if category == "appearance", let group = settingGroups.first(where: { $0.category == category })?.view {
                     func find(_ view: NSView) -> AgentAppearanceSettingsView? { (view as? AgentAppearanceSettingsView) ?? view.subviews.lazy.compactMap(find).first }
                     let width = find(group)?.bounds.width ?? 0
@@ -510,7 +515,22 @@ final class FormDocumentView: NSView {
                 checks["memoryEditorReturnsToOriginalCardAt780By540"] = window.frame.size == NSSize(width: 780, height: 540) && settingsPageHost.currentController === overview && window.firstResponder === button
             }
         }
+        if showSettingsCategory("extensions") {
+            settingsPageHost.selectPage("skills"); window.contentView?.layoutSubtreeIfNeeded()
+            let manager = settingsPageHost.currentController
+            let originalActions = settingsWindowActions.arrangedSubviews
+            let create = originalActions.compactMap { $0 as? NSButton }.first { $0.title == "新建" }
+            create?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
+            checks["GlobalCreationOpensExistingChildAndHidesHeaderActions"] = create != nil && settingsPageHost.currentController is AgentExtensionCreationPage && settingsWindowActions.isHidden
+            settingsPageHost.currentController?.close(); window.contentView?.layoutSubtreeIfNeeded()
+            checks["CancelReturnsSameManagerAndOriginalActionTargets"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 }) && create?.target as AnyObject? === manager
+            settingsSearch.stringValue = "模型"; updateSettingsSections()
+            checks["SettingsSearchHidesCatalogWindowActions"] = settingsWindowActions.isHidden
+            settingsSearch.stringValue = ""; updateSettingsSections()
+            checks["ClearingSearchRestoresOriginalCatalogActions"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 })
+        }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
+        checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
         checks["settingsDoNotReserveHiddenInspectorWidth"] = frames.values.allSatisfy { $0["inspectorWidth"] == 0 }
         return ["checks": checks, "frames": frames]
@@ -691,6 +711,11 @@ final class FormDocumentView: NSView {
         let columnWidth = settings.widthAnchor.constraint(equalToConstant: 764)
         // Keep the wide layout preferred while allowing the user to shrink it.
         columnWidth.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1); columnWidth.isActive = true
+        settingsWindowActions.identifier = .init("settings-window-actions"); settingsWindowActions.setAccessibilityLabel("设置操作")
+        settingsWindowActions.alignment = .centerY; settingsWindowActions.spacing = 8; settingsWindowActions.translatesAutoresizingMaskIntoConstraints = false
+        main.addSubview(settingsWindowActions)
+        NSLayoutConstraint.activate([settingsWindowActions.topAnchor.constraint(equalTo: main.topAnchor, constant: 6), settingsWindowActions.trailingAnchor.constraint(equalTo: main.trailingAnchor, constant: -12), settingsWindowActions.leadingAnchor.constraint(greaterThanOrEqualTo: main.leadingAnchor, constant: 12), settingsWindowActions.heightAnchor.constraint(equalToConstant: 28)])
+        settingsPageHost.actionsHost = settingsWindowActions
         buildSettingsSidebar(in: content); buildSettings(); changeTab()
     }
     private func buildWorkbenchConversation() {
@@ -1403,12 +1428,13 @@ final class FormDocumentView: NSView {
             let row = NSStackView(views: [labels, NSView(), open]); row.spacing = 16; row.alignment = .centerY; row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
             body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
-        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+        let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 16), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)])
         settingsForm.addArrangedSubview(card); card.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
     }
     private func updateSettingsSections() {
+        defer { updateSettingsActions() }
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
@@ -1465,6 +1491,9 @@ final class FormDocumentView: NSView {
         if matches.isEmpty { settingsForm.addArrangedSubview(noSettings) }
         if matches.contains(where: { $0.category == "general" }) { generalSettingsPanel?.matchSearch(query) }
         settingsScroll.contentView.scroll(to: .zero); settingsScroll.reflectScrolledClipView(settingsScroll.contentView)
+    }
+    private func updateSettingsActions() {
+        settingsPageHost.actionsEnabled = selectedTab == "settings" && !settingsPageHost.isHidden && settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     @objc private func revealInstalledApplication() { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
     @objc private func openApplicationChanges() { if let url = URL(string: "https://github.com/flyingrtx2333/ai-girlfriend-desktop/commits/main/") { NSWorkspace.shared.open(url) } }
@@ -1773,6 +1802,7 @@ final class FormDocumentView: NSView {
         pageTitle.textColor = companion?.usesAgent == true || configuring ? .labelColor : AgentWorkbenchTheme.secondaryText
         workbenchChrome.forEach { $0.isHidden = selectedTab != "chat" }
         if configuring { updateSettingsSections() } else { pageTitle.stringValue = currentAgentTask?.title ?? "对话" }
+        updateSettingsActions()
         AgentWorkbenchTheme.color(chatNav.layer, selectedTab == "chat" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         AgentWorkbenchTheme.color(settingsNav.layer, selectedTab == "settings" ? AgentWorkbenchTheme.navigationSelection : .clear, animated: false)
         updateWorkbenchLayout()

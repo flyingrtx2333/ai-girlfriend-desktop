@@ -32,6 +32,7 @@ import QuartzCore
     static let sidebar = adaptive(0xedeff3, 0x1c1e22)
     static let surface = adaptive(0xfefefe, 0x242629)
     static let settings = adaptive(0xfcfcfc, 0x242629)
+    static let card = adaptive(0xfefefe, 0x242629)
     static let line = adaptive(0xd6dbe0, 0x3a3d42)
     static let accent = NSColor(named: "AccentColor") ?? adaptive(0x057561, 0x6bd4b6)
     static let accentText = adaptive(0xffffff, 0x10352b)
