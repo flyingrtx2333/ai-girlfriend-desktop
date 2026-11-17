@@ -553,13 +553,24 @@ final class FormDocumentView: NSView {
         let after = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
         let bottomVisible = bottom.intersection(scroll.contentView.bounds).height >= 29.5
         scroll.contentView.scroll(to: originalScroll); scroll.reflectScrolledClipView(scroll.contentView)
+        let selected = settingsCategory
+        _ = showSettingsCategory("about")
+        let navigationRevealsSelection = last.convert(last.bounds, to: scroll.contentView).intersection(scroll.contentView.bounds).height >= 29.5
+        settingsSearch.stringValue = "模型"; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        window?.contentView?.layoutSubtreeIfNeeded()
+        settingsSearch.stringValue = ""; controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        let clearingRevealsSelection = last.convert(last.bounds, to: scroll.contentView).intersection(scroll.contentView.bounds).height >= 29.5
+        _ = showSettingsCategory(selected)
+        scroll.contentView.scroll(to: originalScroll); scroll.reflectScrolledClipView(scroll.contentView)
         return [
             "SettingsSidebarPreservesEveryRouteOnce": ids == expected && Set(ids).count == settingsCategories.count,
             "SettingsSidebarGroupsCompanionFeaturesTogether": settingsGroupLabels.map(\.0) == ["个人", "陪伴", "集成", "编码", "其他"],
             "SettingsSidebarIconsAndTargetsFit": displayed.allSatisfy { $0.image != nil && abs($0.bounds.height - 30) < 0.5 && $0.bounds.width >= 150 && $0.frame.minX >= 0 },
             "SettingsSidebarUsesOneSelectionAndKeyboardTargets": displayed.filter { $0.state == .on }.count == 1 && displayed.allSatisfy { $0 is AgentSettingsNavigationButton && $0.acceptsFirstResponder },
             "SettingsSidebarSearchStaysPinnedWhileCategoriesScroll": before == after && settingsSidebar.bounds.contains(after) && !after.intersects(scroll.frame) && after.height >= 29.5,
-            "SettingsSidebarBottomRouteCanBeRevealed": bottomVisible
+            "SettingsSidebarBottomRouteCanBeRevealed": bottomVisible,
+            "SettingsSidebarNavigationRevealsSelectedRoute": navigationRevealsSelection,
+            "SettingsSidebarClearingSearchRevealsOriginalSelection": clearingRevealsSelection
         ]
     }
 
@@ -1301,7 +1312,12 @@ final class FormDocumentView: NSView {
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
-        show(tab: "settings"); return true
+        show(tab: "settings"); revealSettingsCategory(); return true
+    }
+    private func revealSettingsCategory() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        guard let index = settingsCategories.firstIndex(where: { $0.0 == settingsCategory }), categoryButtons.indices.contains(index) else { return }
+        categoryButtons[index].scrollToVisible(categoryButtons[index].bounds)
     }
     @objc private func openSettingsSearchResult(_ sender: NSButton) {
         guard sender.isDescendant(of: settingsForm), settingsResults.indices.contains(sender.tag) else { return }
@@ -1949,7 +1965,11 @@ final class FormDocumentView: NSView {
         updateModelOptions()
     }
     func controlTextDidChange(_ obj: Notification) {
-        if let search = obj.object as? NSSearchField, search === settingsSearch { updateSettingsSections(); return }
+        if let search = obj.object as? NSSearchField, search === settingsSearch {
+            updateSettingsSections()
+            if search.stringValue.isEmpty { revealSettingsCategory() }
+            return
+        }
         invalidateModelCheck()
     }
     @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
