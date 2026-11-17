@@ -183,6 +183,12 @@ import AppKit
                     }
                 }
                 host.setContentSize(NSSize(width: 800, height: 540))
+                try press("新建", in: manager)
+                guard let creation = pane.currentController as? AgentExtensionCreationPage else { throw PetError("无工作区新建未进入原表单") }
+                let scope = try menu("扩展范围", in: creation); scope.menu?.update()
+                checks[key + "NoWorkspaceCreationKeepsProjectDisabledAfterMenuUpdate"] = scope.indexOfSelectedItem == 0 && scope.menu?.autoenablesItems == false && scope.item(at: 1)?.isEnabled == false
+                try press("取消", in: creation)
+                checks[key + "CancelCreationKeepsSameEmptyCatalog"] = pane.currentController === manager && find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true })?.numberOfRows == 0
             }
             guard pane.leave() else { throw PetError("空列表未正常退出：" + key) }
         }

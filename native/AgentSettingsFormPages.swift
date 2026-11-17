@@ -55,7 +55,7 @@ import AppKit
         self.service = service; self.kind = kind; self.workspace = workspace
         let name = NSTextField(), scope = NSPopUpButton(); self.name = name; self.scope = scope
         name.placeholderString = "名称"; name.setAccessibilityLabel("扩展名称")
-        scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("扩展范围")
+        scope.addItems(withTitles: ["全局", "当前项目"]); scope.menu?.autoenablesItems = false; scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("扩展范围")
         super.init(title: kind == .skill ? "新建 Skill" : "新建命令", rows: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "范围"), scope]], submitTitle: "创建")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

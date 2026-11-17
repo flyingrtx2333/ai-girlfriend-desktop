@@ -458,7 +458,7 @@ struct AgentSettingsCatalogGroup {
             for child in view.subviews { apply(child) }
         }
         root.wantsLayer = true
-        if let root = root as? AgentThemeView { root.fill = root.identifier?.rawValue == "settings-catalog-page" ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface }
+        if let root = root as? AgentThemeView { root.fill = AgentWorkbenchTheme.settings }
         else { AgentWorkbenchTheme.color(root.layer, AgentWorkbenchTheme.settings, animated: false) }
         apply(root)
     }
