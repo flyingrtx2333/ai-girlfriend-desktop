@@ -91,7 +91,9 @@ import UniformTypeIdentifiers
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedProfile); table.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData(); selectRow(selectedID); updateControls()
+            var actions = (layout.toolbar as? NSStackView)?.arrangedSubviews ?? []
+            if !actions.isEmpty { actions.append(actions.removeFirst()) }
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState, actions: actions, symbol: "person.crop.square"); table.reloadData(); selectRow(selectedID); updateControls()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -119,7 +121,7 @@ import UniformTypeIdentifiers
         if detailPage != nil {
             let title = value.name.isEmpty ? "未命名智能体" : AgentProfiles.title(value, task: try? sourceTask())
             let source = value.pluginSource.map { "插件 · " + ((try? AgentPlugins.scope($0.name).name) ?? $0.name) } ?? ""
-            return AgentSettingsCatalogCell(title: title, summary: [value.description, source].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "person.crop.square", status: value.enabled ? "已启用" : "已停用") { [weak self] in self?.selectProfile(value.id) }
+            return AgentSettingsCatalogCell(title: title, summary: [value.description, source].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "person.crop.square", status: value.enabled ? "已启用" : "已停用", group: table.group(at: row)) { [weak self] in self?.selectProfile(value.id) }
         }
         let text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名智能体" : value.name) + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
     }

@@ -70,7 +70,9 @@ import AppKit
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedTeam); table.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData(); selectRow(); updateControls()
+            var actions = (layout.toolbar as? NSStackView)?.arrangedSubviews ?? []
+            if !actions.isEmpty { actions.append(actions.removeFirst()) }
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState, actions: actions, symbol: "person.2"); table.reloadData(); selectRow(); updateControls()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -95,7 +97,7 @@ import AppKit
         let value = values[row], sources = (try? store.teams.sourceWorkspaces(value).sorted()) ?? []
         let suffix = value.workspace.map { " · " + URL(fileURLWithPath: $0).lastPathComponent } ?? (sources.count > 1 ? " · \(sources.count) 个来源" : "")
         if detailPage != nil {
-            return AgentSettingsCatalogCell(title: (value.name.isEmpty ? "未命名团队" : value.name) + suffix, summary: value.description, symbol: "person.2", status: value.enabled ? "已启用" : "已停用") { [weak self] in
+            return AgentSettingsCatalogCell(title: (value.name.isEmpty ? "未命名团队" : value.name) + suffix, summary: value.description, symbol: "person.2", status: value.enabled ? "已启用" : "已停用", group: table.group(at: row)) { [weak self] in
                 guard let self, !dirty else { return }; open(value.id); showDetail()
             }
         }

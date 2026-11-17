@@ -146,7 +146,7 @@ import UniformTypeIdentifiers
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 72 }
+    override func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 72 }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { catalogRows[row].server == nil }
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { catalogRows[row].server != nil }
     override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { catalogRows[row].server == nil ? NSTableRowView() : AgentSettingsCatalogRow() }

@@ -51,8 +51,12 @@ import AppKit
         if let onSettingsClose { onSettingsClose() } else { super.close() }
     }
     @objc func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        if tableView.identifier?.rawValue == "settings-catalog" { return AgentSettingsCatalogRow() }
+        if let table = tableView as? AgentSettingsCatalogTable, table.identifier?.rawValue == "settings-catalog" { return AgentSettingsCatalogRow(group: table.group(at: row)) }
         return settingsHostWindow == nil ? nil : AgentSettingsTableRow()
+    }
+    @objc func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard let table = tableView as? AgentSettingsCatalogTable, table.identifier?.rawValue == "settings-catalog" else { return tableView.rowHeight }
+        return table.group(at: row).height
     }
 }
 
@@ -98,12 +102,29 @@ import AppKit
     override func settingsDidAppear() { onAppear?() }
 }
 
+struct AgentSettingsCatalogGroup {
+    var title: String? = nil
+    var first = true
+    var last = true
+    var headerHeight: CGFloat { title == nil ? 0 : 30 }
+    var footerHeight: CGFloat { last ? 12 : 0 }
+    var height: CGFloat { headerHeight + 64 + footerHeight }
+}
+
 @MainActor final class AgentSettingsCatalogTable: NSTableView {
     var onOpen: (() -> Void)?
     var onCountChanged: ((Int) -> Void)?
+    var groupName: ((Int) -> String)?
+    weak var emptyCard: AgentSettingsCatalogEmptyView?
+    func group(at row: Int) -> AgentSettingsCatalogGroup {
+        guard row >= 0, row < numberOfRows, let groupName else { return .init() }
+        let name = groupName(row), first = row == 0 || groupName(row - 1) != name
+        return .init(title: first ? name : nil, first: first, last: row == numberOfRows - 1 || groupName(row + 1) != name)
+    }
     override func reloadData() {
         super.reloadData()
         onCountChanged?(numberOfRows)
+        emptyCard?.isHidden = numberOfRows > 0
     }
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty, [36, 76, 124].contains(event.keyCode), selectedRow >= 0, let onOpen { onOpen(); return }
@@ -112,8 +133,11 @@ import AppKit
 }
 
 @MainActor final class AgentSettingsCatalogRow: NSTableRowView {
+    private let group: AgentSettingsCatalogGroup?
     private var hovered = false
     private var hoverArea: NSTrackingArea?
+    init(group: AgentSettingsCatalogGroup? = nil) { self.group = group; super.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -124,12 +148,33 @@ import AppKit
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func drawBackground(in dirtyRect: NSRect) {
+        guard let group else {
+            if isSelected || hovered {
+                AgentThemeContext.resolve(isSelected ? AgentWorkbenchTheme.selection : AgentWorkbenchTheme.hover, in: self).setFill()
+                NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 7, yRadius: 7).fill()
+            }
+            AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setFill()
+            NSRect(x: 16, y: bounds.maxY - 1, width: max(0, bounds.width - 32), height: 1).fill()
+            return
+        }
+        let body = NSRect(x: 1, y: isFlipped ? group.headerHeight : group.footerHeight, width: max(0, bounds.width - 2), height: 64)
+        var card = body
+        if !group.first { if isFlipped { card.origin.y -= 10 }; card.size.height += 10 }
+        if !group.last { if !isFlipped { card.origin.y -= 10 }; card.size.height += 10 }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: body).addClip()
+        let outline = NSBezierPath(roundedRect: card.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+        AgentThemeContext.resolve(AgentWorkbenchTheme.surface, in: self).setFill(); outline.fill()
+        AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); outline.lineWidth = 1; outline.stroke()
+        NSGraphicsContext.restoreGraphicsState()
         if isSelected || hovered {
             AgentThemeContext.resolve(isSelected ? AgentWorkbenchTheme.selection : AgentWorkbenchTheme.hover, in: self).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 7, yRadius: 7).fill()
+            NSBezierPath(roundedRect: body.insetBy(dx: 2, dy: 2), xRadius: 8, yRadius: 8).fill()
         }
-        AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setFill()
-        NSRect(x: 16, y: bounds.maxY - 1, width: max(0, bounds.width - 32), height: 1).fill()
+        if !group.last {
+            AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setFill()
+            NSRect(x: 18, y: isFlipped ? body.maxY - 1 : body.minY, width: max(0, bounds.width - 36), height: 1).fill()
+        }
     }
     override func drawSelection(in dirtyRect: NSRect) {}
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
@@ -138,8 +183,16 @@ import AppKit
 @MainActor final class AgentSettingsCatalogCell: NSTableCellView {
     private let open = NSButton()
     var onOpen: (() -> Void)?
-    init(title: String, summary: String, symbol: String, status: String, onOpen: @escaping () -> Void) {
+    init(title: String, summary: String, symbol: String, status: String, group: AgentSettingsCatalogGroup = .init(), onOpen: @escaping () -> Void) {
         super.init(frame: .zero); self.onOpen = onOpen
+        let body = NSView(); addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor), body.topAnchor.constraint(equalTo: topAnchor, constant: group.headerHeight), body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -group.footerHeight)])
+        if let title = group.title {
+            let heading = NSTextField(labelWithString: title); heading.font = .systemFont(ofSize: 12); heading.textColor = AgentWorkbenchTheme.secondaryText; heading.lineBreakMode = .byTruncatingMiddle; heading.toolTip = title
+            heading.identifier = .init("settings-catalog-group"); heading.setAccessibilityLabel("来源分组")
+            addSubview(heading); heading.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([heading.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16), heading.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16), heading.topAnchor.constraint(equalTo: topAnchor, constant: 4)])
+        }
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage()); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
         let name = NSTextField(labelWithString: title); name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingTail
         let description = NSTextField(labelWithString: summary); description.font = .systemFont(ofSize: 12); description.textColor = AgentWorkbenchTheme.secondaryText; description.lineBreakMode = .byTruncatingTail; description.isHidden = summary.isEmpty
@@ -147,20 +200,42 @@ import AppKit
         let state = NSTextField(labelWithString: status); state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.isHidden = status.isEmpty
         open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.symbolConfiguration = .init(pointSize: 11, weight: .medium); open.contentTintColor = AgentWorkbenchTheme.secondaryText; open.isBordered = false; open.target = self; open.action = #selector(showDetails); open.setAccessibilityLabel("配置 " + title); open.toolTip = "配置 " + title
         imageView = icon; textField = name; toolTip = summary
-        for view in [icon, labels, state, open] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [icon, labels, state, open] { body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         labels.setContentHuggingPriority(.defaultLow, for: .horizontal); state.setContentHuggingPriority(.required, for: .horizontal)
         state.setContentCompressionResistancePriority(.required, for: .horizontal)
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
-            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: centerYAnchor), labels.trailingAnchor.constraint(equalTo: state.leadingAnchor, constant: -12),
+            icon.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: body.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: body.centerYAnchor), labels.trailingAnchor.constraint(equalTo: state.leadingAnchor, constant: -12),
             name.widthAnchor.constraint(equalTo: labels.widthAnchor), description.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: -10), state.centerYAnchor.constraint(equalTo: centerYAnchor),
-            open.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: centerYAnchor), open.widthAnchor.constraint(equalToConstant: 24), open.heightAnchor.constraint(equalToConstant: 28)
+            state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: -10), state.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+            open.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: body.centerYAnchor), open.widthAnchor.constraint(equalToConstant: 24), open.heightAnchor.constraint(equalToConstant: 28)
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func showDetails() { onOpen?() }
+}
+
+@MainActor final class AgentSettingsCatalogEmptyView: AgentThemeView {
+    let label: NSTextField
+    private let icon: NSImageView
+    private let symbol: String
+    init(symbol: String, text: String) {
+        self.symbol = symbol; label = NSTextField(wrappingLabelWithString: text); icon = NSImageView()
+        super.init(frame: .zero); fill = AgentWorkbenchTheme.surface; stroke = AgentWorkbenchTheme.line
+        identifier = .init("settings-catalog-empty-card"); layer?.cornerRadius = 10; layer?.borderWidth = 1
+        label.identifier = .init("settings-list-empty"); label.font = .systemFont(ofSize: 13, weight: .medium); label.alignment = .center
+        label.textColor = AgentWorkbenchTheme.secondaryText; icon.contentTintColor = AgentWorkbenchTheme.secondaryText
+        let column = NSStackView(views: [icon, label]); column.orientation = .vertical; column.alignment = .centerX; column.spacing = 14
+        addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([column.centerYAnchor.constraint(equalTo: centerYAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24), column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24), label.widthAnchor.constraint(equalTo: column.widthAnchor), icon.widthAnchor.constraint(equalToConstant: 36), icon.heightAnchor.constraint(equalToConstant: 36), heightAnchor.constraint(equalToConstant: 144)])
+        setMessage(text)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func setMessage(_ text: String) {
+        label.stringValue = text
+        icon.image = NSImage(systemSymbolName: text.hasPrefix("未找到") ? "magnifyingglass" : symbol, accessibilityDescription: nil)
+    }
 }
 
 @MainActor enum AgentSettingsCatalog {
@@ -174,8 +249,12 @@ import AppKit
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
         return root
     }
-    static func content(table: AgentSettingsCatalogTable, toolbar: NSView, status: AgentSettingsStatusField) -> NSView {
-        let root = NSView(), scroll = table.enclosingScrollView ?? NSScrollView()
+    static func content(table: AgentSettingsCatalogTable, toolbar: NSView, status: AgentSettingsStatusField, actions: [NSView] = [], symbol: String = "tray") -> NSView {
+        let root = AgentThemeView(fill: AgentWorkbenchTheme.settings), scroll = table.enclosingScrollView ?? NSScrollView()
+        root.identifier = .init("settings-catalog-page")
+        for view in actions { (view.superview as? NSStackView)?.removeArrangedSubview(view); view.removeFromSuperview() }
+        for view in actions { view.heightAnchor.constraint(equalToConstant: 28).isActive = true }
+        let actionRow = NSStackView(views: actions); actionRow.alignment = .centerY; actionRow.spacing = 8; actionRow.identifier = .init("settings-catalog-actions")
         let count = NSTextField(labelWithString: "\(table.numberOfRows) 项")
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
         count.identifier = .init("settings-catalog-count"); count.setAccessibilityLabel("列表数量")
@@ -188,20 +267,26 @@ import AppKit
             status.isHidden = value.isEmpty || value == "\(table.numberOfRows) 项" || value == "暂无扩展"
         }
         status.onChange?(status.stringValue)
+        let bar = NSStackView(views: [count, NSView(), actionRow]); bar.alignment = .centerY; bar.spacing = 12
         let searchable = toolbar.subviews.contains { $0 is NSSearchField }
-        let bar = NSStackView(views: searchable ? [count, toolbar] : [count, NSView(), toolbar]); bar.alignment = .centerY; bar.spacing = 12
         if searchable { toolbar.setContentHuggingPriority(.defaultLow, for: .horizontal) }
         bar.identifier = .init("settings-catalog-toolbar")
-        let separator = NSBox(); separator.boxType = .separator
+        let hasFilters = (toolbar as? NSStackView)?.arrangedSubviews.contains { !$0.isHidden && $0 is NSControl } ?? true
+        let filters = NSStackView(views: hasFilters ? [toolbar] : []); filters.alignment = .centerY; filters.identifier = .init("settings-catalog-filters")
+        filters.isHidden = !hasFilters
+        if hasFilters { toolbar.widthAnchor.constraint(equalTo: filters.widthAnchor).isActive = true }
         NSLayoutConstraint.deactivate(scroll.constraints.filter { ($0.firstItem as? NSView) === scroll && $0.firstAttribute == .width && $0.relation == .equal && $0.secondItem == nil })
         table.identifier = .init("settings-catalog"); table.rowHeight = 64; table.intercellSpacing = .zero; table.selectionHighlightStyle = .regular
         scroll.identifier = .init("settings-catalog-scroll"); scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
-        for view in [bar, separator, scroll, status] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        let oldEmpty = scroll.subviews.first { $0.identifier?.rawValue == "settings-list-empty" } as? NSTextField
+        let empty = AgentSettingsCatalogEmptyView(symbol: symbol, text: oldEmpty?.stringValue ?? "暂无内容"); oldEmpty?.removeFromSuperview(); table.emptyCard = empty; empty.isHidden = table.numberOfRows > 0
+        for view in [bar, filters, scroll, status, empty] { root.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: root.topAnchor, constant: 4), bar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), bar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), bar.heightAnchor.constraint(equalToConstant: 28),
-            separator.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 12), separator.leadingAnchor.constraint(equalTo: bar.leadingAnchor), separator.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 4), scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8),
-            status.leadingAnchor.constraint(equalTo: bar.leadingAnchor), status.trailingAnchor.constraint(equalTo: bar.trailingAnchor), status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8)
+            filters.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: hasFilters ? 12 : 0), filters.leadingAnchor.constraint(equalTo: bar.leadingAnchor), filters.trailingAnchor.constraint(equalTo: bar.trailingAnchor), filters.heightAnchor.constraint(equalToConstant: hasFilters ? 28 : 0),
+            scroll.topAnchor.constraint(equalTo: filters.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: bar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: bar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: status.topAnchor, constant: -8),
+            status.leadingAnchor.constraint(equalTo: bar.leadingAnchor), status.trailingAnchor.constraint(equalTo: bar.trailingAnchor), status.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
+            empty.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 1), empty.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -1), empty.topAnchor.constraint(equalTo: scroll.topAnchor)
         ])
         return root
     }
@@ -210,6 +295,10 @@ import AppKit
 @MainActor enum AgentSettingsStyle {
     static let searchRowPrefix = "settings-search-row:"
     static func listState(_ table: NSTableView, text: String) {
+        if let table = table as? AgentSettingsCatalogTable, let empty = table.emptyCard {
+            empty.setMessage(text); empty.isHidden = table.numberOfRows > 0; empty.label.isHidden = empty.isHidden
+            return
+        }
         guard let scroll = table.enclosingScrollView else { return }
         let catalog = scroll.identifier?.rawValue == "settings-catalog-scroll"
         let container = catalog ? (scroll.superview ?? scroll) : scroll
@@ -323,7 +412,7 @@ import AppKit
             for child in view.subviews { apply(child) }
         }
         root.wantsLayer = true
-        if let root = root as? AgentThemeView { root.fill = AgentWorkbenchTheme.surface }
+        if let root = root as? AgentThemeView { root.fill = root.identifier?.rawValue == "settings-catalog-page" ? AgentWorkbenchTheme.settings : AgentWorkbenchTheme.surface }
         else { root.layer?.backgroundColor = AgentWorkbenchTheme.surface.cgColor }
         apply(root)
     }

@@ -99,7 +99,9 @@ import UniformTypeIdentifiers
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedItem); table.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState); table.reloadData(); selectRow(selected?.id); updateControls()
+            table.groupName = { [weak self] row in guard let self, items.indices.contains(row) else { return "" }; return items[row].scope }
+            AgentSettingsStyle.primaryAction(add)
+            window?.contentView = AgentSettingsCatalog.content(table: table, toolbar: layout.toolbar, status: catalogState, actions: [importButton, add], symbol: kind == .skill ? "sparkles" : "command"); table.reloadData(); selectRow(selected?.id); updateControls()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -177,7 +179,7 @@ import UniformTypeIdentifiers
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let item = items[row]
         if detailPage != nil {
-            return AgentSettingsCatalogCell(title: item.name, summary: [item.scope, item.description].filter { !$0.isEmpty }.joined(separator: " · "), symbol: item.kind == .skill ? "sparkles" : "command", status: item.enabled ? "" : "已停用") { [weak self] in self?.selectItem(item.id) }
+            return AgentSettingsCatalogCell(title: item.name, summary: item.description, symbol: item.kind == .skill ? "sparkles" : "command", status: item.enabled ? "" : "已停用", group: table.group(at: row)) { [weak self] in self?.selectItem(item.id) }
         }
         let name = NSTextField(labelWithString: item.name + (item.enabled ? "" : " · 已停用"))
         name.font = .systemFont(ofSize: 12, weight: .semibold); name.lineBreakMode = .byTruncatingTail
@@ -197,7 +199,7 @@ import UniformTypeIdentifiers
         guard !dirty else { state.stringValue = "请先保存或放弃更改"; return }
         do {
             let all = try store.extensions.catalog(workspace: workspace), query = search.stringValue
-            items = all.filter { $0.kind == kind && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query)) }
+            items = all.filter { $0.kind == kind && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query)) }.sorted { $0.scope == $1.scope ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.scope.localizedStandardCompare($1.scope) == .orderedAscending }
             table.delegate = nil; table.reloadData(); table.delegate = self
             let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
             selectRow(next?.id); if let next { open(next) }

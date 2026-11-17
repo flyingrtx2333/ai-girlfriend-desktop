@@ -43,6 +43,13 @@ import AppKit
             let key = kind == .skill ? "skill" : "command", manager = AgentExtensionWindow(store: tasks, taskID: taskID); manager.prepareSettings(kind: kind)
             guard pane.show(category: key, identity: key + "-creation", scope: "设置项目", make: { _ in manager }) else { throw PetError("无法进入扩展创建检查") }
             let before = try tasks.extensions.catalog(workspace: workspace).filter { $0.kind == kind }
+            pane.layoutSubtreeIfNeeded()
+            if let list = find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true }) {
+                let cells = (0..<list.numberOfRows).compactMap { list.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTableCellView }
+                let names = cells.compactMap { $0.textField?.stringValue }
+                let sources = cells.compactMap { find(NSTextField.self, in: $0, matching: { $0.identifier?.rawValue == "settings-catalog-group" })?.stringValue }
+                checks[key + "GroupedCatalogKeepsStoredEntriesAndEachSourceOnce"] = list.numberOfRows == before.count && names.sorted() == before.map(\.name).sorted() && sources.sorted() == Set(before.map(\.scope)).sorted()
+            } else { checks[key + "GroupedCatalogKeepsStoredEntriesAndEachSourceOnce"] = false }
             try press("新建", in: manager)
             guard let page = pane.currentController as? AgentExtensionCreationPage else { throw PetError("新建扩展未进入设置子页") }
             checks[key + "CreationHostedWithoutModal"] = page.presentingWindow === host && page.window?.isVisible == false && host.attachedSheet == nil
@@ -142,6 +149,18 @@ import AppKit
             pane.layoutSubtreeIfNeeded()
             let table = find(AgentSettingsCatalogTable.self, in: manager.pageContentView, matching: { _ in true }), empty = find(NSTextField.self, in: manager.pageContentView, matching: { $0.identifier?.rawValue == "settings-list-empty" })
             checks[key + "EmptyCatalogShowsMessageAndCreationWithoutEditor"] = table?.numberOfRows == 0 && empty?.isHidden == false && !(empty?.stringValue.isEmpty ?? true) && pane.currentController === manager && manager.isPageVisible
+            for width in [CGFloat(800), CGFloat(528)] {
+                host.setContentSize(NSSize(width: width, height: 540)); pane.layoutSubtreeIfNeeded()
+                let root = manager.pageContentView
+                let actions = find(NSStackView.self, in: root, matching: { $0.identifier?.rawValue == "settings-catalog-actions" })
+                let filters = find(NSStackView.self, in: root, matching: { $0.identifier?.rawValue == "settings-catalog-filters" })
+                let card = find(AgentSettingsCatalogEmptyView.self, in: root, matching: { _ in true })
+                if let root, let actions, let filters, let card {
+                    let actionRect = actions.convert(actions.bounds, to: root), filterRect = filters.convert(filters.bounds, to: root), cardRect = card.convert(card.bounds, to: root)
+                    checks[key + "CreationFiltersAndEmptyCardFitAtWidth" + String(Int(width))] = !actions.arrangedSubviews.isEmpty && !actions.hasAmbiguousLayout && root.bounds.contains(actionRect) && root.bounds.contains(cardRect) && !actionRect.intersects(cardRect) && (filters.isHidden || (!actionRect.intersects(filterRect) && !filterRect.intersects(cardRect))) && !card.isHidden
+                } else { checks[key + "CreationFiltersAndEmptyCardFitAtWidth" + String(Int(width))] = false }
+            }
+            host.setContentSize(NSSize(width: 800, height: 540))
             if ["skills", "commands"].contains(key) {
                 for width in [CGFloat(800), CGFloat(528)] {
                     host.setContentSize(NSSize(width: width, height: 540)); pane.layoutSubtreeIfNeeded()

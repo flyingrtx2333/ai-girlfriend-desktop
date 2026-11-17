@@ -81,7 +81,9 @@ import UniformTypeIdentifiers
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             list.target = self; list.action = #selector(openSelectedPlugin); list.onOpen = { [weak self] in self?.showDetail() }
-            window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState); list.reloadData()
+            list.groupName = { [weak self] _ in self?.scopeWorkspace == nil ? "用户插件" : "项目插件" }
+            AgentSettingsStyle.primaryAction(upload)
+            window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState, actions: [upload], symbol: "puzzlepiece.extension"); list.reloadData()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -97,7 +99,7 @@ import UniformTypeIdentifiers
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === list, detailPage != nil, items.indices.contains(row) {
             let item = items[row]
-            return AgentSettingsCatalogCell(title: item.metadata.title, summary: item.metadata.description, symbol: "puzzlepiece.extension", status: item.enabled ? "已启用" : "已停用") { [weak self] in
+            return AgentSettingsCatalogCell(title: item.metadata.title, summary: item.metadata.description, symbol: "puzzlepiece.extension", status: item.enabled ? "已启用" : "已停用", group: list.group(at: row)) { [weak self] in
                 guard let self, let index = items.firstIndex(where: { $0.id == item.id }) else { return }; open(index); showDetail()
             }
         }
