@@ -6,8 +6,9 @@ import AppKit
     private let upstream = NSButton(checkboxWithTitle: "设为上游", target: nil, action: nil), inspectCommit = NSPopUpButton()
     private let add = AgentDialogButton(title: "添加远端", target: nil, action: nil), prepare = AgentDialogButton(title: "检查远端", target: nil, action: nil), push = AgentDialogButton(title: "推送", target: nil, action: nil)
     private let refresh = AgentDialogButton(title: "刷新", target: nil, action: nil)
-    private let stop = AgentDialogButton(title: "停止", target: nil, action: nil), verify = AgentDialogButton(title: "核对上次结果", target: nil, action: nil), state = AgentSettingsStatusField("推送状态"), text = NSTextView()
-    private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface), scroll = NSScrollView()
+    private let stop = AgentDialogButton(title: "停止", target: nil, action: nil), verify = AgentDialogButton(title: "核对上次结果", target: nil, action: nil), state = AgentSettingsStatusField("推送状态")
+    private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface), diffView = AgentGitDiffView()
+    private let displayMode = NSSegmentedControl(labels: ["统一", "并排"], trackingMode: .selectOne, target: nil, action: nil), wrap = NSButton(checkboxWithTitle: "换行", target: nil, action: nil)
     private lazy var remoteFrame = AgentSettingsPopupFrame(remote, outlined: true)
     private lazy var addressFrame = AgentSettingsPopupFrame(address, outlined: true, maximumWidth: nil)
     private lazy var commitFrame = AgentSettingsPopupFrame(inspectCommit, outlined: true, maximumWidth: nil)
@@ -42,20 +43,20 @@ import AppKit
         let header = NSStackView(views: [source, NSView(), refresh, add]), destination = NSStackView(views: [label("远端"), remoteFrame, addressFrame]), target = NSStackView(views: [label("分支"), branch, upstream, prepare])
         for row in [header, destination, target] { row.spacing = 10; row.alignment = .centerY }
         addressFrame.widthAnchor.constraint(equalTo: destination.widthAnchor, constant: -194).isActive = true
-        let top = NSStackView(views: [header, destination, target, count, commitFrame]); top.orientation = .vertical; top.alignment = .leading; top.spacing = 10
+        displayMode.selectedSegment = 0; displayMode.target = self; displayMode.action = #selector(changeDisplay); displayMode.segmentStyle = .roundRect; displayMode.font = .systemFont(ofSize: 13); displayMode.setAccessibilityLabel("待推送差异视图")
+        wrap.state = .on; wrap.target = self; wrap.action = #selector(changeDisplay); wrap.font = .systemFont(ofSize: 13)
+        for view in [displayMode, wrap] { view.heightAnchor.constraint(equalToConstant: 28).isActive = true; view.setContentHuggingPriority(.required, for: .horizontal); view.setContentCompressionResistancePriority(.required, for: .horizontal) }
+        let reading = NSStackView(views: [commitFrame, displayMode, wrap]); reading.spacing = 8; reading.alignment = .centerY
+        let top = NSStackView(views: [header, destination, target, count, reading]); top.orientation = .vertical; top.alignment = .leading; top.spacing = 10
         for row in top.arrangedSubviews { row.widthAnchor.constraint(equalTo: top.widthAnchor).isActive = true }
         inspectCommit.addItem(withTitle: "待推送整体变更")
-        text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.textContainerInset = NSSize(width: 12, height: 12)
-        text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.setAccessibilityLabel("待推送实际差异")
-        scroll.documentView = text; scroll.hasVerticalScroller = true
         state.font = .systemFont(ofSize: 12)
-        text.textColor = .labelColor; text.drawsBackground = false; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let buttons = NSStackView(views: [NSView(), verify, stop, push]); buttons.spacing = 10
         let bottom = NSStackView(views: [state, buttons]); bottom.orientation = .vertical; bottom.alignment = .leading; bottom.spacing = 8
         for row in [state, buttons] { row.widthAnchor.constraint(equalTo: bottom.widthAnchor).isActive = true }
-        for view in [top, scroll, bottom] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        for view in [top, diffView, bottom] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([top.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), top.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), top.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            scroll.leadingAnchor.constraint(equalTo: top.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: top.trailingAnchor), scroll.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12), scroll.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -12), scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
+            diffView.leadingAnchor.constraint(equalTo: top.leadingAnchor), diffView.trailingAnchor.constraint(equalTo: top.trailingAnchor), diffView.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 12), diffView.bottomAnchor.constraint(equalTo: bottom.topAnchor, constant: -12), diffView.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
             bottom.leadingAnchor.constraint(equalTo: top.leadingAnchor), bottom.trailingAnchor.constraint(equalTo: top.trailingAnchor), bottom.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])
         load()
     }
@@ -68,6 +69,9 @@ import AppKit
     private func controls() {
         for control in [remote, address, branch, upstream, prepare, add, refresh] as [NSControl] { control.isEnabled = !busy && writable }
         inspectCommit.isEnabled = !busy && review != nil
+        displayMode.isHidden = review == nil; displayMode.isEnabled = !busy
+        wrap.isHidden = diffView.patch.isEmpty; wrap.isEnabled = !busy
+        changeDisplay()
         push.isEnabled = !busy && writable && (review?.commitCount ?? 0) > 0
         verify.isHidden = store.task(taskID)?.gitPushReceipt == nil; verify.isEnabled = !busy
         stop.isHidden = !busy
@@ -108,7 +112,18 @@ import AppKit
     }
     @objc private func changeRemote() { updateAddresses(); invalidate() }
     func controlTextDidChange(_ obj: Notification) { invalidate() }
-    @objc private func invalidate() { review = nil; text.string = ""; count.stringValue = ""; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更"); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = ""; controls() }
+    @objc private func invalidate() { review = nil; render(""); count.stringValue = ""; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更"); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = ""; controls() }
+    @objc private func changeDisplay() {
+        let split = review != nil && displayMode.selectedSegment == 1, wraps = wrap.state == .on
+        if diffView.splitMode != split { diffView.splitMode = split }
+        if diffView.wraps != wraps { diffView.wraps = wraps }
+    }
+    private func render(_ patch: String, oldTitle: String = "远端", newTitle: String = "本地") {
+        diffView.show(patch, oldTitle: oldTitle, newTitle: newTitle, accessibilityContext: "待推送"); changeDisplay()
+    }
+    private func renderReview(_ value: AgentGitPushReview) {
+        render(value.diff + (value.diffTruncated ? "\n[差异已截取；可选择具体提交查看]" : ""), oldTitle: value.remoteHead == nil ? "空版本" : "远端")
+    }
     private func show(_ value: AgentGitPushReview) {
         review = value; branch.stringValue = value.targetBranch; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更")
         for line in value.commits.split(separator: "\n") {
@@ -117,7 +132,7 @@ import AppKit
             let item = NSMenuItem(title: String(pair[0].prefix(12)) + " " + pair[1], action: nil, keyEquivalent: ""); item.representedObject = pair[0]; inspectCommit.menu?.addItem(item)
         }
         count.stringValue = "待推送 \(value.commitCount) 项" + (value.commitCount > 100 ? " · 列表显示前100项" : "") + (value.uncommittedFiles > 0 ? " · \(value.uncommittedFiles) 个未提交文件留在本地" : "")
-        text.string = value.diff + (value.diffTruncated ? "\n[差异已截取；可选择具体提交查看]" : "")
+        renderReview(value)
         state.stringValue = value.commitCount == 0 ? "远端已包含目标提交" : value.remoteHead == nil ? "将在远端创建分支" : "已核对远端分支"
         controls()
     }
@@ -145,7 +160,7 @@ import AppKit
                 state.stringValue = receipt.verified ? "远端已核对 · " + String(receipt.sourceHead.prefix(12)) + (receipt.localUpdate.isEmpty ? "" : " · " + receipt.localUpdate) : "结果待核对，请核对上次结果"
                 count.stringValue = receipt.verified ? "已推送 \(value.commitCount) 项" : ""
                 inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "推送结果")
-                text.string = receipt.output; review = nil; onReceipt?(receipt)
+                review = nil; render(receipt.output); onReceipt?(receipt)
             } catch { showError(error); review = nil }
             busy = false; sending = false; controls()
         }
@@ -163,7 +178,7 @@ import AppKit
     }
     @objc private func selectCommit() {
         guard !busy, let value = review else { return }
-        guard let oid = inspectCommit.selectedItem?.representedObject as? String else { text.string = value.diff; return }
+        guard let oid = inspectCommit.selectedItem?.representedObject as? String else { renderReview(value); return }
         guard oid.range(of: "^[0-9a-f]{40}([0-9a-f]{24})?$", options: .regularExpression) != nil else { return }
         busy = true; controls(); state.textColor = AgentWorkbenchTheme.secondaryText
         job = Task { [weak self] in
@@ -171,7 +186,7 @@ import AppKit
             do {
                 let transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: value.sessionID)
                 let result = try await transport.run(["-C", transport.repository.path, "show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=medium", "--stat", "-p", oid, "--"], maximumOutput: 200_000)
-                guard !result.failed else { throw PetError(result.text) }; text.string = (result.stdout ?? "") + (result.truncated == true ? "\n[此提交差异已截取]" : "")
+                guard !result.failed else { throw PetError(result.text) }; render((result.stdout ?? "") + (result.truncated == true ? "\n[此提交差异已截取]" : ""), oldTitle: "父版本", newTitle: "当前提交")
             } catch { showError(error) }
             busy = false; controls()
         }
@@ -208,20 +223,20 @@ import AppKit
         var checks: [String: Bool] = ["pushWindowShowsActualConfiguredRemote": !remotes.isEmpty && !address.itemTitles.isEmpty]
         for (name, size) in [("normal", NSSize(width: 860, height: 650)), ("narrow", NSSize(width: 640, height: 460))] {
             window?.setContentSize(size); window?.contentView?.layoutSubtreeIfNeeded()
-            checks["pushWindowLayout-" + name] = !branch.hasAmbiguousLayout && branch.bounds.width > 100 && text.bounds.height > 100 && !push.hasAmbiguousLayout
+            checks["pushWindowLayout-" + name] = !branch.hasAmbiguousLayout && branch.bounds.width > 100 && diffView.bounds.height > 100 && !push.hasAmbiguousLayout
             if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("git-push-" + name + ".png")) }
         }
         return checks
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let items: [NSView] = [remoteFrame, addressFrame, branch, commitFrame, upstream, add, prepare, push, stop, verify, refresh]
+        let items: [NSView] = [remoteFrame, addressFrame, branch, commitFrame, upstream, add, prepare, push, stop, verify, refresh, displayMode, wrap]
         let controls = items.filter { !$0.isHiddenOrHasHiddenAncestor }.map { view in
             let rect = content.convert(view.bounds, from: view)
             return ["label": view.accessibilityLabel() ?? (view as? NSButton)?.title ?? "", "frame": [rect.minX, rect.minY, rect.width, rect.height], "inside": content.bounds.insetBy(dx: -1, dy: -1).contains(rect)] as [String: Any]
         }
         func frame(_ view: NSView) -> [CGFloat] { let r = content.convert(view.bounds, from: view); return [r.minX, r.minY, r.width, r.height] }
-        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "diff": text.string, "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow, "standaloneRemotePage": remotePage != nil, "windowSize": [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)], "contentSize": [content.bounds.width, content.bounds.height], "controls": controls, "popupFrames": [frame(remoteFrame), frame(addressFrame), frame(commitFrame)], "branchFrame": frame(branch), "diffFrame": frame(scroll), "stateFrame": frame(state)]
+        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "diff": diffView.patch, "diffReader": diffView.readingReadback(), "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow, "standaloneRemotePage": remotePage != nil, "windowSize": [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)], "contentSize": [content.bounds.width, content.bounds.height], "controls": controls, "popupFrames": [frame(remoteFrame), frame(addressFrame), frame(commitFrame)], "branchFrame": frame(branch), "diffFrame": frame(diffView), "stateFrame": frame(state)]
     }
     func checkPrepare() async {
         guard AgentTaskWorkspace.readbackEnabled else { return }

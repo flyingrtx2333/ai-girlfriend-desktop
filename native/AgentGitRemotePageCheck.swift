@@ -167,6 +167,63 @@ import AppKit
             let after = try await git.remotes()
             report["taskRemoteReturn"] = ["windowVisible": host.isVisible, "pageVisible": embedded.isPageVisible, "sameController": control.taskWorkspace.currentController === embedded, "firstResponder": host.firstResponder.map { String(describing: type(of: $0)) } ?? "nil", "focusLabel": (host.firstResponder as? NSView)?.accessibilityLabel() ?? "", "remotes": after.map(\.name)] as [String: Any]
             checks["taskRemoteSavePersistsAndReturnsToSamePushPage"] = after.count == 3 && after.contains { $0.name == "task-review" && $0.urls == [fixture.receiver.path] } && (host.firstResponder as? NSPopUpButton)?.accessibilityLabel() == "推送远端"
+            func readerGit(_ arguments: [String], write: Bool = false) async throws -> String {
+                let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 20, gitDirectory: git.directory, gitWrite: write, protectedData: store.directory, arguments: ["-C", fixture.workspace.path] + arguments)
+                guard !result.failed else { throw PetError(result.text) }; return result.stdout ?? ""
+            }
+            let readingFile = fixture.workspace.appendingPathComponent("reading.swift")
+            let originalReading = "struct PublicReading {\n    let title = \"原始公开示例\"\n" + (1...90).map { "    let item\($0) = \($0)\n" }.joined() + "}\n"
+            try Data(originalReading.utf8).write(to: readingFile)
+            _ = try await readerGit(["add", "--", "reading.swift"], write: true); _ = try await readerGit(["commit", "-m", "Public reader baseline"], write: true)
+            let changedReading = originalReading.replacingOccurrences(of: "原始公开示例", with: "新的公开示例 🐋").replacingOccurrences(of: "    let item23 = 23", with: "    let 中文说明 = \"" + String(repeating: "完整中文与表情 🐋 / public-reading-content ", count: 8) + "\"")
+            try Data(changedReading.dropLast().utf8).write(to: readingFile)
+            _ = try await readerGit(["add", "--", "reading.swift"], write: true); _ = try await readerGit(["commit", "-m", "Public reader Unicode 🐋"], write: true)
+            await embedded.checkPrepare()
+            guard let picker = find(NSPopUpButton.self, embedded.pageContentView, where: { $0.accessibilityLabel() == "待推送提交" }), let choose = picker.action,
+                  let reader = find(AgentGitDiffView.self, embedded.pageContentView, where: { _ in true }),
+                  let mode = find(NSSegmentedControl.self, embedded.pageContentView, where: { $0.accessibilityLabel() == "待推送差异视图" }),
+                  let wrap = find(NSButton.self, embedded.pageContentView, where: { $0.title == "换行" }), let display = mode.action, let wrapping = wrap.action,
+                  let oid = picker.item(at: 1)?.representedObject as? String else { throw PetError("推送共享阅读控件不可用") }
+            let overall = reader.patch
+            picker.selectItem(at: 1); NSApp.sendAction(choose, to: picker.target, from: picker)
+            try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
+            let expected = try await readerGit(["show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=medium", "--stat", "-p", oid, "--"])
+            checks["pushReaderKeepsActualCommitMetadataAndPatch"] = reader.patch == expected && expected.hasPrefix("commit " + oid) && expected.contains("Public reader Unicode 🐋") && expected.contains("\\ No newline at end of file")
+            for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                host.appearance = NSAppearance(named: theme)
+                for (kind, size) in [("normal", NSSize(width: 1320, height: 800)), ("narrow", NSSize(width: 780, height: 540))] {
+                    host.setContentSize(size); host.contentView?.layoutSubtreeIfNeeded(); await wait(0.05)
+                    let key = appearance + "-" + kind
+                    let state = embedded.workspaceReadback(), controls = state["controls"] as? [[String: Any]] ?? [], frames = state["popupFrames"] as? [[CGFloat]] ?? [], diff = state["diffFrame"] as? [CGFloat] ?? []
+                    let read = reader.readingReadback()
+                    checks["pushNumberedReaderAndControlsFit-" + key] = controls.allSatisfy { $0["inside"] as? Bool == true } && frames.count == 3 && frames[2][2] > 160 && frames[2][3] == 28 && diff.count == 4 && diff[3] >= 80 && read["gutterVisible"] as? Bool == true && abs((read["textWidth"] as? CGFloat ?? 0) - (read["viewportWidth"] as? CGFloat ?? 1)) < 0.5 && reader.patch == expected
+                    mode.selectedSegment = 1; NSApp.sendAction(display, to: mode.target, from: mode); host.contentView?.layoutSubtreeIfNeeded()
+                    checks["pushSplitUsesSameActualCommit-" + key] = reader.splitMode && reader.patch == expected && !mode.isHidden && mode.isEnabled && wrap.isEnabled
+                    mode.selectedSegment = 0; NSApp.sendAction(display, to: mode.target, from: mode)
+                    let selection = (expected as NSString).range(of: "新的公开示例 🐋"); reader.text.setSelectedRange(selection)
+                    wrap.state = .off; NSApp.sendAction(wrapping, to: wrap.target, from: wrap); host.contentView?.layoutSubtreeIfNeeded()
+                    checks["pushWrapTogglePreservesUnicodeSelection-" + key] = !reader.wraps && reader.text.selectedRange() == selection && selection.location != NSNotFound && reader.patch == expected
+                    wrap.state = .on; NSApp.sendAction(wrapping, to: wrap.target, from: wrap); host.contentView?.layoutSubtreeIfNeeded()
+                    report["numbered-push-" + key] = embedded.workspaceReadback()
+                }
+            }
+            picker.selectItem(at: 0); NSApp.sendAction(choose, to: picker.target, from: picker)
+            checks["pushOverallSelectionRestoresExactPreparedPatch"] = reader.patch == overall
+            host.appearance = nil; host.setContentSize(NSSize(width: 1320, height: 800)); host.contentView?.layoutSubtreeIfNeeded()
+            let largeFile = fixture.workspace.appendingPathComponent("large-public.txt")
+            try Data((1...3000).map { "公开截取验收行 \($0) " + String(repeating: "public-content ", count: 8) + "\n" }.joined().utf8).write(to: largeFile)
+            _ = try await readerGit(["add", "--", "large-public.txt"], write: true); _ = try await readerGit(["commit", "-m", "Public truncated patch check"], write: true)
+            await embedded.checkPrepare()
+            let truncatedOverall = reader.patch
+            checks["actualLargeOverallPatchKeepsTruncationNotice"] = truncatedOverall.utf8.count >= 199_900 && truncatedOverall.hasSuffix("[差异已截取；可选择具体提交查看]")
+            picker.selectItem(at: 1); NSApp.sendAction(choose, to: picker.target, from: picker)
+            try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
+            checks["actualLargeSingleCommitKeepsTruncationNotice"] = reader.patch.utf8.count >= 199_900 && reader.patch.contains("Public truncated patch check") && reader.patch.hasSuffix("[此提交差异已截取]")
+            picker.selectItem(at: 0); NSApp.sendAction(choose, to: picker.target, from: picker)
+            checks["returningToActualTruncatedOverallRetainsNoticeAndBytes"] = reader.patch == truncatedOverall
+            let finalBranch = try field("推送目标分支", in: embedded.pageContentView)
+            finalBranch.stringValue = "bad branch"; finalBranch.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: finalBranch))
+            checks["changingTargetClearsOldPatchAndNumberGutter"] = reader.patch.isEmpty && reader.readingReadback()["gutterVisible"] as? Bool == false && mode.isHidden && wrap.isHidden && embedded.workspaceReadback()["pushEnabled"] as? Bool == false
             checks["originalTaskDraftAndModelUsagePreserved"] = tasks.task(fixture.taskID)?.draft == "保留 Git 远端页面验收草稿" && requests == 0 && tasks.tasks.allSatisfy { $0.inputTokens == 0 && $0.outputTokens == 0 && $0.modelReceipts?.isEmpty != false }
             report["workspace"] = fixture.workspace.path; report["taskID"] = fixture.taskID; report["receiver"] = fixture.receiver.path
         } catch { report["error"] = error.localizedDescription }
