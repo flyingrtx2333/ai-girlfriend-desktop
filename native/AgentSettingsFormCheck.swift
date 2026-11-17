@@ -48,8 +48,8 @@ import AppKit
                 let cells = (0..<list.numberOfRows).compactMap { list.view(atColumn: 0, row: $0, makeIfNecessary: true) as? NSTableCellView }
                 let names = cells.compactMap { $0.textField?.stringValue }
                 let sources = cells.compactMap { find(NSTextField.self, in: $0, matching: { $0.identifier?.rawValue == "settings-catalog-group" })?.stringValue }
-                checks[key + "GroupedCatalogKeepsStoredEntriesAndEachSourceOnce"] = list.numberOfRows == before.count && names.sorted() == before.map(\.name).sorted() && sources.sorted() == Set(before.map(\.scope)).sorted()
-            } else { checks[key + "GroupedCatalogKeepsStoredEntriesAndEachSourceOnce"] = false }
+                checks[key + "GroupedCatalogKeepsStoredEntriesSourcesAndOriginalFirstSelection"] = list.numberOfRows == before.count && names.sorted() == before.map(\.name).sorted() && sources.sorted() == Set(before.map(\.scope)).sorted() && list.selectedRow == 0 && names.first == before.first?.name
+            } else { checks[key + "GroupedCatalogKeepsStoredEntriesSourcesAndOriginalFirstSelection"] = false }
             try press("新建", in: manager)
             guard let page = pane.currentController as? AgentExtensionCreationPage else { throw PetError("新建扩展未进入设置子页") }
             checks[key + "CreationHostedWithoutModal"] = page.presentingWindow === host && page.window?.isVisible == false && host.attachedSheet == nil

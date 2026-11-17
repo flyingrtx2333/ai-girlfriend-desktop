@@ -199,7 +199,11 @@ import UniformTypeIdentifiers
         guard !dirty else { state.stringValue = "请先保存或放弃更改"; return }
         do {
             let all = try store.extensions.catalog(workspace: workspace), query = search.stringValue
-            items = all.filter { $0.kind == kind && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query)) }.sorted { $0.scope == $1.scope ? $0.name.localizedStandardCompare($1.name) == .orderedAscending : $0.scope.localizedStandardCompare($1.scope) == .orderedAscending }
+            let matches = all.filter { $0.kind == kind && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query)) }
+            var seen = Set<String>(), sources: [String] = []
+            for item in matches where seen.insert(item.scope).inserted { sources.append(item.scope) }
+            let groups = Dictionary(grouping: matches, by: \.scope)
+            items = sources.flatMap { groups[$0] ?? [] }
             table.delegate = nil; table.reloadData(); table.delegate = self
             let next = items.first(where: { $0.id == (id ?? selected?.id) }) ?? items.first
             selectRow(next?.id); if let next { open(next) }
