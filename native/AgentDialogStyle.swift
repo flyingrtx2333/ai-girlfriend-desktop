@@ -178,6 +178,8 @@ import AppKit
 @MainActor private final class AgentComboBoxCell: NSComboBoxCell {
     override func draw(withFrame frame: NSRect, in controlView: NSView) {
         guard let field = controlView as? AgentComboBox else { super.draw(withFrame: frame, in: controlView); return }
+        // The native draw pass also updates popup geometry; interior drawing alone narrows its list.
+        super.draw(withFrame: frame, in: controlView)
         AgentInputAppearance.paint(frame, in: field, outlined: true)
         // Combo cells position their text in titleRect, unlike ordinary fields.
         super.drawInterior(withFrame: super.titleRect(forBounds: frame), in: controlView)
