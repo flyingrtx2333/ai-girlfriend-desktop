@@ -52,7 +52,8 @@ import UniformTypeIdentifiers
     private var activeSection = 0, saving = false
     var onWorkspaceChange: (() -> Void)?
     var onWindowClose: (() -> Void)?
-    var workspaceHasUnsavedChanges: Bool { dirty }
+    var workspaceHasUnsavedChanges: Bool { dirty || wikiPlanWindow?.hasUnsavedChanges == true }
+    var recoveryWikiPlan: AgentWikiPlanWindow? { wikiPlanWindow }
     var isKnowledgeWikiReader: Bool { wikiOnly }
     var canPreserveForQuit: Bool { store.task(taskID).map { $0.sideTask?.retained != false } == true }
     override var minimumSettingsContentHeight: CGFloat { sections.selectedSegment == 5 ? 220 : super.minimumSettingsContentHeight }
@@ -82,7 +83,7 @@ import UniformTypeIdentifiers
     private var textFocusRequested = false
     private var hasInlineVideoPlayback: Bool { !video.isHidden && openedFile.map(AgentVideoSnapshot.supports) == true }
     var hasIndependentVideoWindow: Bool { videoWindow?.hasIndependentWindow == true }
-    var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true }
+    var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true || wikiPlanWindow?.hasIndependentWindow == true }
     var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow || sourceWindow?.hasVideoPlayback == true }
     init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
         self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.wikiOnly = wikiOnly; self.memoryWorkspace = memoryWorkspace
@@ -214,6 +215,7 @@ import UniformTypeIdentifiers
         guard wikiReviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return false }
         guard !saving else { state.stringValue = "正在保存…"; return false }
         if isPageVisible, !viewer.isHidden, !textViewportScheduled, presentingWindow?.firstResponder === text { rememberedTextFocus = true }
+        guard wikiPlanWindow?.prepareWorkspaceNavigation() != false else { return false }
         do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); sourceWindow?.prepareWorkspaceNavigation(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
     struct RecoveryState: Codable {
@@ -235,14 +237,16 @@ import UniformTypeIdentifiers
         var textViewport: AgentTextViewport? = nil
         var markdownViewport: AgentMarkdownReader.ViewRecovery? = nil
         var sourceWindow: AgentMarkdownSourceWindow.RecoveryState? = nil
+        var wikiPlan: AgentWikiPlanWindow.RecoveryState? = nil
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "record", page.asset == nil,
               let object = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "videoWindow", "textViewport", "markdownViewport", "sourceWindow"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
+              Set(object.keys).isSubset(of: ["version", "taskID", "documentOnly", "section", "selection", "file", "memoryWorkspace", "openedHash", "text", "encoding", "bom", "mode", "dirty", "video", "videoWindow", "textViewport", "markdownViewport", "sourceWindow", "wikiPlan"]) else { throw PetError("文本恢复记录格式不受支持，原草稿已保留") }
         if let raw = object["textViewport"], !(raw is NSNull) { try AgentTextViewport.validateObject(raw) }
         if let raw = object["markdownViewport"], !(raw is NSNull) { try AgentMarkdownReader.ViewRecovery.validateObject(raw) }
         if let raw = object["sourceWindow"], !(raw is NSNull) { try AgentMarkdownSourceWindow.RecoveryState.validateObject(raw) }
+        if let raw = object["wikiPlan"], !(raw is NSNull) { try AgentWikiPlanWindow.RecoveryState.validateObject(raw) }
         if let video = object["video"] {
             guard let video = video as? [String: Any], Set(video.keys).isSubset(of: ["version", "hash", "time", "duration", "rate", "volume", "muted"]) else { throw PetError("视频播放记录格式不受支持，原记录已保留") }
         }
@@ -251,10 +255,11 @@ import UniformTypeIdentifiers
         }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state)
         guard value.version == 1, value.taskID == page.taskID, (0...6).contains(value.section), [0, 1].contains(value.mode),
-              value.dirty == page.dirty, AgentTextEncoding(rawValue: value.encoding) != nil,
+              (value.dirty || value.wikiPlan?.dirty == true) == page.dirty, AgentTextEncoding(rawValue: value.encoding) != nil,
               !value.dirty || (value.text != nil && value.openedHash?.count == 64),
               value.file.map({ $0.hasPrefix("/") && !$0.contains("\0") }) ?? true,
-              value.videoWindow?.valid != false, value.textViewport?.valid != false, value.markdownViewport?.valid != false, value.sourceWindow?.valid != false else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
+              value.videoWindow?.valid != false, value.textViewport?.valid != false, value.markdownViewport?.valid != false, value.sourceWindow?.valid != false,
+              value.wikiPlan?.valid != false, value.wikiPlan.map({ $0.taskID == value.taskID }) ?? true else { throw PetError("文本恢复版本或所属文件无效，原草稿已保留") }
         if value.textViewport != nil || value.markdownViewport != nil {
             guard value.video == nil, value.openedHash != nil else { throw PetError("文本位置没有对应正文，原记录已保留") }
         }
@@ -276,6 +281,7 @@ import UniformTypeIdentifiers
             guard sourceWindow === current else { continue }; source = value; break
         }
         let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
+        let plan = try wikiPlanWindow?.captureWorkspaceRecovery()
         let viewport: AgentTextViewport?
         if openedHash != nil, !hasInlineVideoPlayback {
             if let pendingTextViewport, pendingTextViewport.matches(text) { viewport = pendingTextViewport }
@@ -288,9 +294,9 @@ import UniformTypeIdentifiers
         } else { viewport = nil }
         let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
             file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
-            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback, videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport, sourceWindow: source)
+            text: dirty ? text.string : nil, encoding: fileFormat.encoding.rawValue, bom: fileFormat.bom, mode: displayMode.selectedSegment, dirty: dirty, video: playback, videoWindow: child, textViewport: viewport, markdownViewport: markdownViewport, sourceWindow: source, wikiPlan: plan)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty, asset: nil)
+        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "record", state: try encoder.encode(value), dirty: dirty || plan?.dirty == true, asset: nil)
         _ = try Self.recoveryState(page); return page
     }
     func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
@@ -306,7 +312,7 @@ import UniformTypeIdentifiers
             else if let selection = value.selection { selectItem(section: value.section, value: selection) }
             if value.video != nil, openedFile?.path != value.file || video.isHidden { throw PetError("原视频暂不可访问，播放记录已保留") }
             if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
-            try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); return
+            try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan); return
         }
         guard let draft = value.text, let hash = value.openedHash else { throw PetError("恢复草稿缺少原始版本") }
         var issue: String?, currentHash: String?
@@ -332,7 +338,7 @@ import UniformTypeIdentifiers
         else { state.stringValue = currentHash == hash ? "已恢复未保存内容" : "文件已更改，草稿已恢复；保存前请比较" }
         if !displayMode.isHidden { displayMode.selectedSegment = value.mode; switchDocumentMode() }
         text.undoManager?.removeAllActions(); updateTaskItemPicker(); onWorkspaceChange?()
-        try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow)
+        try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan)
     }
     private func restoreTextViewports(_ value: RecoveryState) throws {
         if let viewport = value.textViewport {
@@ -384,6 +390,7 @@ import UniformTypeIdentifiers
         guard onSettingsPush != nil else { return }
         if let sourceWindow, sourceWindow.needsHostedPresentation { presentSettingsChild(sourceWindow) }
         if pendingWikiVideoPage, let videoWindow { pendingWikiVideoPage = false; presentSettingsChild(videoWindow) }
+        if let wikiPlanWindow, wikiPlanWindow.needsHostedPresentation { presentSettingsChild(wikiPlanWindow) }
     }
     private func restoreVideoWindow(_ value: AgentVideoWindow.RecoveryState?) {
         guard let value else { return }
@@ -499,16 +506,22 @@ import UniformTypeIdentifiers
     private func openWikiPlan() {
         guard wikiSharingTask == nil else { return }
         do {
-            guard let task = store.task(taskID), let workspace = task.workspace else { throw PetError("请选择项目文件夹") }
-            if let old = wikiPlanWindow, old.isPageVisible { old.presentingWindow?.makeKeyAndOrderFront(nil); return }
-            let original = try AgentFiles(workspace: workspace).root
-            let next = try AgentWikiPlanWindow(workspace: workspace, storage: store.directory) { [weak self] in
-                guard let self, let current = self.store.task(self.taskID), !current.archived, current.kind != "hook", (try? AgentFiles(workspace: current.workspace).root) == original, (try? self.store.agents.limits(current, store: self.store).readOnly) == false else { return false }
-                let path = original.appendingPathComponent(AgentWikiPlan.configurationPath).path
-                return FileManager.default.isWritableFile(atPath: FileManager.default.fileExists(atPath: path) ? path : original.path)
+            if let old = wikiPlanWindow, old.needsHostedPresentation || old.isPageVisible || old.hasIndependentWindow {
+                if old.needsHostedPresentation { presentSettingsChild(old) } else { old.presentingWindow?.makeKeyAndOrderFront(nil) }; return
             }
-            wikiPlanWindow = next; presentSettingsChild(next)
+            let next = try AgentWikiPlanWindow(store: store, taskID: taskID)
+            retainWikiPlan(next); presentSettingsChild(next)
         } catch { state.stringValue = error.localizedDescription }
+    }
+    private func retainWikiPlan(_ next: AgentWikiPlanWindow) {
+        wikiPlanWindow?.onClose = nil; wikiPlanWindow?.close(); wikiPlanWindow = next
+        next.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
+        next.onClose = { [weak self, weak next] in guard let self, wikiPlanWindow === next else { return }; wikiPlanWindow = nil; onWorkspaceChange?() }
+    }
+    private func restoreWikiPlan(_ value: AgentWikiPlanWindow.RecoveryState?) throws {
+        guard let value else { return }
+        let next = try AgentWikiPlanWindow(store: store, taskID: taskID, restoring: value); retainWikiPlan(next)
+        if value.presentation == "window" { next.presentRecoveredWindow() }
     }
     private func updateWikiSharingState() {
         let task = store.task(taskID), writable = task.map { !$0.archived && $0.kind != "hook" && (try? store.agents.limits($0, store: store).readOnly) == false } ?? false
@@ -1128,7 +1141,7 @@ import UniformTypeIdentifiers
               let files = try? AgentFiles(workspace: task.workspace), let data = try? files.readData(file), let document = try? AgentTextFile.decode(data) else { return }
         loadText(document, data: data, file: file, task: task)
     }
-    func checkOpenKnowledgePlan() { if CommandLine.arguments.contains("--knowledge-page-check") { openWikiPlan() } }
+    func checkOpenKnowledgePlan() { if ["--knowledge-page-check", "--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui"].contains(where: CommandLine.arguments.contains) { openWikiPlan() } }
     func checkKnowledgeReview(_ action: String, language: String? = nil) async -> AgentKnowledgeReviewWindow? {
         guard AgentKnowledgePageHost.readbackEnabled else { return nil }
         if let language { guard ["zh", "en"].contains(language) else { return nil }; wikiTree.setLanguage(language); guard wikiTree.onLanguage?(language) == true else { return nil } }

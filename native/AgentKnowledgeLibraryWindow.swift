@@ -14,10 +14,13 @@ import UniformTypeIdentifiers
     private var catalog = AgentKnowledgeCatalog(), revision = "", baseRows: [AgentKnowledgeBase] = [], fileRows: [AgentKnowledgeSource] = []
     private var baseID: String?, sourceID: String?, selectedText = "", job: Task<Void, Never>?, previewJob: Task<Void, Never>?, busy = false
     private enum Page { case bases, files, document, name }
-    private var page = Page.bases, editingBaseID: String?, editingWorkspace: String?, nameChanged = false
+    private var page = Page.bases, editingBaseID: String?, editingWorkspace: String?, editingBaseWorkspace: String?, editingRevision: String?, nameChanged = false
+    private var nameSelection: AgentTextViewport.Selection?, nameFocus = "", pendingRecovery: RecoveryState?, applyingRecovery = false, recoveryScheduled = false
+    var onWorkspaceChange: (() -> Void)?
     var boundTaskID: String? { taskID }
     var hasPendingChanges: Bool { nameChanged || busy }
-    private let back = NSButton(title: "返回", target: nil, action: nil), baseName = NSTextField(string: ""), baseScope = NSPopUpButton()
+    var canPreserveForQuit: Bool { page == .name && !busy && (taskID == nil || taskID.flatMap(store.task).map { $0.sideTask?.retained != false } == true) }
+    private let back = NSButton(title: "返回", target: nil, action: nil), baseName = AgentDialogTextField(frame: .zero), baseScope = NSPopUpButton()
     private let nameForm = NSStackView(), saveName = NSButton(title: "保存", target: nil, action: nil)
     private let baseList = NSScrollView(), fileList = NSScrollView(), viewer = NSScrollView(), body = NSView()
     private var navigation: NSStackView!, header: NSStackView!, fileHeader: NSStackView!, previewHeader: NSStackView!, previewFooter: NSStackView!, baseFooter: NSStackView!
@@ -53,6 +56,7 @@ import UniformTypeIdentifiers
         fileHeader = row([fileSearch, add, replace, removeFile]); previewHeader = row([format, NSView(), NSTextField(labelWithString: "部分"), part, total, copy])
         previewFooter = row([NSView(), open, download])
         baseName.placeholderString = "知识库名称"; baseName.setAccessibilityLabel("知识库名称"); baseName.delegate = self
+        NotificationCenter.default.addObserver(self, selector: #selector(nameSelectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
         baseScope.addItems(withTitles: ["用户", "当前工作区"]); baseScope.setAccessibilityLabel("知识库生效范围"); baseScope.autoenablesItems = false; baseScope.item(at: 1)?.isEnabled = workspace != nil
         baseScope.target = self; baseScope.action = #selector(nameScopeChanged)
         saveName.target = self; saveName.action = #selector(saveBaseName); saveName.keyEquivalent = "s"; saveName.keyEquivalentModifierMask = .command
@@ -88,10 +92,20 @@ import UniformTypeIdentifiers
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmName() }
     private func confirmName() -> Bool {
         guard page == .name, nameChanged else { return true }
-        guard AgentUnsavedChanges.discard("放弃未保存的知识库名称？") else { return false }; nameChanged = false; page = .bases; updatePage(); return true
+        guard AgentUnsavedChanges.discard("放弃未保存的知识库名称？") else { return false }; nameChanged = false; pendingRecovery = nil; page = .bases; updatePage(); onWorkspaceChange?(); return true
     }
-    func controlTextDidChange(_ notification: Notification) { if notification.object as? NSTextField === baseName { nameChanged = true } }
-    @objc private func nameScopeChanged() { nameChanged = true }
+    func controlTextDidChange(_ notification: Notification) { if notification.object as? NSTextField === baseName, !applyingRecovery { nameChanged = true; pendingRecovery = nil; rememberNameSelection(); onWorkspaceChange?() } }
+    @objc private func nameScopeChanged() { nameChanged = true; pendingRecovery = nil; nameFocus = "scope"; onWorkspaceChange?() }
+    @objc private func nameSelectionChanged(_ notification: Notification) {
+        guard !applyingRecovery, page == .name, let editor = baseName.currentEditor() as? NSTextView, notification.object as? NSTextView === editor else { return }
+        rememberNameSelection(); onWorkspaceChange?()
+    }
+    private func rememberNameSelection() {
+        if let editor = baseName.currentEditor() as? NSTextView, presentingWindow?.firstResponder === editor {
+            let range = editor.selectedRange(); nameSelection = .init(location: range.location, length: range.length); nameFocus = "name"
+        } else if presentingWindow?.firstResponder === baseScope { nameFocus = "scope" }
+    }
+    func prepareWorkspaceNavigation() -> Bool { !busy && presentingWindow?.hasBlockingDialog != true }
     func windowWillClose(_ notification: Notification) { job?.cancel(); previewJob?.cancel() }
     @objc private func filterChanged() { reload() }
     func checkState() -> [String: Any] {
@@ -211,21 +225,85 @@ import UniformTypeIdentifiers
         } else { preview.textStorage?.setAttributedString(NSAttributedString(string: selectedText, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor])) }
     }
     private func editBaseName(_ base: AgentKnowledgeBase?) {
-        editingBaseID = base?.id; editingWorkspace = workspace; baseName.stringValue = base?.name ?? ""; baseScope.selectItem(at: base?.workspace == nil ? 0 : 1); baseScope.isEnabled = base == nil; nameChanged = false
-        page = .name; updatePage(); presentingWindow?.makeFirstResponder(baseName)
+        editingBaseID = base?.id; editingWorkspace = workspace; editingBaseWorkspace = base?.workspace; editingRevision = revision
+        baseName.stringValue = base?.name ?? ""; baseScope.selectItem(at: base?.workspace == nil ? 0 : 1); baseScope.isEnabled = base == nil; baseScope.item(at: 1)?.isEnabled = workspace != nil; nameChanged = false
+        pendingRecovery = nil; nameSelection = nil; nameFocus = "name"; page = .name; updatePage(); presentingWindow?.makeFirstResponder(baseName); onWorkspaceChange?()
     }
     @objc private func newBase() { editBaseName(nil) }
     @objc private func renameBase() { if let base = selectedBase { editBaseName(base) } }
-    @objc private func cancelBaseName() { nameChanged = false; page = editingBaseID == nil ? .bases : .files; updatePage() }
+    @objc private func cancelBaseName() { nameChanged = false; pendingRecovery = nil; page = editingBaseID == nil ? .bases : .files; reload(); onWorkspaceChange?() }
     @objc private func saveBaseName() {
         do {
-            if let editingBaseID { try store.knowledge.rename(editingBaseID, name: baseName.stringValue, expected: revision); baseID = editingBaseID }
+            if let editingBaseID { try store.knowledge.rename(editingBaseID, name: baseName.stringValue, expected: editingRevision ?? revision); baseID = editingBaseID }
             else {
                 if baseScope.indexOfSelectedItem == 1 { guard editingWorkspace != nil, workspace == editingWorkspace else { throw PetError("工作区已变化，名称草稿已保留；请返回后重新选择范围") } }
                 let base = try store.knowledge.create(name: baseName.stringValue, workspace: baseScope.indexOfSelectedItem == 1 ? editingWorkspace : nil); baseID = base.id; sourceID = nil; archived.state = .off; baseSearch.stringValue = ""; scope.selectItem(at: 0)
             }
-            nameChanged = false; page = .files; reload(); state.stringValue = "已保存"
+            nameChanged = false; pendingRecovery = nil; page = .files; reload(); state.stringValue = "已保存"
         } catch { state.stringValue = error.localizedDescription }
+        onWorkspaceChange?()
+    }
+    struct RecoveryState: Codable {
+        var version = 1
+        var taskID: String?, openedWorkspace: String?, destinationWorkspace: String?, editingBaseID: String?, editingRevision: String
+        var baseID: String?, sourceID: String?, name: String, project: Bool, baseQuery: String, fileQuery: String, filter: Int, archived: Bool
+        var selection: AgentTextViewport.Selection?, focus: String, status: String, baseY: Double, fileY: Double
+        var valid: Bool {
+            let paths = [openedWorkspace, destinationWorkspace].compactMap { $0 }
+            let ids = [taskID, editingBaseID, baseID, sourceID].compactMap { $0 }
+            return version == 1 && ids.allSatisfy { UUID(uuidString: $0) != nil } && paths.allSatisfy { $0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 8192 && URL(fileURLWithPath: $0).standardizedFileURL.path == $0 } &&
+                (taskID != nil || openedWorkspace == nil) && project == (destinationWorkspace != nil) && (editingBaseID != nil || !project || destinationWorkspace == openedWorkspace) &&
+                (editingBaseID == nil || editingBaseID == baseID) && editingRevision.utf8.count <= 4096 && !editingRevision.contains("\0") && name.utf8.count <= 20_000_000 &&
+                [baseQuery, fileQuery, status].allSatisfy { $0.utf8.count <= 100_000 } && (0...2).contains(filter) && ["", "name", "scope"].contains(focus) &&
+                (selection?.valid(in: (name as NSString).length) ?? true) && [baseY, fileY].allSatisfy { $0.isFinite && (0...1_000_000_000).contains($0) }
+        }
+        static func decode(_ data: Data) throws -> Self {
+            guard data.count <= 20_000_000, let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys).isSubset(of: ["version", "taskID", "openedWorkspace", "destinationWorkspace", "editingBaseID", "editingRevision", "baseID", "sourceID", "name", "project", "baseQuery", "fileQuery", "filter", "archived", "selection", "focus", "status", "baseY", "fileY"]) else { throw PetError("知识库命名恢复格式不受支持，原记录已保留") }
+            if let selection = raw["selection"], !(selection is NSNull) { guard let selection = selection as? [String: Any], Set(selection.keys).isSubset(of: ["location", "length"]) else { throw PetError("知识库名称选区无效") } }
+            let value = try JSONDecoder().decode(Self.self, from: data); guard value.valid else { throw PetError("知识库命名范围或内容无效，原记录已保留") }; return value
+        }
+    }
+    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.KnowledgeLibrary? {
+        guard page == .name else { return nil }; guard prepareWorkspaceNavigation() else { throw PetError("请先完成当前知识库操作") }
+        if pendingRecovery == nil { rememberNameSelection() }
+        let destination = baseScope.indexOfSelectedItem == 1 ? (editingBaseID == nil ? editingWorkspace : editingBaseWorkspace) : nil
+        let value = pendingRecovery ?? RecoveryState(taskID: taskID, openedWorkspace: editingWorkspace, destinationWorkspace: destination, editingBaseID: editingBaseID, editingRevision: editingRevision ?? revision, baseID: baseID, sourceID: sourceID, name: baseName.stringValue, project: baseScope.indexOfSelectedItem == 1, baseQuery: baseSearch.stringValue, fileQuery: fileSearch.stringValue, filter: scope.indexOfSelectedItem, archived: archived.state == .on, selection: nameSelection, focus: nameFocus, status: state.stringValue, baseY: max(0, baseList.contentView.bounds.minY), fileY: max(0, fileList.contentView.bounds.minY))
+        guard value.valid else { throw PetError("知识库命名草稿或范围无效，原记录已保留") }
+        let data = try JSONEncoder().encode(value); guard data.count <= 20_000_000 else { throw PetError("知识库命名草稿过大，原记录已保留") }
+        return .init(state: data, dirty: nameChanged)
+    }
+    func restoreWorkspaceRecovery(_ envelope: AgentWorkspaceRecovery.KnowledgeLibrary) throws {
+        let value = try RecoveryState.decode(envelope.state); guard value.taskID == taskID else { throw PetError("知识库命名所属任务已变化，原记录已保留") }
+        page = .name; baseSearch.stringValue = value.baseQuery; fileSearch.stringValue = value.fileQuery; scope.selectItem(at: value.filter); archived.state = value.archived ? .on : .off; reload()
+        editingBaseID = value.editingBaseID; editingWorkspace = value.openedWorkspace; editingBaseWorkspace = value.destinationWorkspace; editingRevision = value.editingRevision
+        baseID = value.baseID; sourceID = value.sourceID; baseName.stringValue = value.name; baseScope.selectItem(at: value.project ? 1 : 0); baseScope.isEnabled = value.editingBaseID == nil
+        baseScope.item(at: 1)?.isEnabled = workspace != nil && workspace == value.openedWorkspace; baseScope.toolTip = value.destinationWorkspace
+        nameChanged = envelope.dirty; nameSelection = value.selection; nameFocus = value.focus; state.stringValue = value.status; pendingRecovery = value; updatePage(); scheduleRecovery()
+    }
+    private func scheduleRecovery() {
+        guard pendingRecovery != nil, !recoveryScheduled else { return }; recoveryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { recoveryScheduled = false }
+            guard page == .name, isPageVisible, let value = pendingRecovery else { return }; applyingRecovery = true
+            if value.focus == "name" { presentingWindow?.makeFirstResponder(baseName); if let selection = value.selection { (baseName.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) } }
+            else if value.focus == "scope" { presentingWindow?.makeFirstResponder(baseScope) }
+            baseList.contentView.scroll(to: NSPoint(x: 0, y: value.baseY)); baseList.reflectScrolledClipView(baseList.contentView)
+            fileList.contentView.scroll(to: NSPoint(x: 0, y: value.fileY)); fileList.reflectScrolledClipView(fileList.contentView)
+            pendingRecovery = nil; applyingRecovery = false
+        }
+    }
+    override func settingsDidAppear() { super.settingsDidAppear(); scheduleRecovery() }
+    override func pageDidLayout() { scheduleRecovery() }
+    func windowDidBecomeKey(_ notification: Notification) { scheduleRecovery() }
+    func checkRecovery(action: String, name: String? = nil, project: Bool? = nil, baseID: String? = nil, selection: NSRange? = nil) throws {
+        guard ["--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui"].contains(where: CommandLine.arguments.contains) else { throw PetError("仅用于知识库命名恢复验收") }
+        if action == "new" { newBase() }
+        else if action == "rename" { reload(); self.baseID = baseID; reloadFiles(); renameBase() }
+        if let name { baseName.stringValue = name; nameSelection = nil; nameChanged = true; pendingRecovery = nil }
+        if let project { baseScope.selectItem(at: project ? 1 : 0); nameScopeChanged() }
+        if let selection { presentingWindow?.makeFirstResponder(baseName); (baseName.currentEditor() as? NSTextView)?.setSelectedRange(selection); rememberNameSelection() }
+        if action == "save" { saveBaseName() } else if action == "cancel" { cancelBaseName() }
+        onWorkspaceChange?()
     }
     @objc private func archiveBase() {
         guard let base = selectedBase else { return }

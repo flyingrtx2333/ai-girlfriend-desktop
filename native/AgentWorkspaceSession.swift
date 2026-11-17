@@ -181,7 +181,7 @@ private actor AgentWorkspaceJournal {
         coldFloating.removeAll { ids.contains($0.taskID) }
         if var knowledge = coldKnowledge {
             knowledge.readers.removeAll { ids.contains($0.taskID) }
-            coldKnowledge = ids.contains(knowledge.identity) || knowledge.readers.isEmpty ? nil : knowledge
+            coldKnowledge = ids.contains(knowledge.identity) || knowledge.readers.isEmpty && knowledge.library == nil ? nil : knowledge
         }
         for (_, entry) in Array(floating) where ids.contains(entry.0.taskID) { releaseFloating(entry.1); entry.1.endSettingsHosting() }
         changed()
@@ -265,11 +265,16 @@ private actor AgentWorkspaceJournal {
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryEditors.compactMap { editor in
                     if let cards = editor as? AgentKnowledgeCardWindow, cards.canPreserveForQuit { return ObjectIdentifier(cards) }
                     if let index = editor as? AgentKnowledgeWindow, index.canPreserveForQuit { return ObjectIdentifier(index) }
+                    if let library = editor as? AgentKnowledgeLibraryWindow, library.canPreserveForQuit { return ObjectIdentifier(library) }
                     return nil
                 })
                 for (_, _, controller) in editors {
                     if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
                        let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
+                }
+                let records = editors.compactMap { $0.2 as? AgentRecordWindow } + owner.knowledgePageHost.recoveryReaders
+                for record in records where preservedEditors.contains(ObjectIdentifier(record)) {
+                    if let plan = record.recoveryWikiPlan, plan.canPreserveForQuit, try plan.captureWorkspaceRecovery() != nil { preservedEditors.insert(ObjectIdentifier(plan)) }
                 }
             }
         } catch { failure = error; preservedEditors = []; owner.setStatus("工作区恢复未保存：" + error.localizedDescription, error: true) }

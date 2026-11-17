@@ -32,6 +32,11 @@ struct AgentWorkspaceRecovery: Sendable {
         var root: String
         var active: Bool
         var readers: [Page]
+        var library: KnowledgeLibrary? = nil
+    }
+    struct KnowledgeLibrary: Codable, Equatable, Sendable {
+        var state: Data
+        var dirty: Bool
     }
     struct Window: Codable, Equatable, Sendable {
         var version = 1
@@ -125,7 +130,8 @@ struct AgentWorkspaceRecovery: Sendable {
         }
         if let knowledge = value.knowledge {
             guard knowledge.version == 1, knowledge.identity == "standalone" || UUID(uuidString: knowledge.identity) != nil,
-                  ["library", "wiki"].contains(knowledge.root), !knowledge.readers.isEmpty, knowledge.readers.count <= 32 else { throw PetError("知识中心恢复格式无效或版本不受支持") }
+                  ["library", "wiki"].contains(knowledge.root), !knowledge.readers.isEmpty || knowledge.library != nil, knowledge.readers.count <= 32,
+                  knowledge.library.map({ $0.state.count <= Self.maximumState }) ?? true else { throw PetError("知识中心恢复格式无效或版本不受支持") }
             for page in knowledge.readers {
                 try validate(page)
                 guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
@@ -155,7 +161,8 @@ struct AgentWorkspaceRecovery: Sendable {
             if let value = page["tab"] { try tab(value) }; try frame(page["frame"])
         }
         if let raw = object["knowledge"], !(raw is NSNull) {
-            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers"])
+            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers", "library"])
+            if let library = knowledge["library"], !(library is NSNull) { _ = try keys(library, ["state", "dirty"]) }
             for raw in knowledge["readers"] as? [Any] ?? [] {
                 let page = try keys(raw, ["version", "taskID", "kind", "state", "dirty", "asset"])
                 if let asset = page["asset"], !(asset is NSNull) { _ = try keys(asset, ["slot", "hash"]) }

@@ -13,8 +13,10 @@ import AppKit
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.map(\.controller) } }
     var selectedRoot: String { root }
     var recoveryReaders: [AgentRecordWindow] { (stacks["wiki"] ?? []).compactMap { $0.controller as? AgentRecordWindow }.filter(\.isKnowledgeWikiReader) }
-    var recoveryEditors: [AgentSettingsPageController] { (stacks["wiki"] ?? []).map(\.controller).filter { ($0 as? AgentRecordWindow)?.isKnowledgeWikiReader == true || $0 is AgentKnowledgeCardWindow || $0 is AgentKnowledgeWindow } }
-    static var readbackEnabled: Bool { ["--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    var recoveryEditors: [AgentSettingsPageController] {
+        (stacks["wiki"] ?? []).map(\.controller).filter { ($0 as? AgentRecordWindow)?.isKnowledgeWikiReader == true || $0 is AgentKnowledgeCardWindow || $0 is AgentKnowledgeWindow } + (stacks["library"] ?? []).map(\.controller).filter { $0 is AgentKnowledgeLibraryWindow }
+    }
+    static var readbackEnabled: Bool { ["--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui", "--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--knowledge-video-check", "--wiki-lifecycle-check", "--knowledge-review-check", "--knowledge-page-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
     var onRootChange: ((String) -> Void)?
     var onRecoveryChange: (() -> Void)?
     private func recoveryChanged() { recoveryRevision &+= 1; onRecoveryChange?() }
@@ -59,6 +61,7 @@ import AppKit
         (controller as? AgentRecordWindow)?.onWorkspaceChange = changed
         (controller as? AgentKnowledgeCardWindow)?.onWorkspaceChange = changed
         (controller as? AgentKnowledgeWindow)?.onWorkspaceChange = changed
+        (controller as? AgentKnowledgeLibraryWindow)?.onWorkspaceChange = changed
         stacks[ownerRoot, default: []].append(Entry(controller: controller, content: content))
         if ownerRoot == root { displayCurrent() }; recoveryChanged(); return true
     }
@@ -113,6 +116,10 @@ import AppKit
                 guard cards.prepareWorkspaceNavigation() else { return false }
             } else if let index = entry.controller as? AgentKnowledgeWindow, preserving.contains(ObjectIdentifier(index)) {
                 guard index.prepareWorkspaceNavigation() else { return false }
+            } else if let plan = entry.controller as? AgentWikiPlanWindow, preserving.contains(ObjectIdentifier(plan)) {
+                guard plan.prepareWorkspaceNavigation() else { return false }
+            } else if let library = entry.controller as? AgentKnowledgeLibraryWindow, preserving.contains(ObjectIdentifier(library)) {
+                guard library.prepareWorkspaceNavigation() else { return false }
             } else if !entry.controller.canLeaveSettings() { return false }
         }
         return true
@@ -122,17 +129,17 @@ import AppKit
             let revision = recoveryRevision, identity = identity, root = root, readers = recoveryEditors
             guard !readers.isEmpty else { return nil }
             var pages: [AgentWorkspaceRecovery.Page] = []
+            var library: AgentWorkspaceRecovery.KnowledgeLibrary?
             for reader in readers {
                 if let reader = reader as? AgentRecordWindow { pages.append(try await reader.captureWorkspaceRecovery()) }
                 else if let reader = reader as? AgentKnowledgeCardWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
                 else if let reader = reader as? AgentKnowledgeWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
+                else if let reader = reader as? AgentKnowledgeLibraryWindow { library = try reader.captureWorkspaceRecovery() }
             }
             guard revision == recoveryRevision else { continue }
-            guard !pages.isEmpty else { return nil }
-            // Other knowledge managers retain their existing leave guards. This
-            // journal stores the supported Wiki-stack managers and owned pages.
-            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage
-            return .init(identity: identity, root: root, active: active && visibleReader, readers: pages)
+            guard !pages.isEmpty || library != nil else { return nil }
+            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow
+            return .init(identity: identity, root: root, active: active && (visibleReader || currentController is AgentKnowledgeLibraryWindow && library != nil), readers: pages, library: library)
         }
     }
     func restoreWorkspaceRecovery(_ value: AgentWorkspaceRecovery.Knowledge,
@@ -142,14 +149,19 @@ import AppKit
         var restored: [AgentSettingsPageController] = []
         do {
             for page in value.readers { restored.append(try reader(page)) }
-            guard let catalog = make("wiki") else { throw PetError("知识目录暂不可用") }
-            identity = value.identity; root = "wiki"; makeRoot = make
-            guard push(catalog) else { throw PetError("知识目录暂不能显示") }
-            for controller in restored { guard push(controller) else { throw PetError("知识阅读器暂不能显示") } }
-            if value.root == "library" {
-                root = "library"
-                guard let catalog = make("library"), push(catalog) else { throw PetError("知识库暂不能显示") }
+            identity = value.identity; makeRoot = make
+            if !restored.isEmpty || value.root == "wiki" {
+                root = "wiki"
+                guard let catalog = make("wiki"), push(catalog) else { throw PetError("知识目录暂不能显示") }
+                for controller in restored { guard push(controller) else { throw PetError("知识阅读器暂不能显示") } }
             }
+            if value.library != nil || value.root == "library" {
+                root = "library"
+                guard let catalog = make("library") as? AgentKnowledgeLibraryWindow else { throw PetError("知识库暂不能显示") }
+                if let library = value.library { try catalog.restoreWorkspaceRecovery(library) }
+                guard push(catalog) else { throw PetError("知识库暂不能显示") }
+            }
+            root = value.root
             displayCurrent(); recoveryChanged()
         } catch {
             restored.forEach { $0.endSettingsHosting() }; finish(); throw error
