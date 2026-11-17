@@ -246,7 +246,7 @@ import UniformTypeIdentifiers
             if let object = try? JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as? [String: Any], object["mcpServers"] != nil { try reviewImport(document: editor.string); return }
             let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存"
         }
-        catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue }
+        catch { state.showSaveFailure(error) }
     }
     @objc private func toggleEnabled() {
         guard let selected else { return }

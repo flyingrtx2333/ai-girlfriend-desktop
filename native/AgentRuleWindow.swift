@@ -9,7 +9,7 @@ import AppKit
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let remove = NSButton(title: "移到废纸篓", target: nil, action: nil), reveal = NSButton(title: "打开来源", target: nil, action: nil)
-    private let location = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
+    private let location = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("规则保存状态")
     private var descriptionRow = NSStackView(), patternsRow = NSStackView(), scopeRow = NSStackView()
     private let triggers: [AgentRuleTrigger] = [.always, .manual, .decision, .glob]
     private var items: [AgentLocalRuleItem] = [], selected: AgentLocalRuleItem?, creating = false, dirty = false, loading = false, selectedScope = 0
@@ -138,7 +138,7 @@ import AppKit
             if creating { value = try store.rules.create(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), text: text, project: createScope.indexOfSelectedItem == 1, task: task) }
             else if let selected { value = try store.rules.save(selected, text: text, task: task) } else { return false }
             dirty = false; search.stringValue = ""; scopes.selectedSegment = 0; selectedScope = 0; reload(select: value.id); setState("已保存"); return true
-        } catch { setState(error.localizedDescription); return false }
+        } catch { state.showSaveFailure(error); return false }
     }
     @objc private func saveItem() { _ = saveChanges() }
     @objc private func toggleEnabled() {

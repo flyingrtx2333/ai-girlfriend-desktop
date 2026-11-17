@@ -67,7 +67,12 @@ import AppKit
 
 @MainActor final class AgentSettingsStatusField: NSTextField {
     var onChange: ((String) -> Void)?
-    override var stringValue: String { didSet { isHidden = stringValue.isEmpty; toolTip = stringValue; onChange?(stringValue) } }
+    override var stringValue: String { didSet { isHidden = stringValue.isEmpty; toolTip = stringValue; textColor = AgentWorkbenchTheme.secondaryText; onChange?(stringValue) } }
+    func showSaveFailure(_ error: Error) {
+        stringValue = AgentSaveFailure.message(for: error)
+        toolTip = error.localizedDescription
+        textColor = AgentDialogStyle.error
+    }
     init(_ label: String) {
         super.init(frame: .zero)
         isEditable = false; isSelectable = true; isBezeled = false; drawsBackground = false

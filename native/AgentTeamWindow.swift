@@ -190,7 +190,7 @@ import AppKit
             do { try store.teams.save(text, expectedHash: openedHash, store: store, activating: selectedID, workspace: workspace, task: context) }
             catch { if !pendingAgents.isEmpty { try? store.agents.save(prior.0, expectedHash: AgentFiles.hash(Data(preparedAgents.utf8))) }; throw error }
             pendingAgents = []; dirty = false; reload(); state.stringValue = "已保存"
-        } catch { state.stringValue = error.localizedDescription }
+        } catch { state.showSaveFailure(error) }
     }
     @objc private func useTeam() { do { guard !dirty, let selectedID else { throw PetError("请先保存团队") }; let context = try sourceTask(); let id = try store.teams.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
     @objc private func manageAgents() { let manager = AgentProfileWindow(store: store, workspace: workspace, workMode: workMode, taskID: taskID); manager.onUse = onUse; agentWindow = manager; presentSettingsChild(manager) }

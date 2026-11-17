@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
     private let memoryWorkspace: String?
     private var openedMemoryWorkspace: String?, recoveryBlockedReason: String?
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
-    private let table = NSTableView(), text = AgentMarkdownTextView(), state = NSTextField(labelWithString: "")
+    private let table = NSTableView(), text = AgentMarkdownTextView(), state = AgentSettingsStatusField("文档保存状态")
     private let list = NSScrollView(), wikiTree = AgentWikiTree()
     private let sourceAdd = NSButton(title: "加入任务", target: nil, action: nil)
     private let readingToolbar = NSStackView()
@@ -912,11 +912,11 @@ import UniformTypeIdentifiers
                 guard let self else { return }
                 do { try await persistFile(path: path, content: content, format: format, expectedHash: hash) }
                 catch {
-                    state.stringValue = error.localizedDescription
+                    state.showSaveFailure(error)
                     if let current = try? files.readData(file), AgentFiles.hash(current) != hash { presentConflict() }
                 }
             }
-        } catch { state.stringValue = error.localizedDescription }
+        } catch { state.showSaveFailure(error) }
     }
     private func persistFile(path: String, content: String, format: AgentTextFormat, expectedHash: String) async throws {
         guard !saving, let task = store.task(taskID), let file = openedFile, fileIsEditable(task, file: file), try AgentWorkspaceScope.location(task,path:path).1 == file else { throw PetError("文件位置已变化或当前只读，草稿已保留") }

@@ -336,7 +336,7 @@ private extension AgentHookEvent {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(editor) }
-    @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue } }
+    @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.showSaveFailure(error) } }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !saved, editor.string != original else { return true }
         return AgentUnsavedChanges.discard("放弃未保存的更改？", discardTitle: "放弃")

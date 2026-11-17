@@ -6,18 +6,23 @@ struct AgentKnowledgeFileWrite {
     init(files: AgentFiles, path: String, data: Data?, expectedHash: String? = nil, missing: Bool = false, permissions: Int? = nil, label: String = "知识传递") throws {
         let url = try files.literalURL(path)
         let requested = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : files.root.appendingPathComponent(path)).standardizedFileURL
-        guard try files.resolve(path) == url, requested == url else { throw PetError(label + "路径包含符号链接或位置已变化：" + path) }
+        guard try files.resolve(path) == url, requested == url else { throw AgentSaveFailure(reason: .invalidLocation, diagnostic: label + "路径包含符号链接或位置已变化：" + path) }
         let entry = try files.entryMetadata(url)
-        guard ["file", "missing"].contains(entry.kind), !missing || entry.kind == "missing", entry.kind != "file" || (entry.permissions ?? 0) & 0o222 != 0 else { throw PetError(label + "目标已存在、只读或不是普通文件：" + path) }
+        let targetDiagnostic = label + "目标已存在、只读或不是普通文件：" + path
+        guard ["file", "missing"].contains(entry.kind) else { throw AgentSaveFailure(reason: .invalidFile, diagnostic: targetDiagnostic) }
+        guard !missing || entry.kind == "missing" else { throw AgentSaveFailure(reason: .exists, diagnostic: targetDiagnostic) }
+        guard entry.kind != "file" || (entry.permissions ?? 0) & 0o222 != 0 else { throw AgentSaveFailure(reason: .readOnly, diagnostic: targetDiagnostic) }
         let before = entry.kind == "file" ? try files.readData(url, maximum: 20_000_000) : nil
-        guard (data?.count ?? 0) <= 20_000_000, expectedHash == nil || AgentFiles.hash(before ?? Data()) == expectedHash else { throw PetError(label + "文件已变化或超过20MB，请重新打开后重试：" + path) }
+        let versionDiagnostic = label + "文件已变化或超过20MB，请重新打开后重试：" + path
+        guard (data?.count ?? 0) <= 20_000_000 else { throw AgentSaveFailure(reason: .tooLarge, diagnostic: versionDiagnostic) }
+        guard expectedHash == nil || AgentFiles.hash(before ?? Data()) == expectedHash else { throw AgentSaveFailure(reason: .changed, diagnostic: versionDiagnostic) }
         self.label = label
         self.files = files; self.url = url; self.data = data; self.before = before; signature = entry.signature
         self.permissions = permissions ?? entry.permissions ?? 0o644; originalPermissions = entry.permissions ?? self.permissions
     }
     func requireCurrent() throws {
-        guard try files.resolve(url.path) == url, try files.entryMetadata(url).signature == signature else { throw PetError(label + "文件在检查后已变化：" + files.relative(url)) }
-        if let before { guard try files.fileHash(url, maximum: 20_000_000) == AgentFiles.hash(before) else { throw PetError(label + "文件在检查后已变化：" + files.relative(url)) } }
+        guard try files.resolve(url.path) == url, try files.entryMetadata(url).signature == signature else { throw AgentSaveFailure(reason: .changed, diagnostic: label + "文件在检查后已变化：" + files.relative(url)) }
+        if let before { guard try files.fileHash(url, maximum: 20_000_000) == AgentFiles.hash(before) else { throw AgentSaveFailure(reason: .changed, diagnostic: label + "文件在检查后已变化：" + files.relative(url)) } }
     }
 }
 

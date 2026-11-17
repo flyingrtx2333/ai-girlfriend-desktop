@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor class AgentSettingsFormPage: AgentSettingsPageController, NSTextFieldDelegate, NSWindowDelegate {
-    private let status = NSTextField(wrappingLabelWithString: "")
+    private let status = AgentSettingsStatusField("设置保存状态")
     private var dirty = false
     private weak var firstInput: NSView?
 
@@ -37,7 +37,7 @@ import AppKit
     @objc private func changed() { dirty = true; status.stringValue = "" }
     @objc private func submitForm() { submit() }
     func submit() {}
-    func showError(_ error: Error) { status.stringValue = error.localizedDescription }
+    func showError(_ error: Error) { status.showSaveFailure(error) }
     func finish() { dirty = false; close() }
     @objc private func cancelForm() { guard let window, windowShouldClose(window) else { return }; close() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {

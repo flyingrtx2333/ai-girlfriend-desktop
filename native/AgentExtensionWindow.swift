@@ -245,7 +245,7 @@ import UniformTypeIdentifiers
     @objc private func saveItem() {
         guard let item = selected, let hash = openedHash else { return }
         do { let saved = try store.extensions.save(item, text: editor.string, expectedHash: hash, workspace: workspace); dirty = false; reload(select: saved.id); state.stringValue = "已保存" }
-        catch { state.stringValue = error.localizedDescription }
+        catch { state.showSaveFailure(error) }
     }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.file]) } }
     @objc private func useItem() {

@@ -175,6 +175,7 @@ import Darwin
             guard catalogChecks.count == 20 else { throw PetError("设置列表与详情检查缺失") }
             checks.merge(catalogChecks) { _, next in next }
             checks.merge(memoryChecks) { _, value in value }
+            checks.merge(try AgentSaveFailureCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }

@@ -251,7 +251,7 @@ import UniformTypeIdentifiers
             else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
             dirty = false; reload(); state.stringValue = "已保存"
             if let savedID { do { try onSaved?(savedID) } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription } }
-        } catch { state.stringValue = error.localizedDescription }
+        } catch { state.showSaveFailure(error) }
     }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let context = try sourceTask(); let id = try store.agents.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
     @objc private func importProfiles() {
