@@ -212,7 +212,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
     }
     @objc private func refreshList() { reload() }
     func selectHook(_ id: String) {
-        reload(select: id); pageContentView?.layoutSubtreeIfNeeded()
+        reload(select: id)
+        if let selected, selected.id == id { scope.selectItem(at: selected.workspace == nil ? 0 : 1) }
+        pageContentView?.layoutSubtreeIfNeeded()
         if let button = disclosureButton("hook-handler-" + id) { button.scrollToVisible(button.bounds) }
     }
     func checkGroupedPresentation() throws -> [String: Bool] {
@@ -239,7 +241,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         checks["reexpansionRestoresSelectedDetails"] = detail.superview != nil && command.string == first.display
         guard let project = catalog.first(where: { $0.workspace != nil }) else { throw PetError("缺少项目处理器") }
         selectHook(project.id); pageContentView?.layoutSubtreeIfNeeded()
-        checks["directHookSelectionExpandsCorrectEventAndScope"] = selected?.id == project.id && expanded.contains(project.event) && command.string == project.display && handlers().contains { $0.accessibilityIdentifier() == "hook-handler-" + project.id && $0.accessibilityLabel()?.contains("项目") == true }
+        checks["directHookSelectionExpandsCorrectEventAndScope"] = selected?.id == project.id && scope.indexOfSelectedItem == 1 && expanded.contains(project.event) && command.string == project.display && handlers().contains { $0.accessibilityIdentifier() == "hook-handler-" + project.id && $0.accessibilityLabel()?.contains("项目") == true }
         editSelected.performClick(nil)
         func text(_ view: NSView) -> String { (view as? NSTextView)?.string ?? view.subviews.map(text).joined(separator: "\n") }
         let editorText = configWindow?.pageContentView.map(text) ?? ""
@@ -248,7 +250,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         checks["returnFromProjectEditorRetainsGroupedSelection"] = detail.superview != nil && selected?.id == project.id && scope.indexOfSelectedItem == 1
         guard let shared = catalog.first(where: { $0.scope == "共享全局" }) else { throw PetError("缺少实际共享来源") }
         selectHook(shared.id); editSelected.performClick(nil)
-        checks["sharedHandlersDoNotOpenUnrelatedEditableConfig"] = selected?.id == shared.id && command.string == shared.display && !editSelected.isEnabled && configWindow?.settingsHostWindow == nil
+        checks["sharedHandlersDoNotOpenUnrelatedEditableConfig"] = selected?.id == shared.id && scope.indexOfSelectedItem == 0 && command.string == shared.display && !editSelected.isEnabled && configWindow?.settingsHostWindow == nil
         checks["browsingDoesNotEnableAnyHook"] = catalog.allSatisfy { !service.enabled($0) }
         return checks
     }
