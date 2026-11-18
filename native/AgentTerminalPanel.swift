@@ -201,7 +201,6 @@ import BlueFatFishTerminal
     private let tabs = NSPopUpButton(frame: .zero, pullsDown: false)
     private let body = NSView()
     private let path = NSTextField(labelWithString: "")
-    private let issue = NSTextField(labelWithString: "")
     private let add = AgentWorkbenchButton(), right = AgentWorkbenchButton(), down = AgentWorkbenchButton()
     private let theme = AgentWorkbenchButton(), hide = AgentWorkbenchButton()
     var onHide: (() -> Void)?
@@ -237,11 +236,6 @@ import BlueFatFishTerminal
         path.textColor = AgentWorkbenchTheme.secondaryText
         path.lineBreakMode = .byTruncatingMiddle
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        issue.font = .systemFont(ofSize: 11)
-        issue.textColor = .systemRed
-        issue.lineBreakMode = .byTruncatingTail
-        issue.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        issue.isHidden = true
         for (button, label, symbol, action) in [
             (add, "新建终端", "plus", #selector(addTab)),
             (right, "向右分屏", "rectangle.split.2x1", #selector(splitRight)),
@@ -253,7 +247,7 @@ import BlueFatFishTerminal
             button.target = self
             button.action = action
         }
-        let bar = NSStackView(views: [AgentSettingsPopupFrame(tabs, outlined: false), path, issue, NSView(), add, right, down, theme, hide])
+        let bar = NSStackView(views: [AgentSettingsPopupFrame(tabs, outlined: false), path, NSView(), add, right, down, theme, hide])
         bar.alignment = .centerY
         bar.spacing = 4
         let rule = AgentWorkbenchTheme.rule()
@@ -488,6 +482,7 @@ import BlueFatFishTerminal
     private func updatePath() {
         let active = current?.selected?.active
         active?.rememberDirectory()
+        path.textColor = AgentWorkbenchTheme.secondaryText
         path.stringValue = active?.startDirectory ?? current?.directory.path ?? ""
         path.toolTip = path.stringValue
     }
@@ -498,7 +493,6 @@ import BlueFatFishTerminal
         tabs.addItems(withTitles: state?.tabs.map(\.title) ?? [])
         if let state, state.selected != nil { tabs.selectItem(at: state.index) }
         updatePath()
-        issue.isHidden = true
         let root = state?.selected?.root
         if mounted !== root {
             // Splitting the old root can move it into the new split view.
@@ -519,9 +513,9 @@ import BlueFatFishTerminal
     }
 
     private func showIssue(_ error: Error) {
-        issue.stringValue = error.localizedDescription
-        issue.toolTip = issue.stringValue
-        issue.isHidden = false
+        path.textColor = AgentDialogStyle.error
+        path.stringValue = error.localizedDescription
+        path.toolTip = path.stringValue
     }
 
     func layoutToRestore(windowID: String, height: Double?) -> AgentTerminalLayout? {
