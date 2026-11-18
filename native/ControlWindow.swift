@@ -500,9 +500,10 @@ final class FormDocumentView: NSView {
                 let scopeVisible = scope?.isHiddenOrHasHiddenAncestor == false
                 checks[key + "ScopeAppearsOnlyWithManagedContent"] = scopeVisible == managedSettings.contains(category)
                 if scopeVisible, let scope {
-                    let scopeFrame = scope.convert(scope.bounds, to: contentSurface), titleFrame = settingsHeading.convert(settingsHeading.bounds, to: contentSurface)
+                    let scopeFrame = scope.superview!.convert(scope.alignmentRect(forFrame: scope.frame), to: contentSurface), titleFrame = settingsHeading.superview!.convert(settingsHeading.alignmentRect(forFrame: settingsHeading.frame), to: contentSurface)
                     checks[key + "ScopeSharesTitleLineWithoutOverlap"] = abs(scopeFrame.midY - titleFrame.midY) < 1 && scopeFrame.minX >= titleFrame.maxX + 11.5 && scopeFrame.maxX <= column.maxX - 15.5
                     frames[key]?["scopeX"] = scopeFrame.minX; frames[key]?["scopeWidth"] = scopeFrame.width
+                    frames[key]?["scopeTrailingGutter"] = column.maxX - scopeFrame.maxX; frames[key]?["scopeCenterY"] = scopeFrame.midY; frames[key]?["titleCenterY"] = titleFrame.midY
                 }
                 if ["agents", "teams", "hooks", "worktrees"].contains(category) {
                     checks[key + "SingleCatalogHasNoEmptyNavigationRow"] = descendants(settingsPageHost).first { $0.identifier?.rawValue == "settings-manager-navigation" }?.isHidden == true
