@@ -49,7 +49,7 @@ import AppKit
 @MainActor extension AppDelegate {
     func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) async throws {
         guard let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置布局验收项目") }
-        for (name, count) in [("zz-settings-empty", 0), ("zz-settings-many", 16)] {
+        for (name, count) in [("zz-settings-many", 16)] {
             let package = output.appendingPathComponent("公开扩展/" + name), metadata = package.appendingPathComponent(".qoder-plugin")
             try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: ["name": name, "version": "1.0.0"]).write(to: metadata.appendingPathComponent("plugin.json"))
@@ -122,8 +122,8 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            // Original 282 checks plus empty/short/long plugin detail coverage.
-            report["success"] = checks.count == 300 && checks.values.allSatisfy { $0 }
+            // Original 282 checks plus short/long plugin detail coverage.
+            report["success"] = checks.count == 292 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))

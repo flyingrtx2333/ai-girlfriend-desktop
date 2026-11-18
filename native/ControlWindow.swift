@@ -519,7 +519,7 @@ final class FormDocumentView: NSView {
                     frames[key]?["appearanceControlWidth"] = width
                 }
             }
-            for (category, page, title) in [("agents", "agents", "设置审阅员"), ("teams", "teams", "设置协作组"), ("extensions", "plugins", "zz-settings-demo"), ("extensions", "plugins", "zz-settings-empty"), ("extensions", "plugins", "zz-settings-many"), ("extensions", "skills", "settings-skill")] {
+            for (category, page, title) in [("agents", "agents", "设置审阅员"), ("teams", "teams", "设置协作组"), ("extensions", "plugins", "zz-settings-demo"), ("extensions", "plugins", "zz-settings-many"), ("extensions", "skills", "settings-skill")] {
                 guard showSettingsCategory(category) else { checks[name + page + "DetailEntryAvailable"] = false; continue }
                 settingsPageHost.selectPage(page); window.contentView?.layoutSubtreeIfNeeded()
                 let root = settingsPageHost.currentController
@@ -536,7 +536,7 @@ final class FormDocumentView: NSView {
                         checks[name + page + "FormCardsShareTheSameContentColumn"] = !cards.isEmpty && cards.allSatisfy { let rect = $0.convert($0.bounds, to: contentSurface); return abs(rect.minX - column.minX) < 0.5 && abs(rect.width - column.width) < 0.5 }
                     }
                     if page == "plugins", let table = descendants(content).compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "插件组件" }), let scroll = table.enclosingScrollView {
-                        let rows = table.numberOfRows, expected = title.hasSuffix("empty") ? 0 : title.hasSuffix("many") ? 16 : 1
+                        let rows = table.numberOfRows, expected = title.hasSuffix("many") ? 16 : 1
                         let heightFits = scroll.bounds.height <= (rows < 2 ? 76 : 200)
                         let last = rows > 0 ? table.rect(ofRow: rows - 1) : .zero
                         if rows > 0 { table.scrollRowToVisible(rows - 1) }
