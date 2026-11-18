@@ -14,7 +14,7 @@ import AppKit
         var proposal: Proposal?
         var viewport: AgentSettingsDraftViewport.State
 
-        var fields: [String: String] { ["name":form.name, "model":form.model, "zone":form.schedule.timeZone, "time":time, "interval":interval] }
+        var fields: [String: String] { ["name":form.name, "model":form.model, "zone":form.schedule.timeZone, "time":time, "interval":interval, "cron":form.schedule.cronExpression ?? ""] }
     }
     let store: AgentStore
     let service: AgentAutomations
@@ -27,6 +27,7 @@ import AppKit
     private let list = NSTableView(), history = NSTableView(), sections = NSSegmentedControl(labels: ["计划", "运行记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let archived = NSPopUpButton(), awake = NSButton(checkboxWithTitle: "保持设备唤醒", target: nil, action: nil)
     private let name = AgentAutomationTextField(), workspace = AgentAutomationTextField(), model = AgentAutomationTextField(), zone = AgentAutomationTextField(), time = AgentAutomationTextField(), interval = AgentAutomationTextField(), prompt = NSTextView()
+    private let cron = AgentAutomationTextField()
     private let executor = NSPopUpButton(), frequency = NSPopUpButton(), weekdays = NSPopUpButton(frame: .zero, pullsDown: true), output = NSPopUpButton(), permission = NSPopUpButton()
     private var scheduleGrid: NSGridView!
     private let once = NSDatePicker(), expiry = NSDatePicker(), expiring = NSButton(checkboxWithTitle: "到期暂停", target: nil, action: nil)
@@ -50,7 +51,7 @@ import AppKit
     private var definitions: [AgentAutomation] = [], selectedID: String?, opened: AgentAutomation?, newValue: AgentAutomation?, dirty = false, loading = false, selectedDays = Set([2])
     private var editContext: AgentSettingsRecovery.Context?, proposal: Proposal?
     private lazy var draftViewport: AgentSettingsDraftViewport = {
-        let viewport = AgentSettingsDraftViewport(text: prompt, fields: ["name":name, "model":model, "zone":zone, "time":time, "interval":interval], catalog: list,
+        let viewport = AgentSettingsDraftViewport(text: prompt, fields: ["name":name, "model":model, "zone":zone, "time":time, "interval":interval, "cron":cron], catalog: list,
             host: { [weak self] in self?.presentingWindow })
         viewport.trackForm(formScroll)
         viewport.onChange = { [weak self] in if self?.dirty == true { self?.onRecoveryChange?() } }
@@ -77,9 +78,10 @@ import AppKit
         awake.state = service.keepAwake ? .on : .off; awake.target = self; awake.action = #selector(changeAwake)
         let notifications = NSButton(title: "桌面通知", target: self, action: #selector(requestNotifications))
         header = NSStackView(views: [sections, NSView(), awake, notifications]); header.spacing = 10
-        for field in [name, workspace, model, zone, time, interval] { field.font = .systemFont(ofSize: 13); field.delegate = self }
-        for (field, label) in [(name, "自动化名称"), (workspace, "自动化项目目录"), (model, "自动化模型"), (zone, "计划时区"), (time, "计划时间"), (interval, "间隔分钟")] { field.setAccessibilityLabel(label) }
+        for field in [name, workspace, model, zone, time, interval, cron] { field.font = .systemFont(ofSize: 13); field.delegate = self }
+        for (field, label) in [(name, "自动化名称"), (workspace, "自动化项目目录"), (model, "自动化模型"), (zone, "计划时区"), (time, "计划时间"), (interval, "间隔分钟"), (cron, "Cron 表达式")] { field.setAccessibilityLabel(label) }
         name.placeholderString = "名称"; workspace.isEditable = false; workspace.isSelectable = true; workspace.lineBreakMode = .byTruncatingMiddle; model.placeholderString = "跟随已配置模型"; zone.placeholderString = "Asia/Shanghai"; time.placeholderString = "09:00"; interval.placeholderString = "60"
+        cron.placeholderString = "0 9 * * 1-5"; cron.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         workspaceButton.target = self; workspaceButton.action = #selector(chooseWorkspace); let project = NSStackView(views: [workspace, workspaceButton]); project.spacing = 8
         for (popup, titles) in [(frequency, AgentAutomationFrequency.allCases.map(\.title)), (output, AgentAutomationOutput.allCases.map(\.title)), (permission, AgentPermissionMode.allCases.map(\.title))] { popup.addItems(withTitles: titles); popup.target = self; popup.action = #selector(changed) }
         executor.target = self; executor.action = #selector(changed); frequency.action = #selector(frequencyChanged)
@@ -91,7 +93,7 @@ import AppKit
         let clockRow = NSStackView(views: [time, weekdays]); clockRow.spacing = 8; time.widthAnchor.constraint(equalToConstant: 90).isActive = true
         let expireRow = NSStackView(views: [expiring, expiry]); expireRow.spacing = 8
         let scope = NSStackView(views: [readOnly, network]); scope.spacing = 14
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "状态"), enabled], [NSTextField(labelWithString: "下次"), next]])
+        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "Cron"), cron], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "状态"), enabled], [NSTextField(labelWithString: "下次"), next]])
         scheduleGrid = grid
         grid.column(at: 0).width = 60; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill; grid.columnSpacing = 12; grid.rowSpacing = 10
         next.font = .systemFont(ofSize: 11); next.textColor = AgentWorkbenchTheme.secondaryText; next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -145,6 +147,14 @@ import AppKit
         hostWindow = host; top.constant = 68; updatePresentation(); return view
     }
     func refresh() { reload() }
+    func selectImported(_ id: String) throws {
+        guard let value = service.values.first(where: { $0.id == id }), prepareToLeave() else {
+            throw PetError("自动化已移除，或当前草稿尚未处理")
+        }
+        editContext = context(for: sourceTaskID); proposal = nil; newValue = nil
+        selectedID = id; archived.selectItem(at: value.archived ? 1 : 0); sections.selectedSegment = 0
+        editing = true; reload(); formScroll.contentView.scroll(to: .zero)
+    }
     func focusEditor() { if editing, isVisible { draftViewport.appear(default: name) } }
     private func context(for id: String?) -> AgentSettingsRecovery.Context {
         let task = id.flatMap(store.task)
@@ -192,6 +202,7 @@ import AppKit
     private func fillForm(_ value: AgentAutomation?) {
         name.stringValue = value?.name ?? ""; workspace.stringValue = value?.workspace ?? ""; model.stringValue = value?.model ?? ""; prompt.string = value?.prompt ?? ""
         let schedule = value?.schedule ?? AgentAutomationSchedule(); zone.stringValue = schedule.timeZone; time.stringValue = String(format: "%02d:%02d", schedule.hour, schedule.minute); interval.stringValue = String(schedule.intervalMinutes); selectedDays = Set(schedule.weekdays)
+        cron.stringValue = schedule.cronExpression ?? ""
         frequency.selectItem(at: AgentAutomationFrequency.allCases.firstIndex(of: schedule.frequency) ?? 0); once.dateValue = schedule.date; once.timeZone = TimeZone(identifier: schedule.timeZone); expiry.dateValue = schedule.expiration ?? Date().addingTimeInterval(86_400 * 30); expiry.timeZone = once.timeZone; expiring.state = schedule.expiration == nil ? .off : .on
         output.selectItem(at: AgentAutomationOutput.allCases.firstIndex(of: value?.output ?? .independent) ?? 0); permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0)
         readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; notify.state = value?.notify == false ? .off : .on; enabled.state = value?.enabled == true ? .on : .off
@@ -210,7 +221,8 @@ import AppKit
     @objc private func toggleDay(_ sender: NSMenuItem) { if selectedDays.contains(sender.tag) { selectedDays.remove(sender.tag) } else { selectedDays.insert(sender.tag) }; refreshDays(); changed() }
     private func updateScheduleRows() {
         let kind = AgentAutomationFrequency.allCases[max(0, frequency.indexOfSelectedItem)]
-        scheduleGrid.row(at: 5).isHidden = ![.once, .interval].contains(kind); scheduleGrid.row(at: 6).isHidden = ![.daily, .weekly].contains(kind); scheduleGrid.row(at: 7).isHidden = kind != .interval; scheduleGrid.row(at: 9).isHidden = kind == .once
+        scheduleGrid.row(at: 5).isHidden = ![.once, .interval, .cron].contains(kind); scheduleGrid.row(at: 6).isHidden = ![.daily, .weekly].contains(kind); scheduleGrid.row(at: 7).isHidden = kind != .interval
+        scheduleGrid.row(at: 8).isHidden = kind != .cron; scheduleGrid.row(at: 10).isHidden = kind == .once
         weekdays.isHidden = kind != .weekly; expiry.isEnabled = expiring.state == .on
         if selectedID == nil { next.stringValue = "" }
         else if opened?.archived == true { next.stringValue = "已归档" }
@@ -219,7 +231,7 @@ import AppKit
     }
     private func updateControls() {
         let selected = selectedID != nil, stored = opened != nil, archived = opened?.archived == true
-        for view in [name, workspace, workspaceButton, model, zone, time, interval, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
+        for view in [name, workspace, workspaceButton, model, zone, time, interval, cron, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
         model.isEnabled = selected && !archived && executor.selectedItem?.representedObject as? String == "default"; prompt.isEditable = selected && !archived
         save.isEnabled = dirty; run.isEnabled = stored && !dirty && !archived; pause.isEnabled = run.isEnabled; pause.title = opened?.enabled == true ? "暂停" : "启用"; archive.isEnabled = stored && !dirty; archive.title = archived ? "恢复" : "归档"; save.title = stored ? (dirty ? "保存" : "已保存") : "创建"
         expiry.isEnabled = selected && !archived && expiring.state == .on
@@ -262,6 +274,7 @@ import AppKit
         result = AgentAutomations.editableDefinition(result)
         result.name = name.stringValue; result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
         result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue; result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
+        result.schedule.cronExpression = result.schedule.frequency == .cron ? cron.stringValue : nil
         result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on
         return result
     }
@@ -276,7 +289,10 @@ import AppKit
     func controlTextDidChange(_ obj: Notification) { if obj.object as? NSTextField === zone, let value = TimeZone(identifier: zone.stringValue) { once.timeZone = value; expiry.timeZone = value }; changed() }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateScheduleRows(); updateControls(); draftViewport.changed() }
-    @objc private func frequencyChanged() { if frequency.indexOfSelectedItem == AgentAutomationFrequency.allCases.firstIndex(of: .interval) { once.dateValue = Date() }; changed() }
+    @objc private func frequencyChanged() {
+        if [.interval, .cron].contains(AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]) { once.dateValue = Date() }
+        changed()
+    }
     @objc private func changeSection() { updatePresentation(); if !records.isHidden { loadHistory() } }
     @objc private func returnToCatalog() { guard prepareToLeave() else { return }; editing = false; sections.selectedSegment = 0; reload() }
     @objc private func filterHistory() { offset = 0; loadHistory() }
@@ -319,7 +335,7 @@ import AppKit
     private static func validateRecoveryDefinition(_ raw: Any) throws {
         let raw = try AgentSettingsRecovery.object(raw, keys: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived"])
         if let schedule = raw["schedule"] {
-            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration"])
+            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration", "cronExpression"])
         }
     }
     func restoreRecovery(_ value: AgentWorkspaceRecovery.Automation) throws {

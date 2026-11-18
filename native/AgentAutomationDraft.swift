@@ -44,6 +44,7 @@ struct AgentAutomationDraft: Codable, Identifiable {
         var weekdays: [Int]?
         var interval_minutes: Int?
         var expires_at: String?
+        var cron_expression: String?
     }
     private static func date(_ text: String) throws -> Date {
         guard text.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$", options: .regularExpression) != nil else { throw PetError("日期需要含时区的 ISO 8601 格式") }
@@ -67,9 +68,11 @@ struct AgentAutomationDraft: Codable, Identifiable {
         case .daily: required.formUnion(["hour", "minute"]); allowed = required.union(["expires_at"])
         case .weekly: required.formUnion(["hour", "minute", "weekdays"]); allowed = required.union(["expires_at"])
         case .interval: required.insert("interval_minutes"); allowed = required.union(["at", "expires_at"])
+        case .cron: required.insert("cron_expression"); allowed = required.union(["at", "expires_at"])
         }
         guard required.isSubset(of: Set(object.keys)), Set(object.keys).isSubset(of: allowed) else { throw PetError("计划字段与所选频率不一致") }
         var value = AgentAutomationSchedule(); value.frequency = input.frequency; value.timeZone = input.time_zone
+        if input.frequency == .cron { value.date = Date(); value.cronExpression = input.cron_expression }
         if let at = input.at { value.date = try date(at) }
         if let hour = input.hour { value.hour = hour }; if let minute = input.minute { value.minute = minute }
         if let days = input.weekdays { value.weekdays = days }; if let interval = input.interval_minutes { value.intervalMinutes = interval }

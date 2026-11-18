@@ -75,7 +75,7 @@ import Foundation
         let string: [String: Any] = ["type": "string"], integer: [String: Any] = ["type": "integer"]
         let encoding: [String: Any] = ["type": "string", "enum": AgentTextEncoding.allCases.map(\.rawValue)]
         let citations: [String: Any] = ["type": "array", "minItems": 1, "maxItems": 12, "items": ["type": "object", "properties": ["path": string, "line": integer, "end_line": integer], "required": ["path", "line"], "additionalProperties": false]]
-        let automationSchedule: [String: Any] = ["type": "object", "properties": ["frequency": ["type": "string", "enum": AgentAutomationFrequency.allCases.map(\.rawValue)], "time_zone": string, "at": string, "hour": integer, "minute": integer, "weekdays": ["type": "array", "items": integer], "interval_minutes": integer, "expires_at": string], "required": ["frequency", "time_zone"], "additionalProperties": false]
+        let automationSchedule: [String: Any] = ["type": "object", "properties": ["frequency": ["type": "string", "enum": AgentAutomationFrequency.allCases.map(\.rawValue)], "time_zone": string, "at": string, "hour": integer, "minute": integer, "weekdays": ["type": "array", "items": integer], "interval_minutes": integer, "expires_at": string, "cron_expression": string], "required": ["frequency", "time_zone"], "additionalProperties": false]
         func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }

@@ -2,8 +2,10 @@ import AppKit
 import Darwin
 
 enum AgentAutomationFrequency: String, Codable, CaseIterable {
-    case once, daily, weekly, interval
-    var title: String { self == .once ? "仅一次" : self == .daily ? "每天" : self == .weekly ? "每周" : "固定间隔" }
+    case once, daily, weekly, interval, cron
+    var title: String { switch self {
+    case .once: return "仅一次"; case .daily: return "每天"; case .weekly: return "每周"; case .interval: return "固定间隔"; case .cron: return "Cron"
+    } }
 }
 enum AgentAutomationOutput: String, Codable, CaseIterable {
     case independent, merged
@@ -15,7 +17,9 @@ struct AgentAutomationSchedule: Codable {
     var date = Date().addingTimeInterval(3600)
     var hour = 9, minute = 0, weekdays = [2], intervalMinutes = 60
     var expiration: Date?
+    var cronExpression: String?
     func next(after now: Date) -> Date? {
+        if frequency != .once, let expiration, expiration <= now { return nil }
         guard let zone = TimeZone(identifier: timeZone) else { return nil }
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
         let value: Date?
@@ -25,6 +29,9 @@ struct AgentAutomationSchedule: Codable {
             let seconds = Double(intervalMinutes) * 60
             guard seconds > 0 else { return nil }
             value = date > now ? date : date.addingTimeInterval((floor(now.timeIntervalSince(date) / seconds) + 1) * seconds)
+        case .cron:
+            let beforeStart = Date(timeIntervalSinceReferenceDate: date.timeIntervalSinceReferenceDate.nextDown)
+            value = cronExpression.flatMap { try? AgentCronSchedule($0) }?.next(after: max(now, beforeStart), calendar: calendar)
         case .daily, .weekly:
             var match: Date?
             for offset in 0...7 {
@@ -94,12 +101,18 @@ struct AgentAutomationAssignment: Codable {
     private weak var runtime: AgentRuntime?
     private var timer: Timer?, ownerFD: Int32 = -1, activity: NSObjectProtocol?
     private var firing = false
-    private var revision: String?
+    private var revisions: [Bool: String] = [:]
     private struct Document: Codable { var version = 1; var keepAwake = false; var automations: [AgentAutomation] }
+    private struct ScheduleTransition: Codable {
+        let cron: Bool
+        let previous: String?
+        let contents: Data
+    }
+    private static let configLimit = 2_000_000
     private let encoder: JSONEncoder = { let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return e }()
     init(profile: URL) { directory = profile.appendingPathComponent("automations", isDirectory: true) }
     deinit { timer?.invalidate(); if ownerFD >= 0 { close(ownerFD) }; if let activity { ProcessInfo.processInfo.endActivity(activity) } }
-    private var config: URL { directory.appendingPathComponent("definitions.json") }
+    private func config(cron: Bool) -> URL { directory.appendingPathComponent(cron ? "cron-definitions.json" : "definitions.json") }
     private var runsDirectory: URL { directory.appendingPathComponent("runs", isDirectory: true) }
     private func files() throws -> AgentFiles {
         let parent = try AgentFiles(workspace: directory.deletingLastPathComponent().path)
@@ -113,31 +126,82 @@ struct AgentAutomationAssignment: Codable {
             guard try AgentFiles(workspace: directory.deletingLastPathComponent().path).resolve("automations").path == directory.path else { throw PetError("自动化目录不能指向应用数据目录之外") }
             ownerFD = open(directory.appendingPathComponent("scheduler.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
             guard ownerFD >= 0, flock(ownerFD, LOCK_EX | LOCK_NB) == 0 else { if ownerFD >= 0 { close(ownerFD); ownerFD = -1 }; throw PetError("另一应用实例正在管理此目录的自动化") }
-            try load(); isStarted = true
+            try load(); isStarted = true; error = nil
             for value in values where value.current != nil { recover(value.id) }
             unreadCount = (try history(limit: Int.max).runs).filter(\.unread).count
             tick()
-        } catch { self.error = error.localizedDescription; changed() }
+        } catch { stop(); self.error = error.localizedDescription; changed() }
     }
     func stop() { timer?.invalidate(); timer = nil; isStarted = false; if ownerFD >= 0 { close(ownerFD); ownerFD = -1 }; if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil } }
     private func changed() { NotificationCenter.default.post(name: Self.changed, object: self) }
     private func load() throws {
-        guard FileManager.default.fileExists(atPath: config.path) else { values = []; revision = nil; return }
-        let files = try files(), url = try files.literalURL("definitions.json")
-        guard try files.resolve("definitions.json") == url, try files.entryMetadata(url).kind == "file" else { throw PetError("自动化配置必须是普通文件") }
-        let data = try files.readData(url, maximum: 2_000_000)
-        guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "keepAwake", "automations"],
-              let entries = raw["automations"] as? [[String: Any]], entries.allSatisfy({ Set($0.keys).isSubset(of: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived", "nextRun", "mergedTaskID", "current"]) }) else { throw PetError("自动化配置包含不支持的字段") }
-        let document = try JSONDecoder().decode(Document.self, from: data)
-        guard document.version == 1, document.automations.count <= 64, Set(document.automations.map(\.id)).count == document.automations.count else { throw PetError("自动化配置版本或数量无效") }
-        for value in document.automations { try validate(value, runnable: false) }
-        values = document.automations; keepAwake = document.keepAwake; revision = AgentFiles.hash(data)
+        let files = try files()
+        try finishTransition(files)
+        var loaded: [AgentAutomation] = [], hashes: [Bool: String] = [:], awake = false
+        for cron in [false, true] {
+            let url = try files.literalURL(config(cron: cron).path), entry = try files.entryMetadata(url)
+            if entry.kind == "missing" { continue }
+            guard try files.resolve(url.path) == url, entry.kind == "file" else { throw PetError("自动化配置必须是普通文件") }
+            let data = try files.readData(url, maximum: Self.configLimit)
+            guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(raw.keys) == ["version", "keepAwake", "automations"],
+                  let entries = raw["automations"] as? [[String: Any]], entries.allSatisfy({ Set($0.keys).isSubset(of: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived", "nextRun", "mergedTaskID", "current"]) }) else { throw PetError("自动化配置包含不支持的字段") }
+            let document = try JSONDecoder().decode(Document.self, from: data)
+            guard document.version == 1, document.automations.allSatisfy({ ($0.schedule.frequency == .cron) == cron }) else {
+                throw PetError("自动化配置版本或计划类型无效")
+            }
+            for value in document.automations { try validate(value, runnable: false) }
+            if !cron { awake = document.keepAwake }
+            loaded += document.automations; hashes[cron] = AgentFiles.hash(data)
+        }
+        guard loaded.count <= 64, Set(loaded.map(\.id)).count == loaded.count else { throw PetError("自动化编号重复或数量无效") }
+        values = loaded; keepAwake = awake; revisions = hashes
+    }
+    private func finishTransition(_ files: AgentFiles) throws {
+        let journal = try files.literalURL("schedule-transition.json"), marker = try files.entryMetadata(journal)
+        guard marker.kind != "missing" else { return }
+        let parts = try JSONDecoder().decode([ScheduleTransition].self, from: files.readData(journal, maximum: 6_000_000))
+        guard parts.count == 2, Set(parts.map(\.cron)) == [true, false],
+              parts.allSatisfy({ $0.contents.count <= Self.configLimit }) else { throw PetError("自动化计划转换记录无效") }
+        let writes = try parts.compactMap { part -> AgentKnowledgeFileWrite? in
+            let url = config(cron: part.cron), entry = try files.entryMetadata(url)
+            if entry.kind == "file", try files.fileHash(url, maximum: Self.configLimit) == AgentFiles.hash(part.contents) { return nil }
+            return try AgentKnowledgeFileWrite(files: files, path: url.path, data: part.contents, expectedHash: part.previous,
+                                                missing: part.previous == nil, permissions: 0o600, label: "自动化计划转换")
+        }
+        try writes.forEach { try $0.requireCurrent() }
+        for write in writes { try files.writeData(write.data!, to: write.url, permissions: write.permissions, expectedTarget: write.signature) }
+        guard try files.entryMetadata(journal).signature == marker.signature else { throw PetError("自动化计划转换记录已变化") }
+        try files.remove(journal)
     }
     private func persist() throws {
-        let data = try encoder.encode(Document(keepAwake: keepAwake, automations: values))
-        let write = try AgentKnowledgeFileWrite(files: files(), path: config.path, data: data, expectedHash: revision, missing: revision == nil, permissions: 0o600, label: "自动化配置")
-        try write.requireCurrent(); try write.files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
-        revision = AgentFiles.hash(data); error = nil
+        let files = try files()
+        var hashes = revisions, writes: [AgentKnowledgeFileWrite] = [], parts: [ScheduleTransition] = []
+        for cron in [false, true] {
+            let entries = values.filter { ($0.schedule.frequency == .cron) == cron }
+            if entries.isEmpty && revisions[cron] == nil && (cron || !keepAwake) { continue }
+            let data = try encoder.encode(Document(keepAwake: !cron && keepAwake, automations: entries))
+            let hash = AgentFiles.hash(data)
+            guard hash != revisions[cron] else { continue }
+            guard data.count <= Self.configLimit else { throw PetError("自动化配置超过大小上限") }
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: config(cron: cron).path, data: data, expectedHash: revisions[cron],
+                                                     missing: revisions[cron] == nil, permissions: 0o600, label: "自动化配置"))
+            parts.append(ScheduleTransition(cron: cron, previous: revisions[cron], contents: data))
+            hashes[cron] = hash
+        }
+        if writes.count > 1 {
+            try writes.forEach { try $0.requireCurrent() }
+            let journal = try files.literalURL("schedule-transition.json")
+            try files.writeData(try encoder.encode(parts), to: journal, permissions: 0o600, expectedTarget: "missing")
+            do { try finishTransition(files) }
+            catch {
+                stop()
+                let issue = "计划转换已暂停，请重新打开应用继续：" + error.localizedDescription
+                self.error = issue; changed(); throw PetError(issue)
+            }
+        } else if let entry = writes.first, let data = entry.data {
+            try entry.requireCurrent(); try files.writeData(data, to: entry.url, permissions: entry.permissions, expectedTarget: entry.signature)
+        }
+        revisions = hashes; error = nil
     }
     func validate(_ value: AgentAutomation, runnable: Bool, allowMissingWorkspace: Bool = false) throws {
         guard UUID(uuidString: value.id) != nil, !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.name.count <= 80,
@@ -148,6 +212,10 @@ struct AgentAutomationAssignment: Codable {
               (1...525_600).contains(value.schedule.intervalMinutes), value.schedule.weekdays.allSatisfy({ (1...7).contains($0) }), Set(value.schedule.weekdays).count == value.schedule.weekdays.count,
               value.schedule.frequency != .weekly || !value.schedule.weekdays.isEmpty,
               value.executor == "default" || ((value.executor.hasPrefix("agent:") || value.executor.hasPrefix("team:")) && value.executor.split(separator: ":").count == 2 && UUID(uuidString: String(value.executor.split(separator: ":").last ?? "")) != nil) else { throw PetError("请填写有效名称、任务、项目目录、执行者与时间计划") }
+        if value.schedule.frequency == .cron {
+            guard let expression = value.schedule.cronExpression else { throw PetError("请填写 Cron 表达式") }
+            _ = try AgentCronSchedule(expression)
+        } else if value.schedule.cronExpression != nil { throw PetError("Cron 表达式需要使用 Cron 计划") }
         if runnable {
             let files = try AgentFiles(workspace: value.workspace)
             guard files.root.path == value.workspace else { throw PetError("项目目录已改变，请重新选择") }
@@ -155,7 +223,7 @@ struct AgentAutomationAssignment: Codable {
             if value.executor.hasPrefix("team:"), let store { _ = try store.teams.team(String(value.executor.dropFirst(5)), store: store, workspace: value.workspace) }
         }
     }
-    func save(_ value: AgentAutomation, expected: AgentAutomation?) throws {
+    func save(_ value: AgentAutomation, expected: AgentAutomation?, keepIntervalAnchor: Bool = false) throws {
         guard isStarted else { throw PetError(error ?? "自动化调度未启动") }
         try validate(value, runnable: value.enabled && !value.archived)
         let index = values.firstIndex { $0.id == value.id }, old = index.map { values[$0] }
@@ -164,7 +232,7 @@ struct AgentAutomationAssignment: Codable {
         guard index != nil || values.count < 64 else { throw PetError("最多保存64个自动化") }
         var next = value; next.current = old?.current; next.mergedTaskID = old?.mergedTaskID
         if let old, old.workspace != value.workspace || old.executor != value.executor || old.output != value.output { next.mergedTaskID = nil }
-        if next.schedule.frequency == .interval, old?.schedule.frequency != .interval || old?.schedule.intervalMinutes != next.schedule.intervalMinutes, next.schedule.date <= Date() { next.schedule.date = Date() }
+        if !keepIntervalAnchor, next.schedule.frequency == .interval, old?.schedule.frequency != .interval || old?.schedule.intervalMinutes != next.schedule.intervalMinutes, next.schedule.date <= Date() { next.schedule.date = Date() }
         next.nextRun = next.enabled && !next.archived ? next.schedule.next(after: Date()) : nil
         if next.enabled, !next.archived, next.nextRun == nil { throw PetError("计划已过期，或到期时间早于下一次运行") }
         let previous = values

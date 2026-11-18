@@ -95,11 +95,11 @@ import AppKit
             try service.setPaused(enabled.id, paused: true); await wait(0.3)
             checks["pausedDefinitionCreatesNoRunOrTask"] = try service.history().total == 0 && service.values.first { $0.id == enabled.id }?.nextRun == nil && attempts == 0
             let future = ISO8601DateFormatter().string(from: Date().addingTimeInterval(172_800))
-            for schedule: [String: Any] in [["frequency": "once", "time_zone": "Asia/Shanghai", "at": future], ["frequency": "daily", "time_zone": "America/New_York", "hour": 8, "minute": 15], ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires]] {
+            for schedule: [String: Any] in [["frequency": "once", "time_zone": "Asia/Shanghai", "at": future], ["frequency": "daily", "time_zone": "America/New_York", "hour": 8, "minute": 15], ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires], ["frequency": "cron", "time_zone": "Asia/Shanghai", "cron_expression": "0,30 9-17 * * 1-5"]] {
                 _ = try await invoke("frequency-" + (schedule["frequency"] as! String), arguments.merging(["schedule": schedule]) { _, n in n }, taskID: owner)
             }
             let frequencies = Set((tasks.task(owner)?.automationDrafts ?? []).map { $0.automation.schedule.frequency })
-            checks["allFourSchedulesUseProductionParserAndPersist"] = frequencies == Set(AgentAutomationFrequency.allCases)
+            checks["allSchedulesUseProductionParserAndPersist"] = frequencies == Set(AgentAutomationFrequency.allCases)
             let intervalDraft = tasks.task(owner)!.automationDrafts!.first { $0.callID == "frequency-interval" }!
             let intervalArgs = arguments.merging(["schedule": ["frequency": "interval", "time_zone": "UTC", "interval_minutes": 37, "at": future, "expires_at": expires]]) { _, n in n }
             _ = try await invoke("frequency-interval", intervalArgs, taskID: owner)
