@@ -112,10 +112,13 @@ import AppKit
             host.setContentSize(size); pane.layoutSubtreeIfNeeded(); editor.layoutManager?.ensureLayout(for: editor.textContainer!)
             guard let scroll = editor.enclosingScrollView, let save = find(NSButton.self, in: configuration.pageContentView, matching: { $0.title == "保存" }), let page = configuration.pageContentView else { throw PetError("缺少 Hooks 配置编辑区域") }
             editor.scrollRangeToVisible(NSRange(location: editor.string.utf16.count, length: 0))
-            let viewport = scroll.documentVisibleRect, buttonFrame = save.convert(save.bounds, to: page), feedbackFrame = feedback.convert(feedback.bounds, to: page)
+            let viewport = scroll.documentVisibleRect, buttonFrame = save.convert(save.bounds, to: page)
+            // NSTextField's transparent frame extends outside its aligned text rectangle.
+            let feedbackFrame = feedback.superview!.convert(feedback.alignmentRect(forFrame: feedback.frame), to: page)
+            let rawFeedbackFrame = feedback.convert(feedback.bounds, to: page)
             checks["hookConfigLongEditorScrollsAndSaveStaysVisible-" + label] = !scroll.hasAmbiguousLayout && viewport.width >= 140 && viewport.height >= 80 && viewport.minY > 0 && page.visibleRect.contains(buttonFrame)
             checks["hookConfigErrorWrapsWithoutClipping-" + label] = !feedback.isHidden && feedback.isSelectable && !feedback.usesSingleLineMode && feedback.maximumNumberOfLines == 0 && page.visibleRect.contains(feedbackFrame) && feedbackFrame.height >= feedback.intrinsicContentSize.height - 1
-            measurements["hookConfig-" + label] = ["editorViewport": [viewport.width, viewport.height], "saveVisible": page.visibleRect.contains(buttonFrame), "feedbackHeight": feedbackFrame.height]
+            measurements["hookConfig-" + label] = ["editorViewport": [viewport.width, viewport.height], "saveVisible": page.visibleRect.contains(buttonFrame), "feedbackHeight": feedbackFrame.height, "feedbackTextBounds": [feedbackFrame.minX, feedbackFrame.maxX], "feedbackRawBounds": [rawFeedbackFrame.minX, rawFeedbackFrame.maxX], "pageWidth": page.bounds.width]
         }
         try FileManager.default.setAttributes([.posixPermissions: sourceMode], ofItemAtPath: source.path)
         host.setContentSize(NSSize(width: 800, height: 540)); editor.string = originalConfig; try press("保存", page: configuration)
