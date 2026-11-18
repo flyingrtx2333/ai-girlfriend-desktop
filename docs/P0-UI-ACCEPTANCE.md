@@ -48,6 +48,12 @@
 
 团队页同尺寸同主题：[调整前](media/page-parity-team-before.jpg)／[调整后](media/page-parity-team-after.jpg)；[Hooks 根页](media/page-parity-hooks-after.jpg)、[窄窗规则](media/page-parity-rule-narrow.jpg)及[仍待精修的 MCP 详情](media/page-parity-mcp-remaining.jpg)。全部为未编辑的公开样例原图。
 
+## 2026-11-18 Qoder 深色设置参考
+
+- 本机 Qoder 0.5.2，1320×800 深色「森林」。外观、钩子、智能体目录和团队空态各一张原图，切换前、恢复后各一张浅色外观原图。全部六张 JPEG 及校验和位于外置盘项目下的 `evidence/agent/qoder-dark-settings-v7c4m2p9/`。
+- 钩子按事件折叠，处理器数量与事件名同排。团队页面在顶栏提供创建操作，在内容区提供当前与归档切换及空态。继续用相同主题、尺寸和数据状态核对小鲸的背景、目录密度和空态占用高度。
+- 恢复后从 Qoder 外观页确认「浅色」和「森林」均为原选项，保留外观页打开。系统外观及其他 Qoder 设置保持；P0-09 七项整体视觉标准仍开放。
+
 ## 2026-11-18 设置编辑草稿恢复交付
 
 本批日用源码 `3eb105a16781ce8f2a0b93fe74a54f39285022f3`，0.9.4，构建于 **2026-11-18 08:44（北京时间）**，正常进程 **7909** 无验收参数。索引 `evidence/agent/settings-editor-recovery-r9m4p7v2/acceptance-index.json`；代码段、**217** 份资源及 **4** 份依赖与最终验收包一致，严格本地签名。旧 `3ffd1ce` 的 **228** 份应用文件／权限完整备份于 `delivery-01/previous-1WDz2g/蓝色大肥鱼.app`，安装后的 228 份文件与准备记录一致。
