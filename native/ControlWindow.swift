@@ -150,17 +150,19 @@ final class FormDocumentView: NSView {
     private let savedStatus = AgentSettingsStatusField("设置保存状态")
     private let sendButton = NSButton(title: "发送", target: nil, action: nil)
     private let clearButton = NSButton(title: "清空", target: nil, action: nil)
-    private let endpoint = AgentDialogTextField(), persona = AgentDialogTextField(), model = AgentComboBox()
+    private let endpoint = AgentDialogTextField(), persona = AgentDialogTextField(), model = AgentDialogTextField()
     private let apiKey = AgentSecureTextField(), voiceKey = AgentSecureTextField()
     private let apiPreview = NSButton(), voicePreview = NSButton(), apiReplace = NSButton(), voiceReplace = NSButton()
     private let checkModelButton = AgentDialogButton(title: "检测", target: nil, action: nil)
-    private let modelStatus = NSTextField(labelWithString: "未检测")
+    private let modelDirectoryButton = AgentDialogButton(title: "模型列表", target: nil, action: nil)
+    private let modelDirectory = AgentModelDirectoryView()
+    private let modelStatus = AgentSettingsStatusField("检测状态")
     private let vision = NSPopUpButton(), reasoning = NSPopUpButton()
     private let contextTokens = AgentComboBox(), replyTokens = AgentComboBox()
     private let contextMaximum = NSTextField(labelWithString: ""), replyMaximum = NSTextField(labelWithString: "")
-    private var modelCatalog: [ModelInfo] = [], storedModelInfo: ModelInfo?
+    private enum ModelRequestKind { case catalog, probe }
+    private var storedModelInfo: ModelInfo?, modelRequestKind: ModelRequestKind?
     private var modelCheck: Task<Void, Never>?, modelCheckGeneration = 0
-    private var updatingModelChoices = false
     private let effortValues = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
     private let voiceEndpoint = AgentDialogTextField(), voiceID = AgentDialogTextField(), voiceModel = AgentDialogTextField()
     private let voiceEnabled = NSSwitch(), onTop = NSSwitch(), wakeEnabled = NSSwitch()
@@ -1932,13 +1934,24 @@ final class FormDocumentView: NSView {
             group("shortcuts", "快捷键", "快捷键 键盘 shortcuts keyboard 按键 组合 导航 新建 搜索 计划")
             let panel = AgentShortcutSettingsView(shortcuts: shortcuts); shortcutSettings = panel; row("", panel)
         }
-        group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
+        group("model", "服务", "模型 模型列表 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
-        model.completes = false; model.numberOfVisibleItems = 8
+        model.setAccessibilityLabel("模型 ID")
+        model.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         AgentDialogStyle.action(checkModelButton); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
-        modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = AgentWorkbenchTheme.secondaryText
-        row("接口", endpoint); row("模型", stack([model, checkModelButton], spacing: 8))
+        AgentDialogStyle.action(modelDirectoryButton); modelDirectoryButton.target = self; modelDirectoryButton.action = #selector(toggleModelDirectory)
+        modelDirectory.onRead = { [weak self] in self?.requestModel(.catalog) }
+        modelDirectory.onChoose = { [weak self] id in
+            guard let self else { return }
+            model.stringValue = id; invalidateModelCheck(); toggleModelDirectory()
+        }
+        modelStatus.stringValue = "未检测"
+        row("接口", endpoint)
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
+        row("模型", stack([model, modelDirectoryButton, checkModelButton], spacing: 8))
+        modelDirectory.translatesAutoresizingMaskIntoConstraints = false
+        body.addArrangedSubview(modelDirectory); modelDirectory.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+        modelDirectory.isHidden = true
         row("状态", modelStatus)
         group("model", "能力与预算", "模型 视觉 图片 理解 思考 上下文 tokens 回复 上限 预算")
         vision.addItems(withTitles: ["自动（未知）", "支持", "不支持"])
@@ -2136,6 +2149,8 @@ final class FormDocumentView: NSView {
     func refreshPreferences() {
         guard let companion else { return }
         let p = companion.store.preferences
+        let changedModelSource = (try? CompanionService.endpoint(endpoint.stringValue, chat: true)) != (try? CompanionService.endpoint(p.endpoint, chat: true))
+            || removeChatKey || !apiKey.stringValue.isEmpty
         endpoint.stringValue = p.endpoint; model.stringValue = p.model; persona.stringValue = p.persona
         voiceEndpoint.stringValue = p.voiceEndpoint; voiceModel.stringValue = p.voiceModel; voiceID.stringValue = p.voiceID
         refreshToken(apiKey, preview: apiPreview, replace: apiReplace, account: "chat")
@@ -2145,7 +2160,10 @@ final class FormDocumentView: NSView {
         vision.selectItem(at: ["auto", "on", "off"].firstIndex(of: p.visionMode) ?? 0)
         reasoning.selectItem(at: effortValues.firstIndex(of: p.reasoningEffort) ?? 0)
         contextTokens.stringValue = p.contextTokens == 0 ? "自动" : String(p.contextTokens)
-        replyTokens.stringValue = String(p.replyTokens); updateModelOptions()
+        replyTokens.stringValue = String(p.replyTokens)
+        if changedModelSource || modelRequestKind == .probe { invalidateModelCheck(sourceChanged: changedModelSource) }
+        else { updateModelOptions() }
+        modelDirectory.updateCurrentModel(p.model)
         voiceEnabled.state = p.voiceEnabled ? .on : .off; onTop.state = p.alwaysOnTop ? .on : .off
         wakeEnabled.state = p.wakeEnabled ? .on : .off; wakePhrase.stringValue = p.wakePhrase
         wakeStatus.stringValue = companion.wakeStatus
@@ -2213,7 +2231,7 @@ final class FormDocumentView: NSView {
     @objc private func replaceVoice() { editToken(voiceKey, preview: voicePreview, replace: voiceReplace) }
     @objc private func removeAPI() {
         editToken(apiKey, preview: apiPreview, replace: apiReplace); apiKey.stringValue = ""
-        apiKey.placeholderString = "保存后移除"; removeChatKey = true; invalidateModelCheck()
+        apiKey.placeholderString = "保存后移除"; removeChatKey = true; invalidateModelCheck(sourceChanged: true)
     }
     @objc private func removeVoice() {
         editToken(voiceKey, preview: voicePreview, replace: voiceReplace); voiceKey.stringValue = ""
@@ -2222,7 +2240,7 @@ final class FormDocumentView: NSView {
     private var selectedModelInfo: ModelInfo? {
         let url = try? CompanionService.endpoint(endpoint.stringValue, chat: true).absoluteString
         let name = model.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (modelCatalog + [storedModelInfo].compactMap { $0 }).first { $0.endpoint == url && $0.id == name }
+        return (modelDirectory.models + [storedModelInfo].compactMap { $0 }).first { $0.endpoint == url && $0.id == name }
     }
     private func updateModelOptions() {
         let info = selectedModelInfo
@@ -2236,9 +2254,19 @@ final class FormDocumentView: NSView {
         replyMaximum.stringValue = info?.maxOutputTokens.map { "上限 \($0)" } ?? ""
         contextMaximum.toolTip = "服务声明的模型上限"; replyMaximum.toolTip = "服务声明的输出上限"
     }
-    private func invalidateModelCheck() {
-        modelCheckGeneration += 1; modelCheck?.cancel(); modelCheck = nil; checkModelButton.title = "检测"
-        modelStatus.stringValue = "未检测"; modelStatus.textColor = AgentWorkbenchTheme.secondaryText; modelStatus.toolTip = nil
+    private func updateModelRequestControls() {
+        checkModelButton.isEnabled = modelRequestKind != .catalog
+        checkModelButton.title = modelRequestKind == .probe ? "取消检测" : "检测"
+        modelDirectory.setRequestState(reading: modelRequestKind == .catalog, detecting: modelRequestKind == .probe)
+    }
+    private func cancelModelRequest() {
+        modelCheckGeneration += 1; modelCheck?.cancel(); modelCheck = nil; modelRequestKind = nil
+        updateModelRequestControls()
+    }
+    private func invalidateModelCheck(sourceChanged: Bool = false) {
+        if sourceChanged { modelDirectory.clear() }
+        if sourceChanged || modelRequestKind == .probe { cancelModelRequest() }
+        modelStatus.stringValue = "未检测"
         updateModelOptions()
     }
     func controlTextDidChange(_ obj: Notification) {
@@ -2250,10 +2278,12 @@ final class FormDocumentView: NSView {
             workspaceSession?.changed()
             return
         }
-        invalidateModelCheck()
+        let input = obj.object as? NSTextField
+        invalidateModelCheck(sourceChanged: input === endpoint || input === apiKey)
+        if input === model { modelDirectory.updateCurrentModel(model.stringValue) }
     }
     @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
-    func comboBoxSelectionDidChange(_ notification: Notification) { if !updatingModelChoices { invalidateModelCheck() } }
+    func comboBoxSelectionDidChange(_ notification: Notification) { invalidateModelCheck() }
     @objc private func reasoningChanged() { invalidateModelCheck() }
 
     private func chatPreferences() throws -> PetPreferences {
@@ -2269,30 +2299,65 @@ final class FormDocumentView: NSView {
         p.contextTokens = window; p.replyTokens = output; p.modelInfo = selectedModelInfo
         try p.validateModel(); return p
     }
-    @objc private func checkModel() {
-        if modelCheck != nil { invalidateModelCheck(); modelStatus.stringValue = "已取消"; return }
+    @objc private func toggleModelDirectory() {
+        modelDirectory.isHidden.toggle()
+        modelDirectoryButton.title = modelDirectory.isHidden ? "模型列表" : "收起列表"
+        if modelDirectory.isHidden {
+            if modelRequestKind == .catalog { requestModel(.catalog) }
+            window?.makeFirstResponder(model)
+        } else {
+            window?.contentView?.layoutSubtreeIfNeeded(); modelDirectory.focus(model: model.stringValue)
+        }
+    }
+
+    private func modelRequestKey(for url: URL) throws -> String {
+        let input = apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !input.isEmpty { return input }
+        let savedURL = companion.flatMap { try? CompanionService.endpoint($0.store.preferences.endpoint) }
+        func port(_ address: URL) -> Int { address.port ?? (address.scheme == "https" ? 443 : 80) }
+        let sameService = savedURL.map { $0.scheme == url.scheme && $0.host == url.host && port($0) == port(url) } == true
+        let key = !removeChatKey && sameService ? try companion?.store.keychain.read("chat") ?? "" : ""
+        if key.isEmpty && !CompanionService.isLocal(url.host ?? "") { throw PetError("请填写此接口的 Token。") }
+        return key
+    }
+
+    @objc private func checkModel() { requestModel(.probe) }
+    private func requestModel(_ kind: ModelRequestKind) {
+        if let active = modelRequestKind {
+            guard active == kind else { return }
+            cancelModelRequest()
+            if kind == .catalog { modelDirectory.showMessage("已取消读取") }
+            else { modelStatus.stringValue = "已取消" }
+            return
+        }
+        func failure(_ error: Error) {
+            if kind == .catalog { modelDirectory.showMessage(error.localizedDescription, error: true) }
+            else { modelStatus.stringValue = error.localizedDescription; modelStatus.textColor = AgentDialogStyle.error }
+        }
         do {
-            var p = try chatPreferences()
-            let input = apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = removeChatKey || !input.isEmpty ? input : try companion?.store.keychain.read("chat") ?? ""
-            let host = try CompanionService.endpoint(p.endpoint).host ?? ""
-            if key.isEmpty && !CompanionService.isLocal(host) { throw PetError("请先填写 Token。") }
+            let endpointText = endpoint.stringValue
+            let preferences = kind == .probe ? try chatPreferences() : nil
+            let key = try modelRequestKey(for: CompanionService.endpoint(endpointText))
             modelCheckGeneration += 1; let generation = modelCheckGeneration
-            checkModelButton.title = "取消"; modelStatus.stringValue = "检测中"; modelStatus.textColor = AgentWorkbenchTheme.secondaryText
+            modelRequestKind = kind; updateModelRequestControls()
+            if kind == .probe { modelStatus.stringValue = "检测中" }
             modelCheck = Task { [weak self] in
                 guard let self else { return }
+                defer {
+                    if generation == self.modelCheckGeneration {
+                        self.modelRequestKind = nil; self.modelCheck = nil; self.updateModelRequestControls()
+                    }
+                }
                 do {
-                    // Catalog metadata is optional on compatible gateways. The
-                    // completion itself still has to succeed before green.
-                    let catalog = try? await CompanionService.models(endpoint: p.endpoint, key: key)
+                    let catalog: [ModelInfo]?
+                    if kind == .catalog { catalog = try await CompanionService.models(endpoint: endpointText, key: key) }
+                    else { catalog = try? await CompanionService.models(endpoint: endpointText, key: key) }
                     try Task.checkCancellation(); guard generation == self.modelCheckGeneration else { return }
                     if let catalog {
-                        self.modelCatalog = catalog; let name = self.model.stringValue
-                        self.updatingModelChoices = true
-                        self.model.removeAllItems(); self.model.addItems(withObjectValues: catalog.map(\.id)); self.model.stringValue = name
-                        self.updatingModelChoices = false
-                        p.modelInfo = self.selectedModelInfo; self.updateModelOptions()
+                        self.modelDirectory.setModels(catalog); self.updateModelOptions()
                     }
+                    guard var p = preferences else { return }
+                    p.modelInfo = self.selectedModelInfo
                     let result = try await CompanionService.probe(preferences: p, key: key)
                     try Task.checkCancellation(); guard generation == self.modelCheckGeneration else { return }
                     self.modelStatus.stringValue = result.thinkingBudgetReached ? "已连接 · 思考达到检测预算" : "已连通 · \(result.milliseconds) ms"
@@ -2301,12 +2366,10 @@ final class FormDocumentView: NSView {
                     self.modelStatus.toolTip = source + (result.reply.isEmpty ? "" : " 回复：" + result.reply)
                 } catch {
                     guard generation == self.modelCheckGeneration else { return }
-                    self.modelStatus.stringValue = Task.isCancelled ? "已取消" : error.localizedDescription
-                    self.modelStatus.textColor = .systemRed; self.modelStatus.toolTip = error.localizedDescription
+                    failure(error)
                 }
-                self.modelCheck = nil; self.checkModelButton.title = "检测"
             }
-        } catch { modelStatus.stringValue = error.localizedDescription; modelStatus.textColor = .systemRed }
+        } catch { failure(error) }
     }
     @objc private func saveSettings() {
         guard selectedTab == "settings", settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

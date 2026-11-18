@@ -60,7 +60,7 @@ enum CompanionService {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw serverError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0, key: key)
         }
-        guard data.count < 2_000_000, let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard data.count < 2_000_000, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let list = object["data"] as? [[String: Any]] else { throw PetError("模型列表格式无法读取。") }
         return list.prefix(2000).compactMap { ModelInfo(endpoint: chatURL.absoluteString, object: $0) }
     }
