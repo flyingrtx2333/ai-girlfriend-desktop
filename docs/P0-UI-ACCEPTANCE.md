@@ -1,5 +1,14 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 本机数据分类与混合导入
+
+「设置 → 数据导入」沿右侧内容先选择 Codex 或 Qoder，再检测任务记录、记忆、Skills、连接器、定时任务、插件和扩展配置。各类别独立显示数量与错误。整类勾选与逐条选择共用状态，切换来源或从设置其他页返回可继续原选择。记录的目录和项目目标随同一批次保存。[界面规范](QODER-UI-SPEC.md#数据导入) [Qoder 本机导入参考](https://docs.qoder.com/zh/qoder/data-import)
+
+- `2e568db` 的优化包通过 **12 项**混合导入、**23 项**定时任务迁移、**17 项**智能体和 Hooks 迁移、**304 项**设置检查。两个独立进程验证一条任务导入后暂停、按原目录和范围恢复，来源变化的记忆单独报告失败，其余选中项继续处理，随后重新检测可见新增记录。
+- 在 1320×800 深色窗口用同一组公开会话对照前一版，实际切换 Codex 和 Qoder，核对部分选中、目标修改后重新检测、特定来源不可用及从其他设置页返回。一次导入五类选中项，分别为会话、项目记忆、Skill、停用计划和停用智能体。
+- 780×540 浅色窗口在记忆来源离线时恢复 **5/5** 的批次和原范围，保留已写入正文的定位入口，实际打开导入的会话与只读智能体。导入前、导入后与重开退出后分别通过 **14／24／25 项**独立文件核对，留存 **16 张**样例原图，包含两张旧版本对照。验收期间模型请求为 0，14 份日用资料的字节与权限一致。索引为 `evidence/agent/import-workspace-v4m2q7k8/accepted.json`。
+- 首轮 Skill 检查引用了目录路径，定时任务窗口也曾缺少独立验收所需的调度启动参数，原记录保留。第二包实窗发现窄窗首屏底部的完成状态贴近边界，已提交 `fdabedf` 收紧类别行，日用更新以前置复验为准。
+
 ## 2026-11-19 独立智能体与 Hooks 迁移
 
 「设置 → 数据导入 → 扩展配置」可预览并导入 Qoder 的独立 Agent Markdown、`settings.json`／`settings.local.json` 中的 Hooks，以及 Codex 的独立 Agent TOML 和 `hooks.json`。用户来源可选择全局或登记项目，项目来源要求选择一个登记项目。智能体保留兼容的职责、指令、工具范围及只读设置。同名智能体保留现有版本。Hooks 保留可映射的事件、匹配条件和包内脚本，凭据字段改由本机补填。两类配置导入后均停用，并各自接入原设置页的详情与审核操作。[Qoder 智能体](https://docs.qoder.com/cli/subagent) [Qoder Hooks](https://docs.qoder.com/cli/hooks) [Codex 智能体](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app) [Codex Hooks](https://learn.chatgpt.com/docs/hooks)
