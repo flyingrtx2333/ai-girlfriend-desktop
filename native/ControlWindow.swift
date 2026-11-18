@@ -536,6 +536,9 @@ final class FormDocumentView: NSView {
                         checks[name + page + "FormCardsShareTheSameContentColumn"] = !cards.isEmpty && cards.allSatisfy { let rect = $0.convert($0.bounds, to: contentSurface); return abs(rect.minX - column.minX) < 0.5 && abs(rect.width - column.width) < 0.5 }
                     }
                     if page == "plugins", let table = descendants(content).compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "插件组件" }), let scroll = table.enclosingScrollView {
+                        let previousFrame = window.frame, minimumFrame = NSSize(width: 780, height: 540)
+                        window.setFrame(NSRect(origin: previousFrame.origin, size: minimumFrame), display: true)
+                        window.contentView?.layoutSubtreeIfNeeded()
                         let rows = table.numberOfRows, expected = title.hasSuffix("many") ? 16 : 1
                         let heightFits = scroll.bounds.height <= (rows < 2 ? 76 : 200)
                         let last = rows > 0 ? table.rect(ofRow: rows - 1) : .zero
@@ -543,9 +546,12 @@ final class FormDocumentView: NSView {
                         let lastVisible = rows == 0 || last.intersection(table.visibleRect).height >= last.height - 0.5
                         let readme = descendants(content).compactMap({ $0 as? NSTextView }).first { $0.accessibilityLabel() == "插件说明" }?.enclosingScrollView
                         let readmeHeight = readme?.documentVisibleRect.height ?? 0
-                        checks[detailKey + "ComponentListAndReadmeFitWithReachableLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible && readmeHeight >= 76
+                        checks[detailKey + "ComponentListAndReadmeFitWithReachableLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible && readmeHeight >= 76 && window.frame.size == minimumFrame
                         frames[name + "-" + category]?[title + "ComponentsHeight"] = scroll.bounds.height
                         frames[name + "-" + category]?[title + "ReadmeViewportHeight"] = readmeHeight
+                        frames[name + "-" + category]?[title + "MinimumWindowWidth"] = window.frame.width
+                        frames[name + "-" + category]?[title + "MinimumWindowHeight"] = window.frame.height
+                        window.setFrame(previousFrame, display: true); window.contentView?.layoutSubtreeIfNeeded()
                     }
                 }
                 detail?.close(); window.contentView?.layoutSubtreeIfNeeded()

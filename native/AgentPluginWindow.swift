@@ -142,7 +142,7 @@ import UniformTypeIdentifiers
             do { readme.string = try service.readme(item); entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }; connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: item.workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }; rules = try service.ruleItems(workspace: item.workspace, onlyScope: true).filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }
         }
         components.reloadData()
-        componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(180, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
+        componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(120, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
         if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
         history.removeAllItems(); history.addItem(withTitle: "历史版本")
         let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
