@@ -1572,17 +1572,22 @@ final class FormDocumentView: NSView {
         try manager.selectInstallation(id)
     }
     private func openImportedConfiguration(_ plan: AgentStandaloneImportPlan, url: URL) throws {
+        guard let store = companion?.agentStore else { throw PetError("扩展配置设置页不可用") }
         let command = plan.kind == .command
         let commandID: String?
         if command {
-            guard let store = companion?.agentStore,
-                  let item = try store.extensions.catalog(workspace: plan.workspace).first(where: { $0.kind == .command && $0.file.path == url.path }) else {
+            guard let item = try store.extensions.catalog(workspace: plan.workspace).first(where: { $0.kind == .command && $0.file.path == url.path }) else {
                 throw PetError("命令已移除或被同名命令替代")
             }
             commandID = item.id
         } else { commandID = nil }
         guard showSettingsCategory(command ? "extensions" : "memory") else { throw PetError("请先完成当前编辑") }
-        restoredSettingsContext = plan.workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        if !command, let workspace = plan.workspace, let taskID = AgentMemory.projects(store: store, preferredTaskID: store.selectedID)
+            .first(where: { $0.workspace == workspace })?.taskID, let task = store.task(taskID) {
+            restoredSettingsContext = .init(task: task, workspace: workspace)
+        } else {
+            restoredSettingsContext = plan.workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        }
         updateSettingsSections()
         if let commandID {
             settingsPageHost.selectPage("commands")

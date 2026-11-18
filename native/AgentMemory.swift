@@ -4,6 +4,7 @@ enum AgentMemoryScope: String, CaseIterable {
     case global, project, instructions, summary, userInstructions, localInstructions, effectiveInstructions
     var title: String { switch self { case .global: return "全局记忆"; case .project: return "项目记忆"; case .instructions: return "项目指令"; case .summary: return "任务摘要"; case .userInstructions: return "用户指令"; case .localInstructions: return "本机项目指令"; case .effectiveInstructions: return "有效指令" } }
     var isInstructions: Bool { [.instructions, .userInstructions, .localInstructions].contains(self) }
+    var isProjectFile: Bool { [.project, .instructions, .localInstructions].contains(self) }
     var hasTopics: Bool { self == .global || self == .project }
     var primaryPath: String { self == .global ? "memory.md" : ".bluefatfish/memory.md" }
     var topicDirectory: String { self == .global ? "memory" : ".bluefatfish/memory" }
@@ -97,7 +98,7 @@ struct AgentMemoryProjectSource: Equatable {
         let path: String?
         if scope == .global { path = store.directory.path }
         else if scope == .userInstructions { path = store.directory.deletingLastPathComponent().path }
-        else if scope == .project, taskID == nil, let workspace {
+        else if scope.isProjectFile, taskID == nil, let workspace {
             guard workspace != "/", registeredProjects(store).contains(where: { $0.sourceFolders.contains(workspace) }) else { throw PetError("项目目录已离开登记范围") }
             path = workspace
         }
@@ -107,7 +108,7 @@ struct AgentMemoryProjectSource: Equatable {
             path = task.workspace
         }
         let files = try AgentFiles(workspace: path, followParentLinks: followParentLinks)
-        if scope == .project, taskID == nil || !followParentLinks, files.root.path != path {
+        if (scope.isProjectFile && taskID == nil || scope == .project && !followParentLinks), files.root.path != path {
             throw PetError("项目目录位置已变化，请重新选择")
         }
         return files
@@ -120,8 +121,8 @@ struct AgentMemoryProjectSource: Equatable {
         }
         let path = scope == .instructions || scope == .userInstructions ? "AGENTS.md" : scope == .localInstructions ? "AGENTS.local.md" : scope.primaryPath
         let url = try files.resolve(path)
-        if scope == .project, taskID == nil, url.path != files.root.appendingPathComponent(path).path {
-            throw PetError("项目记忆路径已变化，请检查文件后重新打开")
+        if scope.isProjectFile, taskID == nil, url.path != files.root.appendingPathComponent(path).path {
+            throw PetError(scope.title + "路径已变化，请检查文件后重新打开")
         }
         return (files, url, scope.isInstructions ? 65_536 : 24_000)
     }

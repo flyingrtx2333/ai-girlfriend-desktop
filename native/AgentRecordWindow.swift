@@ -493,7 +493,7 @@ import UniformTypeIdentifiers
         wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
         newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
         if sections.selectedSegment == 5 {
-            let existing = memoryTaskID != nil ? AgentMemoryScope.allCases : memoryWorkspace == nil ? [.global, .userInstructions] : [.project]
+            let existing = memoryTaskID != nil ? AgentMemoryScope.allCases : memoryWorkspace == nil ? [.global, .userInstructions] : [.project, .instructions, .localInstructions]
             let scopes = memoryCatalogScope.map { [$0] } ?? existing
             memoryTopicError = nil
             items = scopes.flatMap { scope -> [(title: String, value: String)] in

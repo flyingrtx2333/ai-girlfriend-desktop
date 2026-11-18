@@ -119,6 +119,14 @@ import AppKit
                 && contents(project, ".bluefatfish/commands/kept.md") == "Existing local command\n"
                 && contents(project, "src/.bluefatfish/rules/swift.md") == matching
                 && !fm.fileExists(atPath: project.appendingPathComponent("missing").path)
+            let unscoped = try AgentMemory.snapshot(.instructions, store: reopened, taskID: nil, workspace: project.path)
+            let local = try AgentMemory.snapshot(.localInstructions, store: reopened, taskID: nil, workspace: project.path)
+            let localSaved = try AgentMemory.save(.localInstructions, content: "LOCAL PUBLIC INSTRUCTIONS\n",
+                expectedHash: local.hash, store: reopened, taskID: nil, workspace: project.path, expectedExists: local.exists)
+            checks["registeredProjectInstructionsCanOpenAndSaveWithoutTask"] = unscoped.content == instruction
+                && unscoped.workspace == project.path && !local.exists && localSaved.location == "AGENTS.local.md"
+                && localSaved.content == "LOCAL PUBLIC INSTRUCTIONS\n" && reopened.tasks.map(\.id) == initial
+                && refuses { _ = try AgentMemory.snapshot(.instructions, store: reopened, taskID: nil, workspace: incoming.path) }
             let projectTask = reopened.create(title: "公开项目验收", workspace: project.path, mode: .ask)
             let otherTask = reopened.create(title: "其他项目验收", workspace: other.path)
             let generalTask = reopened.create(title: "无工作区验收", mode: .ask)
