@@ -67,20 +67,26 @@ import Darwin
             func button(_ label: String) throws -> NSButton {
                 guard let value = find(NSButton.self, control.settingsControllerForCheck?.pageContentView, { $0.title == label && $0.isEnabled }) else { throw PetError("缺少设置操作：" + label) }; return value
             }
-            func extensionEditor() throws -> (AgentExtensionWindow, NSTextView) {
-                guard let page = control.settingsControllerForCheck as? AgentExtensionWindow, let editor = find(NSTextView.self, page.pageContentView, { $0.accessibilityLabel() == "扩展说明" }) else { throw PetError("扩展编辑器未打开") }; return (page, editor)
+            func extensionEditor() throws -> (AgentExtensionWindow, AgentSettingsDetailPage, NSTextView) {
+                guard let page = control.settingsControllerForCheck as? AgentExtensionWindow,
+                      let list = find(AgentSettingsCatalogTable.self, page.pageContentView, { $0.identifier?.rawValue == "settings-catalog" }),
+                      let openItem = list.action else { throw PetError("扩展目录未打开") }
+                NSApp.sendAction(openItem, to: list.target, from: list)
+                guard let detail = control.settingsControllerForCheck as? AgentSettingsDetailPage,
+                      let editor = find(NSTextView.self, detail.pageContentView, { $0.accessibilityLabel() == "扩展说明" }) else { throw PetError("扩展编辑器未打开") }
+                return (page, detail, editor)
             }
             guard control.showSettingsCategory("extensions") else { throw PetError("设置未打开") }
             let popup = find(NSPopUpButton.self, host.contentView, { $0.identifier?.rawValue == "settings-source-folder" })
             checks["settingsOffersEveryFrozenSourceAndDefaultsToPrimary"] = popup?.numberOfItems == 2 && popup?.selectedItem?.representedObject as? String == beta && popup?.isHiddenOrHasHiddenAncestor == false
-            try tab("指令"); let (betaPage, betaEditor) = try extensionEditor()
+            try tab("指令"); let (betaPage, betaDetail, betaEditor) = try extensionEditor()
             checks["primaryCommandEditorReadsActualPrimaryFile"] = betaEditor.string.contains("BETA_COMMAND_PUBLIC") && !betaEditor.string.contains("ALPHA_COMMAND_PUBLIC")
             let betaItem = try tasks.extensions.catalog(workspace: beta).first { $0.kind == .command }!, betaBytes = try Data(contentsOf: betaItem.file)
             betaEditor.string += "UNSAVED_BETA\n"; betaPage.textDidChange(Notification(name: NSText.didChangeNotification, object: betaEditor))
             try choose("继续编辑") { try? source(alpha) }
-            checks["continueRestoresPickerAndRetainsEditorAndDraft"] = control.settingsControllerForCheck === betaPage && betaEditor.string.contains("UNSAVED_BETA") && popup?.selectedItem?.representedObject as? String == beta && tasks.task(id)?.draft == task.draft
+            checks["continueRestoresPickerAndRetainsEditorAndDraft"] = control.settingsControllerForCheck === betaDetail && betaEditor.string.contains("UNSAVED_BETA") && popup?.selectedItem?.representedObject as? String == beta && tasks.task(id)?.draft == task.draft
             try choose("放弃更改") { try? source(alpha) }
-            let (alphaPage, alphaEditor) = try extensionEditor()
+            let (alphaPage, _, alphaEditor) = try extensionEditor()
             checks["discardSwitchesSourceAndPreservesSelectedTab"] = control.settingsSourceReadback()["page"] as? String == "commands" && alphaEditor.string.contains("ALPHA_COMMAND_PUBLIC") && !alphaEditor.string.contains("UNSAVED_BETA")
             let alphaItem = try tasks.extensions.catalog(workspace: alpha).first { $0.kind == .command }!
             alphaEditor.string += "ALPHA_EDITED_PUBLIC\n"; alphaPage.textDidChange(Notification(name: NSText.didChangeNotification, object: alphaEditor)); try button("保存").performClick(nil)
