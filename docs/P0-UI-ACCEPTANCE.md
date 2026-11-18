@@ -1,5 +1,14 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 本机 Skills 迁移
+
+「设置 → 数据导入 → Skills」识别 Codex 的 `.agents/skills`、旧版 `.codex/skills`、Qoder 的 `.qoder/skills` 及手选的兼容文件夹。选择全局或项目后，可预览说明和文件数、逐项勾选并暂停续导。说明与资源保留相对路径，复制后核对字节。同名现有版本保留，已由共享目录提供的 Skill 保持原有引用和启停状态。[Codex Skills](https://learn.chatgpt.com/docs/build-skills) [Qoder Skills](https://docs.qoder.com/extensions/skills) [Qoder 数据导入](https://docs.qoder.com/zh/qoder/data-import)
+
+- `13eaa50` 的同一优化验收包通过 22 项 Skills 专项和 20 项记忆导入回归。两个独立进程核对暂停、原选择续导和已落盘条目的复用。另核对来源资源变化、同名不覆盖、项目隔离、单个 Skill 的原导入方式和通过任务工具读取导入说明与资源。
+- 1200×774 浅色实窗选择 Qoder 样例来源及项目目标，核对格式错误、同名和部分勾选。实际导入一项。780×540 深色重开恢复批次和项目范围，在扩展管理打开已启用的导入项。同名原项仍可查看，未选中项没有复制。两个进程正常退出，保留 6 张原图，导入前、导入后和重开退出后分别通过 13／18／19 项文件核对。
+- 首包发现目录扫描跳过隐藏文件时漏读后续脚本。已复现并修正，最终包复制后按字节核对。旧包实窗的「全选」状态错误也已修正，实际切换通过。初次专项的项目样例未建目录、调试构建被系统终止，以及为纳入界面修正而中止的候选均留存记录。
+- 14 份正式资料的字节与权限一致，真实模型请求 0，日用运行 `742a95e`。完整索引在 `evidence/agent/skill-import-k7m4v2q8/accepted.json`，其中关联两张 1320×800 深色 Hooks 实图和 Qoder 的外观恢复原图。
+
 ## 2026-11-19 本机记忆迁移
 
 「设置 → 数据导入 → 记忆」可选来源及全局或项目目标。支持 Codex 的 v1／v2 汇总 Markdown、Qoder CLI 的记忆目录，以及手选记忆文件夹中的 UTF-8 Markdown。Qoder 项目目录需要明确选择项目。预览显示来源、正文片段和实际目标文件名，随后逐项勾选。同名不同内容另存，相同内容跳过。较长文档按 UTF-8 边界拆为有序主题，拼接后的字节与原件一致。[Codex 记忆组织](https://github.com/openai/codex/blob/main/codex-rs/memories/README.md) [Qoder 记忆目录](https://docs.qoder.com/zh/cli/memory)
