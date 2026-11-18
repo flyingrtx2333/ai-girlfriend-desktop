@@ -85,7 +85,7 @@ final class FormDocumentView: NSView {
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
-    private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = NSButton(title: "停止录音", target: nil, action: nil)
+    private let stopRecordingButton = NSButton(title: "停止录音", target: nil, action: nil), voiceStopButton = AgentDialogButton(title: "停止录音", target: nil, action: nil)
     private let chat = NSView(), settings = NSView(), attentionContent = NSView(), automationContent = NSView(), knowledgeContent = NSView()
     private(set) var knowledgePageHost = AgentKnowledgePageHost()
     private let libraryButton = AgentWorkbenchButton(title: "知识库", target: nil, action: nil), projectKnowledgeButton = AgentWorkbenchButton(title: "项目知识", target: nil, action: nil)
@@ -139,7 +139,7 @@ final class FormDocumentView: NSView {
     private let endpoint = AgentDialogTextField(), persona = AgentDialogTextField(), model = AgentComboBox()
     private let apiKey = AgentSecureTextField(), voiceKey = AgentSecureTextField()
     private let apiPreview = NSButton(), voicePreview = NSButton(), apiReplace = NSButton(), voiceReplace = NSButton()
-    private let checkModelButton = NSButton(title: "检测", target: nil, action: nil)
+    private let checkModelButton = AgentDialogButton(title: "检测", target: nil, action: nil)
     private let modelStatus = NSTextField(labelWithString: "未检测")
     private let vision = NSPopUpButton(), reasoning = NSPopUpButton()
     private let contextTokens = AgentComboBox(), replyTokens = AgentComboBox()
@@ -154,8 +154,8 @@ final class FormDocumentView: NSView {
     private let pauseWait = NSPopUpButton()
     private let screenEnabled = NSSwitch(), screenInterval = NSPopUpButton()
     private let screenStatus = NSTextField(labelWithString: ""), screenTarget = NSTextField(labelWithString: "")
-    private let screenPermission = NSButton(title: "授权", target: nil, action: nil)
-    private let screenNow = NSButton(title: "看看屏幕", target: nil, action: nil), screenQuiet = NSButton(title: "免打扰30分钟", target: nil, action: nil)
+    private let screenPermission = AgentDialogButton(title: "授权", target: nil, action: nil)
+    private let screenNow = AgentDialogButton(title: "看看屏幕", target: nil, action: nil), screenQuiet = AgentDialogButton(title: "免打扰30分钟", target: nil, action: nil)
     private let performance = NSPopUpButton(), scale = NSSlider(value: 1, minValue: 0.5, maxValue: 1.5, target: nil, action: nil)
     private var removeChatKey = false, removeVoiceKey = false, busy = false
     private var pendingRender: DispatchWorkItem?
@@ -1731,7 +1731,7 @@ final class FormDocumentView: NSView {
         group("model", "服务", "模型 接口 地址 URL Token 密钥 连接 检测 API")
         endpoint.delegate = self; model.delegate = self; apiKey.delegate = self
         model.completes = false; model.numberOfVisibleItems = 8
-        checkModelButton.bezelStyle = .rounded; checkModelButton.controlSize = .large; checkModelButton.font = .systemFont(ofSize: 13); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
+        AgentDialogStyle.action(checkModelButton); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
         modelStatus.font = .systemFont(ofSize: 12); modelStatus.textColor = AgentWorkbenchTheme.secondaryText
         row("接口", endpoint); row("模型", stack([model, checkModelButton], spacing: 8))
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
@@ -1757,7 +1757,7 @@ final class FormDocumentView: NSView {
         row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
         pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
         wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = AgentWorkbenchTheme.secondaryText; row("状态", wakeStatus)
-        row("", voiceStopButton)
+        AgentDialogStyle.action(voiceStopButton); row("", voiceStopButton)
         group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
         screenEnabled.setAccessibilityLabel("闲置时观察屏幕"); row("自动观察", screenEnabled)
         screenInterval.addItems(withTitles: ["1 分钟", "3 分钟", "5 分钟", "10 分钟", "15 分钟"]); row("观察间隔", screenInterval)
@@ -1768,7 +1768,7 @@ final class FormDocumentView: NSView {
         screenStatus.lineBreakMode = .byTruncatingTail
         row("状态", screenStatus)
         for (button, action) in [(screenPermission, #selector(grantScreenPermission)), (screenNow, #selector(lookAtScreen)), (screenQuiet, #selector(quietScreen))] {
-            button.bezelStyle = .rounded; button.controlSize = .large; button.font = .systemFont(ofSize: 13); button.target = self; button.action = action
+            AgentDialogStyle.action(button); button.target = self; button.action = action
         }
         row("", stack([screenNow, screenPermission, screenQuiet], spacing: 8))
         let screenScope = NSTextField(wrappingLabelWithString: "只看当前应用窗口的一帧，不保存截图。")
@@ -1778,8 +1778,8 @@ final class FormDocumentView: NSView {
         sizeValue.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular); sizeValue.textColor = AgentWorkbenchTheme.secondaryText
         sizeValue.widthAnchor.constraint(equalToConstant: 42).isActive = true
         scale.target = self; scale.action = #selector(scaleChanged); row("大小", stack([scale, sizeValue], spacing: 12))
-        let resetPosition = NSButton(title: "复位位置", target: companion, action: #selector(AppDelegate.resetPosition))
-        resetPosition.controlSize = .large; resetPosition.font = .systemFont(ofSize: 13)
+        let resetPosition = AgentDialogButton(title: "复位位置", target: companion, action: #selector(AppDelegate.resetPosition))
+        AgentDialogStyle.action(resetPosition)
         row("", stack([resetPosition, NSView()], spacing: 8))
         if let companion {
             if companion.usesAgent {

@@ -3,6 +3,7 @@ import AppKit
 @MainActor final class AgentDataImportView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let store: AgentStore, service: AgentDataImport
     private let source = NSPopUpButton(), folder = NSButton(), detect = NSButton(title: "重新检测", target: nil, action: nil)
+    private lazy var sourceControl = AgentSettingsPopupFrame(source)
     private let table = NSTableView(), detail = NSTextView(), state = NSTextField(labelWithString: ""), selectAll = NSButton(checkboxWithTitle: "全选", target: nil, action: nil)
     private let begin = NSButton(title: "开始导入", target: nil, action: nil), pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
     private let open = NSButton(title: "打开任务", target: nil, action: nil), original = NSButton(title: "来源副本", target: nil, action: nil)
@@ -30,14 +31,14 @@ import AppKit
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(begin, #selector(start)), (pause, #selector(pauseImport)), (resume, #selector(resumeImport)), (cancel, #selector(cancelImport)), (open, #selector(openTask)), (original, #selector(showOriginal))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        let header = NSStackView(views: [source, folder, detect]); header.spacing = 8
+        let header = NSStackView(views: [sourceControl, folder, detect]); header.spacing = 8
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
         let actions = NSStackView(views: [state, NSView(), begin, pause, resume, cancel]); actions.spacing = 6
         for line in [header, selection, actions] { line.distribution = .fill }
         let column = NSStackView(views: [header, selection, list, preview, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         let height = list.heightAnchor.constraint(equalToConstant: 236); listHeight = height
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), source.widthAnchor.constraint(equalToConstant: 96), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), height, preview.heightAnchor.constraint(equalToConstant: 142)])
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), sourceControl.widthAnchor.constraint(equalToConstant: 120), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), height, preview.heightAnchor.constraint(equalToConstant: 142)])
         for view in [header, selection, list, preview, actions] { view.translatesAutoresizingMaskIntoConstraints = false; view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         folder.setContentHuggingPriority(.defaultLow, for: .horizontal); refresh()
     }
@@ -52,6 +53,7 @@ import AppKit
         if signature != next { signature = next; selected = Set(rows.filter { $0.issue == nil && viewingPreview }.map(\.id)) }
         folder.title = (root.path as NSString).abbreviatingWithTildeInPath; folder.toolTip = root.path
         source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
+        sourceControl.refreshEnabledState()
         selectAll.isEnabled = viewingPreview && !service.active && !service.scanning && rows.contains { $0.issue == nil }; selectAll.state = selected.isEmpty ? .off : selected.count == rows.filter({ $0.issue == nil }).count ? .on : .mixed
         let previous = table.selectedRow; table.reloadData(); if rows.indices.contains(previous) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
         table.enclosingScrollView?.isHidden = rows.isEmpty; selectAll.superview?.isHidden = rows.isEmpty

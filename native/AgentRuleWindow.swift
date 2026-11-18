@@ -57,7 +57,10 @@ import AppKit
         for view in form.arrangedSubviews { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("规则正文")
-        let viewer = NSScrollView(); viewer.documentView = editor; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
+        let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.borderType = .noBorder; scroll.identifier = .init("form-input")
+        let viewer = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); viewer.identifier = .init("settings-card-rule-body")
+        viewer.layer?.cornerRadius = 12; viewer.layer?.borderWidth = 1; viewer.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: viewer.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: viewer.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: viewer.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: viewer.bottomAnchor, constant: -1)])
         location.font = .systemFont(ofSize: 11); location.textColor = AgentWorkbenchTheme.secondaryText; location.lineBreakMode = .byTruncatingMiddle; location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(save, #selector(saveItem)), (use, #selector(useItem)), (remove, #selector(removeItem)), (reveal, #selector(revealItem))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)

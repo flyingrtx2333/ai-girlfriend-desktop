@@ -38,7 +38,7 @@ private extension AgentHookEvent {
     private let scope = NSPopUpButton(), reveal = NSButton(title: "打开来源", target: nil, action: nil)
     private let clear = NSButton(title: "清除凭据", target: nil, action: nil)
     private let editSelected = NSButton(title: "编辑配置", target: nil, action: nil)
-    private let card = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line)
+    private let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private var items: [AgentHookDefinition] = [], selected: AgentHookDefinition?
     private var expanded: Set<AgentHookEvent> = []
     private var configWindow: AgentHookConfigWindow?
@@ -50,9 +50,11 @@ private extension AgentHookEvent {
         super.init(window: window)
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("Hooks 配置范围")
-        let edit = NSButton(title: "编辑配置", target: self, action: #selector(editConfig)), importButton = NSButton(title: "导入", target: self, action: #selector(importConfig)), refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList))
+        let edit = AgentDialogButton(title: "编辑配置", target: self, action: #selector(editConfig)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importConfig)), refresh = AgentDialogButton(title: "刷新", target: self, action: #selector(refreshList))
+        for button in [edit, importButton, refresh] { AgentDialogStyle.action(button) }
         edit.setAccessibilityLabel("编辑当前范围的 Hooks 配置")
-        let header = NSStackView(views: [count, NSView(), scope, edit, importButton, refresh]); header.spacing = 8
+        let scopeControl = AgentSettingsPopupFrame(scope); scopeControl.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        let header = NSStackView(views: [count, NSView(), scopeControl, edit, importButton, refresh]); header.spacing = 8
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText; count.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let scroll = NSScrollView(), document = FormDocumentView(); scroll.documentView = document; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         scroll.identifier = NSUserInterfaceItemIdentifier("hook-event-groups"); scroll.setAccessibilityLabel("Hooks 事件分组")
@@ -63,7 +65,7 @@ private extension AgentHookEvent {
         for view in [groups, card, empty] { view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
-            card.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 4), card.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -4), card.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), card.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -4),
+            card.leadingAnchor.constraint(equalTo: document.leadingAnchor), card.trailingAnchor.constraint(equalTo: document.trailingAnchor), card.topAnchor.constraint(equalTo: document.topAnchor), card.bottomAnchor.constraint(equalTo: document.bottomAnchor),
             groups.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), groups.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), groups.topAnchor.constraint(equalTo: card.topAnchor), groups.bottomAnchor.constraint(equalTo: card.bottomAnchor),
             empty.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), empty.topAnchor.constraint(equalTo: document.topAnchor, constant: 20)
         ])
@@ -83,7 +85,7 @@ private extension AgentHookEvent {
         detail.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 18, right: 0)
         for view in [header, scroll, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 4), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -4), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 4), header.heightAnchor.constraint(equalToConstant: 30),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 4), header.heightAnchor.constraint(equalToConstant: 30),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor), scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), scroll.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -8),
             state.leadingAnchor.constraint(equalTo: header.leadingAnchor), state.trailingAnchor.constraint(equalTo: header.trailingAnchor), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -4), state.heightAnchor.constraint(equalToConstant: 18)
         ]); reload()
@@ -93,7 +95,7 @@ private extension AgentHookEvent {
     private func disclosure(title: String, subtitle: String, symbol: String, badge: String = "", open: Bool, action: Selector, tag: Int) -> NSButton {
         let button = AgentWorkbenchButton(title: "", target: self, action: action); button.tag = tag; button.isBordered = false
         button.setAccessibilityLabel(title + (badge.isEmpty ? "" : "，\(badge) 个处理器") + "，" + subtitle); button.setAccessibilityValue(open ? "已展开" : "已收起")
-        let emblem = AgentThemeView(fill: AgentWorkbenchTheme.subtle, stroke: AgentWorkbenchTheme.line); emblem.layer?.cornerRadius = 8; emblem.layer?.borderWidth = 1
+        let emblem = AgentThemeView(fill: AgentWorkbenchTheme.accent.withAlphaComponent(0.08), stroke: AgentWorkbenchTheme.line); emblem.layer?.cornerRadius = 8; emblem.layer?.borderWidth = 1
         let icon = NSImageView(); icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage(systemSymbolName: "link", accessibilityDescription: nil); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
         let name = NSTextField(labelWithString: title); name.font = .systemFont(ofSize: 13); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let number = NSTextField(labelWithString: badge); number.font = .systemFont(ofSize: 11); number.textColor = AgentWorkbenchTheme.secondaryText; number.isHidden = badge.isEmpty
@@ -117,7 +119,7 @@ private extension AgentHookEvent {
         let order: [AgentHookEvent] = [.sessionStart, .subagentStart] + AgentHookEvent.allCases.filter { ![.sessionStart, .subagentStart].contains($0) }
         let events = order.filter { event in items.contains { $0.event == event } }
         for (index, event) in events.enumerated() {
-            if index > 0 { let rule = AgentWorkbenchTheme.rule(); groups.addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: groups.widthAnchor).isActive = true }
+            if index > 0 { let rule = AgentSettingsStyle.divider(); groups.addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: groups.widthAnchor).isActive = true }
             let handlers = items.enumerated().filter { $0.element.event == event }
             let header = disclosure(title: event.rawValue, subtitle: event.meaning, symbol: "link", badge: String(handlers.count), open: expanded.contains(event), action: #selector(toggleEvent(_:)), tag: AgentHookEvent.allCases.firstIndex(of: event)!)
             header.setAccessibilityIdentifier("hook-event-" + event.rawValue)
