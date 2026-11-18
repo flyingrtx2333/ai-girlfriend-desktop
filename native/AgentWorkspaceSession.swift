@@ -49,7 +49,9 @@ private actor AgentWorkspaceJournal {
     private var coldFloating: [AgentWorkspaceRecovery.FloatingPage] = []
     private var coldKnowledge: AgentWorkspaceRecovery.Knowledge?
     private var coldSettings: AgentSettingsRecovery.State?, settingsFailure: String?
+    private var coldAutomation: AgentWorkspaceRecovery.Automation?, automationFailure: String?
     var pendingSettingsCategory: String? { coldSettings?.category }
+    var hasPendingAutomation: Bool { coldAutomation != nil }
     private var knowledgeFailure: String?
     var hasPendingKnowledge: Bool { coldKnowledge != nil }
     private var floatingFailures: [String: String] = [:]
@@ -72,6 +74,7 @@ private actor AgentWorkspaceJournal {
         coldFloating = saved?.value.floating ?? []
         coldKnowledge = saved?.value.knowledge
         coldSettings = saved?.value.settings
+        coldAutomation = saved?.value.automation
         super.init()
         owner.taskWorkspace.onRecoveryChange = { [weak self] in self?.changed() }
         owner.knowledgePageHost.onRecoveryChange = { [weak self] in self?.changed() }
@@ -124,6 +127,7 @@ private actor AgentWorkspaceJournal {
         guard !stopped, !disabled else { return }
         restoreKnowledge()
         restoreSettings()
+        if coldKnowledge?.active != true, coldSettings?.active != true { restoreAutomation() }
         for task in owner?.taskWorkspace.recoveryLayouts ?? [] { for tab in task.tabs where tab.hasIndependentChild == true {
             guard let root = AgentTaskWorkspace.Root(key: tab.root), owner?.taskWorkspace.recoveryController(taskID: task.taskID, root: root) == nil else { continue }
             restore(task: task.taskID, tab: tab, activate: false)
@@ -178,6 +182,24 @@ private actor AgentWorkspaceJournal {
                 settingsFailure = message; owner.setStatus(message, error: true)
             }
         }
+    }
+    func restoreAutomation() {
+        guard !stopped, !disabled, let value = coldAutomation, roots["automation"] == nil else { return }
+        roots["automation"] = Task { @MainActor [weak self] in
+            guard let self, let owner else { return }; defer { roots["automation"] = nil }
+            do {
+                try owner.materializeAutomationRecovery(value)
+                coldAutomation = nil
+                if let automationFailure { owner.clearWorkspaceRecoveryStatus(automationFailure, prefix: "") }
+                automationFailure = nil; changed()
+            } catch {
+                let message = "自动化草稿未恢复，原记录已保留：" + error.localizedDescription
+                automationFailure = message; owner.setStatus(message, error: true)
+            }
+        }
+    }
+    func hasAutomationDraft(for ids: Set<String>) -> Bool {
+        coldAutomation?.context.taskID.map(ids.contains) == true
     }
     func prepareFloating(preserving: Bool) async -> Bool {
         for controller in floatingControllers {
@@ -268,6 +290,7 @@ private actor AgentWorkspaceJournal {
                 else { layout.knowledge = try await owner.knowledgePageHost.captureWorkspaceRecovery(active: owner.isShowingKnowledge) }
                 if let coldSettings { layout.settings = coldSettings }
                 else { layout.settings = try owner.captureSettingsRecovery() }
+                layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected)
                 layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision
@@ -284,6 +307,7 @@ private actor AgentWorkspaceJournal {
                 })
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryReaders.filter(\.canPreserveForQuit).map(ObjectIdentifier.init))
                 if coldSettings == nil, layout.settings != nil { preservedEditors.formUnion(owner.settingsRecoveryControllers.map(ObjectIdentifier.init)) }
+                if coldAutomation == nil, layout.automation != nil, let manager = owner.automationWindow { preservedEditors.insert(ObjectIdentifier(manager)) }
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryEditors.compactMap { editor in
                     if let cards = editor as? AgentKnowledgeCardWindow, cards.canPreserveForQuit { return ObjectIdentifier(cards) }
                     if let index = editor as? AgentKnowledgeWindow, index.canPreserveForQuit { return ObjectIdentifier(index) }

@@ -1,12 +1,28 @@
 import AppKit
 
 @MainActor final class AgentAutomationWindow: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSTextViewDelegate, NSWindowDelegate {
+    private struct Proposal: Codable {
+        var id: String, requestHash: String
+    }
+    private struct Recovery: Codable {
+        var version = 1
+        var original: AgentAutomation?
+        var form: AgentAutomation
+        var time: String, interval: String
+        var expiryDate: Date
+        var dateZone: String?
+        var proposal: Proposal?
+        var viewport: AgentSettingsDraftViewport.State
+
+        var fields: [String: String] { ["name":form.name, "model":form.model, "zone":form.schedule.timeZone, "time":time, "interval":interval] }
+    }
     let store: AgentStore
     let service: AgentAutomations
     var onOpen: ((String) -> Void)?
     var onRequestNotifications: (() async throws -> Bool)?
     var onCreateWithAssistant: (() throws -> Void)?
-    var onSaved: ((String) throws -> Void)?
+    var onSaved: (() -> Void)?
+    var onRecoveryChange: (() -> Void)?
     var sourceTaskID: String?
     private let list = NSTableView(), history = NSTableView(), sections = NSSegmentedControl(labels: ["计划", "运行记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let archived = NSPopUpButton(), awake = NSButton(checkboxWithTitle: "保持设备唤醒", target: nil, action: nil)
@@ -32,6 +48,14 @@ import AppKit
     var hasUnsavedChanges: Bool { dirty }
     var isVisible: Bool { (hostedContent?.window?.isVisible ?? window?.isVisible ?? false) && hostedContent?.isHiddenOrHasHiddenAncestor != true }
     private var definitions: [AgentAutomation] = [], selectedID: String?, opened: AgentAutomation?, newValue: AgentAutomation?, dirty = false, loading = false, selectedDays = Set([2])
+    private var editContext: AgentSettingsRecovery.Context?, proposal: Proposal?
+    private lazy var draftViewport: AgentSettingsDraftViewport = {
+        let viewport = AgentSettingsDraftViewport(text: prompt, fields: ["name":name, "model":model, "zone":zone, "time":time, "interval":interval], catalog: list,
+            host: { [weak self] in self?.presentingWindow })
+        viewport.trackForm(formScroll)
+        viewport.onChange = { [weak self] in if self?.dirty == true { self?.onRecoveryChange?() } }
+        return viewport
+    }()
     private enum HistoryRow { case heading(String), run(AgentAutomationRun) }
     private var rows: [HistoryRow] = [], offset = 0, total = 0, observer: NSObjectProtocol?
     init(store: AgentStore) {
@@ -121,6 +145,12 @@ import AppKit
         hostWindow = host; top.constant = 68; updatePresentation(); return view
     }
     func refresh() { reload() }
+    func focusEditor() { if editing, isVisible { draftViewport.appear(default: name) } }
+    private func context(for id: String?) -> AgentSettingsRecovery.Context {
+        let task = id.flatMap(store.task)
+        return .init(task: task, workspace: task?.workspace)
+    }
+    func hasDraft(for ids: Set<String>) -> Bool { dirty && editContext?.taskID.map(ids.contains) == true }
     private func updatePresentation() {
         let showingHistory = !editing && sections.selectedSegment == 1
         title.stringValue = editing ? (opened == nil ? "新建自动化" : opened!.name) : "自动化"
@@ -136,13 +166,17 @@ import AppKit
         if dirty { return }
         let saved = service.values.first { $0.id == draft.automation.id }
         guard draft.savedAt == nil || saved != nil else { throw PetError("自动化已移除，原草稿保留") }
+        editContext = context(for: draft.taskID)
+        proposal = Proposal(id: draft.id, requestHash: draft.requestHash)
         newValue = saved == nil ? draft.automation : nil; selectedID = draft.automation.id
         archived.selectItem(at: saved?.archived == true ? 1 : 0); reload(); open(saved ?? draft.automation)
         dirty = saved == nil; editing = true; sections.selectedSegment = 0; changeSection(); updateControls()
+        onRecoveryChange?()
     }
     private func reload() {
         let savedSelection = selectedID
-        definitions = service.values.filter { $0.archived == (archived.indexOfSelectedItem == 1) }; if let newValue { definitions.append(newValue) }
+        definitions = service.values.filter { $0.archived == (archived.indexOfSelectedItem == 1) }
+        if let newValue, !definitions.contains(where: { $0.id == newValue.id }) { definitions.append(newValue) }
         loading = true; list.reloadData(); if let i = definitions.firstIndex(where: { $0.id == savedSelection }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; loading = false
         awake.state = service.keepAwake ? .on : .off
         if !dirty { open(definitions.first(where: { $0.id == savedSelection }) ?? definitions.first) }
@@ -151,13 +185,17 @@ import AppKit
     }
     private func open(_ value: AgentAutomation?) {
         loading = true; defer { loading = false }; opened = value.flatMap { candidate in service.values.first { $0.id == candidate.id } }; selectedID = value?.id
+        fillForm(value)
+        dirty = false; draftViewport.reset(); prompt.undoManager?.removeAllActions(); state.stringValue = service.error ?? ""
+        if let i = definitions.firstIndex(where: { $0.id == value?.id }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; updateControls()
+    }
+    private func fillForm(_ value: AgentAutomation?) {
         name.stringValue = value?.name ?? ""; workspace.stringValue = value?.workspace ?? ""; model.stringValue = value?.model ?? ""; prompt.string = value?.prompt ?? ""
         let schedule = value?.schedule ?? AgentAutomationSchedule(); zone.stringValue = schedule.timeZone; time.stringValue = String(format: "%02d:%02d", schedule.hour, schedule.minute); interval.stringValue = String(schedule.intervalMinutes); selectedDays = Set(schedule.weekdays)
         frequency.selectItem(at: AgentAutomationFrequency.allCases.firstIndex(of: schedule.frequency) ?? 0); once.dateValue = schedule.date; once.timeZone = TimeZone(identifier: schedule.timeZone); expiry.dateValue = schedule.expiration ?? Date().addingTimeInterval(86_400 * 30); expiry.timeZone = once.timeZone; expiring.state = schedule.expiration == nil ? .off : .on
         output.selectItem(at: AgentAutomationOutput.allCases.firstIndex(of: value?.output ?? .independent) ?? 0); permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0)
         readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; notify.state = value?.notify == false ? .off : .on; enabled.state = value?.enabled == true ? .on : .off
-        refreshExecutors(selected: value?.executor ?? "default"); refreshDays(); updateScheduleRows(); dirty = false; prompt.undoManager?.removeAllActions(); state.stringValue = service.error ?? ""
-        if let i = definitions.firstIndex(where: { $0.id == value?.id }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; updateControls()
+        refreshExecutors(selected: value?.executor ?? "default"); refreshDays(); updateScheduleRows()
     }
     private func refreshExecutors(selected: String) {
         executor.removeAllItems(); executor.addItem(withTitle: "小鲸"); executor.lastItem?.representedObject = "default"
@@ -203,7 +241,9 @@ import AppKit
         guard !loading else { return }
         if notification.object as? NSTableView === list {
             guard definitions.indices.contains(list.selectedRow) else { return }
-            if dirty { state.stringValue = "请先保存更改"; loading = true; if let i = definitions.firstIndex(where: { $0.id == selectedID }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; loading = false; return }; open(definitions[list.selectedRow]); editing = true; updatePresentation(); formScroll.contentView.scroll(to: .zero); offset = 0; loadHistory()
+            if dirty { state.stringValue = "请先保存更改"; loading = true; if let i = definitions.firstIndex(where: { $0.id == selectedID }) { list.selectRowIndexes(IndexSet(integer: i), byExtendingSelection: false) }; loading = false; return }
+            editContext = context(for: sourceTaskID); proposal = nil
+            open(definitions[list.selectedRow]); editing = true; updatePresentation(); formScroll.contentView.scroll(to: .zero); offset = 0; loadHistory()
         } else { let run = selectedRun; detail.stringValue = run?.detail ?? ""; openTask.isEnabled = run?.taskID.flatMap(store.task) != nil }
     }
     private var selectedRun: AgentAutomationRun? { guard rows.indices.contains(history.selectedRow), case .run(let run) = rows[history.selectedRow] else { return nil }; return run }
@@ -217,16 +257,25 @@ import AppKit
             page.stringValue = total == 0 ? "暂无记录" : "\(offset + 1)–\(min(offset + 50, total)) / \(total)"; previous.isEnabled = offset > 0; more.isEnabled = offset + 50 < total; detail.stringValue = selectedRun?.detail ?? ""; openTask.isEnabled = selectedRun?.taskID.flatMap(store.task) != nil
         } catch { state.stringValue = error.localizedDescription }
     }
+    private func readForm() throws -> AgentAutomation {
+        guard var result = (opened ?? newValue), result.id == selectedID else { throw PetError("请选择自动化") }
+        result = AgentAutomations.editableDefinition(result)
+        result.name = name.stringValue; result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
+        result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue; result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
+        result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on
+        return result
+    }
     private func capture() throws -> AgentAutomation {
-        guard let value = definitions.first(where: { $0.id == selectedID }) else { throw PetError("请选择自动化") }; var result = value
-        result.name = name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
-        result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
-        let parts = time.stringValue.split(separator: ":"); guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]), let interval = Int(interval.stringValue) else { throw PetError("时间使用 HH:mm，间隔使用整数分钟") }; result.schedule.hour = hour; result.schedule.minute = minute; result.schedule.intervalMinutes = interval
-        result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on; return result
+        var result = try readForm()
+        result.name = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.schedule.timeZone = result.schedule.timeZone.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = time.stringValue.split(separator: ":"); guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]), let interval = Int(interval.stringValue) else { throw PetError("时间使用 HH:mm，间隔使用整数分钟") }
+        result.schedule.hour = hour; result.schedule.minute = minute; result.schedule.intervalMinutes = interval
+        return result
     }
     func controlTextDidChange(_ obj: Notification) { if obj.object as? NSTextField === zone, let value = TimeZone(identifier: zone.stringValue) { once.timeZone = value; expiry.timeZone = value }; changed() }
     func textDidChange(_ notification: Notification) { changed() }
-    @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateScheduleRows(); updateControls() }
+    @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateScheduleRows(); updateControls(); draftViewport.changed() }
     @objc private func frequencyChanged() { if frequency.indexOfSelectedItem == AgentAutomationFrequency.allCases.firstIndex(of: .interval) { once.dateValue = Date() }; changed() }
     @objc private func changeSection() { updatePresentation(); if !records.isHidden { loadHistory() } }
     @objc private func returnToCatalog() { guard prepareToLeave() else { return }; editing = false; sections.selectedSegment = 0; reload() }
@@ -238,9 +287,75 @@ import AppKit
     @objc private func create() {
         guard !dirty else { state.stringValue = "请先保存更改"; return }
         let source = sourceTaskID.flatMap(store.task) ?? store.selected
+        editContext = context(for: source?.id); proposal = nil
         var value = AgentAutomation(name: "", prompt: "", workspace: source?.workspace ?? ""); value.workMode = source?.workMode; value.enabled = true; newValue = value; selectedID = value.id; archived.selectItem(at: 0); editing = true; reload(); open(value); dirty = true; updateControls(); sections.selectedSegment = 0; changeSection(); formScroll.contentView.scroll(to: .zero); presentingWindow?.makeFirstResponder(name)
+        onRecoveryChange?()
     }
-    @objc private func saveDefinition() { do { let value = try capture(); try service.save(value, expected: opened); newValue = nil; dirty = false; selectedID = value.id; reload(); try onSaved?(value.id); state.stringValue = "已保存" } catch { state.stringValue = error.localizedDescription } }
+    @objc private func saveDefinition() {
+        do {
+            let value = try capture()
+            try editContext?.requireCurrent(store)
+            let origin = try originalProposal(for: value.id)
+            try service.save(value, expected: opened)
+            newValue = nil; dirty = false; selectedID = value.id; reload(); onRecoveryChange?()
+            if let origin { try AgentAutomationDrafts.markSaved(origin.id, taskID: origin.taskID, automationID: value.id, store: store) }
+            onSaved?(); state.stringValue = "已保存"
+        } catch { state.stringValue = error.localizedDescription }
+    }
+    private func originalProposal(for id: String) throws -> AgentAutomationDraft? {
+        guard let proposal else { return nil }
+        guard let taskID = editContext?.taskID else { throw PetError("原自动化提案所属任务不可用") }
+        let current = try AgentAutomationDrafts.load(proposal.id, taskID: taskID, store: store)
+        guard current.requestHash == proposal.requestHash, current.automation.id == id else { throw PetError("原自动化提案已变化，草稿已保留") }
+        return current
+    }
+    func captureRecovery() throws -> AgentWorkspaceRecovery.Automation? {
+        guard dirty, editing else { return nil }
+        let snapshot = Recovery(original: opened.map(AgentAutomations.editableDefinition), form: try readForm(), time: time.stringValue,
+            interval: interval.stringValue, expiryDate: expiry.dateValue, dateZone: once.timeZone?.identifier, proposal: proposal, viewport: try draftViewport.capture())
+        let page = try AgentSettingsRecovery.page("automation", snapshot)
+        return .init(context: editContext ?? context(for: sourceTaskID), state: page.state)
+    }
+    private static func validateRecoveryDefinition(_ raw: Any) throws {
+        let raw = try AgentSettingsRecovery.object(raw, keys: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived"])
+        if let schedule = raw["schedule"] {
+            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration"])
+        }
+    }
+    func restoreRecovery(_ value: AgentWorkspaceRecovery.Automation) throws {
+        guard !dirty else { throw PetError("请先处理当前自动化更改") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: value.state),
+            keys: ["version", "original", "form", "time", "interval", "expiryDate", "dateZone", "proposal", "viewport"])
+        for key in ["original", "form"] { if let entry = raw[key], !(entry is NSNull) { try Self.validateRecoveryDefinition(entry) } }
+        if let origin = raw["proposal"], !(origin is NSNull) { _ = try AgentSettingsRecovery.object(origin, keys: ["id", "requestHash"]) }
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        let snapshot = try JSONDecoder().decode(Recovery.self, from: value.state), form = snapshot.form
+        guard snapshot.version == 1, UUID(uuidString: form.id) != nil, !form.archived,
+              snapshot.original.map({ $0.id == form.id && !$0.archived }) != false,
+              (form.workspace.isEmpty || form.workspace.hasPrefix("/")), !form.workspace.contains("\0"),
+              form.schedule.weekdays.allSatisfy({ (1...7).contains($0) }), snapshot.expiryDate.timeIntervalSince1970.isFinite,
+              snapshot.dateZone.map({ TimeZone(identifier: $0) != nil }) != false,
+              snapshot.proposal.map({ UUID(uuidString: $0.id) != nil && AgentSettingsRecovery.validHash($0.requestHash) && value.context.taskID != nil }) != false else {
+            throw PetError("自动化草稿范围或格式无效，原记录已保留")
+        }
+        if let original = snapshot.original { try service.validate(original, runnable: false) }
+        try draftViewport.validate(snapshot.viewport, text: form.prompt, fields: snapshot.fields)
+        let current = service.values.first { $0.id == form.id }
+        let stale = try service.editableHash(current) != service.editableHash(snapshot.original)
+
+        loading = true
+        editContext = value.context; sourceTaskID = value.context.taskID; proposal = snapshot.proposal
+        opened = snapshot.original; newValue = opened == nil ? form : nil; selectedID = form.id
+        archived.selectItem(at: 0); sections.selectedSegment = 0
+        fillForm(form)
+        time.stringValue = snapshot.time; interval.stringValue = snapshot.interval; expiry.dateValue = snapshot.expiryDate
+        once.timeZone = snapshot.dateZone.flatMap(TimeZone.init(identifier:)); expiry.timeZone = once.timeZone
+        editing = true; dirty = true; loading = false
+        reload(); updateScheduleRows(); updateControls()
+        state.stringValue = stale ? "原计划已变化，草稿已保留" : "未保存"
+        prompt.undoManager?.removeAllActions()
+        try draftViewport.restore(snapshot.viewport)
+    }
     @objc private func createWithAssistant() {
         do { guard !dirty else { throw PetError("请先保存或关闭当前自动化更改") }; guard let action = onCreateWithAssistant else { throw PetError("会话入口暂不可用") }; try action(); if hostWindow == nil { window?.orderOut(nil) } }
         catch { state.stringValue = error.localizedDescription }
@@ -265,7 +380,7 @@ import AppKit
     func prepareToLeave() -> Bool {
         guard dirty else { return true }
         guard AgentUnsavedChanges.discard("放弃未保存的自动化更改？") else { return false }
-        newValue = nil; dirty = false; editing = false; reload(); return true
+        newValue = nil; dirty = false; editing = false; editContext = nil; proposal = nil; reload(); onRecoveryChange?(); return true
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { prepareToLeave() }
     func checkState() -> [String: Any] {

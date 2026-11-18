@@ -2062,6 +2062,7 @@ final class FormDocumentView: NSView {
         if selectedTab == "chat" { focusTaskInput() }
         if selectedTab == "knowledge" { knowledgePageHost.focusCurrentPage() }
         if selectedTab == "attention" { attentionPageController?.refresh(); attentionPageController?.focusSearch() }
+        if selectedTab == "automation" { automationWindow?.focusEditor() }
         companion?.updatePetWorkspaceOcclusion()
     }
     private func focusTaskInput() {
@@ -2480,7 +2481,9 @@ final class FormDocumentView: NSView {
         guard settingsPageHost.prepareToQuit(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
-        guard automationWindow?.prepareToLeave() != false else { return false }
+        if let automationWindow, !preservingRecovery || workspaceSession?.preservedEditors.contains(ObjectIdentifier(automationWindow)) != true {
+            guard automationWindow.prepareToLeave() else { return false }
+        }
         guard knowledgePageHost.prepareToLeave(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard await taskWorkspace.canFinish(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard attachmentImport == nil, window?.hasBlockingDialog != true else { setStatus("请先完成或取消当前对话框／附件导入", error: true); return false }
@@ -2498,6 +2501,18 @@ final class FormDocumentView: NSView {
     }
     func finishOwnedTaskPanels() { workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
     func captureSettingsRecovery() throws -> AgentSettingsRecovery.State? { try settingsPageHost.captureRecovery(active: selectedTab == "settings") }
+    func captureAutomationRecovery() throws -> AgentWorkspaceRecovery.Automation? {
+        try selectedTab == "automation" ? automationWindow?.captureRecovery() : nil
+    }
+    func materializeAutomationRecovery(_ value: AgentWorkspaceRecovery.Automation) throws {
+        guard let store = companion?.agentStore, value.context.taskID == agentTaskID else { throw PetError("请回到原任务打开自动化草稿") }
+        try value.context.requireCurrent(store)
+        guard canLeaveMainPage() else { throw PetError("请先处理当前页面的更改") }
+        let manager = preparedAutomationWindow(store)
+        try manager.restoreRecovery(value)
+        sidebarRequested = true
+        show(tab: "automation"); refreshAutomationBadge()
+    }
     func materializeSettingsRecovery(_ value: AgentSettingsRecovery.State) throws {
         guard let store = companion?.agentStore else { throw PetError("设置所属任务暂不可用") }
         try value.context.requireCurrent(store)
@@ -2518,6 +2533,9 @@ final class FormDocumentView: NSView {
     }
     func requireTaskDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         try attentionPageController?.requireDeletionAllowed(ids); try recordWindow?.requireDeletionAllowed(ids)
+        if workspaceSession?.hasAutomationDraft(for: ids) == true || automationWindow?.hasDraft(for: ids) == true {
+            throw PetError("请先保存或关闭这些任务的自动化草稿")
+        }
         for record in artifactDocuments { try record.requireDeletionAllowed(ids) }
         try taskWorkspace.requireDeletionAllowed(ids, ignoring: controller)
         if settingsPageHost.controllers.contains(where: { ($0 as? AgentWorktreeWindow)?.hasPendingOperation == true }) { throw PetError("请先完成工作树操作") }
@@ -3097,17 +3115,14 @@ final class FormDocumentView: NSView {
         guard let manager = settingsPageHost.currentController as? AgentExtensionWindow else { throw PetError("技能设置页不可用") }
         if let itemID { manager.selectItem(itemID) }; return manager
     }
-    func configureAutomationDraft(_ id: String, taskID: String) throws {
+    internal func configureAutomationDraft(_ id: String, taskID: String) throws {
         guard let store = companion?.agentStore, currentAgentTask?.id == taskID else { throw PetError("请在原任务打开自动化草稿") }
+        guard workspaceSession?.hasPendingAutomation != true else { throw PetError("请从自动化页面处理此窗口已有的草稿") }
         let draft = try AgentAutomationDrafts.load(id, taskID: taskID, store: store)
         if selectedTab != "automation" { guard canLeaveMainPage() else { throw PetError("请先完成当前页面编辑") } }
         let manager = preparedAutomationWindow(store)
         try manager.configureDraft(draft)
         if store.automations.values.contains(where: { $0.id == draft.automation.id }) { try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: draft.automation.id, store: store) }
-        manager.onSaved = { [weak self, weak store] automationID in
-            guard let store, automationID == draft.automation.id else { return }
-            try AgentAutomationDrafts.markSaved(id, taskID: taskID, automationID: automationID, store: store); self?.renderAgentMessages()
-        }
         showAutomations()
     }
     func agentTaskAction(_ id: String, action: String) {
@@ -4278,6 +4293,8 @@ final class FormDocumentView: NSView {
         if let existing = automationWindow { return existing }
         let manager = AgentAutomationWindow(store: store)
         manager.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat"); self?.refreshAutomationBadge() }
+        manager.onSaved = { [weak self] in self?.renderAgentMessages() }
+        manager.onRecoveryChange = { [weak self] in self?.workspaceSession?.changed() }
         manager.onRequestNotifications = { [weak self] in guard let self else { throw PetError("应用已关闭") }; return try await self.companion?.automationNotifications.request() ?? false }
         manager.onCreateWithAssistant = { [weak self, weak store] in
             guard let self, let store, saveAgentDraft() else { throw PetError("请先保存当前会话草稿") }
@@ -4289,6 +4306,7 @@ final class FormDocumentView: NSView {
         return manager
     }
     @objc func showAutomations() {
+        if workspaceSession?.hasPendingAutomation == true { workspaceSession?.restoreAutomation(); return }
         guard let store = companion?.agentStore, saveAgentDraft() else { return }
         if selectedTab != "automation", !canLeaveMainPage() { return }
         let manager = preparedAutomationWindow(store)

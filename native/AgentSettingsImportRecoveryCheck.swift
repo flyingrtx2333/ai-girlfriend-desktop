@@ -96,6 +96,7 @@ import AppKit
                     guard choice.indexOfSelectedItem == 0 else { throw PetError("验收插件状态应为继承") }
                     choice.selectItem(at: 2)
                     try send(choice)
+                    control.window?.makeFirstResponder(choice)
                 }
                 openTaskWindow(task, from: control)
                 guard let hookWindow = additionalTaskWindows.last, hookWindow.showSettingsCategory("hooks") else { throw PetError("缺少 Hooks 设置窗口") }
@@ -149,6 +150,17 @@ import AppKit
                     let selected = try input(plugin, NSPopUpButton.self, "插件启用声明")
                     checks["pluginDetailAndLastScopeReopen"] = try plugin.settingsRecoveryControllers.count == 3 && selected.indexOfSelectedItem == 2 &&
                         input(plugin, NSSegmentedControl.self, "插件设置范围").selectedSegment == AgentPluginSettingScope.local.rawValue
+                    checks["pluginKeyboardFocusReturnsToDeclaration"] = plugin.window?.firstResponder === selected
+                    if !interactive, let host = plugin.window, let content = host.contentView, let editor = plugin.settingsRecoveryControllers.last {
+                        host.setFrame(NSRect(origin: host.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+                        content.layoutSubtreeIfNeeded()
+                        let actions = try [button(plugin, "刷新"), button(plugin, "保存")]
+                        checks["pluginActionsFitInFixedHeaderAtMinimumSize"] = actions.allSatisfy { action in
+                            let rect = action.convert(action.bounds, to: content)
+                            return action.visibleRect.height >= action.bounds.height - 0.5 && content.bounds.contains(rect)
+                                && editor.pageContentView.map { !action.isDescendant(of: $0) } == true
+                        }
+                    }
                     for area in AgentPluginSettingScope.allCases {
                         checks["restoresPluginChoiceFor" + area.title] = try selectPluginScope(plugin, area).indexOfSelectedItem == 2
                     }

@@ -68,12 +68,13 @@ enum AgentSettingsRecovery {
     }
     static func validateObject(_ raw: Any) throws {
         let value = try object(raw, keys: ["version", "context", "category", "root", "active", "pages", "y"])
-        if let context = value["context"] {
-            let context = try object(context, keys: ["taskID", "workspace", "taskWorkspace", "scope", "mode", "archived", "ruleDirectories"])
-            if let scope = context["scope"], !(scope is NSNull) { _ = try object(scope, keys: ["group", "folders", "primary"]) }
-            for directory in context["ruleDirectories"] as? [Any] ?? [] { _ = try object(directory, keys: ["workspace", "path"]) }
-        }
+        if let context = value["context"] { try validateContext(context) }
         for page in value["pages"] as? [Any] ?? [] { _ = try object(page, keys: ["kind", "state"]) }
+    }
+    static func validateContext(_ raw: Any) throws {
+        let context = try object(raw, keys: ["taskID", "workspace", "taskWorkspace", "scope", "mode", "archived", "ruleDirectories"])
+        if let scope = context["scope"], !(scope is NSNull) { _ = try object(scope, keys: ["group", "folders", "primary"]) }
+        for directory in context["ruleDirectories"] as? [Any] ?? [] { _ = try object(directory, keys: ["workspace", "path"]) }
     }
 }
 
@@ -91,6 +92,7 @@ enum AgentSettingsRecovery {
         var focus: String
         var formY: Double? = nil
         var catalogY: Double? = nil
+        var visibleSelectionHeight: Double? = nil
     }
     private let text: NSTextView, fields: [String: NSTextField], catalog: NSView
     private weak var form: NSScrollView?
@@ -140,7 +142,16 @@ enum AgentSettingsRecovery {
         remember(); var viewport = try deferredText ?? AgentTextViewport(text); viewport.focused = focus == "body"
         let values = fields.mapValues(field); cached = values
         return State(text: viewport, fields: values, focus: focus, formY: form.map { max(0, $0.contentView.bounds.minY) },
-                     catalogY: deferredCatalogY ?? (tracksCatalogScroll ? catalog.enclosingScrollView.map { max(0, $0.contentView.bounds.minY) } : nil))
+                     catalogY: deferredCatalogY ?? (tracksCatalogScroll ? catalog.enclosingScrollView.map { max(0, $0.contentView.bounds.minY) } : nil),
+                     visibleSelectionHeight: visibleSelectionHeight(viewport))
+    }
+    private func visibleSelectionHeight(_ viewport: AgentTextViewport) -> Double? {
+        guard viewport.focused, !text.isHiddenOrHasHiddenAncestor, let window = text.window,
+              let scroll = text.enclosingScrollView, let range = viewport.selections.first?.range else { return nil }
+        let selected = text.firstRect(forCharacterRange: range, actualRange: nil)
+        let visible = window.convertToScreen(text.convert(text.visibleRect, to: nil))
+        guard selected.height > 0, selected.minY < visible.maxY, visible.minY < selected.maxY else { return nil }
+        return Double(scroll.contentSize.height)
     }
     func restore(_ value: State) throws {
         try validate(value, text: text.string, fields: fields.mapValues(\.stringValue))
@@ -149,7 +160,8 @@ enum AgentSettingsRecovery {
     func validate(_ value: State, text: String, fields values: [String: String]) throws {
         guard value.version == 1, value.text.valid, value.text.hash == AgentFiles.hash(Data(text.utf8)), value.text.count == (text as NSString).length,
               Set(value.fields.keys) == Set(fields.keys), Set(values.keys) == Set(fields.keys), ["body", "catalog"].contains(value.focus) || fields[value.focus] != nil,
-              AgentSettingsRecovery.validScroll(value.formY), AgentSettingsRecovery.validScroll(value.catalogY) else { throw PetError("设置草稿选区与正文不符，原记录已保留") }
+              AgentSettingsRecovery.validScroll(value.formY), AgentSettingsRecovery.validScroll(value.catalogY),
+              AgentSettingsRecovery.validScroll(value.visibleSelectionHeight) else { throw PetError("设置草稿选区与正文不符，原记录已保留") }
         for (key, saved) in value.fields {
             let current = values[key]!
             guard saved.hash == AgentFiles.hash(Data(current.utf8)), saved.count == (current as NSString).length, saved.selection?.valid(in: saved.count) != false else { throw PetError("设置字段选区与原输入不符，原记录已保留") }
@@ -189,7 +201,11 @@ enum AgentSettingsRecovery {
                 guard value.text.apply(to: text, focus: false) else { return }; deferredText = nil
             }
             guard window.makeFirstResponder(target) else { return }
-            if target === text { guard value.text.apply(to: text, focus: false) else { return } }
+            if target === text {
+                guard value.text.apply(to: text, focus: false) else { return }
+                if let savedHeight = value.visibleSelectionHeight, let scroll = text.enclosingScrollView,
+                   Double(scroll.contentSize.height) + 0.5 < savedHeight { text.scrollRangeToVisible(text.selectedRange()) }
+            }
             else if let field = fields[value.focus], let selection = value.fields[value.focus]?.selection { (field.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
             if let y = value.formY, let form, form.window === window { applyScroll(y, to: form) }
             pending = nil
@@ -201,7 +217,7 @@ enum AgentSettingsRecovery {
         clip.scroll(to: bounds.origin); view.reflectScrolledClipView(clip)
     }
     static func validateObject(_ raw: Any) throws {
-        let value = try AgentSettingsRecovery.object(raw, keys: ["version", "text", "fields", "focus", "formY", "catalogY"])
+        let value = try AgentSettingsRecovery.object(raw, keys: ["version", "text", "fields", "focus", "formY", "catalogY", "visibleSelectionHeight"])
         if let text = value["text"] { try AgentTextViewport.validateObject(text) }
         for raw in (value["fields"] as? [String: Any] ?? [:]).values {
             let field = try AgentSettingsRecovery.object(raw, keys: ["hash", "count", "selection"])

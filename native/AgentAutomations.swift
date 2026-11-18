@@ -175,9 +175,13 @@ struct AgentAutomationAssignment: Codable {
         }
         scheduleTimer(); changed()
     }
-    private func editableHash(_ value: AgentAutomation?) throws -> String? {
-        guard var value else { return nil }; value.current = nil; value.nextRun = nil; value.mergedTaskID = nil
-        return try AgentFiles.hash(encoder.encode(value))
+    static func editableDefinition(_ value: AgentAutomation) -> AgentAutomation {
+        var result = value
+        result.current = nil; result.nextRun = nil; result.mergedTaskID = nil
+        return result
+    }
+    func editableHash(_ value: AgentAutomation?) throws -> String? {
+        try value.map { try AgentFiles.hash(encoder.encode(Self.editableDefinition($0))) }
     }
     func setPaused(_ id: String, paused: Bool) throws {
         guard let value = values.first(where: { $0.id == id }) else { throw PetError("自动化不存在") }
