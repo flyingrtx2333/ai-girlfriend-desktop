@@ -42,7 +42,7 @@ struct AgentPluginAgentDefinition {
         }
         guard result.count <= 64 else { throw PetError("每个插件最多64项 Agent") }; return result
     }
-    private static func agentDefinition(_ text: String, path: String) throws -> AgentPluginAgentDefinition {
+    static func agentDefinition(_ text: String, path: String, standalone: Bool = false) throws -> AgentPluginAgentDefinition {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n"), lines = normalized.components(separatedBy: "\n")
         guard lines.first == "---", let end = lines.dropFirst().firstIndex(of: "---"), end < 200 else { throw PetError("插件 Agent 需要闭合的 frontmatter：" + path) }
         let document = try AgentExtensionDocument(normalized)
@@ -84,8 +84,11 @@ struct AgentPluginAgentDefinition {
                 else { throw PetError("插件 Agent 尚未支持工具：" + name) }
             }; return result
         }
-        let denied = try tools(lists["disallowedTools"] ?? []), selected = try lists["tools"].map(tools) ?? AgentProfiles.toolNames
-        let permissions: [String: AgentPermissionMode] = ["default": .review, "acceptEdits": .workspace, "bypassPermissions": .automatic]
+        let denied = try tools(lists["disallowedTools"] ?? [])
+        let selected: Set<String>
+        if standalone, lists["tools"] == nil || lists["tools"] == ["*"] { selected = Set(aliases.values.flatMap { $0 }) }
+        else { selected = try lists["tools"].map(tools) ?? AgentProfiles.toolNames }
+        let permissions: [String: AgentPermissionMode] = ["default": .review, "acceptEdits": .workspace, "bypassPermissions": .automatic, "plan": .review]
         guard let permission = permissions[fields["permissionMode"] ?? "default"] else { throw PetError("插件 Agent permissionMode 尚未支持") }
         func boolean(_ key: String, fallback: Bool) throws -> Bool {
             guard let value = fields[key] else { return fallback }
@@ -99,7 +102,11 @@ struct AgentPluginAgentDefinition {
         guard servers.isEmpty || !readOnly && network else { throw PetError("插件 Agent 使用 MCP 需要允许外部连接并关闭只读项目") }
         let model = fields["model"] == "inherit" ? "" : fields["model"] ?? ""
         guard model.count <= 200, !model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("插件 Agent 模型无效") }
-        let profile = AgentProfile(name: key, description: description, instructions: document.body, model: model, permission: permission, tools: available.sorted(), readOnly: readOnly, network: network, toolPermissions: denied.isEmpty ? nil : Dictionary(uniqueKeysWithValues: denied.map { ($0, .deny) }))
+        guard standalone || fields["permissionMode"] != "plan" else { throw PetError("插件 Agent permissionMode 尚未支持") }
+        let profile = AgentProfile(name: key, description: description, instructions: document.body, model: model,
+            permission: standalone ? .review : permission, tools: available.sorted(),
+            readOnly: readOnly || (standalone && fields["permissionMode"] == "plan"), network: network && !(standalone && fields["permissionMode"] == "plan"),
+            toolPermissions: denied.isEmpty ? nil : Dictionary(uniqueKeysWithValues: denied.map { ($0, .deny) }))
         return AgentPluginAgentDefinition(key: key, path: path, profile: profile, skills: skillNames, servers: servers)
     }
     func agentProfiles(workspace: String? = nil, onlyScope: Bool = false) throws -> [AgentProfile] {
@@ -134,13 +141,14 @@ struct AgentPluginAgentDefinition {
 @MainActor extension AgentProfiles {
     func currentProfile(_ snapshot: AgentProfile, workspace: String? = nil) throws -> AgentProfile {
         let current = try profile(snapshot.id, workspace: workspace)
+        guard current.sourceWorkspace == snapshot.sourceWorkspace else { throw PetError("Agent 所属项目已变化，请重新选择执行者") }
         guard current.pluginSource == snapshot.pluginSource else { throw PetError("插件 Agent 已变化，请重新选择执行者") }
         if let source = snapshot.pluginSource { try plugins.validateAgent(source, workspace: workspace) }; return current
     }
     func currentProfile(_ snapshot: AgentProfile, task: AgentTaskRecord) throws -> AgentProfile {
         guard task.workspaceScope != nil else { return try currentProfile(snapshot, workspace: task.workspace) }
         _ = try AgentWorkspaceScope.roots(task)
-        let project = try snapshot.pluginSource.flatMap { try AgentPlugins.scope($0.name).workspace }
+        let project = try snapshot.sourceWorkspace ?? snapshot.pluginSource.flatMap { try AgentPlugins.scope($0.name).workspace }
         if let project, !task.includesWorkspaceRoot(project) { throw PetError("Agent 来源超出当前任务的源文件夹") }
         return try currentProfile(snapshot, workspace: project ?? task.workspace)
     }

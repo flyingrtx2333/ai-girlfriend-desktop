@@ -393,6 +393,7 @@ import WebKit
         if CommandLine.arguments.contains("--automation-import-check") { await runAutomationImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-data-import-check") { await runPluginDataImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--standalone-data-import-check") { await runStandaloneDataImportCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--execution-import-check") { await runExecutionImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--organization-check") { await runAgentOrganizationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--office-check") { await runAgentOfficeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--canvas-check") { await runAgentCanvasCheck(output); NSApp.terminate(nil); return }

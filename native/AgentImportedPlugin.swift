@@ -186,7 +186,7 @@ import CoreFoundation
         return json["mcpServers"] == nil ? result : ["mcpServers": result]
     }
 
-    private static func cleanHooks(_ input: [String: Any]) throws -> [String: Any] {
+    static func cleanHooks(_ input: [String: Any]) throws -> [String: Any] {
         var object = input
         let wrapped = input["hooks"] != nil
         guard let raw = (wrapped ? input["hooks"] : input) as? [String: [[String: Any]]] else { throw PetError("插件 Hooks 需要事件与分组") }

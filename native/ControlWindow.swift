@@ -1571,6 +1571,25 @@ final class FormDocumentView: NSView {
         guard let manager = settingsPageHost.currentController as? AgentPluginWindow else { throw PetError("插件设置页不可用") }
         try manager.selectInstallation(id)
     }
+    private func openImportedAgent(_ id: String, workspace: String?) throws {
+        guard showSettingsCategory("agents") else { throw PetError("请先完成当前编辑") }
+        restoredSettingsContext = workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        updateSettingsSections()
+        settingsPageHost.selectPage("agents")
+        guard let manager = settingsPageHost.currentController as? AgentProfileWindow else { throw PetError("智能体设置页不可用") }
+        manager.selectProfile(id)
+    }
+    private func openImportedHooks(_ url: URL, workspace: String?) throws {
+        guard let store = companion?.agentStore, let handler = try store.hooks.catalog(workspace: workspace).first(where: { $0.source == url.path }) else {
+            throw PetError("此配置中的 Hook 已移除或无法载入")
+        }
+        guard showSettingsCategory("hooks") else { throw PetError("请先完成当前编辑") }
+        restoredSettingsContext = workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        updateSettingsSections()
+        settingsPageHost.selectPage("hooks")
+        guard let manager = settingsPageHost.currentController as? AgentHookWindow else { throw PetError("Hooks 设置页不可用") }
+        manager.selectHook(handler.id)
+    }
     private func openImportedConfiguration(_ plan: AgentStandaloneImportPlan, url: URL) throws {
         guard let store = companion?.agentStore else { throw PetError("扩展配置设置页不可用") }
         let command = plan.kind == .command
@@ -2111,6 +2130,8 @@ final class FormDocumentView: NSView {
             imports.onOpenConnector = { [weak self] id, workspace in try self?.configureImportedConnector(id, workspace: workspace) }
             imports.onOpenPlugin = { [weak self] id, workspace in try self?.openImportedPlugin(id, workspace: workspace) }
             imports.onOpenConfiguration = { [weak self] plan, url in try self?.openImportedConfiguration(plan, url: url) }
+            imports.onOpenAgent = { [weak self] id, workspace in try self?.openImportedAgent(id, workspace: workspace) }
+            imports.onOpenHooks = { [weak self] url, workspace in try self?.openImportedHooks(url, workspace: workspace) }
             imports.onOpenAutomation = { [weak self] id in
                 guard let self else { return }
                 self.showAutomations()

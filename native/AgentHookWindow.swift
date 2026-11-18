@@ -33,6 +33,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
     enum Source: Codable, Equatable {
         case local(project: Bool, path: String, imported: Import?)
         case plugin(reference: AgentPluginHookReference, originalHash: String)
+        case standalone(path: String, workspace: String?)
     }
     var source: Source
     var expectedHash: String?
@@ -43,6 +44,8 @@ private struct AgentHookEditTarget: Codable, Equatable {
             return path.hasPrefix("/") && imported.map { $0.path.hasPrefix("/") && AgentSettingsRecovery.validHash($0.hash) } != false
         case .plugin(let reference, let originalHash):
             return !reference.name.isEmpty && !reference.key.isEmpty && !reference.installationID.isEmpty && AgentSettingsRecovery.validHash(originalHash)
+        case .standalone(let path, let workspace):
+            return path.hasPrefix("/") && workspace.map { $0.hasPrefix("/") } != false && expectedHash != nil
         }
     }
 }
@@ -300,11 +303,21 @@ private struct AgentHookEditTarget: Codable, Equatable {
     private var canEditSelected: Bool {
         guard let selected else { return false }
         if selected.plugin != nil { return true }
+        if selected.scope.hasPrefix("导入 · ") {
+            return (try? service.importedDocument(path: selected.source, workspace: selected.workspace)) != nil
+        }
         return (try? service.file(project: selected.workspace != nil, workspace: selected.workspace).path) == selected.source
     }
     @objc private func editSelectedConfig() {
         guard let selected, canEditSelected else { return }
         if let reference = selected.plugin { openPluginConfig(reference) }
+        else if selected.scope.hasPrefix("导入 · ") {
+            do {
+                let document = try service.importedDocument(path: selected.source, workspace: selected.workspace)
+                let target = AgentHookEditTarget(source: .standalone(path: selected.source, workspace: selected.workspace), expectedHash: document.1)
+                presentSettingsChild(try makeEditor(target: target, text: document.0))
+            } catch { state.stringValue = error.localizedDescription }
+        }
         else { scope.selectItem(at: selected.workspace == nil ? 0 : 1); openConfig(imported: nil) }
     }
     private func openPluginConfig(_ reference: AgentPluginHookReference) {
@@ -348,6 +361,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         switch target.source {
         case .local(let project, _, _): title = project ? "项目 Hooks" : "全局 Hooks"
         case .plugin(let reference, _): title = "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)
+        case .standalone(_, let workspace): title = workspace == nil ? "导入 · 全局 Hooks" : "导入 · 项目 Hooks"
         }
         let editor = AgentHookConfigWindow(text: text, title: title, target: target) { [weak self] text in
             guard let self else { throw PetError("Hooks 页面已关闭") }
@@ -365,6 +379,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
                 let current = try service.pluginDocument(reference)
                 guard current.hash == target.expectedHash, AgentFiles.hash(current.original) == originalHash else { throw PetError("插件 Hook 已变化，请重新打开") }
                 try service.savePluginDocument(text, reference: reference, original: current.original, expectedHash: target.expectedHash)
+            case .standalone(let path, let sourceWorkspace):
+                guard sourceWorkspace == nil || sourceWorkspace == workspace else { throw PetError("原 Hooks 所属项目已变化") }
+                try service.saveImportedDocument(text, path: path, workspace: sourceWorkspace, expectedHash: target.expectedHash)
             }
             reload()
         }
@@ -405,6 +422,10 @@ private struct AgentHookEditTarget: Codable, Equatable {
         let draft = try AgentHookConfigWindow.decodeRecovery(page)
         if case .local(let project, let path, _) = draft.target.source {
             guard try service.file(project: project, workspace: workspace).path == path else { throw PetError("原 Hooks 配置路径已变化，草稿已保留") }
+        }
+        if case .standalone(let path, let sourceWorkspace) = draft.target.source {
+            guard sourceWorkspace == nil || sourceWorkspace == workspace else { throw PetError("原 Hooks 所属项目已变化，草稿已保留") }
+            _ = try service.importedDocument(path: path, workspace: sourceWorkspace)
         }
         return try makeEditor(target: draft.target, text: draft.text)
     }

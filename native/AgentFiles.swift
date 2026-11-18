@@ -185,8 +185,12 @@ struct AgentFiles: Sendable {
             }
         }
         guard fchmod(fd, mode_t(permissions)) == 0, fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        if let expectedTarget { guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") } }
-        guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if let expectedTarget {
+            let signature = try Self.status(parent, name).map(Self.signature) ?? "missing"
+            guard signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") }
+        }
+        let renamed = !followParentLinks && expectedTarget == "missing" ? renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) : renameat(parent, temporary, parent, name)
+        guard renamed == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
     func remove(_ url: URL) throws {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }

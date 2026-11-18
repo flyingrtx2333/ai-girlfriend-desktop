@@ -34,6 +34,7 @@ struct AgentProfile: Codable, Identifiable {
     var toolPermissions: [String: AgentToolPermission]?
     var mcpToolPermissions: [AgentMCPToolPermission]?
     var pluginSource: AgentPluginAgentReference?
+    var sourceWorkspace: String?
     var availableTools: Set<String> {
         Set(tools).union((skills ?? []).isEmpty ? [] : AgentProfiles.skillTools).union((mcpServers ?? []).isEmpty ? [] : AgentMCP.tools)
     }
@@ -78,20 +79,29 @@ struct AgentProfileAssignment: Codable {
         directory = profile; self.plugins = plugins ?? AgentPlugins(profile: profile)
         _ = self.plugins.observeChanges { [weak self] name in self?.onPluginChange?(name) }
     }
-    private func file() throws -> URL {
-        let files = try AgentFiles(workspace: directory.path), raw = files.root.appendingPathComponent("extensions/agents.json"), url = try files.literalURL(raw.path)
-        guard url == raw, try files.resolve(raw.path) == raw else { throw PetError("Agent 配置不能是链接") }; return url
+    private func storage(_ workspace: String?) throws -> (AgentFiles, URL) {
+        let files = try AgentFiles(workspace: directory.path, followParentLinks: false)
+        let path = workspace.map { "extensions/project-agents/" + AgentFiles.hash(Data($0.utf8)) + ".json" } ?? "extensions/agents.json"
+        let raw = files.root.appendingPathComponent(path), url = try files.literalURL(raw.path)
+        guard url == raw, try files.resolve(raw.path) == raw else { throw PetError("Agent 配置不能是链接") }
+        return (files, url)
     }
-    func document() throws -> (String, String?) {
-        let url = try file()
-        guard FileManager.default.fileExists(atPath: url.path) else { return ("{\n  \"agents\": []\n}", nil) }
-        let data = try AgentFiles(workspace: directory.path).readData(url, maximum: 512_000)
+    func document(workspace: String? = nil) throws -> (String, String?) {
+        let (files, url) = try storage(workspace)
+        guard try files.entryMetadata(url).kind != "missing" else { return ("{\n  \"agents\": []\n}", nil) }
+        let data = try files.readData(url, maximum: 512_000)
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("Agent 配置不是 UTF-8") }
         _ = try decode(text)
         return (text, AgentFiles.hash(data))
     }
     func list(enabledOnly: Bool = false, workspace: String? = nil) throws -> [AgentProfile] {
-        let values = try decode(document().0) + packagedProfiles(workspace: workspace)
+        var values = try decode(document().0)
+        if let workspace, let canonical = try? AgentFiles(workspace: workspace).root.path {
+            values += try decode(document(workspace: canonical).0).map {
+                var value = $0; value.sourceWorkspace = canonical; return value
+            }
+        }
+        values += try packagedProfiles(workspace: workspace)
         guard Set(values.map(\.id)).count == values.count else { throw PetError("Agent 编号重复") }
         return enabledOnly ? values.filter(\.enabled) : values
     }
@@ -118,8 +128,9 @@ struct AgentProfileAssignment: Codable {
         return value
     }
     static func title(_ value: AgentProfile, task: AgentTaskRecord?) -> String {
-        guard let task, task.workspaceScope != nil, let source = value.pluginSource,
-              let path = try? AgentPlugins.scope(source.name).workspace else { return value.name }
+        guard let task, task.workspaceScope != nil else { return value.name }
+        let project = value.sourceWorkspace ?? value.pluginSource.flatMap { (try? AgentPlugins.scope($0.name))?.workspace }
+        guard let path = project else { return value.name }
         let name = URL(fileURLWithPath: path).lastPathComponent
         return value.name + " · " + (task.workspacePaths.filter { URL(fileURLWithPath: $0).lastPathComponent == name }.count > 1 ? path : name)
     }
@@ -166,22 +177,27 @@ struct AgentProfileAssignment: Codable {
         }
         return values
     }
-    func encode(_ agents: [AgentProfile]) throws -> String { String(decoding: try encoder.encode(Document(agents: agents.filter { $0.pluginSource == nil })), as: UTF8.self) }
-    func save(_ text: String, expectedHash: String?) throws {
-        let values = try decode(text), previous = try document()
+    func encode(_ agents: [AgentProfile], workspace: String? = nil) throws -> String {
+        let values = agents.filter { $0.pluginSource == nil && $0.sourceWorkspace == workspace }.map {
+            var value = $0; value.sourceWorkspace = nil; return value
+        }
+        return String(decoding: try encoder.encode(Document(agents: values)), as: UTF8.self)
+    }
+    func save(_ text: String, expectedHash: String?, workspace: String? = nil) throws {
+        let values = try decode(text), previous = try document(workspace: workspace)
         guard previous.1 == expectedHash else { throw PetError("Agent 配置已改变，请重新读取后保存") }
-        let old = try decode(previous.0), data = Data(try encode(values).utf8), url = try file()
-        let write = try AgentKnowledgeFileWrite(files: AgentFiles(workspace: directory.path), path: url.path, data: data, expectedHash: previous.1, missing: previous.1 == nil, permissions: 0o600, label: "Agent 配置")
+        let old = try decode(previous.0), data = Data(try encode(values).utf8), (files, url) = try storage(workspace)
+        let write = try AgentKnowledgeFileWrite(files: files, path: url.path, data: data, expectedHash: previous.1, missing: previous.1 == nil, permissions: 0o600, label: "Agent 配置")
         try write.requireCurrent(); try write.files.writeData(data, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         for item in old where item.enabled {
             let next = values.first { $0.id == item.id && $0.enabled }
             if next == nil || next?.tools != item.tools || next?.permission != item.permission || next?.readOnly != item.readOnly || next?.network != item.network || next?.skills != item.skills || next?.mcpServers != item.mcpServers || next?.toolPermissions != item.toolPermissions || next?.mcpToolPermissions != item.mcpToolPermissions { onDisable?(item.id) }
         }
     }
-    func setEnabled(_ id: String, _ enabled: Bool) throws {
-        let (text, hash) = try document(); var values = try decode(text)
+    func setEnabled(_ id: String, _ enabled: Bool, workspace: String? = nil) throws {
+        let (text, hash) = try document(workspace: workspace); var values = try decode(text)
         guard let index = values.firstIndex(where: { $0.id == id }) else { throw PetError("Agent 不存在") }
-        values[index].enabled = enabled; try save(encode(values), expectedHash: hash)
+        values[index].enabled = enabled; try save(encode(values), expectedHash: hash, workspace: workspace)
     }
     static func tighter(_ a: AgentPermissionMode, _ b: AgentPermissionMode) -> AgentPermissionMode {
         let order: [AgentPermissionMode] = [.review, .workspace, .automatic]

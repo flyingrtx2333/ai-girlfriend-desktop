@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
-    private var openedPluginModelHash: String?
+    private var openedPluginModelHash: String?, openedProjectHash: String?
     private var storedIDs = Set<String>()
     private var draftOrigin: DraftOrigin?
     private var catalogLayout: (toolbar: NSView, detail: NSView)?
@@ -78,10 +78,16 @@ import UniformTypeIdentifiers
     var scopeWorkspace: String? { workspace }
     private func sourceTask() throws -> AgentTaskRecord? { try AgentWorkspaceScope.settingsSourceTask(taskID, workspace: workspace, store: store) }
     private func availableSkills() throws -> [AgentExtensionItem] {
+        if let project = values.first(where: { $0.id == selectedID })?.sourceWorkspace {
+            return try store.extensions.catalog(workspace: project).filter { $0.kind == .skill }
+        }
         if let task = try sourceTask() { return try store.extensions.catalog(task: task).filter { $0.kind == .skill } }
         return try store.extensions.catalog(workspace: workspace).filter { $0.kind == .skill }
     }
     private func availableServers() throws -> [AgentMCPServer] {
+        if let project = values.first(where: { $0.id == selectedID })?.sourceWorkspace {
+            return store.mcp.availableServers(workspace: project)
+        }
         if let task = try sourceTask() { return try store.mcp.availableServers(task: task) }
         return store.mcp.availableServers(workspace: workspace)
     }
@@ -129,7 +135,8 @@ import UniformTypeIdentifiers
         let value = values[row]
         if detailPage != nil {
             let title = value.name.isEmpty ? "未命名智能体" : AgentProfiles.title(value, task: try? sourceTask())
-            let source = value.pluginSource.map { "插件 · " + ((try? AgentPlugins.scope($0.name).name) ?? $0.name) } ?? ""
+            let source = value.pluginSource.map { "插件 · " + ((try? AgentPlugins.scope($0.name).name) ?? $0.name) }
+                ?? value.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""
             return AgentSettingsCatalogCell(title: title, summary: [value.description, source].filter { !$0.isEmpty }.joined(separator: " · "), symbol: "person.crop.square", status: value.enabled ? "已启用" : "已停用", group: table.group(at: row)) { [weak self] in self?.selectProfile(value.id) }
         }
         let text = NSTextField(labelWithString: (value.name.isEmpty ? "未命名智能体" : value.name) + (value.enabled ? "" : " · 已停用")); text.font = .systemFont(ofSize: 12, weight: .medium); text.lineBreakMode = .byTruncatingTail; text.toolTip = value.description; return text
@@ -142,7 +149,14 @@ import UniformTypeIdentifiers
     }
     private func selectRow(_ id: String?) { loading = true; defer { loading = false }; if let index = values.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } else { table.deselectAll(nil) } }
     private func reload() {
-        do { openedHash = try store.agents.document().1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = try store.agents.list(workspace: workspace); storedIDs = Set(values.map(\.id)); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
+        do {
+            openedHash = try store.agents.document().1
+            openedProjectHash = try workspace.flatMap { try store.agents.document(workspace: $0).1 }
+            openedPluginModelHash = try store.agents.pluginModelVersion()
+            values = try store.agents.list(workspace: workspace); storedIDs = Set(values.map(\.id))
+            loading = true; table.reloadData(); loading = false
+            open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id)
+        }
         catch { state.stringValue = error.localizedDescription }
     }
     private func open(_ id: String?) {
@@ -153,7 +167,9 @@ import UniformTypeIdentifiers
         permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0); readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; enabled.state = value?.enabled == true ? .on : .off; selectedTools = Set(value?.tools ?? [])
         selectedSkills = Set(value?.skills ?? []); selectedMCP = Set(value?.mcpServers ?? []); toolPermissions = value?.toolPermissions ?? [:]; mcpPermissions = value?.mcpToolPermissions ?? []
         refreshMenus()
-        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? ""
+        dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls()
+        state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") }
+            ?? value?.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""
     }
     private func editedValue() -> AgentProfile? {
         guard var value = values.first(where: { $0.id == selectedID }) else { return nil }
@@ -178,6 +194,7 @@ import UniformTypeIdentifiers
         let existing = current.first { $0.id == draft.profile.id && $0.pluginSource == nil }
         guard draft.savedAt == nil || existing != nil else { throw PetError("此草稿保存的 Agent 已移除，原草稿保留") }
         openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current; storedIDs = Set(current.map(\.id))
+        openedProjectHash = try workspace.flatMap { try store.agents.document(workspace: $0).1 }
         draftOrigin = DraftOrigin(id: draft.id, taskID: draft.taskID, profileID: draft.profile.id)
         if existing == nil { values.append(draft.profile) }
         loading = true; table.reloadData(); loading = false; open(draft.profile.id)
@@ -264,8 +281,13 @@ import UniformTypeIdentifiers
             _ = try sourceTask()
             if let value = editedValue(), let index = values.firstIndex(where: { $0.id == value.id }) { values[index] = value }
             let savedID = selectedID
-            if let value = values.first(where: { $0.id == selectedID }), value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
-            else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
+            let value = values.first(where: { $0.id == selectedID })
+            if let value, value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
+            else if let project = value?.sourceWorkspace {
+                guard project == workspace else { throw PetError("Agent 所属项目已变化") }
+                try AgentMCPDataImport.requireDestination(project, store: store)
+                try store.agents.save(store.agents.encode(values, workspace: project), expectedHash: openedProjectHash, workspace: project)
+            } else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
             dirty = false; reload(); state.stringValue = "已保存"
             if let savedID {
                 do {
@@ -294,7 +316,7 @@ import UniformTypeIdentifiers
         var version = 1
         var taskID: String?, workspace: String?
         var value: AgentProfile?, staged: [AgentProfile], origin: DraftOrigin?
-        var openedHash: String?, pluginHash: String?
+        var openedHash: String?, pluginHash: String?, projectHash: String?
         var showsDetail: Bool, dirty: Bool, status: String
         var viewport: AgentSettingsDraftViewport.State
     }
@@ -302,19 +324,20 @@ import UniformTypeIdentifiers
         let value = editedValue()
         return try AgentSettingsRecovery.page("agents", Recovery(taskID: taskID, workspace: workspace, value: value,
             staged: dirty ? values.filter { !storedIDs.contains($0.id) && $0.pluginSource == nil } : [], origin: draftOrigin?.profileID == value?.id ? draftOrigin : nil,
-            openedHash: openedHash, pluginHash: openedPluginModelHash, showsDetail: detailPage?.settingsHostWindow != nil,
+            openedHash: openedHash, pluginHash: openedPluginModelHash, projectHash: openedProjectHash, showsDetail: detailPage?.settingsHostWindow != nil,
             dirty: dirty, status: state.stringValue, viewport: try draftViewport.capture()))
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "agents" else { throw PetError("设置草稿不属于智能体") }
-        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "value", "staged", "origin", "openedHash", "pluginHash", "showsDetail", "dirty", "status", "viewport"])
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "value", "staged", "origin", "openedHash", "pluginHash", "projectHash", "showsDetail", "dirty", "status", "viewport"])
         if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
         let draft = try JSONDecoder().decode(Recovery.self, from: page.state)
         let reopen = draft.showsDetail || draft.dirty
         guard draft.version == 1, draft.taskID == taskID, draft.workspace == workspace,
               !reopen || draft.value != nil, draft.staged.count <= 64, Set(draft.staged.map(\.id)).count == draft.staged.count,
-              draft.staged.allSatisfy({ $0.pluginSource == nil }), AgentSettingsRecovery.validHash(draft.openedHash),
-              AgentSettingsRecovery.validHash(draft.pluginHash) else { throw PetError("智能体草稿范围或版本已变化") }
+              draft.staged.allSatisfy({ $0.pluginSource == nil && $0.sourceWorkspace == nil }), AgentSettingsRecovery.validHash(draft.openedHash),
+              AgentSettingsRecovery.validHash(draft.pluginHash), AgentSettingsRecovery.validHash(draft.projectHash),
+              draft.value?.sourceWorkspace.map({ $0 == workspace && draft.projectHash != nil }) != false else { throw PetError("智能体草稿范围或版本已变化") }
         _ = try sourceTask()
         if let origin = draft.origin {
             guard origin.profileID == draft.value?.id,
@@ -322,21 +345,25 @@ import UniformTypeIdentifiers
                   try AgentProfileDrafts.load(origin.id, taskID: origin.taskID, store: store).profile.id == origin.profileID else { throw PetError("原任务的智能体草稿已变化") }
         }
         let currentHash = try store.agents.document().1, pluginHash = try store.agents.pluginModelVersion()
+        let projectHash = try workspace.flatMap { try store.agents.document(workspace: $0).1 }
         let current = try store.agents.list(workspace: workspace)
         let stored = current.first { $0.id == draft.value?.id }
-        let stale = draft.value?.pluginSource != nil ? pluginHash != draft.pluginHash || stored?.pluginSource != draft.value?.pluginSource : currentHash != draft.openedHash
+        let stale: Bool
+        if draft.value?.pluginSource != nil { stale = pluginHash != draft.pluginHash || stored?.pluginSource != draft.value?.pluginSource }
+        else if draft.value?.sourceWorkspace != nil { stale = projectHash != draft.projectHash || stored?.sourceWorkspace != draft.value?.sourceWorkspace }
+        else { stale = currentHash != draft.openedHash }
         if reopen {
             let value = draft.value
             try draftViewport.validate(draft.viewport, text: value?.instructions ?? "", fields: ["name": value?.name ?? "", "purpose": value?.description ?? "", "model": value?.model ?? ""])
         }
-        values = current; storedIDs = Set(current.map(\.id)); openedHash = currentHash; openedPluginModelHash = pluginHash
+        values = current; storedIDs = Set(current.map(\.id)); openedHash = currentHash; openedPluginModelHash = pluginHash; openedProjectHash = projectHash
         if reopen {
             for value in draft.staged where !storedIDs.contains(value.id) { values.append(value) }
             if let value = draft.value {
                 if let index = values.firstIndex(where: { $0.id == value.id }) { values[index] = value }
                 else { values.append(value) }
             }
-            openedHash = draft.openedHash; openedPluginModelHash = draft.pluginHash
+            openedHash = draft.openedHash; openedPluginModelHash = draft.pluginHash; openedProjectHash = draft.projectHash
         }
         loading = true; table.reloadData(); loading = false; open(draft.value?.id)
         dirty = reopen && (draft.dirty || stale); draftOrigin = draft.origin; updateControls()

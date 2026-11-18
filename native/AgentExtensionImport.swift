@@ -24,34 +24,43 @@ struct AgentSkillPackage: Sendable {
     }
 
     func publish(to destination: URL, files: AgentFiles) throws {
-        let (parent, name) = try files.parentDescriptor(destination, create: true)
+        try files.publishDirectory(resources, to: destination, label: "Skill") { staging in
+            guard try AgentExtensions.resourceData(staging) == resources else { throw PetError("目标磁盘未能完整保留 Skill 的资源路径或内容") }
+        }
+    }
+}
+
+extension AgentFiles {
+    func publishDirectory(_ resources: [String: Data], to destination: URL, label: String,
+                          executable: Set<String> = [], verify: (AgentFiles) throws -> Void) throws {
+        let (parent, name) = try parentDescriptor(destination, create: true)
         defer { close(parent) }
-        let temporary = ".skill-import-" + UUID().uuidString
+        let temporary = "." + label.lowercased() + "-import-" + UUID().uuidString
         guard mkdirat(parent, temporary, 0o700) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         let staging = destination.deletingLastPathComponent().appendingPathComponent(temporary)
         defer {
-            if let (current, _) = try? files.parentDescriptor(staging, create: false) {
+            if let (current, _) = try? parentDescriptor(staging, create: false) {
                 if Self.sameDirectory(parent, current) { try? FileManager.default.removeItem(at: staging) }
                 close(current)
             }
         }
         let stagingFiles = try AgentFiles(workspace: staging.path, followParentLinks: false)
-        guard stagingFiles.root.path == staging.path else { throw PetError("Skill 目标位置已变化，请重新检测") }
+        guard stagingFiles.root.path == staging.path else { throw PetError(label + " 目标位置已变化，请重新检测") }
         for (path, bytes) in resources {
             try Task.checkCancellation()
-            try stagingFiles.writeData(bytes, to: stagingFiles.literalURL(path), permissions: 0o600, expectedTarget: "missing")
+            try stagingFiles.writeData(bytes, to: stagingFiles.literalURL(path), permissions: executable.contains(path) ? 0o700 : 0o600, expectedTarget: "missing")
         }
-        guard try AgentExtensions.resourceData(stagingFiles) == resources else { throw PetError("目标磁盘未能完整保留 Skill 的资源路径或内容") }
-        let (current, _) = try files.parentDescriptor(destination, create: false)
+        try verify(stagingFiles)
+        let (current, _) = try parentDescriptor(destination, create: false)
         defer { close(current) }
-        guard Self.sameDirectory(parent, current) else { throw PetError("Skill 目标位置已变化，请重新检测") }
+        guard Self.sameDirectory(parent, current) else { throw PetError(label + " 目标位置已变化，请重新检测") }
         // A complete package becomes discoverable in a single, non-replacing rename.
         var directory = stat()
         guard fstatat(parent, temporary, &directory, AT_SYMLINK_NOFOLLOW) == 0, directory.st_mode & S_IFMT == S_IFDIR else {
-            throw PetError("Skill 临时目录已变化，请重新检测")
+            throw PetError(label + " 临时目录已变化，请重新检测")
         }
         if renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) != 0 {
-            if errno == EEXIST { throw PetError("同名 Skill 文件夹已出现，已保留现有文件") }
+            if errno == EEXIST { throw PetError("同名 " + label + " 文件夹已出现，已保留现有文件") }
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }

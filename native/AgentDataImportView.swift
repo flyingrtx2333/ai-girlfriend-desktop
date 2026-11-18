@@ -22,6 +22,8 @@ import UniformTypeIdentifiers
     var onOpenAutomation: ((String) throws -> Void)?
     var onOpenPlugin: ((String, String?) throws -> Void)?
     var onOpenConfiguration: ((AgentStandaloneImportPlan, URL) throws -> Void)?
+    var onOpenAgent: ((String, String?) throws -> Void)?
+    var onOpenHooks: ((URL, String?) throws -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
     private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.indexOfSelectedItem)] }
     private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
@@ -212,14 +214,20 @@ import UniformTypeIdentifiers
         if let plan = record.configuration {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局扩展配置"
             var lines = [plan.kind.title + " · " + record.title, "来源 · " + record.file, destination]
-            if plan.kind != .policy { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
+            if !plan.destination.isEmpty { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             lines.append(contentsOf: record.warnings)
             detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
             if plan.kind == .command || (plan.kind == .instruction && plan.directory.isEmpty && record.issue != "已共享") {
                 open.title = "打开" + plan.kind.title
             }
-            open.isEnabled = (try? AgentStandaloneDataImport.installedURL(record, store: store)) != nil
+            if plan.kind == .agent {
+                open.title = "打开智能体"
+                open.isEnabled = AgentStandaloneDataImport.installedProfile(record, store: store) != nil
+            } else {
+                if plan.kind == .hooks { open.title = "打开 Hooks" }
+                open.isEnabled = (try? AgentStandaloneDataImport.installedURL(record, store: store)) != nil
+            }
             original.isEnabled = (try? AgentStandaloneDataImport.reveal(record, root: root, store: store)) != nil
             return
         }
@@ -281,7 +289,16 @@ import UniformTypeIdentifiers
                 return
             }
             if let plan = record.configuration {
+                if plan.kind == .agent {
+                    guard let profile = AgentStandaloneDataImport.installedProfile(record, store: store) else { throw PetError("导入的智能体已移除") }
+                    try onOpenAgent?(profile.id, plan.workspace)
+                    return
+                }
                 let url = try AgentStandaloneDataImport.installedURL(record, store: store)
+                if plan.kind == .hooks {
+                    try onOpenHooks?(url, plan.workspace)
+                    return
+                }
                 if open.title != "在访达中显示", let onOpenConfiguration { try onOpenConfiguration(plan, url) }
                 else { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                 return

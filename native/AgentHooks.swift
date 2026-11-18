@@ -220,6 +220,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             let root = try AgentFiles(workspace: workspace).root
             sources += [(root.appendingPathComponent(".bluefatfish/hooks.json"), "项目", workspace), (root.appendingPathComponent(".qoder/settings.json"), "共享项目", workspace), (root.appendingPathComponent(".qoder/settings.local.json"), "本机项目", workspace)]
         }
+        let importScopes: [String?] = workspace.map { [nil, $0] } ?? [nil]
+        for scope in importScopes {
+            do { sources += try importedConfigurations(workspace: scope).map { ($0, scope == nil ? "导入 · 全局" : "导入 · 项目", scope) } }
+            catch { warnings.append("导入 Hooks：" + error.localizedDescription) }
+        }
         var items: [AgentHookDefinition] = []
         for (file, scope, workspace) in sources where FileManager.default.fileExists(atPath: file.path) {
             do {
