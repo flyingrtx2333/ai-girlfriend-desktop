@@ -8,7 +8,8 @@ import AppKit
     private lazy var sourceControl = AgentSettingsPopupFrame(source)
     private lazy var destinationControl = AgentSettingsPopupFrame(destination)
     private let table = NSTableView(), detail = NSTextView(), state = NSTextField(labelWithString: ""), selectAll = NSButton(checkboxWithTitle: "全选", target: nil, action: nil)
-    private let begin = NSButton(title: "开始导入", target: nil, action: nil), pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
+    private let begin = AgentDialogButton(title: "开始导入", target: nil, action: nil)
+    private let pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
     private let open = NSButton(title: "打开任务", target: nil, action: nil), original = NSButton(title: "来源副本", target: nil, action: nil)
     private var root: URL, rows: [AgentImportCandidate] = [], selected = Set<String>(), states: [String: String] = [:], signature = ""
     private var targetWorkspace: String?
@@ -31,7 +32,7 @@ import AppKit
         folder.target = self; folder.action = #selector(chooseFolder); folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); folder.imagePosition = .imageLeading; folder.setAccessibilityLabel("来源目录"); folder.cell?.lineBreakMode = .byTruncatingMiddle
         folder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detect.target = self; detect.action = #selector(detectRecords)
-        selectAll.target = self; selectAll.action = #selector(toggleAll)
+        selectAll.target = self; selectAll.action = #selector(toggleAll); selectAll.allowsMixedState = true
         let check = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("check")); check.width = 28; check.minWidth = 28; check.maxWidth = 28; table.addTableColumn(check)
         let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")); name.title = "任务记录"; table.addTableColumn(name)
         table.headerView = nil; table.rowHeight = 48; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("可导入任务")
@@ -41,6 +42,7 @@ import AppKit
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byWordWrapping; state.maximumNumberOfLines = 3
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(begin, #selector(start)), (pause, #selector(pauseImport)), (resume, #selector(resumeImport)), (cancel, #selector(cancelImport)), (open, #selector(openTask)), (original, #selector(showOriginal))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
+        AgentSettingsStyle.primaryAction(begin)
         let kinds = NSStackView(views: [category, NSView(), destinationControl]); kinds.spacing = 8
         let header = NSStackView(views: [sourceControl, folder, detect]); header.spacing = 8
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
@@ -123,7 +125,7 @@ import AppKit
         }
         let target = value.category.globalTarget.map { title in value.targetWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? title }
         let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: value.issue ?? states[value.id] ?? target ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录"))
-        title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = value.issue == nil ? AgentWorkbenchTheme.secondaryText : .tertiaryLabelColor; status.lineBreakMode = .byTruncatingTail
+        title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, status]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = value.file; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
@@ -176,7 +178,11 @@ import AppKit
         Task { await service.detect(source, root: directory, category: category, workspace: target) }
     }
     @objc private func toggleRecord(_ sender: NSButton) { guard rows.indices.contains(sender.tag), rows[sender.tag].issue == nil else { return }; let id = rows[sender.tag].id; if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }; refresh() }
-    @objc private func toggleAll() { selected = selectAll.state == .on ? Set(rows.filter { $0.issue == nil }.map(\.id)) : []; refresh() }
+    @objc private func toggleAll() {
+        let available = Set(rows.filter { $0.issue == nil }.map(\.id))
+        selected = selected == available ? [] : available
+        refresh()
+    }
     @objc private func start() {
         do { try service.begin(selectedSource, root: root, ids: selected, category: selectedCategory, workspace: workspace) }
         catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }
