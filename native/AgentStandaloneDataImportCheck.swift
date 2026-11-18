@@ -35,6 +35,7 @@ import AppKit
         let report = output.appendingPathComponent("standalone-data-import-report.json")
         do {
             guard !CommandLine.arguments.contains("--live-agent") else { throw PetError("本次检查只使用本地样例") }
+            try fm.createDirectory(at: shared, withIntermediateDirectories: true)
             let store = makeStore(), importer = store.dataImport
             let initial = store.tasks.map(\.id)
             let start = "---\nname: overview\ntrigger: always_on\n---\nSHORE_ALWAYS_315\n"
@@ -61,7 +62,11 @@ import AppKit
             try write(other, "README.md", "DIFFERENT PUBLIC CONTEXT\n")
             try fm.createSymbolicLink(at: incoming.appendingPathComponent(".qoder/rules/link.md"),
                                       withDestinationURL: incoming.appendingPathComponent(".qoder/rules/start.md"))
-            for folder in [project, other] { try store.organization.register(folder.path, mode: .coding) }
+            for folder in [project, other] {
+                // Keep fixture projects independent from the checkout containing the current test run.
+                try fm.createDirectory(at: folder.appendingPathComponent(".git"), withIntermediateDirectories: true)
+                try store.organization.register(folder.path, mode: .coding)
+            }
             await importer.detect(.qoder, root: incoming, category: category)
             checks["projectSourceRequiresTargetBeforeImport"] = importer.preview.contains { $0.issue?.contains("选择目标项目") == true }
                 && importer.preview.allSatisfy { $0.issue != nil }

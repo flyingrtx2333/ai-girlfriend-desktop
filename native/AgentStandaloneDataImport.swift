@@ -273,7 +273,7 @@ enum AgentStandaloneDataImport {
                     record.sourceHash = fingerprint
                     if current.kind != "missing" {
                         guard current.kind == "file", try files.fileHash(target, maximum: 65_536) == record.rawHash else {
-                            throw PetError("目标文件已存在，保留现有内容")
+                            throw PetError(plan.kind == .command ? "同名命令已存在，保留现有配置" : "目标文件已存在，保留现有内容")
                         }
                         record.issue = "已经导入"
                     }

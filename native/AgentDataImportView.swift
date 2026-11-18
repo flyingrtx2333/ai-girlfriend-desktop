@@ -77,7 +77,9 @@ import UniformTypeIdentifiers
         states = viewingPreview ? [:] : Dictionary((batch?.items ?? []).map { ($0.id, $0.state == "failed" ? "失败：" + $0.detail : ["pending": "等待导入", "imported": "已导入"][ $0.state ] ?? $0.state) }, uniquingKeysWith: { _, last in last })
         let next = rows.map { $0.id + $0.sourceHash + ($0.issue ?? "") }.joined()
         if signature != next { signature = next; selected = Set(rows.filter { $0.issue == nil && viewingPreview }.map(\.id)) }
-        folder.title = (root.path as NSString).abbreviatingWithTildeInPath; folder.toolTip = root.path
+        let defaultPath = (root.path as NSString).abbreviatingWithTildeInPath
+        folder.title = root.path == defaultRoot(selectedCategory).path || root.lastPathComponent.isEmpty ? defaultPath : root.lastPathComponent
+        folder.toolTip = root.path
         source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
         category.isEnabled = source.isEnabled
         sourceControl.refreshEnabledState(); categoryControl.refreshEnabledState()
@@ -133,7 +135,9 @@ import UniformTypeIdentifiers
         let target = value.category.globalTarget.map { title in
             (value.automation?.workspace ?? value.targetWorkspace).map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? title
         }
-        let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: value.issue ?? states[value.id] ?? target ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录"))
+        let subtitle = value.issue ?? states[value.id] ?? value.configuration?.kind.title ?? target
+            ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录")
+        let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: subtitle)
         title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, status]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = value.file; return stack
     }
@@ -147,8 +151,9 @@ import UniformTypeIdentifiers
         case .memory, .skills, .configuration: open.title = "在访达中显示"
         }
         original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
-        detail.enclosingScrollView?.isHidden = !rows.indices.contains(table.selectedRow)
-        guard rows.indices.contains(table.selectedRow) else { detail.string = ""; open.isEnabled = false; original.isEnabled = false; return }
+        let hasSelection = rows.indices.contains(table.selectedRow)
+        detail.enclosingScrollView?.isHidden = !hasSelection; open.isHidden = !hasSelection; original.isHidden = !hasSelection
+        guard hasSelection else { detail.string = ""; open.isEnabled = false; original.isEnabled = false; return }
         let record = rows[table.selectedRow]
         if let plan = record.memory {
             let names = plan.parts.prefix(8).map(\.name).joined(separator: "、")
