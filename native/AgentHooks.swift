@@ -103,10 +103,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         guard current.1 == expectedHash else { throw PetError("配置已变化，请重新打开后编辑") }
         _ = try parse(Data(text.utf8), file: target, scope: project ? "项目" : "全局", workspace: project ? workspace : nil)
         let files = try AgentFiles(workspace: project ? workspace : profile.path)
-        try commitConfiguration(Data(text.utf8), target: target, files: files)
+        try commitConfiguration(Data(text.utf8), target: target, files: files, expectedHash: expectedHash)
     }
-    func commitConfiguration(_ data: Data, target: URL, files: AgentFiles) throws {
-        let write = try AgentKnowledgeFileWrite(files: files, path: target.path, data: data, permissions: 0o600, label: "Hooks 配置")
+    func commitConfiguration(_ data: Data, target: URL, files: AgentFiles, expectedHash: String?) throws {
+        let write = try AgentKnowledgeFileWrite(files: files, path: target.path, data: data, expectedHash: expectedHash,
+            missing: expectedHash == nil, permissions: 0o600, label: "Hooks 配置")
         try write.requireCurrent()
         let changed = try credentials.save(data, file: target) { data, changed in
             let previous = settings

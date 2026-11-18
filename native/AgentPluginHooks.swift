@@ -122,7 +122,7 @@ struct AgentPluginHookDefinition {
         let data = try credentials.restoreImported(Data(text.utf8), original: original, file: config.file)
         try validatePluginConfiguration(data, canonical: config.data)
         _ = try parse(data, file: config.file, scope: "插件", workspace: nil, resource: config.root, inspectResources: false, inspectCredentials: false)
-        try commitConfiguration(data, target: config.file, files: files)
+        try commitConfiguration(data, target: config.file, files: files, expectedHash: expectedHash)
     }
     func validatePlugin(_ hook: AgentHookDefinition, workspace: String? = nil) throws { if let reference = hook.plugin { try plugins.validateHook(reference, workspace: workspace ?? hook.workspace) } }
 }

@@ -24,7 +24,10 @@ import AppKit
         let revisedHook = hook("公开完成导入")
         func find<T: NSView>(_ view: NSView, _ type: T.Type, _ match: (T) -> Bool) -> T? {
             if let item = view as? T, !item.isHiddenOrHasHiddenAncestor, match(item) { return item }
-            return view.subviews.lazy.compactMap { find($0, type, match) }.first
+            for child in view.subviews {
+                if let item = find(child, type, match) { return item }
+            }
+            return nil
         }
         func input<T: NSView>(_ window: ControlWindow, _ type: T.Type, _ label: String) throws -> T {
             guard let content = window.window?.contentView, let control = find(content, type, { $0.accessibilityLabel() == label }) else {
@@ -67,6 +70,9 @@ import AppKit
             guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("任务系统不可用") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("本机配置验收禁止模型请求") }
             let plugins = tasks.extensions.plugins
+            guard plugins.sharedHome?.standardizedFileURL == output.appendingPathComponent("shared-home").standardizedFileURL else {
+                throw PetError("设置验收只允许独立目录")
+            }
             if stage == "seed" {
                 let task = try await prepareSettingsPagesCheck(output, tasks: tasks)
                 guard let primary = tasks.task(task)?.workspace else { throw PetError("缺少主要源文件夹") }
@@ -128,6 +134,7 @@ import AppKit
             } else {
                 let fixture = try JSONDecoder().decode(ImportFixture.self, from: Data(contentsOf: fixtureFile))
                 restoreAdditionalWorkspaceWindows()
+                guard await flushWorkspaceWindows() else { throw PetError("原设置窗口未完成恢复") }
                 guard let plugin = taskControls.first(where: { $0.workspaceSession?.id == fixture.pluginWindow }),
                       let hooks = taskControls.first(where: { $0.workspaceSession?.id == fixture.hookWindow }) else { throw PetError("缺少原设置窗口") }
                 let primary = fixture.primary, secondary = fixture.secondary
