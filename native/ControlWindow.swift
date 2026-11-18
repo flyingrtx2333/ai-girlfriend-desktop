@@ -1704,7 +1704,7 @@ final class FormDocumentView: NSView {
         var panelOnly = false
         func group(_ category: String, _ title: String, _ keywords: String, key: String? = nil) {
             let heading = AgentSettingsStyle.sectionHeading(title)
-            panelOnly = ["general", "monitor", "shortcuts"].contains(category)
+            panelOnly = ["general", "monitor", "shortcuts", "attention"].contains(category)
             let framed = !panelOnly
             let card = AgentThemeView(fill: framed ? AgentWorkbenchTheme.surface : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
             card.layer?.cornerRadius = 12; card.layer?.borderWidth = framed ? 1 : 0
