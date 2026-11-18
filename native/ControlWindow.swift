@@ -519,24 +519,33 @@ final class FormDocumentView: NSView {
                     frames[key]?["appearanceControlWidth"] = width
                 }
             }
-            for (category, page, title) in [("agents", "agents", "设置审阅员"), ("teams", "teams", "设置协作组"), ("extensions", "plugins", "zz-settings-demo"), ("extensions", "skills", "settings-skill")] {
+            for (category, page, title) in [("agents", "agents", "设置审阅员"), ("teams", "teams", "设置协作组"), ("extensions", "plugins", "zz-settings-demo"), ("extensions", "plugins", "zz-settings-empty"), ("extensions", "plugins", "zz-settings-many"), ("extensions", "skills", "settings-skill")] {
                 guard showSettingsCategory(category) else { checks[name + page + "DetailEntryAvailable"] = false; continue }
                 settingsPageHost.selectPage(page); window.contentView?.layoutSubtreeIfNeeded()
                 let root = settingsPageHost.currentController
                 let button = descendants(settingsPageHost).compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == "配置 " + title }
                 button?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
                 let detail = settingsPageHost.currentController, column = settings.convert(settings.bounds, to: contentSurface)
-                checks[name + page + "DetailEntryAvailable"] = button != nil && detail is AgentSettingsDetailPage
+                let detailKey = name + page + (page == "plugins" ? title : "")
+                checks[detailKey + "DetailEntryAvailable"] = button != nil && detail is AgentSettingsDetailPage
                 if let content = detail?.pageContentView, let body = content.subviews.first {
                     let bounds = body.convert(body.bounds, to: contentSurface)
-                    checks[name + page + "DetailKeepsCatalogContentWidth"] = abs(bounds.minX - column.minX) < 0.5 && abs(bounds.width - column.width) < 0.5
+                    checks[detailKey + "DetailKeepsCatalogContentWidth"] = abs(bounds.minX - column.minX) < 0.5 && abs(bounds.width - column.width) < 0.5
                     let cards = descendants(content).filter { $0.identifier?.rawValue.hasPrefix("settings-card-") == true }
                     if ["agents", "teams"].contains(page) {
                         checks[name + page + "FormCardsShareTheSameContentColumn"] = !cards.isEmpty && cards.allSatisfy { let rect = $0.convert($0.bounds, to: contentSurface); return abs(rect.minX - column.minX) < 0.5 && abs(rect.width - column.width) < 0.5 }
                     }
+                    if page == "plugins", let table = descendants(content).compactMap({ $0 as? NSTableView }).first(where: { $0.accessibilityLabel() == "插件组件" }), let scroll = table.enclosingScrollView {
+                        let rows = table.numberOfRows, expected = title.hasSuffix("empty") ? 0 : title.hasSuffix("many") ? 16 : 1
+                        let heightFits = scroll.bounds.height <= (rows < 2 ? 76 : 200)
+                        let last = rows > 0 ? table.rect(ofRow: rows - 1) : .zero
+                        if rows > 0 { table.scrollRowToVisible(rows - 1) }
+                        let lastVisible = rows == 0 || last.intersection(table.visibleRect).height >= last.height - 0.5
+                        checks[detailKey + "ComponentRowsFitWithoutBlankPanelOrClippedLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible
+                    }
                 }
                 detail?.close(); window.contentView?.layoutSubtreeIfNeeded()
-                checks[name + page + "DetailReturnsToOriginalCatalog"] = settingsPageHost.currentController === root
+                checks[detailKey + "DetailReturnsToOriginalCatalog"] = settingsPageHost.currentController === root
             }
         }
         if showSettingsCategory("memory"), let overview = settingsPageHost.currentController as? AgentMemorySettingsPage {

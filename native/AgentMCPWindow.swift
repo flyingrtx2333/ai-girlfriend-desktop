@@ -6,7 +6,8 @@ import UniformTypeIdentifiers
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
     private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = AgentMCPToolCatalog()
     private let configurationKind = NSSegmentedControl(labels: ["表单", "JSON"], trackingMode: .selectOne, target: nil, action: nil)
-    private let configurationHost = NSView(), jsonScroll = NSScrollView(), loadJSON = NSButton(title: "载入 JSON", target: nil, action: nil)
+    private let configurationHost = NSView(), jsonScroll = NSScrollView(), loadJSON = AgentDialogButton(title: "载入 JSON", target: nil, action: nil)
+    private let jsonCard = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private var form: AgentMCPConfigForm?
     private var displayedConfiguration = 0
     private let tabs = NSTabView()
@@ -14,15 +15,15 @@ import UniformTypeIdentifiers
     private let search = NSSearchField(), listState = AgentSettingsStatusField("连接器列表状态"), empty = NSTextField(labelWithString: "暂无连接器")
     private var catalogRows: [CatalogRow] = [], detailPage: AgentMCPDetailPage?, requestedDetail = false
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let connect = NSButton(title: "连接", target: nil, action: nil), disconnect = NSButton(title: "断开", target: nil, action: nil)
-    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let connect = AgentDialogButton(title: "连接", target: nil, action: nil), disconnect = AgentDialogButton(title: "断开", target: nil, action: nil)
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), remove = AgentDialogButton(title: "移除", target: nil, action: nil)
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
     private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
     private var items: [AgentMCPServer] = []
     var onBrowseContent: ((String?) -> Void)? { didSet { browse.isHidden = onBrowseContent == nil } }
-    private let browse = NSButton(title: "资料与提示词", target: nil, action: nil)
+    private let browse = AgentDialogButton(title: "资料与提示词", target: nil, action: nil)
     override var minimumSettingsContentHeight: CGFloat { 220 }
     private var editingPage: AgentMCPDetailPage? { detailPage.flatMap { $0.settingsHostWindow != nil || $0.window?.isVisible == true ? $0 : nil } }
     private var editorWindow: NSWindow? { editingPage?.presentingWindow ?? presentingWindow }
@@ -56,29 +57,31 @@ import UniformTypeIdentifiers
         editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false
         editor.textContainerInset = NSSize(width: 16, height: 16); editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.setAccessibilityLabel("MCP 配置 JSON")
         jsonScroll.documentView = editor; jsonScroll.hasVerticalScroller = true; jsonScroll.identifier = .init("form-input")
+        jsonCard.identifier = .init("settings-card-mcp-editor"); jsonCard.layer?.cornerRadius = 12; jsonCard.layer?.borderWidth = 1
+        jsonCard.addSubview(jsonScroll); jsonScroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([jsonScroll.leadingAnchor.constraint(equalTo: jsonCard.leadingAnchor, constant: 1), jsonScroll.trailingAnchor.constraint(equalTo: jsonCard.trailingAnchor, constant: -1), jsonScroll.topAnchor.constraint(equalTo: jsonCard.topAnchor, constant: 1), jsonScroll.bottomAnchor.constraint(equalTo: jsonCard.bottomAnchor, constant: -1)])
         configurationKind.selectedSegment = 0; configurationKind.setAccessibilityLabel("MCP 配置方式"); configurationKind.target = self; configurationKind.action = #selector(changeConfiguration)
         loadJSON.target = self; loadJSON.action = #selector(reviewPastedJSON); loadJSON.isHidden = true
         let configHeader = NSStackView(views: [configurationKind, NSView(), loadJSON]); configHeader.spacing = 8
         let config = NSStackView(views: [configHeader, configurationHost]); config.orientation = .vertical; config.alignment = .leading; config.spacing = 10
         for child in [configHeader, configurationHost] { child.widthAnchor.constraint(equalTo: config.widthAnchor).isActive = true }; configHeader.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        attachConfiguration(jsonScroll)
+        attachConfiguration(jsonCard)
         tabs.tabViewType = .noTabsNoBorder; tabs.setAccessibilityLabel("连接器详情标签"); tabs.delegate = self
         for (label, view) in [("配置", config as NSView), ("工具", tools as NSView)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
         detailKinds.selectedSegment = 0; detailKinds.target = self; detailKinds.action = #selector(changeDetails); detailKinds.setAccessibilityLabel("连接器详情类型")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
+        for button in [connect, disconnect, remove, browse, loadJSON] { AgentDialogStyle.action(button) }
         for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (save, #selector(saveConfig)), (remove, #selector(removeConfig))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
         let header = NSStackView(views: [enabled, NSView(), disconnect, connect, save]); header.spacing = 8
         browse.target = self; browse.action = #selector(browseContent); browse.isHidden = true
         let navigation = NSStackView(views: [detailKinds, NSView(), browse, remove]); navigation.spacing = 8
-        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-mcp-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
-        card.addSubview(tabs); tabs.translatesAutoresizingMaskIntoConstraints = false
-        let preferredCardHeight = card.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); preferredCardHeight.priority = .defaultHigh; preferredCardHeight.isActive = true
-        NSLayoutConstraint.activate([tabs.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), tabs.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), tabs.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), tabs.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
-        let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, card, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        let preferredContentHeight = tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); preferredContentHeight.priority = .defaultHigh; preferredContentHeight.isActive = true
+        tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, tabs, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         detail.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        for view in [header, state, navigation, card, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor, constant: 14), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor, constant: -14), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -14), header.heightAnchor.constraint(equalToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
+        for view in [header, state, navigation, tabs, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -12), header.heightAnchor.constraint(equalToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
         let page = AgentMCPDetailPage(content: detail)
         page.onCanLeave = { [weak self] in
             guard let self, self.canLeave() else { return false }
@@ -117,7 +120,7 @@ import UniformTypeIdentifiers
         }
     }
     private func applyConfigurationKind() {
-        let json = configurationKind.selectedSegment == 1; jsonScroll.isHidden = !json; form?.view.isHidden = json; loadJSON.isHidden = !json
+        let json = configurationKind.selectedSegment == 1; jsonCard.isHidden = !json; form?.view.isHidden = json; loadJSON.isHidden = !json
         displayedConfiguration = configurationKind.selectedSegment
     }
     private func prepareConfiguration() {

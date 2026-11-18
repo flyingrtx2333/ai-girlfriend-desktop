@@ -47,8 +47,20 @@ import AppKit
 }
 
 @MainActor extension AppDelegate {
-    func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) throws {
+    func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) async throws {
         guard let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置布局验收项目") }
+        for (name, count) in [("zz-settings-empty", 0), ("zz-settings-many", 16)] {
+            let package = output.appendingPathComponent("公开扩展/" + name), metadata = package.appendingPathComponent(".qoder-plugin")
+            try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["name": name, "version": "1.0.0"]).write(to: metadata.appendingPathComponent("plugin.json"))
+            try Data("公开的组件列表尺寸示例。\n".utf8).write(to: package.appendingPathComponent("README.md"))
+            for index in 0..<count {
+                let skill = package.appendingPathComponent("skills/item-\(index)")
+                try FileManager.default.createDirectory(at: skill, withIntermediateDirectories: true)
+                try Data("---\nname: item-\(index)\ndescription: 公开组件\n---\n公开正文。\n".utf8).write(to: skill.appendingPathComponent("SKILL.md"))
+            }
+            _ = try tasks.extensions.plugins.install(await tasks.extensions.plugins.inspect(package))
+        }
         func handler(_ name: String, _ command: String = "/usr/bin/true") -> [String: Any] { ["name": name, "type": "command", "command": command, "args": []] }
         let global: [String: Any] = ["hooks": [
             "SessionStart": [["hooks": [handler("会话准备")]]],
@@ -83,7 +95,7 @@ import AppKit
             guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("缺少独立任务存储") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("设置布局验收禁止模型请求") }
             let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
-            try prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id)
+            try await prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id)
             control.showAgentTask(id)
             func fingerprints() throws -> [String: String] {
                 var result: [String: String] = [:]
@@ -110,8 +122,8 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            // Original 189 checks plus 93 title/scope and catalog/detail checks.
-            report["success"] = checks.count == 282 && checks.values.allSatisfy { $0 }
+            // Original 282 checks plus empty/short/long plugin detail coverage.
+            report["success"] = checks.count == 300 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))

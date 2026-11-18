@@ -325,7 +325,7 @@ private extension AgentHookEvent {
         editor.string = text; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 16, height: 16)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("Hooks JSON 配置")
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.identifier = .init("form-input"); scroll.scrollerStyle = .overlay
-        let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-hook-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
+        let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-hook-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
         let button = AgentDialogButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
@@ -334,7 +334,7 @@ private extension AgentHookEvent {
         let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [actions, state, card] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), actions.heightAnchor.constraint(equalToConstant: 28)])
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12), actions.heightAnchor.constraint(equalToConstant: 28)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(editor) }

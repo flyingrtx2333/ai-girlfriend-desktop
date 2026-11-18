@@ -151,7 +151,7 @@ import WebKit
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {
                     guard !attentionLiveUI else { throw PetError("设置页窗口验收不调用模型") }
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
-                    if CommandLine.arguments.contains("--settings-layout-fixtures") { try prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id) }
+                    if CommandLine.arguments.contains("--settings-layout-fixtures") { try await prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     control.showAgentTask(id)
                 }

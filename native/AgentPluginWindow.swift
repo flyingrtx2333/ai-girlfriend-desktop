@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
     private let title = NSTextField(labelWithString: ""), metadata = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("插件状态")
     private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, components: NSScrollView, document: NSScrollView, footer: NSStackView)?
     private var detailPage: AgentSettingsDetailPage?
+    private var componentHeight: NSLayoutConstraint?
     private let catalogState = AgentSettingsStatusField("插件列表状态")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
@@ -74,8 +75,8 @@ import UniformTypeIdentifiers
             search.setContentHuggingPriority(.defaultLow, for: .horizontal)
             let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
-            for constraint in layout.components.constraints where constraint.firstAttribute == .height && constraint.secondItem == nil { constraint.priority = .defaultHigh }
-            layout.components.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+            NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
+            componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.isActive = true
             let page = AgentSettingsDetailPage(title: "插件详情", content: AgentSettingsCatalog.detail(detail))
             page.onAppear = { [weak self] in guard let self else { return }; reload(select: selected?.id); presentingWindow?.makeFirstResponder(components) }
             detailPage = page; catalogLayout = nil
@@ -139,7 +140,9 @@ import UniformTypeIdentifiers
             title.stringValue = item.metadata.title; metadata.stringValue = [item.metadata.version, item.metadata.author, item.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "); enabled.state = item.enabled ? .on : .off
             do { readme.string = try service.readme(item); entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }; connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: item.workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }; rules = try service.ruleItems(workspace: item.workspace, onlyScope: true).filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }
         }
-        components.reloadData(); if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
+        components.reloadData()
+        componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(180, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
+        if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
         history.removeAllItems(); history.addItem(withTitle: "历史版本")
         let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
         for revision in (selected?.receipt.revisions ?? []).reversed() {
