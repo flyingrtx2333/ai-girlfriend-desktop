@@ -41,6 +41,28 @@ enum AgentSettingsRecovery {
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
     static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins"]
+    struct Navigation: Codable, Equatable, Sendable {
+        var version = 1
+        var category: String, page: String?
+        var source: String?
+        var query: String, selection: AgentTextViewport.Selection?, focus: String?
+        var contentY: Double, sidebarY: Double
+        var returnTab: String, knowledgeRoot: String?
+
+        var valid: Bool {
+            func identifier(_ value: String) -> Bool {
+                !value.isEmpty && value.utf8.count <= 40 && value.utf8.allSatisfy { (97...122).contains($0) || $0 == 45 }
+            }
+            return version == 1 && identifier(category) && page.map(identifier) != false &&
+                source.map({ $0.hasPrefix("/") && !$0.contains("\0") && $0.utf8.count <= 16_384 }) != false &&
+                query.utf8.count <= 20_000_000 && !query.contains("\0") &&
+                selection?.valid(in: query.utf16.count) != false &&
+                focus.map({ $0 == "search" || AgentSettingsRecovery.validHash($0) }) != false &&
+                AgentSettingsRecovery.validScroll(contentY) && AgentSettingsRecovery.validScroll(sidebarY) &&
+                ["chat", "attention", "automation", "knowledge"].contains(returnTab) &&
+                knowledgeRoot.map({ returnTab == "knowledge" && ["library", "wiki"].contains($0) }) != false
+        }
+    }
     struct State: Codable, Equatable, Sendable {
         var version = 1
         var context: Context
@@ -75,6 +97,11 @@ enum AgentSettingsRecovery {
         let context = try object(raw, keys: ["taskID", "workspace", "taskWorkspace", "scope", "mode", "archived", "ruleDirectories"])
         if let scope = context["scope"], !(scope is NSNull) { _ = try object(scope, keys: ["group", "folders", "primary"]) }
         for directory in context["ruleDirectories"] as? [Any] ?? [] { _ = try object(directory, keys: ["workspace", "path"]) }
+    }
+    static func validateNavigation(_ raw: Any) throws {
+        let value = try object(raw, keys: ["version", "category", "page", "source", "query", "selection", "focus",
+            "contentY", "sidebarY", "returnTab", "knowledgeRoot"])
+        if let selection = value["selection"], !(selection is NSNull) { _ = try object(selection, keys: ["location", "length"]) }
     }
 }
 
@@ -149,9 +176,11 @@ enum AgentSettingsRecovery {
         guard viewport.focused, !text.isHiddenOrHasHiddenAncestor, let window = text.window,
               let scroll = text.enclosingScrollView, let range = viewport.selections.first?.range else { return nil }
         let selected = text.firstRect(forCharacterRange: range, actualRange: nil)
+        return selectionIntersectsViewport(selected, in: window) ? Double(scroll.contentSize.height) : nil
+    }
+    private func selectionIntersectsViewport(_ selected: NSRect, in window: NSWindow) -> Bool {
         let visible = window.convertToScreen(text.convert(text.visibleRect, to: nil))
-        guard selected.height > 0, selected.minY < visible.maxY, visible.minY < selected.maxY else { return nil }
-        return Double(scroll.contentSize.height)
+        return selected.height > 0 && selected.minY < visible.maxY && visible.minY < selected.maxY
     }
     func restore(_ value: State) throws {
         try validate(value, text: text.string, fields: fields.mapValues(\.stringValue))
@@ -208,6 +237,12 @@ enum AgentSettingsRecovery {
             }
             else if let field = fields[value.focus], let selection = value.fields[value.focus]?.selection { (field.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
             if let y = value.formY, let form, form.window === window { applyScroll(y, to: form) }
+            if target === text, value.visibleSelectionHeight != nil, let form, let document = form.documentView, form.window === window {
+                let selected = text.firstRect(forCharacterRange: text.selectedRange(), actualRange: nil)
+                if selected.height > 0, !selectionIntersectsViewport(selected, in: window) {
+                    document.scrollToVisible(document.convert(window.convertFromScreen(selected), from: nil))
+                }
+            }
             pending = nil
         }
     }

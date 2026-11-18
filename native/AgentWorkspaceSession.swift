@@ -49,6 +49,7 @@ private actor AgentWorkspaceJournal {
     private var coldFloating: [AgentWorkspaceRecovery.FloatingPage] = []
     private var coldKnowledge: AgentWorkspaceRecovery.Knowledge?
     private var coldSettings: AgentSettingsRecovery.State?, settingsFailure: String?
+    private var coldSettingsNavigation: AgentSettingsRecovery.Navigation?
     private var coldAutomation: AgentWorkspaceRecovery.Automation?, automationFailure: String?
     var pendingSettingsCategory: String? { coldSettings?.category }
     var hasPendingAutomation: Bool { coldAutomation != nil }
@@ -74,6 +75,7 @@ private actor AgentWorkspaceJournal {
         coldFloating = saved?.value.floating ?? []
         coldKnowledge = saved?.value.knowledge
         coldSettings = saved?.value.settings
+        coldSettingsNavigation = saved?.value.settingsNavigation
         coldAutomation = saved?.value.automation
         super.init()
         owner.taskWorkspace.onRecoveryChange = { [weak self] in self?.changed() }
@@ -127,7 +129,7 @@ private actor AgentWorkspaceJournal {
         guard !stopped, !disabled else { return }
         restoreKnowledge()
         restoreSettings()
-        if coldKnowledge?.active != true, coldSettings?.active != true { restoreAutomation() }
+        if coldKnowledge?.active != true, coldSettings?.active != true, coldSettingsNavigation == nil { restoreAutomation() }
         for task in owner?.taskWorkspace.recoveryLayouts ?? [] { for tab in task.tabs where tab.hasIndependentChild == true {
             guard let root = AgentTaskWorkspace.Root(key: tab.root), owner?.taskWorkspace.recoveryController(taskID: task.taskID, root: root) == nil else { continue }
             restore(task: task.taskID, tab: tab, activate: false)
@@ -170,16 +172,26 @@ private actor AgentWorkspaceJournal {
         }
     }
     func restoreSettings() {
-        guard !stopped, !disabled, let value = coldSettings, roots["settings"] == nil else { return }
+        guard !stopped, !disabled, coldSettings != nil || coldSettingsNavigation != nil, roots["settings"] == nil else { return }
         roots["settings"] = Task { @MainActor [weak self] in
             guard let self, let owner else { return }; defer { roots["settings"] = nil }
-            do {
-                try owner.materializeSettingsRecovery(value); coldSettings = nil
-                if let settingsFailure { owner.clearWorkspaceRecoveryStatus(settingsFailure, prefix: "") }
-                settingsFailure = nil; changed()
-            } catch {
-                let message = "设置草稿未恢复，原记录已保留；可从原分类或“窗口”菜单重试：" + error.localizedDescription
+            var failure: Error?
+            if let value = coldSettings {
+                do { try owner.materializeSettingsRecovery(value); coldSettings = nil; changed() }
+                catch { failure = error }
+            }
+            if failure == nil, let navigation = coldSettingsNavigation {
+                do {
+                    try owner.materializeSettingsNavigation(navigation)
+                    coldSettingsNavigation = nil; changed()
+                } catch { failure = error }
+            }
+            if let failure {
+                let message = "设置草稿未恢复，原记录已保留；可从原分类或“窗口”菜单重试：" + failure.localizedDescription
                 settingsFailure = message; owner.setStatus(message, error: true)
+            } else {
+                if let settingsFailure { owner.clearWorkspaceRecoveryStatus(settingsFailure, prefix: "") }
+                settingsFailure = nil
             }
         }
     }
@@ -290,6 +302,7 @@ private actor AgentWorkspaceJournal {
                 else { layout.knowledge = try await owner.knowledgePageHost.captureWorkspaceRecovery(active: owner.isShowingKnowledge) }
                 if let coldSettings { layout.settings = coldSettings }
                 else { layout.settings = try owner.captureSettingsRecovery() }
+                layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected)

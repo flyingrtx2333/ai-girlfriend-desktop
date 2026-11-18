@@ -32,6 +32,8 @@ import WebKit
         if CommandLine.arguments.contains("--settings-import-recovery-ui") { await runSettingsImportRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--automation-recovery-check") { await runAutomationRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-recovery-ui") { await runAutomationRecoveryCheck(output, interactive: true); return }
+        if CommandLine.arguments.contains("--settings-navigation-recovery-check") { await runSettingsNavigationRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--settings-navigation-recovery-ui") { await runSettingsNavigationRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--skill-creation-check") { await runSkillCreationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-skill-evolution-check") { await runWorkspaceSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-roles-check") { await runWorkspaceRolesCheck(output); NSApp.terminate(nil); return }

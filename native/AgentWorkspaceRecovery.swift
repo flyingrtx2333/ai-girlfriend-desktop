@@ -52,6 +52,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var floating: [FloatingPage] = []
         var knowledge: Knowledge? = nil
         var settings: AgentSettingsRecovery.State? = nil
+        var settingsNavigation: AgentSettingsRecovery.Navigation? = nil
         var automation: Automation? = nil
         var closed = false
     }
@@ -143,7 +144,8 @@ struct AgentWorkspaceRecovery: Sendable {
                 guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
             }
         }
-        guard value.settings?.valid != false, !(value.settings?.active == true && value.knowledge?.active == true) else { throw PetError("设置编辑恢复范围无效，原记录已保留") }
+        guard value.settings?.valid != false, value.settingsNavigation?.valid != false,
+              !(value.settings?.active == true && value.knowledge?.active == true) else { throw PetError("设置编辑恢复范围无效，原记录已保留") }
         if let automation = value.automation {
             guard automation.context.valid, automation.state.count <= Self.maximumState else { throw PetError("自动化编辑恢复范围无效，原记录已保留") }
         }
@@ -158,7 +160,7 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "automation", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "settingsNavigation", "automation", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
@@ -179,6 +181,7 @@ struct AgentWorkspaceRecovery: Sendable {
             }
         }
         if let settings = object["settings"], !(settings is NSNull) { try AgentSettingsRecovery.validateObject(settings) }
+        if let navigation = object["settingsNavigation"], !(navigation is NSNull) { try AgentSettingsRecovery.validateNavigation(navigation) }
         if let raw = object["automation"], !(raw is NSNull) {
             let automation = try keys(raw, ["context", "state"])
             if let context = automation["context"] { try AgentSettingsRecovery.validateContext(context) }

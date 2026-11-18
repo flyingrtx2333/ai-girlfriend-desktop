@@ -148,6 +148,12 @@ import AppKit
                         input(existing, NSTextField.self, "自动化项目目录").stringValue == fixture.alpha && body.string == instructions
                     checks["existingPromptRestoresAtOriginalSelection"] = body.window?.firstResponder === body &&
                         body.selectedRange() == (instructions as NSString).range(of: marker) && (body.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0
+                    if let host = body.window {
+                        let selected = body.firstRect(forCharacterRange: body.selectedRange(), actualRange: nil)
+                        let visible = host.convertToScreen(body.convert(body.visibleRect, to: nil))
+                        checks["existingPromptSelectionVisibleInForm"] = selected.height > 0 &&
+                            selected.minY < visible.maxY && visible.minY < selected.maxY
+                    }
                     checks["manualDraftRestoresBlankNameAndInvalidInterval"] = try input(manual, NSTextField.self, "自动化名称").stringValue.isEmpty &&
                         input(manual, NSTextField.self, "间隔分钟").stringValue == invalidInterval &&
                         input(manual, NSTextField.self, "自动化项目目录").stringValue == fixture.beta

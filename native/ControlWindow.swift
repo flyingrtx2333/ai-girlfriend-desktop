@@ -82,6 +82,7 @@ final class FormDocumentView: NSView {
     var isShowingKnowledge: Bool { selectedTab == "knowledge" }
     var hasTaskFocus: Bool { selectedTab == "chat" && window?.isVisible == true && (window?.isKeyWindow == true || window?.childWindows?.contains(where: \.isKeyWindow) == true) }
     private var settingsReturnTab = "chat", settingsBackButton: NSButton?
+    private var settingsReturnKnowledgeRoot: String?
     private let chatNav = NSButton(title: "对话", target: nil, action: nil), settingsNav = NSButton(title: "设置", target: nil, action: nil)
     private let pageTitle = NSTextField(labelWithString: "对话"), modelCaption = NSTextField(labelWithString: "")
     private let sidebarWake = NSTextField(labelWithString: ""), listenButton = NSButton(title: "立即聆听", target: nil, action: nil)
@@ -92,6 +93,7 @@ final class FormDocumentView: NSView {
     private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = AgentSettingsSidebarSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
+    private let settingsNavigationScroll = NSScrollView()
     private var settingsColumn: NSStackView?
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
@@ -114,8 +116,19 @@ final class FormDocumentView: NSView {
     private struct SettingsSearchResult {
         let category: String, title: String, section: String, key: String?
         let target: NSView
+        var identity: String {
+            AgentFiles.hash(Data([category, title, section, key ?? "", target.identifier?.rawValue ?? ""].joined(separator: "\0").utf8))
+        }
+    }
+    private struct SettingsNavigationInput: Equatable {
+        var query = ""
+        var selection: AgentTextViewport.Selection?
+        var focus: String?
     }
     private var settingsResults: [SettingsSearchResult] = []
+    private var settingsResultButtons: [NSButton] = []
+    private var settingsNavigationInput = SettingsNavigationInput()
+    private var pendingSettingsNavigation: AgentSettingsRecovery.Navigation?
     private var settingsGroupLabels: [(String, NSView)] = []
     private weak var settingsEditingInput: NSView?
     private var settingsEditingSelection: NSRange?
@@ -1510,7 +1523,9 @@ final class FormDocumentView: NSView {
         return false
     }
     func windowDidUpdate(_ notification: Notification) {
-        guard selectedTab == "settings", let window, window.isVisible, let responder = window.firstResponder,
+        guard selectedTab == "settings", let window, window.isVisible, let responder = window.firstResponder else { return }
+        rememberSettingsNavigationInput()
+        guard settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let root = settingsPageHost.isHidden ? settingsForm : settingsPageHost.currentController?.pageContentView else { return }
         func find(_ view: NSView) -> NSView? {
             if view === responder || (view as? NSControl)?.currentEditor() === responder { return view }
@@ -1523,6 +1538,7 @@ final class FormDocumentView: NSView {
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
         if workspaceSession?.pendingSettingsCategory == key { workspaceSession?.restoreSettings(); return false }
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
+        pendingSettingsNavigation = nil
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); revealSettingsCategory(); return true
     }
@@ -1639,13 +1655,33 @@ final class FormDocumentView: NSView {
             }
         }
         let fixed = stack([back, settingsSearch], vertical: true, spacing: 14)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
+        let scroll = settingsNavigationScroll
+        scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = document; document.addSubview(navigation)
         settingsSidebar.addSubview(fixed); settingsSidebar.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.setAccessibilityLabel("设置分类")
         NSLayoutConstraint.activate([fixed.topAnchor.constraint(equalTo: settingsSidebar.topAnchor, constant: 50), fixed.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor, constant: 12), fixed.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor, constant: -16), back.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.widthAnchor.constraint(equalTo: fixed.widthAnchor), settingsSearch.heightAnchor.constraint(equalToConstant: 30), scroll.topAnchor.constraint(equalTo: fixed.bottomAnchor, constant: 12), scroll.leadingAnchor.constraint(equalTo: settingsSidebar.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: settingsSidebar.trailingAnchor), scroll.bottomAnchor.constraint(equalTo: settingsSidebar.bottomAnchor, constant: -12), document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), navigation.topAnchor.constraint(equalTo: document.topAnchor), navigation.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 8), navigation.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -16), navigation.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        for clip in [scroll.contentView, settingsScroll.contentView] {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(settingsNavigationScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsSearchSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
     }
-    @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
+    private func setSettingsReturn(to tab: String, knowledgeRoot: String? = nil) {
+        settingsReturnTab = tab
+        settingsReturnKnowledgeRoot = knowledgeRoot
+        settingsBackButton?.title = tab == "attention" ? "返回需要我" : tab == "automation" ? "返回自动化" : tab == "knowledge" ? "返回知识中心" : "返回对话"
+    }
+    @objc private func returnToChat() {
+        companion?.screenCompanion.interaction()
+        switch settingsReturnTab {
+        case "automation" where automationWindow == nil: showAutomations()
+        case "attention" where attentionPageController == nil: showAttentionPage()
+        case "knowledge" where knowledgePageHost.currentController == nil:
+            _ = showKnowledgeCenter(root: settingsReturnKnowledgeRoot ?? "wiki")
+        default: show(tab: settingsReturnTab)
+        }
+    }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
         if workspaceSession?.pendingSettingsCategory == settingsCategories[sender.tag].0 {
             for (index, button) in categoryButtons.enumerated() { button.state = settingsCategories[index].0 == settingsCategory ? .on : .off }
@@ -1660,6 +1696,7 @@ final class FormDocumentView: NSView {
         }
         window?.makeFirstResponder(sender); settingsCategory = settingsCategories[sender.tag].0
         settingsSearch.stringValue = ""; updateSettingsSections(); revealSettingsCategory()
+        pendingSettingsNavigation = nil; workspaceSession?.changed()
     }
     private func settingsSearchMatches(_ query: String) -> [SettingsSearchResult] {
         func children(_ view: NSView) -> [NSView] { (view as? NSStackView)?.arrangedSubviews ?? view.subviews }
@@ -1694,6 +1731,7 @@ final class FormDocumentView: NSView {
             let open = NSButton(title: "打开", target: self, action: #selector(openSettingsSearchResult(_:))); open.tag = index; open.bezelStyle = .rounded; open.controlSize = .large
             open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.imagePosition = .imageTrailing
             open.identifier = .init(result.key ?? "settings-result-\(result.category)-\(index)"); open.setAccessibilityLabel("打开设置：" + category + " · " + result.title)
+            settingsResultButtons.append(open)
             open.widthAnchor.constraint(greaterThanOrEqualToConstant: 68).isActive = true
             let row = NSStackView(views: [labels, NSView(), open]); row.spacing = 16; row.alignment = .centerY; row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
             body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
@@ -1713,6 +1751,7 @@ final class FormDocumentView: NSView {
         settingsHeading.toolTip = nil
         pageTitle.stringValue = settingsHeading.stringValue
         settingsResults = query.isEmpty ? [] : settingsSearchMatches(query)
+        settingsResultButtons.removeAll()
         let categories = Set(settingsResults.map(\.category)), groups = Set(categories.map(settingsNavigationGroup))
         for (index, button) in categoryButtons.enumerated() {
             button.isHidden = !query.isEmpty && !categories.contains(settingsCategories[index].0)
@@ -2052,9 +2091,9 @@ final class FormDocumentView: NSView {
         if selectedTab != tab, !canLeaveMainPage() { return }
         if window?.isVisible != true { refreshPreferences() }
         if tab == "settings", selectedTab != "settings" {
-            settingsReturnTab = selectedTab
-            settingsBackButton?.title = selectedTab == "attention" ? "返回需要我" : selectedTab == "automation" ? "返回自动化" : selectedTab == "knowledge" ? "返回知识中心" : "返回对话"
+            setSettingsReturn(to: selectedTab, knowledgeRoot: selectedTab == "knowledge" ? knowledgePageHost.selectedRoot : nil)
         }
+        if tab != "settings" { pendingSettingsNavigation = nil }
         selectedTab = ["settings", "attention", "automation", "knowledge"].contains(tab) ? tab : "chat"; changeTab(); workspaceSession?.changed()
         renderMessages()
         if companion?.usesBackgroundAttachmentCheck == true { if tab != "settings" { focusTaskInput() }; return }
@@ -2203,8 +2242,11 @@ final class FormDocumentView: NSView {
     }
     func controlTextDidChange(_ obj: Notification) {
         if let search = obj.object as? NSSearchField, search === settingsSearch {
+            pendingSettingsNavigation = nil
             updateSettingsSections()
             if search.stringValue.isEmpty { revealSettingsCategory() }
+            rememberSettingsNavigationInput()
+            workspaceSession?.changed()
             return
         }
         invalidateModelCheck()
@@ -2500,6 +2542,103 @@ final class FormDocumentView: NSView {
         return true
     }
     func finishOwnedTaskPanels() { workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    private func currentSettingsNavigationInput() -> SettingsNavigationInput {
+        let query = settingsSearch.stringValue
+        let responder = window?.firstResponder
+        var value = SettingsNavigationInput(query: query, selection: query == settingsNavigationInput.query ? settingsNavigationInput.selection : nil)
+        if let editor = settingsSearch.currentEditor() as? NSTextView, editor === responder {
+            let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+            if selection.valid(in: query.utf16.count) { value.selection = selection }
+            value.focus = "search"
+        } else if let index = settingsResultButtons.firstIndex(where: { $0 === responder }), settingsResults.indices.contains(index) {
+            value.focus = settingsResults[index].identity
+        }
+        return value
+    }
+    private func rememberSettingsNavigationInput() {
+        guard pendingSettingsNavigation == nil else { return }
+        let input = currentSettingsNavigationInput()
+        guard input != settingsNavigationInput else { return }
+        settingsNavigationInput = input
+        workspaceSession?.changed()
+    }
+    @objc private func settingsSearchSelectionChanged(_ note: Notification) {
+        guard selectedTab == "settings", let editor = note.object as? NSTextView, editor === settingsSearch.currentEditor() else { return }
+        rememberSettingsNavigationInput()
+    }
+    @objc private func settingsNavigationScrolled(_ note: Notification) {
+        if selectedTab == "settings", pendingSettingsNavigation == nil { workspaceSession?.changed() }
+    }
+    func captureSettingsNavigation() -> AgentSettingsRecovery.Navigation? {
+        guard selectedTab == "settings" else { return nil }
+        if let pendingSettingsNavigation { return pendingSettingsNavigation }
+        let input = currentSettingsNavigationInput(), page = managedSettings.contains(settingsCategory) ? settingsPageHost.selectedPageKey : nil
+        let source = page == nil ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
+        let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
+            selection: input.selection, focus: input.focus, contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),
+            sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot)
+        return value.valid ? value : nil
+    }
+    func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
+        guard value.valid, settingsCategories.contains(where: { $0.0 == value.category }) else { throw PetError("原设置页面暂不可用") }
+        guard selectedTab == "settings" || canLeaveMainPage() else { throw PetError("请先处理当前页面的更改") }
+        if restoredSettingsContext != nil, !settingsPageHost.controllers.isEmpty {
+            guard settingsCategory == value.category, value.page == nil || value.page == settingsPageHost.selectedPageKey else {
+                throw PetError("设置导航与原编辑器的范围不一致")
+            }
+        }
+        settingsCategory = value.category
+        if let source = value.source, let id = agentTaskID, currentAgentTask?.workspacePaths.contains(source) == true { settingsSourceFolders[id] = source }
+        pendingSettingsNavigation = value
+        show(tab: "settings")
+        if let page = value.page { settingsPageHost.selectPage(page) }
+        setSettingsReturn(to: value.returnTab, knowledgeRoot: value.knowledgeRoot)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, pendingSettingsNavigation == value, selectedTab == "settings", let window else { return }
+            settingsNavigationInput = SettingsNavigationInput(query: value.query, selection: value.selection)
+            if settingsSearch.stringValue != value.query {
+                if let editor = settingsSearch.currentEditor(), window.firstResponder === editor { window.makeFirstResponder(nil) }
+                settingsSearch.stringValue = value.query
+                updateSettingsSections()
+            }
+            window.contentView?.layoutSubtreeIfNeeded()
+            if !settingsScroll.isHidden { restoreSettingsScroll(value.contentY, to: settingsScroll) }
+            restoreSettingsScroll(value.sidebarY, to: settingsNavigationScroll)
+            if let focus = value.focus {
+                if let index = settingsResults.firstIndex(where: { $0.identity == focus }), settingsResultButtons.indices.contains(index) {
+                    window.makeFirstResponder(settingsResultButtons[index])
+                } else if window.makeFirstResponder(settingsSearch), let range = value.selection?.range {
+                    (settingsSearch.currentEditor() as? NSTextView)?.setSelectedRange(range)
+                }
+            }
+            pendingSettingsNavigation = nil
+            rememberSettingsNavigationInput()
+            workspaceSession?.changed()
+        }
+    }
+    private func restoreSettingsScroll(_ y: Double, to scroll: NSScrollView) {
+        let clip = scroll.contentView
+        let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size))
+        clip.scroll(to: bounds.origin); scroll.reflectScrolledClipView(clip)
+    }
+    func checkSettingsNavigationSearch(_ query: String, selection: NSRange? = nil, focusLastResult: Bool = false) throws {
+        guard ["--settings-navigation-recovery-check", "--settings-navigation-recovery-ui"].contains(where: CommandLine.arguments.contains),
+              selectedTab == "settings", let window else { throw PetError("设置搜索验收未启用") }
+        let value = focusLastResult
+            ? ([query, "项目", "设置", "a"].max { settingsSearchMatches($0).count < settingsSearchMatches($1).count } ?? query)
+            : query
+        window.makeFirstResponder(nil)
+        settingsSearch.stringValue = value
+        controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: settingsSearch))
+        window.makeFirstResponder(settingsSearch)
+        if let selection { (settingsSearch.currentEditor() as? NSTextView)?.setSelectedRange(selection) }
+        if focusLastResult, let result = settingsResultButtons.last {
+            window.contentView?.layoutSubtreeIfNeeded()
+            result.scrollToVisible(result.bounds)
+            window.makeFirstResponder(result)
+        }
+        rememberSettingsNavigationInput()
+    }
     func captureSettingsRecovery() throws -> AgentSettingsRecovery.State? { try settingsPageHost.captureRecovery(active: selectedTab == "settings") }
     func captureAutomationRecovery() throws -> AgentWorkspaceRecovery.Automation? {
         try selectedTab == "automation" ? automationWindow?.captureRecovery() : nil
@@ -2524,7 +2663,10 @@ final class FormDocumentView: NSView {
         changeTab()
         do {
             try settingsPageHost.restoreRecovery(value) { [weak self] kind in self?.makeSettingsManager(kind, taskID: value.context.taskID, workspace: value.context.workspace) }
-            if value.active { settingsReturnTab = previousTab; show(tab: "settings") }
+            if value.active {
+                setSettingsReturn(to: previousTab, knowledgeRoot: previousTab == "knowledge" ? knowledgePageHost.selectedRoot : nil)
+                show(tab: "settings")
+            }
         } catch { restoredSettingsContext = nil; settingsPageHost.finish(); selectedTab = previousTab; changeTab(); throw error }
     }
     func flushWorkspaceRecovery() async -> Bool {
