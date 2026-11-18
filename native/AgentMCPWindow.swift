@@ -79,16 +79,17 @@ import UniformTypeIdentifiers
         detailActions.addItem(withTitle: "更多"); detailActions.setAccessibilityLabel("连接器更多操作")
         detailActions.menu?.autoenablesItems = false; detailActions.menu?.addItem(browse); detailActions.menu?.addItem(remove)
         let actionsFrame = AgentSettingsPopupFrame(detailActions); actionsFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
-        let header = NSStackView(views: [enabled, NSView(), connection, actionsFrame, save]); header.spacing = 8; header.alignment = .centerY
+        let detailToolbar = AgentSettingsDetailActions([connection, actionsFrame, save])
+        let header = NSStackView(views: [enabled, state, NSView(), detailToolbar]); header.spacing = 10; header.alignment = .centerY
         let navigation = NSStackView(views: [detailKinds, NSView(), configurationKind, loadJSON]); navigation.spacing = 8; navigation.alignment = .centerY
         let preferredContentHeight = tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); preferredContentHeight.priority = .defaultHigh; preferredContentHeight.isActive = true
         tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
-        let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, tabs, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
-        column.setCustomSpacing(4, after: header)
+        let detail = AgentThemeView(), column = NSStackView(views: [header, navigation, tabs, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 8
         detail.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        for view in [header, state, navigation, tabs, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -12), header.heightAnchor.constraint(equalToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
+        for view in [header, navigation, tabs, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 4), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -12), header.heightAnchor.constraint(greaterThanOrEqualToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
         let page = AgentMCPDetailPage(content: detail)
+        page.detailActionRow = detailToolbar
         page.onCanLeave = { [weak self] in
             guard let self, self.canLeave() else { return false }
             if self.dirty { self.dirty = false; self.reload(self.selected?.id) }
@@ -230,6 +231,8 @@ import UniformTypeIdentifiers
         } catch { tools.string = error.localizedDescription }
     }
     private func refreshState() {
+        detailPage?.detailHeading = selected.map { .init(title: $0.name, scope: AgentMCPSelection.scope($0), location: AgentMCPSelection.sourceWorkspace($0)) }
+            ?? .init(title: creating ? "新建连接器" : "连接器配置", scope: "用户设置")
         let current = items.first { $0.id == selected?.id }
         let connected = selected.map { service.connected($0.id, owner: sessionOwner) } ?? false
         editor.isEditable = (creating || selected != nil) && job == nil

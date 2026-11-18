@@ -9,6 +9,9 @@ import AppKit
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "在任务中使用", target: nil, action: nil)
     private let remove = AgentDialogButton(title: "移到废纸篓", target: nil, action: nil), reveal = AgentDialogButton(title: "打开来源", target: nil, action: nil)
+    private let more = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let revealInMenu = NSMenuItem(title: "打开来源", action: nil, keyEquivalent: "")
+    private let removeInMenu = NSMenuItem(title: "移到废纸篓", action: nil, keyEquivalent: "")
     private let location = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("规则保存状态")
     private let catalogState = AgentSettingsStatusField("规则列表状态")
     private var layout: (toolbar: NSStackView, add: AgentDialogButton, form: NSStackView, source: NSStackView, viewer: NSView, footer: NSStackView)?
@@ -91,11 +94,20 @@ import AppKit
     override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         if let content = window?.contentView, let layout {
             AgentSettingsCatalog.detach(content)
-            let detail = NSStackView(views: [layout.form, layout.source, layout.viewer, state, layout.footer])
+            layout.source.removeArrangedSubview(use); use.removeFromSuperview()
+            layout.footer.removeArrangedSubview(save); save.removeFromSuperview()
+            more.addItem(withTitle: "更多"); more.setAccessibilityLabel("规则更多操作"); more.menu?.autoenablesItems = false
+            for (item, action) in [(revealInMenu, #selector(revealItem)), (removeInMenu, #selector(removeItem))] {
+                item.target = self; item.action = action; more.menu?.addItem(item)
+            }
+            let menu = AgentSettingsPopupFrame(more); menu.widthAnchor.constraint(equalToConstant: 76).isActive = true
+            let actions = AgentSettingsDetailActions([use, menu, save])
+            let detail = NSStackView(views: [layout.form, state, layout.viewer, actions])
             detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             layout.viewer.heightAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
             let page = AgentSettingsDetailPage(title: "规则详情", content: AgentSettingsCatalog.detail(detail), scrollsInternally: false)
+            page.detailActionRow = actions
             page.onCanLeave = { [weak self] in self?.confirmClosing() ?? true }
             page.onAppear = { [weak self] in
                 guard let self else { return }
@@ -182,6 +194,11 @@ import AppKit
         enabled.isHidden = creating; enabled.isEnabled = selected != nil && !dirty
         save.isEnabled = has && dirty; remove.isEnabled = selected?.permissions != nil && !dirty; reveal.isEnabled = selected != nil
         use.isEnabled = selected?.enabled == true && selected?.definition != nil && onInsert != nil && !dirty
+        revealInMenu.isEnabled = reveal.isEnabled; removeInMenu.isEnabled = remove.isEnabled
+        more.isEnabled = revealInMenu.isEnabled || removeInMenu.isEnabled
+        (more.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
+        detailPage?.detailHeading = selected.map { .init(title: $0.name, scope: location.stringValue, location: $0.source.path) }
+            ?? .init(title: "新建规则", scope: createScope.indexOfSelectedItem == 1 ? "项目规则" : "用户规则")
         window?.isDocumentEdited = dirty
         onSettingsRecoveryChange?()
     }

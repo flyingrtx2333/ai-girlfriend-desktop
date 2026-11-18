@@ -596,6 +596,40 @@ final class FormDocumentView: NSView {
             settingsSearch.stringValue = ""; updateSettingsSections()
             checks["ClearingSearchRestoresOriginalCatalogActions"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 })
         }
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+        for (category, kind, title, entryLabel, contentID, actions) in [
+            ("extensions", "mcp", "设置连接器", "配置连接器 设置连接器", "settings-card-mcp-basic", ["连接", "保存"]),
+            ("extensions", "plugins", "zz-settings-many", "配置 zz-settings-many", "插件说明", ["在任务中使用"]),
+            ("memory", "rules", "settings-rule", "配置 settings-rule", "settings-card-rule-body", ["在任务中使用", "保存"])
+        ] {
+            guard showSettingsCategory(category) else { checks[kind + "CompactDetailOpens"] = false; continue }
+            settingsPageHost.selectPage(kind); window.contentView?.layoutSubtreeIfNeeded()
+            let root = settingsPageHost.currentController
+            let catalogHeading = settingsHeading.stringValue
+            let entry = descendants(settingsPageHost).compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == entryLabel }
+            entry?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
+            guard let detail = settingsPageHost.currentController, detail !== root, let content = detail.pageContentView else {
+                checks[kind + "CompactDetailOpens"] = false; continue
+            }
+            let titleFrame = settingsHeading.convert(settingsHeading.bounds, to: contentSurface)
+            let scopeLabel = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }
+            let scope = scopeLabel?.convert(scopeLabel?.bounds ?? .zero, to: contentSurface) ?? .zero
+            let back = descendants(settingsPageHost).compactMap { $0 as? NSButton }.first { $0.title.hasPrefix("返回 ") && !$0.isHiddenOrHasHiddenAncestor }
+            checks[kind + "CompactDetailUsesActualHeadingScopeAndBack"] = settingsHeading.stringValue == title &&
+                scopeLabel?.isHiddenOrHasHiddenAncestor == false && !scope.isEmpty && scope.minX >= titleFrame.maxX - 1 && back != nil
+            let buttons = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
+            let more = descendants(settingsWindowActions).compactMap { $0 as? NSPopUpButton }.first
+            let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
+            checks[kind + "CompactDetailActionsFitWindowHeader"] = window.frame.size == NSSize(width: 780, height: 540) &&
+                !settingsWindowActions.isHidden && buttons.map(\.title) == actions && (more?.menu?.items.count ?? 0) > 1 &&
+                contentSurface.bounds.insetBy(dx: -0.5, dy: -0.5).contains(actionFrame) && actionFrame.minY >= titleFrame.maxY
+            let firstContent = descendants(content).first { $0.identifier?.rawValue == contentID || $0.accessibilityLabel() == contentID }
+            let visibleContent = ((firstContent as? NSTextView)?.enclosingScrollView ?? firstContent)?.visibleRect.height ?? 0
+            checks[kind + "CompactDetailShowsFirstContent"] = visibleContent >= 60 && firstContent?.isHiddenOrHasHiddenAncestor == false
+            detail.close(); window.contentView?.layoutSubtreeIfNeeded()
+            checks[kind + "CompactDetailRestoresCatalogHeadingAndActions"] = settingsPageHost.currentController === root &&
+                settingsHeading.stringValue == catalogHeading && buttons.allSatisfy { $0.superview !== settingsWindowActions }
+        }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
         checks["settingsPageChangesPreserveUnsentComposer"] = composer.string == draft && settingsSidebar.isHidden && settings.isHidden
@@ -1566,6 +1600,7 @@ final class FormDocumentView: NSView {
         if let title = settingsHeading.superview { settingsColumn?.setCustomSpacing(query.isEmpty && managedSettings.contains(settingsCategory) ? 16 : 30, after: title) }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
         settingsHeading.stringValue = query.isEmpty ? selected.1 : "搜索结果"
+        settingsHeading.toolTip = nil
         pageTitle.stringValue = settingsHeading.stringValue
         settingsResults = query.isEmpty ? [] : settingsSearchMatches(query)
         let categories = Set(settingsResults.map(\.category)), groups = Set(categories.map(settingsNavigationGroup))
@@ -1886,8 +1921,13 @@ final class FormDocumentView: NSView {
         let title = NSStackView(views: [settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
         title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
         settingsPageHost.scopeHost = title
+        settingsPageHost.onDetailHeading = { [weak self] detail in
+            guard let self, let category = settingsCategories.first(where: { $0.0 == self.settingsCategory }) else { return }
+            settingsHeading.stringValue = detail ?? category.1; settingsHeading.toolTip = detail
+            pageTitle.stringValue = settingsHeading.stringValue
+        }
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
-        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.required, for: .horizontal)
+        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
         settingsColumn = column

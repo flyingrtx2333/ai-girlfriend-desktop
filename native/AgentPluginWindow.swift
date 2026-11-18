@@ -15,6 +15,7 @@ import UniformTypeIdentifiers
     private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
     private let more = NSPopUpButton(frame: .zero, pullsDown: true)
+    private lazy var moreFrame = AgentSettingsPopupFrame(more)
     private let settings = NSMenuItem(title: "启用设置", action: nil, keyEquivalent: "")
     private var settingsWindow: AgentPluginSettingsWindow?
     private let source = NSMenuItem(title: "打开来源", action: nil, keyEquivalent: "")
@@ -51,7 +52,7 @@ import UniformTypeIdentifiers
         }
         revisions.autoenablesItems = false; history.submenu = revisions
         for item in [settings, source, .separator(), update, history, .separator(), remove] { more.menu?.addItem(item) }
-        let moreFrame = AgentSettingsPopupFrame(more); moreFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        moreFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
         let header = NSStackView(views: [scopes, search, refresh, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
@@ -84,12 +85,19 @@ import UniformTypeIdentifiers
             layout.footer.removeArrangedSubview(disableAll); disableAll.removeFromSuperview(); layout.toolbar.insertArrangedSubview(disableAll, at: max(0, layout.toolbar.arrangedSubviews.count - 1))
             search.setContentHuggingPriority(.defaultLow, for: .horizontal)
             layout.footer.removeArrangedSubview(state); state.removeFromSuperview()
-            let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, state]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
+            for view in [enabled, moreFrame, use] as [NSView] { layout.actions.removeArrangedSubview(view); view.removeFromSuperview() }
+            let subtitle = NSStackView(views: [enabled, metadata, NSView()]); subtitle.spacing = 12; subtitle.alignment = .centerY
+            subtitle.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+            metadata.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            AgentSettingsStyle.primaryAction(use)
+            let actions = AgentSettingsDetailActions([moreFrame, use])
+            let detail = NSStackView(views: [subtitle, actions, layout.components, layout.document, state]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 8
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
             componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.priority = .defaultHigh; componentHeight?.isActive = true
             NSLayoutConstraint.activate([layout.components.heightAnchor.constraint(greaterThanOrEqualToConstant: 44), layout.document.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
             let page = AgentSettingsDetailPage(title: "插件详情", content: AgentSettingsCatalog.detail(detail))
+            page.detailActionRow = actions
             page.onAppear = { [weak self] in guard let self else { return }; reload(select: selected?.id); presentingWindow?.makeFirstResponder(components) }
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
@@ -151,6 +159,10 @@ import UniformTypeIdentifiers
     }
     private func open(_ row: Int) {
         selected = items.indices.contains(row) ? items[row] : nil; entries = []; connectors = []; agents = []; hooks = []; rules = []; title.stringValue = ""; metadata.stringValue = ""; readme.string = ""; enabled.state = .off
+        detailPage?.detailHeading = selected.map { item in
+            let scope = item.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户插件"
+            return .init(title: item.metadata.title, scope: scope, location: item.root.path)
+        }
         if let item = selected {
             title.stringValue = item.metadata.title; metadata.stringValue = [item.metadata.version, item.metadata.author, item.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "); enabled.state = item.enabled ? .on : .off
             do { readme.string = try service.readme(item); entries = try service.extensionItems(workspace: item.workspace, onlyScope: true).filter { $0.pluginName == item.id }; connectors = store.mcp.availableServers(workspace: item.workspace, onlyScope: true).filter { $0.plugin?.name == item.id }; agents = try store.agents.packagedProfiles(workspace: item.workspace, onlyScope: true).filter { $0.pluginSource?.name == item.id }; hooks = try store.hooks.catalog(workspace: item.workspace).filter { $0.plugin?.name == item.id && $0.plugin?.installationID == item.instanceID }; rules = try service.ruleItems(workspace: item.workspace, onlyScope: true).filter { $0.reference.name == item.id && $0.reference.installationID == item.instanceID } } catch { state.stringValue = error.localizedDescription }

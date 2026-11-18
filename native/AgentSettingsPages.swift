@@ -3,11 +3,19 @@ import AppKit
 // The existing managers keep their storage and permission logic. Their content
 // can be hosted in Settings while short confirmations use the visible window.
 @MainActor class AgentSettingsPageController: NSWindowController {
+    struct DetailHeading: Equatable {
+        let title: String
+        let scope: String
+        var location: String? = nil
+    }
     private(set) weak var settingsHostWindow: NSWindow?
     private var embeddedContent: NSView?
     var onSettingsPush: ((AgentSettingsPageController) -> Void)?
     var onSettingsClose: (() -> Void)?
     var settingsContext: (title: String, location: String)?
+    var detailHeading: DetailHeading? { didSet { if detailHeading != oldValue { onDetailHeadingChange?() } } }
+    var onDetailHeadingChange: (() -> Void)?
+    var detailActionRow: AgentSettingsDetailActions?
     var onSettingsRecoveryChange: (() -> Void)?
     func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { nil }
     func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { throw PetError("此设置页暂不支持草稿恢复，原记录已保留") }
@@ -26,7 +34,10 @@ import AppKit
         return content
     }
     func pageDidLayout() {}
-    func setSettingsActionsHost(_ host: NSStackView?) { (pageContentView as? AgentSettingsCatalogPage)?.setActionsHost(host) }
+    func setSettingsActionsHost(_ host: NSStackView?) {
+        if let detailActionRow { detailActionRow.setActionsHost(host) }
+        else { (pageContentView as? AgentSettingsCatalogPage)?.setActionsHost(host) }
+    }
     func canLeaveSettings() -> Bool {
         guard presentingWindow?.hasBlockingDialog != true else { return false }
         guard let window else { return true }
@@ -44,7 +55,7 @@ import AppKit
     }
     func endSettingsHosting() {
         settingsWillLeave()
-        onSettingsPush = nil; onSettingsClose = nil; onSettingsRecoveryChange = nil
+        onSettingsPush = nil; onSettingsClose = nil; onSettingsRecoveryChange = nil; onDetailHeadingChange = nil
         embeddedContent?.removeFromSuperview(); settingsHostWindow = nil
         window?.close()
     }
@@ -62,6 +73,32 @@ import AppKit
     @objc func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         guard let table = tableView as? AgentSettingsCatalogTable, table.identifier?.rawValue == "settings-catalog" else { return tableView.rowHeight }
         return table.group(at: row).height
+    }
+}
+
+@MainActor final class AgentSettingsDetailActions: NSStackView {
+    private let actions: [NSView]
+    private weak var actionsHost: NSStackView?
+    private lazy var rowHeight = heightAnchor.constraint(equalToConstant: 28)
+    init(_ actions: [NSView]) {
+        self.actions = actions
+        super.init(frame: .zero)
+        alignment = .centerY; spacing = 8
+        addArrangedSubview(NSView())
+        actions.forEach(addArrangedSubview)
+        rowHeight.isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func setActionsHost(_ host: NSStackView?) {
+        guard actionsHost !== host else { return }
+        for action in actions {
+            (action.superview as? NSStackView)?.removeArrangedSubview(action)
+            action.removeFromSuperview()
+            (host ?? self).addArrangedSubview(action)
+        }
+        actionsHost = host
+        rowHeight.constant = host == nil ? 28 : 0
+        isHidden = host != nil
     }
 }
 
@@ -503,16 +540,22 @@ struct AgentSettingsCatalogGroup {
     private var category = "", identity = "", contextTitle = ""
     private var recoveryContext: AgentSettingsRecovery.Context?, pendingRecoveryY: Double?, recoveryScrollScheduled = false
     var onRecoveryChange: (() -> Void)?
+    var onDetailHeading: ((String?) -> Void)?
     private var makePage: ((String) -> AgentSettingsPageController?)?
     private var scrollMonitor: Any?
     private var pageHeight: NSLayoutConstraint?
     private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     weak var actionsHost: NSStackView? { didSet { updateActions() } }
+    private var scopeWidth: NSLayoutConstraint?
     weak var scopeHost: NSStackView? {
         didSet {
             guard oldValue !== scopeHost else { return }
+            scopeWidth?.isActive = false
             (oldValue ?? header).removeArrangedSubview(context); context.removeFromSuperview()
-            (scopeHost ?? header).addArrangedSubview(context); updateHeader()
+            (scopeHost ?? header).addArrangedSubview(context)
+            scopeWidth = scopeHost.map { context.widthAnchor.constraint(lessThanOrEqualTo: $0.widthAnchor, multiplier: 0.42) }
+            scopeWidth?.isActive = true
+            updateHeader()
         }
     }
     var actionsEnabled = false { didSet { updateHeader() } }
@@ -523,12 +566,14 @@ struct AgentSettingsCatalogGroup {
     override init(frame: NSRect) {
         super.init(frame: frame)
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
+        back.cell?.lineBreakMode = .byTruncatingTail
+        back.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         back.target = self; back.action = #selector(goBack)
         tabs.trackingMode = .selectOne; tabs.font = .systemFont(ofSize: 13); tabs.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
         tabs.target = self; tabs.action = #selector(changeTab); tabs.setAccessibilityLabel("设置页面类型")
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.identifier = .init("settings-editing-context"); context.setAccessibilityLabel("设置编辑对象")
-        context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         context.setContentHuggingPriority(.defaultHigh, for: .horizontal); context.alignment = .right
         for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12; header.identifier = .init("settings-manager-navigation")
         sourceFolder.target = self; sourceFolder.action = #selector(changeSource); sourceFolder.setAccessibilityLabel("设置源文件夹"); sourceFolder.identifier = .init("settings-source-folder")
@@ -630,6 +675,9 @@ struct AgentSettingsCatalogGroup {
         controller.onSettingsPush = { [weak self] child in self?.push(child) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
         controller.onSettingsRecoveryChange = { [weak self] in self?.onRecoveryChange?() }
+        controller.onDetailHeadingChange = { [weak self, weak controller] in
+            if self?.currentController === controller { self?.updateHeader() }
+        }
         content.heightAnchor.constraint(greaterThanOrEqualToConstant: controller.minimumSettingsContentHeight).isActive = true
         entries.append(Entry(controller: controller, view: content, title: controller.window?.title ?? "设置"))
         displayCurrent()
@@ -654,13 +702,16 @@ struct AgentSettingsCatalogGroup {
     }
     private func updateHeader() {
         let editing = entries.reversed().compactMap { $0.controller.settingsContext }.first
-        context.stringValue = editing?.title ?? contextTitle; context.toolTip = editing?.location
+        let detail = currentController?.detailHeading
+        context.stringValue = detail?.scope ?? editing?.title ?? contextTitle
+        context.toolTip = detail?.location ?? editing?.location
         sourceRow.isHidden = editing != nil || sourceFolder.numberOfItems < 2
-        context.isHidden = entries.isEmpty || !sourceRow.isHidden || (scopeHost != nil && !actionsEnabled)
+        context.isHidden = entries.isEmpty || (detail == nil && !sourceRow.isHidden) || (scopeHost != nil && !actionsEnabled)
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
         header.isHidden = scopeHost != nil ? back.isHidden && tabs.isHidden : ["hooks", "worktrees"].contains(category) && entries.count == 1
+        if actionsEnabled { onDetailHeading?(detail?.title) }
         updateActions()
     }
     private func updateActions() {

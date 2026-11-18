@@ -91,7 +91,9 @@ import AppKit
                   let openRule = ruleList.action else { throw PetError("规则目录不可用") }
             NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
             let ruleFiles = try tasks.rules.catalog(workspace: workspace).map(\.source), ruleBytes = try ruleFiles.map { try Data(contentsOf: $0) }
-            try await probe("取消", owner: host) { try button("移到废纸篓", pane.currentController?.pageContentView).performClick(nil) }
+            guard let ruleActions = find(NSPopUpButton.self, pane.currentController?.pageContentView, matching: { $0.accessibilityLabel() == "规则更多操作" }),
+                  let trash = ruleActions.menu?.item(withTitle: "移到废纸篓"), let trashAction = trash.action, trash.isEnabled else { throw PetError("规则移除菜单不可用") }
+            try await probe("取消", owner: host) { NSApp.sendAction(trashAction, to: trash.target, from: trash) }
             checks["asynchronousCardCancelPreservesRuleFilesAndReleasesOwner"] = try ruleFiles.enumerated().allSatisfy { try Data(contentsOf: $0.element) == ruleBytes[$0.offset] } && host.agentDialog == nil && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == false
             guard pane.leave() else { throw PetError("规则确认未能结束") }
             let desktop = AgentDesktopSettingsView(desktop: tasks.desktop), beforeDesktop = try tasks.desktop.configuration()
