@@ -92,6 +92,7 @@ final class FormDocumentView: NSView {
     private(set) var attentionPageController: AgentAttentionWindow?
     private let contentSurface = ContentSurface(), settingsSidebar = NSView(), settingsSearch = AgentSettingsSidebarSearchField()
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
+    private var settingsColumn: NSStackView?
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
     private var restoredSettingsContext: AgentSettingsRecovery.Context?
@@ -191,7 +192,7 @@ final class FormDocumentView: NSView {
     private var nameEditor: AgentNameEditor?
     private var workspaceEditor: AgentWorkspaceEditor?
     private var archivedTasksView: AgentArchivedTasksView?
-    private var generalSettingsSave: NSButton?
+    private var generalSettingsSave: AgentDialogButton?
     private var generalSettingsPanel: AgentGeneralSettingsView?
     private var settingsFooter: NSStackView?
     private let executionLocation = AgentWorkbenchButton()
@@ -470,6 +471,7 @@ final class FormDocumentView: NSView {
         guard CommandLine.arguments.contains("--settings-layout-check"), let window else { return [:] }
         let original = window.contentView?.bounds.size ?? .zero, draft = composer.string
         var checks: [String: Bool] = [:], frames: [String: [String: Double]] = [:]
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         window.makeKeyAndOrderFront(nil)
         for (name, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
             for category in settingsCategories.map({ $0.0 }) {
@@ -494,6 +496,17 @@ final class FormDocumentView: NSView {
                 let aligned = centerError <= 0.5 && abs(heading.minX - column.minX - 16) < 0.5 && (50...64).contains(contentSurface.bounds.height - heading.maxY) && heading.minY > body.maxY
                 checks[key + "CenteredColumnAndContentHeading"] = fitsWindow && aligned && settingsHeading.stringValue == settingsCategories[index].1 && pageTitle.isHidden && workbenchChrome.allSatisfy(\.isHidden)
                 checks[key + "VisibleWindowRetainsRequestedSize"] = window.isVisible && window.contentView?.bounds.size == size
+                let scope = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }
+                let scopeVisible = scope?.isHiddenOrHasHiddenAncestor == false
+                checks[key + "ScopeAppearsOnlyWithManagedContent"] = scopeVisible == managedSettings.contains(category)
+                if scopeVisible, let scope {
+                    let scopeFrame = scope.convert(scope.bounds, to: contentSurface), titleFrame = settingsHeading.convert(settingsHeading.bounds, to: contentSurface)
+                    checks[key + "ScopeSharesTitleLineWithoutOverlap"] = abs(scopeFrame.midY - titleFrame.midY) < 1 && scopeFrame.minX >= titleFrame.maxX + 11.5 && scopeFrame.maxX <= column.maxX - 15.5
+                    frames[key]?["scopeX"] = scopeFrame.minX; frames[key]?["scopeWidth"] = scopeFrame.width
+                }
+                if ["agents", "teams", "hooks", "worktrees"].contains(category) {
+                    checks[key + "SingleCatalogHasNoEmptyNavigationRow"] = descendants(settingsPageHost).first { $0.identifier?.rawValue == "settings-manager-navigation" }?.isHidden == true
+                }
                 let catalog = settingsPageHost.currentController?.pageContentView as? AgentSettingsCatalogPage
                 let shouldShowActions = !settingsPageHost.isHidden && catalog != nil
                 let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
@@ -504,6 +517,25 @@ final class FormDocumentView: NSView {
                     checks[key + "AppearanceControlsFillContentColumn"] = width >= group.bounds.width - 32.5
                     frames[key]?["appearanceControlWidth"] = width
                 }
+            }
+            for (category, page, title) in [("agents", "agents", "设置审阅员"), ("teams", "teams", "设置协作组"), ("extensions", "plugins", "zz-settings-demo"), ("extensions", "skills", "settings-skill")] {
+                guard showSettingsCategory(category) else { checks[name + page + "DetailEntryAvailable"] = false; continue }
+                settingsPageHost.selectPage(page); window.contentView?.layoutSubtreeIfNeeded()
+                let root = settingsPageHost.currentController
+                let button = descendants(settingsPageHost).compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == "配置 " + title }
+                button?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
+                let detail = settingsPageHost.currentController, column = settings.convert(settings.bounds, to: contentSurface)
+                checks[name + page + "DetailEntryAvailable"] = button != nil && detail is AgentSettingsDetailPage
+                if let content = detail?.pageContentView, let body = content.subviews.first {
+                    let bounds = body.convert(body.bounds, to: contentSurface)
+                    checks[name + page + "DetailKeepsCatalogContentWidth"] = abs(bounds.minX - column.minX) < 0.5 && abs(bounds.width - column.width) < 0.5
+                    let cards = descendants(content).filter { $0.identifier?.rawValue.hasPrefix("settings-card-") == true }
+                    if ["agents", "teams"].contains(page) {
+                        checks[name + page + "FormCardsShareTheSameContentColumn"] = !cards.isEmpty && cards.allSatisfy { let rect = $0.convert($0.bounds, to: contentSurface); return abs(rect.minX - column.minX) < 0.5 && abs(rect.width - column.width) < 0.5 }
+                    }
+                }
+                detail?.close(); window.contentView?.layoutSubtreeIfNeeded()
+                checks[name + page + "DetailReturnsToOriginalCatalog"] = settingsPageHost.currentController === root
             }
         }
         if showSettingsCategory("memory"), let overview = settingsPageHost.currentController as? AgentMemorySettingsPage {
@@ -540,6 +572,7 @@ final class FormDocumentView: NSView {
             checks["CancelReturnsSameManagerAndOriginalActionTargets"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 }) && create?.target as AnyObject? === manager
             settingsSearch.stringValue = "模型"; updateSettingsSections()
             checks["SettingsSearchHidesCatalogWindowActions"] = settingsWindowActions.isHidden
+            checks["SettingsSearchHidesPreviousScopeCaption"] = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }?.isHidden != false
             settingsSearch.stringValue = ""; updateSettingsSections()
             checks["ClearingSearchRestoresOriginalCatalogActions"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 })
         }
@@ -1510,6 +1543,7 @@ final class FormDocumentView: NSView {
         defer { updateSettingsActions() }
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let title = settingsHeading.superview { settingsColumn?.setCustomSpacing(query.isEmpty && managedSettings.contains(settingsCategory) ? 16 : 30, after: title) }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
         settingsHeading.stringValue = query.isEmpty ? selected.1 : "搜索结果"
         pageTitle.stringValue = settingsHeading.stringValue
@@ -1656,7 +1690,7 @@ final class FormDocumentView: NSView {
             card.layer?.cornerRadius = 12; card.layer?.borderWidth = framed ? 1 : 0
             body = stack([], vertical: true, spacing: 0); body.alignment = .centerX
             card.addSubview(body); pin(body, to: card)
-            let section = stack([heading, card], vertical: true, spacing: 10)
+            let section = stack([heading, card], vertical: true, spacing: AgentSettingsStyle.sectionHeadingSpacing)
             heading.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             card.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
             settingGroups.append((category, title, keywords, section, key))
@@ -1822,18 +1856,21 @@ final class FormDocumentView: NSView {
         let changes = NSButton(title: "更新记录", target: self, action: #selector(openApplicationChanges))
         row("", stack([location, changes, NSView()], spacing: 12))
         noSettings.font = .systemFont(ofSize: 14); noSettings.textColor = AgentWorkbenchTheme.secondaryText
-        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings))
+        let save = AgentDialogButton(title: "保存", target: self, action: #selector(saveSettings))
         generalSettingsSave = save
         AgentSettingsStyle.primaryAction(save)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
         settingsPageHost.isHidden = true
-        let title = NSView(); title.translatesAutoresizingMaskIntoConstraints = false
+        let title = NSStackView(views: [settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
+        title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
+        settingsPageHost.scopeHost = title
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
-        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.translatesAutoresizingMaskIntoConstraints = false; title.addSubview(settingsHeading)
-        NSLayoutConstraint.activate([title.heightAnchor.constraint(equalToConstant: 28), settingsHeading.leadingAnchor.constraint(equalTo: title.leadingAnchor, constant: 16), settingsHeading.trailingAnchor.constraint(lessThanOrEqualTo: title.trailingAnchor, constant: -16), settingsHeading.centerYAnchor.constraint(equalTo: title.centerYAnchor)])
+        settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.required, for: .horizontal)
+        title.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
+        settingsColumn = column
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
         title.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true

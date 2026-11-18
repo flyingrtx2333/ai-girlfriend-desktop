@@ -96,7 +96,7 @@ import AppKit
         case "文件图标": symbol = "doc"
         default: symbol = "slider.horizontal.3"
         }
-        let box = AgentThemeView(fill: AgentWorkbenchTheme.subtle, stroke: AgentWorkbenchTheme.line)
+        let box = AgentThemeView(fill: AgentWorkbenchTheme.accent.withAlphaComponent(0.08), stroke: AgentWorkbenchTheme.line)
         box.layer?.cornerRadius = 8; box.layer?.borderWidth = 0.5; box.setAccessibilityElement(false)
         let image = AgentSettingsGlyph(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
         image.image = image.image?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))

@@ -12,7 +12,7 @@ import UniformTypeIdentifiers
     private let permission = NSPopUpButton(), tools = NSPopUpButton(frame: .zero, pullsDown: true)
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?
     private var catalogLayout: (toolbar: NSView, detail: NSView)?
@@ -54,7 +54,7 @@ import UniformTypeIdentifiers
             AgentSettingsStyle.section("可选能力", id: "agent-capabilities", rows: [AgentSettingsStyle.formRow("Skills", skills, trailing: true), AgentSettingsStyle.formRow("MCP", mcp, trailing: true), AgentSettingsStyle.formRow("工具权限", tools, trailing: true)])
         ], label: "智能体配置")
         save.target = self; save.action = #selector(saveProfile); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
-        AgentSettingsStyle.primaryAction(save)
+        AgentSettingsStyle.primaryAction(save); AgentDialogStyle.action(use)
         use.target = self; use.action = #selector(useProfile)
         let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
         let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12

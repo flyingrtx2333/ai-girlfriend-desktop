@@ -9,7 +9,7 @@ import AppKit
     private let table = AgentSettingsCatalogTable(), name = AgentDialogTextField(), purpose = AgentDialogTextField(), instructions = NSTextView()
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
     private let enabled = NSButton(checkboxWithTitle: "启用团队及成员", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
     private var values: [AgentTeam] = [], agents: [AgentProfile] = [], pendingAgents: [AgentProfile] = []
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var agentWindow: AgentProfileWindow?
@@ -45,7 +45,7 @@ import AppKit
             AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), AgentSettingsStyle.formRow("额外成员", members, trailing: true), AgentSettingsStyle.formRow("", manage, trailing: true)])
         ], label: "团队配置")
         save.target = self; save.action = #selector(saveTeam); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; use.target = self; use.action = #selector(useTeam)
-        AgentSettingsStyle.primaryAction(save)
+        AgentSettingsStyle.primaryAction(save); AgentDialogStyle.action(use)
         let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
         let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
         catalogLayout = (actions, detail)

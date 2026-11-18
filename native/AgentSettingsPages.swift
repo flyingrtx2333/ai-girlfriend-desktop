@@ -335,7 +335,7 @@ struct AgentSettingsCatalogGroup {
     }
     static func detail(_ content: NSView) -> NSView {
         let root = NSView(); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16), content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor), content.trailingAnchor.constraint(equalTo: root.trailingAnchor), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 8), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
         return root
     }
     static func content(table: AgentSettingsCatalogTable, toolbar: NSView, status: AgentSettingsStatusField, actions: [NSView] = [], symbol: String = "tray") -> NSView {
@@ -345,6 +345,7 @@ struct AgentSettingsCatalogGroup {
 
 @MainActor enum AgentSettingsStyle {
     static let searchRowPrefix = "settings-search-row:"
+    static let sectionHeadingSpacing: CGFloat = 16
     static func listState(_ table: NSTableView, text: String) {
         if let table = table as? AgentSettingsCatalogTable, let empty = table.emptyCard {
             empty.setMessage(text); empty.isHidden = table.numberOfRows > 0; empty.label.isHidden = empty.isHidden
@@ -413,7 +414,7 @@ struct AgentSettingsCatalogGroup {
         card.identifier = .init("settings-card-" + id); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 10), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)])
-        let column = NSStackView(views: [heading, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        let column = NSStackView(views: [heading, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = sectionHeadingSpacing
         column.identifier = .init("settings-section-" + id); heading.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true; card.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         return column
     }
@@ -425,19 +426,11 @@ struct AgentSettingsCatalogGroup {
         document.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         for section in sections { section.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
         let preferred = document.heightAnchor.constraint(equalTo: scroll.contentView.heightAnchor); preferred.priority = .defaultLow
-        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor), preferred, body.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), body.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 2), body.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -12), body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor), preferred, body.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), body.leadingAnchor.constraint(equalTo: document.leadingAnchor), body.trailingAnchor.constraint(equalTo: document.trailingAnchor), body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
         return scroll
     }
-    static func primaryAction(_ button: NSButton) {
-        button.bezelStyle = .rounded; button.controlSize = .large; button.font = .systemFont(ofSize: 13, weight: .semibold)
-        refreshPrimaryAction(button)
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
-    }
-    static func refreshPrimaryAction(_ button: NSButton) {
-        button.bezelColor = AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: button)
-        button.contentTintColor = AgentWorkbenchTheme.accentText
-        button.attributedTitle = NSAttributedString(string: button.title, attributes: [.font: button.font ?? .systemFont(ofSize: 13, weight: .semibold), .foregroundColor: AgentWorkbenchTheme.accentText])
-    }
+    static func primaryAction(_ button: AgentDialogButton) { AgentDialogStyle.action(button, prominent: true) }
+    static func refreshPrimaryAction(_ button: AgentDialogButton) { button.prominent = true }
     static func prepare(_ root: NSView) {
         func apply(_ view: NSView) {
             if let table = view as? NSTableView {
@@ -513,7 +506,14 @@ struct AgentSettingsCatalogGroup {
     private var pageHeight: NSLayoutConstraint?
     private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     weak var actionsHost: NSStackView? { didSet { updateActions() } }
-    var actionsEnabled = false { didSet { updateActions() } }
+    weak var scopeHost: NSStackView? {
+        didSet {
+            guard oldValue !== scopeHost else { return }
+            (oldValue ?? header).removeArrangedSubview(context); context.removeFromSuperview()
+            (scopeHost ?? header).addArrangedSubview(context); updateHeader()
+        }
+    }
+    var actionsEnabled = false { didSet { updateHeader() } }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { entries.map(\.controller) }
     var selectedPageKey:String? { keys.indices.contains(selectedTab) ? keys[selectedTab] : nil }
@@ -527,10 +527,12 @@ struct AgentSettingsCatalogGroup {
         context.font = .systemFont(ofSize: 12); context.textColor = AgentWorkbenchTheme.secondaryText; context.lineBreakMode = .byTruncatingMiddle
         context.identifier = .init("settings-editing-context"); context.setAccessibilityLabel("设置编辑对象")
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12
+        context.setContentHuggingPriority(.defaultHigh, for: .horizontal); context.alignment = .right
+        for view in [back, tabs, NSView(), context] { header.addArrangedSubview(view) }; header.spacing = 12; header.identifier = .init("settings-manager-navigation")
         sourceFolder.target = self; sourceFolder.action = #selector(changeSource); sourceFolder.setAccessibilityLabel("设置源文件夹"); sourceFolder.identifier = .init("settings-source-folder")
         sourceFolder.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
-        sourceRow.addArrangedSubview(NSTextField(labelWithString:"源文件夹")); sourceRow.addArrangedSubview(sourceFolder); sourceRow.addArrangedSubview(NSView()); sourceRow.spacing = 10; sourceRow.isHidden = true
+        let sourceControl = AgentSettingsPopupFrame(sourceFolder, outlined: true, maximumWidth: 520)
+        sourceRow.addArrangedSubview(NSTextField(labelWithString:"源文件夹")); sourceRow.addArrangedSubview(sourceControl); sourceRow.addArrangedSubview(NSView()); sourceRow.spacing = 10; sourceRow.isHidden = true
         viewport.drawsBackground = false; viewport.hasVerticalScroller = true; viewport.scrollerStyle = .overlay; viewport.setAccessibilityLabel("设置内容")
         document.translatesAutoresizingMaskIntoConstraints = false; viewport.documentView = document
         // Short pages fill the viewport; longer pages keep their own minimum
@@ -540,7 +542,7 @@ struct AgentSettingsCatalogGroup {
         for view in [column, empty] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor), column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor),
-            sourceRow.widthAnchor.constraint(equalTo:column.widthAnchor),sourceFolder.widthAnchor.constraint(lessThanOrEqualTo:column.widthAnchor,multiplier:0.8),sourceRow.heightAnchor.constraint(equalToConstant:30),header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 26), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
+            sourceRow.widthAnchor.constraint(equalTo:column.widthAnchor),sourceControl.widthAnchor.constraint(lessThanOrEqualTo:column.widthAnchor,multiplier:0.8),sourceRow.heightAnchor.constraint(equalToConstant:30),header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 26), viewport.widthAnchor.constraint(equalTo: column.widthAnchor),
             document.widthAnchor.constraint(equalTo: viewport.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: viewport.contentView.heightAnchor), preferredHeight,
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
@@ -651,11 +653,12 @@ struct AgentSettingsCatalogGroup {
     private func updateHeader() {
         let editing = entries.reversed().compactMap { $0.controller.settingsContext }.first
         context.stringValue = editing?.title ?? contextTitle; context.toolTip = editing?.location
-        sourceRow.isHidden = editing != nil || sourceFolder.numberOfItems < 2; context.isHidden = !sourceRow.isHidden
+        sourceRow.isHidden = editing != nil || sourceFolder.numberOfItems < 2
+        context.isHidden = entries.isEmpty || !sourceRow.isHidden || (scopeHost != nil && !actionsEnabled)
         back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
-        header.isHidden = ["hooks", "worktrees"].contains(category) && entries.count == 1
+        header.isHidden = scopeHost != nil ? back.isHidden && tabs.isHidden : ["hooks", "worktrees"].contains(category) && entries.count == 1
         updateActions()
     }
     private func updateActions() {

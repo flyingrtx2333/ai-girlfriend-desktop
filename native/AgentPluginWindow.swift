@@ -11,7 +11,7 @@ import UniformTypeIdentifiers
     private var detailPage: AgentSettingsDetailPage?
     private let catalogState = AgentSettingsStatusField("插件列表状态")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
-    private let upload = NSButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
     private let settings = NSButton(title: "启用设置", target: nil, action: nil)
     private var settingsWindow: AgentPluginSettingsWindow?

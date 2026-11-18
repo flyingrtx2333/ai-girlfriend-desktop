@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
     private let kinds = NSSegmentedControl(labels: ["Skills", "命令"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), table = AgentSettingsCatalogTable(), editor = NSTextView()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let add = NSButton(title: "新建", target: nil, action: nil), importButton = NSButton(title: "导入", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let add = AgentDialogButton(title: "新建", target: nil, action: nil), importButton = NSButton(title: "导入", target: nil, action: nil)
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let use = NSButton(title: "在任务中使用", target: nil, action: nil), reveal = NSButton(title: "打开来源", target: nil, action: nil)
     private let location = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("扩展保存状态")
     private var catalogLayout: (toolbar: NSStackView, actions: NSStackView, header: NSStackView, viewer: NSScrollView, footer: NSStackView)?
@@ -64,7 +64,7 @@ import UniformTypeIdentifiers
         for (button, action) in [(add, #selector(createItem)), (importButton, #selector(importItem)), (save, #selector(saveItem)), (remove, #selector(removeItem)), (use, #selector(useItem)), (reveal, #selector(revealItem))] {
             button.target = self; button.action = action; button.bezelStyle = .rounded
         }
-        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
         let detailHeader = NSStackView(views: [enabled, location, NSView(), use]); detailHeader.spacing = 10
         let rules = NSButton(title: "规则", target: self, action: #selector(showRules))
         let listActions = NSStackView(views: [add, importButton, rules, NSView()]); listActions.spacing = 8

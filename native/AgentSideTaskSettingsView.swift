@@ -9,7 +9,7 @@ import AppKit
         let line = AgentSettingsStyle.formRow("可恢复侧任务", enabled, trailing: true)
         let note = NSTextField(wrappingLabelWithString: "仅影响新建的侧任务；保留后可从主任务记录中重新打开。")
         note.font = .systemFont(ofSize: 12); note.textColor = AgentWorkbenchTheme.secondaryText
-        let apply = NSButton(title: "应用设置", target: self, action: #selector(save)), reload = NSButton(title: "重新载入", target: self, action: #selector(load))
+        let apply = AgentDialogButton(title: "应用设置", target: self, action: #selector(save)), reload = NSButton(title: "重新载入", target: self, action: #selector(load))
         AgentSettingsStyle.primaryAction(apply)
         let buttons = NSStackView(views: [apply, reload, NSView()]); buttons.spacing = 8
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText

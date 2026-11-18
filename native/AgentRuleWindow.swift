@@ -4,10 +4,10 @@ import AppKit
     private let store: AgentStore, taskID: String
     private let managementWorkspace: String?
     private let scopes = NSSegmentedControl(labels: ["全部", "用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
-    private let search = NSSearchField(), table = NSTableView(), name = NSTextField(), editor = NSTextView(), descriptionField = NSTextField(), patterns = NSTextField()
+    private let search = NSSearchField(), table = NSTableView(), name = AgentDialogTextField(), editor = NSTextView(), descriptionField = NSTextField(), patterns = NSTextField()
     private let trigger = NSPopUpButton(), createScope = NSPopUpButton()
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
     private let remove = NSButton(title: "移到废纸篓", target: nil, action: nil), reveal = NSButton(title: "打开来源", target: nil, action: nil)
     private let location = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("规则保存状态")
     private var descriptionRow = NSStackView(), patternsRow = NSStackView(), scopeRow = NSStackView()
@@ -36,7 +36,8 @@ import AppKit
         let header = NSStackView(views: [scopes, search, refresh, add]); header.spacing = 8
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("rule")); table.addTableColumn(column); table.headerView = nil; table.rowHeight = 50; table.delegate = self; table.dataSource = self; table.setAccessibilityLabel("规则列表")
         let list = NSScrollView(); list.documentView = table; list.hasVerticalScroller = true
-        for field in [name, descriptionField, patterns] { field.delegate = self; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for field in [name, descriptionField, patterns] { AgentSettingsStyle.field(field); field.delegate = self; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        name.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         name.placeholderString = "规则名称"; name.setAccessibilityLabel("规则名称"); descriptionField.setAccessibilityLabel("规则适用场景"); patterns.setAccessibilityLabel("规则匹配模式")
         descriptionField.maximumNumberOfLines = 2; descriptionField.lineBreakMode = .byWordWrapping
         patterns.maximumNumberOfLines = 3; patterns.lineBreakMode = .byWordWrapping; patterns.placeholderString = "src/**/*.ts\n!src/vendor/**"
@@ -45,11 +46,13 @@ import AppKit
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         let titleRow = NSStackView(views: [name, enabled]); titleRow.spacing = 10
         func row(_ title: String, _ field: NSView) -> NSStackView {
-            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12); label.widthAnchor.constraint(equalToConstant: 92).isActive = true
-            let view = NSStackView(views: [label, field]); view.spacing = 8; return view
+            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 13); label.widthAnchor.constraint(equalToConstant: 92).isActive = true
+            let control: NSView = (field as? NSPopUpButton).map(AgentSettingsPopupFrame.init) ?? field
+            let view = NSStackView(views: [label, control]); view.spacing = 8; return view
         }
         let triggerRow = row("触发方式", trigger)
-        scopeRow = row("范围", createScope); descriptionRow = row("适用场景", descriptionField); patternsRow = row("匹配模式（逐行）", patterns)
+        scopeRow = row("范围", createScope); descriptionRow = row("适用场景", descriptionField); patternsRow = row("匹配模式", patterns)
+        patterns.toolTip = "每行一个模式，使用 ! 排除"
         let form = NSStackView(views: [titleRow, scopeRow, triggerRow, descriptionRow, patternsRow]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 10
         for view in form.arrangedSubviews { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }
         editor.isRichText = false; editor.allowsUndo = true; editor.delegate = self; editor.isEditable = false; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 12, height: 12)
@@ -57,7 +60,7 @@ import AppKit
         let viewer = NSScrollView(); viewer.documentView = editor; viewer.hasVerticalScroller = true; viewer.borderType = .bezelBorder
         location.font = .systemFont(ofSize: 11); location.textColor = AgentWorkbenchTheme.secondaryText; location.lineBreakMode = .byTruncatingMiddle; location.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(save, #selector(saveItem)), (use, #selector(useItem)), (remove, #selector(removeItem)), (reveal, #selector(revealItem))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
-        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
         let sourceRow = NSStackView(views: [location, NSView(), use]); sourceRow.spacing = 8
         let footer = NSStackView(views: [NSView(), reveal, remove, save]); footer.spacing = 8
         for view in [header, list, form, viewer, sourceRow, state, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }

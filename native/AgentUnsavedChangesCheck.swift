@@ -82,7 +82,8 @@ import AppKit
             checks["continueDoesNotCreateExtension"] = try tasks.extensions.catalog(workspace: tasks.task(id)?.workspace).map(\.id) == originalCatalog
             checks["discardLeavesFormWithoutCreatingExtension"] = try choose("放弃更改", { pane.leave() }) && pane.currentController == nil && tasks.extensions.catalog(workspace: tasks.task(id)?.workspace).map(\.id) == originalCatalog
             let parent = AgentExtensionWindow(store: tasks, taskID: id); parent.prepareSettings(kind: .skill); try show(parent, "skill-parent")
-            try button("新建", parent).performClick(nil)
+            guard let manual = parent.creationMenu()?.items.first(where: { $0.identifier?.rawValue == "skill-create-manual" }), let action = manual.action else { throw PetError("缺少手动创建扩展入口") }
+            NSApp.sendAction(action, to: manual.target, from: manual)
             guard let child = pane.currentController as? AgentExtensionCreationPage,
                   let back = find(NSButton.self, in: pane, matching: { $0.title.hasPrefix("返回 ") && !$0.isHidden }) else { throw PetError("缺少实际扩展创建返回入口") }
             let childName = try control(NSTextField.self, "扩展名称", child); childName.stringValue = "保留返回焦点检查"; child.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: childName))

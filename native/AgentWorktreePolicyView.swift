@@ -28,7 +28,7 @@ import AppKit
     var onOpenManager: ((AgentWorktreeWindow) -> Void)?
     private let store: AgentStore, onOpenTask: (String) -> Void
     private let enabled = NSSwitch(), scope = NSPopUpButton(), period = NSPopUpButton(), projects = NSPopUpButton()
-    private let apply = NSButton(title: "应用回收设置", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
+    private let apply = AgentDialogButton(title: "应用回收设置", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
     private let check = NSButton(title: "立即检查", target: nil, action: nil), manage = NSButton(title: "管理工作树…", target: nil, action: nil), backups = NSButton(title: "打开备份", target: nil, action: nil)
     private let state = AgentSettingsStatusField("工作树回收状态"), history = NSTextView()
     private var periods: [Double] = [], roots: [AgentWorktreeRoot] = [], revision: String?, savedRevision: String?

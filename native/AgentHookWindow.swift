@@ -326,7 +326,7 @@ private extension AgentHookEvent {
         let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-hook-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
-        let button = NSButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
+        let button = AgentDialogButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
         let scope = NSTextField(labelWithString: title); scope.font = .systemFont(ofSize: 13, weight: .medium); scope.lineBreakMode = .byTruncatingMiddle; scope.toolTip = title; scope.setAccessibilityLabel("当前 Hooks 配置"); scope.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [scope, NSView(), button]); actions.spacing = 8
         let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10

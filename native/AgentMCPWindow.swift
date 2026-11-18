@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
     private var catalogRows: [CatalogRow] = [], detailPage: AgentMCPDetailPage?, requestedDetail = false
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let connect = NSButton(title: "连接", target: nil, action: nil), disconnect = NSButton(title: "断开", target: nil, action: nil)
-    private let save = NSButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
     private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
