@@ -66,7 +66,7 @@ import Darwin
         editor.string = "{ invalid JSON"; manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try mode(1, page: detail)
         checks["mcpRepeatedJSONSelectionDoesNotReplaceTheDraft"] = editor.string == "{ invalid JSON"
         try mode(0, page: detail)
-        checks["mcpInvalidJSONCannotLoseDraftBySwitchingToForm"] = kinds.selectedSegment == 1 && editor.string == "{ invalid JSON" && !editor.isHiddenOrHasHiddenAncestor
+        checks["mcpInvalidJSONCannotLoseDraftBySwitchingToForm"] = try kinds.selectedSegment == 1 && editor.string == "{ invalid JSON" && !editor.isHiddenOrHasHiddenAncestor && control(AgentSettingsStatusField.self, "MCP 保存与连接状态", page: detail).stringValue.contains("请检查括号")
         var fixed = configured; fixed["env"] = [String: String](); editor.string = try encode(fixed); manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try mode(0, page: detail)
         checks["mcpCorrectedJSONReturnsToTheActualForm"] = try kinds.selectedSegment == 0 && control(NSTextField.self, "MCP 名称", page: detail).stringValue == "表单公开连接器"
         for index in 1...2 { try press("添加 MCP 环境变量", page: detail); try edit("MCP 环境变量 \(index) 名称", "SAME", page: detail); try edit("MCP 环境变量 \(index) 值", "public", page: detail) }

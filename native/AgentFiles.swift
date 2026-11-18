@@ -185,9 +185,14 @@ struct AgentFiles: Sendable {
         try readResolved(resolve(path), offset: offset, limit: limit)
     }
     func readResolved(_ url: URL, offset: Int, limit: Int, encoding: AgentTextEncoding? = nil) throws -> String {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard (attributes[.size] as? Int ?? 0) <= 4_000_000 else { throw PetError("文件较大，请用搜索定位内容或通过终端分段读取") }
-        let data = try readData(url)
+        let data: Data
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard (attributes[.size] as? Int ?? 0) <= 4_000_000 else { throw PetError("文件较大，请用搜索定位内容或通过终端分段读取") }
+            data = try readData(url)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            throw PetError("文件不存在：" + relative(url))
+        }
         let text = try AgentTextFile.decode(data, encoding: encoding).text
         let lines = text.components(separatedBy: "\n"), start = min(max(1, offset) - 1, lines.count), end = min(lines.count, start + min(500, max(1, limit)))
         var result = "\(relative(url)) · \(lines.count) 行\n"

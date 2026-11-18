@@ -1,5 +1,15 @@
 import Foundation
 
+enum AgentConfigurationJSON {
+    static func object(_ data: Data) throws -> [String: Any] {
+        let value: Any
+        do { value = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
+        catch { throw PetError("JSON 格式有误。请检查括号、双引号和逗号。") }
+        guard let object = value as? [String: Any] else { throw PetError("配置需要一个 JSON 对象。") }
+        return object
+    }
+}
+
 // Keep the storage diagnostic intact for logs and tools; the UI presents the
 // known cause without making users read an internal configuration path.
 struct AgentSaveFailure: LocalizedError {

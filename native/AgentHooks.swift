@@ -121,7 +121,8 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         for list in jobs.values { for job in list.values where job.source == target.path { cancel(job) } }
     }
     func parse(_ data: Data, file: URL, scope: String, workspace: String?, resource: URL? = nil, fingerprintSuffix: Data = Data(), inspectResources: Bool = true, inspectCredentials: Bool = true) throws -> [AgentHookDefinition] {
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let events = object["hooks"] as? [String: Any] else { throw PetError("Hooks 配置需要 hooks 对象") }
+        let object = try AgentConfigurationJSON.object(data)
+        guard let events = object["hooks"] as? [String: Any] else { throw PetError("Hooks 配置需要 hooks 对象") }
         let resource = resource ?? file.deletingLastPathComponent().appendingPathComponent("hooks", isDirectory: true)
         var fingerprint = data + fingerprintSuffix, resourceDiagnostic: String?
         if inspectResources && FileManager.default.fileExists(atPath: resource.path) {

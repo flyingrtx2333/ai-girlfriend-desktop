@@ -58,6 +58,67 @@ import Darwin
         return id
     }
 
+    func prepareSettingsPluginHistory(_ output: URL, tasks: AgentStore) async throws -> AgentPluginInstallation {
+        let service = tasks.extensions.plugins
+        let source = output.appendingPathComponent("公开扩展/zz-settings-demo")
+        let manifest = source.appendingPathComponent(".qoder-plugin/plugin.json")
+        var installed = try service.installation("zz-settings-demo")
+        for index in 1...8 {
+            let metadata = ["name": "zz-settings-demo", "description": "设置插件示例", "version": "1.0.\(index)"]
+            try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: manifest)
+            try Data("设置插件原文。公开版本 1.0.\(index)\n".utf8).write(to: source.appendingPathComponent("README.md"))
+            installed = try service.update(try await service.inspect(source), replacing: installed)
+        }
+        return installed
+    }
+
+    private func checkSettingsPluginHistory(_ output: URL, tasks: AgentStore, workspace: String?, pane: AgentSettingsPageHost, host: NSWindow) async throws -> [String: Bool] {
+        let service = tasks.extensions.plugins
+        var checks: [String: Bool] = [:]
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        func open(_ identity: String) throws -> AgentSettingsPageController {
+            let manager = AgentPluginWindow(store: tasks, workspace: workspace)
+            guard pane.show(category: "extensions", identity: identity, scope: "用户设置", make: { _ in manager }),
+                  let root = manager.pageContentView,
+                  let catalog = descendants(root).compactMap({ $0 as? AgentSettingsCatalogTable }).first else { throw PetError("没有插件目录") }
+            root.layoutSubtreeIfNeeded()
+            let row = (0..<catalog.numberOfRows).compactMap { catalog.view(atColumn: 0, row: $0, makeIfNecessary: true) }.first { ($0 as? NSTableCellView)?.textField?.stringValue == "zz-settings-demo" }
+            guard let row, let open = descendants(row).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == "配置 zz-settings-demo" }) else { throw PetError("没有示例插件的详情动作") }
+            open.performClick(nil)
+            guard let detail = pane.currentController, detail !== manager, let content = detail.pageContentView,
+                  let more = descendants(content).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.accessibilityLabel() == "插件更多操作" }),
+                  let history = more.itemArray.first(where: { $0.title == "历史版本" && $0.isEnabled }), let action = history.action else { throw PetError("没有可用的历史版本入口") }
+            NSApp.sendAction(action, to: history.target, from: history)
+            guard let page = pane.currentController, page !== detail else { throw PetError("历史版本未打开") }
+            return page
+        }
+        func list(_ page: AgentSettingsPageController) throws -> AgentSettingsCatalogTable {
+            guard let content = page.pageContentView, let table = descendants(content).compactMap({ $0 as? AgentSettingsCatalogTable }).first else { throw PetError("缺少历史版本表格") }
+            return table
+        }
+        let empty = try open("history-empty"), table = try list(empty)
+        let countVisible = empty.pageContentView.map { descendants($0).contains { $0.identifier?.rawValue == "settings-catalog-count" && !$0.isHiddenOrHasHiddenAncestor } } ?? true
+        checks["pluginHistoryEmptyHasCurrentVersionAndNoRedundantCount"] = table.numberOfRows == 0 && table.emptyCard?.isHidden == false && empty.detailHeading?.scope == "当前 1.0.0" && empty.settingsHostWindow === host && !countVisible
+        empty.close()
+        let installed = try await prepareSettingsPluginHistory(output, tasks: tasks)
+        let page = try open("history-filled"), rows = try list(page)
+        let before = installed.receiptHash
+        checks["pluginHistoryListsActualBackupsNewestFirst"] = rows.numberOfRows == 8 && page.detailHeading?.scope == "当前 1.0.8" && (rows.view(atColumn: 0, row: 0, makeIfNecessary: true) as? NSTableCellView)?.textField?.stringValue == "1.0.7"
+        rows.selectRowIndexes(IndexSet(integer: 7), byExtendingSelection: false); rows.scrollRowToVisible(7); rows.onOpen?()
+        guard let preview = pane.currentController as? AgentPluginReviewPage, let content = preview.pageContentView,
+              let cancel = descendants(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "取消" }) else { throw PetError("缺少历史版本恢复审阅") }
+        checks["openingHistoryReviewKeepsActualPluginBytes"] = try service.installation(installed.id).receiptHash == before && preview.settingsHostWindow === host
+        cancel.performClick(nil)
+        checks["cancelHistoryReviewReturnsToSameRevision"] = try pane.currentController === page && rows.selectedRow == 7 && service.installation(installed.id).receiptHash == before
+        rows.onOpen?()
+        guard let review = pane.currentController as? AgentPluginReviewPage, let reviewContent = review.pageContentView,
+              let restore = descendants(reviewContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == "恢复" }) else { throw PetError("缺少恢复动作") }
+        restore.performClick(nil)
+        let restored = try service.installation(installed.id)
+        checks["historyReviewRestoresActualVersionAndRefreshesHistory"] = pane.currentController === page && restored.metadata.version == "1.0.0" && !restored.enabled && restored.receiptHash != before && page.detailHeading?.scope == "当前 1.0.0" && rows.numberOfRows == 9
+        return checks
+    }
+
     func runSettingsPagesCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:]
         do {
@@ -181,6 +242,7 @@ import Darwin
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentMCPFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentManagementReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
+            checks.merge(try await checkSettingsPluginHistory(output, tasks: tasks, workspace: workspace, pane: pane, host: host)) { _, next in next }
             report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = 0; report["appPID"] = getpid()

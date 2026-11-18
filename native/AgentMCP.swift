@@ -140,7 +140,8 @@ struct AgentMCPServer: Codable, Identifiable {
     }
     @discardableResult func save(_ text: String, id: String? = nil, expectedRevision: String? = nil, workspace: String? = nil) throws -> AgentMCPServer {
         if let loadError { throw PetError(loadError) }
-        guard text.utf8.count <= 64_000, let value = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw PetError("请输入有效的 MCP JSON 配置") }
+        guard text.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后保存。") }
+        let value = try AgentConfigurationJSON.object(Data(text.utf8))
         let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !name.contains("\0"), name.count <= 160,

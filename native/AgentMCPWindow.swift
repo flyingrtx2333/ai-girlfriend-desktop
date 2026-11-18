@@ -145,10 +145,10 @@ import UniformTypeIdentifiers
             if configurationKind.selectedSegment == 0 { try installForm() }
             else if let form { editor.string = try form.document() }
             applyConfigurationKind(); focusDetail()
-        } catch { configurationKind.selectedSegment = displayedConfiguration; state.stringValue = error.localizedDescription }
+        } catch { configurationKind.selectedSegment = displayedConfiguration; state.showSaveFailure(error); focusDetail() }
     }
     @objc private func reviewPastedJSON() {
-        do { try reviewImport(document: editor.string) } catch { state.stringValue = error.localizedDescription }
+        do { try reviewImport(document: editor.string) } catch { state.showSaveFailure(error); focusDetail() }
     }
     @objc private func changeDetails() { tabs.selectTabViewItem(at: detailKinds.selectedSegment) }
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {

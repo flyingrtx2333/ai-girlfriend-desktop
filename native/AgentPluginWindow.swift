@@ -22,7 +22,6 @@ import UniformTypeIdentifiers
     private let update = NSMenuItem(title: "更新插件…", action: nil, keyEquivalent: "")
     private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
     private let history = NSMenuItem(title: "历史版本", action: nil, keyEquivalent: "")
-    private let revisions = NSMenu()
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
     private var connectors: [AgentMCPServer] = []
     private var agents: [AgentProfile] = []
@@ -47,10 +46,9 @@ import UniformTypeIdentifiers
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList))
         disableAll.target = self; disableAll.action = #selector(disableProject)
         more.addItem(withTitle: "更多"); more.setAccessibilityLabel("插件更多操作"); more.menu?.autoenablesItems = false
-        for (item, action) in [(settings, #selector(openSettings)), (source, #selector(revealPackage)), (update, #selector(updatePackage)), (remove, #selector(removePackage))] {
+        for (item, action) in [(settings, #selector(openSettings)), (source, #selector(revealPackage)), (update, #selector(updatePackage)), (history, #selector(openHistory)), (remove, #selector(removePackage))] {
             item.target = self; item.action = action
         }
-        revisions.autoenablesItems = false; history.submenu = revisions
         for item in [settings, source, .separator(), update, history, .separator(), remove] { more.menu?.addItem(item) }
         moreFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
         let header = NSStackView(views: [scopes, search, refresh, upload]); header.spacing = 8
@@ -170,13 +168,6 @@ import UniformTypeIdentifiers
         components.reloadData()
         componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(120, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
         if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
-        revisions.removeAllItems()
-        let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
-        for revision in (selected?.receipt.revisions ?? []).reversed() {
-            let version = revision.version.flatMap { $0.isEmpty ? nil : $0 } ?? "未标版本"
-            let item = NSMenuItem(title: version + " · " + formatter.string(from: revision.created), action: #selector(restoreRevision(_:)), keyEquivalent: "")
-            item.target = self; item.representedObject = revision.directory; item.toolTip = revision.sourceName; revisions.addItem(item)
-        }
     }
     private var selectedRuleIndex: Int? { let index = components.selectedRow - entries.count - connectors.count - agents.count - hooks.count; return rules.indices.contains(index) ? index : nil }
     private func showRule(_ item: AgentPluginRuleItem) {
@@ -189,7 +180,7 @@ import UniformTypeIdentifiers
         disableAll.isHidden = scopeWorkspace == nil; disableAll.isEnabled = idle && service.hasProjectActivations(scopeWorkspace)
         settings.isEnabled = idle && selected != nil; more.isEnabled = idle && selected != nil
         (more.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
-        update.isEnabled = idle && selected != nil; history.isEnabled = idle && selected?.receipt.revisions?.isEmpty == false
+        update.isEnabled = idle && selected != nil; history.isEnabled = idle && selected != nil
         let connector = connectors.indices.contains(components.selectedRow - entries.count)
         let agent = agents.indices.contains(components.selectedRow - entries.count - connectors.count)
         let hook = hooks.indices.contains(components.selectedRow - entries.count - connectors.count - agents.count)
@@ -246,12 +237,23 @@ import UniformTypeIdentifiers
             }; updateControls()
         }
     }
-    @objc private func restoreRevision(_ sender: NSMenuItem) {
-        guard let selected, let directory = sender.representedObject as? String, let revision = selected.receipt.revisions?.first(where: { $0.directory == directory }) else { return }
-        do { review(try service.package(revision, of: selected), replacing: selected, restoring: true) }
-        catch { state.stringValue = error.localizedDescription }
+    @objc private func openHistory() {
+        guard let selected, job == nil else { return }
+        do {
+            let page = AgentPluginHistoryPage(item: try service.installation(selected.id))
+            page.onReview = { [weak self, weak page] revision in
+                guard let self, let page else { return }
+                do { review(try service.package(revision, of: page.item), replacing: page.item, restoring: true, historyPage: page) }
+                catch { page.showFailure(error) }
+            }
+            if let detailPage, detailPage.isPageVisible { detailPage.presentSettingsChild(page) }
+            else { presentSettingsChild(page) }
+        } catch { state.showSaveFailure(error) }
     }
     func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
+        review(package, replacing: installed, restoring: restoring, activating: activating, installWorkspace: installWorkspace, historyPage: nil)
+    }
+    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool, activating: Bool = false, installWorkspace: String? = nil, historyPage: AgentPluginHistoryPage?) {
         do {
             let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
             let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring, activating: activating, workspace: installed?.workspace ?? installWorkspace)
@@ -261,13 +263,16 @@ import UniformTypeIdentifiers
                 if let installed { return try service.update(package, replacing: installed) }
                 return try service.install(package, workspace: installWorkspace)
             }
-            page.onApplied = { [weak self] item in
+            page.onApplied = { [weak self, weak historyPage] item in
                 guard let self else { return }
                 let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
                 search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?(); presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list)
+                historyPage?.didRestore(item)
             }
-            presentSettingsChild(page)
-        } catch { state.stringValue = error.localizedDescription }
+            if let historyPage { historyPage.presentSettingsChild(page) } else { presentSettingsChild(page) }
+        } catch {
+            if let historyPage { historyPage.showFailure(error) } else { state.showSaveFailure(error) }
+        }
     }
     @objc private func removePackage() {
         guard let item = selected, let window = presentingWindow else { return }; let alert = AgentConfirmation(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
@@ -278,4 +283,50 @@ import UniformTypeIdentifiers
     }
     override func settingsWillLeave() { job?.cancel() }
     func windowWillClose(_ notification: Notification) { job?.cancel() }
+}
+
+@MainActor private final class AgentPluginHistoryPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate {
+    private let table = AgentSettingsCatalogTable(), status = AgentSettingsStatusField("插件历史状态")
+    private var revisions: [AgentPluginRevision] = []
+    private(set) var item: AgentPluginInstallation
+    var onReview: ((AgentPluginRevision) -> Void)?
+    override var usesInternalScrolling: Bool { true }
+    override var minimumSettingsContentHeight: CGFloat { 220 }
+
+    init(item: AgentPluginInstallation) {
+        self.item = item
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 660, height: 480), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "历史版本 · " + item.metadata.title; window.minSize = NSSize(width: 480, height: 350); window.isReleasedWhenClosed = false; window.center()
+        super.init(window: window)
+        table.addTableColumn(NSTableColumn(identifier: .init("revision"))); table.headerView = nil
+        table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openSelection)
+        table.setAccessibilityLabel("插件历史版本列表"); table.onOpen = { [weak self] in self?.openSelection() }
+        window.contentView = AgentSettingsCatalog.content(table: table, toolbar: NSStackView(), status: status, symbol: "clock.arrow.circlepath")
+        refresh(item)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private func refresh(_ item: AgentPluginInstallation) {
+        self.item = item
+        detailHeading = .init(title: "历史版本", scope: "当前 " + (item.metadata.version.isEmpty ? "未标版本" : item.metadata.version), location: item.metadata.title)
+        revisions = Array((item.receipt.revisions ?? []).reversed())
+        table.reloadData(); AgentSettingsStyle.listState(table, text: "暂无历史版本")
+    }
+    func didRestore(_ item: AgentPluginInstallation) { refresh(item); status.stringValue = "已恢复，插件已停用" }
+    func showFailure(_ error: Error) { status.showSaveFailure(error) }
+    func numberOfRows(in tableView: NSTableView) -> Int { revisions.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard revisions.indices.contains(row) else { return nil }
+        let revision = revisions[row], version = revision.version.flatMap { $0.isEmpty ? nil : $0 } ?? "未标版本"
+        let date = revision.created.formatted(date: .numeric, time: .shortened)
+        let summary = [date, revision.sourceName ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        return AgentSettingsCatalogCell(title: version, summary: summary, symbol: "clock.arrow.circlepath", status: "", group: table.group(at: row), actionLabel: "审阅版本 " + version) { [weak self] in
+            guard let self, let currentRow = revisions.firstIndex(of: revision) else { return }
+            table.selectRowIndexes(IndexSet(integer: currentRow), byExtendingSelection: false); openSelection()
+        }
+    }
+    @objc private func openSelection() {
+        let row = table.selectedRow
+        if revisions.indices.contains(row) { onReview?(revisions[row]) }
+    }
 }

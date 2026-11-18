@@ -3840,7 +3840,7 @@ final class FormDocumentView: NSView {
     }
     func configureApprovalPanel() {
         approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true
-        approvalTitle.font = .systemFont(ofSize: 12, weight: .medium); approvalTitle.textColor = .systemOrange; approvalTitle.lineBreakMode = .byTruncatingTail
+        approvalTitle.font = .systemFont(ofSize: 12, weight: .medium); approvalTitle.textColor = AgentDialogStyle.warning; approvalTitle.lineBreakMode = .byTruncatingTail
         approvalText.isEditable = false; approvalText.isRichText = false; approvalText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         approvalText.setAccessibilityLabel("待处理请求详情")
         approvalText.isVerticallyResizable = true; approvalText.autoresizingMask = [.width]; approvalText.textContainer?.widthTracksTextView = true

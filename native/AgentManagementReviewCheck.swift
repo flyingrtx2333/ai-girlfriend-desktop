@@ -98,10 +98,10 @@ import AppKit
         let editor = try control(NSTextView.self, "Hooks JSON 配置", page: configuration), feedback = try control(NSTextField.self, "Hooks 配置保存状态", page: configuration)
         let originalConfig = editor.string
         checks["hookConfigHostedAndEditorFocused"] = configuration.presentingWindow === host && configuration.window?.isVisible == false && host.firstResponder === editor && host.attachedSheet == nil
-        checks["hookConfigIdentifiesGlobalScopeInsideEditor"] = try control(NSTextField.self, "当前 Hooks 配置", page: configuration).stringValue == "全局 Hooks"
+        checks["hookConfigIdentifiesGlobalScopeInsideEditor"] = configuration.detailHeading?.title == "编辑 Hooks" && configuration.detailHeading?.scope == "全局 Hooks"
         checks["hookConfigEmptyFeedbackCollapses"] = feedback.isHidden
         editor.string = "{ invalid public configuration"; try press("保存", page: configuration)
-        checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == "{ invalid public configuration" && !feedback.stringValue.isEmpty && bytes(source) == configBefore && bytes(authorization) == grantsBefore
+        checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == "{ invalid public configuration" && feedback.stringValue.contains("请检查括号") && bytes(source) == configBefore && bytes(authorization) == grantsBefore
         editor.string = originalConfig + String(repeating: "\n", count: 200)
         let sourceMode = try FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as! NSNumber
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: source.path)

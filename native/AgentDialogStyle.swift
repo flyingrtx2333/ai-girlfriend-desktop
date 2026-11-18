@@ -8,6 +8,7 @@ import AppKit
         }
     }
     static let error = adaptive(0xb42318, 0xffb4ad)
+    static let warning = adaptive(0x82420e, 0xffb05f)
     static let destructive = adaptive(0xb42318, 0xff938d)
     static let destructiveText = adaptive(0xffffff, 0x3b0a07)
     static func action(_ button: AgentDialogButton, prominent: Bool = false) {
@@ -29,12 +30,13 @@ import AppKit
     override var state: NSControl.StateValue { didSet { needsDisplay = true } }
     private func refreshStyle() {
         if !palette {
-            let token = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructiveText : AgentWorkbenchTheme.accentText) : hasDestructiveAction ? AgentDialogStyle.error : .labelColor
+            let enabledText = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructiveText : AgentWorkbenchTheme.accentText) : hasDestructiveAction ? AgentDialogStyle.error : .labelColor
+            let token = isEnabled ? enabledText : AgentWorkbenchTheme.secondaryText
             font = .systemFont(ofSize: 13, weight: prominent ? .medium : .regular)
             effectiveAppearance.performAsCurrentDrawingAppearance {
                 let color = AgentThemeContext.resolve(token, in: self).usingColorSpace(.sRGB) ?? token
                 contentTintColor = color
-                attributedTitle = NSAttributedString(string: title, attributes: [.font: font!, .foregroundColor: color.withAlphaComponent(isEnabled ? 1 : 0.4)])
+                attributedTitle = NSAttributedString(string: title, attributes: [.font: font!, .foregroundColor: color])
             }
         }
         needsDisplay = true
@@ -50,8 +52,10 @@ import AppKit
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
     override func draw(_ dirtyRect: NSRect) {
         let rect = bounds.insetBy(dx: 0.5, dy: 0.5), path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
-        let fill = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructive : AgentWorkbenchTheme.accent) : hasDestructiveAction ? AgentWorkbenchTheme.removed : AgentWorkbenchTheme.subtle
-        AgentThemeContext.resolve(fill, in: self).withAlphaComponent(isEnabled ? 1 : 0.4).setFill(); path.fill()
+        let inactive = !isEnabled && !palette
+        let enabledFill = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructive : AgentWorkbenchTheme.accent) : hasDestructiveAction ? AgentWorkbenchTheme.removed : AgentWorkbenchTheme.subtle
+        AgentThemeContext.resolve(inactive ? AgentWorkbenchTheme.surface : enabledFill, in: self).withAlphaComponent(isEnabled || inactive ? 1 : 0.4).setFill(); path.fill()
+        if inactive { AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke() }
         if isEnabled && (hovered || isHighlighted) {
             NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.12 : 0.06).setFill(); path.fill()
         }

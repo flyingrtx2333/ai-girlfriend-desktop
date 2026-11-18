@@ -119,7 +119,7 @@ class AgentWorkbenchButton: NSButton {
         switch status {
         case .ready: (symbol, color) = ("circle", AgentWorkbenchTheme.secondaryText)
         case .running: (symbol, color) = ("arrow.triangle.2.circlepath", Self.runningColor)
-        case .waiting: (symbol, color) = ("exclamationmark.circle.fill", .systemOrange)
+        case .waiting: (symbol, color) = ("exclamationmark.circle.fill", AgentDialogStyle.warning)
         case .stopped: (symbol, color) = ("stop.circle", AgentWorkbenchTheme.secondaryText)
         case .completed: (symbol, color) = ("checkmark.circle.fill", AgentWorkbenchTheme.accent)
         case .failed: (symbol, color) = ("exclamationmark.circle", .systemRed)

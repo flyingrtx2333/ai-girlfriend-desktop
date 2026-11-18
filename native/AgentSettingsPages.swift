@@ -227,7 +227,7 @@ struct AgentSettingsCatalogGroup {
 @MainActor final class AgentSettingsCatalogCell: NSTableCellView {
     private let open = NSButton()
     var onOpen: (() -> Void)?
-    init(title: String, summary: String, symbol: String, status: String, group: AgentSettingsCatalogGroup = .init(), onOpen: @escaping () -> Void) {
+    init(title: String, summary: String, symbol: String, status: String, group: AgentSettingsCatalogGroup = .init(), actionLabel: String? = nil, onOpen: @escaping () -> Void) {
         super.init(frame: .zero); self.onOpen = onOpen
         let body = NSView(); addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor), body.topAnchor.constraint(equalTo: topAnchor, constant: group.headerHeight), body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -group.footerHeight)])
@@ -242,7 +242,8 @@ struct AgentSettingsCatalogGroup {
         let description = NSTextField(labelWithString: summary); description.font = .systemFont(ofSize: 12); description.textColor = AgentWorkbenchTheme.secondaryText; description.lineBreakMode = .byTruncatingTail; description.isHidden = summary.isEmpty
         let labels = NSStackView(views: [name, description]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
         let state = NSTextField(labelWithString: status); state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.isHidden = status.isEmpty
-        open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.symbolConfiguration = .init(pointSize: 11, weight: .medium); open.contentTintColor = AgentWorkbenchTheme.secondaryText; open.isBordered = false; open.target = self; open.action = #selector(showDetails); open.setAccessibilityLabel("配置 " + title); open.toolTip = "配置 " + title
+        let actionLabel = actionLabel ?? "配置 " + title
+        open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.symbolConfiguration = .init(pointSize: 11, weight: .medium); open.contentTintColor = AgentWorkbenchTheme.secondaryText; open.isBordered = false; open.target = self; open.action = #selector(showDetails); open.setAccessibilityLabel(actionLabel); open.toolTip = actionLabel
         imageView = icon; textField = name; toolTip = summary
         for view in [icon, labels, state, open] { body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -320,7 +321,6 @@ struct AgentSettingsCatalogGroup {
         actionRow.alignment = .centerY; actionRow.spacing = 8; actionRow.identifier = .init("settings-catalog-actions")
         count.stringValue = "\(table.numberOfRows) 项"; count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
         count.identifier = .init("settings-catalog-count"); count.setAccessibilityLabel("列表数量"); count.setContentCompressionResistancePriority(.required, for: .horizontal)
-        table.onCountChanged = { [weak count] in count?.stringValue = "\($0) 项" }
         status.onChange = { [weak status, weak table] value in
             guard let status, let table else { return }
             status.isHidden = value.isEmpty || value == "\(table.numberOfRows) 项" || value == "暂无扩展"
@@ -346,6 +346,8 @@ struct AgentSettingsCatalogGroup {
             status.leadingAnchor.constraint(equalTo: bar.leadingAnchor), status.trailingAnchor.constraint(equalTo: bar.trailingAnchor), status.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
             empty.leadingAnchor.constraint(equalTo: scroll.leadingAnchor, constant: 1), empty.trailingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: -1), empty.topAnchor.constraint(equalTo: scroll.topAnchor)
         ])
+        updateCount(table.numberOfRows)
+        table.onCountChanged = { [weak self] in self?.updateCount($0) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -361,8 +363,20 @@ struct AgentSettingsCatalogGroup {
         else { bar.insertArrangedSubview(count, at: 0) }
         toolbarWidth?.isActive = !external
         barTop.constant = external ? 0 : 4; barHeight.constant = external ? 0 : 28; bar.isHidden = external
-        filtersTop.constant = external ? 4 : hasFilters ? 12 : 0; filtersHeight.constant = external || hasFilters ? 28 : 0; filters.isHidden = !external && !hasFilters
         actionsHost = host
+        updateFilters()
+    }
+    private func updateCount(_ rowCount: Int) {
+        count.stringValue = "\(rowCount) 项"
+        count.isHidden = rowCount == 0
+        updateFilters()
+    }
+    private func updateFilters() {
+        let external = actionsHost != nil
+        let visible = hasFilters || (external && !count.isHidden)
+        filtersTop.constant = visible ? (external ? 4 : 12) : 0
+        filtersHeight.constant = visible ? 28 : 0
+        filters.isHidden = !visible
     }
 }
 

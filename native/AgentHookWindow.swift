@@ -331,7 +331,8 @@ private struct AgentHookEditTarget: Codable, Equatable {
         let url = URL(fileURLWithPath: path), files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
         let data = try files.readData(files.resolve(url.lastPathComponent), maximum: 128_000), hash = AgentFiles.hash(data)
         if let expectedHash, expectedHash != hash { throw PetError("Hooks 导入原件已变化，请重新导入") }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let hooks = object["hooks"] as? [String: Any] else { throw PetError("文件中没有 hooks 对象") }
+        let object = try AgentConfigurationJSON.object(data)
+        guard let hooks = object["hooks"] as? [String: Any] else { throw PetError("文件中没有 hooks 对象") }
         return (.init(path: url.path, hash: hash), try JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]))
     }
     private func makeEditor(target: AgentHookEditTarget, text: String, original: Data? = nil) throws -> AgentHookConfigWindow {
@@ -425,17 +426,17 @@ private struct AgentHookEditTarget: Codable, Equatable {
         card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
         let button = AgentDialogButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
-        let scope = NSTextField(labelWithString: title); scope.font = .systemFont(ofSize: 13, weight: .medium); scope.lineBreakMode = .byTruncatingMiddle; scope.toolTip = title; scope.setAccessibilityLabel("当前 Hooks 配置"); scope.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let actions = NSStackView(views: [scope, NSView(), button]); actions.spacing = 8
+        detailHeading = .init(title: "编辑 Hooks", scope: title)
+        let actions = AgentSettingsDetailActions([button]); detailActionRow = actions
         let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [actions, state, card] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12), actions.heightAnchor.constraint(equalToConstant: 28)])
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func settingsDidAppear() { super.settingsDidAppear(); viewport.appear(default: editor) }
     override func pageDidLayout() { viewport.schedule() }
-    func textDidChange(_ notification: Notification) { viewport.changed() }
+    func textDidChange(_ notification: Notification) { state.stringValue = ""; viewport.changed() }
     @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.showSaveFailure(error) } }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !saved, AgentFiles.hash(Data(editor.string.utf8)) != originalHash else { return true }

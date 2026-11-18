@@ -15,7 +15,7 @@ import AppKit
     convenience init(document: String) throws { try self.init(data: Data(document.utf8), label: "粘贴的 JSON", path: nil) }
     private init(data: Data, label: String, path: String?) throws {
         guard data.count <= 64_000 else { throw PetError("配置文件需小于 64KB") }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PetError("不是 JSON 对象") }
+        let object = try AgentConfigurationJSON.object(data)
         if let raw = object["mcpServers"] {
             guard let servers = raw as? [String: [String: Any]] else { throw PetError("mcpServers 须为连接器对象") }
             guard !servers.isEmpty, servers.count <= 64 else { throw PetError("mcpServers 需包含 1 至 64 个连接器") }

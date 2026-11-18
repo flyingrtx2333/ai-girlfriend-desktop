@@ -60,7 +60,9 @@ struct AgentRuleContextEntry {
             }
         }
         let name = fields["name"] ?? fallback, description = fields["description"] ?? document.metadata["description"] ?? ""
-        guard AgentExtensions.validName(name), description.count <= 2000 else { throw PetError("规则名称或描述无效") }
+        guard !name.isEmpty else { throw PetError("请填写规则名称。") }
+        guard AgentExtensions.validName(name) else { throw PetError("规则名称无效。请使用字母、数字、短横线或下划线，可用冒号分段。") }
+        guard description.count <= 2000 else { throw PetError("规则描述最多 2,000 字，请缩短后保存。") }
         if let value = fields["alwaysApply"], !["true", "false"].contains(value) { throw PetError("规则 alwaysApply 需要 true 或 false") }
         let trigger: AgentRuleTrigger
         if let value = fields["trigger"] { guard let parsed = AgentRuleTrigger(rawValue: value) else { throw PetError("规则 trigger 尚未支持：" + value) }; trigger = parsed }
