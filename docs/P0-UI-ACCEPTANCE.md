@@ -1,5 +1,14 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 本机连接器配置迁移
+
+「设置 → 数据导入 → 连接器」可选 Codex 的 `config.toml`、Qoder 的 `settings.json` 或 `.mcp.json`，支持 STDIO、Streamable HTTP 和 SSE 的连接声明。预览、勾选和暂停续导沿用数据导入页。可指定全局或登记项目，项目来源要求选择目标项目。既有同名配置保留，导入项目单独存放，以便回退旧版时仍保持范围。旧授权和工具审批留给本机重新核对，连接器导入后为停用状态。凭据只保留字段名，需在连接器详情填写。[Codex MCP 配置](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) [Qoder MCP 配置](https://docs.qoder.com/cli/mcp-reference) [Qoder 数据导入](https://docs.qoder.com/zh/qoder/data-import)
+
+- `51976ba` 的同一优化验收包通过 19 项连接器迁移专项和 22 项 Skills 迁移回归。两个独立进程核对真实暂停、续导和来源暂时离线时复用已落盘条目。其他检查覆盖 Codex 引号表名、变量名引用、字段遮盖、同名保留、来源变化、并发写入保护和项目范围。
+- 使用独立测试凭据保存补填、启用项目 STDIO 连接器。任务仍走现有审批路径。实际完成握手、读取工具目录，并通过工具读取公开样例文件。检查确认导入阶段没有启动程序及写入来源凭据，其他项目无法使用该连接器。HTTP／SSE 在本批核对配置迁移和待填状态。
+- 1200×774 浅色实窗核对项目来源的全局限制、两项预览与逐项勾选，只导入所选一项。780×540 深色重开恢复范围和记录，从数据导入直接进入无关联任务的项目详情。实际保存时提示缺少凭据，连接保持禁用。两窗正常退出，保留 6 张原图。导入前、导入后和重开退出分别通过 7／13／14 项独立文件核对。
+- 14 份正式资料的字节与权限一致，模型请求 0，日用运行 `742a95e`。同包的二进制、连接器组件和窗口索引位于 `evidence/agent/mcp-data-import-v2k6m8q4/accepted.json`。
+
 ## 2026-11-19 本机 Skills 迁移
 
 「设置 → 数据导入 → Skills」识别 Codex 的 `.agents/skills`、旧版 `.codex/skills`、Qoder 的 `.qoder/skills` 及手选的兼容文件夹。选择全局或项目后，可预览说明和文件数、逐项勾选并暂停续导。说明与资源保留相对路径，复制后核对字节。同名现有版本保留，已由共享目录提供的 Skill 保持原有引用和启停状态。[Codex Skills](https://learn.chatgpt.com/docs/build-skills) [Qoder Skills](https://docs.qoder.com/extensions/skills) [Qoder 数据导入](https://docs.qoder.com/zh/qoder/data-import)
