@@ -46,6 +46,7 @@ enum AgentSettingsRecovery {
         var category: String, page: String?
         var source: String?
         var query: String, selection: AgentTextViewport.Selection?, focus: String?
+        var resultVisible: Bool?
         var contentY: Double, sidebarY: Double
         var returnTab: String, knowledgeRoot: String?
 
@@ -58,6 +59,7 @@ enum AgentSettingsRecovery {
                 query.utf8.count <= 20_000_000 && !query.contains("\0") &&
                 selection?.valid(in: query.utf16.count) != false &&
                 focus.map({ $0 == "search" || AgentSettingsRecovery.validHash($0) }) != false &&
+                (resultVisible == nil || focus != nil && focus != "search") &&
                 AgentSettingsRecovery.validScroll(contentY) && AgentSettingsRecovery.validScroll(sidebarY) &&
                 ["chat", "attention", "automation", "knowledge"].contains(returnTab) &&
                 knowledgeRoot.map({ returnTab == "knowledge" && ["library", "wiki"].contains($0) }) != false
@@ -100,7 +102,7 @@ enum AgentSettingsRecovery {
     }
     static func validateNavigation(_ raw: Any) throws {
         let value = try object(raw, keys: ["version", "category", "page", "source", "query", "selection", "focus",
-            "contentY", "sidebarY", "returnTab", "knowledgeRoot"])
+            "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot"])
         if let selection = value["selection"], !(selection is NSNull) { _ = try object(selection, keys: ["location", "length"]) }
     }
 }
@@ -237,12 +239,7 @@ enum AgentSettingsRecovery {
             }
             else if let field = fields[value.focus], let selection = value.fields[value.focus]?.selection { (field.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
             if let y = value.formY, let form, form.window === window { applyScroll(y, to: form) }
-            if target === text, value.visibleSelectionHeight != nil, let form, let document = form.documentView, form.window === window {
-                let selected = text.firstRect(forCharacterRange: text.selectedRange(), actualRange: nil)
-                if selected.height > 0, !selectionIntersectsViewport(selected, in: window) {
-                    document.scrollToVisible(document.convert(window.convertFromScreen(selected), from: nil))
-                }
-            }
+            if target === text, value.visibleSelectionHeight != nil, let form, form.window === window { revealSelection(in: form) }
             pending = nil
         }
     }
@@ -250,6 +247,24 @@ enum AgentSettingsRecovery {
         let clip = view.contentView
         let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size))
         clip.scroll(to: bounds.origin); view.reflectScrolledClipView(clip)
+    }
+    private func revealSelection(in form: NSScrollView) {
+        guard let layout = text.layoutManager, let container = text.textContainer else { return }
+        layout.ensureLayout(for: container)
+        let count = (text.string as NSString).length
+        let line: NSRect
+        if text.selectedRange().location == count, layout.extraLineFragmentTextContainer === container {
+            line = layout.extraLineFragmentUsedRect
+        } else {
+            guard count > 0, layout.numberOfGlyphs > 0 else { return }
+            let glyph = min(layout.numberOfGlyphs - 1, layout.glyphIndexForCharacter(at: min(text.selectedRange().location, count - 1)))
+            line = layout.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        }
+        guard line.height > 0 else { return }
+        let clip = form.contentView, origin = text.textContainerOrigin
+        let row = clip.convert(line.offsetBy(dx: origin.x, dy: origin.y), from: text), visible = clip.bounds
+        let y = min(row.minY, max(visible.minY, row.maxY - visible.height))
+        if abs(y - visible.minY) > 0.5 { applyScroll(max(0, y), to: form) }
     }
     static func validateObject(_ raw: Any) throws {
         let value = try AgentSettingsRecovery.object(raw, keys: ["version", "text", "fields", "focus", "formY", "catalogY", "visibleSelectionHeight"])

@@ -124,6 +124,7 @@ final class FormDocumentView: NSView {
         var query = ""
         var selection: AgentTextViewport.Selection?
         var focus: String?
+        var resultVisible: Bool?
     }
     private var settingsResults: [SettingsSearchResult] = []
     private var settingsResultButtons: [NSButton] = []
@@ -2552,6 +2553,8 @@ final class FormDocumentView: NSView {
             value.focus = "search"
         } else if let index = settingsResultButtons.firstIndex(where: { $0 === responder }), settingsResults.indices.contains(index) {
             value.focus = settingsResults[index].identity
+            let button = settingsResultButtons[index], clip = settingsScroll.contentView
+            value.resultVisible = clip.bounds.intersects(clip.convert(button.bounds, from: button))
         }
         return value
     }
@@ -2575,7 +2578,8 @@ final class FormDocumentView: NSView {
         let input = currentSettingsNavigationInput(), page = managedSettings.contains(settingsCategory) ? settingsPageHost.selectedPageKey : nil
         let source = page == nil ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
-            selection: input.selection, focus: input.focus, contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),
+            selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
+            contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),
             sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot)
         return value.valid ? value : nil
     }
@@ -2606,7 +2610,14 @@ final class FormDocumentView: NSView {
             restoreSettingsScroll(value.sidebarY, to: settingsNavigationScroll)
             if let focus = value.focus {
                 if let index = settingsResults.firstIndex(where: { $0.identity == focus }), settingsResultButtons.indices.contains(index) {
-                    window.makeFirstResponder(settingsResultButtons[index])
+                    let result = settingsResultButtons[index]
+                    if value.resultVisible == true {
+                        let clip = settingsScroll.contentView, bounds = clip.bounds
+                        let row = clip.convert(result.bounds, from: result)
+                        let y = min(row.minY, max(bounds.minY, row.maxY - bounds.height))
+                        if abs(y - bounds.minY) > 0.5 { restoreSettingsScroll(max(0, y), to: settingsScroll) }
+                    }
+                    window.makeFirstResponder(result)
                 } else if window.makeFirstResponder(settingsSearch), let range = value.selection?.range {
                     (settingsSearch.currentEditor() as? NSTextView)?.setSelectedRange(range)
                 }

@@ -73,7 +73,7 @@ import AppKit
                 }
                 checks["plainSearchSelectionCheckpointed"] = global.query == "模型" && global.focus == "search" && global.selection?.range == NSRange(location: 1, length: 1)
                 checks["searchDoesNotReplaceHiddenDraft"] = try hooks.captureSettingsRecovery()?.pages.map(\.kind) == ["hooks", "hook-config"] &&
-                    !scoped.query.isEmpty && scoped.focus != nil && scoped.focus != "search"
+                    !scoped.query.isEmpty && scoped.focus != nil && scoped.focus != "search" && scoped.resultVisible == true
                 checks["resultListCanActuallyScroll"] = interactive || scoped.contentY > 0
                 checks["returnRouteRecordedWithoutSearch"] = noQuery.query.isEmpty && noQuery.category == "shortcuts" && noQuery.returnTab == "automation"
                 let fixture = NavigationFixture(windows: ["global":a, "hooks":b, "back":c], tasks: ["global":globalTask, "hooks":hookTask, "back":backTask],
@@ -110,7 +110,7 @@ import AppKit
                     hooks.window?.makeKeyAndOrderFront(nil); await wait(0.14)
                     let scoped = hooks.captureSettingsNavigation()
                     checks["restoresExactResultFocusAndViewport"] = scoped?.query == fixture.hooks.query && scoped?.focus == fixture.hooks.focus &&
-                        (interactive || abs((scoped?.contentY ?? 0) - fixture.hooks.contentY) <= 1)
+                        scoped?.resultVisible == true && (interactive || abs((scoped?.contentY ?? 0) - fixture.hooks.contentY) <= 1)
                     checks["restoredSearchOverlaysOriginalHooksEditor"] = try hooks.captureSettingsRecovery()?.pages.map(\.kind) == ["hooks", "hook-config"] &&
                         find(hooks.window?.contentView, NSTextView.self, { $0.accessibilityLabel() == "Hooks JSON 配置" }) == nil
                     checks["restoresUnfilteredCategoryAndReturnRoute"] = back.captureSettingsNavigation()?.category == "shortcuts" &&
