@@ -80,13 +80,18 @@ import AppKit
             let anotherWindowWasKey = NSApp.isActive && NSApp.keyWindow === other && other !== host
             report["confirmationPrecondition"] = ["applicationActive": NSApp.isActive, "expectedKeyWindow": other.windowNumber, "actualKeyWindow": NSApp.keyWindow?.windowNumber ?? -1, "triggerWindow": host.windowNumber]
             guard anotherWindowWasKey else { throw PetError("跨窗口验收未建立前台窗口状态") }
-            try await probe("取消", owner: host) { try button("移除", detail.pageContentView).performClick(nil) }
+            guard let actions = find(NSPopUpButton.self, detail.pageContentView, matching: { $0.accessibilityLabel() == "连接器更多操作" }),
+                  let remove = actions.menu?.item(withTitle: "移除"), let removeAction = remove.action, remove.isEnabled else { throw PetError("连接器移除菜单不可用") }
+            try await probe("取消", owner: host) { NSApp.sendAction(removeAction, to: remove.target, from: remove) }
             checks["confirmationUsesTriggerWindowWhenAnotherWindowWasKey"] = anotherWindowWasKey && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == true
             checks["synchronousRemoveCancelPreservesActualMCPConfiguration"] = try Data(contentsOf: config) == configBytes && tasks.mcp.availableServers(workspace: workspace).map(\.id) == serverIDs
             guard pane.leave() else { throw PetError("连接器确认未能结束") }
             let rules = AgentRuleWindow(store: tasks, taskID: id); try show(rules, "rules")
+            guard let ruleList = find(NSTableView.self, rules.pageContentView, matching: { $0.accessibilityLabel() == "规则列表" }),
+                  let openRule = ruleList.action else { throw PetError("规则目录不可用") }
+            NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
             let ruleFiles = try tasks.rules.catalog(workspace: workspace).map(\.source), ruleBytes = try ruleFiles.map { try Data(contentsOf: $0) }
-            try await probe("取消", owner: host) { try button("移到废纸篓", rules.pageContentView).performClick(nil) }
+            try await probe("取消", owner: host) { try button("移到废纸篓", pane.currentController?.pageContentView).performClick(nil) }
             checks["asynchronousCardCancelPreservesRuleFilesAndReleasesOwner"] = try ruleFiles.enumerated().allSatisfy { try Data(contentsOf: $0.element) == ruleBytes[$0.offset] } && host.agentDialog == nil && dialogs.last?["inWindow"] as? Bool == true && dialogs.last?["modal"] as? Bool == false
             guard pane.leave() else { throw PetError("规则确认未能结束") }
             let desktop = AgentDesktopSettingsView(desktop: tasks.desktop), beforeDesktop = try tasks.desktop.configuration()

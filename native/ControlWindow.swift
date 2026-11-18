@@ -2527,8 +2527,12 @@ final class FormDocumentView: NSView {
         checks["discardSearchDraftOpensRequestedRulesPage"] = try choose("放弃", { openSettingsSearchResult(accepted); return settingsCategory == "memory" && settingsPageHost.selectedPageKey == "rules" }) && settingsSearch.stringValue.isEmpty && settingsPageHost.currentController is AgentRuleWindow
         checks["discardSearchDraftDoesNotSaveConnectorChanges"] = try Data(contentsOf: file) == before
         guard let rules = settingsPageHost.currentController as? AgentRuleWindow,
-              let body = find(NSTextView.self, in: rules.pageContentView, matching: { $0.accessibilityLabel() == "规则正文" }),
-              let ruleName = find(NSTextField.self, in: rules.pageContentView, matching: { $0.accessibilityLabel() == "规则名称" }),
+              let ruleList = find(NSTableView.self, in: rules.pageContentView, matching: { $0.accessibilityLabel() == "规则列表" }),
+              let openRule = ruleList.action else { throw PetError("缺少规则搜索后的目录入口") }
+        NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
+        guard let ruleDetail = settingsPageHost.currentController as? AgentSettingsDetailPage,
+              let body = find(NSTextView.self, in: ruleDetail.pageContentView, matching: { $0.accessibilityLabel() == "规则正文" }),
+              let ruleName = find(NSTextField.self, in: ruleDetail.pageContentView, matching: { $0.accessibilityLabel() == "规则名称" }),
               let source = try tasks.rules.catalog(workspace: task.workspace).first(where: { $0.name == ruleName.stringValue })?.source else { throw PetError("缺少规则正文焦点验收来源") }
         let ruleBefore = try Data(contentsOf: source)
         body.string = "规则搜索焦点草稿 🧭"; rules.textDidChange(Notification(name: NSText.didChangeNotification, object: body))
@@ -2536,7 +2540,7 @@ final class FormDocumentView: NSView {
         window.makeFirstResponder(body); body.setSelectedRange(selection); windowDidUpdate(Notification(name: NSWindow.didUpdateNotification, object: window))
         search("连接器")
         guard let connector = find(NSButton.self, in: settingsForm, matching: { $0.identifier?.rawValue == "mcp" }) else { throw PetError("缺少连接器搜索入口") }
-        checks["cancelRuleNavigationRestoresActualBodyFocus"] = try !choose("继续编辑", { openSettingsSearchResult(connector); return settingsCategory == "extensions" }) && settingsPageHost.currentController === rules && window.firstResponder === body && body.string == "规则搜索焦点草稿 🧭"
+        checks["cancelRuleNavigationRestoresActualBodyFocus"] = try !choose("继续编辑", { openSettingsSearchResult(connector); return settingsCategory == "extensions" }) && settingsPageHost.currentController === ruleDetail && window.firstResponder === body && body.string == "规则搜索焦点草稿 🧭"
         checks["cancelRuleNavigationRestoresOriginalCursor"] = body.selectedRange() == selection
         search("连接器")
         guard let finalConnector = find(NSButton.self, in: settingsForm, matching: { $0.identifier?.rawValue == "mcp" }) else { throw PetError("缺少恢复后的连接器搜索入口") }

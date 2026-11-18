@@ -100,14 +100,19 @@ import AppKit
             checks["reversedLegacyButtonsDiscardLeavesWithoutSaving"] = try choose("放弃", { pane.leave() }) && pane.currentController == nil && Data(contentsOf: config) == originalConfig
             let rules = AgentRuleWindow(store: tasks, taskID: id)
             try show(rules, "rules"); try button("新建规则", rules).performClick(nil)
-            let ruleName = try control(NSTextField.self, "规则名称", rules), body = try control(NSTextView.self, "规则正文", rules)
+            guard let newRule = pane.currentController as? AgentSettingsDetailPage else { throw PetError("规则新建页未打开") }
+            let ruleName = try control(NSTextField.self, "规则名称", newRule), body = try control(NSTextView.self, "规则正文", newRule)
             ruleName.stringValue = ""; body.string = "公开的未保存规则正文"; rules.textDidChange(Notification(name: NSText.didChangeNotification, object: body))
             let beforeRules = try tasks.rules.catalog(workspace: tasks.task(id)?.workspace).map(\.id)
-            checks["saveFailureKeepsRulePageAndOriginalFiles"] = try !choose("保存", { pane.leave() }) && pane.currentController === rules && body.string == "公开的未保存规则正文" && tasks.rules.catalog(workspace: tasks.task(id)?.workspace).map(\.id) == beforeRules
+            checks["saveFailureKeepsRulePageAndOriginalFiles"] = try !choose("保存", { pane.leave() }) && pane.currentController === newRule && body.string == "公开的未保存规则正文" && tasks.rules.catalog(workspace: tasks.task(id)?.workspace).map(\.id) == beforeRules
             ruleName.stringValue = "unsaved-confirm-rule"; rules.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: ruleName))
             checks["saveChoiceUsesOriginalRuleServiceAndLeaves"] = try choose("保存", { pane.leave() }) && pane.currentController == nil && tasks.rules.catalog(workspace: tasks.task(id)?.workspace).contains { $0.name == "unsaved-confirm-rule" && $0.definition?.body == "公开的未保存规则正文" }
             let existing = AgentRuleWindow(store: tasks, taskID: id); try show(existing, "existing-rule")
-            let oldBody = try control(NSTextView.self, "规则正文", existing), savedBody = oldBody.string, selectedName = try control(NSTextField.self, "规则名称", existing).stringValue
+            let ruleList = try control(NSTableView.self, "规则列表", existing)
+            guard let openRule = ruleList.action else { throw PetError("原规则目录不可用") }
+            NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
+            guard let existingRule = pane.currentController as? AgentSettingsDetailPage else { throw PetError("原规则详情不可用") }
+            let oldBody = try control(NSTextView.self, "规则正文", existingRule), savedBody = oldBody.string, selectedName = try control(NSTextField.self, "规则名称", existingRule).stringValue
             guard let source = try tasks.rules.catalog(workspace: tasks.task(id)?.workspace).first(where: { $0.name == selectedName })?.source else { throw PetError("缺少规则源文件") }
             let bytes = try Data(contentsOf: source); oldBody.string = "保留修改后未保存的规则"; existing.textDidChange(Notification(name: NSText.didChangeNotification, object: oldBody))
             checks["threeChoiceContinuePreservesActualRuleDraft"] = try !choose("继续编辑", { pane.leave() }) && oldBody.string == "保留修改后未保存的规则" && Data(contentsOf: source) == bytes

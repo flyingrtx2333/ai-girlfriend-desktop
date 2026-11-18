@@ -161,9 +161,13 @@ import AppKit
         func openRule(_ identity: String) throws -> (AgentRuleWindow, NSTextView, NSButton, AgentSettingsStatusField) {
             let page = AgentRuleWindow(store: tasks, taskID: taskID)
             guard pane.show(category: "rules", identity: identity, scope: "公开规则保存验收", make: { _ in page }),
-                  let body = find(NSTextView.self, in: page.pageContentView, matching: { $0.accessibilityLabel() == "规则正文" }),
-                  let save = find(NSButton.self, in: page.pageContentView, matching: { $0.title == "保存" }),
-                  let state = find(AgentSettingsStatusField.self, in: page.pageContentView, matching: { $0.accessibilityLabel() == "规则保存状态" }) else { throw PetError("缺少规则实际保存控件") }
+                  let list = find(NSTableView.self, in: page.pageContentView, matching: { $0.accessibilityLabel() == "规则列表" }),
+                  let action = list.action else { throw PetError("缺少规则目录入口") }
+            NSApp.sendAction(action, to: list.target, from: list)
+            let detail = pane.currentController?.pageContentView
+            guard let body = find(NSTextView.self, in: detail, matching: { $0.accessibilityLabel() == "规则正文" }),
+                  let save = find(NSButton.self, in: detail, matching: { $0.title == "保存" }),
+                  let state = find(AgentSettingsStatusField.self, in: detail, matching: { $0.accessibilityLabel() == "规则保存状态" }) else { throw PetError("缺少规则实际保存控件") }
             body.string = draftBody; page.textDidChange(Notification(name: NSText.didChangeNotification, object: body)); save.performClick(nil)
             return (page, body, save, state)
         }

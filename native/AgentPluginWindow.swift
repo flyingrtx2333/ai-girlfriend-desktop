@@ -11,13 +11,17 @@ import UniformTypeIdentifiers
     private var detailPage: AgentSettingsDetailPage?
     private var componentHeight: NSLayoutConstraint?
     private let catalogState = AgentSettingsStatusField("插件列表状态")
-    private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = NSButton(title: "在任务中使用", target: nil, action: nil)
-    private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil), remove = NSButton(title: "移除", target: nil, action: nil)
+    private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = AgentDialogButton(title: "在任务中使用", target: nil, action: nil)
+    private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
-    private let settings = NSButton(title: "启用设置", target: nil, action: nil)
+    private let more = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let settings = NSMenuItem(title: "启用设置", action: nil, keyEquivalent: "")
     private var settingsWindow: AgentPluginSettingsWindow?
-    private let source = NSButton(title: "打开来源", target: nil, action: nil)
-    private let update = NSButton(title: "更新插件…", target: nil, action: nil), history = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let source = NSMenuItem(title: "打开来源", action: nil, keyEquivalent: "")
+    private let update = NSMenuItem(title: "更新插件…", action: nil, keyEquivalent: "")
+    private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
+    private let history = NSMenuItem(title: "历史版本", action: nil, keyEquivalent: "")
+    private let revisions = NSMenu()
     private var items: [AgentPluginInstallation] = [], selected: AgentPluginInstallation?, entries: [AgentExtensionItem] = [], job: Task<Void, Never>?
     private var connectors: [AgentMCPServer] = []
     private var agents: [AgentProfile] = []
@@ -37,11 +41,18 @@ import UniformTypeIdentifiers
         super.init(window: window); window.delegate = self; let content = NSView(); window.contentView = content
         scopes.selectedSegment = 0; scopes.target = self; scopes.action = #selector(changeScope); scopes.setEnabled(workspace != nil, forSegment: 1); scopes.setAccessibilityLabel("插件范围"); scopes.setToolTip(workspace, forSegment: 1)
         search.placeholderString = "搜索插件"; search.delegate = self
-        upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled); use.target = self; use.action = #selector(useComponent); remove.target = self; remove.action = #selector(removePackage)
-        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList)); source.target = self; source.action = #selector(revealPackage)
-        disableAll.target = self; disableAll.action = #selector(disableProject); update.target = self; update.action = #selector(updatePackage); history.target = self; history.action = #selector(restoreRevision); history.setAccessibilityLabel("插件历史版本")
-        settings.target = self; settings.action = #selector(openSettings)
-        let header = NSStackView(views: [scopes, search, refresh, settings, upload]); header.spacing = 8
+        upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled)
+        use.target = self; use.action = #selector(useComponent); AgentDialogStyle.action(use)
+        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList))
+        disableAll.target = self; disableAll.action = #selector(disableProject)
+        more.addItem(withTitle: "更多"); more.setAccessibilityLabel("插件更多操作"); more.menu?.autoenablesItems = false
+        for (item, action) in [(settings, #selector(openSettings)), (source, #selector(revealPackage)), (update, #selector(updatePackage)), (remove, #selector(removePackage))] {
+            item.target = self; item.action = action
+        }
+        revisions.autoenablesItems = false; history.submenu = revisions
+        for item in [settings, source, .separator(), update, history, .separator(), remove] { more.menu?.addItem(item) }
+        let moreFrame = AgentSettingsPopupFrame(more); moreFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        let header = NSStackView(views: [scopes, search, refresh, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier(label))); table.headerView = nil; table.delegate = self; table.dataSource = self; table.rowHeight = table === list ? 44 : 30; table.setAccessibilityLabel(label)
@@ -51,8 +62,8 @@ import UniformTypeIdentifiers
         for label in [metadata, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         readme.isEditable = false; readme.isRichText = false; readme.isSelectable = true; readme.font = .systemFont(ofSize: 12); readme.textContainerInset = NSSize(width: 12, height: 12); readme.isVerticallyResizable = true; readme.autoresizingMask = [.width]; readme.textContainer?.widthTracksTextView = true; readme.setAccessibilityLabel("插件说明")
         let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
-        let actions = NSStackView(views: [enabled, NSView(), use]); actions.spacing = 8
-        let footer = NSStackView(views: [state, NSView(), disableAll, history, update, source, remove]); footer.spacing = 8
+        let actions = NSStackView(views: [enabled, NSView(), use, moreFrame]); actions.spacing = 8; actions.alignment = .centerY
+        let footer = NSStackView(views: [state, NSView(), disableAll]); footer.spacing = 8
         catalogLayout = (header, actions, scrolls[1], document, footer)
         for view in [header, scrolls[0], title, metadata, actions, scrolls[1], document, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
@@ -70,10 +81,10 @@ import UniformTypeIdentifiers
     override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
-            layout.toolbar.removeArrangedSubview(settings); settings.removeFromSuperview(); layout.actions.insertArrangedSubview(settings, at: 1)
             layout.footer.removeArrangedSubview(disableAll); disableAll.removeFromSuperview(); layout.toolbar.insertArrangedSubview(disableAll, at: max(0, layout.toolbar.arrangedSubviews.count - 1))
             search.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
+            layout.footer.removeArrangedSubview(state); state.removeFromSuperview()
+            let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, state]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
             componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.priority = .defaultHigh; componentHeight?.isActive = true
@@ -144,11 +155,12 @@ import UniformTypeIdentifiers
         components.reloadData()
         componentHeight?.constant = components.numberOfRows == 0 ? 60 : min(120, max(44, components.rect(ofRow: components.numberOfRows - 1).maxY + 4))
         if numberOfRows(in: components) > 0 { components.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }; updateControls()
-        history.removeAllItems(); history.addItem(withTitle: "历史版本")
+        revisions.removeAllItems()
         let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
         for revision in (selected?.receipt.revisions ?? []).reversed() {
-            let item = NSMenuItem(title: (revision.version?.isEmpty == false ? revision.version! : "未标版本") + " · " + formatter.string(from: revision.created), action: nil, keyEquivalent: "")
-            item.representedObject = revision.directory; item.toolTip = revision.sourceName; history.menu?.addItem(item)
+            let version = revision.version.flatMap { $0.isEmpty ? nil : $0 } ?? "未标版本"
+            let item = NSMenuItem(title: version + " · " + formatter.string(from: revision.created), action: #selector(restoreRevision(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = revision.directory; item.toolTip = revision.sourceName; revisions.addItem(item)
         }
     }
     private var selectedRuleIndex: Int? { let index = components.selectedRow - entries.count - connectors.count - agents.count - hooks.count; return rules.indices.contains(index) ? index : nil }
@@ -160,7 +172,8 @@ import UniformTypeIdentifiers
         AgentSettingsStyle.listState(components, text: selected == nil ? "选择插件查看组件" : "暂无组件")
         let idle = job == nil; scopes.isEnabled = idle; scopes.setEnabled(workspace != nil, forSegment: 1); list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
         disableAll.isHidden = scopeWorkspace == nil; disableAll.isEnabled = idle && service.hasProjectActivations(scopeWorkspace)
-        settings.isEnabled = idle && selected != nil
+        settings.isEnabled = idle && selected != nil; more.isEnabled = idle && selected != nil
+        (more.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
         update.isEnabled = idle && selected != nil; history.isEnabled = idle && selected?.receipt.revisions?.isEmpty == false
         let connector = connectors.indices.contains(components.selectedRow - entries.count)
         let agent = agents.indices.contains(components.selectedRow - entries.count - connectors.count)
@@ -218,8 +231,8 @@ import UniformTypeIdentifiers
             }; updateControls()
         }
     }
-    @objc private func restoreRevision() {
-        guard let selected, let directory = history.selectedItem?.representedObject as? String, let revision = selected.receipt.revisions?.first(where: { $0.directory == directory }) else { return }
+    @objc private func restoreRevision(_ sender: NSMenuItem) {
+        guard let selected, let directory = sender.representedObject as? String, let revision = selected.receipt.revisions?.first(where: { $0.directory == directory }) else { return }
         do { review(try service.package(revision, of: selected), replacing: selected, restoring: true) }
         catch { state.stringValue = error.localizedDescription }
     }

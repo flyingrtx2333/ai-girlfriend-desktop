@@ -15,15 +15,19 @@ import UniformTypeIdentifiers
     private let search = NSSearchField(), listState = AgentSettingsStatusField("连接器列表状态"), empty = NSTextField(labelWithString: "暂无连接器")
     private var catalogRows: [CatalogRow] = [], detailPage: AgentMCPDetailPage?, requestedDetail = false
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let connect = AgentDialogButton(title: "连接", target: nil, action: nil), disconnect = AgentDialogButton(title: "断开", target: nil, action: nil)
-    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), remove = AgentDialogButton(title: "移除", target: nil, action: nil)
+    private let connection = AgentDialogButton(title: "连接", target: nil, action: nil)
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil)
+    private let detailActions = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
     private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
     private var items: [AgentMCPServer] = []
-    var onBrowseContent: ((String?) -> Void)? { didSet { browse.isHidden = onBrowseContent == nil } }
-    private let browse = AgentDialogButton(title: "资料与提示词", target: nil, action: nil)
+    var onBrowseContent: ((String?) -> Void)? {
+        didSet { browse.isHidden = onBrowseContent == nil; refreshDetailActions() }
+    }
+    private let browse = NSMenuItem(title: "资料与提示词", action: nil, keyEquivalent: "")
     override var minimumSettingsContentHeight: CGFloat { 220 }
     private var editingPage: AgentMCPDetailPage? { detailPage.flatMap { $0.settingsHostWindow != nil || $0.window?.isVisible == true ? $0 : nil } }
     private var editorWindow: NSWindow? { editingPage?.presentingWindow ?? presentingWindow }
@@ -62,23 +66,25 @@ import UniformTypeIdentifiers
         NSLayoutConstraint.activate([jsonScroll.leadingAnchor.constraint(equalTo: jsonCard.leadingAnchor, constant: 1), jsonScroll.trailingAnchor.constraint(equalTo: jsonCard.trailingAnchor, constant: -1), jsonScroll.topAnchor.constraint(equalTo: jsonCard.topAnchor, constant: 1), jsonScroll.bottomAnchor.constraint(equalTo: jsonCard.bottomAnchor, constant: -1)])
         configurationKind.selectedSegment = 0; configurationKind.setAccessibilityLabel("MCP 配置方式"); configurationKind.target = self; configurationKind.action = #selector(changeConfiguration)
         loadJSON.target = self; loadJSON.action = #selector(reviewPastedJSON); loadJSON.isHidden = true
-        let configHeader = NSStackView(views: [configurationKind, NSView(), loadJSON]); configHeader.spacing = 8
-        let config = NSStackView(views: [configHeader, configurationHost]); config.orientation = .vertical; config.alignment = .leading; config.spacing = 10
-        for child in [configHeader, configurationHost] { child.widthAnchor.constraint(equalTo: config.widthAnchor).isActive = true }; configHeader.heightAnchor.constraint(equalToConstant: 28).isActive = true
         attachConfiguration(jsonCard)
         tabs.tabViewType = .noTabsNoBorder; tabs.setAccessibilityLabel("连接器详情标签"); tabs.delegate = self
-        for (label, view) in [("配置", config as NSView), ("工具", tools as NSView)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
+        for (label, view) in [("配置", configurationHost), ("工具", tools as NSView)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
         detailKinds.selectedSegment = 0; detailKinds.target = self; detailKinds.action = #selector(changeDetails); detailKinds.setAccessibilityLabel("连接器详情类型")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
-        for button in [connect, disconnect, remove, browse, loadJSON] { AgentDialogStyle.action(button) }
-        for (button, action) in [(connect, #selector(start)), (disconnect, #selector(stop)), (save, #selector(saveConfig)), (remove, #selector(removeConfig))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
+        for button in [connection, loadJSON] { AgentDialogStyle.action(button) }
+        connection.target = self; save.target = self; save.action = #selector(saveConfig)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
-        let header = NSStackView(views: [enabled, NSView(), disconnect, connect, save]); header.spacing = 8
         browse.target = self; browse.action = #selector(browseContent); browse.isHidden = true
-        let navigation = NSStackView(views: [detailKinds, NSView(), browse, remove]); navigation.spacing = 8
+        remove.target = self; remove.action = #selector(removeConfig)
+        detailActions.addItem(withTitle: "更多"); detailActions.setAccessibilityLabel("连接器更多操作")
+        detailActions.menu?.autoenablesItems = false; detailActions.menu?.addItem(browse); detailActions.menu?.addItem(remove)
+        let actionsFrame = AgentSettingsPopupFrame(detailActions); actionsFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
+        let header = NSStackView(views: [enabled, NSView(), connection, actionsFrame, save]); header.spacing = 8; header.alignment = .centerY
+        let navigation = NSStackView(views: [detailKinds, NSView(), configurationKind, loadJSON]); navigation.spacing = 8; navigation.alignment = .centerY
         let preferredContentHeight = tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 120); preferredContentHeight.priority = .defaultHigh; preferredContentHeight.isActive = true
         tabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         let detail = AgentThemeView(), column = NSStackView(views: [header, state, navigation, tabs, access]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        column.setCustomSpacing(4, after: header)
         detail.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in [header, state, navigation, tabs, access] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: detail.leadingAnchor), column.trailingAnchor.constraint(equalTo: detail.trailingAnchor), column.topAnchor.constraint(equalTo: detail.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -12), header.heightAnchor.constraint(equalToConstant: 28), navigation.heightAnchor.constraint(equalToConstant: 28)])
@@ -120,7 +126,8 @@ import UniformTypeIdentifiers
         }
     }
     private func applyConfigurationKind() {
-        let json = configurationKind.selectedSegment == 1; jsonCard.isHidden = !json; form?.view.isHidden = json; loadJSON.isHidden = !json
+        let json = configurationKind.selectedSegment == 1; jsonCard.isHidden = !json; form?.view.isHidden = json
+        loadJSON.isHidden = !json || configurationKind.isHidden
         displayedConfiguration = configurationKind.selectedSegment
     }
     private func prepareConfiguration() {
@@ -145,9 +152,15 @@ import UniformTypeIdentifiers
     @objc private func changeDetails() { tabs.selectTabViewItem(at: detailKinds.selectedSegment) }
     func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
         detailKinds.selectedSegment = tabViewItem.map { tabs.indexOfTabViewItem($0) } ?? 0
+        configurationKind.isHidden = detailKinds.selectedSegment != 0
+        loadJSON.isHidden = configurationKind.isHidden || configurationKind.selectedSegment != 1
         if editingPage?.isPageVisible == true { focusDetail() }
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
+    private func refreshDetailActions() {
+        detailActions.isEnabled = !browse.isHidden || remove.isEnabled
+        (detailActions.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
     override func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { catalogRows[row].server == nil ? 34 : 72 }
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { catalogRows[row].server == nil }
@@ -222,9 +235,12 @@ import UniformTypeIdentifiers
         editor.isEditable = (creating || selected != nil) && job == nil
         form?.setEnabled(editor.isEditable, pluginLocked: selected?.plugin != nil); configurationKind.isEnabled = job == nil; loadJSON.isEnabled = job == nil
         enabled.isEnabled = current != nil && current?.configured != false && current?.pluginEnabled != false && !dirty && job == nil; enabled.state = current?.enabled == true ? .on : .off
-        connect.isEnabled = current?.enabled == true && !dirty && job == nil && !connected
-        disconnect.isEnabled = selected != nil && (connected || job != nil)
+        let canDisconnect = selected != nil && (connected || job != nil)
+        connection.title = canDisconnect ? "断开" : "连接"
+        connection.action = canDisconnect ? #selector(stop) : #selector(start)
+        connection.isEnabled = canDisconnect || (current?.enabled == true && !dirty && job == nil && !connected)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
+        refreshDetailActions()
         add.isEnabled = job == nil; importButton.isEnabled = job == nil
         let draftType = (dirty || creating) && editor.string.utf8.count <= 64_000 ? ((try? JSONSerialization.jsonObject(with: Data(editor.string.utf8))) as? [String: Any])?["type"] as? String : nil
         let type = configurationKind.selectedSegment == 0 ? form?.type : dirty || creating ? draftType : selected?.type

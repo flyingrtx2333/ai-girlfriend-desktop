@@ -95,9 +95,11 @@ import AppKit
 @MainActor final class AgentSettingsDetailPage: AgentSettingsPageController, NSWindowDelegate {
     var onCanLeave: (() -> Bool)?
     var onAppear: (() -> Void)?
+    private let scrollsInternally: Bool
     override var minimumSettingsContentHeight: CGFloat { 220 }
-    override var usesInternalScrolling: Bool { true }
-    init(title: String, content: NSView) {
+    override var usesInternalScrolling: Bool { scrollsInternally }
+    init(title: String, content: NSView, scrollsInternally: Bool = true) {
+        self.scrollsInternally = scrollsInternally
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false
         super.init(window: window); window.contentView = content; window.delegate = self
@@ -735,24 +737,30 @@ struct AgentSettingsCatalogGroup {
 
 @MainActor final class AgentAttentionSettingsView: NSStackView {
     private let attention: AgentAttention
-    private var controls: [String: NSButton] = [:]
-    private let status = NSTextField(labelWithString: "")
+    private var controls: [String: NSSwitch] = [:]
+    private let status = AgentSettingsStatusField("需要我设置状态")
     init(attention: AgentAttention) {
         self.attention = attention; super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 18
+        orientation = .vertical; alignment = .leading; spacing = 20
         let current = attention.settings
-        func check(_ key: String, _ title: String, _ value: Bool) -> NSButton {
-            let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(change)); button.state = value ? .on : .off
-            controls[key] = button; return button
+        func row(_ key: String, _ title: String, _ value: Bool) -> NSView {
+            let toggle = NSSwitch(); toggle.target = self; toggle.action = #selector(change); toggle.state = value ? .on : .off
+            toggle.setAccessibilityLabel(title); controls[key] = toggle
+            return AgentSettingsStyle.formRow(title, toggle, trailing: true)
         }
-        addArrangedSubview(check("enabled", "启用需要我", current.enabled))
-        for (title, values) in [("来源", AgentAttentionSource.allCases.map { ("source:" + $0.rawValue, $0.title, current.sources.contains($0.rawValue)) }), ("内容", AgentAttentionKind.allCases.map { ("kind:" + $0.rawValue, $0.title, current.kinds.contains($0.rawValue)) })] {
-            let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12, weight: .medium); label.textColor = AgentWorkbenchTheme.secondaryText
-            addArrangedSubview(label)
-            let row = NSStackView(views: values.map { check($0.0, $0.1, $0.2) }); row.spacing = 16; addArrangedSubview(row)
+        let general = AgentSettingsStyle.section("常规", id: "attention-general", rows: [
+            row("enabled", "启用需要我", current.enabled),
+            row("notifications", "自动化桌面通知", current.automationNotifications)
+        ])
+        let sources = AgentSettingsStyle.section("来源", id: "attention-sources", rows: AgentAttentionSource.allCases.map {
+            row("source:" + $0.rawValue, $0.title, current.sources.contains($0.rawValue))
+        })
+        let kinds = AgentSettingsStyle.section("内容", id: "attention-kinds", rows: AgentAttentionKind.allCases.map {
+            row("kind:" + $0.rawValue, $0.title, current.kinds.contains($0.rawValue))
+        })
+        for section in [general, status, sources, kinds] {
+            addArrangedSubview(section); section.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
-        addArrangedSubview(check("notifications", "自动化桌面通知", current.automationNotifications))
-        status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; addArrangedSubview(status)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func change() {
@@ -762,7 +770,7 @@ struct AgentSettingsCatalogGroup {
         value.automationNotifications = controls["notifications"]?.state == .on
         do { try attention.setSettings(value); status.stringValue = "已保存" }
         catch {
-            status.stringValue = error.localizedDescription
+            status.showSaveFailure(error); status.scrollToVisible(status.bounds)
             controls["enabled"]?.state = attention.settings.enabled ? .on : .off
             controls["notifications"]?.state = attention.settings.automationNotifications ? .on : .off
             for source in AgentAttentionSource.allCases { controls["source:" + source.rawValue]?.state = attention.settings.sources.contains(source.rawValue) ? .on : .off }

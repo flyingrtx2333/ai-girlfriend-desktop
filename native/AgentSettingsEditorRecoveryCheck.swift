@@ -23,7 +23,7 @@ import AppKit
         func field(_ label: String, _ value: String, _ window: ControlWindow) throws {
             let input = try input(NSTextField.self, label, window); input.stringValue = value
             if let page = window.settingsRecoveryControllers.last as? AgentExtensionCreationPage { page.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: input)) }
-            else if let page = window.settingsRecoveryControllers.last as? AgentRuleWindow { page.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: input)) }
+            else if let page = window.settingsRecoveryControllers.compactMap({ $0 as? AgentRuleWindow }).last { page.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: input)) }
         }
         func body(_ window: ControlWindow, _ value: String, marker: String = "MARKER") throws {
             let label = window.settingsRecoveryControllers.contains(where: { $0 is AgentRuleWindow }) ? "规则正文" : "扩展说明"
@@ -107,6 +107,9 @@ import AppKit
                 let sources = try input(NSPopUpButton.self, "设置源文件夹", rules)
                 guard let alphaItem = sources.itemArray.first(where: { $0.representedObject as? String == alpha.path }) else { throw PetError("原次源文件夹不可用") }
                 sources.select(alphaItem); if let action = sources.action { NSApp.sendAction(action, to: sources.target, from: sources) }
+                let ruleList = try input(NSTableView.self, "规则列表", rules)
+                guard let openRule = ruleList.action else { throw PetError("恢复验收的原规则目录不可用") }
+                NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
                 try field("规则名称", "", rules); try choosePopup("规则触发方式", 3, rules); try field("规则匹配模式", "src/**/*.swift\n!vendor/**\n[", rules); try body(rules, long)
                 let commands = try editor("用户命令", general, category: "extensions", key: "commands")
                 guard let commandsPage = commands.settingsRecoveryControllers.first as? AgentExtensionWindow else { throw PetError("命令编辑器不可用") }; commandsPage.selectItem(command.id); try body(commands, invalidCommand)
