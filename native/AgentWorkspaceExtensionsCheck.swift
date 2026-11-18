@@ -99,7 +99,12 @@ import Darwin
             guard control.showSettingsCategory("extensions") else { throw PetError("扩展未重开") }; try tab("连接器")
             checks["connectorManagerUsesChosenSource"] = (control.settingsControllerForCheck as? AgentMCPWindow)?.scopeWorkspace == alpha
             guard control.showSettingsCategory("memory") else { throw PetError("规则未打开") }; try tab("规则")
-            guard let rulePage = control.settingsControllerForCheck as? AgentRuleWindow, let body = find(NSTextView.self, rulePage.pageContentView, { $0.accessibilityLabel() == "规则正文" }) else { throw PetError("规则正文未打开") }
+            guard let rulePage = control.settingsControllerForCheck as? AgentRuleWindow,
+                  let ruleList = find(NSTableView.self, rulePage.pageContentView, { $0.accessibilityLabel() == "规则列表" }),
+                  let openRule = ruleList.action else { throw PetError("规则目录未打开") }
+            NSApp.sendAction(openRule, to: ruleList.target, from: ruleList)
+            guard let detail = control.settingsControllerForCheck as? AgentSettingsDetailPage,
+                  let body = find(NSTextView.self, detail.pageContentView, { $0.accessibilityLabel() == "规则正文" }) else { throw PetError("规则正文未打开") }
             checks["secondaryRuleEditorReadsActualSecondaryRule"] = body.string.contains("ALPHA_LOCAL_SOURCE_RULE") && !body.string.contains("BETA_LOCAL_SOURCE_RULE")
             body.string += "\nALPHA_RULE_EDITED_PUBLIC"; rulePage.textDidChange(Notification(name: NSText.didChangeNotification, object: body)); try button("保存").performClick(nil)
             checks["actualRuleSaveTargetsOnlyChosenSource"] = try tasks.rules.catalog(workspace: alpha).contains { $0.text?.contains("ALPHA_RULE_EDITED_PUBLIC") == true } && !tasks.rules.catalog(workspace: beta).contains { $0.text?.contains("ALPHA_RULE_EDITED_PUBLIC") == true }
