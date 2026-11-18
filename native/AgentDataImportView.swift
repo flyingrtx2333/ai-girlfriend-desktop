@@ -4,9 +4,10 @@ import UniformTypeIdentifiers
 @MainActor final class AgentDataImportView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let store: AgentStore, service: AgentDataImport
     private let source = NSPopUpButton(), folder = NSButton(), detect = NSButton(title: "重新检测", target: nil, action: nil)
-    private let category = NSSegmentedControl(labels: AgentImportCategory.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let category = NSPopUpButton()
     private let destination = NSPopUpButton()
     private lazy var sourceControl = AgentSettingsPopupFrame(source)
+    private lazy var categoryControl = AgentSettingsPopupFrame(category)
     private lazy var destinationControl = AgentSettingsPopupFrame(destination)
     private let table = NSTableView(), detail = NSTextView(), state = NSTextField(labelWithString: ""), selectAll = NSButton(checkboxWithTitle: "全选", target: nil, action: nil)
     private let begin = AgentDialogButton(title: "开始导入", target: nil, action: nil)
@@ -20,8 +21,9 @@ import UniformTypeIdentifiers
     var onOpenConnector: ((String, String?) throws -> Void)?
     var onOpenAutomation: ((String) throws -> Void)?
     var onOpenPlugin: ((String, String?) throws -> Void)?
+    var onOpenConfiguration: ((AgentStandaloneImportPlan, URL) throws -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
-    private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.selectedSegment)] }
+    private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.indexOfSelectedItem)] }
     private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
     init(store: AgentStore) {
         self.store = store; service = store.dataImport
@@ -29,7 +31,8 @@ import UniformTypeIdentifiers
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
         source.addItems(withTitles: AgentImportSource.allCases.map(\.title)); source.selectItem(at: service.batch.flatMap { AgentImportSource.allCases.firstIndex(of: $0.source) } ?? 0)
         source.target = self; source.action = #selector(changeSource); source.setAccessibilityLabel("导入来源")
-        category.selectedSegment = 0; category.target = self; category.action = #selector(changeCategory); category.setAccessibilityLabel("导入内容")
+        category.addItems(withTitles: AgentImportCategory.allCases.map(\.title))
+        category.target = self; category.action = #selector(changeCategory); category.setAccessibilityLabel("导入内容")
         destination.target = self; destination.action = #selector(changeDestination)
         destination.cell?.lineBreakMode = .byTruncatingMiddle
         destinationControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -47,7 +50,7 @@ import UniformTypeIdentifiers
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(begin, #selector(start)), (pause, #selector(pauseImport)), (resume, #selector(resumeImport)), (cancel, #selector(cancelImport)), (open, #selector(openTask)), (original, #selector(showOriginal))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         AgentSettingsStyle.primaryAction(begin)
-        let kinds = NSStackView(views: [category, NSView(), destinationControl]); kinds.spacing = 8
+        let kinds = NSStackView(views: [categoryControl, NSView(), destinationControl]); kinds.spacing = 8
         let header = NSStackView(views: [sourceControl, folder, detect]); header.spacing = 8
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
         let actions = NSStackView(views: [state, NSView(), begin, pause, resume, cancel]); actions.spacing = 6
@@ -64,7 +67,7 @@ import UniformTypeIdentifiers
         let batch = service.batch
         if let batch, shownBatch != batch.id {
             shownBatch = batch.id; root = URL(fileURLWithPath: batch.root); source.selectItem(at: AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0)
-            category.selectedSegment = AgentImportCategory.allCases.firstIndex(of: batch.category) ?? 0
+            category.selectItem(at: AgentImportCategory.allCases.firstIndex(of: batch.category) ?? 0)
             targetWorkspace = batch.targetWorkspace; signature = ""
         }
         let viewingPreview = service.previewSource == selectedSource && service.previewRoot == root.path
@@ -77,7 +80,7 @@ import UniformTypeIdentifiers
         folder.title = (root.path as NSString).abbreviatingWithTildeInPath; folder.toolTip = root.path
         source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
         category.isEnabled = source.isEnabled
-        sourceControl.refreshEnabledState()
+        sourceControl.refreshEnabledState(); categoryControl.refreshEnabledState()
         destinationControl.isHidden = selectedCategory.globalTarget == nil
         if let title = selectedCategory.globalTarget { updateDestinations(globalTitle: title) }
         table.setAccessibilityLabel("可导入" + selectedCategory.title)
@@ -141,7 +144,7 @@ import UniformTypeIdentifiers
         case .connectors: open.title = "配置连接器"
         case .automations: open.title = "打开自动化"
         case .plugins: open.title = "打开插件"
-        case .memory, .skills: open.title = "在访达中显示"
+        case .memory, .skills, .configuration: open.title = "在访达中显示"
         }
         original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
         detail.enclosingScrollView?.isHidden = !rows.indices.contains(table.selectedRow)
@@ -201,6 +204,20 @@ import UniformTypeIdentifiers
             original.isEnabled = (try? AgentPluginDataImport.reveal(record, root: root)) != nil
             return
         }
+        if let plan = record.configuration {
+            let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局扩展配置"
+            var lines = [plan.kind.title + " · " + record.title, "来源 · " + record.file, destination]
+            if plan.kind != .policy { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
+            if let status = record.issue ?? states[record.id] { lines.append(status) }
+            lines.append(contentsOf: record.warnings)
+            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            if plan.kind == .command || (plan.kind == .instruction && plan.directory.isEmpty && record.issue != "已共享") {
+                open.title = "打开" + plan.kind.title
+            }
+            open.isEnabled = (try? AgentStandaloneDataImport.installedURL(record, store: store)) != nil
+            original.isEnabled = (try? AgentStandaloneDataImport.reveal(record, root: root, store: store)) != nil
+            return
+        }
         detail.string = record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
@@ -258,6 +275,12 @@ import UniformTypeIdentifiers
                 try onOpenPlugin?(id, record.targetWorkspace)
                 return
             }
+            if let plan = record.configuration {
+                let url = try AgentStandaloneDataImport.installedURL(record, store: store)
+                if open.title != "在访达中显示", let onOpenConfiguration { try onOpenConfiguration(plan, url) }
+                else { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                return
+            }
             let files = record.category == .skills ? [try AgentSkillImport.destinationURL(record, store: store)] : try AgentMemoryImport.destinationURLs(record, store: store)
             guard !files.isEmpty else { throw PetError("目标记忆文件已移除") }
             NSWorkspace.shared.activateFileViewerSelecting(files)
@@ -275,6 +298,7 @@ import UniformTypeIdentifiers
             case .connectors: url = try AgentMCPDataImport.reveal(record, root: root)
             case .automations: url = try AgentAutomationDataImport.reveal(record, root: root)
             case .plugins: url = try AgentPluginDataImport.reveal(record, root: root)
+            case .configuration: url = try AgentStandaloneDataImport.reveal(record, root: root, store: store)
             }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }

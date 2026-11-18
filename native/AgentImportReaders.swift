@@ -8,7 +8,7 @@ enum AgentImportSource: String, Codable, CaseIterable {
 }
 
 enum AgentImportCategory: String, CaseIterable {
-    case tasks, memory, skills, connectors, automations, plugins
+    case tasks, memory, skills, connectors, automations, plugins, configuration
     var title: String {
         switch self {
         case .tasks: return "任务记录"
@@ -17,6 +17,7 @@ enum AgentImportCategory: String, CaseIterable {
         case .connectors: return "连接器"
         case .automations: return "定时任务"
         case .plugins: return "插件"
+        case .configuration: return "扩展配置"
         }
     }
     var globalTarget: String? {
@@ -27,6 +28,7 @@ enum AgentImportCategory: String, CaseIterable {
         case .connectors: return "全局连接器"
         case .automations: return "保留来源项目"
         case .plugins: return "全局插件"
+        case .configuration: return "全局扩展配置"
         }
     }
     var acceptsFiles: Bool { self == .connectors || self == .automations || self == .plugins }
@@ -68,15 +70,17 @@ struct AgentImportCandidate: Codable, Identifiable {
     var connector: AgentMCPImportPlan?
     var automation: AgentAutomationImportPlan?
     var plugin: AgentPluginImportPlan?
+    var configuration: AgentStandaloneImportPlan?
     var id: String { source.rawValue + ":" + sourceID.lowercased() }
     var category: AgentImportCategory {
         if automation != nil { return .automations }
         if plugin != nil { return .plugins }
+        if configuration != nil { return .configuration }
         if connector != nil { return .connectors }
         if skill != nil { return .skills }
         return memory == nil ? .tasks : .memory
     }
-    var targetWorkspace: String? { automation?.workspaceOverride ?? connector?.workspace ?? skill?.workspace ?? memory?.workspace ?? plugin?.workspace }
+    var targetWorkspace: String? { automation?.workspaceOverride ?? connector?.workspace ?? skill?.workspace ?? memory?.workspace ?? plugin?.workspace ?? configuration?.workspace }
 }
 
 struct AgentImportDocument {

@@ -98,6 +98,10 @@ struct AgentImportBatch: Codable {
                 preview = try await AgentPluginDataImport.discover(source, root: root, workspace: workspace, store: store)
                 return
             }
+            if category == .configuration {
+                preview = try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
+                return
+            }
             let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
             let duplicates = Dictionary(grouping: records, by: \.id)
             preview = try records.map { record in
@@ -178,6 +182,8 @@ struct AgentImportBatch: Codable {
                     try await AgentAutomationDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.plugin != nil {
                     try await AgentPluginDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
+                } else if candidate.configuration != nil {
+                    try await AgentStandaloneDataImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else {
                     let document = try await Task.detached(priority: .utility) {
                         let directory = URL(fileURLWithPath: root)

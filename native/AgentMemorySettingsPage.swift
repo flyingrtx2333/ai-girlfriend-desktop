@@ -153,6 +153,12 @@ import AppKit
         if scope == .global { editor.settingsContext = (scope.title, store.directory.path) }
         presentSettingsChild(editor)
     }
+    func openInstruction(_ scope: AgentMemoryScope) throws {
+        guard let button = buttons.first(where: { AgentMemoryScope.allCases[$0.tag] == scope }), button.isEnabled else {
+            throw PetError("指令设置页不可用")
+        }
+        openMemory(button)
+    }
     @objc private func openProjectMemory(_ sender: NSButton) {
         guard sender.isEnabled, projectButtons.contains(sender), projectSources.indices.contains(sender.tag) else { return }
         let source = projectSources[sender.tag]

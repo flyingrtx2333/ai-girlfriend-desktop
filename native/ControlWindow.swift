@@ -1571,6 +1571,30 @@ final class FormDocumentView: NSView {
         guard let manager = settingsPageHost.currentController as? AgentPluginWindow else { throw PetError("插件设置页不可用") }
         try manager.selectInstallation(id)
     }
+    private func openImportedConfiguration(_ plan: AgentStandaloneImportPlan, url: URL) throws {
+        let command = plan.kind == .command
+        let commandID: String?
+        if command {
+            guard let store = companion?.agentStore,
+                  let item = try store.extensions.catalog(workspace: plan.workspace).first(where: { $0.kind == .command && $0.file.path == url.path }) else {
+                throw PetError("命令已移除或被同名命令替代")
+            }
+            commandID = item.id
+        } else { commandID = nil }
+        guard showSettingsCategory(command ? "extensions" : "memory") else { throw PetError("请先完成当前编辑") }
+        restoredSettingsContext = plan.workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        updateSettingsSections()
+        if let commandID {
+            settingsPageHost.selectPage("commands")
+            guard let manager = settingsPageHost.currentController as? AgentExtensionWindow else { throw PetError("命令设置页不可用") }
+            manager.selectItem(commandID)
+        } else {
+            settingsPageHost.selectPage("memory")
+            guard let manager = settingsPageHost.currentController as? AgentMemorySettingsPage else { throw PetError("指令设置页不可用") }
+            let scope: AgentMemoryScope = plan.workspace == nil ? .userInstructions : plan.relative == "AGENTS.local.md" ? .localInstructions : .instructions
+            try manager.openInstruction(scope)
+        }
+    }
     private func revealSettingsCategory() {
         window?.contentView?.layoutSubtreeIfNeeded()
         guard let index = settingsCategories.firstIndex(where: { $0.0 == settingsCategory }), categoryButtons.indices.contains(index) else { return }
@@ -2077,10 +2101,11 @@ final class FormDocumentView: NSView {
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel); desktopPanel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
-            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能 MCP 连接器 定时任务 自动化 插件")
+            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能 MCP 连接器 定时任务 自动化 插件 扩展配置 规则 指令 命令")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
             imports.onOpenConnector = { [weak self] id, workspace in try self?.configureImportedConnector(id, workspace: workspace) }
             imports.onOpenPlugin = { [weak self] id, workspace in try self?.openImportedPlugin(id, workspace: workspace) }
+            imports.onOpenConfiguration = { [weak self] plan, url in try self?.openImportedConfiguration(plan, url: url) }
             imports.onOpenAutomation = { [weak self] id in
                 guard let self else { return }
                 self.showAutomations()
