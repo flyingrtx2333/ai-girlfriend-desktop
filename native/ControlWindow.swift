@@ -541,7 +541,11 @@ final class FormDocumentView: NSView {
                         let last = rows > 0 ? table.rect(ofRow: rows - 1) : .zero
                         if rows > 0 { table.scrollRowToVisible(rows - 1) }
                         let lastVisible = rows == 0 || last.intersection(table.visibleRect).height >= last.height - 0.5
-                        checks[detailKey + "ComponentRowsFitWithoutBlankPanelOrClippedLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible
+                        let readme = descendants(content).compactMap({ $0 as? NSTextView }).first { $0.accessibilityLabel() == "插件说明" }?.enclosingScrollView
+                        let readmeHeight = readme?.documentVisibleRect.height ?? 0
+                        checks[detailKey + "ComponentListAndReadmeFitWithReachableLastRow"] = rows == expected && heightFits && scroll.bounds.height >= 40 && lastVisible && readmeHeight >= 76
+                        frames[name + "-" + category]?[title + "ComponentsHeight"] = scroll.bounds.height
+                        frames[name + "-" + category]?[title + "ReadmeViewportHeight"] = readmeHeight
                     }
                 }
                 detail?.close(); window.contentView?.layoutSubtreeIfNeeded()

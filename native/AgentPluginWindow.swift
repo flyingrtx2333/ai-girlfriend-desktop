@@ -76,7 +76,8 @@ import UniformTypeIdentifiers
             let detail = NSStackView(views: [title, metadata, layout.actions, layout.components, layout.document, layout.footer]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
             for view in detail.arrangedSubviews { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
             NSLayoutConstraint.deactivate(layout.components.constraints.filter { $0.firstAttribute == .height && $0.secondItem == nil })
-            componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.isActive = true
+            componentHeight = layout.components.heightAnchor.constraint(equalToConstant: 60); componentHeight?.priority = .defaultHigh; componentHeight?.isActive = true
+            NSLayoutConstraint.activate([layout.components.heightAnchor.constraint(greaterThanOrEqualToConstant: 44), layout.document.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
             let page = AgentSettingsDetailPage(title: "插件详情", content: AgentSettingsCatalog.detail(detail))
             page.onAppear = { [weak self] in guard let self else { return }; reload(select: selected?.id); presentingWindow?.makeFirstResponder(components) }
             detailPage = page; catalogLayout = nil
