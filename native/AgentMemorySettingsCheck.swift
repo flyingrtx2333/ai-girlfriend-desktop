@@ -71,11 +71,12 @@ import AppKit
         try saved.write(to: configuration); service.reload()
         let page = AgentMemorySettingsPage(store: tasks, taskID: id, workspace: workspace.path, service: service)
         func find(_ view: NSView, id: String) -> NSView? { if view.identifier?.rawValue == id { return view }; return view.subviews.lazy.compactMap { find($0, id: id) }.first }
+        func buttonID(_ path: String) -> String { "memory-project-" + AgentFiles.hash(Data(path.utf8)) }
         guard let root = page.pageContentView else { throw PetError("缺少记忆设置页") }
         checks["memoryPageUsesGroupedBehaviorAndSourceCards"] = find(root, id: "settings-card-memory-behavior") != nil && find(root, id: "settings-card-memory-content") != nil && find(root, id: "settings-card-memory-instructions") != nil
         var child: AgentSettingsPageController?
         page.onSettingsPush = { child = $0 }
-        (find(root, id: "memory-manage-project") as? NSButton)?.performClick(nil)
+        (find(root, id: buttonID(workspace.path)) as? NSButton)?.performClick(nil)
         func containsText(_ view: NSView, _ text: String) -> Bool { (view as? NSTextView)?.string.contains(text) == true || view.subviews.contains { containsText($0, text) } }
         checks["memoryCardOpensExistingEditorAtRequestedScope"] = child is AgentRecordWindow && child?.pageContentView.map { containsText($0, "PROJECT_MEMORY_PUBLIC_692") } == true
         child?.window?.close(); page.window?.close()
@@ -106,6 +107,12 @@ import AppKit
         tasks.update(multiID) { $0.workspaceScope = AgentWorkspaceScope(group: output.appendingPathComponent("memory-source-group").path, folders: [second.path, secondary.path], primary: second.path) }
         let missingID = tasks.create(title: "暂不可用项目", workspace: unavailable.path)
         try FileManager.default.moveItem(at: unavailable, to: unavailable.appendingPathExtension("offline"))
+        let standalone = output.appendingPathComponent("memory-standalone-project"), standaloneSource = output.appendingPathComponent("memory-standalone-source")
+        for folder in [standalone, standaloneSource] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        try tasks.organization.register(standalone.path, mode: .coding)
+        try tasks.organization.register(standaloneSource.path, mode: .general)
+        guard let standaloneEntry = tasks.organization.entry(standalone.path, mode: .coding, tasks: []) else { throw PetError("未登记无任务项目") }
+        try tasks.organization.editWorkspace(standaloneEntry, name: "云端服务", icon: .globe, color: .blue, folders: [standalone.path, standaloneSource.path], primary: standalone.path, tasks: [])
         let peerInitial = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID)
         _ = try AgentMemory.save(.project, content: "PEER_MEMORY_PUBLIC_347", expectedHash: peerInitial.hash, store: tasks, taskID: peerID)
         let secondaryInitial = try AgentMemory.snapshot(.project, store: tasks, taskID: multiID, workspace: secondary.path)
@@ -115,11 +122,11 @@ import AppKit
         checks["memoryProjectInventoryDeduplicatesSharedDirectories"] = sources.filter { $0.workspace == second.path }.count == 1
         checks["memoryProjectInventoryIncludesSecondarySourceFolders"] = sources.contains { $0.workspace == secondary.path && $0.taskID == multiID }
         checks["memoryProjectInventoryRetainsUnavailableDirectories"] = sources.contains { $0.workspace == unavailable.path && $0.taskID == missingID }
+        checks["registeredProjectsWithoutTasksIncludeAllSourceFoldersAcrossModes"] = sources.filter { $0.workspace == standaloneSource.path }.count == 1 && sources.contains { $0.workspace == standaloneSource.path && $0.taskID == nil } && sources.contains { $0.workspace == standalone.path && $0.taskID == nil && $0.title == "云端服务" }
         checks["memoryProjectInventoryPrefersCurrentTaskAsOwner"] = AgentMemory.projects(store: tasks, preferredTaskID: peerID).first { $0.workspace == second.path }?.taskID == peerID
         checks["memoryProjectInventoryKeepsUnrelatedFoldersOutsideScope"] = !sources.contains { $0.workspace == output.path }
         let projectPage = AgentMemorySettingsPage(store: tasks, taskID: noWorkspace, workspace: nil, service: service)
         guard let projectRoot = projectPage.pageContentView else { throw PetError("缺少跨项目记忆页") }
-        let buttonID = { (path: String) in "memory-project-" + AgentFiles.hash(Data(path.utf8)) }
         checks["noWorkspaceMemoryPageListsExistingProjects"] = find(projectRoot, id: "settings-card-memory-projects") != nil && (find(projectRoot, id: buttonID(second.path)) as? NSButton)?.isEnabled == true
         checks["unavailableMemoryProjectDoesNotBlockOtherProjects"] = (find(projectRoot, id: buttonID(unavailable.path)) as? NSButton)?.isEnabled == false && (find(projectRoot, id: buttonID(secondary.path)) as? NSButton)?.isEnabled == true
         projectPage.window?.close()
@@ -140,6 +147,39 @@ import AppKit
         projectChild?.close(); projectPane.layoutSubtreeIfNeeded()
         checks["returnFromOtherProjectRestoresOriginalSourcePicker"] = projectPane.currentController === hostedPage && sourcePicker?.isHiddenOrHasHiddenAncestor == false && sourcePicker?.selectedItem?.representedObject as? String == second.path && editing?.stringValue == "项目 · " + second.lastPathComponent
         projectPane.finish(); projectHost.close()
+        let initial = try AgentMemory.snapshot(.project, store: tasks, taskID: nil, workspace: standalone.path)
+        let standaloneFile = standalone.appendingPathComponent(".bluefatfish/memory.md")
+        _ = try AgentMemory.save(.project, content: "STANDALONE_MEMORY_PUBLIC_493", expectedHash: initial.hash, store: tasks, taskID: nil, workspace: standalone.path)
+        let createdMemory = try String(contentsOf: standaloneFile, encoding: .utf8)
+        checks["registeredProjectCreatesItsOwnMemoryFile"] = initial.content.isEmpty && createdMemory == "STANDALONE_MEMORY_PUBLIC_493"
+        do { _ = try AgentMemory.save(.project, content: "STALE_PUBLIC", expectedHash: initial.hash, store: tasks, taskID: nil, workspace: standalone.path); checks["registeredProjectRejectsAnOutdatedDraft"] = false }
+        catch { checks["registeredProjectRejectsAnOutdatedDraft"] = error.localizedDescription.contains("已更改") }
+        do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: nil, workspace: output.path); checks["unregisteredFolderCannotOpenTasklessMemory"] = false }
+        catch { checks["unregisteredFolderCannotOpenTasklessMemory"] = error.localizedDescription.contains("登记范围") }
+        let moved = standalone.appendingPathExtension("moved")
+        try FileManager.default.moveItem(at: standalone, to: moved)
+        try FileManager.default.createSymbolicLink(at: standalone, withDestinationURL: second)
+        do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: nil, workspace: standalone.path); checks["registeredMemoryRejectsRedirectedRoot"] = false }
+        catch { checks["registeredMemoryRejectsRedirectedRoot"] = error.localizedDescription.contains("位置已变化") }
+        let whileRedirected = AgentMemory.projects(store: tasks, preferredTaskID: nil)
+        checks["registeredProjectRemainsListedWhenItsPathIsRedirected"] = whileRedirected.contains { $0.workspace == standalone.path && $0.taskID == nil } && whileRedirected.contains { $0.workspace == second.path }
+        try FileManager.default.removeItem(at: standalone)
+        try FileManager.default.moveItem(at: moved, to: standalone)
+        let detachedPage = AgentMemorySettingsPage(store: tasks, taskID: nil, workspace: nil, service: service)
+        guard let detachedRoot = detachedPage.pageContentView, let search = find(detachedRoot, id: "memory-project-search") as? NSSearchField,
+              let action = search.action else { throw PetError("缺少独立项目搜索") }
+        search.stringValue = "云端服务"; search.sendAction(action, to: search.target)
+        checks["memoryOverviewSearchFiltersByRegisteredName"] = find(detachedRoot, id: buttonID(second.path)) == nil && (find(detachedRoot, id: buttonID(standalone.path)) as? NSButton)?.isEnabled == true
+        search.stringValue = "STANDALONE-SOURCE"; search.sendAction(action, to: search.target)
+        checks["memoryOverviewSearchFiltersByPath"] = find(detachedRoot, id: buttonID(standalone.path)) == nil && (find(detachedRoot, id: buttonID(standaloneSource.path)) as? NSButton)?.isEnabled == true
+        search.stringValue = "NO_PROJECT_PUBLIC"; search.sendAction(action, to: search.target)
+        checks["memoryOverviewSearchShowsEmptyResult"] = (find(detachedRoot, id: "memory-project-empty") as? NSTextField)?.stringValue == "未找到项目"
+        search.stringValue = ""; search.sendAction(action, to: search.target)
+        var detachedEditor: AgentSettingsPageController?
+        detachedPage.onSettingsPush = { detachedEditor = $0 }
+        (find(detachedRoot, id: buttonID(standalone.path)) as? NSButton)?.performClick(nil)
+        checks["registeredProjectEditorOpensWithoutAnyTaskContext"] = detachedEditor is AgentRecordWindow && detachedEditor?.settingsContext?.location == standalone.path && detachedEditor?.pageContentView.map { containsText($0, "STANDALONE_MEMORY_PUBLIC_493") } == true
+        detachedEditor?.window?.close(); detachedPage.window?.close()
         do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID, workspace: secondary.path); checks["crossProjectInventoryDoesNotExpandOwnerScope"] = false }
         catch { checks["crossProjectInventoryDoesNotExpandOwnerScope"] = error.localizedDescription.contains("不属于当前任务") }
         let reloaded = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: store.keychain, hookKeychain: store.keychain)

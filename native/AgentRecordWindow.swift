@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 @MainActor final class AgentRecordWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String
     private let taskHosted: Bool, documentOnly: Bool, wikiOnly: Bool
-    private let memoryWorkspace: String?
+    private let memoryTaskID: String?, memoryWorkspace: String?
     private var openedMemoryWorkspace: String?, recoveryBlockedReason: String?
     private let sections = NSSegmentedControl(labels: ["计划", "产物", "来源", "变更", "日志", "记忆", "Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let table = NSTableView(), text = AgentMarkdownTextView(), state = AgentSettingsStatusField("文档保存状态")
@@ -85,8 +85,9 @@ import UniformTypeIdentifiers
     var hasIndependentVideoWindow: Bool { videoWindow?.hasIndependentWindow == true }
     var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true || wikiPlanWindow?.hasIndependentWindow == true }
     var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow || sourceWindow?.hasVideoPlayback == true }
-    init(store: AgentStore, taskID: String, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
-        self.store = store; self.taskID = taskID; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.wikiOnly = wikiOnly; self.memoryWorkspace = memoryWorkspace
+    init(store: AgentStore, taskID: String?, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil) {
+        self.store = store; self.taskID = taskID ?? ""; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.wikiOnly = wikiOnly; self.memoryTaskID = taskID; self.memoryWorkspace = memoryWorkspace
+        let taskID = self.taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
         window.backgroundColor = .windowBackgroundColor
@@ -170,7 +171,9 @@ import UniformTypeIdentifiers
         }
         let actions = NSStackView(views: [state, NSView(), allowInstruction, revokeInstruction, newOffice, openOffice, generate, wikiCards, undo, open, compare, save]); actions.spacing = 8
         for view in [sections, navigation, documentPane, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: 165), navigation.topAnchor.constraint(equalTo: memoryOnly || wikiOnly ? content.topAnchor : sections.bottomAnchor, constant: memoryOnly || wikiOnly ? 14 : 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
+        let singleMemory = memoryOnly && memoryTaskID == nil && memoryWorkspace != nil
+        navigation.isHidden = singleMemory
+        NSLayoutConstraint.activate([sections.topAnchor.constraint(equalTo: content.topAnchor, constant: 18), sections.centerXAnchor.constraint(equalTo: content.centerXAnchor), navigation.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), navigation.widthAnchor.constraint(equalToConstant: singleMemory ? 0 : 165), navigation.topAnchor.constraint(equalTo: memoryOnly || wikiOnly ? content.topAnchor : sections.bottomAnchor, constant: memoryOnly || wikiOnly ? 14 : 16), navigation.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -12), documentPane.leadingAnchor.constraint(equalTo: navigation.trailingAnchor, constant: singleMemory ? 0 : 12), documentPane.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), documentPane.topAnchor.constraint(equalTo: navigation.topAnchor), documentPane.bottomAnchor.constraint(equalTo: navigation.bottomAnchor), actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14)])
         refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -417,9 +420,14 @@ import UniformTypeIdentifiers
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
         wikiCards.isHidden = sections.selectedSegment != 6 || onOpenKnowledgeCards == nil
         wikiTree.isHidden = sections.selectedSegment != 6; list.isHidden = !wikiTree.isHidden
+        newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
+        if sections.selectedSegment == 5 {
+            let scopes = memoryTaskID != nil ? AgentMemoryScope.allCases : memoryWorkspace == nil ? [.global, .userInstructions] : [.project]
+            items = scopes.map { ($0.title, $0.rawValue) }; text.string = ""
+            reloadRecordItems(selecting: preferred); return
+        }
         guard let task = store.task(taskID) else { return }
         updateWikiSharingState()
-        newOffice.isHidden = sections.selectedSegment != 1; openOffice.isHidden = newOffice.isHidden
         openOffice.isEnabled = task.workspace != nil; newOffice.isEnabled = task.workspace != nil && ![.running, .waiting].contains(task.status) && !task.archived
         switch sections.selectedSegment {
         case 0:
@@ -435,14 +443,16 @@ import UniformTypeIdentifiers
         case 3: items = task.changes.map { ((($0.restoredAt != nil) ? "✓ " : "") + URL(fileURLWithPath: $0.path).lastPathComponent, $0.id) }
         case 4:
             items = [("全部日志", "all-logs")] + task.events.filter { $0.kind == "hook" }.suffix(64).reversed().map { ($0.statusTitle + " · " + $0.title, $0.id) }
-        case 5: items = AgentMemoryScope.allCases.map { ($0.title, $0.rawValue) }
         case 6:
             do { let view = try AgentWiki.view(store: store, taskID: taskID, language: wikiTree.selectedLanguage), pages = view.pages; items = pages.map { ($0.title, $0.path) }; let preferred = pages.first { $0.path == wikiTree.selectedDocument }?.path ?? items.first?.value; wikiTree.show(pages, selected: preferred, root: view.root); state.stringValue = items.isEmpty ? "未生成" : try AgentWiki.status(store: store, taskID: taskID, language: wikiTree.selectedLanguage) }
             catch { items = []; wikiTree.show([], selected: nil); state.stringValue = error.localizedDescription }
         default:
             items = []; text.string = task.events.map { "\($0.title) · \($0.status)\n\($0.detail)" }.joined(separator: "\n\n────────\n\n")
         }
-        if [1, 2, 3, 5, 6].contains(sections.selectedSegment) { text.string = "" }
+        if [1, 2, 3, 6].contains(sections.selectedSegment) { text.string = "" }
+        reloadRecordItems(selecting: preferred)
+    }
+    private func reloadRecordItems(selecting preferred: String?) {
         table.delegate = nil; table.reloadData(); table.deselectAll(nil); table.delegate = self
         updateTaskItemPicker()
         if sections.selectedSegment == 6 { if let selected = wikiTree.selectedDocument { _ = wikiTree.select(selected, notify: false); loadSelection(selected) } }
@@ -741,11 +751,27 @@ import UniformTypeIdentifiers
     }
     private func loadSelection(_ value: String) {
         defer { updateTaskItemPicker(); onWorkspaceChange?() }
-        guard let task = store.task(taskID) else { return }
         load?.cancel(); selection = value; openedHash = nil; recoveryBlockedReason = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true; open.title = "打开"
         do {
+            if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
+                let task = memoryTaskID.flatMap(store.task)
+                let memory = try AgentMemory.snapshot(scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace)
+                openedMemoryWorkspace = memory.workspace ?? memoryWorkspace ?? task?.workspace
+                text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
+                text.isEditable = scope != .effectiveInstructions && task?.status != .running && (!scope.isInstructions || task?.status != .waiting)
+                save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
+                allowInstruction.isHidden = scope != .effectiveInstructions; revokeInstruction.isHidden = allowInstruction.isHidden
+                guard scope == .effectiveInstructions, let task else { return }
+                allowInstruction.isEnabled = !task.archived && ![.running, .waiting].contains(task.status) && store.instructions.report(task).issues.contains(where: \.needsPermission)
+                revokeInstruction.removeAllItems(); revokeInstruction.addItem(withTitle: "撤销允许")
+                for grant in task.instructionGrants ?? [] where grant.workspace == task.workspace {
+                    let item = NSMenuItem(title: URL(fileURLWithPath: grant.path).lastPathComponent, action: nil, keyEquivalent: ""); item.representedObject = grant.path; item.toolTip = grant.path; revokeInstruction.menu?.addItem(item)
+                }
+                revokeInstruction.isEnabled = revokeInstruction.numberOfItems > 1; return
+            }
+            guard let task = store.task(taskID) else { return }
             if sections.selectedSegment == 1, let url = URL(string: value), url.scheme == "canvas", let id = url.host.flatMap({ UUID(uuidString: $0)?.uuidString }) {
                 let canvas = try store.canvases.source(id, taskID: taskID); text.string = canvas.code; open.isHidden = false; open.title = "打开画布"; state.stringValue = canvas.record.title; return
             }
@@ -754,20 +780,6 @@ import UniformTypeIdentifiers
                 text.string = events.map { event in
                     event.title + " · " + event.statusTitle + (event.hook?.asynchronous == true ? " · 后台" : "") + (event.duration.map { " · " + String(format: "%.1fs", $0) } ?? "") + "\n" + event.detail
                 }.joined(separator: "\n\n────────\n\n"); return
-            }
-            if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: value) {
-                let memory = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: memoryWorkspace)
-                openedMemoryWorkspace = memory.workspace ?? memoryWorkspace ?? task.workspace
-                text.string = memory.content; openedHash = memory.hash; state.stringValue = memory.location
-                text.isEditable = scope != .effectiveInstructions && task.status != .running && (!scope.isInstructions || task.status != .waiting)
-                save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
-                allowInstruction.isHidden = scope != .effectiveInstructions; revokeInstruction.isHidden = allowInstruction.isHidden
-                allowInstruction.isEnabled = !task.archived && ![.running, .waiting].contains(task.status) && store.instructions.report(task).issues.contains(where: \.needsPermission)
-                revokeInstruction.removeAllItems(); revokeInstruction.addItem(withTitle: "撤销允许")
-                for grant in task.instructionGrants ?? [] where grant.workspace == task.workspace {
-                    let item = NSMenuItem(title: URL(fileURLWithPath: grant.path).lastPathComponent, action: nil, keyEquivalent: ""); item.representedObject = grant.path; item.toolTip = grant.path; revokeInstruction.menu?.addItem(item)
-                }
-                revokeInstruction.isEnabled = revokeInstruction.numberOfItems > 1; return
             }
             if sections.selectedSegment == 2 {
                 if let url = URL(string: value), url.isFileURL, AgentVideoSnapshot.supports(url) { let (files,file) = try AgentWorkspaceScope.location(task,path:url.path); try showVideo(file, files: files) }
@@ -907,15 +919,16 @@ import UniformTypeIdentifiers
     }
     @objc private func saveFile() {
         if let recoveryBlockedReason { state.stringValue = recoveryBlockedReason; return }
-        guard let path = selection, let task = store.task(taskID) else { return }
-        guard !saving else { return }
-        guard ![.running, .waiting].contains(task.status), !task.archived else { state.stringValue = "任务当前只读，草稿已保留"; return }
+        guard let path = selection, !saving else { return }
+        let task = store.task(taskID)
+        if let task, [.running, .waiting].contains(task.status) || task.archived { state.stringValue = "任务当前只读，草稿已保留"; return }
         do {
             try markdown.finishEditing()
             if sections.selectedSegment == 5, let scope = AgentMemoryScope(rawValue: path), let hash = openedHash {
-                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: taskID, workspace: openedMemoryWorkspace ?? memoryWorkspace)
+                let saved = try AgentMemory.save(scope, content: text.string, expectedHash: hash, store: store, taskID: memoryTaskID, workspace: openedMemoryWorkspace ?? memoryWorkspace)
                 openedHash = saved.hash; dirty = false; state.stringValue = "已保存"; return
             }
+            guard let task else { return }
             let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)
             guard file == openedFile, fileIsEditable(task, file: file) else { throw PetError("文件位置已变化或当前只读，草稿已保留") }
             guard let hash = openedHash else { throw PetError("打开的文件版本不可用，草稿已保留") }

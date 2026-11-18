@@ -7,23 +7,41 @@ enum AgentMemoryScope: String, CaseIterable {
 }
 struct AgentMemorySnapshot { var content: String; var hash: String; var location: String; var workspace: String? = nil }
 struct AgentMemoryProjectSource: Equatable {
-    let taskID: String, workspace: String, title: String
+    let taskID: String?, workspace: String, title: String
 }
 
 @MainActor enum AgentMemory {
-    static func projects(store: AgentStore, preferredTaskID: String) -> [AgentMemoryProjectSource] {
+    private static func registeredProjects(_ store: AgentStore) -> [AgentDirectoryEntry] {
+        AgentWorkMode.allCases.flatMap { store.organization.directories($0, tasks: [], includingArchived: true) }
+    }
+    static func projects(store: AgentStore, preferredTaskID: String?) -> [AgentMemoryProjectSource] {
+        let projects = registeredProjects(store)
+        let registeredPaths = Set(projects.flatMap(\.sourceFolders))
         var sources: [String: AgentMemoryProjectSource] = [:]
+        func add(_ path: String, taskID: String?, title: String) {
+            guard path.hasPrefix("/"), path != "/", !path.contains("\0"), path.utf8.count < 8192 else { return }
+            let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+            let key = taskID == nil ? normalized : (try? AgentFiles(workspace: path).root.path) ?? normalized
+            // A redirected registration must not displace the destination in the catalog.
+            if registeredPaths.contains(path), key != normalized { return }
+            guard sources[key] == nil else { return }
+            sources[key] = AgentMemoryProjectSource(taskID: taskID, workspace: path, title: title)
+        }
         let tasks = store.tasks.sorted {
             if ($0.id == preferredTaskID) != ($1.id == preferredTaskID) { return $0.id == preferredTaskID }
             if $0.archived != $1.archived { return !$0.archived }
             return $0.id < $1.id
         }
         for task in tasks {
-            for path in task.workspacePaths where path.hasPrefix("/") && path != "/" && !path.contains("\0") && path.utf8.count < 8192 {
-                let key = (try? AgentFiles(workspace: path).root.path) ?? URL(fileURLWithPath: path).standardizedFileURL.path
-                guard sources[key] == nil else { continue }
+            for path in task.workspacePaths {
                 let title = store.organization.name(path, mode: task.organizationMode) ?? URL(fileURLWithPath: path).lastPathComponent
-                sources[key] = AgentMemoryProjectSource(taskID: task.id, workspace: path, title: title)
+                add(path, taskID: task.id, title: title)
+            }
+        }
+        for project in projects {
+            for path in project.sourceFolders {
+                let title = path == project.primary ? project.title : URL(fileURLWithPath: path).lastPathComponent
+                add(path, taskID: nil, title: title)
             }
         }
         return sources.values.sorted {
@@ -40,25 +58,35 @@ struct AgentMemoryProjectSource: Equatable {
         let settings = try agentSettings(store: store)
         guard scope == .global ? settings.globalMemory : settings.projectMemory else { throw PetError(scope.title + "已关闭；可在设置中重新启用") }
     }
-    private static func file(_ scope: AgentMemoryScope, store: AgentStore, taskID: String, workspace: String?) throws -> (AgentFiles, URL, Int) {
+    private static func file(_ scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String?) throws -> (AgentFiles, URL, Int) {
         let files: AgentFiles, path: String
         if scope == .global { files = try AgentFiles(workspace: store.directory.path); path = "memory.md" }
         else if scope == .userInstructions { files = try AgentFiles(workspace: store.directory.deletingLastPathComponent().path); path = "AGENTS.md" }
+        else if scope == .project, taskID == nil, let workspace {
+            guard workspace != "/", registeredProjects(store).contains(where: { $0.sourceFolders.contains(workspace) }) else { throw PetError("项目目录已离开登记范围") }
+            files = try AgentFiles(workspace: workspace)
+            guard files.root.path == workspace else { throw PetError("项目目录位置已变化，请重新选择") }
+            path = ".bluefatfish/memory.md"
+        }
         else {
-            guard let original = store.task(taskID) else { throw PetError("任务不存在") }
+            guard let taskID, let original = store.task(taskID) else { throw PetError("任务不存在") }
             let task = try AgentWorkspaceScope.settingsTask(original, workspace: workspace)
             files = try AgentFiles(workspace: task.workspace); path = scope == .instructions ? "AGENTS.md" : scope == .localInstructions ? "AGENTS.local.md" : ".bluefatfish/memory.md"
         }
-        return (files, try files.resolve(path), scope.isInstructions ? 65_536 : 24_000)
+        let url = try files.resolve(path)
+        if scope == .project, taskID == nil, url.path != files.root.appendingPathComponent(path).path {
+            throw PetError("项目记忆路径已变化，请检查文件后重新打开")
+        }
+        return (files, url, scope.isInstructions ? 65_536 : 24_000)
     }
-    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String, workspace: String? = nil) throws -> AgentMemorySnapshot {
+    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String? = nil) throws -> AgentMemorySnapshot {
         if scope == .effectiveInstructions {
-            guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+            guard let taskID, let task = store.task(taskID) else { throw PetError("任务不存在") }
             let report = store.instructions.report(task), text = report.preview
             return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(Data(text.utf8)), location: "\(report.sources.count)份来源" + (report.issues.isEmpty ? "" : " · \(report.issues.count)项待处理"))
         }
         if scope == .summary {
-            guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+            guard let taskID, let task = store.task(taskID) else { throw PetError("任务不存在") }
             let text = task.contextSummary ?? ""
             return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(Data(text.utf8)), location: "当前任务摘要")
         }
@@ -67,13 +95,14 @@ struct AgentMemoryProjectSource: Equatable {
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("记忆文件不是 UTF-8 文本") }
         return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: scope == .global ? "全局 memory.md" : files.relative(url), workspace: [.global, .userInstructions].contains(scope) ? nil : files.root.path)
     }
-    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String, workspace: String? = nil) throws -> AgentMemorySnapshot {
+    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String?, workspace: String? = nil) throws -> AgentMemorySnapshot {
         guard scope != .effectiveInstructions else { throw PetError("请编辑原指令文件，有效指令只读") }
-        guard let task = store.task(taskID) else { throw PetError("任务不存在") }
+        if let taskID, store.task(taskID) == nil { throw PetError("任务不存在") }
         let previous = try snapshot(scope, store: store, taskID: taskID, workspace: workspace)
         guard previous.hash == expectedHash else { throw PetError("记忆已更改，请重新打开后编辑") }
         let data = Data(content.utf8)
         if scope == .summary {
+            guard let taskID, let task = store.task(taskID) else { throw PetError("任务不存在") }
             guard task.status != .running, data.count <= 24_000 else { throw PetError("请先停止任务，摘要最多 24 KB") }
             store.update(taskID) { $0.contextSummary = content.isEmpty ? nil : content; if content.isEmpty { $0.contextThroughID = nil } }
             if let error = store.writeError { throw PetError(error) }

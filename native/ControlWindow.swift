@@ -1619,7 +1619,6 @@ final class FormDocumentView: NSView {
             }
             worktreePolicyPanel = manager.policy; return manager
         case "memory":
-            guard let taskID else { return nil }
             guard let companion else { return nil }
             return AgentMemorySettingsPage(store: store, taskID: taskID, workspace: workspace, service: companion.generalSettings)
         case "rules":
@@ -2042,7 +2041,7 @@ final class FormDocumentView: NSView {
             ("agents", "agents", "智能体", "Agent 角色 模型 工具权限"),
             ("teams", "teams", "智能体团队", "Team 团队 成员 负责人"),
             ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
-            ("memory", "memory", "记忆与指令", "AGENTS 全局 项目记忆 用户指令"),
+            ("memory", "memory", "记忆与指令", "AGENTS 全局 全部项目 项目记忆 用户指令"),
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
             ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {

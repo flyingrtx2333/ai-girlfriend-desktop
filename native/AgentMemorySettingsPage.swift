@@ -1,22 +1,23 @@
 import AppKit
 
 @MainActor final class AgentMemorySettingsPage: AgentSettingsPageController {
-    private let store: AgentStore, taskID: String, workspace: String?
+    private let store: AgentStore, taskID: String?, workspace: String?
     private let service: AgentGeneralSettings
     private let global = NSSwitch(), project = NSSwitch()
     private let state = AgentSettingsStatusField("记忆保存状态")
     private let feedback = NSStackView()
     private let reload = NSButton(title: "重新载入", target: nil, action: nil)
     private var states: [String: NSTextField] = [:], buttons: [NSButton] = []
-    private let projectRows = NSStackView()
-    private var projectSection: NSView!
+    private let projectSearch = NSSearchField(), projectRows = NSStackView()
+    private let emptyProjects = NSTextField(labelWithString: "")
+    private var allProjects: [AgentMemoryProjectSource] = []
     private var projectSources: [AgentMemoryProjectSource] = [], projectButtons: [NSButton] = [], projectStates: [NSTextField] = []
     private var saveFailed = false
     private weak var lastOpened: NSButton?
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
 
-    init(store: AgentStore, taskID: String, workspace: String?, service: AgentGeneralSettings) {
+    init(store: AgentStore, taskID: String?, workspace: String?, service: AgentGeneralSettings) {
         self.store = store; self.taskID = taskID; self.workspace = workspace; self.service = service
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "记忆与指令"; window.minSize = NSSize(width: 650, height: 450); window.isReleasedWhenClosed = false
@@ -41,12 +42,21 @@ import AppKit
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
             states[scope.rawValue] = status; buttons.append(button); return row
         }
-        let memory = AgentSettingsStyle.section("记忆内容", id: "memory-content", rows: [.global, .project].map(source))
-        projectRows.orientation = .vertical; projectRows.alignment = .leading; projectRows.spacing = 16
-        projectSection = AgentSettingsStyle.section("其他项目记忆", id: "memory-projects", rows: [projectRows])
+        let memory = AgentSettingsStyle.section("记忆内容", id: "memory-content", rows: [source(.global)])
+        projectSearch.placeholderString = "搜索项目名称或路径"; projectSearch.setAccessibilityLabel("搜索记忆项目")
+        projectSearch.identifier = .init("memory-project-search"); projectSearch.target = self; projectSearch.action = #selector(filterProjects); projectSearch.sendsSearchStringImmediately = true
+        projectRows.orientation = .vertical; projectRows.alignment = .leading; projectRows.spacing = 10
+        emptyProjects.textColor = AgentWorkbenchTheme.secondaryText
+        emptyProjects.identifier = .init("memory-project-empty")
+        let projectResults = NSStackView(views: [projectRows, emptyProjects])
+        projectResults.orientation = .vertical; projectResults.alignment = .leading
+        projectRows.widthAnchor.constraint(equalTo: projectResults.widthAnchor).isActive = true
+        let projectSection = AgentSettingsStyle.section("全部项目记忆", id: "memory-projects", rows: [projectSearch, projectResults])
         let instructions = AgentSettingsStyle.section("指令", id: "memory-instructions", rows: [.userInstructions, .instructions, .localInstructions, .effectiveInstructions].map(source))
         let summary = AgentSettingsStyle.section("当前任务", id: "memory-summary", rows: [source(.summary)])
-        let content = AgentSettingsStyle.form([behavior, feedback, memory, projectSection, instructions, summary], label: "记忆与指令设置")
+        var sections: [NSView] = [behavior, feedback, memory, projectSection, instructions]
+        if taskID != nil { sections.append(summary) }
+        let content = AgentSettingsStyle.form(sections, label: "记忆与指令设置")
         window.contentView = content; update()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -71,13 +81,13 @@ import AppKit
                 states[scope.rawValue]?.stringValue = error.localizedDescription; states[scope.rawValue]?.toolTip = error.localizedDescription; button.isEnabled = false
             }
         }
-        updateProjects()
+        allProjects = AgentMemory.projects(store: store, preferredTaskID: taskID)
+        filterProjects()
     }
-    private func updateProjects() {
-        let current = workspace ?? store.task(taskID)?.workspace
-        let currentRoot = current.flatMap { try? AgentFiles(workspace: $0).root.path } ?? current
-        let sources = AgentMemory.projects(store: store, preferredTaskID: taskID).filter {
-            ((try? AgentFiles(workspace: $0.workspace).root.path) ?? $0.workspace) != currentRoot
+    @objc private func filterProjects() {
+        let query = projectSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sources = allProjects.filter {
+            query.isEmpty || $0.title.localizedStandardContains(query) || $0.workspace.localizedStandardContains(query)
         }
         if sources != projectSources {
             projectRows.arrangedSubviews.forEach { projectRows.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -96,15 +106,17 @@ import AppKit
                 projectButtons.append(button); projectStates.append(status)
             }
         }
-        projectSection.isHidden = sources.isEmpty
+        projectRows.isHidden = sources.isEmpty
+        emptyProjects.isHidden = !sources.isEmpty
+        emptyProjects.stringValue = query.isEmpty ? "暂无项目" : "未找到项目"
         for (index, source) in sources.enumerated() {
             do {
-                let value = try AgentMemory.snapshot(.project, store: store, taskID: source.taskID, workspace: source.workspace)
-                let count = value.content.trimmingCharacters(in: .whitespacesAndNewlines).count
-                projectStates[index].stringValue = (count == 0 ? "暂无内容" : "\(count) 字") + " · " + source.workspace
+                let files = try AgentFiles(workspace: source.workspace)
+                guard source.taskID != nil || files.root.path == source.workspace else { throw PetError("项目目录位置已变化") }
+                projectStates[index].stringValue = source.workspace
                 projectStates[index].toolTip = source.workspace; projectButtons[index].isEnabled = true
             } catch {
-                projectStates[index].stringValue = error.localizedDescription; projectStates[index].toolTip = source.workspace + "\n" + error.localizedDescription
+                projectStates[index].stringValue = error.localizedDescription + " · " + source.workspace; projectStates[index].toolTip = source.workspace + "\n" + error.localizedDescription
                 projectButtons[index].isEnabled = false
             }
         }
@@ -131,7 +143,11 @@ import AppKit
         guard sender.isEnabled, projectButtons.contains(sender), projectSources.indices.contains(sender.tag) else { return }
         let source = projectSources[sender.tag]
         do { _ = try AgentMemory.snapshot(.project, store: store, taskID: source.taskID, workspace: source.workspace) }
-        catch { updateProjects(); return }
+        catch {
+            projectStates[sender.tag].stringValue = error.localizedDescription
+            projectStates[sender.tag].toolTip = source.workspace + "\n" + error.localizedDescription
+            return
+        }
         lastOpened = sender
         let editor = AgentRecordWindow(store: store, taskID: source.taskID, section: 5, memoryOnly: true, memoryWorkspace: source.workspace)
         editor.window?.title = source.title + " · 项目记忆"; editor.selectItem(section: 5, value: AgentMemoryScope.project.rawValue)
