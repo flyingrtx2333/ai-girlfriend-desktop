@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor final class AgentDataImportView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let store: AgentStore, service: AgentDataImport
@@ -16,6 +17,7 @@ import AppKit
     private var shownBatch: String?
     private var listHeight: NSLayoutConstraint?
     var onOpen: ((String) -> Void)?
+    var onOpenConnector: ((String, String?) throws -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
     private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.selectedSegment)] }
     private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
@@ -130,7 +132,7 @@ import AppKit
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
     private func updateDetail() {
-        open.title = selectedCategory == .tasks ? "打开任务" : "在访达中显示"
+        open.title = selectedCategory == .tasks ? "打开任务" : selectedCategory == .connectors ? "配置连接器" : "在访达中显示"
         original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
         detail.enclosingScrollView?.isHidden = !rows.indices.contains(table.selectedRow)
         guard rows.indices.contains(table.selectedRow) else { detail.string = ""; open.isEnabled = false; original.isEnabled = false; return }
@@ -156,6 +158,17 @@ import AppKit
             original.isEnabled = (try? AgentSkillImport.sourceURL(record, root: root)) != nil
             return
         }
+        if let plan = record.connector {
+            let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局连接器"
+            var lines = [record.title, "来源 · " + record.file, destination]
+            if let status = record.issue ?? states[record.id] { lines.append(status) }
+            if record.issue == nil { lines.append(plan.needsSetup ? "待配置 · 导入后需补全" : "导入后可在连接器中启用") }
+            lines.append(contentsOf: record.warnings)
+            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            open.isEnabled = store.mcp.containsImported(record.targetID, workspace: plan.workspace)
+            original.isEnabled = (try? AgentMCPDataImport.reveal(record, root: root)) != nil
+            return
+        }
         detail.string = record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
@@ -165,12 +178,17 @@ import AppKit
     }
     @objc private func changeSource() { root = defaultRoot(selectedCategory); signature = ""; refresh() }
     @objc private func changeCategory() {
-        if root.path == defaultRoot(.tasks).path || root.path == defaultRoot(.skills).path { root = defaultRoot(selectedCategory) }
+        let configurationFile = selectedCategory != .connectors && (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        if configurationFile || root.path == defaultRoot(.tasks).path || root.path == defaultRoot(.skills).path { root = defaultRoot(selectedCategory) }
         signature = ""; refresh()
     }
     @objc private func changeDestination() { targetWorkspace = destination.selectedItem?.representedObject as? String; signature = ""; refresh() }
     @objc private func chooseFolder() {
-        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true; panel.directoryURL = root; panel.prompt = "选择来源目录"
+        let connector = selectedCategory == .connectors
+        let panel = NSOpenPanel(); panel.canChooseFiles = connector; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true
+        if connector { panel.allowedContentTypes = [selectedSource == .qoder ? .json : UTType(filenameExtension: "toml") ?? .data] }
+        panel.directoryURL = root.hasDirectoryPath ? root : root.deletingLastPathComponent()
+        panel.prompt = connector ? "选择来源" : "选择来源目录"
         guard let window else { return }; panel.beginSheetModal(for: window) { [weak self] response in guard let self, response == .OK, let url = panel.url else { return }; root = url; signature = ""; refresh() }
     }
     @objc private func detectRecords() {
@@ -195,6 +213,7 @@ import AppKit
         let record = rows[table.selectedRow]
         guard record.category != .tasks else { onOpen?(record.targetID); return }
         do {
+            if record.connector != nil { try onOpenConnector?(record.targetID, record.targetWorkspace); return }
             let files = record.category == .skills ? [try AgentSkillImport.destinationURL(record, store: store)] : try AgentMemoryImport.destinationURLs(record, store: store)
             guard !files.isEmpty else { throw PetError("目标记忆文件已移除") }
             NSWorkspace.shared.activateFileViewerSelecting(files)
@@ -209,6 +228,7 @@ import AppKit
             case .tasks: url = try service.sourceURL(record.targetID)
             case .memory: url = try AgentMemoryImport.sourceURL(record, root: root)
             case .skills: url = try AgentSkillImport.sourceURL(record, root: root)
+            case .connectors: url = try AgentMCPDataImport.reveal(record, root: root)
             }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }

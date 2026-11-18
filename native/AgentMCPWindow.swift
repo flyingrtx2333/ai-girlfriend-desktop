@@ -287,7 +287,7 @@ import UniformTypeIdentifiers
         guard let selected else { return }
         let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”？"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
         guard alert.runModal(for: editorWindow) == .alertFirstButtonReturn else { return }
-        do { try service.remove(selected.id, revision: selected.revision); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
+        do { try service.remove(selected.id, revision: selected.revision, workspace: workspace); dirty = false; reload() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func importJSON() {
         guard job == nil, let window = editorWindow, !window.hasBlockingDialog, canLeave() else { return }

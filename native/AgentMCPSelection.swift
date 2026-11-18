@@ -2,9 +2,9 @@ import Foundation
 
 struct AgentMCPSelection: Codable, Equatable {
     var id:String, name:String, revision:String, hash:String
-    static func sourceWorkspace(_ server: AgentMCPServer) -> String? { server.plugin.flatMap { try? AgentPlugins.scope($0.name).workspace } }
+    static func sourceWorkspace(_ server: AgentMCPServer) -> String? { server.workspace ?? server.plugin.flatMap { try? AgentPlugins.scope($0.name).workspace } }
     static func scope(_ server:AgentMCPServer) -> String {
-        guard let plugin = server.plugin else { return "用户" }
+        guard let plugin = server.plugin else { return server.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户" }
         return (try? AgentPlugins.scope(plugin.name).workspace).map { "项目插件 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户插件"
     }
     static func title(_ server:AgentMCPServer) -> String { scope(server) + " · " + server.name }
@@ -48,7 +48,7 @@ struct AgentMCPSelection: Codable, Equatable {
         let all = try store.mcp.availableServers(task: task)
         var matches = all.filter { selectionTitle($0).localizedCaseInsensitiveCompare(command.name) == .orderedSame }
         if matches.isEmpty { matches = all.filter { title($0).localizedCaseInsensitiveCompare(command.name) == .orderedSame } }
-        if matches.isEmpty { matches = all.filter { sourceWorkspace($0) != nil && ("项目插件 · " + $0.name).localizedCaseInsensitiveCompare(command.name) == .orderedSame } }
+        if matches.isEmpty { matches = all.filter { $0.plugin != nil && sourceWorkspace($0) != nil && ("项目插件 · " + $0.name).localizedCaseInsensitiveCompare(command.name) == .orderedSame } }
         if matches.isEmpty { matches = all.filter { $0.name.localizedCaseInsensitiveCompare(command.name) == .orderedSame } }
         guard matches.count == 1 else { throw PetError(matches.isEmpty ? "连接器已移除或不属于当前项目，请重新选择" : "连接器名称重复，请从分类中按来源选择") }
         let server = try current(reference(matches[0]),task:task,store:store)

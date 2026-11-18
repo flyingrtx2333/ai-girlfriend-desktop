@@ -1,5 +1,5 @@
 {
-  "originHash" : "cd44d00e72d9d7761211d4002d23909659446f1ba22fdc43ec10b4d4bed6f926",
+  "originHash" : "50ffa1d74ffc273a229a2edba076458cf4bb6113c4ddf6e94e5b3e0f3fed1b1e",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -62,6 +62,15 @@
       "state" : {
         "revision" : "869129b7bf4ecc57b97d0193ad29690ca2134750",
         "version" : "1.8.1"
+      }
+    },
+    {
+      "identity" : "tomldecoder",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/dduan/TOMLDecoder.git",
+      "state" : {
+        "revision" : "a2bbd2796fe3064e107de18cb56031052c4fa899",
+        "version" : "0.4.5"
       }
     }
   ],

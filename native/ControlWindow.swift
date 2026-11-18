@@ -1549,6 +1549,18 @@ final class FormDocumentView: NSView {
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); revealSettingsCategory(); return true
     }
+    private func configureImportedConnector(_ id: String, workspace: String?) throws {
+        guard let store = companion?.agentStore, store.mcp.availableServers(workspace: workspace).contains(where: { $0.id == id }) else {
+            throw PetError("导入的连接器已移除")
+        }
+        try AgentMCPDataImport.requireDestination(workspace, store: store)
+        guard showSettingsCategory("extensions") else { throw PetError("请先完成当前编辑") }
+        restoredSettingsContext = workspace.map { AgentSettingsRecovery.Context(managedWorkspace: $0) } ?? .init(task: nil, workspace: nil)
+        updateSettingsSections()
+        settingsPageHost.selectPage("mcp")
+        guard let manager = settingsPageHost.currentController as? AgentMCPWindow else { throw PetError("连接器设置页不可用") }
+        manager.selectServer(id)
+    }
     private func revealSettingsCategory() {
         window?.contentView?.layoutSubtreeIfNeeded()
         guard let index = settingsCategories.firstIndex(where: { $0.0 == settingsCategory }), categoryButtons.indices.contains(index) else { return }
@@ -2055,8 +2067,10 @@ final class FormDocumentView: NSView {
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel); desktopPanel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
-            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能")
-            let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
+            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能 MCP 连接器")
+            let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
+            imports.onOpenConnector = { [weak self] id, workspace in try self?.configureImportedConnector(id, workspace: workspace) }
+            dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("experiments", "侧任务", "实验 侧任务 保留 可恢复 对话 标签页 主任务")
             let sides = AgentSideTaskSettingsView(service: store.sideTasks); row("", sides); sides.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true

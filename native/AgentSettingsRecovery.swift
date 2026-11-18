@@ -4,14 +4,20 @@ enum AgentSettingsRecovery {
     struct Context: Codable, Equatable, Sendable {
         var taskID: String?, workspace: String?, taskWorkspace: String?, scope: AgentWorkspaceScope?
         var mode: String?, archived: Bool?, ruleDirectories: [AgentRuleDirectory]?
+        var managedProject: Bool?
         @MainActor init(task: AgentTaskRecord?, workspace: String?) {
             taskID = task?.id; self.workspace = workspace; taskWorkspace = task?.workspace; scope = task?.workspaceScope
             mode = task?.organizationMode.rawValue; archived = task?.archived; ruleDirectories = task?.ruleDirectories
         }
-        var folders: [String] { scope?.folders ?? taskWorkspace.map { [$0] } ?? [] }
+        init(managedWorkspace: String) { workspace = managedWorkspace; managedProject = true }
+        var folders: [String] { scope?.folders ?? taskWorkspace.map { [$0] } ?? (managedProject == true ? workspace.map { [$0] } ?? [] : []) }
         var identity: String { ([taskID ?? "", workspace ?? "", scope?.group ?? taskWorkspace ?? ""] + folders).joined(separator: "\0") }
         var valid: Bool {
             func path(_ value: String) -> Bool { value.hasPrefix("/") && !value.contains("\0") && value.utf8.count <= 16_384 }
+            if managedProject == true {
+                return taskID == nil && taskWorkspace == nil && scope == nil && workspace.map(path) == true &&
+                    mode == nil && archived == nil && ruleDirectories == nil
+            }
             return (taskID.map { UUID(uuidString: $0) != nil } ?? true) &&
                 [workspace, taskWorkspace, scope?.group, scope?.primary].compactMap { $0 }.allSatisfy(path) && folders.count <= 128 && folders.allSatisfy(path) &&
                 (workspace == nil || folders.contains(workspace!)) &&
@@ -19,6 +25,7 @@ enum AgentSettingsRecovery {
         }
         @MainActor func requireCurrent(_ store: AgentStore) throws {
             guard valid else { throw PetError("设置草稿所属范围无效，原记录已保留") }
+            if managedProject == true { try AgentMCPDataImport.requireDestination(workspace, store: store); return }
             if let taskID {
                 guard let task = store.task(taskID), Context(task: task, workspace: workspace) == self else { throw PetError("原任务或源文件夹已变化，设置草稿已保留") }
                 if task.workspaceScope != nil { _ = try AgentWorkspaceScope.roots(task) }
