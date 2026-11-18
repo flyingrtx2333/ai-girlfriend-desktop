@@ -61,7 +61,7 @@ import AppKit
             try write(Data(fixture.replacingOccurrences(of: "qoder-reader", with: "kept").utf8), incoming, ".qoder/agents/kept.md")
             let documentation = "PUBLIC HARBOR CONTENT 7213"
             try write(Data((documentation + "\n").utf8), project, "README.md")
-            let script = Data("#!/bin/sh\nprintf '%s\\n' '{\"additionalContext\":\"PUBLIC LOCAL HOOK 4872\"}'\n".utf8)
+            let script = Data("#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"PUBLIC LOCAL HOOK 4872\"}}'\n".utf8)
             try write(script, incoming, ".qoder/hooks/public-check.sh", mode: 0o755)
             let hookConfig = try json(["hooks": [
                 "SessionStart": [["hooks": [["name": "公开项目检查", "type": "command", "command": "\"$QODER_HOOK_ROOT/public-check.sh\"", "timeout": 5]]]],
