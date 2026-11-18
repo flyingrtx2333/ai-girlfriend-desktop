@@ -175,7 +175,7 @@ struct AgentMemoryProjectSource: Equatable {
     static func importDestination(store: AgentStore, workspace: String?) throws -> (files: AgentFiles, folder: URL) {
         let taskID: String?
         if let workspace {
-            guard let source = projects(store: store, preferredTaskID: store.selectedID).first(where: { $0.workspace == workspace }) else { throw PetError("导入目标已离开项目范围") }
+            guard let source = projects(store: store, preferredTaskID: store.selectedID).first(where: { $0.workspace == workspace }) else { throw PetError("项目已离开可用范围") }
             taskID = source.taskID
         } else { taskID = nil }
         let scope: AgentMemoryScope = workspace == nil ? .global : .project

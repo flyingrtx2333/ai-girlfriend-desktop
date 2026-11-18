@@ -7,6 +7,8 @@ import AppKit
     private let state = AgentSettingsStatusField("记忆保存状态")
     private let feedback = NSStackView()
     private let reload = NSButton(title: "重新载入", target: nil, action: nil)
+    private let clearGlobal = AgentDialogButton(title: "清空…", target: nil, action: nil)
+    private let clearProjects = AgentDialogButton(title: "清空项目记忆…", target: nil, action: nil)
     private var states: [String: NSTextField] = [:], buttons: [NSButton] = []
     private let projectSearch = NSSearchField(), projectRows = NSStackView()
     private let emptyProjects = NSTextField(labelWithString: "")
@@ -29,6 +31,12 @@ import AppKit
             control.toolTip = "关闭后不自动加入上下文，记忆工具停止读取和写入；已有内容仍可手动管理。"
         }
         reload.target = self; reload.action = #selector(reloadSettings); reload.bezelStyle = .rounded
+        clearGlobal.target = self; clearGlobal.action = #selector(reviewCleanup(_:))
+        clearProjects.target = self; clearProjects.action = #selector(reviewCleanup(_:))
+        clearGlobal.setAccessibilityLabel("清空全局记忆")
+        clearGlobal.setAccessibilityIdentifier("memory-clear-global")
+        clearProjects.setAccessibilityIdentifier("memory-clear-projects")
+        for button in [clearGlobal, clearProjects] { button.hasDestructiveAction = true; AgentDialogStyle.action(button) }
         [state, NSView(), reload].forEach { feedback.addArrangedSubview($0) }; feedback.spacing = 8
         let behavior = AgentSettingsStyle.section("记忆行为", id: "memory-behavior", rows: [AgentSettingsStyle.formRow("全局记忆", global, trailing: true), AgentSettingsStyle.formRow("项目记忆", project, trailing: true)])
         func source(_ scope: AgentMemoryScope) -> NSView {
@@ -38,7 +46,8 @@ import AppKit
             let labels = NSStackView(views: [title, status]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 5
             let button = NSButton(title: "管理", target: self, action: #selector(openMemory)); button.bezelStyle = .rounded
             button.tag = AgentMemoryScope.allCases.firstIndex(of: scope)!; button.identifier = .init("memory-manage-" + scope.rawValue); button.setAccessibilityLabel("管理" + scope.title)
-            let row = NSStackView(views: [labels, NSView(), button]); row.alignment = .centerY; row.spacing = 12
+            let row = NSStackView(views: [labels, NSView(), button] + (scope == .global ? [clearGlobal] : []))
+            row.alignment = .centerY; row.spacing = 12
             row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
             states[scope.rawValue] = status; buttons.append(button); return row
         }
@@ -51,7 +60,8 @@ import AppKit
         let projectResults = NSStackView(views: [projectRows, emptyProjects])
         projectResults.orientation = .vertical; projectResults.alignment = .leading
         projectRows.widthAnchor.constraint(equalTo: projectResults.widthAnchor).isActive = true
-        let projectSection = AgentSettingsStyle.section("全部项目记忆", id: "memory-projects", rows: [projectSearch, projectResults])
+        let projectToolbar = NSStackView(views: [projectSearch, clearProjects]); projectToolbar.alignment = .centerY; projectToolbar.spacing = 12
+        let projectSection = AgentSettingsStyle.section("全部项目记忆", id: "memory-projects", rows: [projectToolbar, projectResults])
         let instructions = AgentSettingsStyle.section("指令", id: "memory-instructions", rows: [.userInstructions, .instructions, .localInstructions, .effectiveInstructions].map(source))
         let summary = AgentSettingsStyle.section("当前任务", id: "memory-summary", rows: [source(.summary)])
         var sections: [NSView] = [behavior, feedback, memory, projectSection, instructions]
@@ -70,6 +80,7 @@ import AppKit
         if let error = service.error { state.stringValue = error; saveFailed = true }
         feedback.isHidden = state.stringValue.isEmpty
         reload.isHidden = !saveFailed
+        clearGlobal.isEnabled = false
         for button in buttons {
             let scope = AgentMemoryScope.allCases[button.tag]
             do {
@@ -77,6 +88,7 @@ import AppKit
                     let catalog = try AgentMemory.catalog(scope, store: store, taskID: taskID, workspace: workspace)
                     states[scope.rawValue]?.stringValue = countAndDate(catalog)
                     states[scope.rawValue]?.toolTip = catalog.topicError ?? store.directory.path
+                    if scope == .global { clearGlobal.isEnabled = catalog.count > 0 || catalog.topicError != nil }
                 } else {
                     let value = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: workspace)
                     let text = value.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -118,6 +130,7 @@ import AppKit
             }
         }
         projectRows.isHidden = sources.isEmpty
+        clearProjects.isEnabled = !sources.isEmpty
         emptyProjects.isHidden = !sources.isEmpty
         emptyProjects.stringValue = query.isEmpty ? "暂无项目" : "未找到项目"
         for (index, source) in sources.enumerated() {
@@ -143,6 +156,11 @@ import AppKit
     }
     @objc private func reloadSettings() {
         service.reload(); saveFailed = false; state.stringValue = ""; update()
+    }
+    @objc private func reviewCleanup(_ sender: NSButton) {
+        guard sender.isEnabled else { return }
+        lastOpened = sender
+        presentSettingsChild(AgentMemoryCleanupPage(store: store, projects: sender === clearGlobal ? nil : projectSources))
     }
     @objc private func openMemory(_ sender: NSButton) {
         guard sender.isEnabled, AgentMemoryScope.allCases.indices.contains(sender.tag) else { return }

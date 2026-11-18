@@ -387,6 +387,7 @@ import WebKit
         if CommandLine.arguments.contains("--round-rollback-recovery-check") { await runAgentRoundRollbackRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--terminal-check") { await runAgentTerminalCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--import-check") { await runAgentImportCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--memory-cleanup-check") { runMemoryCleanupCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--memory-import-check") { await runMemoryImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-import-check") { await runSkillImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-data-import-check") { await runMCPDataImportCheck(output); NSApp.terminate(nil); return }
