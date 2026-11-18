@@ -1,4 +1,66 @@
 import Foundation
+import Darwin
+
+struct AgentSkillPackage: Sendable {
+    let name: String
+    let text: String
+    let resources: [String: Data]
+
+    init(resources: [String: Data], fallbackName: String) throws {
+        guard let data = resources["SKILL.md"], let text = String(data: data, encoding: .utf8) else {
+            throw PetError("Skill 缺少 UTF-8 的 SKILL.md")
+        }
+        let document = try AgentExtensionDocument(text)
+        let name = document.metadata["name"] ?? fallbackName
+        guard AgentExtensions.validName(name), !name.contains(":") else { throw PetError("请在 SKILL.md 的 frontmatter 中填写有效的 name") }
+        self.name = name
+        self.text = text
+        self.resources = resources
+    }
+
+    static func target(_ name: String, files: AgentFiles, project: Bool) throws -> URL {
+        guard AgentExtensions.validName(name), !name.contains(":") else { throw PetError("Skill 名称无效") }
+        return try files.literalURL((project ? ".bluefatfish/skills/" : "extensions/skills/") + name)
+    }
+
+    func publish(to destination: URL, files: AgentFiles) throws {
+        let (parent, name) = try files.parentDescriptor(destination, create: true)
+        defer { close(parent) }
+        let temporary = ".skill-import-" + UUID().uuidString
+        guard mkdirat(parent, temporary, 0o700) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let staging = destination.deletingLastPathComponent().appendingPathComponent(temporary)
+        defer {
+            if let (current, _) = try? files.parentDescriptor(staging, create: false) {
+                if Self.sameDirectory(parent, current) { try? FileManager.default.removeItem(at: staging) }
+                close(current)
+            }
+        }
+        let stagingFiles = try AgentFiles(workspace: staging.path, followParentLinks: false)
+        guard stagingFiles.root.path == staging.path else { throw PetError("Skill 目标位置已变化，请重新检测") }
+        for (path, bytes) in resources {
+            try Task.checkCancellation()
+            try stagingFiles.writeData(bytes, to: stagingFiles.literalURL(path), permissions: 0o600, expectedTarget: "missing")
+        }
+        guard try AgentExtensions.resourceData(stagingFiles) == resources else { throw PetError("目标磁盘未能完整保留 Skill 的资源路径或内容") }
+        let (current, _) = try files.parentDescriptor(destination, create: false)
+        defer { close(current) }
+        guard Self.sameDirectory(parent, current) else { throw PetError("Skill 目标位置已变化，请重新检测") }
+        // A complete package becomes discoverable in a single, non-replacing rename.
+        var directory = stat()
+        guard fstatat(parent, temporary, &directory, AT_SYMLINK_NOFOLLOW) == 0, directory.st_mode & S_IFMT == S_IFDIR else {
+            throw PetError("Skill 临时目录已变化，请重新检测")
+        }
+        if renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) != 0 {
+            if errno == EEXIST { throw PetError("同名 Skill 文件夹已出现，已保留现有文件") }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func sameDirectory(_ first: Int32, _ second: Int32) -> Bool {
+        var a = stat(), b = stat()
+        return fstat(first, &a) == 0 && fstat(second, &b) == 0 && a.st_dev == b.st_dev && a.st_ino == b.st_ino
+    }
+}
 
 @MainActor extension AgentExtensions {
     func importItem(_ url: URL, kind: AgentExtensionKind, project: Bool, workspace: String?) async throws -> AgentExtensionItem {
@@ -17,35 +79,12 @@ import Foundation
             guard input.lastPathComponent == "SKILL.md" else { throw PetError("请选择 SKILL.md、Skill 文件夹、ZIP 或 .skill 文件") }
             resources = ["SKILL.md": try parent.readData(input, maximum: 65_536)]
         }
-        try Task.checkCancellation()
-        guard let data = resources["SKILL.md"], let text = String(data: data, encoding: .utf8) else { throw PetError("Skill 缺少 UTF-8 的 SKILL.md") }
-        let document = try AgentExtensionDocument(text), name = document.metadata["name"] ?? input.deletingPathExtension().lastPathComponent
-        guard Self.validName(name), !name.contains(":") else { throw PetError("请在 SKILL.md 的 frontmatter 中填写有效的 name") }
-        guard try !catalog(workspace: workspace).contains(where: { $0.kind == .skill && $0.name.lowercased() == name.lowercased() }) else { throw PetError("同名 Skill 已存在，请先查看现有版本") }
-        let destinationFiles = try AgentFiles(workspace: project ? workspace : profile.path)
-        let base = project ? ".bluefatfish/skills/" : "extensions/skills/"
-        let destination = try destinationFiles.resolve(base + name)
-        guard !FileManager.default.fileExists(atPath: destination.path) else { throw PetError("同名 Skill 文件夹已存在") }
-        // Publish SKILL.md last: incomplete copies are never discoverable.
-        var written: [URL] = []
-        do {
-            for path in resources.keys.sorted() where path != "SKILL.md" {
-                try Task.checkCancellation()
-                let file = try destinationFiles.resolve(base + name + "/" + path)
-                try destinationFiles.writeData(resources[path]!, to: file, permissions: 0o600); written.append(file)
-            }
-            let definition = try destinationFiles.resolve(base + name + "/SKILL.md")
-            try destinationFiles.writeData(data, to: definition, permissions: 0o600); written.append(definition)
-        } catch {
-            for file in written.reversed() { try? destinationFiles.remove(file) }
-            var directories = Set([base + name])
-            for path in resources.keys {
-                let segments = path.split(separator: "/")
-                for count in 0..<max(0, segments.count - 1) { directories.insert(base + name + "/" + segments.prefix(count + 1).joined(separator: "/")) }
-            }
-            for path in directories.sorted(by: { $0.count > $1.count }) { if let directory = try? destinationFiles.resolve(path) { try? destinationFiles.removeEmptyDirectory(directory) } }
-            throw error
-        }
+        let package = try AgentSkillPackage(resources: resources, fallbackName: input.deletingPathExtension().lastPathComponent)
+        guard try !catalog(workspace: workspace).contains(where: { $0.kind == .skill && $0.name.lowercased() == package.name.lowercased() }) else { throw PetError("同名 Skill 已存在，请先查看现有版本") }
+        let destinationFiles = try AgentFiles(workspace: project ? workspace : profile.path, followParentLinks: false)
+        let destination = try AgentSkillPackage.target(package.name, files: destinationFiles, project: project)
+        guard try destinationFiles.entryMetadata(destination).kind == "missing" else { throw PetError("同名 Skill 文件夹已存在") }
+        try package.publish(to: destination, files: destinationFiles)
         guard let imported = try catalog(workspace: workspace).first(where: { $0.file.path == destination.appendingPathComponent("SKILL.md").path }) else { throw PetError("Skill 已复制但未能载入，请查看扩展状态") }
         return imported
     }

@@ -8,8 +8,21 @@ enum AgentImportSource: String, Codable, CaseIterable {
 }
 
 enum AgentImportCategory: String, CaseIterable {
-    case tasks, memory
-    var title: String { self == .tasks ? "任务记录" : "记忆" }
+    case tasks, memory, skills
+    var title: String {
+        switch self {
+        case .tasks: return "任务记录"
+        case .memory: return "记忆"
+        case .skills: return "Skills"
+        }
+    }
+    var globalTarget: String? {
+        switch self {
+        case .tasks: return nil
+        case .memory: return "全局记忆"
+        case .skills: return "全局 Skills"
+        }
+    }
 }
 
 struct AgentImportOrigin: Codable {
@@ -44,8 +57,10 @@ struct AgentImportCandidate: Codable, Identifiable {
     var issue: String?
     var targetID = UUID().uuidString
     var memory: AgentMemoryImportPlan?
+    var skill: AgentSkillImportPlan?
     var id: String { source.rawValue + ":" + sourceID.lowercased() }
-    var category: AgentImportCategory { memory == nil ? .tasks : .memory }
+    var category: AgentImportCategory { skill != nil ? .skills : memory != nil ? .memory : .tasks }
+    var targetWorkspace: String? { skill?.workspace ?? memory?.workspace }
 }
 
 struct AgentImportDocument {

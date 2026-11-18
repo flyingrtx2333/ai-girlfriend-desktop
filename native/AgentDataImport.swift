@@ -15,7 +15,7 @@ struct AgentImportBatch: Codable {
     var items: [AgentImportItem]
     var created = Date()
     var category: AgentImportCategory { items.first?.record.category ?? .tasks }
-    var memoryWorkspace: String? { items.first?.record.memory?.workspace }
+    var targetWorkspace: String? { items.first?.record.targetWorkspace }
 }
 
 @MainActor final class AgentDataImport {
@@ -77,6 +77,11 @@ struct AgentImportBatch: Codable {
                     do { return try AgentMemoryImport.plan(entry, destination: destination, reserved: &reserved) }
                     catch { var skipped = entry.record; skipped.issue = error.localizedDescription; return skipped }
                 }
+                return
+            }
+            if category == .skills {
+                let records = try await Task.detached(priority: .utility) { try AgentSkillImport.discover(source, root: root, workspace: workspace) }.value
+                preview = try AgentSkillImport.plan(records, store: store, workspace: workspace)
                 return
             }
             let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
@@ -151,6 +156,8 @@ struct AgentImportBatch: Codable {
                     let recordID = AgentFiles.hash(Data(candidate.id.utf8))
                     let backup = directory.appendingPathComponent("memory-transfers").appendingPathComponent(id).appendingPathComponent(recordID)
                     try AgentMemoryImport.install(data, record: candidate, store: store, backup: backup)
+                } else if candidate.skill != nil {
+                    try await AgentSkillImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else {
                     let document = try await Task.detached(priority: .utility) {
                         let directory = URL(fileURLWithPath: root)

@@ -2055,7 +2055,7 @@ final class FormDocumentView: NSView {
             let appShot = AgentAppShotSettingsView(service: companion!.appShot); row("", appShot); appShot.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("computer", "电脑操作", "电脑操作 Computer Use 窗口 截图 辅助功能 屏幕录制 权限")
             let desktopPanel = AgentDesktopSettingsView(desktop: store.desktop); desktopSettings = desktopPanel; row("", desktopPanel); desktopPanel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
-            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆")
+            group("imports", "本机数据", "数据 导入 Codex Qoder 历史 来源 全局记忆 项目记忆 Skills 技能")
             let imports = AgentDataImportView(store: store); imports.onOpen = { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }; dataImportView = imports; row("", imports)
             imports.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
             group("experiments", "侧任务", "实验 侧任务 保留 可恢复 对话 标签页 主任务")

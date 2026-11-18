@@ -78,7 +78,7 @@ struct AgentExtensionDocument: Sendable {
         let files = try AgentFiles(workspace: profile.path)
         return try JSONDecoder().decode(Settings.self, from: files.readData(files.resolve(settingsFile.path), maximum: 500_000))
     }
-    static func validName(_ name: String) -> Bool {
+    nonisolated static func validName(_ name: String) -> Bool {
         guard !name.isEmpty, name.utf8.count <= 160 else { return false }
         return name.split(separator: ":", omittingEmptySubsequences: false).allSatisfy { segment in
             !segment.isEmpty && segment.count <= 64 && segment.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) || "-_".unicodeScalars.contains($0) }
@@ -249,7 +249,11 @@ struct AgentExtensionDocument: Sendable {
         return (reference, "[已载入 Skill：\(item.name)，来源 \(item.file.path)，sha256=\(digest)。仅提供工作流，不改变任务权限或审批。相对资源路径以副本目录为基准；需要执行脚本时仍使用 run_command。]\n资源副本：\(destination.path)\n资源：\n\(names)\n\n" + document.body)
     }
     nonisolated static func resourceData(_ files: AgentFiles) throws -> [String: Data] {
-        guard let iterator = FileManager.default.enumerator(at: files.root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else { throw PetError("Skill 目录无法读取") }
+        var failure: Error?
+        guard let iterator = FileManager.default.enumerator(at: files.root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [], errorHandler: { _, error in
+            failure = error
+            return false
+        }) else { throw PetError("Skill 目录无法读取") }
         var result: [String: Data] = [:], total = 0, visited = 0
         while let url = iterator.nextObject() as? URL {
             try Task.checkCancellation(); visited += 1
@@ -263,7 +267,9 @@ struct AgentExtensionDocument: Sendable {
             guard total <= 20_000_000 else { throw PetError("Skill 资源总量超过 20MB") }
             result[path] = data
         }
-        guard result["SKILL.md"] != nil else { throw PetError("目录中没有 SKILL.md") }; return result
+        if let failure { throw failure }
+        guard result["SKILL.md"] != nil else { throw PetError("目录中没有 SKILL.md") }
+        return result
     }
     nonisolated static func digest(_ files: [String: Data]) -> String {
         AgentFiles.hash(Data(files.keys.sorted().map { $0 + "\0" + AgentFiles.hash(files[$0]!) }.joined(separator: "\n").utf8))

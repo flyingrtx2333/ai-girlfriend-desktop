@@ -11,13 +11,13 @@ import AppKit
     private let begin = NSButton(title: "开始导入", target: nil, action: nil), pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
     private let open = NSButton(title: "打开任务", target: nil, action: nil), original = NSButton(title: "来源副本", target: nil, action: nil)
     private var root: URL, rows: [AgentImportCandidate] = [], selected = Set<String>(), states: [String: String] = [:], signature = ""
-    private var memoryWorkspace: String?
+    private var targetWorkspace: String?
     private var shownBatch: String?
     private var listHeight: NSLayoutConstraint?
     var onOpen: ((String) -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
     private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.selectedSegment)] }
-    private var workspace: String? { selectedCategory == .memory ? memoryWorkspace : nil }
+    private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
     init(store: AgentStore) {
         self.store = store; service = store.dataImport
         root = service.batch.map { URL(fileURLWithPath: $0.root) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(AgentImportSource.codex.homeName)
@@ -25,7 +25,7 @@ import AppKit
         source.addItems(withTitles: AgentImportSource.allCases.map(\.title)); source.selectItem(at: service.batch.flatMap { AgentImportSource.allCases.firstIndex(of: $0.source) } ?? 0)
         source.target = self; source.action = #selector(changeSource); source.setAccessibilityLabel("导入来源")
         category.selectedSegment = 0; category.target = self; category.action = #selector(changeCategory); category.setAccessibilityLabel("导入内容")
-        destination.target = self; destination.action = #selector(changeDestination); destination.setAccessibilityLabel("记忆目标")
+        destination.target = self; destination.action = #selector(changeDestination)
         destination.cell?.lineBreakMode = .byTruncatingMiddle
         destinationControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         folder.target = self; folder.action = #selector(chooseFolder); folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); folder.imagePosition = .imageLeading; folder.setAccessibilityLabel("来源目录"); folder.cell?.lineBreakMode = .byTruncatingMiddle
@@ -59,11 +59,11 @@ import AppKit
         if let batch, shownBatch != batch.id {
             shownBatch = batch.id; root = URL(fileURLWithPath: batch.root); source.selectItem(at: AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0)
             category.selectedSegment = AgentImportCategory.allCases.firstIndex(of: batch.category) ?? 0
-            memoryWorkspace = batch.memoryWorkspace; signature = ""
+            targetWorkspace = batch.targetWorkspace; signature = ""
         }
         let viewingPreview = service.previewSource == selectedSource && service.previewRoot == root.path
             && service.previewCategory == selectedCategory && service.previewWorkspace == workspace
-        let viewingBatch = batch?.source == selectedSource && batch?.root == root.path && batch?.category == selectedCategory && batch?.memoryWorkspace == workspace
+        let viewingBatch = batch?.source == selectedSource && batch?.root == root.path && batch?.category == selectedCategory && batch?.targetWorkspace == workspace
         rows = viewingPreview ? service.preview : viewingBatch ? batch?.items.map(\.record) ?? [] : []
         states = viewingPreview ? [:] : Dictionary((batch?.items ?? []).map { ($0.id, $0.state == "failed" ? "失败：" + $0.detail : ["pending": "等待导入", "imported": "已导入"][ $0.state ] ?? $0.state) }, uniquingKeysWith: { _, last in last })
         let next = rows.map { $0.id + $0.sourceHash + ($0.issue ?? "") }.joined()
@@ -72,8 +72,8 @@ import AppKit
         source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
         category.isEnabled = source.isEnabled
         sourceControl.refreshEnabledState()
-        destinationControl.isHidden = selectedCategory != .memory
-        if selectedCategory == .memory { updateDestinations() }
+        destinationControl.isHidden = selectedCategory.globalTarget == nil
+        if let title = selectedCategory.globalTarget { updateDestinations(globalTitle: title) }
         table.setAccessibilityLabel("可导入" + selectedCategory.title)
         selectAll.isEnabled = viewingPreview && !service.active && !service.scanning && rows.contains { $0.issue == nil }; selectAll.state = selected.isEmpty ? .off : selected.count == rows.filter({ $0.issue == nil }).count ? .on : .mixed
         let previous = table.selectedRow; table.reloadData(); if rows.indices.contains(previous) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
@@ -94,15 +94,16 @@ import AppKit
         }
         updateDetail()
     }
-    private func updateDestinations() {
+    private func updateDestinations(globalTitle: String) {
         destination.removeAllItems()
-        destination.addItem(withTitle: "全局记忆")
+        destination.setAccessibilityLabel(selectedCategory.title + "目标")
+        destination.addItem(withTitle: globalTitle)
         for project in AgentMemory.projects(store: store, preferredTaskID: store.selectedID) {
             let item = NSMenuItem(title: "项目 · " + project.title, action: nil, keyEquivalent: "")
             item.representedObject = project.workspace; item.toolTip = project.workspace
             destination.menu?.addItem(item)
         }
-        if let workspace = memoryWorkspace {
+        if let workspace = targetWorkspace {
             if let item = destination.itemArray.first(where: { $0.representedObject as? String == workspace }) { destination.select(item) }
             else {
                 destination.addItem(withTitle: URL(fileURLWithPath: workspace).lastPathComponent + "（不可用）")
@@ -110,7 +111,7 @@ import AppKit
                 destination.select(destination.lastItem)
             }
         } else { destination.selectItem(at: 0) }
-        destination.toolTip = memoryWorkspace
+        destination.toolTip = targetWorkspace
         destination.isEnabled = source.isEnabled; destinationControl.refreshEnabledState()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
@@ -120,15 +121,15 @@ import AppKit
         if column?.identifier.rawValue == "check" {
             let box = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleRecord(_:))); box.tag = row; box.state = selected.contains(value.id) ? .on : .off; box.isEnabled = selectAll.isEnabled && value.issue == nil; box.setAccessibilityLabel("导入：" + value.title); return box
         }
-        let target = value.memory.map { $0.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "全局记忆" }
+        let target = value.category.globalTarget.map { title in value.targetWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? title }
         let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: value.issue ?? states[value.id] ?? target ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录"))
         title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = value.issue == nil ? AgentWorkbenchTheme.secondaryText : .tertiaryLabelColor; status.lineBreakMode = .byTruncatingTail
         let stack = NSStackView(views: [title, status]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 4; stack.toolTip = value.file; return stack
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
     private func updateDetail() {
-        open.title = selectedCategory == .memory ? "在访达中显示" : "打开任务"
-        original.title = selectedCategory == .memory ? "来源文件" : "来源副本"
+        open.title = selectedCategory == .tasks ? "打开任务" : "在访达中显示"
+        original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
         detail.enclosingScrollView?.isHidden = !rows.indices.contains(table.selectedRow)
         guard rows.indices.contains(table.selectedRow) else { detail.string = ""; open.isEnabled = false; original.isEnabled = false; return }
         let record = rows[table.selectedRow]
@@ -143,12 +144,29 @@ import AppKit
             original.isEnabled = (try? AgentMemoryImport.sourceURL(record, root: root)) != nil
             return
         }
+        if let plan = record.skill {
+            let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局 Skills"
+            var lines = [record.title, "来源 · " + record.file, destination]
+            if plan.fileCount > 0 { lines.append("\(plan.fileCount) 个文件") }
+            if let status = record.issue ?? states[record.id] { lines.append(status) }
+            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            open.isEnabled = states[record.id] == "已导入" || record.issue == "已经导入"
+            original.isEnabled = (try? AgentSkillImport.sourceURL(record, root: root)) != nil
+            return
+        }
         detail.string = record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
-    @objc private func changeSource() { root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(selectedSource.homeName); signature = ""; refresh() }
-    @objc private func changeCategory() { signature = ""; refresh() }
-    @objc private func changeDestination() { memoryWorkspace = destination.selectedItem?.representedObject as? String; signature = ""; refresh() }
+    private func defaultRoot(_ category: AgentImportCategory) -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return category == .skills ? AgentSkillImport.defaultDirectory(for: selectedSource, home: home) : home.appendingPathComponent(selectedSource.homeName)
+    }
+    @objc private func changeSource() { root = defaultRoot(selectedCategory); signature = ""; refresh() }
+    @objc private func changeCategory() {
+        if root.path == defaultRoot(.tasks).path || root.path == defaultRoot(.skills).path { root = defaultRoot(selectedCategory) }
+        signature = ""; refresh()
+    }
+    @objc private func changeDestination() { targetWorkspace = destination.selectedItem?.representedObject as? String; signature = ""; refresh() }
     @objc private func chooseFolder() {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true; panel.directoryURL = root; panel.prompt = "选择来源目录"
         guard let window else { return }; panel.beginSheetModal(for: window) { [weak self] response in guard let self, response == .OK, let url = panel.url else { return }; root = url; signature = ""; refresh() }
@@ -169,9 +187,9 @@ import AppKit
     @objc private func openTask() {
         guard rows.indices.contains(table.selectedRow) else { return }
         let record = rows[table.selectedRow]
-        guard record.memory != nil else { onOpen?(record.targetID); return }
+        guard record.category != .tasks else { onOpen?(record.targetID); return }
         do {
-            let files = try AgentMemoryImport.destinationURLs(record, store: store)
+            let files = record.category == .skills ? [try AgentSkillImport.destinationURL(record, store: store)] : try AgentMemoryImport.destinationURLs(record, store: store)
             guard !files.isEmpty else { throw PetError("目标记忆文件已移除") }
             NSWorkspace.shared.activateFileViewerSelecting(files)
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }
@@ -180,7 +198,12 @@ import AppKit
         guard rows.indices.contains(table.selectedRow) else { return }
         let record = rows[table.selectedRow]
         do {
-            let url = record.memory != nil ? try AgentMemoryImport.sourceURL(record, root: root) : try service.sourceURL(record.targetID)
+            let url: URL
+            switch record.category {
+            case .tasks: url = try service.sourceURL(record.targetID)
+            case .memory: url = try AgentMemoryImport.sourceURL(record, root: root)
+            case .skills: url = try AgentSkillImport.sourceURL(record, root: root)
+            }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }
     }
