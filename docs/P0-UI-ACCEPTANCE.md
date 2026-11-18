@@ -1,8 +1,18 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 独立智能体与 Hooks 迁移
+
+「设置 → 数据导入 → 扩展配置」可预览并导入 Qoder 的独立 Agent Markdown、`settings.json`／`settings.local.json` 中的 Hooks，以及 Codex 的独立 Agent TOML 和 `hooks.json`。用户来源可选择全局或登记项目，项目来源要求选择一个登记项目。智能体保留兼容的职责、指令、工具范围及只读设置。同名智能体保留现有版本。Hooks 保留可映射的事件、匹配条件和包内脚本，凭据字段改由本机补填。两类配置导入后均停用，并各自接入原设置页的详情与审核操作。[Qoder 智能体](https://docs.qoder.com/cli/subagent) [Qoder Hooks](https://docs.qoder.com/cli/hooks) [Codex 智能体](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app) [Codex Hooks](https://learn.chatgpt.com/docs/hooks)
+
+- 同一优化包 `0b1819e` 通过 **17 项**迁移专项、**22 项**独立规则／指令／命令及 **22 项** Skills 回归。验收实际使用项目角色读取公开 README，确认其他登记项目无法使用该角色。另一项测试在本机审核启用后执行迁移的 SessionStart 脚本，检查退出码与返回内容。Codex 多行角色指令、只读配置和停用终端由原生解析器读取。
+- 1320×800 深色实窗核对未选项目拦截、同名跳过、角色和 Hook 预览、凭据待补填，并实际迁移两项。780×540 浅色实窗在来源离线时重开原批次，从导入记录进入原项目：保存停用智能体的职责，并查看 Hooks 的页内编辑器、两个事件及凭据占位。两次进程正常退出，保留 **11 张**原图。导入前、导入后、离线重开和保存后分别通过 **12／16／17／19 项**独立文件核对。
+- 首包中止后修正了 SessionStart 验收样例的返回对象结构，正式候选通过本机签名校验。模型请求 **0**，14 份日用资料的字节与权限一致，日用源码为 `742a95e`。索引位于 `evidence/agent/role-hook-import-p7w3k8m4/accepted.json`。
+
+仍待补齐 Codex 在 `config.toml` 内声明的 Hooks、MCP 工具处理器、未对应的事件和独立智能体高级选项。本轮实际 Hook 执行覆盖本机命令。HTTP、提示和模型处理器的真实执行另行验收。
+
 ## 2026-11-19 独立扩展配置迁移
 
-「设置 → 数据导入 → 扩展配置」支持 Qoder 用户目录或项目中的规则、持久指令和命令，以及 Codex 生效的 `AGENTS.md`／`AGENTS.override.md` 和旧版静态提示词。选定目标后可逐项预览、勾选、暂停和续导。已共享的 Qoder 配置维持原位置。项目规则和指令保留目录层级，命令保留分组；指令的相对引用要求目标已有相同内容。预览逐项说明同名冲突、引用缺失和不兼容项。Codex 终端审批策略、带参数的旧提示词和独立智能体／Hooks 仍待另行处理。[Qoder 规则与指令](https://docs.qoder.com/cli/memory) [Qoder 命令](https://docs.qoder.com/cli/commands) [Codex 指令](https://learn.chatgpt.com/docs/agent-configuration/agents-md) [Codex 旧提示词](https://learn.chatgpt.com/docs/custom-prompts)
+「设置 → 数据导入 → 扩展配置」支持 Qoder 用户目录或项目中的规则、持久指令和命令，以及 Codex 生效的 `AGENTS.md`／`AGENTS.override.md` 和旧版静态提示词。选定目标后可逐项预览、勾选、暂停和续导。已共享的 Qoder 配置维持原位置。项目规则和指令保留目录层级，命令保留分组；指令的相对引用要求目标已有相同内容。预览逐项说明同名冲突、引用缺失和不兼容项。Codex 终端审批策略和带参数的旧提示词仍待处理。[Qoder 规则与指令](https://docs.qoder.com/cli/memory) [Qoder 命令](https://docs.qoder.com/cli/commands) [Codex 指令](https://learn.chatgpt.com/docs/agent-configuration/agents-md) [Codex 旧提示词](https://learn.chatgpt.com/docs/custom-prompts) [独立智能体与 Hooks 迁移](#2026-11-19-独立智能体与-hooks-迁移)
 
 - 最终同一优化包 `7d4a8b3` 通过 **22 项**专用检查和 **20 项**记忆导入回归。覆盖四种规则触发、子目录匹配、真实指令与相对引用载入、斜杠命令展开、范围保护、原件与同名保留、已写入条目的离线续导，以及导入后无关联任务的登记项目指令读取和保存。
 - 1320×800 深色窗口核对文件夹名称、项目限制、引用不匹配、同名跳过、规则路径和分项勾选，并实际导入所选的命令与项目指令。780×540 浅色重开恢复原批次；来源离线时打开两个导入项并通过 ⌘S 保存项目指令。两窗正常退出，保留 **9 张**原图。导入前、导入后、离线重开和保存后各通过 **15／18／19／20 项**独立文件核对，包含指令原版本备份。
