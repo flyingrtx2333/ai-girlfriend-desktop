@@ -104,23 +104,51 @@ class AgentWorkbenchButton: NSButton {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); AgentWorkbenchTheme.color(layer, state == .on ? AgentWorkbenchTheme.selection : .clear, animated: false) }
 }
 
+@MainActor struct AgentTaskStatusAppearance {
+    let symbol: String
+    let color: NSColor
+
+    init(_ task: AgentTaskRecord) {
+        let status: AgentTaskStatus = task.statusTitle == "校验未通过" ? .failed : task.status
+        switch status {
+        case .ready: (symbol, color) = ("circle", AgentWorkbenchTheme.secondaryText)
+        case .running: (symbol, color) = ("circle.dotted", .systemBlue)
+        case .waiting: (symbol, color) = ("exclamationmark.circle.fill", .systemOrange)
+        case .stopped: (symbol, color) = ("stop.circle", AgentWorkbenchTheme.secondaryText)
+        case .completed: (symbol, color) = ("checkmark.circle.fill", AgentWorkbenchTheme.accent)
+        case .failed: (symbol, color) = ("exclamationmark.circle", .systemRed)
+        }
+    }
+
+    func apply(to icon: NSImageView) {
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        icon.contentTintColor = color
+    }
+}
+
 @MainActor final class AgentStatusBadge: NSView {
-    private let label = NSTextField(labelWithString: ""), dot = NSView()
+    private let label = NSTextField(labelWithString: ""), icon = NSImageView()
     private var statusColor: NSColor = AgentWorkbenchTheme.secondaryText
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false; wantsLayer = true; layer?.cornerRadius = 9
-        label.font = .systemFont(ofSize: 12, weight: .medium); dot.wantsLayer = true; dot.layer?.cornerRadius = 3
-        for view in [dot, label] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([heightAnchor.constraint(equalToConstant: 22), dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), dot.widthAnchor.constraint(equalToConstant: 6), dot.heightAnchor.constraint(equalToConstant: 6), dot.centerYAnchor.constraint(equalTo: centerYAnchor), label.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 5), label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        for view in [icon, label] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        NSLayoutConstraint.activate([heightAnchor.constraint(equalToConstant: 22), icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12), icon.centerYAnchor.constraint(equalTo: centerYAnchor), label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 5), label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8), label.centerYAnchor.constraint(equalTo: centerYAnchor)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() { effectiveAppearance.performAsCurrentDrawingAppearance { let color = AgentThemeContext.resolve(statusColor, in: self); dot.layer?.backgroundColor = color.cgColor; layer?.backgroundColor = color.withAlphaComponent(0.08).cgColor } }
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = AgentThemeContext.resolve(statusColor, in: self).withAlphaComponent(0.08).cgColor
+        }
+    }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
-    override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + 27, height: 22) }
+    override var intrinsicContentSize: NSSize { NSSize(width: label.intrinsicContentSize.width + 33, height: 22) }
     func update(_ task: AgentTaskRecord) {
-        let color: NSColor = task.statusTitle == "校验未通过" || task.status == .failed ? .systemRed : task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : AgentWorkbenchTheme.secondaryText
-        label.stringValue = task.statusTitle; label.textColor = color; statusColor = color; needsDisplay = true
+        let appearance = AgentTaskStatusAppearance(task)
+        appearance.apply(to: icon)
+        label.stringValue = task.statusTitle; label.textColor = appearance.color; statusColor = appearance.color; needsDisplay = true
         invalidateIntrinsicContentSize()
         setAccessibilityLabel(task.statusTitle)
     }

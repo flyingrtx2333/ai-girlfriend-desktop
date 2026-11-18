@@ -153,7 +153,10 @@ private final class AgentTaskTable: NSTableView {
         if previous != selected, let path = values.first(where: { $0.id == selected })?.organizationWorkspace { collapsed.remove(groupKey(path)) }
         let next = values.map { "\($0.id)|\($0.title)|\($0.organizationWorkspace ?? "")|\($0.organizationMode.rawValue)|\($0.status.rawValue)|\($0.archived)|\($0.pinned)|\($0.summary)|\($0.activityAt ?? $0.updated)" }.joined(separator: "\n") + "\n\(organization.revision)|\(workMode.rawValue)|\(Calendar.current.startOfDay(for: Date()))|\(search.stringValue.isEmpty ? 0 : searchRevision)"
         if onAttention == nil { setAttentionCount(values.filter { !$0.archived && $0.status == .waiting }.count, enabled: true) }
-        if signature != next || previous != selected { signature = next; tasks = values; applyFilter() } else { selectCurrent() }
+        if signature != next || previous != selected {
+            signature = next; tasks = values; applyFilter()
+            if previous != selected { selectCurrent(reveal: true) }
+        } else { selectCurrent() }
     }
     @objc private func newTask() { onNew?() }
     func refreshShortcuts(_ shortcuts: AgentShortcuts) {
@@ -174,11 +177,7 @@ private final class AgentTaskTable: NSTableView {
         attention.state = active ? .on : .off
         AgentWorkbenchTheme.color(attention.layer, active ? AgentWorkbenchTheme.selection : .clear, animated: false)
         guard mainPage != page else { return }; attentionSelected = active; mainPage = page
-        let wasUpdating = updating; updating = true
-        if let index = rows.firstIndex(where: { if case let .task(task, _) = $0 { return task.id == listSelection }; return false }) {
-            table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-        } else { table.deselectAll(nil) }
-        updating = wasUpdating
+        selectCurrent(reveal: page == "chat")
     }
     func checkAttentionSelected() -> Bool {
         guard CommandLine.arguments.contains("--attention-page-check") else { return false }
@@ -352,18 +351,27 @@ private final class AgentTaskTable: NSTableView {
         if bulkIDs.isEmpty { bulkSelecting = false }; updateBulkBar()
         updating = true; table.reloadData(); updating = false; selectCurrent()
     }
-    private func selectCurrent() {
-        updating = true; defer { updating = false }
-        if bulkSelecting {
+    private func selectCurrent(reveal: Bool = false) {
+        let wasUpdating = updating; updating = true; defer { updating = wasUpdating }
+        if bulkSelecting, mainPage == "chat" {
             table.selectRowIndexes(IndexSet(rows.indices.filter { row in if case .task(let task, _) = rows[row] { return bulkIDs.contains(task.id) }; return false }), byExtendingSelection: false)
         } else if let row = rows.firstIndex(where: { if case .task(let task, _) = $0 { return task.id == listSelection }; return false }) {
-            if table.selectedRow != row { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
+            let changed = table.selectedRow != row
+            if changed { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+            if reveal { layoutSubtreeIfNeeded() }
+            if changed || reveal { table.scrollRowToVisible(row) }
         } else { table.deselectAll(nil) }
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound { for row in visible.location..<min(rows.count, NSMaxRange(visible)) {
             guard case .task(let task, _) = rows[row] else { continue }
-            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection)
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(mainPage == "chat" && (bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection))
         } }
+    }
+    func workbenchSelectionIsVisible(_ id: String) -> Bool {
+        let row = table.selectedRow
+        guard rows.indices.contains(row), case .task(let task, _) = rows[row], task.id == id else { return false }
+        let bounds = table.rect(ofRow: row).insetBy(dx: 0, dy: 1)
+        return table.visibleRect.minY <= bounds.minY && table.visibleRect.maxY >= bounds.maxY
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { if case .group = rows[row] { return 32 }; if case .task(let task, _) = rows[row], searchSnippet(task) != nil { return 53 }; return 33 }
@@ -419,14 +427,15 @@ private final class AgentTaskTable: NSTableView {
             let cell = AgentTaskCell(); cell.select(bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection, animated: false)
             let unread = organization?.isTaskUnread(task.id) == true
             let label = NSTextField(labelWithString: task.title); label.font = .systemFont(ofSize: 15, weight: unread ? .semibold : task.id == selected ? .medium : .regular); label.lineBreakMode = .byTruncatingTail
-            let icon = NSImageView(image: NSImage(systemSymbolName: task.status == .completed ? "circle.fill" : task.status == .running ? "circle.dotted" : task.status == .waiting ? "exclamationmark.circle.fill" : task.status == .failed ? "exclamationmark.circle" : task.status == .stopped ? "stop.circle" : "circle", accessibilityDescription: nil)!)
-            icon.contentTintColor = task.status == .completed ? AgentWorkbenchTheme.accent : task.status == .waiting ? .systemOrange : task.status == .failed ? .systemRed : AgentWorkbenchTheme.secondaryText
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let icon = NSImageView()
+            AgentTaskStatusAppearance(task).apply(to: icon)
             let snippet = searchSnippet(task)
             let text = NSStackView(views: [label]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 3
             if let snippet { let preview = NSTextField(labelWithString: snippet); preview.font = .systemFont(ofSize: 11); preview.textColor = AgentWorkbenchTheme.secondaryText; preview.lineBreakMode = .byTruncatingTail; text.addArrangedSubview(preview) }
             for child in text.arrangedSubviews { child.widthAnchor.constraint(equalTo: text.widthAnchor).isActive = true }
             let line = NSStackView(views: [icon, text]); line.spacing = 9; cell.addSubview(line); line.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12), icon.heightAnchor.constraint(equalToConstant: task.status == .completed ? 7 : 12)])
+            NSLayoutConstraint.activate([line.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: CGFloat(37 + depth * 12)), line.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -9), line.centerYAnchor.constraint(equalTo: cell.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 12), icon.heightAnchor.constraint(equalToConstant: 12)])
             cell.toolTip = task.title + " · " + task.statusTitle + (unread ? " · 未读" : "") + (snippet.map { "\n" + $0 } ?? ""); cell.setAccessibilityLabel(task.title + "，" + task.statusTitle + (unread ? "，未读" : "") + (snippet.map { "，" + $0 } ?? "")); return cell
         }
     }

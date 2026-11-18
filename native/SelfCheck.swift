@@ -148,6 +148,10 @@ import WebKit
                 if CommandLine.arguments.contains("--content-appearance-fixtures") { try prepareContentAppearanceUI(output) }
                 if CommandLine.arguments.contains("--file-icons-fixtures") { _ = try await prepareFileIconsUI(output) }
                 if CommandLine.arguments.contains("--task-monitor-fixtures") { try await prepareTaskMonitorUI(output) }
+                if CommandLine.arguments.contains("--workbench-state-fixtures") {
+                    guard !boundedLiveUI else { throw PetError("工作台状态样例仅用于本机验收") }
+                    _ = try await prepareWorkbenchStates(output)
+                }
                 if CommandLine.arguments.contains("--task-monitor-reopen") { try reopenTaskMonitorUI(output) }
                 if CommandLine.arguments.contains("--slash-menu-fixtures") || CommandLine.arguments.contains("--slash-menu-reopen") { _ = try await prepareSlashMenuUI(output, seed: CommandLine.arguments.contains("--slash-menu-fixtures")) }
                 if CommandLine.arguments.contains("--settings-pages-fixtures") {

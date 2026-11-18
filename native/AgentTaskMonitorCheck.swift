@@ -26,6 +26,56 @@ import AppKit
         guard let ids = value?["tasks"] as? [String: String], let id = ids["primary"], agentStore?.task(id) != nil else { throw PetError("缺少原任务监控资料") }
         control.showAgentTask(id)
     }
+    func prepareWorkbenchStates(_ output: URL) async throws -> [String: String] {
+        let data = try Data(contentsOf: output.appendingPathComponent("task-monitor-fixtures.json"))
+        let fixture = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let tasks = agentStore, let runtime = agentRuntime, let ids = fixture?["tasks"] as? [String: String],
+              let primary = ids["primary"], let running = ids["background"], runtime.isRunning(running),
+              let workspace = tasks.task(primary)?.workspace else { throw PetError("缺少独立监控样例") }
+        let project = URL(fileURLWithPath: workspace, isDirectory: true)
+        let command = AgentCommand()
+        let branch = "review/public-readme-check-with-a-long-descriptive-branch-name"
+        let git = try await command.run(command: try AgentGit.executablePath(), workspace: project, scratch: output, network: false, timeout: 5, gitWrite: true, arguments: ["init", "--quiet", "--initial-branch", branch])
+        guard !git.failed else { throw PetError(git.text) }
+        let empty = tasks.create()
+        let waiting = tasks.create(title: "确认公开说明核对命令", workspace: workspace)
+        let failed = tasks.create(title: "逐项核对公开说明的安装章节、依赖版本和示例命令是否齐全", workspace: workspace)
+        let completed = tasks.create(title: "已读取公开项目说明", workspace: workspace)
+        let read = AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: "{\"path\":\"README.md\",\"limit\":2}")
+        let proof = try await AgentTools(store: tasks, taskID: completed).execute(read)
+        guard !proof.failed, proof.text.contains("README.md") else { throw PetError("未读到公开 README") }
+        let missing = AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: "{\"path\":\"missing-readme.md\"}")
+        let failure: String
+        do {
+            let result = try await AgentTools(store: tasks, taskID: failed).execute(missing)
+            failure = result.failed ? result.text : ""
+        } catch { failure = error.localizedDescription }
+        guard !failure.isEmpty else { throw PetError("缺失文件样例未返回错误") }
+        let approval = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: "{\"command\":\"/usr/bin/wc -c README.md\",\"network\":false}")
+        tasks.update(running) { task in
+            task.status = .running; task.draft = ""
+            task.messages = [AgentMessage(role: "user", content: "继续核对公开 README 的后台记录。")]
+        }
+        tasks.update(waiting) { task in
+            task.status = .waiting; task.pendingCalls = [approval]
+            task.approvals = [AgentApproval(call: approval, reason: "确认后统计 README.md 的字节数", workspace: workspace)]
+            task.messages = [AgentMessage(role: "user", content: "统计公开 README 的字节数，执行前先确认。")]
+        }
+        tasks.update(failed) { task in
+            task.status = .failed; task.events = [AgentEvent(kind: "tool", title: "read_file", detail: failure, status: "failed", toolCallID: missing.id)]
+            task.messages = [AgentMessage(role: "user", content: "读取项目补充说明 missing-readme.md。"), AgentMessage(role: "assistant", content: "", toolCalls: [missing])]
+        }
+        tasks.update(completed) { task in
+            task.status = .completed; task.events = [AgentEvent(kind: "tool", title: "read_file", detail: proof.text, status: "completed", toolCallID: read.id)]
+            task.messages = [AgentMessage(role: "user", content: "读取公开 README 的头两行。"), AgentMessage(role: "assistant", content: "", toolCalls: [read]), AgentMessage(role: "assistant", content: "已读到 README.md。\n\n```text\n\(proof.text.trimmingCharacters(in: .whitespacesAndNewlines))\n```")]
+        }
+        if let issue = tasks.writeError { throw PetError(issue) }
+        let states = ["primary": primary, "empty": empty, "running": running, "waiting": waiting, "failed": failed, "completed": completed]
+        let report: [String: Any] = ["tasks": states, "appPID": getpid(), "branch": branch, "sourceHash": fixture?["sourceHash"] as? String ?? "", "modelRequests": 0]
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("workbench-state-fixtures.json"), options: .atomic)
+        control.showAgentTask(primary)
+        return states
+    }
     func runTaskMonitorCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], report: [String: Any] = [:], requests = 0
         defer { control.checkTaskMonitor("stop-terminals"); agentRuntime?.stopAll() }
@@ -127,6 +177,11 @@ import AppKit
             try JSONSerialization.data(withJSONObject: Dictionary(uniqueKeysWithValues: originals.keys.map { ($0, try encoder.encode(tasks.task($0)!).base64EncodedString()) }), options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("final-task-checkpoint.json"))
             checks["BackgroundProcessStillAliveAfterAllDisplayChanges"] = tasks.hooks.isRunning(b) && kill(pid, 0) == 0
             checks["ActualPublicSourceBytesRemainExact"] = try AgentFiles.hash(Data(contentsOf: URL(fileURLWithPath: tasks.task(a)!.workspace!).appendingPathComponent("README.md"))) == fixture["sourceHash"] as? String
+            let workbenchStates = try await prepareWorkbenchStates(output)
+            let layout = await control.checkWorkbenchStates(workbenchStates)
+            checks.merge(layout.checks) { _, new in new }
+            report["workbenchGeometry"] = layout.frames
+            checks["WorkbenchProcessRemainsLiveAcrossTaskNavigation"] = runtime.isRunning(b) && kill(pid, 0) == 0
             report["boundary"] = "Actual public file read, local background Hook and interactive terminal; fixed component fixtures verify module rendering only. No model-generated recap or assistant reply is claimed."
             report["states"] = [control.taskMonitorReadback(), second.taskMonitorReadback()]; report["backgroundPID"] = pid
             report["success"] = checks.count >= 40 && checks.values.allSatisfy { $0 }

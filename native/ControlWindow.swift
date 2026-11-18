@@ -233,6 +233,7 @@ final class FormDocumentView: NSView {
     private let workbenchLower = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, entryInputHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
+    private var entryToolbarGap: NSLayoutConstraint!
     private var workbenchSidebarWidth: NSLayoutConstraint!, navigationLeading: NSLayoutConstraint!, sidebarRequested = true
     private var workbenchColumnLeading: NSLayoutConstraint!, workbenchColumnTrailing: NSLayoutConstraint!
     private var workbenchChrome: [NSView] = [], inspectorRequested = true
@@ -926,7 +927,17 @@ final class FormDocumentView: NSView {
         entryTrailing.orientation = .horizontal; entryTrailing.spacing = 8; entryTrailing.addArrangedSubview(taskModel); entryTrailing.addArrangedSubview(taskContext); entryTrailing.addArrangedSubview(voiceInput); entryTrailing.addArrangedSubview(sendButton)
         for view in [entryLeading, entryTrailing] { entryToolbar.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         entryToolbarHeight = entryToolbar.heightAnchor.constraint(equalToConstant: 34)
-        NSLayoutConstraint.activate([entryToolbarHeight, entryLeading.leadingAnchor.constraint(equalTo: entryToolbar.leadingAnchor), entryLeading.topAnchor.constraint(equalTo: entryToolbar.topAnchor), entryTrailing.trailingAnchor.constraint(equalTo: entryToolbar.trailingAnchor), entryTrailing.bottomAnchor.constraint(equalTo: entryToolbar.bottomAnchor)])
+        entryToolbarGap = entryTrailing.leadingAnchor.constraint(greaterThanOrEqualTo: entryLeading.trailingAnchor, constant: 12)
+        branchControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        NSLayoutConstraint.activate([
+            entryToolbarHeight,
+            entryLeading.leadingAnchor.constraint(equalTo: entryToolbar.leadingAnchor),
+            entryLeading.trailingAnchor.constraint(lessThanOrEqualTo: entryToolbar.trailingAnchor),
+            entryLeading.topAnchor.constraint(equalTo: entryToolbar.topAnchor),
+            entryTrailing.leadingAnchor.constraint(greaterThanOrEqualTo: entryToolbar.leadingAnchor),
+            entryTrailing.trailingAnchor.constraint(equalTo: entryToolbar.trailingAnchor),
+            entryTrailing.bottomAnchor.constraint(equalTo: entryToolbar.bottomAnchor)
+        ])
         let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1
         for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         entryInputHeight = input.heightAnchor.constraint(equalToConstant: 60)
@@ -984,13 +995,17 @@ final class FormDocumentView: NSView {
         let fullWorkspace = showWorkspace && (taskWorkspace.expanded || remaining < 920)
         let showInspector = chatting && !showWorkspace && monitorState.presentation == .fixed && monitorState.visible && (hasRecords || monitorState.explicitVisibility) && (width >= 1080 || monitorState.explicitVisibility)
         let fullMonitor = showInspector && width < 1080
+        let focus = window?.firstResponder as? NSView
+        let focusMonitor = fullMonitor && focus === composer
+        let restoreComposer = chatting && !fullMonitor && !fullWorkspace && !workbenchInspector.isHidden && terminalSplit.isHidden &&
+            (focus === resultsButton || focus?.isDescendant(of: workbenchInspector) == true || window?.firstResponder === window)
         let target: CGFloat = showWorkspace ? (fullWorkspace ? remaining : min(560, max(470, floor(remaining * 0.51)))) : showInspector ? (fullMonitor ? remaining : 281) : 0
         if fullWorkspace || fullMonitor {
             conversationTrailing.isActive = false; fullConversationTrailing.isActive = true
         } else {
             fullConversationTrailing.isActive = false; conversationTrailing.isActive = true
         }
-        if showWorkspace { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
+        if showWorkspace || fullMonitor { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
         else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
         terminalSplit.isHidden = fullWorkspace || fullMonitor
         if !showWorkspace { taskWorkspace.setVisible(false) }
@@ -1001,11 +1016,13 @@ final class FormDocumentView: NSView {
         titleLeading.constant = configuring ? 80 : sidebarRequested ? 126 : 190
         sidebarToggle.setAccessibilityLabel(sidebarRequested ? "收起左侧栏" : "显示左侧栏")
         let maximum = companion?.contentAppearance.settings.contentWidth.maximum ?? AgentContentWidth.standard.maximum
-        let columnInset = max(18, (remaining - (fullWorkspace || fullMonitor ? 0 : target) - maximum) / 2)
+        let conversationWidth = remaining - (fullWorkspace || fullMonitor ? 0 : target)
+        let columnInset = max(18, (conversationWidth - maximum) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
-        workbenchInspector.isHidden = !showInspector; inspectorRule.isHidden = !(showInspector || showWorkspace); headerInspectorRule.isHidden = !showInspector
-        pageTitle.isHidden = !chatting || !(hasMessages || showWorkspace)
-        workbenchBadge.isHidden = !chatting || !(hasMessages || showWorkspace)
+        workbenchInspector.isHidden = !showInspector
+        inspectorRule.isHidden = fullMonitor || fullWorkspace || !(showInspector || showWorkspace)
+        headerInspectorRule.isHidden = !showInspector || fullMonitor
+        pageTitle.isHidden = !chatting; workbenchBadge.isHidden = !chatting
         let compactHeight = (window?.contentView?.bounds.height ?? 800) < 650
         workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages || compactHeight; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
@@ -1013,7 +1030,7 @@ final class FormDocumentView: NSView {
         let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
-        workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "新的任务"
+        workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "默认执行者"
         workbenchEmptyTitle.isEnabled = task.canChooseExecutor
         emptyProject.title = companion?.agentStore?.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle; emptyProject.toolTip = task.workspace
         if let entry = companion?.agentStore?.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:companion?.agentStore?.tasks ?? []) { emptyProject.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); emptyProject.contentTintColor = (entry.color ?? .forest).nsColor } else { emptyProject.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); emptyProject.contentTintColor = AgentWorkbenchTheme.secondaryText }
@@ -1038,13 +1055,18 @@ final class FormDocumentView: NSView {
         let hasMCP = (try? companion?.agentStore?.mcp.availableServers(task: task))?.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
         taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
         let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
-        let available = remaining - target - columnInset * 2 - 22
-        entryToolbarHeight.constant = available < preferred ? 64 : 34
+        let available = conversationWidth - columnInset * 2 - 22
+        let oneRow = available >= preferred
+        entryToolbarHeight.constant = oneRow ? 34 : 64
+        entryToolbarGap.isActive = oneRow
         updateWorkbenchVoice()
         lastInspectorTransitionDuration = AgentWorkbenchTheme.layout(in: window?.contentView, duration: 0.16, animated: animated && window?.inLiveResize != true) { self.inspectorWidth.constant = target; self.inspectorPreferredWidth.constant = target }
         if showWorkspace { taskWorkspace.setVisible(true) }
         let monitorVisible = showInspector || monitorPanel?.isVisible == true
+        resultsButton.isEnabled = chatting
         resultsButton.state = monitorVisible ? .on : .off; resultsButton.setAccessibilityLabel(monitorVisible ? "隐藏任务监控" : "显示任务监控"); resultsButton.toolTip = monitorVisible ? "隐藏任务监控" : "显示任务监控"
+        if focusMonitor, let window, !window.makeFirstResponder(resultsButton) { window.makeFirstResponder(nil) }
+        if restoreComposer, composer.isEditable { window?.makeFirstResponder(composer) }
         (Array(messageRows.values) + Array(reasoningRows.values)).forEach { $0.fit(width: history.contentView.bounds.width - 40) }
         revealMessageSearch(keepingVisible: keepSearchHitVisible)
     }
@@ -1214,6 +1236,71 @@ final class FormDocumentView: NSView {
     func checkTaskMonitor(_ action: String, frame: NSRect? = nil) {
         guard ["--task-monitor-check", "--browser-workspace-check"].contains(where: CommandLine.arguments.contains) else { return }
         switch action { case "toggle": toggleTaskInspector(); case "pin": pinTaskMonitor(); case "close": closeTaskMonitor(); case "frame": if let frame { monitorPanel?.setFrame(frame, display: false) }; case "terminal": openTaskTerminal(); case "stop-terminals": stopTaskTerminals(); case "source-link": if let id = agentTaskID { presentSourceLink(id) }; default: break }
+    }
+    func checkWorkbenchStates(_ ids: [String: String]) async -> (checks: [String: Bool], frames: [String: [String: [CGFloat]]]) {
+        guard CommandLine.arguments.contains("--task-monitor-check"), let window, let root = window.contentView,
+              let tasks = companion?.agentStore, let primary = ids["primary"], let complete = ids["completed"] else {
+            return (["WorkbenchHasIndependentStateFixtures": false], [:])
+        }
+        var checks: [String: Bool] = [:], frames: [String: [String: [CGFloat]]] = [:]
+        func rect(_ view: NSView) -> NSRect { view.convert(view.bounds, to: root) }
+        func visible(_ view: NSView) -> Bool {
+            let frame = rect(view)
+            return !view.isHiddenOrHasHiddenAncestor && !frame.isEmpty && root.bounds.insetBy(dx: -1, dy: -1).contains(frame)
+        }
+        func header(_ task: AgentTaskRecord) -> Bool {
+            let controls = [projectButton, browserButton, terminalButton, desktopButton, gitButton, resultsButton, taskMore].filter { !$0.isHidden }
+            return visible(pageTitle) && rect(pageTitle).width >= 48 && pageTitle.stringValue == task.title && pageTitle.toolTip == task.title &&
+                visible(workbenchBadge) && workbenchBadge.accessibilityLabel() == task.statusTitle && resultsButton.isEnabled &&
+                controls.allSatisfy { visible($0) && rect($0).minX >= rect(workbenchBadge).maxX }
+        }
+        func capture(_ key: String) {
+            let views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
+                                           "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer]
+            frames[key] = views.mapValues {
+                let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
+            }
+        }
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+        for state in ["empty", "running", "waiting", "failed", "completed"] {
+            guard let id = ids[state], let task = tasks.task(id) else { checks["WorkbenchState-" + state] = false; continue }
+            showAgentTask(id)
+            if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
+            root.layoutSubtreeIfNeeded()
+            let expectedStatus = ["empty": "待开始", "running": "执行中", "waiting": "需要我", "failed": "出错了", "completed": "已完成"][state]
+            checks["WorkbenchTitleStatusAndSelection-" + state] = window.frame.size == NSSize(width: 780, height: 540) && header(task) && expectedStatus == task.statusTitle && taskSidebar.workbenchSelectionIsVisible(id)
+            let leading = rect(entryLeading), trailing = rect(entryTrailing)
+            checks["WorkbenchComposerFits-" + state] = !terminalSplit.isHidden && composer.enclosingScrollView.map(visible) == true && visible(modePopup) && visible(permissionPopup) && visible(sendButton) && !leading.intersects(trailing)
+            capture(state)
+            switch state {
+            case "empty": checks["EmptyWorkbenchOffersExecutorAndNoWorkspaceTerminal"] = visible(workbenchEmptyTitle) && terminalButton.isEnabled && history.isHidden
+            case "running": checks["RunningWorkbenchShowsStopForLiveProcess"] = busy && sendButton.accessibilityLabel() == "停止任务" && !taskModel.isEnabled
+            case "waiting": checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
+            case "failed": checks["FailedWorkbenchShowsActualErrorAndFullTitleOnHover"] = visible(status) && !status.stringValue.isEmpty && pageTitle.intrinsicContentSize.width > rect(pageTitle).width
+            default: checks["CompletedWorkbenchKeepsConversationAndFollowup"] = visible(history) && composer.isEditable && sendButton.isEnabled
+            }
+        }
+        showAgentTask(primary)
+        if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
+        let draft = composer.string, caret = NSRange(location: 3, length: 0)
+        window.makeFirstResponder(composer); composer.setSelectedRange(caret)
+        resultsButton.performClick(nil)
+        try? await Task.sleep(for: .milliseconds(200)); root.layoutSubtreeIfNeeded()
+        capture("monitor-expanded")
+        checks["ExpandedMonitorFillsChatWithoutTakingTitleOrActions"] = tasks.task(primary).map(header) == true && visible(workbenchInspector) && rect(chat) == rect(workbenchInspector) && terminalSplit.isHidden && taskSidebar.workbenchSelectionIsVisible(primary)
+        checks["ExpandedMonitorMovesKeyboardFocusOutOfHiddenInput"] = window.firstResponder !== composer
+        resultsButton.performClick(nil); root.layoutSubtreeIfNeeded()
+        checks["ClosingMonitorRestoresUnsentDraftAndCaret"] = workbenchInspector.isHidden && !terminalSplit.isHidden && window.firstResponder === composer && composer.string == draft && composer.selectedRange() == caret
+        showAgentTask(complete); taskBack.performClick(nil); root.layoutSubtreeIfNeeded()
+        checks["TaskBackRestoresExactTitleDraftSelectionAndMonitorState"] = agentTaskID == primary && tasks.task(primary).map(header) == true && taskSidebar.workbenchSelectionIsVisible(primary) && composer.string == draft && workbenchInspector.isHidden
+        taskForward.performClick(nil); root.layoutSubtreeIfNeeded()
+        checks["TaskForwardRestoresExactCompletedSelection"] = agentTaskID == complete && tasks.task(complete).map(header) == true && taskSidebar.workbenchSelectionIsVisible(complete)
+        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 1320, height: 800)), display: true)
+        if workbenchInspector.isHidden { resultsButton.performClick(nil) }
+        try? await Task.sleep(for: .milliseconds(200)); root.layoutSubtreeIfNeeded()
+        capture("monitor-docked")
+        checks["WideMonitorSharesSpaceWithVisibleConversationAndActions"] = tasks.task(complete).map(header) == true && rect(workbenchInspector).width == 281 && visible(workbenchInspector) && visible(history) && visible(sendButton) && rect(history).maxX < rect(workbenchInspector).minX
+        return (checks, frames)
     }
     @objc private func toggleLeftSidebar() {
         guard selectedTab == "chat" else { return }
@@ -1956,6 +2043,9 @@ final class FormDocumentView: NSView {
     }
     private func focusTaskInput() {
         if !taskWorkspace.isHiddenOrHasHiddenAncestor, let page = taskWorkspace.currentController, page is AgentEditResendWindow || page is AgentRoundRollbackWindow || page is AgentMCPContentWindow { page.settingsDidAppear() }
+        else if !workbenchInspector.isHiddenOrHasHiddenAncestor, terminalSplit.isHidden, let window {
+            if !window.makeFirstResponder(resultsButton) { window.makeFirstResponder(nil) }
+        }
         else { window?.makeFirstResponder(composer) }
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
@@ -3855,7 +3945,7 @@ final class FormDocumentView: NSView {
         while previous != hidden { previous = hidden; for item in listing where item.agent?.ownerID.map(hidden.contains) == true || item.kind == "hook" && item.parentID.map(hidden.contains) == true { hidden.insert(item.id) } }
         let sidebarSelection = task.sideTask.flatMap { side in tasks.tasks.contains { $0.id == side.parentID && !$0.archived } ? side.parentID : nil } ?? task.id
         taskSidebar.refresh(listing.filter { !hidden.contains($0.id) }, selected: sidebarSelection, organization: tasks.organization, searchRevision: tasks.taskSearchRevision)
-        if selectedTab == "chat" { pageTitle.stringValue = task.title }
+        if selectedTab == "chat" { pageTitle.stringValue = task.title; pageTitle.toolTip = task.title }
         projectButton.title = ""; projectButton.imagePosition = .imageOnly; projectButton.toolTip = tasks.organization.name(task.organizationWorkspace, mode: task.organizationMode) ?? "选择" + task.organizationMode.directoryTitle
         if let entry = tasks.organization.entry(task.organizationWorkspace ?? "",mode:task.organizationMode,tasks:tasks.tasks) { projectButton.image = NSImage(systemSymbolName:(entry.icon ?? .folder).rawValue,accessibilityDescription:nil); projectButton.contentTintColor = (entry.color ?? .forest).nsColor } else { projectButton.image = NSImage(systemSymbolName:"folder",accessibilityDescription:nil); projectButton.contentTintColor = AgentWorkbenchTheme.secondaryText }
         modePopup.selectItem(at: AgentMode.allCases.firstIndex(of: task.mode) ?? 2)
@@ -3874,7 +3964,6 @@ final class FormDocumentView: NSView {
         browserButton.isEnabled = !managed
         resumeButton.isHidden = (managed && task.kind != AgentKnowledgeCards.kind) || running || rollbackBlocked || ![.stopped, .failed, .ready].contains(task.status) || task.messages.isEmpty || task.archived
         resultsButton.title = ""; resultsButton.imagePosition = .imageOnly; resultsButton.toolTip = task.plan.isEmpty ? "任务记录" : "计划 \(task.plan.filter { $0.status == "completed" }.count)/\(task.plan.count)"
-        resultsButton.isEnabled = !task.events.isEmpty || !task.artifacts.isEmpty || !(task.canvases ?? []).isEmpty || !task.plan.isEmpty
         renderDraftAttachments(task); setBusy(running); clearButton.title = task.archived ? "恢复任务" : "归档任务"
         composer.isEditable = !managed; attachmentButton.isEnabled = !managed
         let queueCount = task.queuedCount
