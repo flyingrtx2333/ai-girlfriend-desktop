@@ -37,7 +37,7 @@ import AppKit
         let branch = "review/public-readme-check-with-a-long-descriptive-branch-name"
         let git = try await command.run(command: try AgentGit.executablePath(), workspace: project, scratch: output, network: false, timeout: 5, gitWrite: true, arguments: ["init", "--quiet", "--initial-branch", branch])
         guard !git.failed else { throw PetError(git.text) }
-        let empty = tasks.create()
+        let empty = tasks.tasks.first(where: { $0.title == "新的任务" && $0.workspace == nil && $0.status == .ready })?.id ?? tasks.create()
         let waiting = tasks.create(title: "确认公开说明核对命令", workspace: workspace)
         let failed = tasks.create(title: "逐项核对公开说明的安装章节、依赖版本和示例命令是否齐全", workspace: workspace)
         let completed = tasks.create(title: "已读取公开项目说明", workspace: workspace)
@@ -165,7 +165,6 @@ import AppKit
             checks["MissingArtifactIsDisabledAndIdentified"] = missing?.isEnabled == false && missing?.accessibilityLabel()?.contains("文件已移动或删除") == true
             view.update(AgentMonitorContent(task: AgentTaskRecord(title: "另一组件任务"))); _ = stale.sendAction(stale.action, to: stale.target); checks["DetachedOldFileActionCannotAffectAnotherTask"] = firstOpen == 1 && opens == firstOpen
             checks["AllSixLegacyPreferenceFilesUnchanged"] = oldNames.map { try? Data(contentsOf: store.directory.appendingPathComponent($0)) } == oldBytes
-            for (key, pass) in try await checkMonitorSources(output) { checks["Source-" + key] = pass }
             var changedFields: [String: [String]] = [:]
             for (id, data) in originals {
                 let before = try JSONSerialization.jsonObject(with: data) as! [String: Any], after = try JSONSerialization.jsonObject(with: encoder.encode(tasks.task(id)!)) as! [String: Any]
@@ -177,11 +176,14 @@ import AppKit
             try JSONSerialization.data(withJSONObject: Dictionary(uniqueKeysWithValues: originals.keys.map { ($0, try encoder.encode(tasks.task($0)!).base64EncodedString()) }), options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("final-task-checkpoint.json"))
             checks["BackgroundProcessStillAliveAfterAllDisplayChanges"] = tasks.hooks.isRunning(b) && kill(pid, 0) == 0
             checks["ActualPublicSourceBytesRemainExact"] = try AgentFiles.hash(Data(contentsOf: URL(fileURLWithPath: tasks.task(a)!.workspace!).appendingPathComponent("README.md"))) == fixture["sourceHash"] as? String
+            control.checkTaskMonitor("stop-terminals")
+            try service.save(.init())
             let workbenchStates = try await prepareWorkbenchStates(output)
             let layout = await control.checkWorkbenchStates(workbenchStates)
             checks.merge(layout.checks) { _, new in new }
             report["workbenchGeometry"] = layout.frames
             checks["WorkbenchProcessRemainsLiveAcrossTaskNavigation"] = runtime.isRunning(b) && kill(pid, 0) == 0
+            for (key, pass) in try await checkMonitorSources(output) { checks["Source-" + key] = pass }
             report["boundary"] = "Actual public file read, local background Hook and interactive terminal; fixed component fixtures verify module rendering only. No model-generated recap or assistant reply is claimed."
             report["states"] = [control.taskMonitorReadback(), second.taskMonitorReadback()]; report["backgroundPID"] = pid
             report["success"] = checks.count >= 40 && checks.values.allSatisfy { $0 }
@@ -195,42 +197,43 @@ import AppKit
     func checkMonitorSources(_ output: URL) async throws -> [String: Bool] {
         guard let tasks = agentStore, let runtime = agentRuntime, let host = control.window else { throw PetError("来源验收缺少任务窗口") }
         var checks: [String: Bool] = [:]
+        defer { host.cancelAgentDialog() }
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        func field(_ name: String, _ sheet: NSWindow) throws -> NSTextField {
-            guard let value = sheet.contentView.flatMap({ descendants($0).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == name } }) else { throw PetError("缺少来源字段：" + name) }; return value
+        func field(_ name: String, _ form: AgentDialogController) throws -> NSTextField {
+            guard let value = descendants(form.view).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == name }) else { throw PetError("缺少来源字段：" + name) }; return value
         }
-        func click(_ title: String, _ sheet: NSWindow) throws {
-            guard let button = sheet.contentView.flatMap({ descendants($0).compactMap { $0 as? NSButton }.first { $0.title == title } }) else { throw PetError("缺少来源操作：" + title) }; _ = button.sendAction(button.action, to: button.target)
+        func click(_ title: String, _ form: AgentDialogController) throws {
+            guard let button = descendants(form.view).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) else { throw PetError("缺少来源操作：" + title) }; _ = button.sendAction(button.action, to: button.target)
         }
         func waitForClose() async throws {
             let deadline = Date().addingTimeInterval(3)
-            while host.attachedSheet != nil, Date() < deadline { await wait(0.03) }
-            guard host.attachedSheet == nil else { throw PetError("来源表单没有关闭") }; await wait(0.05)
+            while host.agentDialog != nil, Date() < deadline { await wait(0.03) }
+            guard host.agentDialog == nil else { throw PetError("来源表单没有关闭") }; await wait(0.05)
         }
         let id = tasks.create(title: "无工作区来源验收", mode: .ask), draft = "保留原有中文草稿 🧭"
         tasks.update(id) { $0.draft = draft }; control.showAgentTask(id); control.show(tab: "chat")
         let file = tasks.directory.appendingPathComponent(id + ".json"), before = try Data(contentsOf: file)
         control.checkTaskMonitor("source-link")
-        guard let sheet = host.attachedSheet else { throw PetError("链接表单没有打开") }
+        guard let sheet = host.agentDialog else { throw PetError("链接表单没有打开") }
         let input = try field("链接地址", sheet)
-        checks["LinkUsesStyledOwnedFormAndAddAction"] = sheet.contentView is AgentThemeView && sheet.sheetParent === host && NSApp.modalWindow == nil
+        checks["LinkUsesStyledOwnedFormAndAddAction"] = sheet.isVisible && sheet.view is AgentThemeView && sheet.view.window === host && host.attachedSheet == nil && NSApp.modalWindow == nil
         for invalid in ["file:///tmp/local", "javascript:alert(1)", "https://user:pass@example.com/", "https://", "https://example.com/line\nbreak"] {
             input.stringValue = invalid; try click("添加", sheet)
-            checks["InvalidLink-" + String(checks.count)] = try host.attachedSheet === sheet && input.stringValue == invalid && !field("链接状态", sheet).stringValue.isEmpty && Data(contentsOf: file) == before && tasks.task(id)?.sourceReferences.isEmpty == true
+            checks["InvalidLink-" + String(checks.count)] = try host.agentDialog === sheet && input.stringValue == invalid && !field("链接状态", sheet).stringValue.isEmpty && Data(contentsOf: file) == before && tasks.task(id)?.sourceReferences.isEmpty == true
         }
         input.stringValue = "https://example.com/cancelled"; try click("取消", sheet); try await waitForClose()
         checks["CancelKeepsTaskBytesAndDraftExact"] = try Data(contentsOf: file) == before && tasks.task(id)?.draft == draft
         let link = "https://example.com/notes?lang=zh#part"
-        control.checkTaskMonitor("source-link"); guard let added = host.attachedSheet else { throw PetError("无法重开链接表单") }
+        control.checkTaskMonitor("source-link"); guard let added = host.agentDialog else { throw PetError("无法重开链接表单") }
         try field("链接地址", added).stringValue = "  " + link + "  "; try click("添加", added); try await waitForClose()
         checks["LinkAppendsOnlyToOriginalUnsentDraft"] = tasks.task(id)?.draft == draft + "\n\n" + link && tasks.task(id)?.messages.isEmpty == true && tasks.task(id)?.sourceReferences.isEmpty == true
         let once = try Data(contentsOf: file); try control.appendSourceLink(link, taskID: id)
         checks["DuplicateLinkDoesNotWriteOrDuplicateDraft"] = try Data(contentsOf: file) == once && tasks.task(id)?.draft == draft + "\n\n" + link
-        control.checkTaskMonitor("source-link"); guard let retry = host.attachedSheet else { throw PetError("缺少来源保存重试表单") }
+        control.checkTaskMonitor("source-link"); guard let retry = host.agentDialog else { throw PetError("缺少来源保存重试表单") }
         let second = "https://example.com/retained"
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: file.path)
         try field("链接地址", retry).stringValue = second; try click("添加", retry)
-        checks["ReadOnlySaveKeepsDiskAndRetainsPendingDraft"] = try Data(contentsOf: file) == once && host.attachedSheet === retry && tasks.task(id)?.draft?.hasSuffix(second) == true && field("链接状态", retry).stringValue.contains("尚未保存")
+        checks["ReadOnlySaveKeepsDiskAndRetainsPendingDraft"] = try Data(contentsOf: file) == once && host.agentDialog === retry && tasks.task(id)?.draft?.hasSuffix(second) == true && field("链接状态", retry).stringValue.contains("尚未保存")
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path); try click("添加", retry); try await waitForClose()
         let expected = draft + "\n\n" + link + "\n\n" + second
         checks["RetrySavesRetainedLinkOnlyOnce"] = tasks.task(id)?.draft == expected && tasks.task(id)?.sourceReferences.isEmpty == true

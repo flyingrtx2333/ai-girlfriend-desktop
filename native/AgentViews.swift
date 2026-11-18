@@ -367,6 +367,10 @@ private final class AgentTaskTable: NSTableView {
             (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? AgentTaskCell)?.select(mainPage == "chat" && (bulkSelecting ? bulkIDs.contains(task.id) : task.id == listSelection))
         } }
     }
+    func revealCurrentSelection() {
+        guard !bulkSelecting, !searchVisible, let task = listSelection, !workbenchSelectionIsVisible(task) else { return }
+        selectCurrent(reveal: true)
+    }
     func workbenchSelectionIsVisible(_ id: String) -> Bool {
         let row = table.selectedRow
         guard rows.indices.contains(row), case .task(let task, _) = rows[row], task.id == id else { return false }

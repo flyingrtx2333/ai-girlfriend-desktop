@@ -107,12 +107,18 @@ class AgentWorkbenchButton: NSButton {
 @MainActor struct AgentTaskStatusAppearance {
     let symbol: String
     let color: NSColor
+    private static let runningColor = NSColor(name: "AgentTaskRunning") { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 0.52, green: 0.76, blue: 1, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.02, green: 0.31, blue: 0.69, alpha: 1)
+    }
 
     init(_ task: AgentTaskRecord) {
         let status: AgentTaskStatus = task.statusTitle == "校验未通过" ? .failed : task.status
         switch status {
         case .ready: (symbol, color) = ("circle", AgentWorkbenchTheme.secondaryText)
-        case .running: (symbol, color) = ("circle.dotted", .systemBlue)
+        case .running: (symbol, color) = ("arrow.triangle.2.circlepath", Self.runningColor)
         case .waiting: (symbol, color) = ("exclamationmark.circle.fill", .systemOrange)
         case .stopped: (symbol, color) = ("stop.circle", AgentWorkbenchTheme.secondaryText)
         case .completed: (symbol, color) = ("checkmark.circle.fill", AgentWorkbenchTheme.accent)
