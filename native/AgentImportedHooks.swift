@@ -1,4 +1,5 @@
 import Foundation
+import BlueFatFishMCP
 
 struct AgentImportedHookReceipt: Codable {
     let originalName: String
@@ -21,7 +22,7 @@ struct AgentImportedHookReceipt: Codable {
         let receipt = try files.literalURL(target.deletingLastPathComponent().appendingPathComponent("receipt.json").path)
         if try files.entryMetadata(receipt).kind == "missing" { return nil }
         let value = try JSONDecoder().decode(AgentImportedHookReceipt.self, from: files.readData(receipt, maximum: 4096))
-        guard ["settings.json", "settings.local.json", "hooks.json"].contains(value.originalName),
+        guard ["settings.json", "settings.local.json", "hooks.json", "config.toml"].contains(value.originalName),
               value.sourceHash.count == 64, value.sourceHash.allSatisfy(\.isHexDigit) else { throw PetError("Hooks 导入记录无效") }
         return value
     }
@@ -69,16 +70,27 @@ struct AgentStandaloneHookPackage {
         AgentFiles.hash(Data((AgentExtensions.digest(files) + "\n" + executable.sorted().joined(separator: "\n")).utf8))
     }
 
-    @MainActor static func prepare(_ data: Data, source: AgentImportSource, file: URL, files: AgentFiles,
-                                  target: URL, workspace: String?, service: AgentHooks) throws -> Self? {
-        let object = try AgentConfigurationJSON.object(data)
-        guard let raw = object["hooks"] else { return nil }
+    static func events(_ data: Data, source: AgentImportSource, file: URL) throws -> [String: Any]? {
+        if source == .codex, file.lastPathComponent == "config.toml" {
+            do { return try CodexInlineHooks.read(data) }
+            catch { throw PetError("Codex config.toml 或内联 Hooks 格式无效") }
+        }
+        guard let raw = try AgentConfigurationJSON.object(data)["hooks"] else { return nil }
         guard let events = raw as? [String: Any] else { throw PetError("需要 Hooks 事件对象") }
+        return events
+    }
+
+    @MainActor static func prepare(_ events: [String: Any], source: AgentImportSource, file: URL, files: AgentFiles,
+                                  projectSource: Bool, target: URL, workspace: String?, service: AgentHooks) throws -> Self? {
         guard !events.isEmpty else { return nil }
+        let inline = source == .codex && file.lastPathComponent == "config.toml"
+        let resourceRoot = file.deletingLastPathComponent().appendingPathComponent("hooks")
+        let inlineResources = inline ? try resources(resourceRoot, files: files) : nil
         var normalized: [String: [[String: Any]]] = [:], skipped: [String] = [], labels: [String] = []
-        var count = 0
-        let handlerFields: Set<String> = ["name", "type", "command", "timeout", "shell", "args", "env", "network", "if", "allowedEnvVars",
+        var count = 0, relocated = 0, hasOriginalScriptPath = false
+        var handlerFields: Set<String> = ["name", "type", "command", "timeout", "shell", "args", "env", "network", "if", "allowedEnvVars",
             "url", "headers", "prompt", "model", "tools", "maxTurns", "async", "asyncRewake", "rewakeMessage", "rewakeSummary", "statusMessage", "once"]
+        if inline { handlerFields.insert("additionalContextLimit") }
         for key in events.keys.sorted() {
             guard AgentHookEvent(rawValue: key) != nil else { skipped.append(key); continue }
             guard let groups = events[key] as? [[String: Any]], groups.count <= 64 else { throw PetError("Hooks 的事件分组无效：" + key) }
@@ -104,6 +116,17 @@ struct AgentStandaloneHookPackage {
                                      options: .regularExpression) != nil {
                         skipped.append(key + " · 命令含内嵌凭据字段"); continue
                     }
+                    var movedScript = false, originalPath = false
+                    if let inlineResources, let command = handler["command"] as? String {
+                        if let replacement = relocatedCommand(command, resourceRoot: resourceRoot, project: projectSource,
+                                                              resources: inlineResources.contents) {
+                            handler["command"] = replacement
+                            movedScript = true
+                        } else {
+                            originalPath = command.contains(".codex/hooks/") || command.contains("CODEX_HOME")
+                                || command.contains(resourceRoot.path + "/")
+                        }
+                    }
                     handler["name"] = handler["name"] ?? key + " · " + type + " " + String(count)
                     var candidate = group
                     candidate["hooks"] = [handler]
@@ -119,6 +142,8 @@ struct AgentStandaloneHookPackage {
                             throw PetError("处理器配置无法载入")
                         }
                         kept += cleaned
+                        if movedScript { relocated += 1 }
+                        hasOriginalScriptPath = hasOriginalScriptPath || originalPath
                         labels.append(check.name + "\n" + key + " · " + type + (check.matcher.isEmpty ? "" : " · " + check.matcher))
                     } catch { skipped.append(key + " · 处理器需要调整") }
                 }
@@ -137,13 +162,51 @@ struct AgentStandaloneHookPackage {
         }
         let config = try JSONSerialization.data(withJSONObject: ["hooks": normalized], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         guard config.count <= 128_000 else { throw PetError("Hooks 配置超过 128KB") }
-        var payload = try resources(file.deletingLastPathComponent().appendingPathComponent("hooks"), files: files)
+        var payload = try inlineResources ?? resources(resourceRoot, files: files)
         payload.contents["hooks.json"] = config
         var warnings = ["导入后为停用状态"]
         if !skipped.isEmpty { warnings.append("跳过 " + String(skipped.count) + " 项 · " + Array(Set(skipped)).sorted().prefix(5).joined(separator: "、")) }
         if String(decoding: config, as: UTF8.self).contains(AgentHookCredentials.placeholder) { warnings.append("使用前请补填本机凭据") }
         if payload.contents.count > 1 { warnings.append("包含 " + String(payload.contents.count - 1) + " 份脚本与资源") }
+        if relocated > 0 { warnings.append("已调整 " + String(relocated) + " 条命令的脚本路径") }
+        if hasOriginalScriptPath { warnings.append("含原脚本路径，启用前请检查") }
         return Self(files: payload.contents, executable: payload.executable, events: labels, warnings: warnings)
+    }
+
+    private static func relocatedCommand(_ command: String, resourceRoot: URL, project: Bool,
+                                         resources: [String: Data]) -> String? {
+        let leading = command.drop(while: \.isWhitespace)
+        let executable = leading.prefix { !$0.isWhitespace }
+        let interpreters = ["sh", "bash", "zsh", "python", "python3", "node", "ruby", "perl"]
+        let argument = interpreters.contains((String(executable) as NSString).lastPathComponent)
+            ? leading.dropFirst(executable.count).drop(while: { $0 == " " || $0 == "\t" }) : leading
+        guard let first = argument.first else { return nil }
+        let quote: Character? = first == "\"" || first == "'" ? first : nil
+        let path: Substring, end: String.Index
+        if let quote {
+            let inner = argument.dropFirst()
+            guard let close = inner.firstIndex(of: quote) else { return nil }
+            path = inner[..<close]; end = command.index(after: close)
+            guard end == command.endIndex || command[end].isWhitespace || ";&|<>".contains(command[end]) else { return nil }
+        } else {
+            path = argument.prefix { !$0.isWhitespace }; end = path.endIndex
+        }
+        var roots = [resourceRoot.path + "/"]
+        if project {
+            roots += [".codex/hooks/", "./.codex/hooks/"]
+            if quote == "\"" { roots += ["$(git rev-parse --show-toplevel)/.codex/hooks/"] }
+        } else if quote != "'" {
+            roots += ["$HOME/.codex/hooks/", "${HOME}/.codex/hooks/", "$CODEX_HOME/hooks/", "${CODEX_HOME}/hooks/"]
+            if quote == nil { roots.append("~/.codex/hooks/") }
+        }
+        guard let root = roots.first(where: { path.hasPrefix($0) }) else { return nil }
+        let relative = String(path.dropFirst(root.count))
+        guard AgentArchive.validPath(relative), resources["hooks/" + relative] != nil,
+              !relative.contains(where: \.isNewline) else { return nil }
+        if quote == nil, relative.range(of: #"^[\p{L}\p{N}_./+-]+$"#, options: .regularExpression) == nil { return nil }
+        if quote == "\"", relative.contains(where: { $0 == "$" || $0 == "\u{60}" || $0 == "\\" }) { return nil }
+        return String(command[..<argument.startIndex]) + "\"${QODER_HOOK_ROOT}/\""
+            + AgentGit.quote(relative) + command[end...]
     }
 
     private static func resources(_ root: URL, files: AgentFiles) throws -> (contents: [String: Data], executable: Set<String>) {

@@ -20,6 +20,10 @@ struct AgentStandaloneImportPlan: Codable, Equatable, Sendable {
     var relative: String
 
     var commandName: String { String(relative.dropLast(3)).replacingOccurrences(of: "/", with: ":") }
+    var maximumReadBytes: Int {
+        guard kind == .hooks else { return 65_536 }
+        return relative == "config.toml" ? 512_000 : 128_000
+    }
     var destination: String {
         let folder = workspace == nil ? "extensions/" : ".bluefatfish/"
         switch kind {
@@ -71,7 +75,7 @@ enum AgentStandaloneDataImport {
             let directory = parts.prefix(anchor ?? 0).joined(separator: "/")
             if parts.count == start + 1 {
                 switch (source, name) {
-                case (.qoder, "settings.json"), (.codex, "hooks.json"):
+                case (.qoder, "settings.json"), (.codex, "hooks.json"), (.codex, "config.toml"):
                     return .init(kind: .hooks, workspace: workspace, directory: directory, relative: name)
                 case (.qoder, "settings.local.json") where project:
                     return .init(kind: .hooks, workspace: workspace, directory: directory, relative: name)
@@ -150,7 +154,7 @@ enum AgentStandaloneDataImport {
                 }
                 if !nested { try visit(prefix + "agents", recursive: false) }
                 if !configurationRoot && (!nested || source == .codex) {
-                    for name in source == .qoder ? ["settings.json", "settings.local.json"] : ["hooks.json"] {
+                    for name in source == .qoder ? ["settings.json", "settings.local.json"] : ["hooks.json", "config.toml"] {
                         let child = try files.literalURL(prefix + name)
                         if try files.entryMetadata(child).kind != "missing", let plan = try entry(child) { try add(child, plan) }
                     }
@@ -261,7 +265,7 @@ enum AgentStandaloneDataImport {
             record.configuration = plan
             do {
                 guard plan.kind != .policy else { throw PetError("Codex 终端审批策略需要单独配置") }
-                let bytes = try read(file, from: location.files, maximum: plan.kind == .hooks ? 128_000 : 65_536)
+                let bytes = try read(file, from: location.files, maximum: plan.maximumReadBytes)
                 record.rawHash = AgentFiles.hash(bytes)
                 if plan.kind == .agent || plan.kind == .hooks {
                     if try previewExtension(&record, plan: plan, file: file, bytes: bytes, location: location, store: store) {
@@ -332,7 +336,8 @@ enum AgentStandaloneDataImport {
     @MainActor private static func previewExtension(_ record: inout AgentImportCandidate, plan: AgentStandaloneImportPlan, file: URL,
                                                    bytes: Data, location: Location, store: AgentStore) throws -> Bool {
         record.targetID = AgentPlugins.mcpUUID("standalone:" + plan.kind.rawValue + ":" + record.source.rawValue + "\0" + file.path + "\0" + (plan.workspace ?? ""))
-        if plan.kind == .hooks, try AgentConfigurationJSON.object(bytes)["hooks"] == nil { return false }
+        let hookEvents = try plan.kind == .hooks ? AgentStandaloneHookPackage.events(bytes, source: record.source, file: file) : nil
+        if plan.kind == .hooks, hookEvents == nil { return false }
         guard !location.project || plan.workspace != nil else { throw PetError("项目来源，请选择目标项目") }
         guard plan.directory.isEmpty else { throw PetError("请选择对应的子目录作为来源和目标项目") }
         if plan.kind == .agent {
@@ -350,8 +355,8 @@ enum AgentStandaloneDataImport {
                 record.issue = "已共享"; return true
             }
             let (files, target) = try store.hooks.importedConfiguration(record.targetID, workspace: plan.workspace)
-            guard let package = try AgentStandaloneHookPackage.prepare(bytes, source: record.source, file: file, files: location.files,
-                                                                      target: target, workspace: plan.workspace, service: store.hooks) else { return false }
+            guard let hookEvents, let package = try AgentStandaloneHookPackage.prepare(hookEvents, source: record.source, file: file,
+                files: location.files, projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks) else { return false }
             record.preview = package.events.joined(separator: "\n")
             record.warnings = package.warnings
             record.sourceHash = AgentFiles.hash(Data((record.rawHash + package.fingerprint).utf8))
@@ -477,7 +482,7 @@ enum AgentStandaloneDataImport {
         guard try location.entry(file) == plan, plan.directory.isEmpty, !location.project || plan.workspace != nil else {
             throw PetError("来源或项目已变化，请重新检测")
         }
-        let bytes = try read(file, from: location.files, maximum: plan.kind == .hooks ? 128_000 : 65_536)
+        let bytes = try read(file, from: location.files, maximum: plan.maximumReadBytes)
         guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("来源已变化，请重新检测") }
         if plan.kind == .agent {
             let (value, _) = try AgentStandaloneRoleImport.profile(bytes, source: record.source, file: file, id: record.targetID, workspace: plan.workspace, store: store)
@@ -490,8 +495,9 @@ enum AgentStandaloneDataImport {
         }
         let (files, target) = try store.hooks.importedConfiguration(record.targetID, workspace: plan.workspace)
         guard try store.hooks.importedConfigurations(workspace: plan.workspace).count < 128 else { throw PetError("同一范围最多 128 份独立 Hooks 配置") }
-        guard var bundle = try AgentStandaloneHookPackage.prepare(bytes, source: record.source, file: file, files: location.files,
-                                                                  target: target, workspace: plan.workspace, service: store.hooks),
+        guard let events = try AgentStandaloneHookPackage.events(bytes, source: record.source, file: file),
+              var bundle = try AgentStandaloneHookPackage.prepare(events, source: record.source, file: file, files: location.files,
+                projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks),
               AgentFiles.hash(Data((record.rawHash + bundle.fingerprint).utf8)) == record.sourceHash else {
             throw PetError("来源 Hooks 或资源已变化，请重新检测")
         }

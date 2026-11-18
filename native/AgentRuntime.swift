@@ -792,7 +792,7 @@ import Foundation
             run.key = key
             hookSecret = key
             let session = store.task(id)?.hookSession ?? run.token
-            _ = try await hook(.sessionStart, id: id, trigger: session, fields: ["source": "startup"], secret: key)
+            _ = try await hook(.sessionStart, id: id, trigger: session, value: "startup", fields: ["source": "startup"], secret: key)
             if let task = store.task(id) {
                 if let previous = task.hookCwd, previous != (task.workspace ?? "") { _ = try await hook(.cwd, id: id, trigger: session + ":" + (task.workspace ?? ""), fields: ["old_cwd": previous, "new_cwd": task.workspace ?? ""], secret: key) }
                 store.update(id) { $0.hookCwd = task.workspace ?? "" }

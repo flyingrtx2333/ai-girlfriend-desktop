@@ -17,6 +17,7 @@ struct AgentHookDefinition: Codable, Identifiable {
     var asynchronous: Bool?, asyncRewake: Bool?, rewakeMessage: String?, rewakeSummary: String?, statusMessage: String?
     var shell: String?, arguments: [String]?, environmentNames: [String]?, condition: String?, allowedEnvVars: [String]?, once: Bool?
     var plugin: AgentPluginHookReference?, pluginEnabled: Bool?
+    var additionalContextLimit: Int?
     var runsInBackground: Bool { asynchronous == true || asyncRewake == true }
     var display: String {
         let body: String
@@ -27,7 +28,8 @@ struct AgentHookDefinition: Codable, Identifiable {
             let argv = arguments.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.withoutEscapingSlashes]) }.map { String(decoding: $0, as: UTF8.self) }
             body = (arguments == nil ? (shell ?? "sh") + " · Shell\n" : "Exec · 直接参数\n") + command + (argv.map { "\nargs: " + $0 } ?? "") + ((environmentNames ?? []).isEmpty ? "" : "\nenv: " + (environmentNames ?? []).joined(separator: ", "))
         }
-        return (condition.map { "if: " + $0 + "\n" } ?? "") + body + (once == true ? "\nonce: true（仅适用于会话配置）" : "")
+        let context = additionalContextLimit.flatMap { $0 > 0 ? "\n补充上下文上限 · \($0) tokens" : nil } ?? ""
+        return (condition.map { "if: " + $0 + "\n" } ?? "") + body + context + (once == true ? "\nonce: true（仅适用于会话配置）" : "")
     }
 }
 struct AgentHookSetting: Codable { var enabled: Bool; var definition: AgentHookDefinition }
@@ -202,6 +204,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     else if type != "http", handler["allowedEnvVars"] != nil { item.diagnostic = "allowedEnvVars 仅适用于 HTTP 处理器" }
                     else if handler["if"] != nil && !(handler["if"] is String) { item.diagnostic = "if 需要字符串" }
                     else if name.count > 100 { item.diagnostic = "Hook 名称不超过 100 字" }
+                    }
+                    if item.diagnostic == nil, let raw = handler["additionalContextLimit"] {
+                        if type == "command", CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(), let limit = raw as? Int, limit >= 0 {
+                            item.additionalContextLimit = limit
+                        } else { item.diagnostic = "additionalContextLimit 需要 command 处理器与非负整数" }
                     }
                     if item.diagnostic == nil, let condition = item.condition { do { _ = try AgentHookCondition(condition) } catch { item.diagnostic = error.localizedDescription } }
                     if let resourceDiagnostic { item.diagnostic = resourceDiagnostic }
@@ -424,7 +431,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             }
             // Interpret protocol values before hiding text. An env value such
             // as "block" or "false" must never alter the execution decision.
-            var effect = hook.runsInBackground ? try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") : try interpret(event, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "")
+            var effect = hook.runsInBackground ? try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") : try interpret(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "")
             if let input = effect.updatedInput, redact(input) != input { throw AgentHookHalt("Hook 参数包含受保护的凭据或环境值，未继续执行") }
             effect.context = redact(effect.context); effect.systemMessage = effect.systemMessage.map(redact)
             effect.deny = effect.deny.map(redact); effect.halt = effect.halt.map(redact); effect.sessionTitle = effect.sessionTitle.map(redact)
@@ -466,7 +473,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             effect.systemMessage = object["systemMessage"] as? String; effect.suppressOutput = object["suppressOutput"] as? Bool ?? false
             if let specific = object["hookSpecificOutput"] as? [String: Any] {
                 guard specific["hookEventName"] as? String == hook.event.rawValue else { throw AgentHookHalt("后台 Hook 输出的 hookEventName 不匹配") }
-                if let context = specific["additionalContext"] as? String { content = context }
+                if let context = specific["additionalContext"] as? String { content = boundedContext(context, hook.additionalContextLimit) }
             }
         }
         if !stderr.isEmpty { content += (content.isEmpty ? "" : "\n") + stderr }
@@ -480,7 +487,19 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         }
         return effect
     }
-    private func interpret(_ event: AgentHookEvent, result: AgentToolResult, stdout: String, stderr: String) throws -> AgentHookEffect {
+    private func boundedContext(_ context: String, _ limit: Int?) -> String {
+        let window = String(context.prefix(3000))
+        guard let limit, limit > 0, AgentContext.estimate(window) > limit else { return window }
+        var lower = 0, upper = window.count
+        while lower < upper {
+            let middle = lower + (upper - lower + 1) / 2
+            if AgentContext.estimate(String(window.prefix(middle))) <= limit { lower = middle }
+            else { upper = middle - 1 }
+        }
+        return String(window.prefix(lower))
+    }
+    private func interpret(_ hook: AgentHookDefinition, result: AgentToolResult, stdout: String, stderr: String) throws -> AgentHookEffect {
+        let event = hook.event
         var effect = AgentHookEffect()
         if result.exitCode == 2 && event.controlsExecution { effect.deny = String((stderr.isEmpty ? "Hook 阻止了此操作" : stderr).prefix(2000)); return effect }
         if result.failed {
@@ -496,7 +515,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         effect.systemMessage = object["systemMessage"] as? String; effect.suppressOutput = object["suppressOutput"] as? Bool ?? false
         if let specific = object["hookSpecificOutput"] as? [String: Any] {
             guard specific["hookEventName"] as? String == event.rawValue else { throw AgentHookHalt("Hook 输出缺少匹配的 hookEventName") }
-            effect.context = String((specific["additionalContext"] as? String ?? "").prefix(3000))
+            effect.context = boundedContext(specific["additionalContext"] as? String ?? "", hook.additionalContextLimit)
             if [.preTool, .permission].contains(event) {
                 let nested = event == .permission ? specific["decision"] as? [String: Any] : nil
                 let decision = specific["permissionDecision"] as? String ?? nested?["behavior"] as? String
