@@ -114,7 +114,8 @@ import AppKit
             let exported = output.appendingPathComponent("codex-export")
             func codex(_ id: String, _ name: String, _ rrule: String, workspaces: [String], extra: String = "") throws -> URL {
                 let file = exported.appendingPathComponent("automations/\(id)/automation.toml")
-                let paths = try String(decoding: JSONEncoder().encode(workspaces), as: UTF8.self)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
+                let paths = try String(decoding: encoder.encode(workspaces), as: UTF8.self)
                 let rule = rrule.replacingOccurrences(of: "\n", with: "\\n")
                 let data = """
                 id = "\(id)"
@@ -166,6 +167,8 @@ import AppKit
             let spring = try AgentCronSchedule("30 2 * * *"), autumn = try AgentCronSchedule("30 1 * * *")
             checks["cronSkipsNonexistentTimeAndVisitsBothRepeatedTimes"] = spring.next(after: date("2026-03-08T05:00:00Z"), calendar: newYork) == date("2026-03-09T06:30:00Z")
                 && autumn.next(after: date("2026-11-01T05:31:00Z"), calendar: newYork) == date("2026-11-01T06:30:00Z")
+            let repeated = try AgentAutomationRecurrence.codex("FREQ=DAILY;BYHOUR=1;BYMINUTE=30", created: nil, zone: "America/New_York")
+            checks["codexCalendarSchedulesVisitFirstRepeatedTimeOnly"] = repeated.next(after: date("2026-11-01T05:31:00Z")) == date("2026-11-02T06:30:00Z")
             var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(secondsFromGMT: 0)!
             let or = try AgentCronSchedule("0 12 15 * 1"), leap = try AgentCronSchedule("0 9 29 2 *")
             checks["cronUsesDayOrWeekdayAndCrossesGregorianLeapGap"] = or.next(after: date("2027-01-12T00:00:00Z"), calendar: utc) == date("2027-01-15T12:00:00Z")

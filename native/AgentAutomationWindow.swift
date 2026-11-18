@@ -275,6 +275,7 @@ import AppKit
         result.name = name.stringValue; result.prompt = prompt.string; result.workspace = workspace.stringValue; result.model = model.stringValue; result.executor = executor.selectedItem?.representedObject as? String ?? "default"
         result.schedule.frequency = AgentAutomationFrequency.allCases[frequency.indexOfSelectedItem]; result.schedule.timeZone = zone.stringValue; result.schedule.date = once.dateValue; result.schedule.weekdays = selectedDays.sorted(); result.schedule.expiration = expiring.state == .on ? expiry.dateValue : nil
         result.schedule.cronExpression = result.schedule.frequency == .cron ? cron.stringValue : nil
+        if result.schedule.frequency != .cron { result.schedule.cronRepeatLocalTimes = nil }
         result.output = AgentAutomationOutput.allCases[output.indexOfSelectedItem]; result.permission = AgentPermissionMode.allCases[permission.indexOfSelectedItem]; result.readOnly = readOnly.state == .on; result.network = network.state == .on; result.notify = notify.state == .on; result.enabled = enabled.state == .on
         return result
     }
@@ -335,7 +336,7 @@ import AppKit
     private static func validateRecoveryDefinition(_ raw: Any) throws {
         let raw = try AgentSettingsRecovery.object(raw, keys: ["id", "name", "prompt", "workspace", "workMode", "schedule", "output", "executor", "model", "permission", "readOnly", "network", "notify", "enabled", "archived"])
         if let schedule = raw["schedule"] {
-            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration", "cronExpression"])
+            _ = try AgentSettingsRecovery.object(schedule, keys: ["frequency", "timeZone", "date", "hour", "minute", "weekdays", "intervalMinutes", "expiration", "cronExpression", "cronRepeatLocalTimes"])
         }
     }
     func restoreRecovery(_ value: AgentWorkspaceRecovery.Automation) throws {

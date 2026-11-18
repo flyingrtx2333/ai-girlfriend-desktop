@@ -46,7 +46,7 @@ enum AgentAutomationRecurrence {
         result.timeZone = zoneID
         result.expiration = try fields["UNTIL"].map { try date($0, zone: zone) }
         let selectors = fields.keys.contains { $0.hasPrefix("BY") }
-        if ["HOURLY", "MINUTELY"].contains(frequency), !selectors, let start {
+        if ["HOURLY", "MINUTELY"].contains(frequency), !selectors, let start, zone.identifier == "GMT" || zone.identifier == "UTC" {
             result.frequency = .interval
             result.intervalMinutes = interval * (frequency == "HOURLY" ? 60 : 1)
             guard result.intervalMinutes <= 525_600 else { throw PetError("Codex 间隔超过一年") }
@@ -56,7 +56,7 @@ enum AgentAutomationRecurrence {
             guard interval == 1, fields["BYSECOND"].map({ $0 == "0" }) ?? (defaultSecond == 0) else {
                 throw PetError("此 Codex 间隔或秒级时间暂不能准确迁移")
             }
-            let time = anchor.map { calendar.dateComponents([.hour, .minute, .weekday, .day, .month], from: $0) }
+            let time = start.map { calendar.dateComponents([.hour, .minute, .weekday, .day, .month], from: $0) }
             let hours = try list(fields["BYHOUR"], bounds: 0...23)
             let minutes = try list(fields["BYMINUTE"], bounds: 0...59)
             var monthDays = try list(fields["BYMONTHDAY"], bounds: 1...31)
@@ -87,11 +87,12 @@ enum AgentAutomationRecurrence {
             guard let hour, let minute else { throw PetError("Codex 计划缺少明确的运行时间") }
             result.frequency = .cron
             result.cronExpression = [minute, hour, monthDays.map(field) ?? "*", months.map(field) ?? "*", weekdays.map(field) ?? "*"].joined(separator: " ")
+            result.cronRepeatLocalTimes = false
         }
         if countOne, let anchor {
             let justBefore = Date(timeIntervalSinceReferenceDate: anchor.timeIntervalSinceReferenceDate.nextDown)
-            guard let first = result.next(after: justBefore) else { throw PetError("一次性 Codex 计划没有有效时间") }
-            result.frequency = .once; result.date = first; result.cronExpression = nil; result.expiration = nil
+            guard result.next(after: justBefore) == anchor else { throw PetError("一次性 Codex 计划与开始时间不一致") }
+            result.frequency = .once; result.date = anchor; result.cronExpression = nil; result.cronRepeatLocalTimes = nil; result.expiration = nil
         }
         return result
     }

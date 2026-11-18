@@ -18,6 +18,7 @@ struct AgentAutomationSchedule: Codable {
     var hour = 9, minute = 0, weekdays = [2], intervalMinutes = 60
     var expiration: Date?
     var cronExpression: String?
+    var cronRepeatLocalTimes: Bool?
     func next(after now: Date) -> Date? {
         if frequency != .once, let expiration, expiration <= now { return nil }
         guard let zone = TimeZone(identifier: timeZone) else { return nil }
@@ -31,7 +32,8 @@ struct AgentAutomationSchedule: Codable {
             value = date > now ? date : date.addingTimeInterval((floor(now.timeIntervalSince(date) / seconds) + 1) * seconds)
         case .cron:
             let beforeStart = Date(timeIntervalSinceReferenceDate: date.timeIntervalSinceReferenceDate.nextDown)
-            value = cronExpression.flatMap { try? AgentCronSchedule($0) }?.next(after: max(now, beforeStart), calendar: calendar)
+            value = cronExpression.flatMap { try? AgentCronSchedule($0) }?.next(after: max(now, beforeStart), calendar: calendar,
+                                                                              repeatLocalTimes: cronRepeatLocalTimes ?? true)
         case .daily, .weekly:
             var match: Date?
             for offset in 0...7 {
@@ -215,7 +217,7 @@ struct AgentAutomationAssignment: Codable {
         if value.schedule.frequency == .cron {
             guard let expression = value.schedule.cronExpression else { throw PetError("请填写 Cron 表达式") }
             _ = try AgentCronSchedule(expression)
-        } else if value.schedule.cronExpression != nil { throw PetError("Cron 表达式需要使用 Cron 计划") }
+        } else if value.schedule.cronExpression != nil || value.schedule.cronRepeatLocalTimes != nil { throw PetError("Cron 参数需要使用 Cron 计划") }
         if runnable {
             let files = try AgentFiles(workspace: value.workspace)
             guard files.root.path == value.workspace else { throw PetError("项目目录已改变，请重新选择") }

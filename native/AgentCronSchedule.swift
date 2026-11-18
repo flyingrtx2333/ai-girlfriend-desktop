@@ -51,7 +51,7 @@ struct AgentCronSchedule {
         return Int(text)
     }
 
-    func next(after now: Date, calendar: Calendar) -> Date? {
+    func next(after now: Date, calendar: Calendar, repeatLocalTimes: Bool = true) -> Date? {
         var day = calendar.startOfDay(for: now)
         // Eight years covers the maximum gap between leap days in Gregorian dates.
         for _ in 0..<2930 {
@@ -61,14 +61,14 @@ struct AgentCronSchedule {
             if let month = parts.month, months.contains(month), let number = parts.day, let weekday = parts.weekday {
                 let matchesDay = days.contains(number), matchesWeekday = weekdays.contains(weekday)
                 if (anyDay || anyWeekday) ? matchesDay && matchesWeekday : matchesDay || matchesWeekday,
-                   let match = firstTime(on: day, nextDay: nextDay, after: now, calendar: calendar) { return match }
+                   let match = firstTime(on: day, nextDay: nextDay, after: now, calendar: calendar, repeatLocalTimes: repeatLocalTimes) { return match }
             }
             day = nextDay
         }
         return nil
     }
 
-    private func firstTime(on day: Date, nextDay: Date, after now: Date, calendar: Calendar) -> Date? {
+    private func firstTime(on day: Date, nextDay: Date, after now: Date, calendar: Calendar, repeatLocalTimes: Bool) -> Date? {
         if nextDay.timeIntervalSince(day) == 86_400, calendar.component(.hour, from: day) == 0, calendar.component(.minute, from: day) == 0 {
             for hour in hours {
                 for minute in minutes {
@@ -78,10 +78,11 @@ struct AgentCronSchedule {
             }
             return nil
         }
+        let policies: [Calendar.RepeatedTimePolicy] = repeatLocalTimes ? [.first, .last] : [.first]
         var best: Date?
         for hour in hours {
             for minute in minutes {
-                for policy in [Calendar.RepeatedTimePolicy.first, .last] {
+                for policy in policies {
                     guard let value = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day,
                                                     matchingPolicy: .strict, repeatedTimePolicy: policy),
                           value > now, calendar.isDate(value, inSameDayAs: day), best.map({ value < $0 }) ?? true else { continue }
