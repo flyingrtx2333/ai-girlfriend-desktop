@@ -112,7 +112,7 @@ import Darwin
         checks["cancelHistoryReviewReturnsToSameRevision"] = try pane.currentController === page && rows.selectedRow == 7 && service.installation(installed.id).receiptHash == before
         rows.onOpen?()
         guard let review = pane.currentController as? AgentPluginReviewPage, let reviewContent = review.pageContentView,
-              let restore = descendants(reviewContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == "恢复" }) else { throw PetError("缺少恢复动作") }
+              let restore = descendants(reviewContent).compactMap({ $0 as? NSButton }).first(where: { $0.title == "恢复并停用" && $0.isEnabled }) else { throw PetError("缺少恢复并停用动作") }
         restore.performClick(nil)
         let restored = try service.installation(installed.id)
         checks["historyReviewRestoresActualVersionAndRefreshesHistory"] = pane.currentController === page && restored.metadata.version == "1.0.0" && !restored.enabled && restored.receiptHash != before && page.detailHeading?.scope == "当前 1.0.0" && rows.numberOfRows == 9
