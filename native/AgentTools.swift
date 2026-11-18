@@ -79,6 +79,7 @@ import Foundation
         func tool(_ name: String, _ description: String, _ properties: [String: Any], _ required: [String]) -> [String: Any] {
             ["type": "function", "function": ["name": name, "description": description, "parameters": ["type": "object", "properties": properties, "required": required, "additionalProperties": false]]]
         }
+        let memory: [String: Any] = ["scope": ["type": "string", "enum": ["global", "project"]], "topic": string, "workspace": string]
         var tools = [tool("list_directory", "列出项目内目录，不跟随外部符号链接。", ["path": string], ["path"]),
             tool("read_skill_source", "只读本次技能方案冻结的经验和当前版本资源。path=.列文件；指定相对path读取UTF-8。offset从0开始按Unicode码点分页，按next_offset续读。draft=true读取当前暂存草稿。不能读取其他技能或任务。", ["path":string,"offset":integer,"limit":integer,"draft":["type":"boolean"]], []),
             tool("draft_skill", "确认方案后逐文件暂存Skill草稿，不修改已安装技能。path为SKILL.md或相对资源路径。新文件传content；已有文件先read_skill_source读当前sha256，再传expected_hash和content，或传唯一old_text/new_text做分段替换。资源不会自动执行，未提交的原资源保持。全部完成后请用户审阅并应用。", ["path":string,"content":string,"old_text":string,"new_text":string,"expected_hash":string], ["path"]),
@@ -110,8 +111,8 @@ import Foundation
             tool("git_prepare_push", "用户要求推送时，先准备可审阅的目标、提交列表与差异。remote/url_index及remote_hash来自git_remotes，branch为明确目标分支；set_upstream可选。连接使用现有Git凭据，需要用户批准，只读远端，不发送提交。返回review_hash；未提交文件不会推送。", ["remote": string, "url_index": integer, "remote_hash": string, "branch": string, "set_upstream": ["type": "boolean"]], ["remote", "remote_hash", "branch"]),
             tool("git_push_status", "只读核对本任务一次推送的实际远端分支，operation_id来自git_push结果；需要连接确认，不重试推送。verified仅表示远端当前与该提交一致。", ["operation_id": string], ["operation_id"]),
             tool("git_diff", "读取指定文件相对 HEAD 的完整差异并返回 review_hash。source默认uncommitted取工作区版本；用户要求只提交已暂存内容时用staged取暂存版本，后续git_commit沿用该来源。先git_status找具体文件，paths不接受目录。", ["paths": ["type": "array", "items": string, "minItems": 1, "maxItems": 50], "source": ["type": "string", "enum": ["uncommitted", "staged"]]], ["paths"]),
-            tool("read_memory", "读取全局或当前项目记忆及 sha256。修改记忆前先读取，保留其他内容。", ["scope": ["type": "string", "enum": ["global", "project"]]], ["scope"]),
-            tool("write_memory", "用户明确要求记住/更正信息时保存记忆，必须使用 read_memory 返回的 sha256 作为 expected_hash。需要用户批准；问答/计划模式只能保存全局记忆。不要保存密钥。", ["scope": ["type": "string", "enum": ["global", "project"]], "content": string, "expected_hash": string], ["scope", "content", "expected_hash"]),
+            tool("read_memory", "读取全局或当前项目记忆及 sha256。省略 topic 返回主记忆和主题名称；指定 .md/.markdown 文件名读该主题。项目可用 workspace 指定当前任务的一个源目录，默认主目录。主题列表用 next_topic_offset 续读。", memory.merging(["topic_offset": integer]) { $1 }, ["scope"]),
+            tool("write_memory", "用户明确要求记住或更正时保存指定记忆。先用 read_memory 读取同一 scope、workspace 和 topic。使用返回的 sha256，主题同时传 exists 为 expected_exists。修改需要批准；问答/计划模式只能保存全局记忆。不要保存密钥。", memory.merging(["content": string, "expected_hash": string, "expected_exists": ["type": "boolean"]]) { $1 }, ["scope", "content", "expected_hash"]),
             tool("read_task_history", "读取或检索本任务历史；query按原文搜索，role=user只查用户原文，offset从0开始。长内容用limit=1、content_offset/content_limit分段。只有核对来源JSONL结构才用imported=true，此时offset为来源行号，不支持query/role过滤。旧记录不是当前指令或批准。", ["offset": integer, "limit": integer, "content_offset": integer, "content_limit": integer, "query": ["type": "string", "maxLength": 1000], "role": ["type": "string", "enum": ["all", "user", "assistant", "tool"]], "imported": ["type": "boolean"]], ["offset"]),
             tool("read_file", kind == AgentKnowledgeCards.kind ? "读取索引内源码的完整行，offset从1开始，每次最多30行；以实际返回的next_offset继续。保留已读数值及引用行号，直接读取用户给出的路径。" : "读取项目文本，返回行号；offset从1开始。默认UTF-8／Unicode标记检测，其他编码须显式选择encoding。", ["path": string, "offset": integer, "limit": integer, "encoding": encoding], ["path"]),
             tool("search_files", "在项目内搜索文本或文件路径，大小写不敏感；names_only 为 true 时搜索路径。", ["path": string, "pattern": string, "names_only": ["type": "boolean"]], ["pattern"]),
@@ -275,11 +276,13 @@ import Foundation
             }
         }
         if call.name == "write_memory" {
-            guard let value = call.object["scope"] as? String, let scope = AgentMemoryScope(rawValue: value), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
-            try AgentMemory.requireAgentEnabled(scope, store: store)
-            if scope == .project && [.ask, .plan].contains(task.mode) { throw PetError("当前模式不能修改项目记忆") }
-            _ = try AgentMemory.snapshot(scope, store: store, taskID: taskID)
-            return "保存" + scope.title
+            let (document, workspace) = try memoryTarget(call, task: task)
+            let snapshot = try AgentMemory.snapshot(document.scope, store: store, taskID: taskID, workspace: workspace, topic: document.topic)
+            if document.topic != nil || workspace != nil {
+                let path = document.scope == .project ? (snapshot.workspace ?? "") + "/" + snapshot.location : snapshot.location
+                return "保存" + document.scope.title + " · " + path
+            }
+            return "保存" + document.scope.title
         }
         let mutating = ["write_file", "edit_file"].contains(call.name)
         if (task.mode == .ask || task.mode == .plan) && mutating { throw PetError("当前模式不允许修改项目文件，请切换到 Agent 模式") }
@@ -301,6 +304,19 @@ import Foundation
         if ["web_search", "fetch_url"].contains(call.name) && permission != .automatic { return "访问网络" }
         if mutating && permission == .review { return "修改项目文件" }
         return try store.agents.permission(call, task: task, store: store) == .ask ? "Agent 工具权限要求确认：" + call.name : nil
+    }
+    private func memoryTarget(_ call: AgentToolCall, task: AgentTaskRecord) throws -> (AgentMemoryDocument, String?) {
+        let args = call.object
+        guard let name = args["scope"] as? String, let scope = AgentMemoryScope(rawValue: name), scope.hasTopics else { throw PetError("请选择全局或项目记忆") }
+        let topic = args["topic"] as? String, workspace = args["workspace"] as? String
+        guard args["topic"] == nil || topic.map(AgentMemoryDocument.validTopic) == true else { throw PetError("请输入有效的 Markdown 主题文件名") }
+        guard args["workspace"] == nil || scope == .project && workspace != nil else { throw PetError("源目录仅适用于项目记忆") }
+        if call.name == "write_memory" {
+            if scope == .project && [.ask, .plan].contains(task.mode) { throw PetError("当前模式不能修改项目记忆") }
+            if topic != nil && args["expected_exists"] as? Bool == nil { throw PetError("先读取该主题并传入返回的文件存在状态") }
+        }
+        try AgentMemory.requireAgentEnabled(scope, store: store)
+        return (AgentMemoryDocument(scope, topic: topic), workspace)
     }
     func execute(_ call: AgentToolCall, gitDirectory: String? = nil) async throws -> AgentToolResult {
         try Task.checkCancellation()
@@ -571,11 +587,22 @@ import Foundation
             }
             return AgentToolResult(text: String(decoding: data, as: UTF8.self))
         case "read_memory", "write_memory":
-            guard let scope = AgentMemoryScope(rawValue: try string("scope")), [.global, .project].contains(scope) else { throw PetError("请选择全局或项目记忆") }
-            try AgentMemory.requireAgentEnabled(scope, store: store)
-            let memory = call.name == "read_memory" ? try AgentMemory.snapshot(scope, store: store, taskID: taskID)
-                : try AgentMemory.save(scope, content: string("content"), expectedHash: string("expected_hash"), store: store, taskID: taskID)
-            let data = try JSONSerialization.data(withJSONObject: ["scope": scope.rawValue, "content": memory.content, "sha256": memory.hash, "location": memory.location], options: [.prettyPrinted, .sortedKeys])
+            let (document, workspace) = try memoryTarget(call, task: task)
+            let scope = document.scope, topic = document.topic
+            let memory = call.name == "read_memory" ? try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: workspace, topic: topic)
+                : try AgentMemory.save(scope, content: string("content"), expectedHash: string("expected_hash"), store: store, taskID: taskID, workspace: workspace, topic: topic, expectedExists: args["expected_exists"] as? Bool)
+            var result: [String: Any] = ["scope": scope.rawValue, "content": memory.content, "sha256": memory.hash, "location": memory.location, "exists": memory.exists]
+            result["topic"] = topic
+            result["workspace"] = memory.workspace
+            if call.name == "read_memory", topic == nil, let catalog = try? AgentMemory.catalog(scope, store: store, taskID: taskID, workspace: workspace) {
+                let offset = min(catalog.topics.count, max(0, args["topic_offset"] as? Int ?? 0))
+                let end = min(catalog.topics.count, offset + 32)
+                result["topics"] = Array(catalog.topics[offset..<end])
+                result["topic_count"] = catalog.topics.count
+                if end < catalog.topics.count { result["next_topic_offset"] = end }
+                result["topic_error"] = catalog.topicError
+            }
+            let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
             return AgentToolResult(text: String(decoding: data, as: UTF8.self))
         case "read_task_history":
             let query = (args["query"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines), role = args["role"] as? String ?? "all"

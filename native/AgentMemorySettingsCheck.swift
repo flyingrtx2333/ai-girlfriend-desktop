@@ -189,6 +189,98 @@ import AppKit
         checks["memoryProjectManagementPreservesAllOriginalTaskRecords"] = try originalTasks.allSatisfy { task in try encoder.encode(tasks.task(task.id)) == encoder.encode(Optional(task)) }
         checks["memoryProjectManagementPreservesEachSourceMemory"] = try AgentMemory.snapshot(.project, store: tasks, taskID: peerID).content == "PEER_MEMORY_PUBLIC_347" && AgentMemory.snapshot(.project, store: tasks, taskID: multiID, workspace: secondary.path).content == "SECONDARY_MEMORY_PUBLIC_529" && AgentMemory.snapshot(.project, store: tasks, taskID: id).content == "PROJECT_MEMORY_PUBLIC_692"
         checks["memorySettingsChecksDoNotRequestModels"] = modelAttempts == 0
+        let topics = try await checkMemoryTopics(output)
+        checks.merge(topics) { _, later in later }
+        return checks
+    }
+
+    private func checkMemoryTopics(_ output: URL) async throws -> [String: Bool] {
+        let root = output.appendingPathComponent("memory-topic-fixture")
+        let primary = root.appendingPathComponent("primary"), secondary = root.appendingPathComponent("secondary"), other = root.appendingPathComponent("other")
+        for directory in [primary, secondary, other] { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let profile = root.appendingPathComponent("profile")
+        let tasks = AgentStore(directory: profile, legacy: [], extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: store.keychain, hookKeychain: store.keychain)
+        let scope = AgentWorkspaceScope(group: primary.path, folders: [primary.path, secondary.path], primary: primary.path)
+        let id = tasks.create(title: "主题来源验收", workspaceScope: scope)
+        let unlinked = tasks.create(title: "无工作区", mode: .ask)
+        let unrelated = tasks.create(title: "独立项目", workspace: other.path)
+        guard let task = tasks.task(id), let ask = tasks.task(unlinked) else { throw PetError("缺少记忆主题测试任务") }
+        let runtime = AgentRuntime(store: tasks, keychain: store.keychain, preferences: { PetPreferences() })
+        var modelRequests = 0, checks: [String: Bool] = [:]
+        runtime.modelRequestCheck = { modelRequests += 1; throw PetError("主题验收禁止请求模型") }
+        let tools = AgentTools(store: tasks, taskID: id), askTools = AgentTools(store: tasks, taskID: unlinked)
+        func call(_ name: String, _ arguments: [String: Any]) throws -> AgentToolCall {
+            let data = try JSONSerialization.data(withJSONObject: arguments, options: .sortedKeys)
+            return AgentToolCall(id: UUID().uuidString, name: name, arguments: String(decoding: data, as: UTF8.self))
+        }
+        func json(_ result: AgentToolResult) throws -> [String: Any] {
+            guard let object = try JSONSerialization.jsonObject(with: Data(result.text.utf8)) as? [String: Any] else { throw PetError("无效的记忆工具结果") }
+            return object
+        }
+        let old = try AgentMemory.snapshot(.project, store: tasks, taskID: id)
+        let anchor = try AgentMemory.save(.project, content: "PUBLIC_DEFAULT_MEMORY", expectedHash: old.hash, store: tasks, taskID: id)
+        let theme = try AgentMemory.createTopic("发布流程", scope: .project, store: tasks, taskID: id, workspace: secondary.path)
+        let global = try AgentMemory.createTopic("沟通偏好.md", scope: .global, store: tasks, taskID: nil, workspace: nil)
+        let opened = try AgentMemory.snapshot(.project, store: tasks, taskID: id, workspace: secondary.path, topic: theme.topic)
+        let file = try AgentMemory.revealURL(theme, store: tasks, taskID: id, workspace: secondary.path)
+        checks["memoryTopicCreationUsesNamedMarkdownFile"] = theme.topic == "发布流程.md" && opened.exists && opened.content.isEmpty && file.path == secondary.appendingPathComponent(".bluefatfish/memory/发布流程.md").path
+        let globalFile = try AgentMemory.revealURL(global, store: tasks, taskID: nil, workspace: nil)
+        checks["globalMemoryTopicIsPrivate"] = (try FileManager.default.attributesOfItem(atPath: globalFile.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600
+        checks["projectMemoryTopicRetainsProjectFilePermissions"] = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue == 0o644
+        do { _ = try AgentMemory.createTopic("发布流程.md", scope: .project, store: tasks, taskID: id, workspace: secondary.path); checks["memoryTopicCreateRejectsDuplicate"] = false }
+        catch { checks["memoryTopicCreateRejectsDuplicate"] = error.localizedDescription.contains("同名") }
+        let absent = try AgentMemory.snapshot(.global, store: tasks, taskID: nil, topic: "并发.md")
+        _ = try AgentMemory.createTopic("并发", scope: .global, store: tasks, taskID: nil, workspace: nil)
+        do { _ = try AgentMemory.save(.global, content: "不得覆盖", expectedHash: absent.hash, store: tasks, taskID: nil, topic: "并发.md", expectedExists: absent.exists); checks["memoryTopicDoesNotMistakeNewEmptyFileForMissingFile"] = false }
+        catch { checks["memoryTopicDoesNotMistakeNewEmptyFileForMissingFile"] = error.localizedDescription.contains("已更改") }
+        let args: [String: Any] = ["scope": "project", "workspace": secondary.path, "topic": theme.topic!]
+        let read = try json(await tools.execute(call("read_memory", args)))
+        checks["memoryToolReadsExactTopicFromSecondaryFolder"] = read["sha256"] as? String == opened.hash && read["workspace"] as? String == secondary.path && read["topic"] as? String == theme.topic && read["exists"] as? Bool == true
+        let edit = try call("write_memory", args.merging(["expected_exists": true, "expected_hash": opened.hash, "content": "PUBLIC_SECONDARY_RELEASE_TOPIC"]) { $1 })
+        let reason = try tools.approvalReason(for: edit)
+        checks["memoryTopicApprovalNamesExactTarget"] = reason?.contains(file.path) == true
+        let changed = try json(await tools.execute(edit))
+        checks["approvedTopicWriteSavesOnlyItsTarget"] = try changed["content"] as? String == "PUBLIC_SECONDARY_RELEASE_TOPIC" && AgentMemory.snapshot(.project, store: tasks, taskID: id).hash == anchor.hash
+        do { _ = try await tools.execute(edit); checks["memoryTopicWriteRejectsStaleHash"] = false }
+        catch { checks["memoryTopicWriteRejectsStaleHash"] = error.localizedDescription.contains("已更改") }
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: file.path)
+        let currentHash = try AgentMemory.snapshot(.project, store: tasks, taskID: id, workspace: secondary.path, topic: theme.topic).hash
+        do { _ = try AgentMemory.save(.project, content: "REJECT", expectedHash: currentHash, store: tasks, taskID: id, workspace: secondary.path, topic: theme.topic); checks["memoryTopicReadOnlyRejectsSave"] = false }
+        catch { checks["memoryTopicReadOnlyRejectsSave"] = error.localizedDescription.contains("只读") }
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: file.path)
+        let metadata = try AgentMemory.catalog(.project, store: tasks, taskID: id, workspace: secondary.path)
+        checks["memoryTopicCatalogCountsFilesAndReadsUpdateTime"] = metadata.count == 1 && metadata.topics == [theme.topic!] && metadata.latest != nil
+        let request = try call("read_memory", ["scope": "project", "workspace": secondary.path])
+        let list = try json(await tools.execute(request))
+        checks["memoryToolPublishesTopicCatalog"] = list["topics"] as? [String] == [theme.topic!] && list["topic_count"] as? Int == 1
+        let globalRead = try json(await askTools.execute(call("read_memory", ["scope": "global", "topic": global.topic!])))
+        checks["memoryGlobalTopicWorksInAskWithoutWorkspace"] = globalRead["exists"] as? Bool == true && globalRead["topic"] as? String == global.topic
+        let context = try runtime.systemContext(task), askContext = try runtime.systemContext(ask)
+        checks["memoryRuntimeAdvertisesScopedTopicsAndKeepsMainMemory"] = context.contains("发布流程.md") && context.contains("沟通偏好.md") && context.contains("PUBLIC_DEFAULT_MEMORY") && !context.contains("PUBLIC_SECONDARY_RELEASE_TOPIC")
+        checks["memoryRuntimeDoesNotExposeProjectTopicsWithoutWorkspace"] = askContext.contains("沟通偏好.md") && !askContext.contains("发布流程.md")
+        do { _ = try await AgentTools(store: tasks, taskID: unrelated).execute(request); checks["memoryToolRejectsAnotherProjectsSource"] = false }
+        catch { checks["memoryToolRejectsAnotherProjectsSource"] = error.localizedDescription.contains("不属于当前任务") }
+        for mode in [AgentMode.ask, .plan] {
+            tasks.update(id) { $0.mode = mode }
+            do { _ = try await tools.execute(edit); checks["memoryTopicExecutionRespectsMode-" + mode.rawValue] = false }
+            catch { checks["memoryTopicExecutionRespectsMode-" + mode.rawValue] = error.localizedDescription.contains("不能修改项目记忆") }
+        }
+        tasks.update(id) { $0.mode = .agent }
+        let service = AgentGeneralSettings(directory: profile)
+        var settings = service.settings; settings.projectMemory = false; try service.save(settings)
+        checks["memoryOffOmitsTopicNamesAndMainContents"] = try !runtime.systemContext(task).contains("发布流程.md") && !runtime.systemContext(task).contains("PUBLIC_DEFAULT_MEMORY")
+        do { _ = try await tools.execute(request); checks["memoryOffBlocksTopicDirectoryTool"] = false }
+        catch { checks["memoryOffBlocksTopicDirectoryTool"] = error.localizedDescription.contains("已关闭") }
+        checks["disabledMemoryTopicsRemainManuallyAvailable"] = try AgentMemory.snapshot(.project, store: tasks, taskID: id, workspace: secondary.path, topic: theme.topic).content == "PUBLIC_SECONDARY_RELEASE_TOPIC"
+        let directory = primary.appendingPathComponent(".bluefatfish/memory")
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: file.deletingLastPathComponent())
+        let redirected = try AgentMemory.catalog(.project, store: tasks, taskID: id)
+        checks["memoryCatalogRejectsLinkedTopicDirectory"] = redirected.topicError != nil && redirected.topics.isEmpty
+        do { _ = try AgentMemory.snapshot(.project, store: tasks, taskID: id, topic: theme.topic); checks["memoryTopicCannotReadThroughLinkedParent"] = false }
+        catch { checks["memoryTopicCannotReadThroughLinkedParent"] = true }
+        do { _ = try AgentMemory.createTopic("../越界.md", scope: .project, store: tasks, taskID: id, workspace: secondary.path); checks["memoryTopicRejectsNonlocalName"] = false }
+        catch { checks["memoryTopicRejectsNonlocalName"] = error.localizedDescription.contains("有效的 Markdown") }
+        checks["memoryTopicCheckDidNotRequestModels"] = modelRequests == 0
         return checks
     }
 }

@@ -4,8 +4,10 @@ import Darwin
 
 struct AgentFiles: Sendable {
     let root: URL
-    init(workspace: String?) throws {
+    private let followParentLinks: Bool
+    init(workspace: String?, followParentLinks: Bool = true) throws {
         guard let workspace, !workspace.isEmpty else { throw PetError("请先选择项目文件夹") }
+        self.followParentLinks = followParentLinks
         root = URL(fileURLWithPath: workspace, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else { throw PetError("项目文件夹不可用") }
@@ -33,7 +35,8 @@ struct AgentFiles: Sendable {
     func literalURL(_ path: String) throws -> URL {
         guard !path.contains("\0"), path.utf8.count < 8192 else { throw PetError("文件路径无效") }
         let raw = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)).standardizedFileURL
-        let candidate = raw.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(raw.lastPathComponent)
+        let parent = raw.deletingLastPathComponent()
+        let candidate = (followParentLinks ? parent.resolvingSymlinksInPath() : parent).appendingPathComponent(raw.lastPathComponent)
         guard candidate.path.hasPrefix(root.path + "/") else { throw PetError("路径超出项目范围") }
         return candidate
     }
@@ -57,15 +60,23 @@ struct AgentFiles: Sendable {
     static func signature(_ value: stat) -> String {
         "\(value.st_dev):\(value.st_ino):\(value.st_mode):\(value.st_size):\(value.st_mtimespec.tv_sec):\(value.st_mtimespec.tv_nsec):\(value.st_ctimespec.tv_sec):\(value.st_ctimespec.tv_nsec)"
     }
-    func entryMetadata(_ url: URL) throws -> (kind: String, permissions: Int?, signature: String) {
+    private static func status(_ parent: Int32, _ name: String) throws -> stat? {
+        var info = stat()
+        if fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 { return info }
+        if errno == ENOENT { return nil }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    private static func modified(_ info: stat) -> Date {
+        Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000)
+    }
+    func entryMetadata(_ url: URL) throws -> (kind: String, permissions: Int?, signature: String, modified: Date?) {
         do {
             let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
-            var info = stat()
-            guard fstatat(parent, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            guard let info = try Self.status(parent, name) else { return ("missing", nil, "missing", nil) }
             let kind: String
             switch info.st_mode & S_IFMT { case S_IFREG: kind = "file"; case S_IFLNK: kind = "link"; case S_IFDIR: kind = "directory"; default: kind = "special" }
-            return (kind, kind == "file" ? Int(info.st_mode & 0o7777) : nil, Self.signature(info))
-        } catch let error as POSIXError where error.code == .ENOENT { return ("missing", nil, "missing") }
+            return (kind, kind == "file" ? Int(info.st_mode & 0o7777) : nil, Self.signature(info), Self.modified(info))
+        } catch let error as POSIXError where error.code == .ENOENT { return ("missing", nil, "missing", nil) }
     }
     private func streamFile(_ url: URL, copyingTo output: Int32? = nil, maximum: Int? = nil) throws -> String {
         let (parent, name) = try parentDescriptor(url, create: false); defer { close(parent) }
@@ -110,8 +121,12 @@ struct AgentFiles: Sendable {
         let hash = try sourceFiles.streamFile(source, copyingTo: fd, maximum: maximum)
         guard expectedHash == nil || expectedHash == hash else { throw PetError("检查点校验失败") }
         guard fchmod(fd, mode_t(permissions)) == 0, fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        if let expectedTarget { guard try entryMetadata(url).signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") } }
-        guard renameat(parent, temporary, parent, name) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if let expectedTarget {
+            let signature = try Self.status(parent, name).map(Self.signature) ?? "missing"
+            guard signature == expectedTarget else { throw PetError("文件已被其他操作修改，未覆盖你的改动") }
+        }
+        let renamed = !followParentLinks && expectedTarget == "missing" ? renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) : renameat(parent, temporary, parent, name)
+        guard renamed == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         return hash
     }
     func symbolicLink(_ url: URL) throws -> String {
@@ -204,6 +219,23 @@ struct AgentFiles: Sendable {
     }
     func list(_ path: String) throws -> String {
         try listResolved(resolve(path))
+    }
+    func regularFiles(in directory: URL) throws -> [(name: String, modified: Date)] {
+        let (fd, _) = try parentDescriptor(directory.appendingPathComponent(".directory"), create: false)
+        guard let iterator = fdopendir(fd) else { close(fd); throw PetError("目录无法读取") }
+        defer { closedir(iterator) }
+        var result: [(String, Date)] = [], visited = 0
+        while let entry = readdir(iterator) {
+            try Task.checkCancellation()
+            visited += 1
+            guard visited <= 20_000 else { throw PetError("目录项目过多，无法载入完整列表") }
+            let name = withUnsafePointer(to: entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 1024) { String(validatingCString: $0) }
+            }
+            guard let name, !name.hasPrefix("."), let info = try Self.status(fd, name), info.st_mode & S_IFMT == S_IFREG else { continue }
+            result.append((name, Self.modified(info)))
+        }
+        return result
     }
     func listResolved(_ directory: URL) throws -> String {
         let (fd, _) = try parentDescriptor(directory.appendingPathComponent(".directory"), create: false)

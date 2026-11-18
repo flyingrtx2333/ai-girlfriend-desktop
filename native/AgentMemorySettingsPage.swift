@@ -73,16 +73,27 @@ import AppKit
         for button in buttons {
             let scope = AgentMemoryScope.allCases[button.tag]
             do {
-                let value = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: workspace)
-                let text = value.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                states[scope.rawValue]?.stringValue = text.isEmpty ? "暂无内容" : "\(text.count) 字"
-                states[scope.rawValue]?.toolTip = value.location; button.isEnabled = true
+                if scope.hasTopics {
+                    let catalog = try AgentMemory.catalog(scope, store: store, taskID: taskID, workspace: workspace)
+                    states[scope.rawValue]?.stringValue = countAndDate(catalog)
+                    states[scope.rawValue]?.toolTip = catalog.topicError ?? store.directory.path
+                } else {
+                    let value = try AgentMemory.snapshot(scope, store: store, taskID: taskID, workspace: workspace)
+                    let text = value.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    states[scope.rawValue]?.stringValue = text.isEmpty ? "暂无内容" : "\(text.count) 字"
+                    states[scope.rawValue]?.toolTip = value.location
+                }
+                button.isEnabled = true
             } catch {
                 states[scope.rawValue]?.stringValue = error.localizedDescription; states[scope.rawValue]?.toolTip = error.localizedDescription; button.isEnabled = false
             }
         }
         allProjects = AgentMemory.projects(store: store, preferredTaskID: taskID)
         filterProjects()
+    }
+    private func countAndDate(_ value: AgentMemoryCatalog) -> String {
+        let count = "\(value.count) 个文件"
+        return count + (value.latest.map { " · " + $0.formatted(date: .numeric, time: .shortened) } ?? "")
     }
     @objc private func filterProjects() {
         let query = projectSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -113,8 +124,10 @@ import AppKit
             do {
                 let files = try AgentFiles(workspace: source.workspace)
                 guard source.taskID != nil || files.root.path == source.workspace else { throw PetError("项目目录位置已变化") }
-                projectStates[index].stringValue = source.workspace
-                projectStates[index].toolTip = source.workspace; projectButtons[index].isEnabled = true
+                let catalog = try AgentMemory.catalog(.project, store: store, taskID: source.taskID, workspace: source.workspace)
+                let detail = countAndDate(catalog) + " · " + source.workspace
+                projectStates[index].stringValue = detail
+                projectStates[index].toolTip = detail + (catalog.topicError.map { "\n" + $0 } ?? ""); projectButtons[index].isEnabled = true
             } catch {
                 projectStates[index].stringValue = error.localizedDescription + " · " + source.workspace; projectStates[index].toolTip = source.workspace + "\n" + error.localizedDescription
                 projectButtons[index].isEnabled = false
@@ -135,21 +148,22 @@ import AppKit
         guard sender.isEnabled, AgentMemoryScope.allCases.indices.contains(sender.tag) else { return }
         lastOpened = sender
         let scope = AgentMemoryScope.allCases[sender.tag]
-        let editor = AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace)
+        let editor = AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace, memoryCatalogScope: scope.hasTopics ? scope : nil)
         editor.window?.title = scope.title; editor.selectItem(section: 5, value: scope.rawValue)
+        if scope == .global { editor.settingsContext = (scope.title, store.directory.path) }
         presentSettingsChild(editor)
     }
     @objc private func openProjectMemory(_ sender: NSButton) {
         guard sender.isEnabled, projectButtons.contains(sender), projectSources.indices.contains(sender.tag) else { return }
         let source = projectSources[sender.tag]
-        do { _ = try AgentMemory.snapshot(.project, store: store, taskID: source.taskID, workspace: source.workspace) }
+        do { _ = try AgentMemory.catalog(.project, store: store, taskID: source.taskID, workspace: source.workspace) }
         catch {
             projectStates[sender.tag].stringValue = error.localizedDescription
             projectStates[sender.tag].toolTip = source.workspace + "\n" + error.localizedDescription
             return
         }
         lastOpened = sender
-        let editor = AgentRecordWindow(store: store, taskID: source.taskID, section: 5, memoryOnly: true, memoryWorkspace: source.workspace)
+        let editor = AgentRecordWindow(store: store, taskID: source.taskID, section: 5, memoryOnly: true, memoryWorkspace: source.workspace, memoryCatalogScope: .project)
         editor.window?.title = source.title + " · 项目记忆"; editor.selectItem(section: 5, value: AgentMemoryScope.project.rawValue)
         editor.settingsContext = ("项目 · " + source.title, source.workspace)
         presentSettingsChild(editor)

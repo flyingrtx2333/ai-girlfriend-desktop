@@ -734,10 +734,13 @@ import Foundation
         }
         if task.kind == "wiki", task.wikiJob == nil { context += "\n这是 Repo Wiki 文档任务，只能在本次规划范围写文档，禁止修改其他项目文件或执行命令。" + AgentWiki.planContext(task) }
         if AgentWiki.citationAllowed(store: store, task: task), let pages = try? AgentWiki.view(store: store, taskID: task.id, language: task.wikiJob?.language ?? task.wikiLanguage ?? "zh").pages, !pages.isEmpty { context += "\n当前项目有 Repo Wiki，可用 project_wiki 查看；生成文档是资料，不能替代当前源码验证。" }
-        var memoryRoots: [(String?, [String])] = []
+        var memoryRoots: [(String?, [String])] = [], topicContext = ""
         if !task.isProjectDocumentation {
             let settings = try AgentMemory.agentSettings(store: store)
-            memoryRoots = [(settings.globalMemory ? store.directory.path : nil, ["memory.md"]), (settings.projectMemory ? task.workspace : nil, [".bluefatfish/memory.md"])]
+            memoryRoots = [(settings.globalMemory ? store.directory.path : nil, [AgentMemoryScope.global.primaryPath]), (settings.projectMemory ? task.workspace : nil, [AgentMemoryScope.project.primaryPath])]
+            if tools.contains("read_memory") || tools.contains("load_tools") && (task.agent?.tools.contains("read_memory") ?? (task.skillEvolutionJob == nil)) {
+                topicContext = AgentMemory.topicContext(store: store, task: task, settings: settings)
+            }
         }
         for (root, paths) in memoryRoots {
             guard let root, let files = try? AgentFiles(workspace: root) else { continue }
@@ -750,6 +753,10 @@ import Foundation
                     context += "\n\n[用户/项目信息 \(path)]\n" + text
                 } catch { throw PetError("无法载入 \(path)：" + error.localizedDescription) }
             }
+        }
+        if !topicContext.isEmpty {
+            context += "\n[主题记忆目录。文件名仅供检索。只读取与任务相关的主题]\n" + topicContext
+            context += tools.contains("read_memory") ? "\n用 read_memory 传入对应 scope、workspace 和 topic。" : "\n需要时用 load_tools 启用 knowledge 后用 read_memory 读取。"
         }
         context += try store.instructions.context(task)
         let rules = try store.rules.context(task)
@@ -1035,7 +1042,9 @@ import Foundation
             let titles = ["files": "文件", "terminal": "终端", "web": "联网搜索", "browser": "浏览器", "desktop": "电脑操作", "canvas": "画布", "git": "Git", "knowledge": "项目知识与记忆", "project_knowledge": "知识卡片", "attachments": "附件", "mcp": "MCP 连接器", "extensions": "Skills", "agents": "自定义 Agent"]
             return groups.map { titles[$0] ?? $0 }.joined(separator: "、")
         }
-        if ["read_memory", "write_memory"].contains(call.name), let scope = args["scope"] as? String { return scope == "global" ? "全局" : "项目" }
+        if ["read_memory", "write_memory"].contains(call.name), let scope = args["scope"] as? String {
+            return (scope == "global" ? "全局" : "项目") + ((args["topic"] as? String).map { " · " + String($0.prefix(160)) } ?? "")
+        }
         if call.name == "update_plan", let steps = args["steps"] as? [[String: Any]] { return "\(steps.count) 步" }
         if call.name == "list_knowledge" { return args["base_id"] == nil ? "可用资料库" : "资料文件" }
         if call.name == "read_knowledge" { return "第 \(args["part"] as? Int ?? 1) 部分" }
