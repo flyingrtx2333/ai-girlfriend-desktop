@@ -1,5 +1,10 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 Qoder 数据导入明暗对照
+
+- 本机 Qoder 0.5.2，在 1320×800 窗口下记录「森林」主题的数据导入和展开分类。页面将本机来源与 SSH 实例分组，Codex 卡片在正文中展开任务记录、定时任务、记忆和扩展类别。操作限于浏览界面和切换外观。[Qoder 数据导入说明](https://docs.qoder.com/zh/qoder/data-import)
+- 外观已恢复为原「浅色／森林」，并回到原外观页。六张原图、窗口尺寸与校验和位于外置盘 `evidence/agent/qoder-import-reference-s8r5j3w2/`。
+
 ## 2026-11-19 本机插件迁移
 
 「设置 → 数据导入 → 插件」支持 Qoder 本机插件目录、Codex 本机缓存，以及手选插件目录或 ZIP。可按全局或登记项目预览、勾选、暂停和续导。插件的 Skills、命令、Agent、规则、Hooks 和 MCP 配置保留在同一个安装包里。导入后停用，可直接进入扩展管理中的插件详情。[Qoder 插件结构](https://docs.qoder.com/cli/plugins-reference) [Codex 插件结构](https://developers.openai.com/plugins/build/plugins) [Codex 缓存版本选择](https://github.com/openai/codex/blob/main/codex-rs/core-plugin-common/src/installed.rs)
