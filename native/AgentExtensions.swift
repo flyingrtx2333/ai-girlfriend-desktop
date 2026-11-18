@@ -260,7 +260,10 @@ struct AgentExtensionDocument: Sendable {
             guard visited <= 2000 else { throw PetError("Skill 资源超过 2000 项，请缩小目录") }
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]), path = files.relative(url)
             guard values.isSymbolicLink != true else { throw PetError("Skill 资源含符号链接，请先整理为普通文件：" + path) }
-            if path.split(separator: "/").contains(where: { $0.hasPrefix(".") || ["node_modules", "__pycache__"].contains(String($0)) }) { iterator.skipDescendants(); continue }
+            if path.split(separator: "/").contains(where: { $0.hasPrefix(".") || ["node_modules", "__pycache__"].contains(String($0)) }) {
+                if values.isDirectory == true { iterator.skipDescendants() }
+                continue
+            }
             guard !AgentFiles.sensitive(path) else { throw PetError("Skill 资源含受保护文件：" + path) }
             if values.isDirectory == true { continue }
             let data = try files.readData(url, maximum: 2_000_000); total += data.count

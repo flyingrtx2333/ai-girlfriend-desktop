@@ -133,7 +133,7 @@ import AppKit
             let linked = qoder.appendingPathComponent("linked")
             try skill("linked", at: linked)
             try fm.createSymbolicLink(at: linked.appendingPathComponent("public-link.md"), withDestinationURL: change)
-            try fm.createDirectory(at: other, withIntermediateDirectories: true)
+            for directory in [project, other] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
             try store.organization.register(project.path, mode: .coding)
             try store.organization.register(other.path, mode: .general)
             await service.detect(.qoder, root: qoderRoot, category: .skills, workspace: project.path)
