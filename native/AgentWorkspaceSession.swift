@@ -32,6 +32,9 @@ private actor AgentWorkspaceJournal {
     func saveWindow(_ layout: AgentWorkspaceRecovery.Window, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window> {
         try storage.saveWindow(layout, expected: expected)
     }
+    func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
+        try storage.saveTerminalLayout(layout, expected: expected)
+    }
 }
 
 // One serialized journal per task window. Cold tabs keep their stored page until
@@ -41,6 +44,8 @@ private actor AgentWorkspaceJournal {
     private let journal: AgentWorkspaceJournal
     let id: String
     private var layoutHash: String?, previous: AgentWorkspaceRecovery.Window?
+    private var savedTerminals: AgentWorkspaceRecovery.Saved<AgentTerminalLayout>?
+    private var terminalRecoveryReadOnly = false
     private var pages: [String: AgentWorkspaceRecovery.Page] = [:], pageHashes: [String: String] = [:]
     private var revision = 0, savedRevision = -1, disabled = false, stopped = false, closing = false
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
@@ -84,6 +89,15 @@ private actor AgentWorkspaceJournal {
         owner.taskWorkspace.onRestoreRoot = { [weak self] task, tab in self?.restore(task: task, tab: tab) }
         do { if let saved { try owner.taskWorkspace.restoreLayouts(saved.value.tasks); loadTabStates(saved.value.tasks) } }
         catch { disabled = true; owner.setStatus(error.localizedDescription, error: true) }
+        if saved != nil, !disabled {
+            do {
+                savedTerminals = try AgentWorkspaceRecovery(profile: profile).loadTerminalLayout(windowID: id)
+                if let savedTerminals { owner.restoreTerminalLayout(savedTerminals.value) }
+            } catch {
+                terminalRecoveryReadOnly = true
+                owner.setStatus("终端记录未恢复，原记录已保留：" + error.localizedDescription, error: true)
+            }
+        }
         restoreFloating()
     }
     func ownsFloating(_ controller: AgentSettingsPageController) -> Bool { floating.values.contains { $0.1 === controller } }
@@ -306,7 +320,11 @@ private actor AgentWorkspaceJournal {
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected)
-                layoutHash = saved.hash; previous = saved.value; savedRevision = targetRevision
+                layoutHash = saved.hash; previous = saved.value
+                if !terminalRecoveryReadOnly, let terminals = owner.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value {
+                    savedTerminals = try await journal.saveTerminals(terminals, expected: savedTerminals?.hash)
+                }
+                savedRevision = targetRevision
                 if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
                 failure = nil
                 preservedEditors = Set(editors.compactMap { _, _, controller in
@@ -350,6 +368,7 @@ private actor AgentWorkspaceJournal {
         for root in Array(roots.values) { await root.value }
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
+        if !terminalRecoveryReadOnly, let terminals = owner?.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value { revision &+= 1 }
         if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }
         if savedRevision != revision { await savePending() }
@@ -394,7 +413,7 @@ private actor AgentWorkspaceJournal {
         } while taskControls.contains { $0.workspaceSession?.isCurrent == false }
         return true
     }
-    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || usesSettingsRecoveryCheck || CommandLine.arguments.contains("--knowledge-editor-recovery-check") || CommandLine.arguments.contains("--knowledge-editor-recovery-ui") || ((CommandLine.arguments.contains("--knowledge-reader-recovery-check") || CommandLine.arguments.contains("--knowledge-reader-recovery-ui") || CommandLine.arguments.contains("--knowledge-source-recovery-check")) || CommandLine.arguments.contains("--knowledge-source-recovery-ui") || CommandLine.arguments.contains("--workspace-source-recovery-check")) || CommandLine.arguments.contains("--workspace-source-recovery-ui") || CommandLine.arguments.contains("--workspace-text-viewport-check") || CommandLine.arguments.contains("--workspace-text-viewport-ui") || CommandLine.arguments.contains("--workspace-child-recovery-check") || CommandLine.arguments.contains("--workspace-child-recovery-ui") || CommandLine.arguments.contains("--workspace-floating-recovery-check") || CommandLine.arguments.contains("--workspace-floating-recovery-ui") || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
+    var workspaceRecoveryEnabled: Bool { checkDirectory == nil || usesSettingsRecoveryCheck || (CommandLine.arguments.contains("--manual-ui") && CommandLine.arguments.contains("--terminal-recovery-ui")) || CommandLine.arguments.contains("--knowledge-editor-recovery-check") || CommandLine.arguments.contains("--knowledge-editor-recovery-ui") || ((CommandLine.arguments.contains("--knowledge-reader-recovery-check") || CommandLine.arguments.contains("--knowledge-reader-recovery-ui") || CommandLine.arguments.contains("--knowledge-source-recovery-check")) || CommandLine.arguments.contains("--knowledge-source-recovery-ui") || CommandLine.arguments.contains("--workspace-source-recovery-check")) || CommandLine.arguments.contains("--workspace-source-recovery-ui") || CommandLine.arguments.contains("--workspace-text-viewport-check") || CommandLine.arguments.contains("--workspace-text-viewport-ui") || CommandLine.arguments.contains("--workspace-child-recovery-check") || CommandLine.arguments.contains("--workspace-child-recovery-ui") || CommandLine.arguments.contains("--workspace-floating-recovery-check") || CommandLine.arguments.contains("--workspace-floating-recovery-ui") || CommandLine.arguments.contains("--workspace-video-recovery-check") || CommandLine.arguments.contains("--workspace-video-recovery-ui") || CommandLine.arguments.contains("--workspace-browser-recovery-check") || CommandLine.arguments.contains("--workspace-browser-recovery-ui") || CommandLine.arguments.contains("--workspace-edit-recovery-check") || CommandLine.arguments.contains("--workspace-edit-recovery-ui") || CommandLine.arguments.contains("--workspace-mcp-recovery-check") || CommandLine.arguments.contains("--workspace-mcp-recovery-ui") || CommandLine.arguments.contains("--workspace-canvas-recovery-check") || CommandLine.arguments.contains("--workspace-canvas-recovery-ui") || CommandLine.arguments.contains("--workspace-office-recovery-check") || CommandLine.arguments.contains("--workspace-office-recovery-ui") || CommandLine.arguments.contains("--workspace-recovery-lifecycle-check") || CommandLine.arguments.contains("--workspace-recovery-ui") }
     func loadWorkspaceWindows() {
         guard workspaceRecoveryEnabled else { return }
         do {

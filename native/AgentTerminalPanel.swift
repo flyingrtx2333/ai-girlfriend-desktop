@@ -17,6 +17,12 @@ import BlueFatFishTerminal
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    var recoveryHeight: Double? {
+        let current = terminal.map { Double($0.frame.height) }.flatMap { $0 > 0 ? $0 : nil }
+        return current ?? preferredHeight.map { Double($0) }
+    }
+    func restoreHeight(_ value: Double?) { preferredHeight = value.map { CGFloat($0) } }
+
     func showTerminal(_ view: NSView?) {
         guard terminal !== view else { return }
         if let terminal {
@@ -44,24 +50,53 @@ import BlueFatFishTerminal
     }
 }
 
+@MainActor private final class AgentTerminalPaneSplit: NSSplitView {
+    private var restoredFraction: Double?
+    init(vertical: Bool, fraction: Double? = nil) {
+        restoredFraction = fraction
+        super.init(frame: .zero)
+        isVertical = vertical; dividerStyle = .thin
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private var length: CGFloat { (isVertical ? bounds.width : bounds.height) - dividerThickness }
+    var fraction: Double {
+        if let restoredFraction { return restoredFraction }
+        guard let first = arrangedSubviews.first, length > 0 else { return 0.5 }
+        return max(0, min(1, Double((isVertical ? first.frame.width : first.frame.height) / length)))
+    }
+    override func layout() {
+        super.layout()
+        if let restoredFraction, window != nil, length > 1, arrangedSubviews.count == 2 {
+            self.restoredFraction = nil
+            setPosition(length * CGFloat(restoredFraction), ofDividerAt: 0)
+        }
+    }
+}
+
 @MainActor private final class AgentTerminalPane: NSView {
-    let surface = TerminalSurface()
-    let number: Int
-    let id = UUID()
+    private(set) var surface: TerminalSurface?
+    private(set) var record: AgentTerminalLayout.Pane
+    private var suspending = false
     private let title = NSTextField(labelWithString: "")
     private let state = NSTextField(labelWithString: "")
     private let header = AgentThemeView(fill: AgentWorkbenchTheme.surface)
-    private let close = AgentWorkbenchButton()
+    private let terminalHost = NSView()
+    private let start = AgentWorkbenchButton(), close = AgentWorkbenchButton()
+    var onStart: (() -> Void)?
     var onClose: (() -> Void)?
+    var number: Int { record.number }
+    var id: UUID { record.id }
     var name: String { "终端 \(number)" }
-    private(set) var exitCode: Int32?
+    var pid: pid_t { surface?.pid ?? 0 }
+    var startDirectory: String { record.directory }
+    var focusView: NSView { pid > 0 ? surface?.view ?? start : start }
 
-    init(number: Int, directory: URL) {
-        self.number = number
+    init(_ record: AgentTerminalLayout.Pane) {
+        self.record = record
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 240))
         title.stringValue = name
         title.font = .systemFont(ofSize: 11, weight: .medium)
-        title.toolTip = directory.path
+        title.toolTip = record.directory
         state.font = .systemFont(ofSize: 11)
         state.textColor = AgentWorkbenchTheme.secondaryText
         state.lineBreakMode = .byTruncatingTail
@@ -69,13 +104,15 @@ import BlueFatFishTerminal
         AgentWorkbenchTheme.toolbar(close, title: "关闭\(name)", symbol: "xmark")
         close.target = self
         close.action = #selector(closePane)
-        let row = NSStackView(views: [title, state, NSView(), close])
+        AgentWorkbenchTheme.toolbar(start, title: "启动\(name)", symbol: "play.fill")
+        start.target = self; start.action = #selector(startPane)
+        let row = NSStackView(views: [title, state, NSView(), start, close])
         row.spacing = 6
         row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(row)
         let rule = AgentWorkbenchTheme.rule()
-        for view in [header, rule, surface.view] {
+        for view in [header, rule, terminalHost] {
             addSubview(view)
             view.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: leadingAnchor), view.trailingAnchor.constraint(equalTo: trailingAnchor)])
@@ -84,33 +121,53 @@ import BlueFatFishTerminal
             header.topAnchor.constraint(equalTo: topAnchor), header.heightAnchor.constraint(equalToConstant: 28),
             row.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 9), row.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -3),
             row.centerYAnchor.constraint(equalTo: header.centerYAnchor), rule.topAnchor.constraint(equalTo: header.bottomAnchor),
-            surface.view.topAnchor.constraint(equalTo: rule.bottomAnchor), surface.view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            terminalHost.topAnchor.constraint(equalTo: rule.bottomAnchor), terminalHost.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        surface.onIssue = { [weak self] message in self?.state.stringValue = message }
+        refreshLifecycle()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     @objc private func closePane() { onClose?() }
+    @objc private func startPane() { onStart?() }
 
     func select(_ selected: Bool) {
         title.textColor = selected ? AgentWorkbenchTheme.accent : AgentWorkbenchTheme.secondaryText
     }
 
-    func exited(_ code: Int32) { exitCode = code; state.stringValue = "已退出（\(code)）" }
+    func rememberDirectory() {
+        if let directory = AgentTerminalLayout.directory(of: pid) { record.directory = directory; title.toolTip = directory }
+    }
+    func mount(_ next: TerminalSurface) {
+        surface?.view.removeFromSuperview()
+        surface = next; record.exitCode = nil
+        let view = next.view
+        view.frame = terminalHost.bounds; view.autoresizingMask = [.width, .height]; terminalHost.addSubview(view)
+        next.onIssue = { [weak self] message in self?.state.stringValue = message }
+        refreshLifecycle()
+    }
+    func suspend() {
+        guard pid > 0 else { return }
+        rememberDirectory(); suspending = true; surface?.stop()
+    }
+    func exited(_ code: Int32) {
+        record.exitCode = suspending ? nil : code; suspending = false; refreshLifecycle()
+    }
+    private func refreshLifecycle() {
+        start.isHidden = pid > 0
+        state.stringValue = pid > 0 ? "" : record.exitCode.map { "已退出（\($0)）" } ?? "待启动"
+    }
 }
 
 @MainActor final class AgentTerminalPanel: AgentThemeView {
     @MainActor private final class Tab {
-        let title: String
+        let number: Int
+        var title: String { "终端 \(number)" }
         var root: NSView
         var panes: [AgentTerminalPane]
         var active: AgentTerminalPane
 
-        init(_ pane: AgentTerminalPane) {
-            title = pane.name
-            root = pane
-            panes = [pane]
-            active = pane
+        init(number: Int, root: NSView, panes: [AgentTerminalPane], active: AgentTerminalPane) {
+            self.number = number; self.root = root; self.panes = panes; self.active = active
         }
     }
 
@@ -140,7 +197,7 @@ import BlueFatFishTerminal
     private var mounted: NSView?
     private var nextNumber = 1
     private var dark = false
-    private let maximumPanes = 8
+    private let maximumPanes = AgentTerminalLayout.maximumPanes
     private let tabs = NSPopUpButton(frame: .zero, pullsDown: false)
     private let body = NSView()
     private let path = NSTextField(labelWithString: "")
@@ -149,17 +206,19 @@ import BlueFatFishTerminal
     private let theme = AgentWorkbenchButton(), hide = AgentWorkbenchButton()
     var onHide: (() -> Void)?
     var onMonitorChange: (() -> Void)?
+    var onLayoutChange: (() -> Void)?
     var isShown: Bool { current?.shown == true && current?.selected != nil }
     private var current: TaskTerminals? { currentID.flatMap { states[$0] } }
     private var paneCount: Int { states.values.reduce(0) { count, state in count + state.tabs.reduce(0) { $0 + $1.panes.count } } }
     func monitorEntries(taskID: String) -> [AgentMonitorEntry] {
         (states[taskID]?.tabs ?? []).flatMap(\.panes).map { pane in
-            AgentMonitorEntry(id: pane.id.uuidString, title: pane.name + (pane.exitCode.map { " · 已退出（\($0)）" } ?? ""), detail: "PID \(pane.surface.pid)")
+            let status = pane.record.exitCode.map { " · 已退出（\($0)）" } ?? (pane.pid == 0 ? " · 待启动" : "")
+            return AgentMonitorEntry(id: pane.id.uuidString, title: pane.name + status, detail: pane.pid > 0 ? "PID \(pane.pid)" : pane.startDirectory)
         }
     }
     func openMonitorEntry(_ id: String, taskID: String) throws {
         guard currentID == taskID, let state = current, let index = state.tabs.firstIndex(where: { $0.panes.contains { $0.id.uuidString == id } }), let pane = state.tabs[index].panes.first(where: { $0.id.uuidString == id }) else { throw PetError("此任务的终端会话已关闭") }
-        state.index = index; state.tabs[index].active = pane; state.shown = true; render(); focus()
+        state.index = index; state.tabs[index].active = pane; state.shown = true; render(); focus(); onLayoutChange?()
     }
 
     init(store: AgentStore, checkHome: URL?) {
@@ -194,7 +253,7 @@ import BlueFatFishTerminal
             button.target = self
             button.action = action
         }
-        let bar = NSStackView(views: [tabs, path, issue, NSView(), add, right, down, theme, hide])
+        let bar = NSStackView(views: [AgentSettingsPopupFrame(tabs, outlined: false), path, issue, NSView(), add, right, down, theme, hide])
         bar.alignment = .centerY
         bar.spacing = 4
         let rule = AgentWorkbenchTheme.rule()
@@ -229,6 +288,7 @@ import BlueFatFishTerminal
             guard let state = states[id] else { continue }
             if let record = store.task(id), taskIsAvailable(record, store: store), record.workspace == state.workspace, record.workspaceScope == state.workspaceScope { continue }
             closeState(id)
+            onLayoutChange?()
         }
         let id = task?.id
         if currentID != id || mounted !== current?.selected?.root {
@@ -246,59 +306,83 @@ import BlueFatFishTerminal
         } else {
             let directory = try task.workspace.map { try AgentFiles(workspace: $0).root } ?? store.terminalTaskDirectory(id)
             let state = TaskTerminals(task: task, directory: directory)
-            state.tabs = [Tab(try makePane(for: state))]
+            let pane = try makePane(for: state)
+            state.tabs = [Tab(number: pane.number, root: pane, panes: [pane], active: pane)]
             states[id] = state
         }
-        render()
+        render(); onLayoutChange?()
     }
 
     @objc func hidePanel() {
         current?.shown = false
-        onHide?()
+        onHide?(); onLayoutChange?()
     }
 
     func focus() {
-        if let pane = current?.selected?.active { window?.makeFirstResponder(pane.surface.view) }
+        if let pane = current?.selected?.active { window?.makeFirstResponder(pane.focusView) }
     }
 
     private func makePane(for state: TaskTerminals) throws -> AgentTerminalPane {
-        guard paneCount < maximumPanes, let store, let task = store.task(state.id), taskIsAvailable(task, store: store), task.workspace == state.workspace, task.workspaceScope == state.workspaceScope else {
-            throw PetError("任务已变化或终端数量已达上限")
+        guard paneCount < maximumPanes, nextNumber < Int.max - 1 else { throw PetError("终端数量已达上限") }
+        let pane = AgentTerminalPane(.init(number: nextNumber, directory: state.directory.path))
+        bind(pane, taskID: state.id)
+        try launch(pane, in: state)
+        nextNumber += 1
+        return pane
+    }
+
+    private func bind(_ pane: AgentTerminalPane, taskID: String) {
+        pane.onClose = { [weak self, weak pane] in if let pane { self?.close(pane, taskID: taskID) } }
+        pane.onStart = { [weak self, weak pane] in
+            guard let self, let pane, let state = states[taskID], let tab = state.selected, tab.panes.contains(where: { $0 === pane }) else { return }
+            do {
+                try launch(pane, in: state)
+                tab.active = pane
+                render(); focus(); onLayoutChange?()
+            } catch { showIssue(error) }
         }
-        if let workspace = state.workspace, try AgentFiles(workspace: workspace).root != state.directory {
-            throw PetError("项目目录已变化，请重新打开终端")
+    }
+
+    private func launch(_ pane: AgentTerminalPane, in state: TaskTerminals) throws {
+        guard pane.pid == 0, let store, let task = store.task(state.id), taskIsAvailable(task, store: store),
+              task.workspace == state.workspace, task.workspaceScope == state.workspaceScope else { throw PetError("任务或终端状态已变化") }
+        let root = try task.workspace.map { try AgentFiles(workspace: $0).root } ?? store.terminalTaskDirectory(state.id)
+        guard root == state.directory else { throw PetError("任务目录已变化，原终端记录仍保留") }
+        guard let directory = try? AgentFiles(workspace: pane.startDirectory).root, directory.path == pane.startDirectory else {
+            throw PetError("终端目录暂不可用，请恢复目录后重试")
         }
-        let pane = AgentTerminalPane(number: nextNumber, directory: state.directory)
-        pane.surface.setDark(dark)
+        let surface = TerminalSurface(); surface.setDark(dark)
         let operation = pane.id
         let taskID = state.id
         let retention = store.worktreeRetention
-        pane.surface.onExit = { [weak self, weak pane, weak retention] code in
+        surface.onExit = { [weak self, weak pane, weak retention] code in
             retention?.setNativeOperation(operation, taskID: taskID, busy: false)
             pane?.exited(code)
-            self?.onMonitorChange?()
+            self?.onMonitorChange?(); self?.onLayoutChange?()
         }
-        do { try pane.surface.start(in: state.directory, checkHome: checkHome) }
+        do { try surface.start(in: directory, checkHome: checkHome) }
         catch { throw PetError("终端无法启动。\(error.localizedDescription)") }
         retention.setNativeOperation(operation, taskID: taskID, busy: true)
-        nextNumber += 1
-        pane.onClose = { [weak self, weak pane] in if let pane { self?.close(pane, taskID: taskID) } }
-        pane.surface.onFocus = { [weak self, weak pane] in
-            if let pane, let tab = self?.current?.selected, tab.panes.contains(where: { $0 === pane }) {
+        surface.onFocus = { [weak self, weak pane] in
+            if let self, let pane, let tab = current?.selected, tab.panes.contains(where: { $0 === pane }) {
+                let focusedDifferentPane = tab.active !== pane
                 tab.active = pane
                 tab.panes.forEach { $0.select($0 === pane) }
+                updatePath()
+                if focusedDifferentPane { onLayoutChange?() }
             }
         }
-        return pane
+        pane.mount(surface)
     }
 
     @objc private func addTab() {
         guard let state = current else { return }
         do {
-            state.tabs.append(Tab(try makePane(for: state)))
+            let pane = try makePane(for: state)
+            state.tabs.append(Tab(number: pane.number, root: pane, panes: [pane], active: pane))
             state.index = state.tabs.count - 1
             render()
-            focus()
+            focus(); onLayoutChange?()
         } catch { showIssue(error) }
     }
 
@@ -306,7 +390,7 @@ import BlueFatFishTerminal
         guard let state = current, state.tabs.indices.contains(tabs.indexOfSelectedItem) else { return }
         state.index = tabs.indexOfSelectedItem
         render()
-        focus()
+        focus(); onLayoutChange?()
     }
 
     @objc private func splitRight() { split(vertical: true) }
@@ -322,9 +406,7 @@ import BlueFatFishTerminal
         }
         do {
             let pane = try makePane(for: state)
-            let split = NSSplitView(frame: previous.frame)
-            split.isVertical = vertical
-            split.dividerStyle = .thin
+            let split = AgentTerminalPaneSplit(vertical: vertical)
             replace(previous, with: split, in: tab)
             split.addArrangedSubview(previous)
             split.addArrangedSubview(pane)
@@ -333,7 +415,7 @@ import BlueFatFishTerminal
             tab.panes.append(pane)
             tab.active = pane
             render()
-            focus()
+            focus(); onLayoutChange?()
         } catch { showIssue(error) }
     }
 
@@ -355,7 +437,7 @@ import BlueFatFishTerminal
     private func close(_ pane: AgentTerminalPane, taskID: String) {
         guard let state = states[taskID], let index = state.tabs.firstIndex(where: { tab in tab.panes.contains { $0 === pane } }) else { return }
         let tab = state.tabs[index]
-        pane.surface.stop()
+        pane.surface?.stop()
         if let parent = pane.superview as? NSSplitView, let remaining = parent.arrangedSubviews.first(where: { $0 !== pane }) {
             parent.removeArrangedSubview(remaining)
             remaining.removeFromSuperview()
@@ -371,27 +453,43 @@ import BlueFatFishTerminal
         if state.tabs.isEmpty { states.removeValue(forKey: taskID) }
         render()
         if isShown { focus() } else { onHide?() }
+        onLayoutChange?()
     }
 
     private func closeState(_ id: String) {
         let state = states.removeValue(forKey: id)
-        state?.tabs.flatMap(\.panes).forEach { $0.surface.stop() }
+        state?.tabs.flatMap(\.panes).forEach { $0.surface?.stop() }
     }
 
     func stopAll() {
         for id in Array(states.keys) { closeState(id) }
-        render()
+        render(); onLayoutChange?()
+    }
+
+    func suspendAll() {
+        for state in states.values { state.tabs.flatMap(\.panes).forEach { $0.suspend() } }
+        onLayoutChange?()
     }
 
     @objc private func toggleTheme() {
         dark.toggle()
+        refreshTheme()
+        for state in states.values { state.tabs.flatMap(\.panes).forEach { $0.surface?.setDark(dark) } }
+        focus(); onLayoutChange?()
+    }
+    private func refreshTheme() {
         let title = dark ? "切换为浅色终端" : "切换为深色终端"
         theme.image = NSImage(systemSymbolName: dark ? "sun.max" : "moon", accessibilityDescription: nil)
         theme.image?.size = NSSize(width: 16, height: 16)
         theme.setAccessibilityLabel(title)
         theme.toolTip = title
-        for state in states.values { state.tabs.flatMap(\.panes).forEach { $0.surface.setDark(dark) } }
-        focus()
+    }
+
+    private func updatePath() {
+        let active = current?.selected?.active
+        active?.rememberDirectory()
+        path.stringValue = active?.startDirectory ?? current?.directory.path ?? ""
+        path.toolTip = path.stringValue
     }
 
     private func render() {
@@ -399,8 +497,7 @@ import BlueFatFishTerminal
         tabs.removeAllItems()
         tabs.addItems(withTitles: state?.tabs.map(\.title) ?? [])
         if let state, state.selected != nil { tabs.selectItem(at: state.index) }
-        path.stringValue = state?.directory.path ?? ""
-        path.toolTip = state?.directory.path
+        updatePath()
         issue.isHidden = true
         let root = state?.selected?.root
         if mounted !== root {
@@ -423,7 +520,59 @@ import BlueFatFishTerminal
 
     private func showIssue(_ error: Error) {
         issue.stringValue = error.localizedDescription
+        issue.toolTip = issue.stringValue
         issue.isHidden = false
+    }
+
+    func layoutToRestore(windowID: String, height: Double?) -> AgentTerminalLayout? {
+        func capture(_ view: NSView) -> AgentTerminalLayout.Split? {
+            if let pane = view as? AgentTerminalPane { pane.rememberDirectory(); return .pane(pane.record) }
+            guard let split = view as? AgentTerminalPaneSplit, split.arrangedSubviews.count == 2,
+                  let first = capture(split.arrangedSubviews[0]), let second = capture(split.arrangedSubviews[1]) else { return nil }
+            return .branch(vertical: split.isVertical, fraction: split.fraction, first: first, second: second)
+        }
+        var records: [AgentTerminalLayout.Task] = []
+        for state in states.values.sorted(by: { $0.id < $1.id }) {
+            var tabs: [AgentTerminalLayout.Tab] = []
+            for tab in state.tabs {
+                guard let root = capture(tab.root) else { return nil }
+                tabs.append(.init(number: tab.number, active: tab.active.id, root: root))
+            }
+            records.append(.init(id: state.id, workspace: state.workspace, scope: state.workspaceScope, directory: state.directory.path,
+                shown: state.shown, index: state.index, tabs: tabs))
+        }
+        return AgentTerminalLayout(windowID: windowID, dark: dark, height: height, nextNumber: nextNumber, tasks: records)
+    }
+
+    func restore(_ layout: AgentTerminalLayout) {
+        guard states.isEmpty, let store else { return }
+        dark = layout.dark; nextNumber = layout.nextNumber; refreshTheme()
+        for saved in layout.tasks {
+            guard let task = store.task(saved.id), taskIsAvailable(task, store: store),
+                  task.workspace == saved.workspace, task.workspaceScope == saved.scope else { continue }
+            let state = TaskTerminals(task: task, directory: URL(fileURLWithPath: saved.directory, isDirectory: true))
+            func restoreNode(_ node: AgentTerminalLayout.Split, panes: inout [AgentTerminalPane]) -> NSView {
+                switch node {
+                case .pane(let record):
+                    let pane = AgentTerminalPane(record)
+                    bind(pane, taskID: state.id); panes.append(pane); return pane
+                case .branch(let vertical, let fraction, let first, let second):
+                    let split = AgentTerminalPaneSplit(vertical: vertical, fraction: fraction)
+                    split.addArrangedSubview(restoreNode(first, panes: &panes))
+                    split.addArrangedSubview(restoreNode(second, panes: &panes))
+                    return split
+                }
+            }
+            for savedTab in saved.tabs {
+                var panes: [AgentTerminalPane] = []
+                let root = restoreNode(savedTab.root, panes: &panes)
+                guard let active = panes.first(where: { $0.id == savedTab.active }) else { continue }
+                state.tabs.append(Tab(number: savedTab.number, root: root, panes: panes, active: active))
+            }
+            guard state.tabs.indices.contains(saved.index), state.tabs.count == saved.tabs.count else { continue }
+            state.index = saved.index; state.shown = saved.shown; states[state.id] = state
+        }
+        render()
     }
 
     func verificationSnapshot() -> [String: Any] {
@@ -431,8 +580,9 @@ import BlueFatFishTerminal
             ["taskID": state.id, "directory": state.directory.path, "shown": state.shown, "tabIndex": state.index,
              "tabs": state.tabs.map { tab in
                  ["active": tab.active.number, "panes": tab.panes.map { pane in
-                     ["number": pane.number, "pid": pane.surface.pid, "width": pane.bounds.width, "height": pane.bounds.height,
-                      "terminal": pane.surface.textForVerification()]
+                     ["number": pane.number, "id": pane.id.uuidString, "pid": pane.pid, "width": pane.bounds.width, "height": pane.bounds.height,
+                      "directory": pane.startDirectory, "exitCode": pane.record.exitCode as Any? ?? NSNull(),
+                      "terminal": pane.surface?.textForVerification() ?? ""]
                  }]
              }] as [String: Any]
         }

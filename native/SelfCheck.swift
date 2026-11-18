@@ -23,6 +23,7 @@ import WebKit
     }
     func runSelfCheck() async {
         guard let output = checkDirectory else { return }
+        if CommandLine.arguments.contains("--terminal-recovery-storage-check") { runTerminalRecoveryStorageCheck(output); NSApp.terminate(nil); return }
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         if CommandLine.arguments.contains("--settings-editor-recovery-check") { await runSettingsEditorRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-editor-recovery-ui") { await runSettingsEditorRecoveryCheck(output, interactive: true); return }
@@ -252,6 +253,7 @@ import WebKit
                 let pid = String(getpid()), binary = Bundle.main.executableURL!, hash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
                 func write(_ value: [String: Any], _ name: String) throws { try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent(name), options: .atomic) }
                 control.show(tab: "chat")
+                if CommandLine.arguments.contains("--terminal-recovery-ui") { restoreAdditionalWorkspaceWindows() }
                 if let size = ProcessInfo.processInfo.environment["BLUEFATFISH_CHECK_WINDOW_SIZE"] {
                     let parts = size.split(separator: "x").compactMap { Double($0) }.map { CGFloat($0) }
                     guard parts.count == 2, let window = control.window, let screen = window.screen ?? NSScreen.main,

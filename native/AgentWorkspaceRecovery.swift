@@ -224,6 +224,30 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {
+        let files = try files(), path = try prefix(windowID) + "/terminal.json", url = try literal(files, path)
+        let metadata = try files.entryMetadata(url)
+        if metadata.kind == "missing" { return nil }
+        guard metadata.kind == "file" else { throw PetError("终端恢复记录不是普通文件") }
+        let data = try files.readData(url, maximum: AgentTerminalLayout.maximumBytes)
+        _ = try keys(JSONSerialization.jsonObject(with: data), ["version", "windowID", "dark", "height", "nextNumber", "tasks"])
+        let value = try JSONDecoder().decode(AgentTerminalLayout.self, from: data)
+        try value.validate(windowID: windowID)
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveTerminalLayout(_ value: AgentTerminalLayout, expected: String?) throws -> Saved<AgentTerminalLayout> {
+        try value.validate(windowID: value.windowID)
+        let data = try encoded(value)
+        guard data.count <= AgentTerminalLayout.maximumBytes else { throw PetError("终端恢复记录过大") }
+        return try locked(value.windowID) { files in
+            let path = try prefix(value.windowID) + "/terminal.json"
+            let change = try AgentKnowledgeFileWrite(files: files, path: path, data: data, expectedHash: expected ?? AgentFiles.hash(Data()),
+                missing: expected == nil, permissions: 0o600, label: "终端恢复记录")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
+        }
+    }
     // Tab chrome needs only metadata. It must not hash a large Office asset or
     // construct an editor merely to retain the last known unsaved marker.
     func loadTabDirtyState(windowID: String, pageID: String, taskID: String) throws -> Bool? {

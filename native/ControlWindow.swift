@@ -1011,7 +1011,6 @@ final class FormDocumentView: NSView {
         terminalPanel?.selectTask(chatting ? task : nil)
         terminalButton.isEnabled = AgentTerminalPanel.available(task) && companion?.agentStore?.organization.archiveID(task.organizationWorkspace, mode: task.organizationMode) == nil
         workbenchInspector.canOpenTerminal = terminalButton.isEnabled
-        updateTerminalDock()
         let hasMessages = task.messages.contains { ["user", "assistant"].contains($0.role) && $0.nativeContext != true } || !(task.agentDrafts ?? []).isEmpty || !(task.automationDrafts ?? []).isEmpty || task.skillEvolutionJob != nil
         let monitorContent = makeMonitorContent(task), monitorState = taskMonitorState(task.id)
         let hasRecords = monitorContent.hasContent
@@ -1041,6 +1040,7 @@ final class FormDocumentView: NSView {
         if showWorkspace || fullMonitor { headerActionsTrailing.isActive = false; fullHeaderActionsTrailing.isActive = true }
         else { fullHeaderActionsTrailing.isActive = false; headerActionsTrailing.isActive = true }
         terminalSplit.isHidden = fullWorkspace || fullMonitor
+        updateTerminalDock()
         if !showWorkspace { taskWorkspace.setVisible(false) }
         taskWorkspace.updateHeader(full: fullWorkspace, canSplit: remaining >= 920)
         settingsSidebarWidth?.constant = settingsWidth
@@ -1166,7 +1166,11 @@ final class FormDocumentView: NSView {
         view.onOpenIn = { [weak self] section, value, location in self?.openAgentRecordItem(section: section, value: value, location: location) }
         view.onShowAll = { [weak self] section in self?.presentAgentRecords(section: section) }
         view.onOpenTerminal = { [weak self] in self?.openTaskTerminal() }
-        view.onTerminal = { [weak self] entry in guard let self, let id = agentTaskID else { return }; do { try terminalPanel?.openMonitorEntry(entry, taskID: id); updateTerminalDock() } catch { setStatus(error.localizedDescription, error: true) } }
+        view.onTerminal = { [weak self] entry in
+            guard let self, let id = agentTaskID, let terminalPanel else { return }
+            do { try terminalPanel.openMonitorEntry(entry, taskID: id); showTerminalDock() }
+            catch { setStatus(error.localizedDescription, error: true) }
+        }
         view.onSideTask = { [weak self] id in
             guard let self, let task = companion?.agentStore?.task(id) else { return }
             if task.sideTask != nil { companion?.openSideTask(id, from: self) } else { selectAgentTask(id) }
@@ -2531,7 +2535,7 @@ final class FormDocumentView: NSView {
         }
         if taskWindowNumber != 1 { guard await closeOwnedTaskPanels() else { return false }; return true }
         if modelCheck != nil { invalidateModelCheck() }
-        stopTaskTerminals()
+        terminalPanel?.suspendAll()
         monitorPanel?.orderOut(nil); sender.orderOut(nil); companion?.updatePetWorkspaceOcclusion(); return false
     }
     private func finishClosingSideTask() {
@@ -3557,36 +3561,48 @@ final class FormDocumentView: NSView {
         catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func toggleTaskTerminal() {
-        if terminalSplit.isHidden && taskWorkspace.requested {
-            taskWorkspace.hideForNavigation()
-            if terminalPanel?.isShown == true { terminalPanel?.focus(); return }
-        }
-        if terminalPanel?.isShown == true { terminalPanel?.hidePanel() }
+        if !terminalSplit.isHidden, terminalPanel?.isShown == true { terminalPanel?.hidePanel() }
         else { openTaskTerminal() }
     }
     private func openTaskTerminal() {
         guard selectedTab == "chat", let companion, let store = companion.agentStore, let task = currentAgentTask else { return }
-        if terminalSplit.isHidden && taskWorkspace.requested { taskWorkspace.hideForNavigation() }
-        let panel = terminalPanel ?? AgentTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        let panel = taskTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        panel.selectTask(task)
+        do { try panel.open(); showTerminalDock() }
+        catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func taskTerminalPanel(store: AgentStore, checkHome: URL?) -> AgentTerminalPanel {
+        if let terminalPanel { return terminalPanel }
+        let panel = AgentTerminalPanel(store: store, checkHome: checkHome)
         terminalPanel = panel
         panel.onMonitorChange = { [weak self] in self?.scheduleRender() }
+        panel.onLayoutChange = { [weak self] in self?.workspaceSession?.changed() }
         panel.onHide = { [weak self] in
             guard let self else { return }
             updateTerminalDock()
             window?.makeFirstResponder(composer)
         }
-        panel.selectTask(task)
-        do {
-            try panel.open()
-            updateTerminalDock()
-            window?.contentView?.layoutSubtreeIfNeeded()
-            panel.focus()
-        } catch { setStatus(error.localizedDescription, error: true) }
+        return panel
+    }
+    private func showTerminalDock() {
+        if terminalSplit.isHidden, taskWorkspace.requested { taskWorkspace.hideForNavigation() }
+        if terminalSplit.isHidden, !workbenchInspector.isHidden { closeTaskMonitor() }
+        updateTerminalDock(); window?.contentView?.layoutSubtreeIfNeeded(); terminalPanel?.focus()
+    }
+    internal func captureTerminalLayout(windowID: String) -> AgentTerminalLayout? {
+        terminalPanel?.layoutToRestore(windowID: windowID, height: terminalSplit.recoveryHeight)
+    }
+    internal func restoreTerminalLayout(_ layout: AgentTerminalLayout) {
+        guard let companion, let store = companion.agentStore else { return }
+        let panel = taskTerminalPanel(store: store, checkHome: companion.checkDirectory)
+        terminalSplit.restoreHeight(layout.height)
+        panel.restore(layout); panel.selectTask(selectedTab == "chat" ? currentAgentTask : nil)
+        updateTerminalDock()
     }
     private func updateTerminalDock() {
         let shown = selectedTab == "chat" && terminalPanel?.isShown == true
         terminalSplit.showTerminal(shown ? terminalPanel : nil)
-        let title = shown ? "收起终端" : "打开终端"
+        let title = shown && !terminalSplit.isHidden ? "收起终端" : "打开终端"
         terminalButton.setAccessibilityLabel(title)
         terminalButton.toolTip = title
     }
