@@ -81,14 +81,14 @@ for (const stage of ['seed', 'unavailable', 'reopen']) {
     if (!state) throw Error('独立设置记录缺失：' + role);
     settings[role] = state;
     independent[role + 'PrivateFileAndVersion'] = (await stat(file)).mode % 0o1000 === 0o600 && state.version === 1 && layout.id === id;
-    independent[role + 'OriginalScopeExact'] = role === 'creation' ? state.context.taskID == null && state.context.workspace == null : state.context.taskID === (['rule', 'skill'].includes(role) ? fixture.multi : fixture.general) && (state.context.workspace ?? null) === (role === 'rule' ? fixture.alpha : role === 'skill' ? fixture.beta : null);
+    independent[role + 'OriginalScopeExact'] = role === 'creation' ? state.context.taskID === fixture.creationTask && state.context.workspace == null : state.context.taskID === (['rule', 'skill'].includes(role) ? fixture.multi : fixture.general) && (state.context.workspace ?? null) === (role === 'rule' ? fixture.alpha : role === 'skill' ? fixture.beta : null);
     const page = JSON.parse(Buffer.from(state.pages[0].state, 'base64'));
     if (role === 'command') independent.commandWholeDraftExact = page.body === invalidCommand + (stage === 'reopen' ? 'LAST_EDIT_PUBLIC_842\n' : '');
     if (role === 'rule') independent.ruleWholeDraftAndOriginalFileExact = page.body === long && page.selected.id === fixture.rule && fileURLToPath(page.selected.source) === path.join(fixture.alpha, '.bluefatfish/rules/public-alpha-rule.md');
     if (role === 'skill') independent.skillWholeDraftExact = page.body === (stage === 'reopen' ? savedSkill : invalidSkill) && page.selected.id === fixture.skill;
     if (role === 'creation' && stage !== 'reopen') {
       const form = JSON.parse(Buffer.from(state.pages.at(-1).state, 'base64'));
-      independent.tasklessInvalidNameScopeAndSelectionExact = form.name === 'PUBLIC_INVALID_NAME/😀' && form.scope === 0 && form.selection.location === 7 && form.selection.length === 7;
+      independent.noWorkspaceInvalidNameScopeAndSelectionExact = form.name === 'PUBLIC_INVALID_NAME/😀' && form.scope === 0 && form.selection.location === 7 && form.selection.length === 7;
     }
     if (stage === 'unavailable' && ['rule', 'skill'].includes(role)) independent[role + 'UnavailableRecordExact'] = JSON.stringify(state) === JSON.stringify(snapshots[role]);
   }

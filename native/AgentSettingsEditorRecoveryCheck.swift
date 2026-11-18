@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor extension AppDelegate {
     private struct SettingsEditorFixture: Codable {
-        var multi: String, general: String, alpha: String, beta: String
+        var multi: String, general: String, creationTask: String, alpha: String, beta: String
         var rule: String, skill: String, command: String
         var windows: [String: String], sources: [String: String]
     }
@@ -72,7 +72,11 @@ import AppKit
                 for path in [alpha, beta] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true); try Data("PUBLIC_SETTINGS_SOURCE_718\n".utf8).write(to: path.appendingPathComponent("README.md")) }
                 let userSkill = try tasks.extensions.create(.skill, name: "public-user-skill", text: "---\nname: public-user-skill\ndescription: public fixture\n---\n\nPUBLIC_USER_SKILL_286\n", project: false, workspace: nil)
                 let command = try tasks.extensions.create(.command, name: "public-command", text: "---\ndescription: public command\n---\n\nPUBLIC_COMMAND_SOURCE_928\n", project: false, workspace: nil)
-                checks["initialSettingsHaveNoTask"] = control.agentTaskID == nil
+                guard let creationTask = control.agentTaskID, let initialTask = tasks.task(creationTask) else { throw PetError("初始设置所属任务不可用") }
+                checks["initialSettingsHaveNoWorkspace"] = initialTask.workspace == nil && initialTask.workspaceScope == nil
+                let emptyContext = AgentSettingsRecovery.Context(task: nil, workspace: nil)
+                let decodedEmptyContext = try JSONDecoder().decode(AgentSettingsRecovery.Context.self, from: JSONEncoder().encode(emptyContext))
+                checks["emptySettingsContextRemainsValidWithoutInventingATask"] = emptyContext.valid && decodedEmptyContext == emptyContext
                 if !interactive {
                     let before = try tasks.agents.document().1
                     guard control.showSettingsCategory("agents") else { throw PetError("退出保护检查未打开智能体页") }
@@ -113,11 +117,11 @@ import AppKit
                 guard await flushWorkspaceWindows(), let mainID = control.workspaceSession?.id, let rulesID = rules.workspaceSession?.id,
                       let commandsID = commands.workspaceSession?.id, let newRuleID = newRule.workspaceSession?.id, let skillsID = skills.workspaceSession?.id else { throw PetError("设置草稿未保存") }
                 let sourcesMap = [rule.source.path, skill.file.path, command.file.path, userSkill.file.path, alpha.appendingPathComponent("README.md").path, beta.appendingPathComponent("README.md").path]
-                fixture = .init(multi: multi, general: general, alpha: alpha.path, beta: beta.path, rule: rule.id, skill: skill.id, command: command.id,
+                fixture = .init(multi: multi, general: general, creationTask: creationTask, alpha: alpha.path, beta: beta.path, rule: rule.id, skill: skill.id, command: command.id,
                     windows: ["creation": mainID, "rule": rulesID, "command": commandsID, "newRule": newRuleID, "skill": skillsID],
                     sources: Dictionary(uniqueKeysWithValues: try sourcesMap.map { ($0, AgentFiles.hash(try Data(contentsOf: URL(fileURLWithPath: $0)))) }))
                 try JSONEncoder().encode(fixture).write(to: fixtureFile, options: .atomic)
-                checks["tasklessCreationRetainsOriginalUserScopeAfterOtherWindowsOpen"] = try control.captureSettingsRecovery()?.context.taskID == nil && control.captureSettingsRecovery()?.context.workspace == nil
+                checks["noWorkspaceCreationRetainsOriginalTaskAndUserScopeAfterOtherWindowsOpen"] = try control.captureSettingsRecovery()?.context.taskID == creationTask && control.captureSettingsRecovery()?.context.workspace == nil
                 checks["secondaryRuleKeepsItsOwnOriginalFolder"] = try rules.captureSettingsRecovery()?.context.workspace == alpha.path
                 checks["allFiveWindowsCheckpointTheirOwnSettings"] = taskControls.count == 5 && taskControls.allSatisfy { $0.workspaceSession?.preservedEditors.isEmpty == false }
             } else {
@@ -130,8 +134,8 @@ import AppKit
                       let skills = taskControls.first(where: { $0.workspaceSession?.id == fixture.windows["skill"] }) else { throw PetError("原五个设置窗口未完整恢复") }
                 creation.window?.makeKeyAndOrderFront(nil); creation.settingsRecoveryControllers.last?.settingsDidAppear(); await wait(0.08)
                 let name = try input(NSTextField.self, "扩展名称", creation), popup = try input(NSPopUpButton.self, "扩展范围", creation)
-                checks["tasklessCreationNameAndScopeRestoreExactly"] = name.stringValue == "PUBLIC_INVALID_NAME/😀" && popup.indexOfSelectedItem == 0 && popup.item(at: 1)?.isEnabled == false
-                checks["tasklessCreationRestoresUTF16SelectionAndFocus"] = (name.currentEditor() as? NSTextView)?.selectedRange() == (name.stringValue as NSString).range(of: "INVALID") && creation.window?.firstResponder === name.currentEditor()
+                checks["noWorkspaceCreationNameAndScopeRestoreExactly"] = name.stringValue == "PUBLIC_INVALID_NAME/😀" && popup.indexOfSelectedItem == 0 && popup.item(at: 1)?.isEnabled == false
+                checks["noWorkspaceCreationRestoresUTF16SelectionAndFocus"] = (name.currentEditor() as? NSTextView)?.selectedRange() == (name.stringValue as NSString).range(of: "INVALID") && creation.window?.firstResponder === name.currentEditor()
                 let commandBody = try input(NSTextView.self, "扩展说明", commands)
                 checks["generalTaskRestoresWholeInvalidCommandDraft"] = commandBody.string == invalidCommand && commandBody.selectedRange() == (invalidCommand as NSString).range(of: "MARKER") && commands.window?.firstResponder === commandBody
                 let newRuleBody = try input(NSTextView.self, "规则正文", newRule)
@@ -175,7 +179,7 @@ import AppKit
                         guard let form = creation.settingsRecoveryControllers.last as? AgentExtensionCreationPage else { throw PetError("原新建表单未恢复") }
                         form.submit(); checks["invalidCreationDoesNotWriteAnySkill"] = try tasks.extensions.catalog(workspace: nil).allSatisfy { $0.name != "PUBLIC_INVALID_NAME/😀" }
                         try field("扩展名称", "public-created-skill", creation); form.submit()
-                        checks["tasklessCreationSavesOnlyIntoOriginalUserScope"] = try tasks.extensions.catalog(workspace: nil).contains { $0.name == "public-created-skill" && $0.scope == "全局" } && !tasks.extensions.catalog(workspace: fixture.beta).contains { $0.name == "public-created-skill" && $0.scope != "全局" }
+                        checks["noWorkspaceCreationSavesOnlyIntoOriginalUserScope"] = try tasks.extensions.catalog(workspace: nil).contains { $0.name == "public-created-skill" && $0.scope == "全局" } && !tasks.extensions.catalog(workspace: fixture.beta).contains { $0.name == "public-created-skill" && $0.scope != "全局" }
                         try field("规则名称", "public-created-rule", newRule); try choosePopup("规则触发方式", 1, newRule); try body(newRule, "PUBLIC_CREATED_USER_RULE_747\n", marker: "PUBLIC_CREATED"); try click("保存", newRule)
                         checks["newRuleSavesOnlyIntoOriginalUserScope"] = try tasks.rules.catalog(workspace: nil, directories: []).contains { $0.name == "public-created-rule" && !$0.project }
                         guard await flushWorkspaceWindows(), let windowID = commands.workspaceSession?.id else { throw PetError("命令窗口未保存") }
