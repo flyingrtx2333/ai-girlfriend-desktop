@@ -308,7 +308,7 @@ import UniformTypeIdentifiers
 
     private func refresh(_ item: AgentPluginInstallation) {
         self.item = item
-        detailHeading = .init(title: "历史版本", scope: "当前 " + (item.metadata.version.isEmpty ? "未标版本" : item.metadata.version), location: item.metadata.title)
+        detailHeading = .init(title: "历史版本 · " + item.metadata.title, scope: "当前 " + (item.metadata.version.isEmpty ? "未标版本" : item.metadata.version), location: item.root.path)
         revisions = Array((item.receipt.revisions ?? []).reversed())
         table.reloadData(); AgentSettingsStyle.listState(table, text: "暂无历史版本")
     }

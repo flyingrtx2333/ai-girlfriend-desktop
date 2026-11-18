@@ -98,7 +98,7 @@ import Darwin
         }
         let empty = try open("history-empty"), table = try list(empty)
         let countVisible = empty.pageContentView.map { descendants($0).contains { $0.identifier?.rawValue == "settings-catalog-count" && !$0.isHiddenOrHasHiddenAncestor } } ?? true
-        checks["pluginHistoryEmptyHasCurrentVersionAndNoRedundantCount"] = table.numberOfRows == 0 && table.emptyCard?.isHidden == false && empty.detailHeading?.scope == "当前 1.0.0" && empty.settingsHostWindow === host && !countVisible
+        checks["pluginHistoryEmptyHasCurrentVersionAndNoRedundantCount"] = table.numberOfRows == 0 && table.emptyCard?.isHidden == false && empty.detailHeading?.title == "历史版本 · zz-settings-demo" && empty.detailHeading?.scope == "当前 1.0.0" && empty.settingsHostWindow === host && !countVisible
         empty.close()
         let installed = try await prepareSettingsPluginHistory(output, tasks: tasks)
         let page = try open("history-filled"), rows = try list(page)
