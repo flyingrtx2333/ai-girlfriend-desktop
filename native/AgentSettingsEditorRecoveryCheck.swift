@@ -164,6 +164,13 @@ import AppKit
                             try rejected("wrongSourceRuleDraftRejected") { $0["workspace"] = fixture.beta }
                             try rejected("wrongTextViewportHashRejected") { value in var view = value["viewport"] as! [String: Any], text = view["text"] as! [String: Any]; text["hash"] = String(repeating: "0", count: 64); view["text"] = text; value["viewport"] = view }
                             checks["rejectedDraftsLeaveCurrentRuleTextAndSelection"] = ruleBody.string == long && ruleBody.selectedRange() == (long as NSString).range(of: "MARKER")
+                            var earlierRule = try JSONSerialization.jsonObject(with: original.state) as! [String: Any]
+                            earlierRule.removeValue(forKey: "showsDetail"); earlierRule.removeValue(forKey: "catalogY")
+                            let stackBefore = rules.settingsRecoveryControllers.map(ObjectIdentifier.init)
+                            try rules.settingsRecoveryControllers.compactMap { $0 as? AgentRuleWindow }.first!.restoreSettingsRecovery(
+                                .init(kind: "rules", state: JSONSerialization.data(withJSONObject: earlierRule)))
+                            await wait(0.08)
+                            checks["earlierRuleDraftKeepsEditorAndSelectionWithoutDuplicatingDetail"] = rules.settingsRecoveryControllers.map(ObjectIdentifier.init) == stackBefore && ruleBody.string == long && ruleBody.selectedRange() == (long as NSString).range(of: "MARKER")
                             let sourceRule = try tasks.rules.current(fixture.rule, task: AgentWorkspaceScope.settingsTask(tasks.task(fixture.multi)!, workspace: fixture.alpha), enabledOnly: false)
                             let sourceSkill = try tasks.extensions.item(fixture.skill, workspace: fixture.beta, enabled: false)
                             let oldRule = try Data(contentsOf: sourceRule.source), oldSkill = try Data(contentsOf: sourceSkill.file)

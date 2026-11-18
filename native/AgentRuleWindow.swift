@@ -111,9 +111,13 @@ import AppKit
         return super.settingsContent(in: host, styled: styled)
     }
     @objc private func openSelectedRule() {
-        guard items.indices.contains(table.selectedRow), let detailPage else { return }
+        guard items.indices.contains(table.selectedRow) else { return }
         let item = items[table.selectedRow]
         if selected?.id != item.id { open(item) }
+        showDetail()
+    }
+    private func showDetail() {
+        guard let detailPage, detailPage.settingsHostWindow == nil else { return }
         presentSettingsChild(detailPage)
     }
     func numberOfRows(in tableView: NSTableView) -> Int { items.count }
@@ -196,7 +200,7 @@ import AppKit
     @objc private func createItem() {
         guard confirmClosing() else { return }; clear(); creating = true; createScope.selectItem(at: scopes.selectedSegment == 2 && task?.workspace != nil ? 1 : 0)
         trigger.selectItem(at: 0); editor.setAccessibilityLabel("规则正文"); location.stringValue = ""; dirty = true; updateControls()
-        if let detailPage { presentSettingsChild(detailPage) }
+        if detailPage != nil { showDetail() }
         else { selectRow(nil); presentingWindow?.makeFirstResponder(name) }
     }
     @discardableResult private func saveChanges() -> Bool {
@@ -312,6 +316,6 @@ import AppKit
         var viewport = value.viewport
         if detailPage != nil && restoreDetail == listFocus { viewport.focus = restoreDetail ? "body" : "catalog" }
         try draftViewport.restore(viewport)
-        if restoreDetail, let detailPage { presentSettingsChild(detailPage) }
+        if restoreDetail { showDetail() }
     }
 }

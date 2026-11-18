@@ -62,7 +62,7 @@ import UniformTypeIdentifiers
         for label in [metadata, state] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         readme.isEditable = false; readme.isRichText = false; readme.isSelectable = true; readme.font = .systemFont(ofSize: 12); readme.textContainerInset = NSSize(width: 12, height: 12); readme.isVerticallyResizable = true; readme.autoresizingMask = [.width]; readme.textContainer?.widthTracksTextView = true; readme.setAccessibilityLabel("插件说明")
         let document = NSScrollView(); document.documentView = readme; document.hasVerticalScroller = true; document.borderType = .bezelBorder
-        let actions = NSStackView(views: [enabled, NSView(), use, moreFrame]); actions.spacing = 8; actions.alignment = .centerY
+        let actions = NSStackView(views: [enabled, NSView(), moreFrame, use]); actions.spacing = 8; actions.alignment = .centerY
         let footer = NSStackView(views: [state, NSView(), disableAll]); footer.spacing = 8
         catalogLayout = (header, actions, scrolls[1], document, footer)
         for view in [header, scrolls[0], title, metadata, actions, scrolls[1], document, footer] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -143,7 +143,10 @@ import UniformTypeIdentifiers
             items = all.filter { query.isEmpty || $0.metadata.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) || $0.metadata.description.localizedCaseInsensitiveContains(query) }
             list.delegate = nil; list.reloadData(); let row = items.firstIndex(where: { $0.id == (id ?? selected?.id) }) ?? (items.isEmpty ? -1 : 0)
             if row >= 0 { list.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) } else { list.deselectAll(nil) }; list.delegate = self; open(row)
-            state.stringValue = service.warnings.isEmpty ? (selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false ? "需本机审阅后启用" : "\(items.count) 项") : service.warnings.joined(separator: "；"); state.toolTip = state.stringValue
+            let needsReview = selected?.workspace != nil && selected?.requestedEnabled == true && selected?.locallyApproved == false
+            if !service.warnings.isEmpty { state.stringValue = service.warnings.joined(separator: "；") }
+            else if needsReview { state.stringValue = "需本机审阅后启用" }
+            else { state.stringValue = detailPage == nil ? "\(items.count) 项" : "" }
         } catch { state.stringValue = error.localizedDescription }; updateControls()
     }
     private func open(_ row: Int) {
