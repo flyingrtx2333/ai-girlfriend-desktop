@@ -5,7 +5,7 @@ import AppKit
         let profile = output.appendingPathComponent("profile")
         let credentials = PetKeychain(service: "com.xjs.bluefatfish.automation-import-fixture",
                                       configurationFile: output.appendingPathComponent("unused-credentials.json"), migrateLegacy: false)
-        let store = AgentStore(directory: profile.appendingPathComponent("agent"), legacy: [],
+        let store = AgentStore(directory: profile, legacy: [],
                                extensionHome: output.appendingPathComponent("shared-home"), mcpKeychain: credentials)
         let runtime = AgentRuntime(store: store, keychain: credentials) { PetPreferences() }
         let automations = store.automations, imports = store.dataImport, fm = FileManager.default
@@ -17,6 +17,7 @@ import AppKit
         let paused = output.appendingPathComponent("automation-import-paused.json")
         let report = output.appendingPathComponent("automation-import-report.json")
         var checks: [String: Bool] = [:], attempts = 0
+        let initialTaskIDs = store.tasks.map(\.id)
         runtime.modelRequestCheck = { attempts += 1; throw PetError("定时任务迁移检查禁止模型传输") }
         defer { automations.stop(); runtime.stopAll() }
 
@@ -84,8 +85,8 @@ import AppKit
                     && primary.workspace == harbor.path && primary.prompt == "查阅公开 README"
                     && !primary.enabled && primary.nextRun == nil && primary.current == nil
                     && primary.readOnly && !primary.network && primary.permission == .review
-                checks["cronOnlyImportKeepsLegacyBytesAndCreatesNoRunsOrTasks"] = try hash(original) == legacyHash
-                    && automations.history().runs.isEmpty && store.tasks.isEmpty
+                checks["cronOnlyImportKeepsLegacyDefinitionBytes"] = try hash(original) == legacyHash
+                checks["pausedImportLeavesExistingTasksAndCreatesNoRuns"] = try automations.history().runs.isEmpty && store.tasks.map(\.id) == initialTaskIDs
                 try await AgentAutomationDataImport.install(pending.record, root: harbor, store: store)
                 let once = imported(pending.record)
                 let expected = AgentAutomationSchedule(frequency: .cron, timeZone: TimeZone.current.identifier, date: Date(timeIntervalSince1970: (now + 86_400_000) / 1000), cronExpression: "37 * * * *")
@@ -94,7 +95,7 @@ import AppKit
                 checks["sourceBytesStayUnchanged"] = try hash(qoder) == qoderHash
                 try fm.moveItem(at: qoder, to: offline)
                 try write(["checks": checks, "pid": getpid(), "batch": batch.id, "qoder": qoderHash,
-                           "cron": try hash(cron), "ordinary": try hash(original)], to: paused)
+                           "cron": try hash(cron), "ordinary": try hash(original), "taskIDs": initialTaskIDs], to: paused)
                 return
             }
 
@@ -197,7 +198,8 @@ import AppKit
             try automations.setPaused(legacy.id, paused: false)
             checks["explicitEnableUsesFutureCronAnchorThenCanPause"] = automations.values.first { $0.id == legacy.id }?.nextRun == date("2030-01-01T00:00:00Z")
             try automations.setPaused(legacy.id, paused: true)
-            checks["verificationNeverCreatesTasksRunsOrModelRequests"] = try automations.history().runs.isEmpty && store.tasks.isEmpty && attempts == 0
+            checks["verificationLeavesOriginalTasksAndCreatesNoRunsOrModelRequests"] = try automations.history().runs.isEmpty
+                && store.tasks.map(\.id) == initialTaskIDs && initialTaskIDs == seed["taskIDs"] as? [String] && attempts == 0
             try write(["success": checks.values.allSatisfy { $0 }, "checks": checks, "pid": getpid(), "modelRequests": attempts], to: report)
         } catch {
             try? write(["success": false, "checks": checks, "pid": getpid(), "modelRequests": attempts, "error": error.localizedDescription], to: report)
