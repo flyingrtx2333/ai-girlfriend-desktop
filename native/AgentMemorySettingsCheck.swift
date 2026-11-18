@@ -204,6 +204,10 @@ import AppKit
         let id = tasks.create(title: "主题来源验收", workspaceScope: scope)
         let unlinked = tasks.create(title: "无工作区", mode: .ask)
         let unrelated = tasks.create(title: "独立项目", workspace: other.path)
+        for folder in [primary, secondary] {
+            let git = try AgentGit(store: tasks, taskID: id, directory: AgentGit.metadata(workspace: folder.path, creating: true), workspace: folder.path)
+            _ = try await git.initialize()
+        }
         guard let task = tasks.task(id), let ask = tasks.task(unlinked) else { throw PetError("缺少记忆主题测试任务") }
         let runtime = AgentRuntime(store: tasks, keychain: store.keychain, preferences: { PetPreferences() })
         var modelRequests = 0, checks: [String: Bool] = [:]
