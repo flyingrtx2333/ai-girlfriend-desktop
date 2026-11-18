@@ -80,7 +80,7 @@ enum AgentMCPDataImport {
         }
     }
 
-    private static func configuredAddress(_ text: String) throws -> String {
+    static func configuredAddress(_ text: String) throws -> String {
         guard text.utf8.count <= 4000, var url = URLComponents(string: text), let scheme = url.scheme?.lowercased(),
               let host = url.host?.lowercased(), !host.isEmpty,
               scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else {
@@ -98,7 +98,7 @@ enum AgentMCPDataImport {
         return (url.string ?? "") + "?" + missing
     }
 
-    private static func scrubArguments(_ args: [String], command: String) -> [String] {
+    static func scrubArguments(_ args: [String], command: String) -> [String] {
         func credentialOption(_ text: String) -> Bool {
             let key = text.lowercased().filter { $0.isASCII && $0.isLetter }
             return ["token", "key", "secret", "password", "authorization", "credential", "passphrase"].contains { key.hasSuffix($0) }

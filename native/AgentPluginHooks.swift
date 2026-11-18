@@ -8,7 +8,7 @@ struct AgentPluginHookDefinition {
 }
 
 @MainActor extension AgentPlugins {
-    static let hookRootVariables = ["QODER_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"]
+    static let hookRootVariables = ["QODER_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "CODEX_PLUGIN_ROOT", "PLUGIN_ROOT"]
     static func hookDefinitions(_ manifest: [String: Any], paths: Set<String>, read: (String) throws -> Data) throws -> [AgentPluginHookDefinition] {
         var inputs: [(String, Any)] = []
         func load(_ raw: String) throws {

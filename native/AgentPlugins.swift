@@ -139,31 +139,44 @@ struct AgentPluginInstallation: Identifiable {
         guard try JSONEncoder().encode(receipt).count <= 500_000 else { throw PetError("插件资源索引过大，请缩小插件包") }
         return AgentPluginPackage(metadata: info, receipt: receipt, files: files, mcpServers: mcpServers, agents: agents, hooks: hooks, rules: rules)
     }
-    func inspect(_ archive: URL) async throws -> AgentPluginPackage {
+    func inspect(_ archive: URL, importing: Bool = false) async throws -> AgentPluginPackage {
         let metadata = try archive.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard metadata.isSymbolicLink != true else { throw PetError("请选择插件原文件夹或ZIP，不支持链接") }
+        let hiddenRoots = importing ? AgentImportedPlugin.hiddenRoots : [".qoder-plugin", ".claude-plugin", ".mcp.json"]
         if metadata.isDirectory == true {
-            let scan = Task.detached(priority: .userInitiated) { try AgentArchive.directoryResources(archive, hiddenRoots: [".qoder-plugin", ".claude-plugin", ".mcp.json"]) }
+            let scan = Task.detached(priority: .userInitiated) { try AgentArchive.directoryResources(archive, hiddenRoots: hiddenRoots) }
             let files = try await withTaskCancellationHandler(operation: { try await scan.value }, onCancel: { scan.cancel() })
             try Task.checkCancellation()
-            return try Self.package(files, sourceName: archive.lastPathComponent + "/", sourceHash: AgentExtensions.digest(files), inferredName: archive.lastPathComponent)
+            let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: archive.lastPathComponent) : files
+            return try Self.package(payload, sourceName: archive.lastPathComponent + "/", sourceHash: AgentExtensions.digest(files), inferredName: archive.lastPathComponent)
         }
         guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择插件文件夹或ZIP") }
         let input = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try input.readData(input.literalURL(archive.lastPathComponent), maximum: 20_000_000)
         let scratch = profile.appendingPathComponent(".plugin-review-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); defer { try? FileManager.default.removeItem(at: scratch) }
         let pinned = scratch.appendingPathComponent("package.zip"); try data.write(to: pinned)
-        let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"], hiddenRoots: [".qoder-plugin", ".claude-plugin", ".mcp.json"])
-        return try Self.package(files, sourceName: archive.lastPathComponent, sourceHash: AgentFiles.hash(data))
+        let definitions = importing ? AgentImportedPlugin.manifests : [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"]
+        let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: definitions, hiddenRoots: hiddenRoots)
+        let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: nil) : files
+        return try Self.package(payload, sourceName: archive.lastPathComponent, sourceHash: AgentFiles.hash(data))
     }
-    @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil) throws -> AgentPluginInstallation {
+    @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil, importing installationID: String? = nil) throws -> AgentPluginInstallation {
         let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }, existing = try catalog(workspace: workspace, onlyScope: true)
         guard existing.count < 64 else { throw PetError("此范围插件数量已达到64项") }
-        let package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
+        var package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
         guard existing.reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64 else { throw PetError("插件 MCP 总数最多64项") }
         guard existing.reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128 else { throw PetError("插件 Hooks 总数最多128项") }
         guard existing.reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("插件规则总数最多256项") }
-        let id = Self.scopedID(package.metadata.name, workspace: workspace), target = try folder(id), files = try AgentFiles(workspace: workspace ?? profile.path), (parentFD, name) = try files.parentDescriptor(target, create: true)
+        let id = Self.scopedID(package.metadata.name, workspace: workspace), target = try folder(id)
+        let files = try AgentFiles(workspace: workspace ?? profile.path, followParentLinks: installationID == nil)
+        if let installationID {
+            let relative = (workspace == nil ? "extensions/plugins/" : ".bluefatfish/plugins/") + package.metadata.name
+            guard UUID(uuidString: installationID) != nil, try files.literalURL(relative).path == target.path else {
+                throw PetError("插件目标位置已变化，请重新检测")
+            }
+            package.receipt.installationID = installationID
+        }
+        let (parentFD, name) = try files.parentDescriptor(target, create: true)
         defer { Darwin.close(parentFD) }
         guard try files.entryMetadata(target).kind == "missing" else { throw PetError("同名插件已安装，请先查看现有版本") }
         let temporaryName = ".plugin-" + UUID().uuidString, temporary = target.deletingLastPathComponent().appendingPathComponent(temporaryName)

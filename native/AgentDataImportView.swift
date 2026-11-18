@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
     var onOpen: ((String) -> Void)?
     var onOpenConnector: ((String, String?) throws -> Void)?
     var onOpenAutomation: ((String) throws -> Void)?
+    var onOpenPlugin: ((String, String?) throws -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
     private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.selectedSegment)] }
     private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
@@ -139,6 +140,7 @@ import UniformTypeIdentifiers
         case .tasks: open.title = "打开任务"
         case .connectors: open.title = "配置连接器"
         case .automations: open.title = "打开自动化"
+        case .plugins: open.title = "打开插件"
         case .memory, .skills: open.title = "在访达中显示"
         }
         original.title = selectedCategory == .tasks ? "来源副本" : "来源文件"
@@ -188,24 +190,41 @@ import UniformTypeIdentifiers
             original.isEnabled = (try? AgentAutomationDataImport.reveal(record, root: root)) != nil
             return
         }
+        if let plan = record.plugin {
+            let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局插件"
+            var lines = [record.title, "来源 · " + record.file, destination]
+            if let status = record.issue ?? states[record.id] { lines.append(status) }
+            else { lines.append("导入后为停用状态") }
+            lines.append(contentsOf: record.warnings)
+            detail.string = lines.joined(separator: "\n") + "\n\n" + record.preview
+            open.isEnabled = AgentPluginDataImport.installedID(record, store: store) != nil
+            original.isEnabled = (try? AgentPluginDataImport.reveal(record, root: root)) != nil
+            return
+        }
         detail.string = record.title + "\n" + (record.workspace ?? "无工作目录") + "\n" + record.warnings.joined(separator: "\n") + (record.issue.map { "\n" + $0 } ?? states[record.id].map { "\n" + $0 } ?? "") + "\n\n" + record.preview
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
     private func defaultRoot(_ category: AgentImportCategory) -> URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return category == .skills ? AgentSkillImport.defaultDirectory(for: selectedSource, home: home) : home.appendingPathComponent(selectedSource.homeName)
+        let base = home.appendingPathComponent(selectedSource.homeName)
+        switch category {
+        case .skills: return AgentSkillImport.defaultDirectory(for: selectedSource, home: home)
+        case .plugins: return base.appendingPathComponent("plugins", isDirectory: true)
+        default: return base
+        }
     }
     @objc private func changeSource() { root = defaultRoot(selectedCategory); signature = ""; refresh() }
     @objc private func changeCategory() {
-        let configurationFile = !selectedCategory.acceptsConfigurationFile && (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-        if configurationFile || root.path == defaultRoot(.tasks).path || root.path == defaultRoot(.skills).path { root = defaultRoot(selectedCategory) }
+        let file = !selectedCategory.acceptsFiles && (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        if file || AgentImportCategory.allCases.contains(where: { root.path == defaultRoot($0).path }) { root = defaultRoot(selectedCategory) }
         signature = ""; refresh()
     }
     @objc private func changeDestination() { targetWorkspace = destination.selectedItem?.representedObject as? String; signature = ""; refresh() }
     @objc private func chooseFolder() {
-        let canChooseFile = selectedCategory.acceptsConfigurationFile
+        let canChooseFile = selectedCategory.acceptsFiles
         let panel = NSOpenPanel(); panel.canChooseFiles = canChooseFile; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true
-        if canChooseFile { panel.allowedContentTypes = [selectedSource == .qoder ? .json : UTType(filenameExtension: "toml") ?? .data] }
+        if selectedCategory == .plugins { panel.allowedContentTypes = [.zip] }
+        else if canChooseFile { panel.allowedContentTypes = [selectedSource == .qoder ? .json : UTType(filenameExtension: "toml") ?? .data] }
         panel.directoryURL = root.hasDirectoryPath ? root : root.deletingLastPathComponent()
         panel.prompt = canChooseFile ? "选择来源" : "选择来源目录"
         guard let window else { return }; panel.beginSheetModal(for: window) { [weak self] response in guard let self, response == .OK, let url = panel.url else { return }; root = url; signature = ""; refresh() }
@@ -234,6 +253,11 @@ import UniformTypeIdentifiers
         do {
             if record.connector != nil { try onOpenConnector?(record.targetID, record.targetWorkspace); return }
             if record.automation != nil { try onOpenAutomation?(record.targetID); return }
+            if record.plugin != nil {
+                guard let id = AgentPluginDataImport.installedID(record, store: store) else { throw PetError("插件已移除或更新") }
+                try onOpenPlugin?(id, record.targetWorkspace)
+                return
+            }
             let files = record.category == .skills ? [try AgentSkillImport.destinationURL(record, store: store)] : try AgentMemoryImport.destinationURLs(record, store: store)
             guard !files.isEmpty else { throw PetError("目标记忆文件已移除") }
             NSWorkspace.shared.activateFileViewerSelecting(files)
@@ -250,6 +274,7 @@ import UniformTypeIdentifiers
             case .skills: url = try AgentSkillImport.sourceURL(record, root: root)
             case .connectors: url = try AgentMCPDataImport.reveal(record, root: root)
             case .automations: url = try AgentAutomationDataImport.reveal(record, root: root)
+            case .plugins: url = try AgentPluginDataImport.reveal(record, root: root)
             }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }

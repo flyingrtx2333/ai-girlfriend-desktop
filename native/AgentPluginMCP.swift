@@ -80,7 +80,7 @@ extension AgentPluginInstallation {
         let root = item.root.appendingPathComponent("payload").path
         func expand(_ text: String, credential: Bool = false) -> String {
             var text = text
-            for token in ["${QODER_PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}", "${PLUGIN_ROOT}"] { text = text.replacingOccurrences(of: token, with: root) }
+            for token in ["${QODER_PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}", "${CODEX_PLUGIN_ROOT}", "${PLUGIN_ROOT}"] { text = text.replacingOccurrences(of: token, with: root) }
             return credential && text.contains("${") ? "" : text
         }
         var value = definition.value

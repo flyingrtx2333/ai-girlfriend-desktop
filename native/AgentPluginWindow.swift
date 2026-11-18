@@ -118,6 +118,15 @@ import UniformTypeIdentifiers
         guard selected != nil, let detailPage else { return }
         if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
     }
+    func selectInstallation(_ id: String) throws {
+        let target = try AgentPlugins.scope(id)
+        guard target.workspace == nil || target.workspace == workspace else { throw PetError("插件项目已变化，请重新选择") }
+        search.stringValue = ""
+        scopes.selectedSegment = target.workspace == nil ? 0 : 1
+        reload(select: id)
+        guard selected?.id == id else { throw PetError("插件已移除或无法读取") }
+        showDetail()
+    }
     override func settingsDidAppear() {
         super.settingsDidAppear()
         guard detailPage?.settingsHostWindow == nil else { return }

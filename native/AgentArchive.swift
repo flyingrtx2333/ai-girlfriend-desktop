@@ -24,7 +24,10 @@ enum AgentArchive {
                 if !prefix.split(separator: "/").contains(where: { $0.hasPrefix(".") || $0 == "__MACOSX" }) { prefixes.insert(prefix) }
             }
         }
-        guard prefixes.count == 1, let prefix = prefixes.first else { throw PetError("扩展包必须只包含一个完整扩展目录") }
+        let roots = definitions.contains("plugin.json")
+            ? prefixes.filter { candidate in !prefixes.contains(where: { $0 != candidate && candidate.hasPrefix($0) }) }
+            : prefixes
+        guard roots.count == 1, let prefix = roots.first else { throw PetError("扩展包必须只包含一个完整扩展目录") }
         var result: [String: Data] = [:], total = 0
         for name in names where name.hasPrefix(prefix) && !name.hasSuffix("/") {
             let path = String(name.dropFirst(prefix.count))
