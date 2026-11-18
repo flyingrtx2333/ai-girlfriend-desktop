@@ -1,5 +1,16 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 本机插件迁移
+
+「设置 → 数据导入 → 插件」支持 Qoder 本机插件目录、Codex 本机缓存，以及手选插件目录或 ZIP。可按全局或登记项目预览、勾选、暂停和续导。插件的 Skills、命令、Agent、规则、Hooks 和 MCP 配置保留在同一个安装包里。导入后停用，可直接进入扩展管理中的插件详情。[Qoder 插件结构](https://docs.qoder.com/cli/plugins-reference) [Codex 插件结构](https://developers.openai.com/plugins/build/plugins) [Codex 缓存版本选择](https://github.com/openai/codex/blob/main/codex-rs/core-plugin-common/src/installed.rs)
+
+兼容的 Codex 主清单及嵌套 Skills 转换为小鲸安装格式。MCP 和 Hooks 凭据字段保留名称与占位，使用前在本机设置中补填并按原入口启用。项目来源要求选择项目，原件及同范围同名插件保留。依赖来源应用注册的连接器、专属 SDK 和无法保留的授权配置会显示跳过原因。
+
+- `bd00019` 的同一优化包通过 21 项迁移专项。两个进程验收暂停、重开续导和来源离线时复用已落盘版本。检查覆盖项目原件、同名保留、来源变化、Codex 缓存版本、便携主清单、实际 ZIP、整包组件和普通插件安装入口。
+- 导入时未启动插件或写入来源凭据。使用独立验收凭据补填并显式启用 Codex 插件连接器后，实际握手、读取工具目录以及读取包内公开文件均通过。停用插件后连接器随之停用。带凭据的 Hooks 保留事件和配置结构，沿用本机配置入口。
+- 1200×774 浅色实窗核对项目范围、六类组件预览、跳过提示和只导入勾选项。780×540 深色重开恢复原批次，来源离线时打开原项目的停用插件。从详情进入 MCP 配置，缺少凭据时在页内提示。两窗正常退出，保留 8 张原图，导入前、导入后和重开退出后分别通过 6／12／13 项文件核对。
+- 真实模型请求 0 次，14 份日用资料的字节与权限一致。验收包通过本机签名校验，日用版源码为 `742a95e`。索引在 `evidence/agent/plugin-import-r6m4k8q2/accepted.json`。
+
 ## 2026-11-19 本机定时任务迁移
 
 「设置 → 数据导入 → 定时任务」支持 Qoder CLI 的 `.qoder/scheduled_tasks.json`，以及 Codex `automation.toml` 中可转换的本机独立计划。预览可保留原项目或指定一个已登记项目，支持逐项勾选、暂停和续导。导入计划默认为停用，可直接打开自动化详情核对项目、指令与时间。[Qoder 定时任务参考](https://docs.qoder.com/cli/scheduled-reference) [Codex 定时任务](https://learn.chatgpt.com/docs/automations?surface=app)
