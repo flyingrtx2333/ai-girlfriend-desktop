@@ -7,6 +7,11 @@ enum AgentImportSource: String, Codable, CaseIterable {
     var homeName: String { self == .codex ? ".codex" : ".qoder" }
 }
 
+enum AgentImportCategory: String, CaseIterable {
+    case tasks, memory
+    var title: String { self == .tasks ? "任务记录" : "记忆" }
+}
+
 struct AgentImportOrigin: Codable {
     var source: AgentImportSource
     var sourceID: String
@@ -38,7 +43,9 @@ struct AgentImportCandidate: Codable, Identifiable {
     var warnings: [String] = []
     var issue: String?
     var targetID = UUID().uuidString
+    var memory: AgentMemoryImportPlan?
     var id: String { source.rawValue + ":" + sourceID.lowercased() }
+    var category: AgentImportCategory { memory == nil ? .tasks : .memory }
 }
 
 struct AgentImportDocument {

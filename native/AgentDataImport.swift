@@ -14,6 +14,8 @@ struct AgentImportBatch: Codable {
     var state = "paused"
     var items: [AgentImportItem]
     var created = Date()
+    var category: AgentImportCategory { items.first?.record.category ?? .tasks }
+    var memoryWorkspace: String? { items.first?.record.memory?.workspace }
 }
 
 @MainActor final class AgentDataImport {
@@ -26,6 +28,8 @@ struct AgentImportBatch: Codable {
     private(set) var preview: [AgentImportCandidate] = []
     private(set) var previewSource: AgentImportSource?
     private(set) var previewRoot: String?
+    private(set) var previewCategory: AgentImportCategory = .tasks
+    private(set) var previewWorkspace: String?
     private(set) var scanning = false
     private(set) var issue: String?
     var onChange: (() -> Void)?
@@ -57,12 +61,24 @@ struct AgentImportBatch: Codable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return AgentFiles.hash(try encoder.encode(value))
     }
-    func detect(_ source: AgentImportSource, root: URL) async {
+    func detect(_ source: AgentImportSource, root: URL, category: AgentImportCategory = .tasks, workspace: String? = nil) async {
         guard !scanning, !active, !unfinished else { issue = "请先继续或取消尚未完成的导入"; onChange?(); return }
-        scanning = true; issue = nil; preview = []; previewSource = source; previewRoot = root.path; onChange?()
+        scanning = true; issue = nil; preview = []; previewSource = source; previewRoot = root.path
+        previewCategory = category; previewWorkspace = workspace
+        onChange?()
         defer { scanning = false; onChange?() }
         do {
             if let loadIssue { throw PetError(loadIssue) }
+            if category == .memory {
+                let destination = try AgentMemory.importDestination(store: store, workspace: workspace)
+                let records = try await Task.detached(priority: .utility) { try AgentMemoryImport.discover(source, root: root, workspace: workspace) }.value
+                var reserved = Set<String>()
+                preview = records.map { entry in
+                    do { return try AgentMemoryImport.plan(entry, destination: destination, reserved: &reserved) }
+                    catch { var skipped = entry.record; skipped.issue = error.localizedDescription; return skipped }
+                }
+                return
+            }
             let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
             let duplicates = Dictionary(grouping: records, by: \.id)
             preview = try records.map { record in
@@ -79,10 +95,13 @@ struct AgentImportBatch: Codable {
             }
         } catch { issue = error.localizedDescription; preview = [] }
     }
-    func begin(_ source: AgentImportSource, root: URL, ids: Set<String>) throws {
+    func begin(_ source: AgentImportSource, root: URL, ids: Set<String>, category: AgentImportCategory = .tasks, workspace: String? = nil) throws {
         guard !active, !scanning, !unfinished else { throw PetError("已有尚未完成的导入") }
+        guard previewSource == source, previewRoot == root.path, previewCategory == category, previewWorkspace == workspace else {
+            throw PetError("来源或导入目标已变化，请重新检测")
+        }
         let selected = preview.filter { ids.contains($0.id) && $0.issue == nil && $0.source == source }
-        guard !selected.isEmpty else { throw PetError("请选择可导入的任务") }
+        guard !selected.isEmpty else { throw PetError("请选择可导入的" + category.title) }
         if let previous = batch {
             let history = directory.appendingPathComponent("history")
             try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -90,8 +109,11 @@ struct AgentImportBatch: Codable {
             let bytes = try JSONEncoder().encode(previous)
             try files.writeData(bytes, to: url, permissions: 0o600)
         }
-        batch = AgentImportBatch(source: source, root: root.path, items: selected.map { AgentImportItem(record: $0) }); issue = nil; preview = []; previewSource = nil; previewRoot = nil
-        try save(); resume()
+        let previous = batch
+        batch = AgentImportBatch(source: source, root: root.path, items: selected.map { AgentImportItem(record: $0) })
+        do { try save() } catch { batch = previous; throw error }
+        issue = nil; preview = []; previewSource = nil; previewRoot = nil; previewWorkspace = nil
+        resume()
     }
     func pause() {
         guard active else { return }
@@ -122,13 +144,22 @@ struct AgentImportBatch: Codable {
         defer { releaseLock(); work = nil; onChange?() }
         while batch?.state == "running", let index = batch?.items.firstIndex(where: { $0.state == "pending" }), let source = batch?.source, let root = batch?.root, let candidate = batch?.items[index].record {
             do {
-                let document = try await Task.detached(priority: .utility) {
-                    let directory = URL(fileURLWithPath: root)
-                    let index = source == .codex ? AgentImportReaders.codexIndex(directory) : [:]
-                    return try AgentImportReaders.read(source, file: URL(fileURLWithPath: candidate.file), root: directory, index: index)
-                }.value
-                guard document.candidate.sourceHash == candidate.sourceHash else { throw PetError("来源已更新，请重新检测；本次未替换任务") }
-                try install(document, candidate: candidate)
+                if candidate.memory != nil {
+                    guard let id = batch?.id, UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
+                    let base = URL(fileURLWithPath: root)
+                    let data = try await Task.detached(priority: .utility) { try AgentMemoryImport.read(candidate, root: base) }.value
+                    let recordID = AgentFiles.hash(Data(candidate.id.utf8))
+                    let backup = directory.appendingPathComponent("memory-transfers").appendingPathComponent(id).appendingPathComponent(recordID)
+                    try AgentMemoryImport.install(data, record: candidate, store: store, backup: backup)
+                } else {
+                    let document = try await Task.detached(priority: .utility) {
+                        let directory = URL(fileURLWithPath: root)
+                        let index = source == .codex ? AgentImportReaders.codexIndex(directory) : [:]
+                        return try AgentImportReaders.read(source, file: URL(fileURLWithPath: candidate.file), root: directory, index: index)
+                    }.value
+                    guard document.candidate.sourceHash == candidate.sourceHash else { throw PetError("来源已更新，请重新检测；本次未替换任务") }
+                    try install(document, candidate: candidate)
+                }
                 batch?.items[index].state = "imported"; batch?.items[index].detail = "已导入"
             } catch {
                 batch?.items[index].state = "failed"; batch?.items[index].detail = error.localizedDescription

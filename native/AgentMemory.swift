@@ -171,6 +171,18 @@ struct AgentMemoryProjectSource: Equatable {
         try files.writeData(Data(), to: url, permissions: scope == .global ? 0o600 : 0o644, expectedTarget: "missing")
         return AgentMemoryDocument(scope, topic: topic)
     }
+    static func importDestination(store: AgentStore, workspace: String?) throws -> (files: AgentFiles, folder: URL) {
+        let taskID: String?
+        if let workspace {
+            guard let source = projects(store: store, preferredTaskID: store.selectedID).first(where: { $0.workspace == workspace }) else { throw PetError("导入目标已离开项目范围") }
+            taskID = source.taskID
+        } else { taskID = nil }
+        let scope: AgentMemoryScope = workspace == nil ? .global : .project
+        let files = try root(scope, store: store, taskID: taskID, workspace: workspace, followParentLinks: false)
+        let folder = try files.literalURL(scope.topicDirectory)
+        guard ["missing", "directory"].contains(try files.entryMetadata(folder).kind) else { throw PetError("记忆目录不是普通目录") }
+        return (files, folder)
+    }
     static func revealURL(_ document: AgentMemoryDocument, store: AgentStore, taskID: String?, workspace: String?) throws -> URL {
         let (files, url, _) = try file(document.scope, store: store, taskID: taskID, workspace: workspace, topic: document.topic)
         guard try files.entryMetadata(url).kind == "file" else { throw PetError("记忆文件已移除") }
