@@ -50,7 +50,12 @@ import AppKit
         }
         actionsHost = host; footer.isHidden = host != nil; footerHeight.constant = host == nil ? 28 : 0
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(firstInput) }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        guard let host = presentingWindow, let firstInput, host.firstResponder !== firstInput else { return }
+        if let field = firstInput as? NSTextField, field.currentEditor() === host.firstResponder { return }
+        host.makeFirstResponder(firstInput)
+    }
     func controlTextDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { dirty = true; status.stringValue = ""; onSettingsRecoveryChange?() }
     @objc private func submitForm() { submit() }
