@@ -2,6 +2,11 @@ import AppKit
 import UniformTypeIdentifiers
 
 @MainActor final class AgentPluginWindow: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSWindowDelegate {
+    private struct Recovery: Codable {
+        var version = 1
+        var workspace: String?, selectedID: String?
+        var project: Bool, query: String, showsDetail: Bool
+    }
     private let store: AgentStore, workspace: String?
     private let scopes = NSSegmentedControl(labels: ["用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private var scopeWorkspace: String? { scopes.selectedSegment == 1 ? workspace : nil }
@@ -113,7 +118,11 @@ import UniformTypeIdentifiers
         guard selected != nil, let detailPage else { return }
         if detailPage.settingsHostWindow == nil { presentSettingsChild(detailPage) } else { detailPage.settingsDidAppear() }
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); reload(select: selected?.id); presentingWindow?.makeFirstResponder(list) }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        guard detailPage?.settingsHostWindow == nil else { return }
+        reload(select: selected?.id); presentingWindow?.makeFirstResponder(list)
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? items.count : entries.count + connectors.count + agents.count + hooks.count + rules.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === list, detailPage != nil, items.indices.contains(row) {
@@ -137,11 +146,11 @@ import UniformTypeIdentifiers
         else if let selected { readme.string = (try? service.readme(selected)) ?? "" }
         updateControls()
     }
-    func controlTextDidChange(_ notification: Notification) { reload() }
+    func controlTextDidChange(_ notification: Notification) { reload(); onSettingsRecoveryChange?() }
     @objc private func refreshList() { reload() }
     @objc private func changeScope() {
         search.stringValue = ""; selected = nil
-        window?.title = scopeWorkspace.map { "插件 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "插件"; reload()
+        window?.title = scopeWorkspace.map { "插件 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "插件"; reload(); onSettingsRecoveryChange?()
     }
     private func reload(select id: String? = nil) {
         do {
@@ -192,8 +201,39 @@ import UniformTypeIdentifiers
     @objc private func openSettings() {
         if let window = settingsWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         guard let selected else { return }
-        let editor = AgentPluginSettingsWindow(service: service, item: selected, workspace: workspace)
-        editor.onChange = { [weak self] in self?.reload(select: selected.id); self?.onChange?() }; settingsWindow = editor; presentSettingsChild(editor)
+        presentSettingsChild(makeSettingsEditor(selected))
+    }
+    private func makeSettingsEditor(_ item: AgentPluginInstallation) -> AgentPluginSettingsWindow {
+        let editor = AgentPluginSettingsWindow(service: service, item: item, workspace: workspace)
+        editor.onChange = { [weak self] in self?.reload(select: item.id); self?.onChange?() }
+        settingsWindow = editor
+        return editor
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        try AgentSettingsRecovery.page("plugins", Recovery(workspace: workspace, selectedID: selected?.id,
+            project: scopes.selectedSegment == 1, query: search.stringValue, showsDetail: detailPage?.settingsHostWindow != nil))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "plugins" else { throw PetError("设置草稿不属于插件") }
+        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+            keys: ["version", "workspace", "selectedID", "project", "query", "showsDetail"])
+        let recovery = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard recovery.version == 1, recovery.workspace == workspace, !recovery.project || workspace != nil else {
+            throw PetError("原插件设置范围已变化，草稿已保留")
+        }
+        scopes.selectedSegment = recovery.project ? 1 : 0
+        search.stringValue = recovery.query
+        selected = nil
+        reload(select: recovery.selectedID)
+        if recovery.showsDetail {
+            guard let id = recovery.selectedID, selected?.id == id, detailPage != nil else { throw PetError("原插件暂不可用，草稿已保留") }
+            showDetail()
+        }
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "plugin-settings" else { return nil }
+        guard let selected, detailPage?.settingsHostWindow != nil else { throw PetError("原插件详情暂不可用，草稿已保留") }
+        return makeSettingsEditor(selected)
     }
     @objc private func disableProject() {
         guard let workspace = scopeWorkspace else { return }

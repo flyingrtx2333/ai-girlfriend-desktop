@@ -40,7 +40,7 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
-    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams"]
+    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins"]
     struct State: Codable, Equatable, Sendable {
         var version = 1
         var context: Context
@@ -56,6 +56,7 @@ enum AgentSettingsRecovery {
             case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
                 return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
             case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
+            case ("extensions", "plugins"): return kinds == [root] || kinds == [root, "plugin-settings"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
             case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
             default: return false

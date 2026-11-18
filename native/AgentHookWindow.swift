@@ -312,7 +312,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         do {
             let document = try service.pluginDocument(reference)
             let target = AgentHookEditTarget(source: .plugin(reference: reference, originalHash: AgentFiles.hash(document.original)), expectedHash: document.hash)
-            let editor = try makeEditor(target: target, text: document.text, original: document.original)
+            let editor = try makeEditor(target: target, text: document.text)
             presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
     }
@@ -323,19 +323,27 @@ private struct AgentHookEditTarget: Codable, Equatable {
             let path = try service.file(project: project, workspace: workspace).path
             let target = AgentHookEditTarget(source: .local(project: project, path: path, imported: imported?.source), expectedHash: document.1)
             let masked = try imported.map { String(decoding: try service.credentials.mask($0.data), as: UTF8.self) }
-            let editor = try makeEditor(target: target, text: masked ?? document.0, original: imported?.data)
+            let editor = try makeEditor(target: target, text: masked ?? document.0)
             presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
     }
     private static func readImport(_ path: String, expectedHash: String? = nil) throws -> (AgentHookEditTarget.Import, Data) {
-        let url = URL(fileURLWithPath: path), files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
-        let data = try files.readData(files.resolve(url.lastPathComponent), maximum: 128_000), hash = AgentFiles.hash(data)
+        let url = URL(fileURLWithPath: path)
+        let data: Data
+        do {
+            let files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
+            data = try files.readData(files.resolve(url.lastPathComponent), maximum: 128_000)
+        } catch {
+            if expectedHash != nil { throw PetError("Hooks 导入原件无法读取，请核对原路径后重试") }
+            throw error
+        }
+        let hash = AgentFiles.hash(data)
         if let expectedHash, expectedHash != hash { throw PetError("Hooks 导入原件已变化，请重新导入") }
         let object = try AgentConfigurationJSON.object(data)
         guard let hooks = object["hooks"] as? [String: Any] else { throw PetError("文件中没有 hooks 对象") }
         return (.init(path: url.path, hash: hash), try JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]))
     }
-    private func makeEditor(target: AgentHookEditTarget, text: String, original: Data? = nil) throws -> AgentHookConfigWindow {
+    private func makeEditor(target: AgentHookEditTarget, text: String) throws -> AgentHookConfigWindow {
         let title: String
         switch target.source {
         case .local(let project, _, _): title = project ? "项目 Hooks" : "全局 Hooks"
@@ -349,7 +357,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
                 guard file.path == path else { throw PetError("Hooks 配置路径已变化，请重新打开") }
                 var data = Data(text.utf8)
                 if let imported {
-                    let bytes = try original ?? Self.readImport(imported.path, expectedHash: imported.hash).1
+                    let bytes = try Self.readImport(imported.path, expectedHash: imported.hash).1
                     data = try service.credentials.restoreImported(data, original: bytes, file: file)
                 }
                 try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: target.expectedHash)
@@ -363,13 +371,14 @@ private struct AgentHookEditTarget: Codable, Equatable {
         configWindow = editor
         return editor
     }
+    func reviewImport(_ url: URL) throws { openConfig(imported: try Self.readImport(url.path)) }
     @objc private func importConfig() {
         guard let window = presentingWindow else { return }
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.allowedContentTypes = [.json]
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, let url = panel.url else { return }
             do {
-                openConfig(imported: try Self.readImport(url.path))
+                try reviewImport(url)
             } catch { state.stringValue = error.localizedDescription }
         }
     }
@@ -426,7 +435,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
         card.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1), scroll.topAnchor.constraint(equalTo: card.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -1), card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80)])
         let button = AgentDialogButton(title: "保存", target: self, action: #selector(saveConfig)); button.keyEquivalent = "s"; button.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(button)
-        detailHeading = .init(title: "编辑 Hooks", scope: title)
+        if case .local(_, _, let imported?) = target.source {
+            detailHeading = .init(title: "导入 Hooks · " + URL(fileURLWithPath: imported.path).lastPathComponent, scope: title, location: imported.path)
+        } else { detailHeading = .init(title: "编辑 Hooks", scope: title) }
         let actions = AgentSettingsDetailActions([button]); detailActionRow = actions
         let content = AgentThemeView(), column = NSStackView(views: [actions, state, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
         window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false

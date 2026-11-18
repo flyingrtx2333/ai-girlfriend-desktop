@@ -28,6 +28,8 @@ import WebKit
         if CommandLine.arguments.contains("--settings-editor-recovery-ui") { await runSettingsEditorRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--settings-manager-recovery-check") { await runSettingsManagerRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-manager-recovery-ui") { await runSettingsManagerRecoveryCheck(output, interactive: true); return }
+        if CommandLine.arguments.contains("--settings-import-recovery-check") { await runSettingsImportRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--settings-import-recovery-ui") { await runSettingsImportRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--skill-creation-check") { await runSkillCreationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-skill-evolution-check") { await runWorkspaceSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-roles-check") { await runWorkspaceRolesCheck(output); NSApp.terminate(nil); return }

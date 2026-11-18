@@ -765,6 +765,9 @@ struct AgentSettingsCatalogGroup {
     }
     func captureRecovery(active: Bool) throws -> AgentSettingsRecovery.State? {
         guard let recoveryContext, let root = selectedPageKey, AgentSettingsRecovery.roots.contains(root), !entries.isEmpty else { return nil }
+        if root == "plugins", entries.contains(where: { entry in
+            !(entry.controller is AgentPluginWindow || entry.controller is AgentSettingsDetailPage || entry.controller is AgentPluginSettingsWindow)
+        }) { return nil }
         var pages: [AgentSettingsRecovery.Page] = []
         for entry in entries where !(entry.controller is AgentSettingsDetailPage) {
             guard let page = try entry.controller.captureSettingsRecovery() else { return nil }; pages.append(page)
