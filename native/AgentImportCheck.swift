@@ -10,6 +10,10 @@ import SQLite3
             ensureAgent(); guard let tasks = agentStore, let runtime = agentRuntime else { throw PetError("导入运行时未初始化") }
             let binary = Bundle.main.executableURL!, binaryHash = try AgentFiles(workspace: binary.deletingLastPathComponent().path).fileHash(binary)
             try write(["appPID": getpid(), "binaryHash": binaryHash], "import-process.json")
+            if CommandLine.arguments.contains("--mixed-import-native") {
+                try await checkMixedImport(output, tasks: tasks, binaryHash: binaryHash)
+                return
+            }
             let fixtures = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("import-fixtures.json"))) as! [String: Any]
             let codexRoot = URL(fileURLWithPath: fixtures["codexRoot"] as! String), qoderRoot = URL(fileURLWithPath: fixtures["qoderRoot"] as! String)
             let codex = fixtures["codex"] as! String, other = fixtures["codexOther"] as! String, qoder = fixtures["qoder"] as! String, qoderUI = fixtures["qoderUI"] as! String

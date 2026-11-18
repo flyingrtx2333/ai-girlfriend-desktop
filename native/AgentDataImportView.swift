@@ -1,21 +1,56 @@
 import AppKit
 import UniformTypeIdentifiers
 
+@MainActor private final class AgentImportCategoryRow: NSStackView {
+    let choice = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    let status = NSTextField(labelWithString: "")
+    let inspect = AgentDialogButton(title: "查看", target: nil, action: nil)
+
+    init(_ category: AgentImportCategory, index: Int, target: AnyObject, toggle: Selector, open: Selector) {
+        super.init(frame: .zero)
+        let title = NSTextField(labelWithString: category.title)
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.setContentCompressionResistancePriority(.required, for: .horizontal)
+        status.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        status.textColor = AgentWorkbenchTheme.secondaryText
+        status.lineBreakMode = .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        choice.tag = index; choice.target = target; choice.action = toggle; choice.allowsMixedState = true
+        choice.setAccessibilityLabel("选择" + category.title)
+        choice.setAccessibilityIdentifier("import-select-" + category.rawValue)
+        inspect.tag = index; inspect.target = target; inspect.action = open
+        AgentDialogStyle.action(inspect)
+        inspect.setAccessibilityLabel("查看" + category.title)
+        inspect.setAccessibilityIdentifier("import-category-" + category.rawValue)
+        [choice, title, NSView(), status, inspect].forEach(addArrangedSubview)
+        spacing = 10; alignment = .centerY
+        heightAnchor.constraint(equalToConstant: 36).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+}
+
 @MainActor final class AgentDataImportView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let store: AgentStore, service: AgentDataImport
-    private let source = NSPopUpButton(), folder = NSButton(), detect = NSButton(title: "重新检测", target: nil, action: nil)
-    private let category = NSPopUpButton()
+    private let sources = NSSegmentedControl(labels: AgentImportSource.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+    private let detectAll = AgentDialogButton(title: "检测可导入内容", target: nil, action: nil)
+    private let folder = AgentDialogButton(title: "", target: nil, action: nil), detect = AgentDialogButton(title: "重新检测", target: nil, action: nil)
+    private let back = AgentDialogButton(title: "返回导入", target: nil, action: nil)
+    private let overview = NSStackView(), editor = NSStackView()
+    private let categoryTitle = NSTextField(labelWithString: "")
     private let destination = NSPopUpButton()
-    private lazy var sourceControl = AgentSettingsPopupFrame(source)
-    private lazy var categoryControl = AgentSettingsPopupFrame(category)
     private lazy var destinationControl = AgentSettingsPopupFrame(destination)
     private let table = NSTableView(), detail = NSTextView(), state = NSTextField(labelWithString: ""), selectAll = NSButton(checkboxWithTitle: "全选", target: nil, action: nil)
-    private let begin = AgentDialogButton(title: "开始导入", target: nil, action: nil)
+    private let begin = AgentDialogButton(title: "导入所选数据", target: nil, action: nil)
     private let pause = NSButton(title: "暂停", target: nil, action: nil), resume = NSButton(title: "继续导入", target: nil, action: nil), cancel = NSButton(title: "取消导入", target: nil, action: nil)
     private let open = NSButton(title: "打开任务", target: nil, action: nil), original = NSButton(title: "来源副本", target: nil, action: nil)
-    private var root: URL, rows: [AgentImportCandidate] = [], selected = Set<String>(), states: [String: String] = [:], signature = ""
-    private var targetWorkspace: String?
-    private var shownBatch: String?
+    private struct Selection { let preview: UUID; var ids: Set<String> }
+    private var categoryRows: [AgentImportCategory: AgentImportCategoryRow] = [:]
+    private var routes: [AgentImportSource: [AgentImportCategory: AgentImportRoute]] = [:]
+    private var selections: [AgentImportRoute: Selection] = [:]
+    private var editing: AgentImportCategory?, shownRoute: AgentImportRoute?, shownBatch: String?
+    private var highlighted: [AgentImportRoute: String] = [:]
+    private var rows: [AgentImportCandidate] = [], states: [String: String] = [:]
     private var listHeight: NSLayoutConstraint?
     var onOpen: ((String) -> Void)?
     var onOpenConnector: ((String, String?) throws -> Void)?
@@ -24,23 +59,29 @@ import UniformTypeIdentifiers
     var onOpenConfiguration: ((AgentStandaloneImportPlan, URL) throws -> Void)?
     var onOpenAgent: ((String, String?) throws -> Void)?
     var onOpenHooks: ((URL, String?) throws -> Void)?
-    private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, source.indexOfSelectedItem)] }
-    private var selectedCategory: AgentImportCategory { AgentImportCategory.allCases[max(0, category.indexOfSelectedItem)] }
-    private var workspace: String? { selectedCategory.globalTarget == nil ? nil : targetWorkspace }
+    private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, sources.selectedSegment)] }
+    private var selectedCategory: AgentImportCategory { editing ?? .tasks }
+    private var currentRoute: AgentImportRoute { route(selectedCategory) }
+    private var canConfigure: Bool { !service.active && !service.scanning && !service.unfinished }
+    private var selected: Set<String> { selections[currentRoute]?.ids ?? [] }
     init(store: AgentStore) {
         self.store = store; service = store.dataImport
-        root = service.batch.map { URL(fileURLWithPath: $0.root) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(AgentImportSource.codex.homeName)
         super.init(frame: .zero); translatesAutoresizingMaskIntoConstraints = false
-        source.addItems(withTitles: AgentImportSource.allCases.map(\.title)); source.selectItem(at: service.batch.flatMap { AgentImportSource.allCases.firstIndex(of: $0.source) } ?? 0)
-        source.target = self; source.action = #selector(changeSource); source.setAccessibilityLabel("导入来源")
-        category.addItems(withTitles: AgentImportCategory.allCases.map(\.title))
-        category.target = self; category.action = #selector(changeCategory); category.setAccessibilityLabel("导入内容")
+        sources.selectedSegment = 0; sources.target = self; sources.action = #selector(changeSource)
+        sources.setAccessibilityLabel("导入来源"); sources.setAccessibilityIdentifier("import-sources")
+        for index in 0..<sources.segmentCount { sources.setWidth(76, forSegment: index) }
         destination.target = self; destination.action = #selector(changeDestination)
         destination.cell?.lineBreakMode = .byTruncatingMiddle
         destinationControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         folder.target = self; folder.action = #selector(chooseFolder); folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil); folder.imagePosition = .imageLeading; folder.setAccessibilityLabel("来源目录"); folder.cell?.lineBreakMode = .byTruncatingMiddle
+        folder.alignment = .left
         folder.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detect.target = self; detect.action = #selector(detectRecords)
+        detectAll.target = self; detectAll.action = #selector(detectSource)
+        back.target = self; back.action = #selector(closeCategory); back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
+        for button in [folder, detect, detectAll, back] { AgentDialogStyle.action(button) }
+        categoryTitle.font = .systemFont(ofSize: 14, weight: .semibold)
+        categoryTitle.lineBreakMode = .byTruncatingTail
         selectAll.target = self; selectAll.action = #selector(toggleAll); selectAll.allowsMixedState = true
         let check = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("check")); check.width = 28; check.minWidth = 28; check.maxWidth = 28; table.addTableColumn(check)
         let name = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")); name.title = "任务记录"; table.addTableColumn(name)
@@ -52,59 +93,124 @@ import UniformTypeIdentifiers
         state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, action) in [(begin, #selector(start)), (pause, #selector(pauseImport)), (resume, #selector(resumeImport)), (cancel, #selector(cancelImport)), (open, #selector(openTask)), (original, #selector(showOriginal))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
         AgentSettingsStyle.primaryAction(begin)
-        let kinds = NSStackView(views: [categoryControl, NSView(), destinationControl]); kinds.spacing = 8
-        let header = NSStackView(views: [sourceControl, folder, detect]); header.spacing = 8
+        let sourcesBar = NSStackView(views: [sources, NSView(), detectAll]); sourcesBar.spacing = 10; sourcesBar.alignment = .centerY
+        append(sourcesBar, to: overview)
+        for (index, category) in AgentImportCategory.allCases.enumerated() {
+            append(AgentSettingsStyle.divider(), to: overview)
+            let row = AgentImportCategoryRow(category, index: index, target: self, toggle: #selector(toggleCategory(_:)), open: #selector(openCategory(_:)))
+            categoryRows[category] = row
+            append(row, to: overview)
+        }
+        let kinds = NSStackView(views: [back, categoryTitle, NSView(), destinationControl]); kinds.spacing = 10; kinds.alignment = .centerY
+        let header = NSStackView(views: [folder, detect]); header.spacing = 8
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
         let actions = NSStackView(views: [state, NSView(), begin, pause, resume, cancel]); actions.spacing = 6
-        for line in [kinds, header, selection, actions] { line.distribution = .fill }
-        let column = NSStackView(views: [kinds, header, selection, list, preview, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
+        for view in [kinds, header, selection, list, preview] { append(view, to: editor) }
+        let column = NSStackView()
+        for view in [overview, editor, actions] { append(view, to: column) }
+        for stack in [overview, editor, column] { stack.orientation = .vertical; stack.alignment = .leading }
+        overview.spacing = 3; overview.setCustomSpacing(10, after: sourcesBar)
+        editor.spacing = 10; column.spacing = 12
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         let height = list.heightAnchor.constraint(equalToConstant: 236); listHeight = height
-        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), sourceControl.widthAnchor.constraint(equalToConstant: 120), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), height, preview.heightAnchor.constraint(equalToConstant: 142)])
-        for view in [kinds, header, selection, list, preview, actions] { view.translatesAutoresizingMaskIntoConstraints = false; view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), folder.widthAnchor.constraint(greaterThanOrEqualToConstant: 90), height, preview.heightAnchor.constraint(equalToConstant: 142)])
         folder.setContentHuggingPriority(.defaultLow, for: .horizontal); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private func append(_ view: NSView, to stack: NSStackView) {
+        stack.addArrangedSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
     func refresh() {
         let batch = service.batch
         if let batch, shownBatch != batch.id {
-            shownBatch = batch.id; root = URL(fileURLWithPath: batch.root); source.selectItem(at: AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0)
-            category.selectItem(at: AgentImportCategory.allCases.firstIndex(of: batch.category) ?? 0)
-            targetWorkspace = batch.targetWorkspace; signature = ""
+            shownBatch = batch.id
+            sources.selectedSegment = AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0
+            for item in batch.items {
+                let route = batch.route(for: item)
+                routes[route.source, default: [:]][route.category] = route
+            }
         }
-        let viewingPreview = service.previewSource == selectedSource && service.previewRoot == root.path
-            && service.previewCategory == selectedCategory && service.previewWorkspace == workspace
-        let viewingBatch = batch?.source == selectedSource && batch?.root == root.path && batch?.category == selectedCategory && batch?.targetWorkspace == workspace
-        rows = viewingPreview ? service.preview : viewingBatch ? batch?.items.map(\.record) ?? [] : []
-        states = viewingPreview ? [:] : Dictionary((batch?.items ?? []).map { ($0.id, $0.state == "failed" ? "失败：" + $0.detail : ["pending": "等待导入", "imported": "已导入"][ $0.state ] ?? $0.state) }, uniquingKeysWith: { _, last in last })
-        let next = rows.map { $0.id + $0.sourceHash + ($0.issue ?? "") }.joined()
-        if signature != next { signature = next; selected = Set(rows.filter { $0.issue == nil && viewingPreview }.map(\.id)) }
-        let defaultPath = (root.path as NSString).abbreviatingWithTildeInPath
-        folder.title = root.path == defaultRoot(selectedCategory).path || root.lastPathComponent.isEmpty ? defaultPath : root.lastPathComponent
-        folder.toolTip = root.path
-        source.isEnabled = !service.active && !service.scanning && !service.unfinished; folder.isEnabled = source.isEnabled; detect.isEnabled = source.isEnabled
-        category.isEnabled = source.isEnabled
-        sourceControl.refreshEnabledState(); categoryControl.refreshEnabledState()
-        destinationControl.isHidden = selectedCategory.globalTarget == nil
-        if let title = selectedCategory.globalTarget { updateDestinations(globalTitle: title) }
-        table.setAccessibilityLabel("可导入" + selectedCategory.title)
-        selectAll.isEnabled = viewingPreview && !service.active && !service.scanning && rows.contains { $0.issue == nil }; selectAll.state = selected.isEmpty ? .off : selected.count == rows.filter({ $0.issue == nil }).count ? .on : .mixed
-        let previous = table.selectedRow; table.reloadData(); if rows.indices.contains(previous) { table.selectRowIndexes(IndexSet(integer: previous), byExtendingSelection: false) }
-        table.enclosingScrollView?.isHidden = rows.isEmpty; selectAll.superview?.isHidden = rows.isEmpty
-        listHeight?.constant = CGFloat(min(236, max(48, rows.count * 48)))
-        begin.isHidden = !viewingPreview; begin.isEnabled = !selected.isEmpty && !service.scanning && !service.active && !service.unfinished
+        selections = selections.filter { service.preview(for: $0.key)?.id == $0.value.preview }
+        let grouped = batch.map { batch in Dictionary(grouping: batch.items) { batch.route(for: $0) } } ?? [:]
+        var picked = 0, hasPreview = false
+        for category in AgentImportCategory.allCases {
+            let route = route(category), preview = service.preview(for: route)
+            if let preview, selections[route] == nil { selections[route] = .init(preview: preview.id, ids: preview.available) }
+            picked += selections[route]?.ids.count ?? 0
+            hasPreview = hasPreview || preview != nil
+            updateCategory(route, preview: preview, items: grouped[route] ?? [])
+        }
+        sources.isEnabled = canConfigure; detectAll.isEnabled = canConfigure
+        detectAll.title = hasPreview ? "重新检测全部" : "检测可导入内容"
+        overview.isHidden = editing != nil; editor.isHidden = editing == nil
+        let preview = editing.flatMap { service.preview(for: route($0)) }
+        refreshEditor(preview: preview, items: editing.map { grouped[route($0)] ?? [] } ?? [])
+        begin.isHidden = !canConfigure || !hasPreview
+        begin.isEnabled = picked > 0
+        begin.title = picked > 0 ? "导入 \(picked) 项" : "导入所选数据"
         pause.isHidden = !service.active; pause.isEnabled = batch?.state == "running"
         resume.isHidden = !service.unfinished || service.active; cancel.isHidden = !service.unfinished && !service.active
-        if let issue = service.issue { state.stringValue = issue; state.textColor = .systemRed }
+        if let issue = service.operationIssue ?? preview?.issue { state.stringValue = issue; state.textColor = .systemRed }
         else {
             state.textColor = AgentWorkbenchTheme.secondaryText
             if service.scanning { state.stringValue = "正在检测…" }
-            else if viewingPreview { state.stringValue = rows.isEmpty ? "未找到可导入的" + selectedCategory.title : "可导入\(rows.filter { $0.issue == nil }.count)项 · 跳过\(rows.filter { $0.issue != nil }.count)项" }
-            else if let batch, viewingBatch {
+            else if let batch, batch.source == selectedSource, service.active || service.unfinished || !hasPreview {
                 let done = batch.items.filter { $0.state == "imported" }.count, failed = batch.items.filter { $0.state == "failed" }.count
-                state.stringValue = ["running": "导入中", "paused": "已暂停", "cancelled": "已取消", "completed": "已完成"][batch.state, default: batch.state] + " · \(done)/\(batch.items.count)" + (failed > 0 ? " · 失败\(failed)" : "")
-            } else { state.stringValue = "尚未检测" }
+                state.stringValue = ["running": "导入中", "paused": "已暂停", "cancelled": "已取消", "completed": "已完成"][batch.state, default: batch.state] + " · \(done)/\(batch.items.count)" + (failed > 0 ? " · 失败 \(failed) 项" : "")
+            } else if let preview {
+                let available = preview.available.count, skipped = preview.records.count - available
+                state.stringValue = preview.records.isEmpty ? "此类别无可导入内容" : "\(available) 项可导入" + (skipped > 0 ? " · 跳过 \(skipped) 项" : "")
+            } else { state.stringValue = hasPreview ? "" : "尚未检测" }
         }
+        state.toolTip = state.stringValue
+    }
+    private func updateCategory(_ route: AgentImportRoute, preview: AgentImportPreview?, items: [AgentImportItem]) {
+        guard let row = categoryRows[route.category] else { return }
+        let chosen = selections[route]?.ids.count ?? 0, available = preview?.available.count ?? 0
+        row.choice.isEnabled = canConfigure && available > 0
+        row.choice.state = chosen == 0 ? .off : chosen == available ? .on : .mixed
+        row.status.textColor = AgentWorkbenchTheme.secondaryText
+        row.status.toolTip = preview?.issue
+        if preview?.issue != nil { row.status.stringValue = "检测失败"; row.status.textColor = .systemRed }
+        else if let preview {
+            let skipped = preview.records.count - available
+            row.status.stringValue = preview.records.isEmpty ? "无可导入内容" : "\(available) 项可导入" + (skipped > 0 ? " · 跳过 \(skipped) 项" : "")
+        } else if !items.isEmpty {
+            let imported = items.filter { $0.state == "imported" }.count, failed = items.filter { $0.state == "failed" }.count
+            row.status.stringValue = "已导入 \(imported)/\(items.count)" + (failed > 0 ? " · 失败 \(failed) 项" : "")
+        } else { row.status.stringValue = "" }
+    }
+    private func refreshEditor(preview: AgentImportPreview?, items: [AgentImportItem]) {
+        if let shownRoute, rows.indices.contains(table.selectedRow) { highlighted[shownRoute] = rows[table.selectedRow].id }
+        shownRoute = editing.map { route($0) }
+        guard let route = shownRoute else { return }
+        let root = route.directory
+        rows = preview?.records ?? items.map(\.record)
+        states = [:]
+        if preview == nil {
+            for item in items {
+                states[item.id] = item.state == "failed" ? "失败 · " + item.detail : ["pending": "等待导入", "imported": "已导入"][item.state, default: item.state]
+            }
+        }
+        categoryTitle.stringValue = route.source.title + " · " + route.category.title
+        let home = store.extensions.sharedHome ?? FileManager.default.homeDirectoryForCurrentUser
+        let isDefault = root.path == defaultRoot(route.category).path && root.path.hasPrefix(home.path + "/")
+        folder.title = isDefault ? "~/" + String(root.path.dropFirst(home.path.count + 1)) : root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent
+        folder.toolTip = root.path
+        folder.isEnabled = canConfigure; detect.isEnabled = canConfigure
+        detect.title = preview == nil ? "检测此类" : "重新检测"
+        destinationControl.isHidden = route.category.globalTarget == nil
+        if let title = route.category.globalTarget { updateDestinations(globalTitle: title) }
+        table.setAccessibilityLabel("可导入" + route.category.title)
+        let available = preview?.available.count ?? 0
+        selectAll.isEnabled = canConfigure && available > 0
+        selectAll.state = selected.isEmpty ? .off : selected.count == available ? .on : .mixed
+        table.reloadData()
+        if let id = highlighted[route], let index = rows.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) }
+        else { table.deselectAll(nil) }
+        table.enclosingScrollView?.isHidden = rows.isEmpty; selectAll.superview?.isHidden = rows.isEmpty
+        listHeight?.constant = CGFloat(min(236, max(48, rows.count * 48)))
         updateDetail()
     }
     private func updateDestinations(globalTitle: String) {
@@ -116,7 +222,8 @@ import UniformTypeIdentifiers
             item.representedObject = project.workspace; item.toolTip = project.workspace
             destination.menu?.addItem(item)
         }
-        if let workspace = targetWorkspace {
+        let workspace = currentRoute.workspace
+        if let workspace {
             if let item = destination.itemArray.first(where: { $0.representedObject as? String == workspace }) { destination.select(item) }
             else {
                 destination.addItem(withTitle: URL(fileURLWithPath: workspace).lastPathComponent + "（不可用）")
@@ -124,8 +231,8 @@ import UniformTypeIdentifiers
                 destination.select(destination.lastItem)
             }
         } else { destination.selectItem(at: 0) }
-        destination.toolTip = targetWorkspace
-        destination.isEnabled = source.isEnabled; destinationControl.refreshEnabledState()
+        destination.toolTip = workspace
+        destination.isEnabled = canConfigure; destinationControl.refreshEnabledState()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -145,6 +252,7 @@ import UniformTypeIdentifiers
     }
     func tableViewSelectionDidChange(_ notification: Notification) { updateDetail() }
     private func updateDetail() {
+        let root = currentRoute.directory
         switch selectedCategory {
         case .tasks: open.title = "打开任务"
         case .connectors: open.title = "配置连接器"
@@ -235,7 +343,7 @@ import UniformTypeIdentifiers
         open.isEnabled = store.task(record.targetID) != nil; original.isEnabled = store.task(record.targetID)?.importOrigin != nil
     }
     private func defaultRoot(_ category: AgentImportCategory) -> URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = store.extensions.sharedHome ?? FileManager.default.homeDirectoryForCurrentUser
         let base = home.appendingPathComponent(selectedSource.homeName)
         switch category {
         case .skills: return AgentSkillImport.defaultDirectory(for: selectedSource, home: home)
@@ -243,34 +351,69 @@ import UniformTypeIdentifiers
         default: return base
         }
     }
-    @objc private func changeSource() { root = defaultRoot(selectedCategory); signature = ""; refresh() }
-    @objc private func changeCategory() {
-        let file = !selectedCategory.acceptsFiles && (try? root.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-        if file || AgentImportCategory.allCases.contains(where: { root.path == defaultRoot($0).path }) { root = defaultRoot(selectedCategory) }
-        signature = ""; refresh()
+    private func route(_ category: AgentImportCategory) -> AgentImportRoute {
+        routes[selectedSource]?[category] ?? .init(source: selectedSource, category: category, root: defaultRoot(category).path, workspace: nil)
     }
-    @objc private func changeDestination() { targetWorkspace = destination.selectedItem?.representedObject as? String; signature = ""; refresh() }
+    private func setRoute(_ route: AgentImportRoute) {
+        routes[route.source, default: [:]][route.category] = route
+        refresh()
+    }
+    @objc private func changeSource() { refresh() }
+    @objc private func openCategory(_ sender: NSButton) {
+        editing = AgentImportCategory.allCases[sender.tag]; refresh()
+        window?.makeFirstResponder(back)
+    }
+    @objc private func closeCategory() {
+        let category = selectedCategory
+        editing = nil; refresh()
+        window?.makeFirstResponder(categoryRows[category]?.inspect)
+    }
+    @objc private func changeDestination() {
+        let route = currentRoute
+        setRoute(.init(source: route.source, category: route.category, root: route.root, workspace: destination.selectedItem?.representedObject as? String))
+    }
     @objc private func chooseFolder() {
+        let route = currentRoute, root = route.directory
         let canChooseFile = selectedCategory.acceptsFiles
         let panel = NSOpenPanel(); panel.canChooseFiles = canChooseFile; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true
         if selectedCategory == .plugins { panel.allowedContentTypes = [.zip] }
         else if canChooseFile { panel.allowedContentTypes = [selectedSource == .qoder ? .json : UTType(filenameExtension: "toml") ?? .data] }
         panel.directoryURL = root.hasDirectoryPath ? root : root.deletingLastPathComponent()
         panel.prompt = canChooseFile ? "选择来源" : "选择来源目录"
-        guard let window else { return }; panel.beginSheetModal(for: window) { [weak self] response in guard let self, response == .OK, let url = panel.url else { return }; root = url; signature = ""; refresh() }
+        guard let window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            setRoute(.init(source: route.source, category: route.category, root: url.path, workspace: route.workspace))
+        }
+    }
+    @objc private func detectSource() {
+        let routes = AgentImportCategory.allCases.map(route)
+        Task { await service.detect(routes) }
     }
     @objc private func detectRecords() {
-        let source = selectedSource, directory = root, category = selectedCategory, target = workspace
-        Task { await service.detect(source, root: directory, category: category, workspace: target) }
+        let route = currentRoute
+        Task { await service.detect([route]) }
     }
-    @objc private func toggleRecord(_ sender: NSButton) { guard rows.indices.contains(sender.tag), rows[sender.tag].issue == nil else { return }; let id = rows[sender.tag].id; if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }; refresh() }
-    @objc private func toggleAll() {
-        let available = Set(rows.filter { $0.issue == nil }.map(\.id))
-        selected = selected == available ? [] : available
-        refresh()
+    @objc private func toggleRecord(_ sender: NSButton) {
+        let route = currentRoute
+        guard canConfigure, rows.indices.contains(sender.tag), rows[sender.tag].issue == nil, var choice = selections[route] else { return }
+        let id = rows[sender.tag].id
+        if choice.ids.contains(id) { choice.ids.remove(id) } else { choice.ids.insert(id) }
+        selections[route] = choice; refresh()
+    }
+    @objc private func toggleCategory(_ sender: NSButton) { toggleSelection(route(AgentImportCategory.allCases[sender.tag])) }
+    @objc private func toggleAll() { toggleSelection(currentRoute) }
+    private func toggleSelection(_ route: AgentImportRoute) {
+        guard canConfigure, let preview = service.preview(for: route), var choice = selections[route] else { return }
+        choice.ids = choice.ids == preview.available ? [] : preview.available
+        selections[route] = choice; refresh()
     }
     @objc private func start() {
-        do { try service.begin(selectedSource, root: root, ids: selected, category: selectedCategory, workspace: workspace) }
+        let choices = AgentImportCategory.allCases.map(route).compactMap { route in selections[route].map { (route, $0.ids) } }
+        do {
+            try service.begin(Dictionary(uniqueKeysWithValues: choices))
+            editing = nil; refresh()
+        }
         catch { state.stringValue = error.localizedDescription; state.textColor = .systemRed }
     }
     @objc private func pauseImport() { service.pause() }
@@ -311,6 +454,7 @@ import UniformTypeIdentifiers
     @objc private func showOriginal() {
         guard rows.indices.contains(table.selectedRow) else { return }
         let record = rows[table.selectedRow]
+        let root = currentRoute.directory
         do {
             let url: URL
             switch record.category {

@@ -1,10 +1,32 @@
 import Foundation
 import Darwin
 
+struct AgentImportRoute: Hashable {
+    let source: AgentImportSource
+    let category: AgentImportCategory
+    let root: String
+    let workspace: String?
+
+    var directory: URL { URL(fileURLWithPath: root) }
+}
+
+struct AgentImportPreview {
+    let id = UUID()
+    let records: [AgentImportCandidate]
+    let issue: String?
+    let available: Set<String>
+
+    init(records: [AgentImportCandidate], issue: String? = nil) {
+        self.records = records; self.issue = issue
+        available = Set(records.lazy.filter { $0.issue == nil }.map(\.id))
+    }
+}
+
 struct AgentImportItem: Codable, Identifiable {
     var record: AgentImportCandidate
     var state = "pending"
     var detail = ""
+    var sourceRoot: String? = nil
     var id: String { record.id }
 }
 struct AgentImportBatch: Codable {
@@ -16,6 +38,10 @@ struct AgentImportBatch: Codable {
     var created = Date()
     var category: AgentImportCategory { items.first?.record.category ?? .tasks }
     var targetWorkspace: String? { items.first?.record.targetWorkspace }
+
+    func route(for item: AgentImportItem) -> AgentImportRoute {
+        .init(source: source, category: item.record.category, root: item.sourceRoot ?? root, workspace: item.record.targetWorkspace)
+    }
 }
 
 @MainActor final class AgentDataImport {
@@ -25,13 +51,12 @@ struct AgentImportBatch: Codable {
     private var work: Task<Void, Never>?
     private var lock: Int32 = -1
     private(set) var batch: AgentImportBatch?
-    private(set) var preview: [AgentImportCandidate] = []
-    private(set) var previewSource: AgentImportSource?
-    private(set) var previewRoot: String?
-    private(set) var previewCategory: AgentImportCategory = .tasks
-    private(set) var previewWorkspace: String?
+    private var recentRoute: AgentImportRoute?
+    private var previews: [AgentImportRoute: AgentImportPreview] = [:]
+    var preview: [AgentImportCandidate] { recentRoute.flatMap { previews[$0]?.records } ?? [] }
     private(set) var scanning = false
-    private(set) var issue: String?
+    private(set) var operationIssue: String?
+    var issue: String? { operationIssue ?? recentRoute.flatMap { previews[$0]?.issue } }
     var onChange: (() -> Void)?
     var active: Bool { work != nil }
     var unfinished: Bool { batch?.items.contains(where: { $0.state == "pending" }) == true && batch?.state != "cancelled" }
@@ -45,7 +70,7 @@ struct AgentImportBatch: Codable {
             guard try files.entryMetadata(journal).signature == before else { throw PetError("导入记录正在变化") }
             batch = try JSONDecoder().decode(AgentImportBatch.self, from: bytes); signature = before
             if batch?.state == "running" { batch?.state = "paused" }
-        } catch { loadIssue = "导入记录无法读取，原件已保留：" + error.localizedDescription; issue = loadIssue }
+        } catch { loadIssue = "导入记录无法读取，原件已保留：" + error.localizedDescription; operationIssue = loadIssue }
     }
     private func save() throws {
         if let loadIssue { throw PetError(loadIssue) }
@@ -61,50 +86,59 @@ struct AgentImportBatch: Codable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return AgentFiles.hash(try encoder.encode(value))
     }
+
+    func preview(for route: AgentImportRoute) -> AgentImportPreview? { previews[route] }
+
     func detect(_ source: AgentImportSource, root: URL, category: AgentImportCategory = .tasks, workspace: String? = nil) async {
-        guard !scanning, !active, !unfinished else { issue = "请先继续或取消尚未完成的导入"; onChange?(); return }
-        scanning = true; issue = nil; preview = []; previewSource = source; previewRoot = root.path
-        previewCategory = category; previewWorkspace = workspace
+        await detect([.init(source: source, category: category, root: root.path, workspace: workspace)])
+    }
+
+    func detect(_ routes: [AgentImportRoute]) async {
+        guard let first = routes.first, routes.allSatisfy({ $0.source == first.source }),
+              Set(routes.map(\.category)).count == routes.count else { return }
+        guard !scanning, !active, !unfinished else { operationIssue = "请先继续或取消尚未完成的导入"; onChange?(); return }
+        if let loadIssue { operationIssue = loadIssue; onChange?(); return }
+        let categories = Set(routes.map(\.category))
+        previews = previews.filter { $0.key.source != first.source || !categories.contains($0.key.category) }
+        recentRoute = routes.count == 1 ? first : nil
+        scanning = true; operationIssue = nil
         onChange?()
         defer { scanning = false; onChange?() }
-        do {
-            if let loadIssue { throw PetError(loadIssue) }
-            if category == .memory {
-                let destination = try AgentMemory.importDestination(store: store, workspace: workspace)
-                let records = try await Task.detached(priority: .utility) { try AgentMemoryImport.discover(source, root: root, workspace: workspace) }.value
-                var reserved = Set<String>()
-                preview = records.map { entry in
-                    do { return try AgentMemoryImport.plan(entry, destination: destination, reserved: &reserved) }
-                    catch { var skipped = entry.record; skipped.issue = error.localizedDescription; return skipped }
-                }
-                return
+        for route in routes {
+            do { previews[route] = .init(records: try await discover(route)) }
+            catch { previews[route] = .init(records: [], issue: error.localizedDescription) }
+            onChange?()
+        }
+    }
+
+    private func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        let source = route.source, root = route.directory, workspace = route.workspace
+        switch route.category {
+        case .memory:
+            let destination = try AgentMemory.importDestination(store: store, workspace: workspace)
+            let records = try await Task.detached(priority: .utility) { try AgentMemoryImport.discover(source, root: root, workspace: workspace) }.value
+            var reserved = Set<String>()
+            return records.map { entry in
+                do { return try AgentMemoryImport.plan(entry, destination: destination, reserved: &reserved) }
+                catch { var skipped = entry.record; skipped.issue = error.localizedDescription; return skipped }
             }
-            if category == .skills {
-                let records = try await Task.detached(priority: .utility) { try AgentSkillImport.discover(source, root: root, workspace: workspace) }.value
-                preview = try AgentSkillImport.plan(records, store: store, workspace: workspace)
-                return
-            }
-            if category == .connectors {
-                let records = try await Task.detached(priority: .utility) { try AgentMCPDataImport.discover(source, root: root, workspace: workspace) }.value
-                preview = try AgentMCPDataImport.plan(records, workspace: workspace, store: store)
-                return
-            }
-            if category == .automations {
-                let records = try await Task.detached(priority: .utility) { try AgentAutomationDataImport.discover(source, root: root, workspace: workspace) }.value
-                preview = try AgentAutomationDataImport.plan(records, workspace: workspace, store: store)
-                return
-            }
-            if category == .plugins {
-                preview = try await AgentPluginDataImport.discover(source, root: root, workspace: workspace, store: store)
-                return
-            }
-            if category == .configuration {
-                preview = try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
-                return
-            }
+        case .skills:
+            let records = try await Task.detached(priority: .utility) { try AgentSkillImport.discover(source, root: root, workspace: workspace) }.value
+            return try AgentSkillImport.plan(records, store: store, workspace: workspace)
+        case .connectors:
+            let records = try await Task.detached(priority: .utility) { try AgentMCPDataImport.discover(source, root: root, workspace: workspace) }.value
+            return try AgentMCPDataImport.plan(records, workspace: workspace, store: store)
+        case .automations:
+            let records = try await Task.detached(priority: .utility) { try AgentAutomationDataImport.discover(source, root: root, workspace: workspace) }.value
+            return try AgentAutomationDataImport.plan(records, workspace: workspace, store: store)
+        case .plugins:
+            return try await AgentPluginDataImport.discover(source, root: root, workspace: workspace, store: store)
+        case .configuration:
+            return try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
+        case .tasks:
             let records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value
             let duplicates = Dictionary(grouping: records, by: \.id)
-            preview = try records.map { record in
+            return try records.map { record in
                 var value = record
                 guard value.issue == nil else { return value }
                 value.targetID = try store.importTargetID(value.targetID)
@@ -116,15 +150,37 @@ struct AgentImportBatch: Codable {
                 }
                 return value
             }
-        } catch { issue = error.localizedDescription; preview = [] }
-    }
-    func begin(_ source: AgentImportSource, root: URL, ids: Set<String>, category: AgentImportCategory = .tasks, workspace: String? = nil) throws {
-        guard !active, !scanning, !unfinished else { throw PetError("已有尚未完成的导入") }
-        guard previewSource == source, previewRoot == root.path, previewCategory == category, previewWorkspace == workspace else {
-            throw PetError("来源或导入目标已变化，请重新检测")
         }
-        let selected = preview.filter { ids.contains($0.id) && $0.issue == nil && $0.source == source }
-        guard !selected.isEmpty else { throw PetError("请选择可导入的" + category.title) }
+    }
+
+    func begin(_ source: AgentImportSource, root: URL, ids: Set<String>, category: AgentImportCategory = .tasks, workspace: String? = nil) throws {
+        let route = AgentImportRoute(source: source, category: category, root: root.path, workspace: workspace)
+        guard recentRoute == route else { throw PetError("来源或导入目标已变化，请重新检测") }
+        try begin([route: ids])
+    }
+
+    func begin(_ selections: [AgentImportRoute: Set<String>]) throws {
+        guard !active, !scanning, !unfinished else { throw PetError("已有尚未完成的导入") }
+        let choices = selections.filter { !$0.value.isEmpty }
+        guard let source = choices.keys.first?.source else { throw PetError("请选择可导入的内容") }
+        guard choices.keys.allSatisfy({ $0.source == source }), Set(choices.keys.map(\.category)).count == choices.count else {
+            throw PetError("请从同一来源选择导入内容")
+        }
+        var items: [AgentImportItem] = []
+        let ordered = AgentImportCategory.allCases.compactMap { category in choices.keys.first { $0.category == category } }
+        guard let root = ordered.first?.root else { throw PetError("请选择可导入的内容") }
+        for route in ordered {
+            guard let ids = choices[route], let preview = previews[route], ids.isSubset(of: preview.available) else {
+                throw PetError("来源或导入目标已变化，请重新检测")
+            }
+            let records = preview.records.filter { ids.contains($0.id) && $0.issue == nil }
+            guard records.allSatisfy({ $0.source == route.source && $0.category == route.category && $0.targetWorkspace == route.workspace }) else {
+                throw PetError("导入记录与选定来源或目标不符，请重新检测")
+            }
+            items += records.map { record in
+                .init(record: record, sourceRoot: route.root == root ? nil : route.root)
+            }
+        }
         if let previous = batch {
             let history = directory.appendingPathComponent("history")
             try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -133,26 +189,26 @@ struct AgentImportBatch: Codable {
             try files.writeData(bytes, to: url, permissions: 0o600)
         }
         let previous = batch
-        batch = AgentImportBatch(source: source, root: root.path, items: selected.map { AgentImportItem(record: $0) })
+        batch = AgentImportBatch(source: source, root: root, items: items)
         do { try save() } catch { batch = previous; throw error }
-        issue = nil; preview = []; previewSource = nil; previewRoot = nil; previewWorkspace = nil
+        operationIssue = nil; previews = previews.filter { $0.key.source != source }; recentRoute = nil
         resume()
     }
     func pause() {
         guard active else { return }
         batch?.state = "paused"
-        do { try save() } catch { issue = error.localizedDescription }
+        do { try save() } catch { operationIssue = error.localizedDescription }
         onChange?()
     }
     func cancel() {
         guard unfinished || active else { return }
         batch?.state = "cancelled"
-        do { try save() } catch { issue = error.localizedDescription }
+        do { try save() } catch { operationIssue = error.localizedDescription }
         onChange?()
     }
     func resume() {
         guard work == nil, unfinished, loadIssue == nil else { return }
-        batch?.state = "running"; issue = nil
+        batch?.state = "running"; operationIssue = nil
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let files = try AgentFiles(workspace: directory.path), url = try files.literalURL("import.lock")
@@ -160,12 +216,14 @@ struct AgentImportBatch: Codable {
             guard descriptor >= 0 else { throw PetError("导入锁无法打开") }
             guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { close(descriptor); throw PetError("另一个应用窗口正在导入，请稍后继续") }
             lock = descriptor; try save()
-        } catch { releaseLock(); batch?.state = "paused"; issue = error.localizedDescription; onChange?(); return }
+        } catch { releaseLock(); batch?.state = "paused"; operationIssue = error.localizedDescription; onChange?(); return }
         work = Task { [weak self] in await self?.process() }; onChange?()
     }
     private func process() async {
         defer { releaseLock(); work = nil; onChange?() }
-        while batch?.state == "running", let index = batch?.items.firstIndex(where: { $0.state == "pending" }), let source = batch?.source, let root = batch?.root, let candidate = batch?.items[index].record {
+        while batch?.state == "running", let index = batch?.items.firstIndex(where: { $0.state == "pending" }),
+              let source = batch?.source, let base = batch?.root, let item = batch?.items[index] {
+            let candidate = item.record, root = item.sourceRoot ?? base
             do {
                 if candidate.memory != nil {
                     guard let id = batch?.id, UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
@@ -197,10 +255,10 @@ struct AgentImportBatch: Codable {
             } catch {
                 batch?.items[index].state = "failed"; batch?.items[index].detail = error.localizedDescription
             }
-            do { try save() } catch { issue = "进度未保存，请重新打开应用后继续：" + error.localizedDescription; return }
+            do { try save() } catch { operationIssue = "进度未保存，请重新打开应用后继续：" + error.localizedDescription; return }
             onChange?(); await Task.yield()
         }
-        if batch?.state != "cancelled", batch?.items.contains(where: { $0.state == "pending" }) == false { batch?.state = "completed"; do { try save() } catch { issue = error.localizedDescription } }
+        if batch?.state != "cancelled", batch?.items.contains(where: { $0.state == "pending" }) == false { batch?.state = "completed"; do { try save() } catch { operationIssue = error.localizedDescription } }
     }
     private func releaseLock() { if lock >= 0 { flock(lock, LOCK_UN); close(lock); lock = -1 } }
     private func install(_ document: AgentImportDocument, candidate: AgentImportCandidate) throws {
