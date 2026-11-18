@@ -92,14 +92,15 @@ import AppKit
         for (label, size) in [("normal", NSSize(width: 1000, height: 660)), ("narrow", NSSize(width: 520, height: 380))] {
             for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                 host.appearance = NSAppearance(named: appearance); host.setContentSize(size); pane.layoutSubtreeIfNeeded()
-                let rect = state.convert(state.bounds, to: rootView)
-                let needed = state.attributedStringValue.boundingRect(with: NSSize(width: state.bounds.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
+                // Stack views align the text rectangle; the transparent frame extends 2pt on each side.
+                let rect = state.superview!.convert(state.alignmentRect(forFrame: state.frame), to: rootView)
+                let needed = state.attributedStringValue.boundingRect(with: NSSize(width: rect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
                 let key = label + "-" + appearance.rawValue
-                checks[key + "ErrorWrapsWithinActualEditor"] = !state.isHiddenOrHasHiddenAncestor && !state.hasAmbiguousLayout && rect.minX >= 0 && rect.maxX <= rootView.bounds.width + 1 && needed.height <= state.bounds.height + 2 && state.bounds.width > 80
+                checks[key + "ErrorWrapsWithinActualEditor"] = !state.isHiddenOrHasHiddenAncestor && !state.hasAmbiguousLayout && rect.minX >= 0 && rect.maxX <= rootView.bounds.width + 1 && needed.height <= rect.height + 2 && rect.width > 80
                 var semanticColor = false
                 host.effectiveAppearance.performAsCurrentDrawingAppearance { semanticColor = state.textColor?.usingColorSpace(.sRGB) == AgentDialogStyle.error.usingColorSpace(.sRGB) }
                 checks[key + "ErrorUsesSemanticColor"] = semanticColor
-                geometry.append(["case": key, "width": state.bounds.width, "height": state.bounds.height, "neededHeight": needed.height, "message": state.stringValue])
+                geometry.append(["case": key, "frameWidth": state.bounds.width, "alignmentX": rect.minX, "width": rect.width, "rootWidth": rootView.bounds.width, "height": rect.height, "neededHeight": needed.height, "message": state.stringValue])
             }
         }
         try fm.setAttributes([.posixPermissions: mode], ofItemAtPath: config.path)
@@ -174,7 +175,10 @@ import AppKit
                 // AppKit positions text fields by their alignment rectangle;
                 // the transparent control frame extends beyond that rectangle.
                 let aligned = ruleState.alignmentRect(forFrame: ruleState.frame)
-                let viewer = ruleBody.enclosingScrollView.map { $0.convert($0.bounds, to: ruleState.superview) } ?? .zero
+                // The status aligns with the editor card, outside its 1pt border.
+                let scroll = ruleBody.enclosingScrollView
+                let container = scroll?.superview?.identifier?.rawValue == "settings-card-rule-body" ? scroll?.superview : scroll
+                let viewer = container.map { $0.convert($0.bounds, to: ruleState.superview) } ?? .zero
                 let action = ruleSave.convert(ruleSave.bounds, to: ruleState.superview)
                 let above = ruleState.superview?.isFlipped == true ? aligned.maxY <= action.minY : aligned.minY >= action.maxY
                 let needed = ruleState.attributedStringValue.boundingRect(with: NSSize(width: aligned.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading])
