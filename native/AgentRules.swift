@@ -6,7 +6,7 @@ struct AgentLocalRuleReference: Codable, Equatable {
 struct AgentRuleDirectory: Codable, Equatable {
     var workspace: String, path: String
 }
-struct AgentLocalRuleItem: Identifiable {
+struct AgentLocalRuleItem: Identifiable, Codable {
     var id: String, invocation: String, source: URL, owner: URL, base: URL
     var rootPath: String, relative: String, scope: String, project: Bool, enabled: Bool
     var text: String?, sha256: String, signature: String, permissions: Int?

@@ -8,6 +8,10 @@ import AppKit
     var onSettingsPush: ((AgentSettingsPageController) -> Void)?
     var onSettingsClose: (() -> Void)?
     var settingsContext: (title: String, location: String)?
+    var onSettingsRecoveryChange: (() -> Void)?
+    func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { nil }
+    func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { throw PetError("此设置页暂不支持草稿恢复，原记录已保留") }
+    func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? { nil }
     var presentingWindow: NSWindow? { settingsHostWindow ?? window }
     var pageContentView: NSView? { embeddedContent ?? window?.contentView }
     var isPageVisible: Bool { pageContentView?.window?.isVisible == true && pageContentView?.isHiddenOrHasHiddenAncestor != true }
@@ -40,7 +44,7 @@ import AppKit
     }
     func endSettingsHosting() {
         settingsWillLeave()
-        onSettingsPush = nil; onSettingsClose = nil
+        onSettingsPush = nil; onSettingsClose = nil; onSettingsRecoveryChange = nil
         embeddedContent?.removeFromSuperview(); settingsHostWindow = nil
         window?.close()
     }
@@ -502,6 +506,8 @@ struct AgentSettingsCatalogGroup {
     private let viewport = NSScrollView(), document = AgentSettingsDocument(), empty = NSTextField(labelWithString: "请先选择任务")
     private var entries: [Entry] = [], keys: [String] = [], selectedTab = 0
     private var category = "", identity = "", contextTitle = ""
+    private var recoveryContext: AgentSettingsRecovery.Context?, pendingRecoveryY: Double?, recoveryScrollScheduled = false
+    var onRecoveryChange: (() -> Void)?
     private var makePage: ((String) -> AgentSettingsPageController?)?
     private var scrollMonitor: Any?
     private var pageHeight: NSLayoutConstraint?
@@ -539,7 +545,12 @@ struct AgentSettingsCatalogGroup {
             empty.centerXAnchor.constraint(equalTo: centerXAnchor), empty.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
         updateHeader()
+        viewport.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(recoveryBoundsChanged), name: NSView.boundsDidChangeNotification, object: viewport.contentView)
     }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func recoveryBoundsChanged(_ note: Notification) { if pendingRecoveryY == nil { onRecoveryChange?() } }
+    override func layout() { super.layout(); entries.forEach { $0.controller.pageDidLayout() }; scheduleRecoveryScroll() }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func viewDidMoveToWindow() {
@@ -580,10 +591,11 @@ struct AgentSettingsCatalogGroup {
         effectiveAppearance.performAsCurrentDrawingAppearance { entries.forEach { AgentSettingsStyle.prepare($0.view) } }
     }
 
-    @discardableResult func show(category: String, identity: String, scope: String, make: @escaping (String) -> AgentSettingsPageController?) -> Bool {
+    @discardableResult func show(category: String, identity: String, scope: String, recoveryContext: AgentSettingsRecovery.Context? = nil, make: @escaping (String) -> AgentSettingsPageController?) -> Bool {
         if self.category == category, self.identity == identity, !entries.isEmpty { return true }
         guard leave() else { return false }
         self.category = category; self.identity = identity; makePage = make; contextTitle = scope
+        self.recoveryContext = recoveryContext
         let options: [(String, String)] = category == "extensions" ? [("plugins", "插件"), ("skills", "技能"), ("commands", "指令"), ("mcp", "连接器"), ("agents", "智能体")] : category == "memory" ? [("memory", "记忆与指令"), ("rules", "规则")] : [(category, category)]
         keys = options.map(\.0); tabs.segmentCount = options.count
         for (index, option) in options.enumerated() { tabs.setLabel(option.1, forSegment: index) }
@@ -613,6 +625,7 @@ struct AgentSettingsCatalogGroup {
         entries.last?.view.removeFromSuperview()
         controller.onSettingsPush = { [weak self] child in self?.push(child) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
+        controller.onSettingsRecoveryChange = { [weak self] in self?.onRecoveryChange?() }
         content.heightAnchor.constraint(greaterThanOrEqualToConstant: controller.minimumSettingsContentHeight).isActive = true
         entries.append(Entry(controller: controller, view: content, title: controller.window?.title ?? "设置"))
         displayCurrent()
@@ -633,6 +646,7 @@ struct AgentSettingsCatalogGroup {
         startScrollMonitor()
         entry.controller.settingsDidAppear(); updateHeader()
         window?.recalculateKeyViewLoop()
+        onRecoveryChange?()
     }
     private func updateHeader() {
         let editing = entries.reversed().compactMap { $0.controller.settingsContext }.first
@@ -673,9 +687,47 @@ struct AgentSettingsCatalogGroup {
     }
     @discardableResult func leave() -> Bool {
         guard entries.reversed().allSatisfy({ $0.controller.canLeaveSettings() }) else { return false }
-        clearEntries(); category = ""; identity = ""; makePage = nil; return true
+        clearEntries(); category = ""; identity = ""; makePage = nil; recoveryContext = nil; pendingRecoveryY = nil; onRecoveryChange?(); return true
     }
-    func finish() { clearEntries(); category = ""; identity = ""; makePage = nil }
+    func finish() { clearEntries(); category = ""; identity = ""; makePage = nil; recoveryContext = nil; pendingRecoveryY = nil }
+    func prepareToQuit(preserving ids: Set<ObjectIdentifier>) -> Bool {
+        entries.reversed().allSatisfy { ids.contains(ObjectIdentifier($0.controller)) || $0.controller.canLeaveSettings() }
+    }
+    func captureRecovery(active: Bool) throws -> AgentSettingsRecovery.State? {
+        guard let recoveryContext, let root = selectedPageKey, ["rules", "skills", "commands"].contains(root), !entries.isEmpty else { return nil }
+        var pages: [AgentSettingsRecovery.Page] = []
+        for entry in entries where !(entry.controller is AgentSettingsDetailPage) {
+            guard let page = try entry.controller.captureSettingsRecovery() else { return nil }; pages.append(page)
+        }
+        let value = AgentSettingsRecovery.State(context: recoveryContext, category: category, root: root, active: active,
+            pages: pages, y: pendingRecoveryY ?? max(0, viewport.contentView.bounds.minY))
+        guard value.valid else { throw PetError("设置编辑恢复格式无效，原草稿已保留") }; return value
+    }
+    func restoreRecovery(_ value: AgentSettingsRecovery.State, make: @escaping (String) -> AgentSettingsPageController?) throws {
+        guard value.valid else { throw PetError("设置草稿版本或范围无效，原记录已保留") }
+        do {
+            guard show(category: value.category, identity: value.context.identity, scope: value.context.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", recoveryContext: value.context, make: make) else { throw PetError("请先处理当前设置更改") }
+            selectPage(value.root)
+            guard let root = entries.first?.controller else { throw PetError("原设置页面暂不可用") }
+            try root.restoreSettingsRecovery(value.pages[0]); root.settingsDidAppear()
+            for page in value.pages.dropFirst() {
+                var child: AgentSettingsPageController?
+                for entry in entries.reversed() { if let candidate = try entry.controller.makeSettingsRecoveryChild(page) { child = candidate; break } }
+                if child == nil { child = make(page.kind) }
+                guard let child else { throw PetError("设置子页面暂不支持恢复，原草稿已保留") }
+                try child.restoreSettingsRecovery(page); push(child)
+            }
+            pendingRecoveryY = value.y; scheduleRecoveryScroll()
+        } catch { finish(); throw error }
+    }
+    private func scheduleRecoveryScroll() {
+        guard pendingRecoveryY != nil, !recoveryScrollScheduled else { return }; recoveryScrollScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { recoveryScrollScheduled = false }
+            guard let y = pendingRecoveryY, window?.isVisible == true, !isHiddenOrHasHiddenAncestor else { return }
+            layoutSubtreeIfNeeded(); viewport.contentView.scroll(to: NSPoint(x: 0, y: y)); viewport.reflectScrolledClipView(viewport.contentView); pendingRecoveryY = nil
+        }
+    }
 }
 
 @MainActor final class AgentAttentionSettingsView: NSStackView {

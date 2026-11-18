@@ -16,7 +16,7 @@ struct AgentExtensionReference: Codable, Sendable {
     var pluginName: String? = nil
 }
 
-struct AgentExtensionItem: Identifiable, Sendable {
+struct AgentExtensionItem: Identifiable, Codable, Sendable {
     var id: String
     var name: String
     var description: String

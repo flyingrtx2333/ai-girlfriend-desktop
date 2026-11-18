@@ -94,6 +94,13 @@ final class FormDocumentView: NSView {
     private let settingsForm = NSStackView(), settingsScroll = NSScrollView(), settingsHeading = NSTextField(labelWithString: "模型")
     private let settingsWindowActions = NSStackView()
     private let settingsPageHost = AgentSettingsPageHost(), settingsBody = NSView()
+    private var restoredSettingsContext: AgentSettingsRecovery.Context?
+    var onSettingsRecoveryChange: (() -> Void)? { didSet { settingsPageHost.onRecoveryChange = onSettingsRecoveryChange } }
+    var settingsRecoveryControllers: [AgentSettingsPageController] { settingsPageHost.controllers }
+    func checkSelectSettingsRecoveryPage(_ key: String) throws {
+        guard ["--settings-editor-recovery-check", "--settings-editor-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { throw PetError("设置恢复验收未启用") }
+        settingsPageHost.selectPage(key)
+    }
     private var settingsSourceFolders: [String: String] = [:]
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
@@ -1293,7 +1300,7 @@ final class FormDocumentView: NSView {
         return leaveSettingsPage()
     }
     private func leaveSettingsPage() -> Bool {
-        if canLeaveBasicSettings(), settingsPageHost.leave() { return true }
+        if canLeaveBasicSettings(), settingsPageHost.leave() { restoredSettingsContext = nil; return true }
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
             let input = settingsEditingInput, selection = settingsEditingSelection
             settingsSearch.stringValue = ""; updateSettingsSections()
@@ -1317,6 +1324,7 @@ final class FormDocumentView: NSView {
         }
     }
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
+        if workspaceSession?.pendingSettingsCategory == key { workspaceSession?.restoreSettings(); return false }
         guard settingsCategories.contains(where: { $0.0 == key }), canLeaveMainPage() else { return false }
         companion?.ensureAgent(); settingsCategory = key; settingsSearch.stringValue = ""
         show(tab: "settings"); revealSettingsCategory(); return true
@@ -1442,6 +1450,10 @@ final class FormDocumentView: NSView {
     }
     @objc private func returnToChat() { companion?.screenCompanion.interaction(); show(tab: settingsReturnTab) }
     @objc private func selectSettingsCategory(_ sender: NSButton) {
+        if workspaceSession?.pendingSettingsCategory == settingsCategories[sender.tag].0 {
+            for (index, button) in categoryButtons.enumerated() { button.state = settingsCategories[index].0 == settingsCategory ? .on : .off }
+            workspaceSession?.restoreSettings(); return
+        }
         guard leaveSettingsPage() else {
             for (index, button) in categoryButtons.enumerated() {
                 button.state = settingsSearch.stringValue.isEmpty && settingsCategories[index].0 == settingsCategory ? .on : .off
@@ -1523,13 +1535,14 @@ final class FormDocumentView: NSView {
         settingsPageHost.isHidden = !managed; settingsScroll.isHidden = managed
         if managed {
             generalSettingsSave?.isHidden = true
-            let id = agentTaskID ?? companion?.agentStore?.selectedID
+            let id = restoredSettingsContext.map(\.taskID) ?? (agentTaskID ?? companion?.agentStore?.selectedID)
             let task = id.flatMap { companion?.agentStore?.task($0) }
-            let folders = settingsCategory == "worktrees" ? [] : task?.workspacePaths ?? []
+            let folders = settingsCategory == "worktrees" ? [] : restoredSettingsContext?.folders ?? task?.workspacePaths ?? []
             let remembered = id.flatMap { settingsSourceFolders[$0] }
-            let workspace = remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
-            let identity = ([id ?? "", workspace ?? "", task?.organizationWorkspace ?? ""] + folders).joined(separator: "\0")
-            guard settingsPageHost.show(category: settingsCategory, identity: identity, scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", make: { [weak self] kind in
+            let workspace = restoredSettingsContext != nil ? restoredSettingsContext?.workspace : remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
+            let context = restoredSettingsContext ?? AgentSettingsRecovery.Context(task: task, workspace: workspace)
+            let identity = context.identity
+            guard settingsPageHost.show(category: settingsCategory, identity: identity, scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", recoveryContext: context, make: { [weak self] kind in
                 self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
             }) else { return }
             settingsPageHost.setSourceFolders(folders, selected: workspace, primary: task?.workspace) { [weak self] path in
@@ -2253,6 +2266,7 @@ final class FormDocumentView: NSView {
     }
     func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
         guard canLeaveBasicSettings() else { return false }
+        guard settingsPageHost.prepareToQuit(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
         guard automationWindow?.prepareToLeave() != false else { return false }
@@ -2271,7 +2285,22 @@ final class FormDocumentView: NSView {
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
-    func finishOwnedTaskPanels() { workspaceSession?.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func finishOwnedTaskPanels() { workspaceSession?.finish(); settingsPageHost.finish(); knowledgePageHost.finish(); taskWorkspace.finish() }
+    func captureSettingsRecovery() throws -> AgentSettingsRecovery.State? { try settingsPageHost.captureRecovery(active: selectedTab == "settings") }
+    func materializeSettingsRecovery(_ value: AgentSettingsRecovery.State) throws {
+        guard let store = companion?.agentStore else { throw PetError("设置所属任务暂不可用") }
+        try value.context.requireCurrent(store)
+        guard canLeaveMainPage() else { throw PetError("请先保存或关闭当前编辑") }
+        let previousTab = selectedTab
+        restoredSettingsContext = value.context; settingsCategory = value.category; settingsSearch.stringValue = ""
+        if let id = value.context.taskID, let workspace = value.context.workspace { settingsSourceFolders[id] = workspace }
+        if value.active { selectedTab = "settings" }
+        changeTab()
+        do {
+            try settingsPageHost.restoreRecovery(value) { [weak self] kind in self?.makeSettingsManager(kind, taskID: value.context.taskID, workspace: value.context.workspace) }
+            if value.active { settingsReturnTab = previousTab; show(tab: "settings") }
+        } catch { restoredSettingsContext = nil; settingsPageHost.finish(); selectedTab = previousTab; changeTab(); throw error }
+    }
     func flushWorkspaceRecovery() async -> Bool {
         do { try await workspaceSession?.flush(); return true }
         catch { setStatus("工作区恢复未保存：" + error.localizedDescription, error: true); return false }

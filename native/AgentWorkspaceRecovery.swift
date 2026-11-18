@@ -47,6 +47,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var tasks: [TaskLayout]
         var floating: [FloatingPage] = []
         var knowledge: Knowledge? = nil
+        var settings: AgentSettingsRecovery.State? = nil
         var closed = false
     }
     struct Asset: Codable, Equatable, Sendable {
@@ -137,6 +138,7 @@ struct AgentWorkspaceRecovery: Sendable {
                 guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
             }
         }
+        guard value.settings?.valid != false, !(value.settings?.active == true && value.knowledge?.active == true) else { throw PetError("设置编辑恢复范围无效，原记录已保留") }
     }
     private func validate(_ value: Page) throws {
         guard value.version == 1, UUID(uuidString: value.taskID) != nil, !value.kind.isEmpty, value.kind.utf8.count <= 80,
@@ -148,7 +150,7 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
@@ -168,6 +170,7 @@ struct AgentWorkspaceRecovery: Sendable {
                 if let asset = page["asset"], !(asset is NSNull) { _ = try keys(asset, ["slot", "hash"]) }
             }
         }
+        if let settings = object["settings"], !(settings is NSNull) { try AgentSettingsRecovery.validateObject(settings) }
         let value = try JSONDecoder().decode(Window.self, from: data); try validate(value); return value
     }
     private func decodePage(_ data: Data) throws -> Page {

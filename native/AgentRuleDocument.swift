@@ -4,7 +4,7 @@ enum AgentRuleTrigger: String, Codable {
     case always = "always_on", manual, decision = "model_decision", glob
     var title: String { switch self { case .always: return "始终应用"; case .manual: return "手动选择"; case .decision: return "模型判断"; case .glob: return "匹配文件" } }
 }
-struct AgentRuleDefinition {
+struct AgentRuleDefinition: Codable {
     var key: String, path: String, description: String, body: String
     var trigger: AgentRuleTrigger, patterns: [String]
 }

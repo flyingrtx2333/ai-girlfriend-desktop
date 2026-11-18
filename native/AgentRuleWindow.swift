@@ -14,6 +14,10 @@ import AppKit
     private let triggers: [AgentRuleTrigger] = [.always, .manual, .decision, .glob]
     private var items: [AgentLocalRuleItem] = [], selected: AgentLocalRuleItem?, creating = false, dirty = false, loading = false, selectedScope = 0
     private var readOnlySaveFailed = false
+    private lazy var draftViewport: AgentSettingsDraftViewport = {
+        let view = AgentSettingsDraftViewport(text: editor, fields: ["name": name, "description": descriptionField, "patterns": patterns, "search": search], catalog: table, host: { [weak self] in self?.presentingWindow })
+        view.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }; return view
+    }()
     var onInsert: ((AgentLocalRuleItem) throws -> Void)? { didSet { updateControls() } }
     private var task: AgentTaskRecord? { try? editingTask() }
     private func editingTask() throws -> AgentTaskRecord {
@@ -95,9 +99,11 @@ import AppKit
         } catch { setState(error.localizedDescription); updateControls() }
     }
     private func clear() {
+        draftViewport.reset()
         loading = true; selected = nil; creating = false; readOnlySaveFailed = false; name.stringValue = ""; descriptionField.stringValue = ""; patterns.stringValue = ""; editor.string = ""; location.stringValue = ""; dirty = false; loading = false; updateControls()
     }
     private func open(_ item: AgentLocalRuleItem) {
+        draftViewport.reset()
         loading = true; selected = item; creating = false; readOnlySaveFailed = false
         name.stringValue = item.name; descriptionField.stringValue = item.definition?.description ?? ""; patterns.stringValue = item.definition?.patterns.joined(separator: "\n") ?? ""
         trigger.selectItem(at: triggers.firstIndex(of: item.definition?.trigger ?? .always) ?? 0)
@@ -114,11 +120,13 @@ import AppKit
         save.isEnabled = has && dirty; remove.isEnabled = selected?.permissions != nil && !dirty; reveal.isEnabled = selected != nil
         use.isEnabled = selected?.enabled == true && selected?.definition != nil && onInsert != nil && !dirty
         window?.isDocumentEdited = dirty
+        onSettingsRecoveryChange?()
     }
-    private func setState(_ text: String) { state.stringValue = text; state.toolTip = text.isEmpty ? nil : text }
-    private func markDirty() { guard !loading else { return }; dirty = true; setState("未保存"); updateControls() }
+    private func setState(_ text: String) { state.stringValue = text; state.toolTip = text.isEmpty ? nil : text; onSettingsRecoveryChange?() }
+    private func markDirty() { guard !loading else { return }; draftViewport.changed(); dirty = true; setState("未保存"); updateControls() }
     func textDidChange(_ notification: Notification) { markDirty() }
     func controlTextDidChange(_ notification: Notification) {
+        draftViewport.changed()
         if notification.object as? NSSearchField === search { if !dirty { reload() } else { setState("请先保存或放弃更改") } }
         else { markDirty() }
     }
@@ -145,7 +153,7 @@ import AppKit
             if creating { value = try store.rules.create(name: name.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), text: text, project: createScope.indexOfSelectedItem == 1, task: task) }
             else if let selected { value = try store.rules.save(selected, text: text, task: task) } else { return false }
             dirty = false; search.stringValue = ""; scopes.selectedSegment = 0; selectedScope = 0; reload(select: value.id); setState("已保存"); return true
-        } catch { readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly; state.showSaveFailure(error); return false }
+        } catch { readOnlySaveFailed = (error as? AgentSaveFailure)?.reason == .readOnly; state.showSaveFailure(error); onSettingsRecoveryChange?(); return false }
     }
     @objc private func saveItem() { _ = saveChanges() }
     @objc private func toggleEnabled() {
@@ -168,4 +176,54 @@ import AppKit
         switch AgentUnsavedChanges.saveOrDiscard("保存规则更改？") { case .alertFirstButtonReturn: return saveChanges(); case .alertSecondButtonReturn: dirty = false; if creating { clear() } else { reload(select: selected?.id) }; return true; default: return false }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { confirmClosing() }
+    override func settingsDidAppear() { super.settingsDidAppear(); draftViewport.appear(default: creating ? name : editor) }
+    override func pageDidLayout() { draftViewport.schedule() }
+    private struct Recovery: Codable {
+        var version = 1
+        var taskID: String, workspace: String?
+        var selected: AgentLocalRuleItem?, creating: Bool, dirty: Bool, readOnlySaveFailed: Bool
+        var scope: Int, query: String, createScope: Int, trigger: Int
+        var name: String, description: String, patterns: String, body: String, status: String
+        var viewport: AgentSettingsDraftViewport.State
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard !taskID.isEmpty else { return nil }
+        let value = Recovery(taskID: taskID, workspace: managementWorkspace, selected: selected, creating: creating, dirty: dirty,
+            readOnlySaveFailed: readOnlySaveFailed, scope: selectedScope, query: search.stringValue, createScope: createScope.indexOfSelectedItem,
+            trigger: trigger.indexOfSelectedItem, name: name.stringValue, description: descriptionField.stringValue, patterns: patterns.stringValue,
+            body: editor.string, status: state.stringValue, viewport: try draftViewport.capture())
+        return try AgentSettingsRecovery.page("rules", value)
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "rules" else { throw PetError("设置草稿不属于规则编辑器") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "selected", "creating", "dirty", "readOnlySaveFailed", "scope", "query", "createScope", "trigger", "name", "description", "patterns", "body", "status", "viewport"])
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        if let item = raw["selected"], !(item is NSNull) {
+            let item = try AgentSettingsRecovery.object(item, keys: ["id", "invocation", "source", "owner", "base", "rootPath", "relative", "scope", "project", "enabled", "text", "sha256", "signature", "permissions", "definition", "error"])
+            if let definition = item["definition"], !(definition is NSNull) { _ = try AgentSettingsRecovery.object(definition, keys: ["key", "path", "description", "body", "trigger", "patterns"]) }
+        }
+        let value = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard value.version == 1, value.taskID == taskID, value.workspace == managementWorkspace,
+              (0...2).contains(value.scope), (0...1).contains(value.createScope), triggers.indices.contains(value.trigger),
+              !value.creating || value.selected == nil else { throw PetError("规则草稿范围或格式已变化，原记录已保留") }
+        let task = try editingTask(), all = try store.rules.catalog(workspace: task.workspace, directories: task.ruleDirectories ?? [])
+        if let item = value.selected {
+            guard item.id == "local-rule-" + AgentFiles.hash(Data(item.source.path.utf8)).prefix(32) else { throw PetError("规则草稿与原来源不符") }
+        }
+        // Validate text positions against the complete draft before changing UI.
+        try draftViewport.validate(value.viewport, text: value.body, fields: ["name": value.name, "description": value.description, "patterns": value.patterns, "search": value.query])
+        loading = true; defer { loading = false }
+        selectedScope = value.scope; scopes.selectedSegment = value.scope; search.stringValue = value.query
+        items = all.filter { (value.scope == 0 || $0.project == (value.scope == 2)) && (value.query.isEmpty || $0.name.localizedCaseInsensitiveContains(value.query) || $0.invocation.localizedCaseInsensitiveContains(value.query)) }
+        if let item = value.selected { items.removeAll { $0.id == item.id }; items.append(item) }
+        selected = value.selected; creating = value.creating; readOnlySaveFailed = value.readOnlySaveFailed
+        name.stringValue = value.name; descriptionField.stringValue = value.description; patterns.stringValue = value.patterns; editor.string = value.body
+        createScope.selectItem(at: value.createScope); trigger.selectItem(at: value.trigger); enabled.state = selected?.enabled == true ? .on : .off
+        editor.setAccessibilityLabel(creating || selected?.definition != nil ? "规则正文" : "规则源文件")
+        location.stringValue = selected.map { $0.scope + " · @rule:" + $0.invocation } ?? ""; location.toolTip = selected?.source.path
+        let changed = value.selected.map { old in !all.contains { $0.id == old.id && $0.source == old.source && $0.owner == old.owner && $0.sha256 == old.sha256 } } ?? false
+        dirty = value.dirty || changed; table.delegate = nil; table.reloadData(); table.delegate = self; selectRow(selected?.id)
+        setState(changed ? "原规则已变化，恢复草稿已保留；刷新可重新读取" : value.status); updateControls(); editor.undoManager?.removeAllActions()
+        try draftViewport.restore(value.viewport)
+    }
 }

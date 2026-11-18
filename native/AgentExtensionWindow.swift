@@ -16,6 +16,10 @@ import UniformTypeIdentifiers
     private var requestedDetail = false
     private var items: [AgentExtensionItem] = [], selected: AgentExtensionItem?, openedHash: String?, dirty = false, selectedKind = 0
     private var availableInTask = false
+    private lazy var draftViewport: AgentSettingsDraftViewport = {
+        let view = AgentSettingsDraftViewport(text: editor, fields: ["search": search], catalog: table, host: { [weak self] in self?.presentingWindow })
+        view.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }; return view
+    }()
     private var job: Task<Void, Never>?
     private var mcpWindow: AgentMCPWindow?
     private var hookWindow: AgentHookWindow?
@@ -95,7 +99,7 @@ import UniformTypeIdentifiers
                 guard let self else { return true }; let wasDirty = dirty
                 guard canLeave() else { return false }; if wasDirty { reload(select: selected?.id) }; return true
             }
-            page.onAppear = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(editor) }
+            page.onAppear = { [weak self] in guard let self else { return }; draftViewport.appear(default: editor) }
             detailPage = page; catalogLayout = nil
             state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedItem); table.onOpen = { [weak self] in self?.showDetail() }
@@ -118,7 +122,7 @@ import UniformTypeIdentifiers
         if requestedDetail { requestedDetail = false; showDetail(); return }
         guard isPageVisible, let content = pageContentView, let host = presentingWindow else { return }
         if let focused = host.firstResponder as? NSView, focused.isDescendant(of: content) { return }
-        host.makeFirstResponder(table)
+        draftViewport.appear(default: table)
     }
     func prepareSettings(kind: AgentExtensionKind) {
         kinds.selectedSegment = kind == .command ? 1 : 0; selectedKind = kinds.selectedSegment
@@ -213,6 +217,7 @@ import UniformTypeIdentifiers
         } catch { state.stringValue = error.localizedDescription }
     }
     private func open(_ item: AgentExtensionItem) {
+        draftViewport.reset()
         do {
             let (text, _) = try store.extensions.document(item)
             selected = item; openedHash = AgentFiles.hash(Data(text.utf8)); editor.string = text; editor.isEditable = item.managed
@@ -234,13 +239,14 @@ import UniformTypeIdentifiers
         use.toolTip = availableInTask ? nil : "此扩展超出当前任务的可用范围"
         remove.isEnabled = idle && managed; save.isEnabled = idle && managed && dirty; reveal.isEnabled = idle && selected != nil
         editor.isEditable = idle && managed
+        onSettingsRecoveryChange?()
     }
     @objc private func changeKind() {
         guard canLeave() else { kinds.selectedSegment = selectedKind; return }; selectedKind = kinds.selectedSegment; selected = nil; reload()
     }
     @objc private func refreshList() { if canLeave() { reload() } }
-    func controlTextDidChange(_ notification: Notification) { if !dirty { reload() } }
-    func textDidChange(_ notification: Notification) { dirty = true; state.stringValue = "未保存"; updateControls() }
+    func controlTextDidChange(_ notification: Notification) { draftViewport.changed(); if !dirty { reload() }; onSettingsRecoveryChange?() }
+    func textDidChange(_ notification: Notification) { draftViewport.changed(); dirty = true; state.stringValue = "未保存"; updateControls() }
     @objc private func toggleEnabled() {
         guard let item = selected else { return }
         do {
@@ -255,7 +261,7 @@ import UniformTypeIdentifiers
     @objc private func saveItem() {
         guard let item = selected, let hash = openedHash else { return }
         do { let saved = try store.extensions.save(item, text: editor.string, expectedHash: hash, workspace: workspace); dirty = false; reload(select: saved.id); state.stringValue = "已保存" }
-        catch { state.showSaveFailure(error) }
+        catch { state.showSaveFailure(error); onSettingsRecoveryChange?() }
     }
     @objc private func revealItem() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([selected.file]) } }
     @objc private func useItem() {
@@ -298,12 +304,15 @@ import UniformTypeIdentifiers
     }
     @objc private func createManually() {
         guard canLeave() else { return }
+        presentSettingsChild(makeCreationPage())
+    }
+    private func makeCreationPage() -> AgentExtensionCreationPage {
         let page = AgentExtensionCreationPage(service: store.extensions, kind: kind, workspace: workspace)
         page.onCreated = { [weak self] item in
             guard let self else { return }
             search.stringValue = ""; reload(select: item.id); state.stringValue = "已创建"; showDetail(); presentingWindow?.makeFirstResponder(editor)
         }
-        presentSettingsChild(page)
+        return page
     }
     @objc private func importItem() {
         guard canLeave(), let window = presentingWindow else { return }
@@ -332,6 +341,49 @@ import UniformTypeIdentifiers
         if canLeave() { job?.cancel(); return true }; return false
     }
     override func settingsWillLeave() { job?.cancel() }
+    override func pageDidLayout() { draftViewport.schedule() }
+    private struct Recovery: Codable {
+        var version = 1
+        var taskID: String, workspace: String?, kind: AgentExtensionKind
+        var selected: AgentExtensionItem?, openedHash: String?, body: String, query: String, dirty: Bool, detail: Bool, status: String
+        var viewport: AgentSettingsDraftViewport.State
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard job == nil else { throw PetError("请先完成或取消扩展导入") }
+        var viewport = try draftViewport.capture()
+        let detail = detailPage?.settingsHostWindow != nil || requestedDetail
+        if !detail { viewport.focus = search.currentEditor() === presentingWindow?.firstResponder ? "search" : "catalog"; viewport.text.focused = false }
+        let value = Recovery(taskID: taskID, workspace: workspace, kind: kind, selected: selected, openedHash: openedHash,
+            body: editor.string, query: search.stringValue, dirty: dirty, detail: detail, status: state.stringValue, viewport: viewport)
+        return try AgentSettingsRecovery.page(kind == .skill ? "skills" : "commands", value)
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == (kind == .skill ? "skills" : "commands"), job == nil else { throw PetError("扩展草稿类型或操作已变化，原记录已保留") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "kind", "selected", "openedHash", "body", "query", "dirty", "detail", "status", "viewport"])
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        if let selected = raw["selected"], !(selected is NSNull) { _ = try AgentSettingsRecovery.object(selected, keys: ["id", "name", "description", "kind", "file", "root", "scope", "managed", "enabled", "manualOnly", "sha256", "pluginName"]) }
+        let value = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard value.version == 1, value.taskID == taskID, value.workspace == workspace, value.kind == kind,
+              value.selected?.kind == nil || value.selected?.kind == kind, !value.detail || value.selected != nil,
+              (value.selected == nil) == (value.openedHash == nil) else { throw PetError("扩展草稿所属对象或范围无效，原记录已保留") }
+        try draftViewport.validate(value.viewport, text: value.body, fields: ["search": value.query])
+        let current = try store.extensions.catalog(workspace: workspace)
+        items = current.filter { $0.kind == kind && (value.query.isEmpty || $0.name.localizedCaseInsensitiveContains(value.query) || $0.description.localizedCaseInsensitiveContains(value.query)) }
+        if let item = value.selected { items.removeAll { $0.id == item.id }; items.append(item) }
+        selected = value.selected; openedHash = value.openedHash; editor.string = value.body; search.stringValue = value.query
+        let changed = value.selected.map { old in !current.contains { $0.id == old.id && $0.file == old.file && $0.root == old.root && $0.sha256 == old.sha256 } } ?? false
+        dirty = value.dirty || changed; requestedDetail = value.detail
+        availableInTask = selected.map { item in store.task(taskID).map { task in
+            (try? store.extensions.item(item.id, task: task, enabled: false).file) == item.file && (item.kind != .skill || (try? store.agents.checkSkill(item.id, task: task)) != nil)
+        } ?? false } ?? false
+        location.stringValue = selected.map { $0.scope + " · /" + $0.invocation } ?? ""; location.toolTip = selected?.file.path
+        enabled.state = selected?.enabled == true ? .on : .off; table.delegate = nil; table.reloadData(); table.delegate = self; selectRow(selected?.id)
+        state.stringValue = changed ? "原扩展已变化，恢复草稿已保留；刷新可重新读取" : value.status; updateControls(); editor.undoManager?.removeAllActions()
+        try draftViewport.restore(value.viewport)
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        page.kind == "extension-create" ? makeCreationPage() : nil
+    }
     func checkLayout(_ output: URL) -> [String: Bool] {
         showWindow(nil); var checks = ["extensionEditorMatchesActualFile": selected.flatMap { try? store.extensions.document($0).0 } == editor.string, "extensionEnableAndSourceControls": enabled.isEnabled && reveal.isEnabled]
         if let item = selected, item.enabled, let row = items.firstIndex(where: { $0.id == item.id }) {
