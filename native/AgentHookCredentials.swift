@@ -11,6 +11,27 @@ import Foundation
     static func field(_ entry: [String: Any]) -> String? {
         switch entry["type"] as? String ?? "command" { case "http": return "headers"; case "command": return "env"; default: return nil }
     }
+    static func canPreserveDraft(_ text: String) -> Bool {
+        let source = text as NSString
+        // Inspect raw tokens because decoding may collapse duplicate keys or
+        // duplicate entries inside a credential map.
+        let tokens = draftStringPattern.matches(in: text, range: NSRange(location: 0, length: source.length))
+        for token in tokens {
+            let end = NSMaxRange(token.range), suffix = NSRange(location: end, length: source.length - end)
+            guard draftColonPattern.firstMatch(in: text, options: .anchored, range: suffix) != nil,
+                  let key = try? JSONDecoder().decode(String.self, from: Data(source.substring(with: token.range).utf8)),
+                  ["headers", "env"].contains(key.lowercased()) else { continue }
+            guard draftMaskedMapPattern.firstMatch(in: text, options: .anchored, range: suffix) != nil else { return false }
+        }
+        if text.range(of: #"(?i)\b(headers|env)\b"#, options: .regularExpression) == nil { return true }
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil
+    }
+    private static let draftStringPattern = try! NSRegularExpression(pattern: #""(?:\\.|[^"\\])*""#)
+    private static let draftColonPattern = try! NSRegularExpression(pattern: #"\s*:"#)
+    private static let draftMaskedMapPattern: NSRegularExpression = {
+        let entry = draftStringPattern.pattern + #"\s*:\s*"(?:\$\{KEYCHAIN\})?""#
+        return try! NSRegularExpression(pattern: #"\s*:\s*\{\s*(?:"# + entry + #"(?:\s*,\s*"# + entry + #")*)?\s*\}"#)
+    }()
     static func validateEnvironment(_ value: Any?) throws {
         guard let value else { return }
         guard let values = value as? [String: String], values.count <= 64 else { throw PetError("env 需要字符串对象，不超过 64 项") }

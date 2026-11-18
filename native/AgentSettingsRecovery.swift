@@ -36,6 +36,11 @@ enum AgentSettingsRecovery {
         guard data.count <= 20_000_000 else { throw PetError("设置草稿超过恢复记录容量，当前输入已保留") }
         return .init(kind: kind, state: data)
     }
+    static func validHash(_ hash: String?) -> Bool {
+        hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
+    }
+    static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
+    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams"]
     struct State: Codable, Equatable, Sendable {
         var version = 1
         var context: Context
@@ -44,9 +49,17 @@ enum AgentSettingsRecovery {
         var pages: [Page]
         var y: Double
         var valid: Bool {
-            version == 1 && context.valid && ((category == "memory" && root == "rules") || (category == "extensions" && ["skills", "commands"].contains(root))) &&
-                (1...16).contains(pages.count) && pages.first?.kind == root && pages.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0.kind) && $0.state.count <= 20_000_000 } &&
-                y.isFinite && (0...1_000_000_000).contains(y)
+            guard version == 1, context.valid, (1...16).contains(pages.count), pages.first?.kind == root,
+                  pages.allSatisfy({ $0.state.count <= 20_000_000 }), AgentSettingsRecovery.validScroll(y) else { return false }
+            let kinds = pages.map(\.kind)
+            switch (category, root) {
+            case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
+                return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
+            case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
+            case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
+            case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
+            default: return false
+            }
         }
     }
     static func object(_ raw: Any, keys: Set<String>) throws -> [String: Any] {
@@ -75,8 +88,14 @@ enum AgentSettingsRecovery {
         var text: AgentTextViewport
         var fields: [String: Field]
         var focus: String
+        var formY: Double? = nil
+        var catalogY: Double? = nil
     }
     private let text: NSTextView, fields: [String: NSTextField], catalog: NSView
+    private weak var form: NSScrollView?
+    private weak var observedCatalogClip: NSClipView?
+    private var tracksCatalogScroll = false
+    private var deferredCatalogY: Double?
     private let host: () -> NSWindow?
     private var cached: [String: Field] = [:], focus = "body", pending: State?, deferredText: AgentTextViewport?
     private var applying = false, scheduled = false
@@ -86,6 +105,14 @@ enum AgentSettingsRecovery {
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
         if let clip = text.enclosingScrollView?.contentView { clip.postsBoundsChangedNotifications = true; NotificationCenter.default.addObserver(self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification, object: clip) }
+    }
+    func trackForm(_ form: NSScrollView?) {
+        self.form = form; tracksCatalogScroll = true
+        if let clip = form?.contentView { observeScroll(clip) }
+    }
+    private func observeScroll(_ clip: NSClipView) {
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification, object: clip)
     }
     deinit { NotificationCenter.default.removeObserver(self) }
     private func field(_ input: NSTextField) -> Field {
@@ -111,21 +138,30 @@ enum AgentSettingsRecovery {
         if let pending { return pending }
         remember(); var viewport = try deferredText ?? AgentTextViewport(text); viewport.focused = focus == "body"
         let values = fields.mapValues(field); cached = values
-        return State(text: viewport, fields: values, focus: focus)
+        return State(text: viewport, fields: values, focus: focus, formY: form.map { max(0, $0.contentView.bounds.minY) },
+                     catalogY: deferredCatalogY ?? (tracksCatalogScroll ? catalog.enclosingScrollView.map { max(0, $0.contentView.bounds.minY) } : nil))
     }
     func restore(_ value: State) throws {
         try validate(value, text: text.string, fields: fields.mapValues(\.stringValue))
-        pending = value; deferredText = value.text; cached = value.fields; focus = value.focus; schedule()
+        pending = value; deferredText = value.text; deferredCatalogY = value.catalogY; cached = value.fields; focus = value.focus; schedule()
     }
     func validate(_ value: State, text: String, fields values: [String: String]) throws {
         guard value.version == 1, value.text.valid, value.text.hash == AgentFiles.hash(Data(text.utf8)), value.text.count == (text as NSString).length,
-              Set(value.fields.keys) == Set(fields.keys), Set(values.keys) == Set(fields.keys), ["body", "catalog"].contains(value.focus) || fields[value.focus] != nil else { throw PetError("设置草稿选区与正文不符，原记录已保留") }
+              Set(value.fields.keys) == Set(fields.keys), Set(values.keys) == Set(fields.keys), ["body", "catalog"].contains(value.focus) || fields[value.focus] != nil,
+              AgentSettingsRecovery.validScroll(value.formY), AgentSettingsRecovery.validScroll(value.catalogY) else { throw PetError("设置草稿选区与正文不符，原记录已保留") }
         for (key, saved) in value.fields {
             let current = values[key]!
             guard saved.hash == AgentFiles.hash(Data(current.utf8)), saved.count == (current as NSString).length, saved.selection?.valid(in: saved.count) != false else { throw PetError("设置字段选区与原输入不符，原记录已保留") }
         }
     }
     func appear(default target: NSView) {
+        if tracksCatalogScroll, let clip = catalog.enclosingScrollView?.contentView, clip !== observedCatalogClip {
+            if let observedCatalogClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedCatalogClip) }
+            observedCatalogClip = clip; observeScroll(clip)
+        }
+        if let y = deferredCatalogY, catalog.window != nil, let scroll = catalog.enclosingScrollView {
+            applyScroll(y, to: scroll); deferredCatalogY = nil
+        }
         if pending != nil { schedule(); return }
         if let window = host(), let current = window.firstResponder,
            (current === text && text.window === window && !text.isHiddenOrHasHiddenAncestor) ||
@@ -154,11 +190,17 @@ enum AgentSettingsRecovery {
             guard window.makeFirstResponder(target) else { return }
             if target === text { guard value.text.apply(to: text, focus: false) else { return } }
             else if let field = fields[value.focus], let selection = value.fields[value.focus]?.selection { (field.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
+            if let y = value.formY, let form, form.window === window { applyScroll(y, to: form) }
             pending = nil
         }
     }
+    private func applyScroll(_ y: Double, to view: NSScrollView) {
+        let clip = view.contentView
+        let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size))
+        clip.scroll(to: bounds.origin); view.reflectScrolledClipView(clip)
+    }
     static func validateObject(_ raw: Any) throws {
-        let value = try AgentSettingsRecovery.object(raw, keys: ["version", "text", "fields", "focus"])
+        let value = try AgentSettingsRecovery.object(raw, keys: ["version", "text", "fields", "focus", "formY", "catalogY"])
         if let text = value["text"] { try AgentTextViewport.validateObject(text) }
         for raw in (value["fields"] as? [String: Any] ?? [:]).values {
             let field = try AgentSettingsRecovery.object(raw, keys: ["hash", "count", "selection"])

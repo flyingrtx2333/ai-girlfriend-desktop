@@ -699,7 +699,7 @@ struct AgentSettingsCatalogGroup {
         entries.reversed().allSatisfy { ids.contains(ObjectIdentifier($0.controller)) || $0.controller.canLeaveSettings() }
     }
     func captureRecovery(active: Bool) throws -> AgentSettingsRecovery.State? {
-        guard let recoveryContext, let root = selectedPageKey, ["rules", "skills", "commands"].contains(root), !entries.isEmpty else { return nil }
+        guard let recoveryContext, let root = selectedPageKey, AgentSettingsRecovery.roots.contains(root), !entries.isEmpty else { return nil }
         var pages: [AgentSettingsRecovery.Page] = []
         for entry in entries where !(entry.controller is AgentSettingsDetailPage) {
             guard let page = try entry.controller.captureSettingsRecovery() else { return nil }; pages.append(page)

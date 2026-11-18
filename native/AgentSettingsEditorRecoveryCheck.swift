@@ -78,17 +78,17 @@ import AppKit
                 let decodedEmptyContext = try JSONDecoder().decode(AgentSettingsRecovery.Context.self, from: JSONEncoder().encode(emptyContext))
                 checks["emptySettingsContextRemainsValidWithoutInventingATask"] = emptyContext.valid && decodedEmptyContext == emptyContext
                 if !interactive {
-                    let before = try tasks.agents.document().1
-                    guard control.showSettingsCategory("agents") else { throw PetError("退出保护检查未打开智能体页") }
-                    try click("新建", control)
-                    guard let profile = control.settingsRecoveryControllers.compactMap({ $0 as? AgentProfileWindow }).first else { throw PetError("原智能体编辑器不可用") }
-                    let name = try input(NSTextField.self, "Agent 名称", control); name.stringValue = "PUBLIC_UNSAVED_AGENT_215"
-                    profile.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: name))
+                    let before = try tasks.hooks.document(project: false, workspace: nil).1
+                    guard control.showSettingsCategory("hooks") else { throw PetError("退出保护检查未打开 Hooks 页") }
+                    try click("编辑配置", control)
+                    let body = try input(NSTextView.self, "Hooks JSON 配置", control)
+                    let literal = #"{"hooks":{"Stop":[{"hooks":[{"type":"http","headers":{"Authorization":"PUBLIC_DUMMY_215"}}]}]}}"#
+                    body.string = literal; body.didChangeText()
                     let flushed = await control.flushWorkspaceRecovery()
-                    checks["unsupportedEditorIsNotMarkedAsPreserved"] = flushed && control.workspaceSession?.preservedEditors.isEmpty == true
-                    checks["quitChecksUnsupportedHostedEditorsBeforeLosingInput"] = !(try await choose("继续编辑", { await self.control.prepareOwnedTaskPanels(preservingRecovery: true) })) && name.stringValue == "PUBLIC_UNSAVED_AGENT_215"
-                    checks["cancelQuitDoesNotSaveUnsupportedAgentDraft"] = try tasks.agents.document().1 == before
-                    checks["explicitDiscardReturnsFromUnsupportedEditor"] = try await choose("放弃更改", { self.control.showSettingsCategory("extensions") }) && tasks.agents.document().1 == before
+                    checks["unmaskedHookEditorIsNotMarkedAsPreserved"] = flushed && control.workspaceSession?.preservedEditors.isEmpty == true
+                    checks["quitProtectsUnmaskedHooksWithoutWritingTheDraft"] = !(try await choose("继续编辑", { await self.control.prepareOwnedTaskPanels(preservingRecovery: true) })) && body.string == literal
+                    checks["cancelQuitLeavesHookSourceExact"] = try tasks.hooks.document(project: false, workspace: nil).1 == before
+                    checks["explicitDiscardReturnsFromUnmaskedHookEditor"] = try await choose("放弃", { self.control.showSettingsCategory("extensions") }) && tasks.hooks.document(project: false, workspace: nil).1 == before
                 }
                 guard control.showSettingsCategory("extensions") else { throw PetError("无任务设置未打开") }; try control.checkSelectSettingsRecoveryPage("skills")
                 guard let parent = control.settingsRecoveryControllers.first as? AgentExtensionWindow,

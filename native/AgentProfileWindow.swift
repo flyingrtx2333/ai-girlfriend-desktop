@@ -15,11 +15,17 @@ import UniformTypeIdentifiers
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?
+    private var storedIDs = Set<String>()
+    private var draftOrigin: DraftOrigin?
     private var catalogLayout: (toolbar: NSView, detail: NSView)?
     private var detailPage: AgentSettingsDetailPage?
     private let catalogState = AgentSettingsStatusField("智能体列表状态")
     private var requestedDetail = false
     private var selectedSkills = Set<String>(), selectedMCP = Set<String>(), toolPermissions: [String: AgentToolPermission] = [:], mcpPermissions: [AgentMCPToolPermission] = []
+    private lazy var draftViewport: AgentSettingsDraftViewport = {
+        let viewport = AgentSettingsDraftViewport(text: instructions, fields: ["name": name, "purpose": purpose, "model": model], catalog: table, host: { [weak self] in self?.presentingWindow })
+        viewport.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }; return viewport
+    }()
     override var minimumSettingsContentHeight: CGFloat { 220 }
     init(store: AgentStore, workspace: String?, workMode: AgentWorkMode? = nil, taskID: String? = nil) {
         self.store = store; self.workspace = workspace; self.taskID = taskID; self.workMode = workMode ?? store.selected?.organizationMode ?? .coding
@@ -53,6 +59,7 @@ import UniformTypeIdentifiers
             AgentSettingsStyle.section("工作指令", id: "agent-instructions", rows: [editor]),
             AgentSettingsStyle.section("可选能力", id: "agent-capabilities", rows: [AgentSettingsStyle.formRow("Skills", skills, trailing: true), AgentSettingsStyle.formRow("MCP", mcp, trailing: true), AgentSettingsStyle.formRow("工具权限", tools, trailing: true)])
         ], label: "智能体配置")
+        draftViewport.trackForm(form)
         save.target = self; save.action = #selector(saveProfile); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         AgentSettingsStyle.primaryAction(save); AgentDialogStyle.action(use)
         use.target = self; use.action = #selector(useProfile)
@@ -87,9 +94,9 @@ import UniformTypeIdentifiers
                 guard let self, let window, windowShouldClose(window) else { return false }
                 if dirty { dirty = false; reload() }; return true
             }
-            page.onAppear = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(name) }
+            page.onAppear = { [weak self] in guard let self else { return }; draftViewport.appear(default: name.isEnabled ? name : model) }
             detailPage = page; catalogLayout = nil
-            state.onChange = { [weak self] value in self?.catalogState.stringValue = value }; catalogState.stringValue = state.stringValue
+            state.onChange = { [weak self] value in self?.catalogState.stringValue = value; self?.onSettingsRecoveryChange?() }; catalogState.stringValue = state.stringValue
             table.target = self; table.action = #selector(openSelectedProfile); table.onOpen = { [weak self] in self?.showDetail() }
             var actions = (layout.toolbar as? NSStackView)?.arrangedSubviews ?? []
             if !actions.isEmpty { actions.append(actions.removeFirst()) }
@@ -101,8 +108,10 @@ import UniformTypeIdentifiers
     override func canLeaveSettings() -> Bool { detailPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
     override func settingsDidAppear() {
         super.settingsDidAppear()
-        if requestedDetail { requestedDetail = false; showDetail() } else { presentingWindow?.makeFirstResponder(table) }
+        if requestedDetail { requestedDetail = false; showDetail() }
+        else if detailPage?.settingsHostWindow == nil { draftViewport.appear(default: table) }
     }
+    override func pageDidLayout() { draftViewport.schedule() }
     @objc private func openSelectedProfile() { showDetail() }
     private func showDetail() {
         guard selectedID != nil, let detailPage else { return }
@@ -133,10 +142,12 @@ import UniformTypeIdentifiers
     }
     private func selectRow(_ id: String?) { loading = true; defer { loading = false }; if let index = values.firstIndex(where: { $0.id == id }) { table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false) } else { table.deselectAll(nil) } }
     private func reload() {
-        do { openedHash = try store.agents.document().1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = try store.agents.list(workspace: workspace); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
+        do { openedHash = try store.agents.document().1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = try store.agents.list(workspace: workspace); storedIDs = Set(values.map(\.id)); loading = true; table.reloadData(); loading = false; open(values.first(where: { $0.id == selectedID })?.id ?? values.first?.id) }
         catch { state.stringValue = error.localizedDescription }
     }
     private func open(_ id: String?) {
+        draftViewport.reset()
+        if draftOrigin?.profileID != id { draftOrigin = nil }
         loading = true; defer { loading = false }; selectedID = id
         let value = values.first { $0.id == id }; name.stringValue = value?.name ?? ""; purpose.stringValue = value?.description ?? ""; model.stringValue = value?.model ?? ""; instructions.string = value?.instructions ?? ""
         permission.selectItem(at: AgentPermissionMode.allCases.firstIndex(of: value?.permission ?? .review) ?? 0); readOnly.state = value?.readOnly == false ? .off : .on; network.state = value?.network == true ? .on : .off; enabled.state = value?.enabled == true ? .on : .off; selectedTools = Set(value?.tools ?? [])
@@ -144,12 +155,14 @@ import UniformTypeIdentifiers
         refreshMenus()
         dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls(); state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") } ?? ""
     }
-    private func capture() {
-        guard let i = values.firstIndex(where: { $0.id == selectedID }) else { return }
-        if values[i].pluginSource != nil { values[i].model = model.stringValue; return }
-        values[i].name = name.stringValue; values[i].description = purpose.stringValue; values[i].model = model.stringValue; values[i].instructions = instructions.string
-        values[i].permission = AgentPermissionMode.allCases[max(0, permission.indexOfSelectedItem)]; values[i].readOnly = readOnly.state == .on; values[i].network = network.state == .on; values[i].enabled = enabled.state == .on; values[i].tools = selectedTools.sorted()
-        values[i].skills = selectedSkills.isEmpty ? nil : selectedSkills.sorted(); values[i].mcpServers = selectedMCP.isEmpty ? nil : selectedMCP.sorted(); values[i].toolPermissions = toolPermissions.isEmpty ? nil : toolPermissions; values[i].mcpToolPermissions = mcpPermissions.isEmpty ? nil : mcpPermissions
+    private func editedValue() -> AgentProfile? {
+        guard var value = values.first(where: { $0.id == selectedID }) else { return nil }
+        value.model = model.stringValue
+        guard value.pluginSource == nil else { return value }
+        value.name = name.stringValue; value.description = purpose.stringValue; value.instructions = instructions.string
+        value.permission = AgentPermissionMode.allCases[max(0, permission.indexOfSelectedItem)]; value.readOnly = readOnly.state == .on; value.network = network.state == .on; value.enabled = enabled.state == .on; value.tools = selectedTools.sorted()
+        value.skills = selectedSkills.isEmpty ? nil : selectedSkills.sorted(); value.mcpServers = selectedMCP.isEmpty ? nil : selectedMCP.sorted(); value.toolPermissions = toolPermissions.isEmpty ? nil : toolPermissions; value.mcpToolPermissions = mcpPermissions.isEmpty ? nil : mcpPermissions
+        return value
     }
     private func updateControls() {
         AgentSettingsStyle.listState(table, text: "暂无智能体")
@@ -164,7 +177,8 @@ import UniformTypeIdentifiers
         let document = try store.agents.document(), current = try store.agents.list(workspace: workspace)
         let existing = current.first { $0.id == draft.profile.id && $0.pluginSource == nil }
         guard draft.savedAt == nil || existing != nil else { throw PetError("此草稿保存的 Agent 已移除，原草稿保留") }
-        openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current
+        openedHash = document.1; openedPluginModelHash = try store.agents.pluginModelVersion(); values = current; storedIDs = Set(current.map(\.id))
+        draftOrigin = DraftOrigin(id: draft.id, taskID: draft.taskID, profileID: draft.profile.id)
         if existing == nil { values.append(draft.profile) }
         loading = true; table.reloadData(); loading = false; open(draft.profile.id)
         if existing == nil { changed(); presentingWindow?.makeFirstResponder(name) }
@@ -172,7 +186,7 @@ import UniformTypeIdentifiers
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
-    @objc private func changed() { guard !loading else { return }; dirty = true; state.stringValue = "未保存"; updateControls() }
+    @objc private func changed() { guard !loading else { return }; dirty = true; draftViewport.changed(); state.stringValue = "未保存"; updateControls() }
     private func refreshMenus() {
         tools.removeAllItems(); tools.addItem(withTitle: "工具权限")
         for key in AgentProfiles.toolNames.sorted() {
@@ -248,12 +262,19 @@ import UniformTypeIdentifiers
     @objc private func saveProfile() {
         do {
             _ = try sourceTask()
-            capture()
+            if let value = editedValue(), let index = values.firstIndex(where: { $0.id == value.id }) { values[index] = value }
             let savedID = selectedID
             if let value = values.first(where: { $0.id == selectedID }), value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
             else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
             dirty = false; reload(); state.stringValue = "已保存"
-            if let savedID { do { try onSaved?(savedID) } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription } }
+            if let savedID {
+                do {
+                    if let origin = draftOrigin, origin.profileID == savedID {
+                        try AgentProfileDrafts.markSaved(origin.id, taskID: origin.taskID, profileID: savedID, store: store); draftOrigin = nil
+                    }
+                    try onSaved?(savedID)
+                } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription }
+            }
         } catch { state.showSaveFailure(error) }
     }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let context = try sourceTask(); let id = try store.agents.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }
@@ -267,6 +288,68 @@ import UniformTypeIdentifiers
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if dirty { guard AgentUnsavedChanges.discard("放弃未保存的 Agent 更改？") else { return false } }
         return true
+    }
+    private struct DraftOrigin: Codable { var id: String, taskID: String, profileID: String }
+    private struct Recovery: Codable {
+        var version = 1
+        var taskID: String?, workspace: String?
+        var value: AgentProfile?, staged: [AgentProfile], origin: DraftOrigin?
+        var openedHash: String?, pluginHash: String?
+        var showsDetail: Bool, dirty: Bool, status: String
+        var viewport: AgentSettingsDraftViewport.State
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        let value = editedValue()
+        return try AgentSettingsRecovery.page("agents", Recovery(taskID: taskID, workspace: workspace, value: value,
+            staged: dirty ? values.filter { !storedIDs.contains($0.id) && $0.pluginSource == nil } : [], origin: draftOrigin?.profileID == value?.id ? draftOrigin : nil,
+            openedHash: openedHash, pluginHash: openedPluginModelHash, showsDetail: detailPage?.settingsHostWindow != nil,
+            dirty: dirty, status: state.stringValue, viewport: try draftViewport.capture()))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "agents" else { throw PetError("设置草稿不属于智能体") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "taskID", "workspace", "value", "staged", "origin", "openedHash", "pluginHash", "showsDetail", "dirty", "status", "viewport"])
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        let draft = try JSONDecoder().decode(Recovery.self, from: page.state)
+        let reopen = draft.showsDetail || draft.dirty
+        guard draft.version == 1, draft.taskID == taskID, draft.workspace == workspace,
+              !reopen || draft.value != nil, draft.staged.count <= 64, Set(draft.staged.map(\.id)).count == draft.staged.count,
+              draft.staged.allSatisfy({ $0.pluginSource == nil }), AgentSettingsRecovery.validHash(draft.openedHash),
+              AgentSettingsRecovery.validHash(draft.pluginHash) else { throw PetError("智能体草稿范围或版本已变化") }
+        _ = try sourceTask()
+        if let origin = draft.origin {
+            guard origin.profileID == draft.value?.id,
+                  try AgentWorkspaceScope.settingsSourceTask(origin.taskID, workspace: workspace, store: store) != nil,
+                  try AgentProfileDrafts.load(origin.id, taskID: origin.taskID, store: store).profile.id == origin.profileID else { throw PetError("原任务的智能体草稿已变化") }
+        }
+        let currentHash = try store.agents.document().1, pluginHash = try store.agents.pluginModelVersion()
+        let current = try store.agents.list(workspace: workspace)
+        let stored = current.first { $0.id == draft.value?.id }
+        let stale = draft.value?.pluginSource != nil ? pluginHash != draft.pluginHash || stored?.pluginSource != draft.value?.pluginSource : currentHash != draft.openedHash
+        if reopen {
+            let value = draft.value
+            try draftViewport.validate(draft.viewport, text: value?.instructions ?? "", fields: ["name": value?.name ?? "", "purpose": value?.description ?? "", "model": value?.model ?? ""])
+        }
+        values = current; storedIDs = Set(current.map(\.id)); openedHash = currentHash; openedPluginModelHash = pluginHash
+        if reopen {
+            for value in draft.staged where !storedIDs.contains(value.id) { values.append(value) }
+            if let value = draft.value {
+                if let index = values.firstIndex(where: { $0.id == value.id }) { values[index] = value }
+                else { values.append(value) }
+            }
+            openedHash = draft.openedHash; openedPluginModelHash = draft.pluginHash
+        }
+        loading = true; table.reloadData(); loading = false; open(draft.value?.id)
+        dirty = reopen && (draft.dirty || stale); draftOrigin = draft.origin; updateControls()
+        if reopen {
+            var viewport = draft.viewport
+            if viewport.focus == "catalog" { viewport.focus = draft.value?.pluginSource == nil ? "body" : "model" }
+            try draftViewport.restore(viewport)
+            state.stringValue = stale ? "原智能体配置已变化，草稿已保留" : draft.status
+            if settingsHostWindow != nil { showDetail() } else { requestedDetail = true }
+        } else if let y = draft.viewport.catalogY {
+            var viewport = try draftViewport.capture(); viewport.catalogY = y; viewport.focus = "catalog"
+            try draftViewport.restore(viewport)
+        }
     }
     func checkScopeLayout(_ output: URL) async -> [String: Bool] {
         var checks: [String: Bool] = [:]

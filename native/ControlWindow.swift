@@ -2907,10 +2907,7 @@ final class FormDocumentView: NSView {
         }
         try manager.configureDraft(draft)
         if try store.agents.decode(store.agents.document().0).contains(where: { $0.id == draft.profile.id }) { try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: draft.profile.id, store: store) }
-        manager.onSaved = { [weak self, weak store] profileID in
-            guard let store, profileID == draft.profile.id else { return }
-            try AgentProfileDrafts.markSaved(id, taskID: taskID, profileID: profileID, store: store); self?.renderAgentMessages()
-        }
+        manager.onSaved = { [weak self] _ in self?.renderAgentMessages() }
         profileWindow = manager
         window?.makeKeyAndOrderFront(nil)
     }

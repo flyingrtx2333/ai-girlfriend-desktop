@@ -28,6 +28,25 @@ private extension AgentHookEvent {
     }
 }
 
+private struct AgentHookEditTarget: Codable, Equatable {
+    struct Import: Codable, Equatable { var path: String, hash: String }
+    enum Source: Codable, Equatable {
+        case local(project: Bool, path: String, imported: Import?)
+        case plugin(reference: AgentPluginHookReference, originalHash: String)
+    }
+    var source: Source
+    var expectedHash: String?
+    var valid: Bool {
+        guard AgentSettingsRecovery.validHash(expectedHash) else { return false }
+        switch source {
+        case .local(_, let path, let imported):
+            return path.hasPrefix("/") && imported.map { $0.path.hasPrefix("/") && AgentSettingsRecovery.validHash($0.hash) } != false
+        case .plugin(let reference, let originalHash):
+            return !reference.name.isEmpty && !reference.key.isEmpty && !reference.installationID.isEmpty && AgentSettingsRecovery.validHash(originalHash)
+        }
+    }
+}
+
 @MainActor final class AgentHookWindow: AgentSettingsPageController {
     private let service: AgentHooks
     private let workspace: String?
@@ -43,6 +62,8 @@ private extension AgentHookEvent {
     private var expanded: Set<AgentHookEvent> = []
     private var configWindow: AgentHookConfigWindow?
     private var reviewPage: AgentSettingsReviewPage?
+    private weak var eventScroll: NSScrollView?
+    private var pendingScroll: Double?
     init(service: AgentHooks, workspace: String?) {
         self.service = service; self.workspace = workspace
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -50,6 +71,7 @@ private extension AgentHookEvent {
         super.init(window: window)
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("Hooks 配置范围")
+        scope.target = self; scope.action = #selector(recoveryChanged(_:))
         let edit = AgentDialogButton(title: "编辑配置", target: self, action: #selector(editConfig)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importConfig)), refresh = AgentDialogButton(title: "刷新", target: self, action: #selector(refreshList))
         for button in [edit, importButton, refresh] { AgentDialogStyle.action(button) }
         edit.setAccessibilityLabel("编辑当前范围的 Hooks 配置")
@@ -58,6 +80,8 @@ private extension AgentHookEvent {
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText; count.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let scroll = NSScrollView(), document = FormDocumentView(); scroll.documentView = document; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         scroll.identifier = NSUserInterfaceItemIdentifier("hook-event-groups"); scroll.setAccessibilityLabel("Hooks 事件分组")
+        eventScroll = scroll; scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(recoveryChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         document.translatesAutoresizingMaskIntoConstraints = false
         card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         groups.orientation = .vertical; groups.alignment = .leading; groups.spacing = 0
@@ -92,6 +116,8 @@ private extension AgentHookEvent {
     }
     var scopeWorkspace: String? { workspace }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func recoveryChanged(_ sender: Any?) { onSettingsRecoveryChange?() }
     private func disclosure(title: String, subtitle: String, symbol: String, badge: String = "", open: Bool, action: Selector, tag: Int) -> NSButton {
         let button = AgentWorkbenchButton(title: "", target: self, action: action); button.tag = tag; button.isBordered = false
         button.setAccessibilityLabel(title + (badge.isEmpty ? "" : "，\(badge) 个处理器") + "，" + subtitle); button.setAccessibilityValue(open ? "已展开" : "已收起")
@@ -142,12 +168,12 @@ private extension AgentHookEvent {
     @objc private func toggleEvent(_ sender: NSButton) {
         let event = AgentHookEvent.allCases[sender.tag]
         if expanded.contains(event) { expanded.remove(event) } else { expanded.insert(event) }
-        renderGroups(); presentingWindow?.makeFirstResponder(disclosureButton("hook-event-" + event.rawValue))
+        renderGroups(); presentingWindow?.makeFirstResponder(disclosureButton("hook-event-" + event.rawValue)); recoveryChanged(nil)
     }
     @objc private func selectHandler(_ sender: NSButton) {
         guard items.indices.contains(sender.tag) else { return }
         selected = selected?.id == items[sender.tag].id ? nil : items[sender.tag]
-        showSelection(); renderGroups(); presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + items[sender.tag].id))
+        showSelection(); renderGroups(); presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + items[sender.tag].id)); recoveryChanged(nil)
     }
     private func disclosureButton(_ identifier: String) -> NSButton? {
         func find(_ view: NSView) -> NSButton? {
@@ -175,7 +201,7 @@ private extension AgentHookEvent {
         do {
             let previous = id ?? selected?.id; items = try service.catalog(workspace: workspace)
             selected = items.first { $0.id == previous }
-            expanded = expanded.intersection(Set(items.map(\.event))); if let selected { expanded.insert(selected.event) }
+            expanded = expanded.intersection(Set(items.map(\.event))); if id != nil, let selected { expanded.insert(selected.event) }
             count.stringValue = "已配置的 Hooks  \(items.count)"
             state.stringValue = service.warnings.joined(separator: "\n"); state.toolTip = state.stringValue
             showSelection(); renderGroups()
@@ -226,6 +252,14 @@ private extension AgentHookEvent {
     override func settingsDidAppear() {
         super.settingsDidAppear(); reload()
         if let selected { presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + selected.id)) }
+        pageDidLayout()
+    }
+    override func pageDidLayout() {
+        guard let y = pendingScroll, let scroll = eventScroll, scroll.window?.isVisible == true, !scroll.isHiddenOrHasHiddenAncestor else { return }
+        pendingScroll = nil
+        let clip = scroll.contentView
+        let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: 0, y: y), size: clip.bounds.size))
+        clip.scroll(to: bounds.origin); scroll.reflectScrolledClipView(clip)
     }
     @objc private func revealSource() { if let selected { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: selected.source)]) } }
     @objc private func clearCredentials() {
@@ -277,24 +311,56 @@ private extension AgentHookEvent {
         if let window = configWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         do {
             let document = try service.pluginDocument(reference)
-            let editor = AgentHookConfigWindow(text: document.text, title: "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)) { [weak self] text in
-                guard let self else { return }
-                try service.savePluginDocument(text, reference: reference, original: document.original, expectedHash: document.hash); reload()
-            }; configWindow = editor; presentSettingsChild(editor)
+            let target = AgentHookEditTarget(source: .plugin(reference: reference, originalHash: AgentFiles.hash(document.original)), expectedHash: document.hash)
+            let editor = try makeEditor(target: target, text: document.text, original: document.original)
+            presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
     }
-    private func openConfig(imported: String?) {
+    private func openConfig(imported: (source: AgentHookEditTarget.Import, data: Data)?) {
         if let window = configWindow?.window, window.isVisible { window.makeKeyAndOrderFront(nil); return }
         do {
             let project = scope.indexOfSelectedItem == 1, document = try service.document(project: project, workspace: workspace)
-            let importedData = imported.map { Data($0.utf8) }
-            let masked = try importedData.map { String(decoding: try service.credentials.mask($0), as: UTF8.self) }
-            let editor = AgentHookConfigWindow(text: masked ?? document.0, title: project ? "项目 Hooks" : "全局 Hooks") { [weak self] text in
-                guard let self else { return }
-                let data = try importedData.map { try self.service.credentials.restoreImported(Data(text.utf8), original: $0, file: self.service.file(project: project, workspace: self.workspace)) } ?? Data(text.utf8)
-                try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: document.1); reload()
-            }; configWindow = editor; presentSettingsChild(editor)
+            let path = try service.file(project: project, workspace: workspace).path
+            let target = AgentHookEditTarget(source: .local(project: project, path: path, imported: imported?.source), expectedHash: document.1)
+            let masked = try imported.map { String(decoding: try service.credentials.mask($0.data), as: UTF8.self) }
+            let editor = try makeEditor(target: target, text: masked ?? document.0, original: imported?.data)
+            presentSettingsChild(editor)
         } catch { state.stringValue = error.localizedDescription }
+    }
+    private static func readImport(_ path: String, expectedHash: String? = nil) throws -> (AgentHookEditTarget.Import, Data) {
+        let url = URL(fileURLWithPath: path), files = try AgentFiles(workspace: url.deletingLastPathComponent().path)
+        let data = try files.readData(files.resolve(url.lastPathComponent), maximum: 128_000), hash = AgentFiles.hash(data)
+        if let expectedHash, expectedHash != hash { throw PetError("Hooks 导入原件已变化，请重新导入") }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let hooks = object["hooks"] as? [String: Any] else { throw PetError("文件中没有 hooks 对象") }
+        return (.init(path: url.path, hash: hash), try JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]))
+    }
+    private func makeEditor(target: AgentHookEditTarget, text: String, original: Data? = nil) throws -> AgentHookConfigWindow {
+        let title: String
+        switch target.source {
+        case .local(let project, _, _): title = project ? "项目 Hooks" : "全局 Hooks"
+        case .plugin(let reference, _): title = "插件 Hooks · " + (try AgentPlugins.scope(reference.name).name)
+        }
+        let editor = AgentHookConfigWindow(text: text, title: title, target: target) { [weak self] text in
+            guard let self else { throw PetError("Hooks 页面已关闭") }
+            switch target.source {
+            case .local(let project, let path, let imported):
+                let file = try service.file(project: project, workspace: workspace)
+                guard file.path == path else { throw PetError("Hooks 配置路径已变化，请重新打开") }
+                var data = Data(text.utf8)
+                if let imported {
+                    let bytes = try original ?? Self.readImport(imported.path, expectedHash: imported.hash).1
+                    data = try service.credentials.restoreImported(data, original: bytes, file: file)
+                }
+                try service.save(String(decoding: data, as: UTF8.self), project: project, workspace: workspace, expectedHash: target.expectedHash)
+            case .plugin(let reference, let originalHash):
+                let current = try service.pluginDocument(reference)
+                guard current.hash == target.expectedHash, AgentFiles.hash(current.original) == originalHash else { throw PetError("插件 Hook 已变化，请重新打开") }
+                try service.savePluginDocument(text, reference: reference, original: current.original, expectedHash: target.expectedHash)
+            }
+            reload()
+        }
+        configWindow = editor
+        return editor
     }
     @objc private func importConfig() {
         guard let window = presentingWindow else { return }
@@ -302,27 +368,57 @@ private extension AgentHookEvent {
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, let url = panel.url else { return }
             do {
-                let files = try AgentFiles(workspace: url.deletingLastPathComponent().path), data = try files.readData(files.resolve(url.lastPathComponent), maximum: 128_000)
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], let hooks = object["hooks"] as? [String: Any] else { throw PetError("文件中没有 hooks 对象") }
-                openConfig(imported: String(decoding: try JSONSerialization.data(withJSONObject: ["hooks": hooks], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]), as: UTF8.self))
+                openConfig(imported: try Self.readImport(url.path))
             } catch { state.stringValue = error.localizedDescription }
         }
     }
+    private struct Recovery: Codable {
+        var version = 1
+        var workspace: String?, selectedID: String?
+        var project: Bool, expanded: [AgentHookEvent], scrollY: Double
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        try AgentSettingsRecovery.page("hooks", Recovery(workspace: workspace, selectedID: selected?.id, project: scope.indexOfSelectedItem == 1,
+            expanded: expanded.sorted { $0.rawValue < $1.rawValue }, scrollY: pendingScroll ?? max(0, eventScroll?.contentView.bounds.minY ?? 0)))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "hooks" else { throw PetError("设置草稿不属于 Hooks") }
+        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "workspace", "selectedID", "project", "expanded", "scrollY"])
+        let draft = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard draft.version == 1, draft.workspace == workspace, !draft.project || workspace != nil,
+              AgentSettingsRecovery.validScroll(draft.scrollY), Set(draft.expanded).count == draft.expanded.count else { throw PetError("Hooks 草稿范围或分组无效") }
+        scope.selectItem(at: draft.project ? 1 : 0); selected = nil; reload(select: draft.selectedID)
+        expanded = Set(draft.expanded).intersection(Set(items.map(\.event))); renderGroups(); pendingScroll = draft.scrollY
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "hook-config" else { return nil }
+        let draft = try AgentHookConfigWindow.decodeRecovery(page)
+        if case .local(let project, let path, _) = draft.target.source {
+            guard try service.file(project: project, workspace: workspace).path == path else { throw PetError("原 Hooks 配置路径已变化，草稿已保留") }
+        }
+        return try makeEditor(target: draft.target, text: draft.text)
+    }
 }
 
-@MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate {
+@MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
     private let editor = NSTextView(), state = AgentSettingsStatusField("Hooks 配置保存状态")
     private let save: (String) throws -> Void
-    private let original: String
+    private let target: AgentHookEditTarget
+    private var originalHash: String
     private var saved = false
+    private lazy var viewport: AgentSettingsDraftViewport = {
+        let viewport = AgentSettingsDraftViewport(text: editor, fields: [:], catalog: editor, host: { [weak self] in self?.presentingWindow })
+        viewport.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }
+        return viewport
+    }()
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
-    init(text: String, title: String, save: @escaping (String) throws -> Void) {
-        self.save = save; original = text
+    init(text: String, title: String, target: AgentHookEditTarget, save: @escaping (String) throws -> Void) {
+        self.save = save; self.target = target; originalHash = AgentFiles.hash(Data(text.utf8))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 560, height: 350); window.center(); window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
-        editor.string = text; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 16, height: 16)
+        editor.string = text; editor.delegate = self; editor.isRichText = false; editor.allowsUndo = true; editor.font = .monospacedSystemFont(ofSize: 12, weight: .regular); editor.textContainerInset = NSSize(width: 16, height: 16)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticTextReplacementEnabled = false; editor.setAccessibilityLabel("Hooks JSON 配置")
         let scroll = NSScrollView(); scroll.documentView = editor; scroll.hasVerticalScroller = true; scroll.identifier = .init("form-input"); scroll.scrollerStyle = .overlay
         let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); card.identifier = .init("settings-card-hook-editor"); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
@@ -337,10 +433,38 @@ private extension AgentHookEvent {
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 8), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12), actions.heightAnchor.constraint(equalToConstant: 28)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(editor) }
+    override func settingsDidAppear() { super.settingsDidAppear(); viewport.appear(default: editor) }
+    override func pageDidLayout() { viewport.schedule() }
+    func textDidChange(_ notification: Notification) { viewport.changed() }
     @objc private func saveConfig() { do { try save(editor.string); saved = true; close() } catch { state.showSaveFailure(error) } }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard !saved, editor.string != original else { return true }
+        guard !saved, AgentFiles.hash(Data(editor.string.utf8)) != originalHash else { return true }
         return AgentUnsavedChanges.discard("放弃未保存的更改？", discardTitle: "放弃")
+    }
+    struct Recovery: Codable {
+        var version = 1
+        var target: AgentHookEditTarget, text: String, originalHash: String
+        var viewport: AgentSettingsDraftViewport.State
+    }
+    static func decodeRecovery(_ page: AgentSettingsRecovery.Page) throws -> Recovery {
+        guard page.kind == "hook-config" else { throw PetError("设置草稿不属于 Hooks 配置") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "text", "originalHash", "viewport"])
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        let draft = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard draft.version == 1, draft.target.valid, AgentSettingsRecovery.validHash(draft.originalHash),
+              draft.viewport.focus == "body", AgentHookCredentials.canPreserveDraft(draft.text) else { throw PetError("Hooks 草稿版本、范围或凭据状态无效") }
+        return draft
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard AgentHookCredentials.canPreserveDraft(editor.string) else { return nil }
+        return try AgentSettingsRecovery.page("hook-config", Recovery(target: target, text: editor.string, originalHash: originalHash, viewport: try viewport.capture()))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        let draft = try Self.decodeRecovery(page)
+        guard draft.target == target else { throw PetError("Hooks 草稿配置范围已变化") }
+        try viewport.validate(draft.viewport, text: draft.text, fields: [:])
+        editor.string = draft.text; originalHash = draft.originalHash
+        try viewport.restore(draft.viewport)
+        if AgentFiles.hash(Data(draft.text.utf8)) != originalHash { state.stringValue = "未保存" }
     }
 }
