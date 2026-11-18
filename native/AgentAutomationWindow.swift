@@ -346,7 +346,11 @@ import AppKit
         for key in ["original", "form"] { if let entry = raw[key], !(entry is NSNull) { try Self.validateRecoveryDefinition(entry) } }
         if let origin = raw["proposal"], !(origin is NSNull) { _ = try AgentSettingsRecovery.object(origin, keys: ["id", "requestHash"]) }
         if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
-        let snapshot = try JSONDecoder().decode(Recovery.self, from: value.state), form = snapshot.form
+        var snapshot = try JSONDecoder().decode(Recovery.self, from: value.state)
+        let form = snapshot.form
+        if form.schedule.frequency != .cron, snapshot.viewport.fields["cron"] == nil {
+            snapshot.viewport.fields["cron"] = .init(hash: AgentFiles.hash(Data()), count: 0, selection: nil)
+        }
         guard snapshot.version == 1, UUID(uuidString: form.id) != nil, !form.archived,
               snapshot.original.map({ $0.id == form.id && !$0.archived }) != false,
               (form.workspace.isEmpty || form.workspace.hasPrefix("/")), !form.workspace.contains("\0"),
