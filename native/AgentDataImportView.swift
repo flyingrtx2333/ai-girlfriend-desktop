@@ -31,7 +31,7 @@ import UniformTypeIdentifiers
         inspect.setAccessibilityIdentifier("import-category-" + category.rawValue)
         [choice, title, NSView(), status, inspect].forEach(addArrangedSubview)
         spacing = 10; alignment = .centerY
-        heightAnchor.constraint(equalToConstant: 36).isActive = true
+        heightAnchor.constraint(equalToConstant: 32).isActive = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -116,7 +116,7 @@ import UniformTypeIdentifiers
         let column = NSStackView()
         for view in [overview, editor, actions] { append(view, to: column) }
         for stack in [overview, editor, column] { stack.orientation = .vertical; stack.alignment = .leading }
-        overview.spacing = 3; overview.setCustomSpacing(10, after: sourcesBar)
+        overview.spacing = 2; overview.setCustomSpacing(10, after: sourcesBar)
         editor.spacing = 10; column.spacing = 12
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         let height = list.heightAnchor.constraint(equalToConstant: 236); listHeight = height
