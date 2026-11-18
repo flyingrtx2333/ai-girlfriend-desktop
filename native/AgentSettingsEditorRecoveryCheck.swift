@@ -132,63 +132,65 @@ import AppKit
                       let newRule = taskControls.first(where: { $0.workspaceSession?.id == fixture.windows["newRule"] }),
                       let rules = taskControls.first(where: { $0.workspaceSession?.id == fixture.windows["rule"] }),
                       let skills = taskControls.first(where: { $0.workspaceSession?.id == fixture.windows["skill"] }) else { throw PetError("原五个设置窗口未完整恢复") }
-                creation.window?.makeKeyAndOrderFront(nil); creation.settingsRecoveryControllers.last?.settingsDidAppear(); await wait(0.08)
-                let name = try input(NSTextField.self, "扩展名称", creation), popup = try input(NSPopUpButton.self, "扩展范围", creation)
-                checks["noWorkspaceCreationNameAndScopeRestoreExactly"] = name.stringValue == "PUBLIC_INVALID_NAME/😀" && popup.indexOfSelectedItem == 0 && popup.item(at: 1)?.isEnabled == false
-                checks["noWorkspaceCreationRestoresUTF16SelectionAndFocus"] = (name.currentEditor() as? NSTextView)?.selectedRange() == (name.stringValue as NSString).range(of: "INVALID") && creation.window?.firstResponder === name.currentEditor()
-                let commandBody = try input(NSTextView.self, "扩展说明", commands)
-                checks["generalTaskRestoresWholeInvalidCommandDraft"] = commandBody.string == invalidCommand && commandBody.selectedRange() == (invalidCommand as NSString).range(of: "MARKER") && commands.window?.firstResponder === commandBody
-                let newRuleBody = try input(NSTextView.self, "规则正文", newRule)
-                checks["newUserRuleRetainsInvalidFieldsAndWholeBody"] = try input(NSTextField.self, "规则名称", newRule).stringValue == "" && input(NSPopUpButton.self, "规则触发方式", newRule).indexOfSelectedItem == 2 && newRuleBody.string == "PUBLIC_NEW_RULE_DRAFT_648\n" + long
-                if stage == "unavailable" {
-                    checks["changedSourceScopeDoesNotRedirectEitherProjectEditor"] = rules.settingsRecoveryControllers.isEmpty && skills.settingsRecoveryControllers.isEmpty
-                } else {
-                    let ruleBody = try input(NSTextView.self, "规则正文", rules), skillBody = try input(NSTextView.self, "扩展说明", skills)
-                    checks["projectRuleRestoresBlankNameGlobAndCompleteDraft"] = try input(NSTextField.self, "规则名称", rules).stringValue == "" && input(NSTextField.self, "规则匹配模式", rules).stringValue == "src/**/*.swift\n!vendor/**\n[" && ruleBody.string == long
-                    checks["projectSkillRestoresWholeInvalidDraft"] = skillBody.string == invalidSkill
-                    checks["separateProjectWindowsRestoreOwnSelectionsAndFocus"] = [ruleBody, skillBody].allSatisfy { $0.selectedRange() == ($0.string as NSString).range(of: "MARKER") && $0.window?.firstResponder === $0 }
-                    checks["projectSourceRemainsOriginalSecondaryFolder"] = try rules.captureSettingsRecovery()?.context.workspace == fixture.alpha && skills.captureSettingsRecovery()?.context.workspace == fixture.beta
-                    if !interactive {
-                        let original = try rules.settingsRecoveryControllers.compactMap { $0 as? AgentRuleWindow }.first!.captureSettingsRecovery()!
-                        func rejected(_ label: String, change: (inout [String: Any]) -> Void) throws {
-                            var object = try JSONSerialization.jsonObject(with: original.state) as! [String: Any]; change(&object)
-                            do { try rules.settingsRecoveryControllers.compactMap { $0 as? AgentRuleWindow }.first!.restoreSettingsRecovery(.init(kind: "rules", state: JSONSerialization.data(withJSONObject: object))); checks[label] = false } catch { checks[label] = true }
+                if stage != "observe" {
+                    creation.window?.makeKeyAndOrderFront(nil); creation.settingsRecoveryControllers.last?.settingsDidAppear(); await wait(0.08)
+                    let name = try input(NSTextField.self, "扩展名称", creation), popup = try input(NSPopUpButton.self, "扩展范围", creation)
+                    checks["noWorkspaceCreationNameAndScopeRestoreExactly"] = name.stringValue == "PUBLIC_INVALID_NAME/😀" && popup.indexOfSelectedItem == 0 && popup.item(at: 1)?.isEnabled == false
+                    checks["noWorkspaceCreationRestoresUTF16SelectionAndFocus"] = (name.currentEditor() as? NSTextView)?.selectedRange() == (name.stringValue as NSString).range(of: "INVALID") && creation.window?.firstResponder === name.currentEditor()
+                    let commandBody = try input(NSTextView.self, "扩展说明", commands)
+                    checks["generalTaskRestoresWholeInvalidCommandDraft"] = commandBody.string == invalidCommand && commandBody.selectedRange() == (invalidCommand as NSString).range(of: "MARKER") && commands.window?.firstResponder === commandBody
+                    let newRuleBody = try input(NSTextView.self, "规则正文", newRule)
+                    checks["newUserRuleRetainsInvalidFieldsAndWholeBody"] = try input(NSTextField.self, "规则名称", newRule).stringValue == "" && input(NSPopUpButton.self, "规则触发方式", newRule).indexOfSelectedItem == 2 && newRuleBody.string == "PUBLIC_NEW_RULE_DRAFT_648\n" + long
+                    if stage == "unavailable" {
+                        checks["changedSourceScopeDoesNotRedirectEitherProjectEditor"] = rules.settingsRecoveryControllers.isEmpty && skills.settingsRecoveryControllers.isEmpty
+                    } else {
+                        let ruleBody = try input(NSTextView.self, "规则正文", rules), skillBody = try input(NSTextView.self, "扩展说明", skills)
+                        checks["projectRuleRestoresBlankNameGlobAndCompleteDraft"] = try input(NSTextField.self, "规则名称", rules).stringValue == "" && input(NSTextField.self, "规则匹配模式", rules).stringValue == "src/**/*.swift\n!vendor/**\n[" && ruleBody.string == long
+                        checks["projectSkillRestoresWholeInvalidDraft"] = skillBody.string == invalidSkill
+                        checks["separateProjectWindowsRestoreOwnSelectionsAndFocus"] = [ruleBody, skillBody].allSatisfy { $0.selectedRange() == ($0.string as NSString).range(of: "MARKER") && $0.window?.firstResponder === $0 }
+                        checks["projectSourceRemainsOriginalSecondaryFolder"] = try rules.captureSettingsRecovery()?.context.workspace == fixture.alpha && skills.captureSettingsRecovery()?.context.workspace == fixture.beta
+                        if !interactive {
+                            let original = try rules.settingsRecoveryControllers.compactMap { $0 as? AgentRuleWindow }.first!.captureSettingsRecovery()!
+                            func rejected(_ label: String, change: (inout [String: Any]) -> Void) throws {
+                                var object = try JSONSerialization.jsonObject(with: original.state) as! [String: Any]; change(&object)
+                                do { try rules.settingsRecoveryControllers.compactMap { $0 as? AgentRuleWindow }.first!.restoreSettingsRecovery(.init(kind: "rules", state: JSONSerialization.data(withJSONObject: object))); checks[label] = false } catch { checks[label] = true }
+                            }
+                            try rejected("futureRuleDraftVersionRejected") { $0["version"] = 2 }
+                            try rejected("unknownRuleDraftFieldRejected") { $0["future"] = true }
+                            try rejected("wrongTaskRuleDraftRejected") { $0["taskID"] = UUID().uuidString }
+                            try rejected("wrongSourceRuleDraftRejected") { $0["workspace"] = fixture.beta }
+                            try rejected("wrongTextViewportHashRejected") { value in var view = value["viewport"] as! [String: Any], text = view["text"] as! [String: Any]; text["hash"] = String(repeating: "0", count: 64); view["text"] = text; value["viewport"] = view }
+                            checks["rejectedDraftsLeaveCurrentRuleTextAndSelection"] = ruleBody.string == long && ruleBody.selectedRange() == (long as NSString).range(of: "MARKER")
+                            let sourceRule = try tasks.rules.current(fixture.rule, task: AgentWorkspaceScope.settingsTask(tasks.task(fixture.multi)!, workspace: fixture.alpha), enabledOnly: false)
+                            let sourceSkill = try tasks.extensions.item(fixture.skill, workspace: fixture.beta, enabled: false)
+                            let oldRule = try Data(contentsOf: sourceRule.source), oldSkill = try Data(contentsOf: sourceSkill.file)
+                            try click("保存", rules); checks["invalidRuleSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceRule.source) == oldRule && ruleBody.string == long
+                            try click("保存", skills); checks["invalidSkillSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == invalidSkill
+                            let savedSkill = "---\nname: public-beta-skill\ndescription: saved public recovery\n---\n\nPUBLIC_SAVED_SKILL_784 中文😀\n"
+                            try body(skills, savedSkill, marker: "PUBLIC_SAVED")
+                            let attributes = try FileManager.default.attributesOfItem(atPath: sourceSkill.file.path), permissions = attributes[.posixPermissions]!
+                            try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: sourceSkill.file.path)
+                            try click("保存", skills); checks["readOnlySkillSavePreservesPreviousBytesAndNewInput"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == savedSkill
+                            try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: sourceSkill.file.path); try click("保存", skills)
+                            checks["sameSkillDraftSavesAfterPermissionRestores"] = try String(contentsOf: sourceSkill.file, encoding: .utf8) == savedSkill
+                            let external = "---\nname: public-alpha-rule\ntrigger: manual\n---\n\nPUBLIC_EXTERNAL_RULE_UPDATE_814\n"
+                            try Data(external.utf8).write(to: sourceRule.source)
+                            try field("规则名称", "public-alpha-rule", rules); try choosePopup("规则触发方式", 1, rules); try field("规则匹配模式", "", rules); try click("保存", rules)
+                            checks["staleRuleSaveDoesNotOverwriteExternalRevision"] = try String(contentsOf: sourceRule.source, encoding: .utf8) == external && ruleBody.string == long
+                            guard let form = creation.settingsRecoveryControllers.last as? AgentExtensionCreationPage else { throw PetError("原新建表单未恢复") }
+                            form.submit(); checks["invalidCreationDoesNotWriteAnySkill"] = try tasks.extensions.catalog(workspace: nil).allSatisfy { $0.name != "PUBLIC_INVALID_NAME/😀" }
+                            try field("扩展名称", "public-created-skill", creation); form.submit()
+                            checks["noWorkspaceCreationSavesOnlyIntoOriginalUserScope"] = try tasks.extensions.catalog(workspace: nil).contains { $0.name == "public-created-skill" && $0.scope == "全局" } && !tasks.extensions.catalog(workspace: fixture.beta).contains { $0.name == "public-created-skill" && $0.scope != "全局" }
+                            try field("规则名称", "public-created-rule", newRule); try choosePopup("规则触发方式", 1, newRule); try body(newRule, "PUBLIC_CREATED_USER_RULE_747\n", marker: "PUBLIC_CREATED"); try click("保存", newRule)
+                            checks["newRuleSavesOnlyIntoOriginalUserScope"] = try tasks.rules.catalog(workspace: nil, directories: []).contains { $0.name == "public-created-rule" && !$0.project }
+                            guard await flushWorkspaceWindows(), let windowID = commands.workspaceSession?.id else { throw PetError("命令窗口未保存") }
+                            let layout = store.directory.appendingPathComponent("workspace-recovery/" + windowID + "/layout.json"), previous = try Data(contentsOf: layout)
+                            try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: layout.path); try body(commands, invalidCommand + "LAST_EDIT_PUBLIC_842\n")
+                            checks["readOnlyJournalRejectsCheckpointWithoutDroppingLastEdit"] = !(await commands.flushWorkspaceRecovery()) && commandBody.string.hasSuffix("LAST_EDIT_PUBLIC_842\n")
+                            checks["failedJournalLeavesPreviousRecordBytesExact"] = try Data(contentsOf: layout) == previous
+                            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: layout.path)
+                            checks["lastEditRetriesAfterJournalPermissionRestores"] = await commands.flushWorkspaceRecovery()
                         }
-                        try rejected("futureRuleDraftVersionRejected") { $0["version"] = 2 }
-                        try rejected("unknownRuleDraftFieldRejected") { $0["future"] = true }
-                        try rejected("wrongTaskRuleDraftRejected") { $0["taskID"] = UUID().uuidString }
-                        try rejected("wrongSourceRuleDraftRejected") { $0["workspace"] = fixture.beta }
-                        try rejected("wrongTextViewportHashRejected") { value in var view = value["viewport"] as! [String: Any], text = view["text"] as! [String: Any]; text["hash"] = String(repeating: "0", count: 64); view["text"] = text; value["viewport"] = view }
-                        checks["rejectedDraftsLeaveCurrentRuleTextAndSelection"] = ruleBody.string == long && ruleBody.selectedRange() == (long as NSString).range(of: "MARKER")
-                        let sourceRule = try tasks.rules.current(fixture.rule, task: AgentWorkspaceScope.settingsTask(tasks.task(fixture.multi)!, workspace: fixture.alpha), enabledOnly: false)
-                        let sourceSkill = try tasks.extensions.item(fixture.skill, workspace: fixture.beta, enabled: false)
-                        let oldRule = try Data(contentsOf: sourceRule.source), oldSkill = try Data(contentsOf: sourceSkill.file)
-                        try click("保存", rules); checks["invalidRuleSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceRule.source) == oldRule && ruleBody.string == long
-                        try click("保存", skills); checks["invalidSkillSaveKeepsSourceAndDraft"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == invalidSkill
-                        let savedSkill = "---\nname: public-beta-skill\ndescription: saved public recovery\n---\n\nPUBLIC_SAVED_SKILL_784 中文😀\n"
-                        try body(skills, savedSkill, marker: "PUBLIC_SAVED")
-                        let attributes = try FileManager.default.attributesOfItem(atPath: sourceSkill.file.path), permissions = attributes[.posixPermissions]!
-                        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: sourceSkill.file.path)
-                        try click("保存", skills); checks["readOnlySkillSavePreservesPreviousBytesAndNewInput"] = try Data(contentsOf: sourceSkill.file) == oldSkill && skillBody.string == savedSkill
-                        try FileManager.default.setAttributes([.posixPermissions: permissions], ofItemAtPath: sourceSkill.file.path); try click("保存", skills)
-                        checks["sameSkillDraftSavesAfterPermissionRestores"] = try String(contentsOf: sourceSkill.file, encoding: .utf8) == savedSkill
-                        let external = "---\nname: public-alpha-rule\ntrigger: manual\n---\n\nPUBLIC_EXTERNAL_RULE_UPDATE_814\n"
-                        try Data(external.utf8).write(to: sourceRule.source)
-                        try field("规则名称", "public-alpha-rule", rules); try choosePopup("规则触发方式", 1, rules); try field("规则匹配模式", "", rules); try click("保存", rules)
-                        checks["staleRuleSaveDoesNotOverwriteExternalRevision"] = try String(contentsOf: sourceRule.source, encoding: .utf8) == external && ruleBody.string == long
-                        guard let form = creation.settingsRecoveryControllers.last as? AgentExtensionCreationPage else { throw PetError("原新建表单未恢复") }
-                        form.submit(); checks["invalidCreationDoesNotWriteAnySkill"] = try tasks.extensions.catalog(workspace: nil).allSatisfy { $0.name != "PUBLIC_INVALID_NAME/😀" }
-                        try field("扩展名称", "public-created-skill", creation); form.submit()
-                        checks["noWorkspaceCreationSavesOnlyIntoOriginalUserScope"] = try tasks.extensions.catalog(workspace: nil).contains { $0.name == "public-created-skill" && $0.scope == "全局" } && !tasks.extensions.catalog(workspace: fixture.beta).contains { $0.name == "public-created-skill" && $0.scope != "全局" }
-                        try field("规则名称", "public-created-rule", newRule); try choosePopup("规则触发方式", 1, newRule); try body(newRule, "PUBLIC_CREATED_USER_RULE_747\n", marker: "PUBLIC_CREATED"); try click("保存", newRule)
-                        checks["newRuleSavesOnlyIntoOriginalUserScope"] = try tasks.rules.catalog(workspace: nil, directories: []).contains { $0.name == "public-created-rule" && !$0.project }
-                        guard await flushWorkspaceWindows(), let windowID = commands.workspaceSession?.id else { throw PetError("命令窗口未保存") }
-                        let layout = store.directory.appendingPathComponent("workspace-recovery/" + windowID + "/layout.json"), previous = try Data(contentsOf: layout)
-                        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: layout.path); try body(commands, invalidCommand + "LAST_EDIT_PUBLIC_842\n")
-                        checks["readOnlyJournalRejectsCheckpointWithoutDroppingLastEdit"] = !(await commands.flushWorkspaceRecovery()) && commandBody.string.hasSuffix("LAST_EDIT_PUBLIC_842\n")
-                        checks["failedJournalLeavesPreviousRecordBytesExact"] = try Data(contentsOf: layout) == previous
-                        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: layout.path)
-                        checks["lastEditRetriesAfterJournalPermissionRestores"] = await commands.flushWorkspaceRecovery()
                     }
                 }
                 checks["allSourceReadmesRemainExact"] = try [fixture.alpha, fixture.beta].allSatisfy { try String(contentsOf: URL(fileURLWithPath: $0).appendingPathComponent("README.md"), encoding: .utf8) == "PUBLIC_SETTINGS_SOURCE_718\n" }
