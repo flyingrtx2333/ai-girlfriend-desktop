@@ -81,7 +81,7 @@ import Foundation
         checks["actualProjectMemoryBytesMatch"] = try Data(contentsOf: current.appendingPathComponent("public.md")) == publicText
         if let item = items.first(where: { $0.record.category == .skills }) {
             let url = try AgentSkillImport.destinationURL(item.record, store: tasks)
-            checks["actualSkillInstalledFromItsOwnDirectory"] = try Data(contentsOf: url) == skillText
+            checks["actualSkillInstalledFromItsOwnDirectory"] = try Data(contentsOf: url.appendingPathComponent("SKILL.md")) == skillText
         } else { checks["actualSkillInstalledFromItsOwnDirectory"] = false }
         await importer.detect([route, memoryRoute, skillRoute])
         checks["rescanShowsAlreadyImportedAndNewSourceRecords"] = importer.preview(for: route)?.available.count == 1 && importer.preview(for: memoryRoute)?.records.count == 3 && importer.preview(for: skillRoute)?.available.isEmpty == true

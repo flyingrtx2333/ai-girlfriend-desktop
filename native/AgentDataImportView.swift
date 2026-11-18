@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 @MainActor private final class AgentImportCategoryRow: NSStackView {
     let choice = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let status = NSTextField(labelWithString: "")
-    let inspect = AgentDialogButton(title: "查看", target: nil, action: nil)
+    let inspect = AgentWorkbenchButton(title: "", target: nil, action: nil)
 
     init(_ category: AgentImportCategory, index: Int, target: AnyObject, toggle: Selector, open: Selector) {
         super.init(frame: .zero)
@@ -19,7 +19,14 @@ import UniformTypeIdentifiers
         choice.setAccessibilityLabel("选择" + category.title)
         choice.setAccessibilityIdentifier("import-select-" + category.rawValue)
         inspect.tag = index; inspect.target = target; inspect.action = open
-        AgentDialogStyle.action(inspect)
+        inspect.isBordered = false
+        inspect.focusRingType = .exterior
+        inspect.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        inspect.imagePosition = .imageOnly
+        inspect.contentTintColor = AgentWorkbenchTheme.secondaryText
+        inspect.toolTip = "查看" + category.title
+        inspect.widthAnchor.constraint(equalToConstant: 32).isActive = true
+        inspect.heightAnchor.constraint(equalToConstant: 28).isActive = true
         inspect.setAccessibilityLabel("查看" + category.title)
         inspect.setAccessibilityIdentifier("import-category-" + category.rawValue)
         [choice, title, NSView(), status, inspect].forEach(addArrangedSubview)
@@ -102,7 +109,7 @@ import UniformTypeIdentifiers
             append(row, to: overview)
         }
         let kinds = NSStackView(views: [back, categoryTitle, NSView(), destinationControl]); kinds.spacing = 10; kinds.alignment = .centerY
-        let header = NSStackView(views: [folder, detect]); header.spacing = 8
+        let header = NSStackView(views: [folder, NSView(), detect]); header.spacing = 8; header.alignment = .centerY
         let selection = NSStackView(views: [selectAll, NSView(), open, original]); selection.spacing = 8
         let actions = NSStackView(views: [state, NSView(), begin, pause, resume, cancel]); actions.spacing = 6
         for view in [kinds, header, selection, list, preview] { append(view, to: editor) }
@@ -172,7 +179,11 @@ import UniformTypeIdentifiers
         row.choice.state = chosen == 0 ? .off : chosen == available ? .on : .mixed
         row.status.textColor = AgentWorkbenchTheme.secondaryText
         row.status.toolTip = preview?.issue
-        if preview?.issue != nil { row.status.stringValue = "检测失败"; row.status.textColor = .systemRed }
+        if preview?.issue != nil {
+            let unavailable = route.root == defaultRoot(route.category).path && !FileManager.default.fileExists(atPath: route.root)
+            row.status.stringValue = unavailable ? "来源不可用" : "检测失败"
+            if !unavailable { row.status.textColor = .systemRed }
+        }
         else if let preview {
             let skipped = preview.records.count - available
             row.status.stringValue = preview.records.isEmpty ? "无可导入内容" : "\(available) 项可导入" + (skipped > 0 ? " · 跳过 \(skipped) 项" : "")
