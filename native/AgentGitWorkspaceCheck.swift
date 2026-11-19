@@ -210,7 +210,10 @@ import AppKit
                 let sourceRect = r["sourceFrame"] as? [Double] ?? [], fileRect = r["fileFrame"] as? [Double] ?? []
                 let actions = gitReviewSubviews(content).compactMap { $0 as? AgentDialogButton }.filter { !$0.isHiddenOrHasHiddenAncestor }
                 checks[key + "-sharedPopupsAndFullFileWidth"] = source.superview is AgentSettingsPopupFrame && picker.superview is AgentSettingsPopupFrame && sourceRect.count == 4 && fileRect.count == 4 && sourceRect[3] == 28 && fileRect[3] == 28 && abs(fileRect[2] - Double(content.bounds.width - 68)) < 1 && source.font?.pointSize == 13 && picker.font?.pointSize == 13
-                checks[key + "-sharedActionsFitAt28Points"] = actions.count == 6 && actions.allSatisfy { $0.bounds.height == 28 && $0.font?.pointSize == 13 } && (r["checks"] as? [String: Bool])?["gitActionsFitWorkspace"] == true
+                checks[key + "-sharedActionsFitAt28Points"] = actions.count == 7
+                    && actions.contains { $0.accessibilityLabel() == "生成提交说明" }
+                    && actions.allSatisfy { $0.bounds.height == 28 && $0.font?.pointSize == 13 }
+                    && (r["checks"] as? [String: Bool])?["gitActionsFitWorkspace"] == true
                 let visibleLabel = fileList.view(atColumn: 0, row: fileList.selectedRow, makeIfNecessary: true) as? NSTextField
                 checks[key + "-readableDiffAndVisibleFileList"] = viewer.bounds.height >= 80 && viewer.bounds.width >= 230 && fileList.enclosingScrollView?.bounds.height ?? 0 >= 32 && viewer.patch.contains("+selected-working-preserved") && visibleLabel?.font?.pointSize == 13
                 checks[key + "-outlinedCommitInputFits"] = message.outlined && message.bounds.height == 32 && !message.hasAmbiguousLayout
