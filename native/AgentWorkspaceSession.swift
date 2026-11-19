@@ -300,6 +300,9 @@ private actor AgentWorkspaceJournal {
                     } else if let browser = controller as? AgentBrowserWindow {
                         let page = try await browser.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let attachment = controller as? AgentAttachmentWindow {
+                        let page = try attachment.captureWorkspaceRecovery()
+                        if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
                     } else if let git = controller as? AgentGitWindow, let page = try git.captureWorkspaceRecovery(persistClean: pages[tab.id] != nil), pages[tab.id] != page {
                         try await persist(page, asset: nil, pageID: tab.id)
                     }

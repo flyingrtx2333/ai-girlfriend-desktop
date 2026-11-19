@@ -232,6 +232,7 @@ final class FormDocumentView: NSView {
     private var extensionBrowserMention: AgentBrowserMention?
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
+    private var pendingAttachmentTarget: (taskID: String, attachmentID: String, target: AgentAttachmentReadingTarget)?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
     private let thinkingIndicator = AgentThinkingIndicator()
     private var monitorPanel: AgentTaskMonitorPanel?, monitorPanelTaskID: String?
@@ -906,7 +907,7 @@ final class FormDocumentView: NSView {
             window?.contentView?.layoutSubtreeIfNeeded(); window?.makeFirstResponder(composer)
         }
         taskWorkspace.onOpenRoot = { [weak self] root in
-            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
+            switch root { case .review: self?.showAgentGit(); case .records: self?.presentAgentRecords(section: 4); case .context: self?.presentTaskContext(section: 0); case .browser: self?.showAgentBrowser(); case .mcpContent: self?.showTaskMCPContent(); case .document(let path): self?.showTaskDocument(path); case .attachment(let id): if let taskID = self?.agentTaskID { self?.openAttachment(taskID: taskID, id: id) }; case .canvas(let id): if let taskID = self?.agentTaskID { self?.openCanvasReference("canvas://" + id, taskID: taskID, location: .workspace) }; case .rollback(let id): if let taskID = self?.agentTaskID { self?.presentRoundRollback(taskID: taskID, messageID: id) }; case .editResend(let id): if let taskID = self?.agentTaskID { self?.presentEditResend(taskID: taskID, messageID: id) } }
         }
         taskWorkspace.onOpenDocument = { [weak self] in self?.chooseTaskDocument() }
         taskWorkspace.onResolveCanvas = { [weak self] task, canvas in
@@ -3265,7 +3266,14 @@ final class FormDocumentView: NSView {
         draftAttachments.onOpen = { [weak self] id in self?.openAttachment(taskID: owner, id: id) }
         draftAttachments.onRemove = { [weak self] id in
             guard let self, let store = companion?.agentStore else { return }
-            do { try AgentAttachments.removeDraft(store: store, taskID: owner, id: id); renderMessages() }
+            do {
+                try AgentAttachments.removeDraft(store: store, taskID: owner, id: id)
+                if store.task(owner)?.attachments?.contains(where: { $0.id == id }) != true {
+                    taskWorkspace.removeAttachment(taskID: owner, id: id)
+                    if attachmentWindow?.taskID == owner, attachmentWindow?.attachmentID == id { attachmentWindow?.close(); attachmentWindow = nil }
+                }
+                renderMessages()
+            }
             catch { setStatus(error.localizedDescription, error: true) }
         }
         draftAttachments.update(values, removable: true, enabled: !importing)
@@ -3273,10 +3281,36 @@ final class FormDocumentView: NSView {
         attachmentButton.toolTip = importing ? "取消添加" : "添加附件"
         attachmentButton.isEnabled = !task.archived && !task.isProjectDocumentation && (attachmentImport == nil || importing)
     }
-    func openAttachment(taskID: String, id: String, part: Int = 1) {
-        guard let store = companion?.agentStore else { return }
-        do { attachmentWindow?.window?.performClose(nil); attachmentWindow = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, part: part); attachmentWindow?.showWindow(nil); attachmentWindow?.window?.makeKeyAndOrderFront(nil) }
+    func openAttachment(taskID: String, id: String) {
+        do { try presentAttachment(taskID: taskID, id: id) }
         catch { setStatus(error.localizedDescription, error: true) }
+    }
+    private func presentAttachment(taskID: String, id: String, target: AgentAttachmentReadingTarget? = nil) throws {
+        guard agentTaskID == taskID, let store = companion?.agentStore else { throw PetError("请在附件所属任务中打开") }
+        guard window?.hasBlockingDialog != true, saveAgentDraft() else { throw PetError("请先完成当前操作") }
+        if selectedTab != "chat" {
+            guard canLeaveMainPage() else { throw PetError("请先完成当前编辑") }
+            show(tab: "chat")
+        }
+        pendingAttachmentTarget = nil
+        if companion?.generalSettings.settings.artifactLocation == .window {
+            let preview = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, target: target)
+            attachmentWindow?.close(); attachmentWindow = preview
+            preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
+            return
+        }
+        let root = AgentTaskWorkspace.Root.attachment(id)
+        let existing = taskWorkspace.rootController(root) as? AgentAttachmentWindow
+        let preview = try existing ?? AgentAttachmentWindow(store: store, taskID: taskID, id: id, target: target)
+        guard taskWorkspace.show(taskID: taskID, root: root, make: { preview }) else {
+            if let target, taskWorkspace.taskID == taskID, taskWorkspace.selectedRoot == root, taskWorkspace.requested, taskWorkspace.rootController(root) == nil {
+                pendingAttachmentTarget = (taskID, id, target)
+                return
+            }
+            throw PetError("请先完成当前工作区操作")
+        }
+        if existing != nil, let target { preview.open(target) }
+        updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     func composerChanged() {
         updateSendButton(); draftSave?.cancel(); updateExtensionCandidates()
@@ -3321,6 +3355,7 @@ final class FormDocumentView: NSView {
     func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
         guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft(), canLeaveMainPage() else { return }
+        if id != agentTaskID { pendingAttachmentTarget = nil }
         if let sideTaskTabID, sideTaskTabID != id {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
@@ -3804,6 +3839,7 @@ final class FormDocumentView: NSView {
             if let office = page as? AgentOfficeWindow { offices.append(await office.workspaceReadback()) }
             if let canvas = page as? AgentCanvasWindow { canvases.append(canvas.workspaceReadback()) }
             if let browser = page as? AgentBrowserWindow { browsers.append(browser.workspaceReadback()); if browser.isPageVisible { value["browser"] = browser.workspaceReadback() } }
+            if let attachment = page as? AgentAttachmentWindow, attachment.isPageVisible { value["attachment"] = await attachment.workspaceReadback() }
             if let annotation = page as? AgentBrowserAnnotationWindow, annotation.isPageVisible { value["browserAnnotation"] = annotation.workspaceReadback() }
             if let creation = page as? AgentWorktreeCreationWindow, creation.isPageVisible { value["worktreeCreation"] = creation.workspaceReadback() }
             if let manager = page as? AgentWorktreeWindow, manager.isPageVisible { value["worktrees"] = manager.workspaceReadback() }
@@ -4028,6 +4064,10 @@ final class FormDocumentView: NSView {
                 guard let self, self.agentTaskID == id else { throw PetError("请在原任务打开视频") }; self.showTaskDocument(file.path)
             }
             record.onChooseWorkspaceFile = { [weak self] in guard let self, self.agentTaskID == id else { return }; self.chooseTaskDocument() }
+            record.onOpenAttachment = { [weak self] fileID, target in
+                guard let self else { throw PetError("任务窗口已关闭") }
+                try self.presentAttachment(taskID: id, id: fileID, target: target)
+            }
         }
         record.enableWikiGeneration { [weak self] language in self?.generateAgentWiki(sourceID: id, language: language) }
         record.onOpenKnowledgeCards = { [weak self] language in self?.showKnowledgeCards(taskID: id, language: language) }
@@ -4036,11 +4076,18 @@ final class FormDocumentView: NSView {
     }
     internal func materializeRecoveryRoot(task id: String, tab: AgentWorkspaceRecovery.Tab, loaded: AgentWorkspaceRecovery.LoadedPage?, activate: Bool = true) async throws {
         guard (!activate || agentTaskID == id && selectedTab == "chat"), let store = companion?.agentStore, let task = store.task(id), let root = AgentTaskWorkspace.Root(key: tab.root) else { throw PetError("请在原任务中重新选择该标签页") }
-        if !activate { guard task.sideTask?.retained != false, let kind = loaded?.saved.value.kind, ["record", "browser"].contains(kind) else { throw PetError("此子窗口的恢复格式暂不支持，原记录已保留") } }
+        if !activate { guard task.sideTask?.retained != false, let kind = loaded?.saved.value.kind, ["record", "browser", "attachment"].contains(kind) else { throw PetError("此子窗口的恢复格式暂不支持，原记录已保留") } }
         func present(_ controller: AgentSettingsPageController) -> Bool {
             activate ? taskWorkspace.show(taskID: id, root: root, recovering: true, make: { controller }) : taskWorkspace.restoreBackgroundRoot(taskID: id, tab: tab, controller: controller)
         }
-        if let loaded, loaded.saved.value.kind == "office" {
+        if case .attachment(let id) = root {
+            let preview = try AgentAttachmentWindow(store: store, taskID: task.id, id: id)
+            if let loaded { try preview.restoreWorkspaceRecovery(loaded.saved.value) }
+            if activate, let pending = pendingAttachmentTarget, pending.taskID == task.id, pending.attachmentID == id {
+                preview.open(pending.target); pendingAttachmentTarget = nil
+            }
+            guard present(preview) else { throw PetError("工作区当前无法打开附件") }
+        } else if let loaded, loaded.saved.value.kind == "office" {
             guard case .document(let path) = root, try AgentOfficeWindow.recoveryState(loaded.saved.value).file == path else { throw PetError("恢复的办公文件与标签不匹配") }
             var presented: AgentOfficeWindow?
             do {
@@ -5289,6 +5336,9 @@ extension ControlWindow {
     func saveWindowDraft() -> Bool { saveAgentDraft() }
     func refreshAttention() { if let attention = companion?.agentStore?.attention { taskSidebar.setAttentionCount(attention.pendingCount, enabled: attention.settings.enabled); attentionPageController?.refresh() } }
     func undoManager(for view: NSTextView) -> UndoManager? { view === composer ? windowDraft?.undo : nil }
+    func checkOpenAttachment(taskID: String, id: String) {
+        if AgentTaskWorkspace.readbackEnabled { openAttachment(taskID: taskID, id: id) }
+    }
     func checkAttachmentUI(_ output: URL, taskID: String, fileID: String) async -> [String: Bool] {
         guard let store = companion?.agentStore else { return ["attachmentUI": false] }
         selectAgentTask(taskID); showWindow(nil); composer.string = "附件草稿"; composer.didChangeText(); saveAgentDraft()
@@ -5307,9 +5357,10 @@ extension ControlWindow {
             if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("attachments-" + name + ".png")) }
         }
         do {
-            let preview = try AgentAttachmentWindow(store: store, taskID: taskID, id: fileID)
+            try presentAttachment(taskID: taskID, id: fileID)
+            guard let preview = taskWorkspace.rootController(.attachment(fileID)) as? AgentAttachmentWindow else { throw PetError("附件未进入工作区") }
             await preview.captureQuickLook(output)
-            checks["nativePreviewReadsActualWordCopy"] = await preview.checkText("1499.00", output: output); preview.close()
+            checks["nativePreviewReadsActualWordCopy"] = await preview.checkText("1499.00", output: output)
         } catch { checks["nativePreviewReadsActualWordCopy"] = false }
         return checks
     }

@@ -18,12 +18,12 @@ import AppKit
 // their tab is closed, when the existing unsaved-content guards apply.
 @MainActor final class AgentTaskWorkspace: NSView {
     enum Root: Hashable {
-        case review, records, context, browser, mcpContent, document(String), canvas(String), rollback(String), editResend(String)
+        case review, records, context, browser, mcpContent, document(String), attachment(String), canvas(String), rollback(String), editResend(String)
         var title: String {
-            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .canvas: return "画布"; case .rollback: return "撤回文件"; case .editResend: return "编辑并重发" }
+            switch self { case .review: return "审阅"; case .records: return "记录"; case .context: return "任务详情"; case .browser: return "浏览器"; case .mcpContent: return "MCP 资料"; case .document(let path): return URL(fileURLWithPath: path).lastPathComponent; case .attachment: return "附件"; case .canvas: return "画布"; case .rollback: return "撤回文件"; case .editResend: return "编辑并重发" }
         }
         var key: String {
-            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .canvas(let id): return "canvas:" + id; case .rollback(let id): return "rollback:" + id; case .editResend(let id): return "edit-resend:" + id }
+            switch self { case .review: return "review"; case .records: return "records"; case .context: return "context"; case .browser: return "browser"; case .mcpContent: return "mcp"; case .document(let path): return "document:" + path; case .attachment(let id): return "attachment:" + id; case .canvas(let id): return "canvas:" + id; case .rollback(let id): return "rollback:" + id; case .editResend(let id): return "edit-resend:" + id }
         }
         init?(key: String) {
             switch key {
@@ -33,6 +33,7 @@ import AppKit
                 let value = String(key[key.index(after: split)...])
                 switch String(key[..<split]) {
                 case "document": guard value.hasPrefix("/") else { return nil }; self = .document(value)
+                case "attachment": guard UUID(uuidString: value) != nil else { return nil }; self = .attachment(value)
                 case "canvas": self = .canvas(value); case "rollback": self = .rollback(value); case "edit-resend": self = .editResend(value)
                 default: return nil
                 }
@@ -63,7 +64,7 @@ import AppKit
     private var entries: [Entry] { taskID.flatMap { stacks[$0]?[selectedRoot] } ?? [] }
     var currentController: AgentSettingsPageController? { entries.last?.controller }
     var controllers: [AgentSettingsPageController] { stacks.values.flatMap { $0.values.flatMap { $0.map(\.controller) } } }
-    static var readbackEnabled: Bool { CommandLine.arguments.contains("--security-report-check") || CommandLine.arguments.contains("--dependency-report-check") || ["--settings-editor-recovery-check", "--settings-editor-recovery-ui", "--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui", "--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui", "--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-preferences-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
+    static var readbackEnabled: Bool { CommandLine.arguments.contains("--security-report-check") || CommandLine.arguments.contains("--dependency-report-check") || ["--settings-editor-recovery-check", "--settings-editor-recovery-ui", "--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui", "--knowledge-reader-recovery-check", "--knowledge-reader-recovery-ui", "--knowledge-source-recovery-check", "--knowledge-source-recovery-ui", "--workspace-source-recovery-check", "--workspace-source-recovery-ui", "--workspace-text-viewport-check", "--workspace-text-viewport-ui", "--workspace-child-recovery-check", "--workspace-child-recovery-ui", "--workspace-floating-recovery-check", "--workspace-floating-recovery-ui", "--workspace-video-recovery-check", "--workspace-video-recovery-ui", "--workspace-browser-recovery-check", "--workspace-browser-recovery-ui", "--workspace-edit-recovery-check", "--workspace-edit-recovery-ui", "--workspace-mcp-recovery-check", "--workspace-mcp-recovery-ui", "--workspace-canvas-recovery-check", "--workspace-canvas-recovery-ui", "--workspace-office-recovery-check", "--workspace-office-recovery-ui", "--workspace-recovery-lifecycle-check", "--workspace-recovery-ui", "--workspace-worktrees-check", "--task-monitor-check", "--file-icons-check", "--git-remote-page-check", "--conversation-workspace-check", "--mcp-content-check", "--browser-workspace-check", "--attachment-workspace-check", "--video-workspace-check", "--worktree-workspace-check", "--artifact-workspace-check", "--task-workspace-check", "--git-workspace-check", "--git-preferences-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -178,6 +179,7 @@ import AppKit
         if title.isEmpty { title = root.title }
         var dirty = tab.flatMap { recoveredDirty[$0.id] } ?? false
         if case .document = root, let document = (page as? AgentRecordWindow)?.workspaceDocumentURL { title = document.lastPathComponent }
+        else if case .attachment = root, let attachment = page as? AgentAttachmentWindow { title = attachment.filename }
         else if case .canvas(let canvasID) = root {
             let record = onResolveCanvas?(id, canvasID)
             if let canvas = page as? AgentCanvasWindow, canvas.selectedID == canvasID { title = canvas.window?.title ?? title }
@@ -223,6 +225,7 @@ import AppKit
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentGitWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
+        if let attachment = controller as? AgentAttachmentWindow { attachment.onSettingsRecoveryChange = { [weak self] in self?.onRecoveryChange?() } }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if stacks[id]?[root]?.count == 1, let tab = recoveryTabs[id]?[root] { pendingRecovery.remove(tab.id) }
         if taskID == id, selectedRoot == root { displayCurrent() }
@@ -267,6 +270,7 @@ import AppKit
             let label = value?.title ?? root.title, dirty = value?.dirty == true
             let document = (page as? AgentRecordWindow)?.workspaceDocumentURL
             if case .document(let path) = root { let current = document?.path ?? path; AgentFileIcons.bind(button, filename: current); button.toolTip = current }
+            else if case .attachment = root { AgentFileIcons.bind(button, filename: label); button.toolTip = label }
             else { button.toolTip = label }
             group.fill = root == selectedRoot ? AgentWorkbenchTheme.navigationSelection : .clear; button.state = root == selectedRoot ? .on : .off; button.title = (dirty ? "• " : "") + label
             buttonWidth.constant = min(174, max(48, ceil((button.title as NSString).size(withAttributes: [.font: button.font!]).width) + 12 + (button.image == nil ? 0 : 20))); groupWidth.constant = buttonWidth.constant + 26
@@ -309,6 +313,11 @@ import AppKit
         if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
         if taskID == id { displayCurrent(); onLayoutChange?() }
         onRecoveryChange?()
+    }
+    func removeAttachment(taskID: String, id: String) {
+        let root = Root.attachment(id)
+        guard orders[taskID]?.contains(root) == true else { return }
+        removeRoot(taskID: taskID, root: root)
     }
     func detachBrowser(_ browser: AgentBrowserWindow) -> Bool {
         guard let id = taskID, rootController(.browser) === browser else { return false }

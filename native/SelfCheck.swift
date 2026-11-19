@@ -71,6 +71,7 @@ import WebKit
         if CommandLine.arguments.contains("--operation-confirmation-check") { await runOperationConfirmationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--artifact-workspace-check") { await runArtifactWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--attachment-workspace-check") { await runAttachmentWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-handoff-check") { await runWorktreeHandoffCheck(output); NSApp.terminate(nil); return }
@@ -207,6 +208,7 @@ import WebKit
                 if CommandLine.arguments.contains("--conversation-workspace-reopen") { try reopenConversationWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--browser-workspace-fixtures") { _ = try await prepareBrowserWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--browser-workspace-reopen") { try await reopenBrowserWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--attachment-workspace-fixtures") { _ = try await prepareAttachmentWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-fixtures") { _ = try prepareVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--video-workspace-reopen") { try reopenVideoWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--knowledge-video-fixtures") { _ = try await prepareKnowledgeVideoUI(output) }

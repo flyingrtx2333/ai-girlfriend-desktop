@@ -44,69 +44,224 @@ private final class AgentPreviewItem: NSObject, QLPreviewItem {
     var previewItemTitle: String? { title }
 }
 
-@MainActor final class AgentAttachmentWindow: NSWindowController, NSWindowDelegate {
-    private let store: AgentStore, taskID: String, file: AgentAttachment
+struct AgentAttachmentReadingTarget {
+    let part: Int
+    let line: Int?
+}
+
+@MainActor final class AgentAttachmentWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
+    private struct ReadingState: Codable {
+        var version = 1
+        let attachmentID: String
+        let hash: String
+        let part: Int
+        let showsText: Bool
+        let viewport: AgentTextViewport?
+    }
+
+    private let store: AgentStore, file: AgentAttachment
+    let taskID: String
+    var attachmentID: String { file.id }
+    var filename: String { file.name }
     private let mode = NSSegmentedControl(labels: ["预览", "文字"], trackingMode: .selectOne, target: nil, action: nil)
-    private let number = NSTextField(string: "1"), stepper = NSStepper(), title = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: "")
+    private let number = AgentDialogTextField(string: "1"), stepper = NSStepper()
+    private let title = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("附件状态")
     private let body = NSView(), text = NSTextView(), textScroll = NSScrollView()
     private var preview: QLPreviewView?, item: AgentPreviewItem?, job: Task<Void, Never>?
-    init(store: AgentStore, taskID: String, id: String, part: Int = 1) throws {
+    private var started = false, textReady = false, applyingPosition = false
+    private var pendingViewport: AgentTextViewport?, pendingLine: Int?
+    private var textOnly: Bool { AgentDocument.textTypes.contains(file.fileExtension) }
+    private var showsText: Bool { mode.selectedSegment == 1 }
+
+    init(store: AgentStore, taskID: String, id: String, target: AgentAttachmentReadingTarget? = nil) throws {
         self.store = store; self.taskID = taskID; file = try AgentAttachments.record(store: store, taskID: taskID, id: id)
         _ = try AgentAttachments.source(store: store, taskID: taskID, id: id)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = file.name; window.minSize = NSSize(width: 640, height: 450); window.isReleasedWhenClosed = false; window.center()
+        window.title = file.name; window.minSize = NSSize(width: 410, height: 370); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        mode.selectedSegment = AgentDocument.textTypes.contains(file.fileExtension) ? 1 : 0; mode.target = self; mode.action = #selector(loadPart); mode.isHidden = AgentDocument.textTypes.contains(file.fileExtension)
-        number.integerValue = min(max(1, part), max(1, file.totalParts)); number.alignment = .center; number.widthAnchor.constraint(equalToConstant: 54).isActive = true; number.target = self; number.action = #selector(numberChanged)
-        stepper.minValue = 1; stepper.maxValue = Double(max(1, file.totalParts)); stepper.integerValue = number.integerValue; stepper.target = self; stepper.action = #selector(stepChanged)
-        number.isEnabled = file.totalParts > 1; stepper.isEnabled = number.isEnabled
-        title.font = .systemFont(ofSize: 12); title.lineBreakMode = .byTruncatingMiddle
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
-        text.isEditable = false; text.isRichText = false; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular); text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 14, height: 14)
-        textScroll.documentView = text; textScroll.hasVerticalScroller = true; body.addSubview(textScroll); textScroll.translatesAutoresizingMaskIntoConstraints = false
-        let header = NSStackView(views: [mode, NSView(), title, number, NSTextField(labelWithString: "/ \(file.totalParts)"), stepper]); header.spacing = 8
-        for view in [header, body, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
-        NSLayoutConstraint.activate([header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), body.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12), body.bottomAnchor.constraint(equalTo: state.topAnchor, constant: -10), state.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), state.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), state.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12), textScroll.leadingAnchor.constraint(equalTo: body.leadingAnchor), textScroll.trailingAnchor.constraint(equalTo: body.trailingAnchor), textScroll.topAnchor.constraint(equalTo: body.topAnchor), textScroll.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
-        loadPart()
+        mode.selectedSegment = textOnly ? 1 : 0; mode.target = self; mode.action = #selector(modeChanged)
+        mode.controlSize = .small; mode.isHidden = textOnly; mode.setAccessibilityLabel("附件显示方式")
+        number.integerValue = 1; number.alignment = .center; number.font = .systemFont(ofSize: 12); number.outlined = true
+        number.widthAnchor.constraint(equalToConstant: 44).isActive = true; number.target = self; number.action = #selector(numberChanged)
+        number.setAccessibilityLabel("附件部分编号")
+        stepper.minValue = 1; stepper.maxValue = Double(max(1, file.totalParts)); stepper.integerValue = 1
+        stepper.target = self; stepper.action = #selector(stepChanged); stepper.setAccessibilityLabel("切换附件部分")
+        title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.drawsBackground = false
+        text.textColor = .labelColor; text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true
+        text.textContainerInset = NSSize(width: 2, height: 8); text.delegate = self; text.setAccessibilityLabel("附件正文")
+        textScroll.documentView = text; textScroll.hasVerticalScroller = true; textScroll.drawsBackground = false
+        textScroll.borderType = .noBorder; textScroll.scrollerStyle = .overlay
+        textScroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: textScroll.contentView)
+        body.addSubview(textScroll); textScroll.translatesAutoresizingMaskIntoConstraints = false
+        let count = NSTextField(labelWithString: "/ \(file.totalParts)")
+        count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
+        let header = NSStackView(views: [mode, NSView(), title, number, count, stepper]); header.spacing = 8
+        for control in [title, number, count, stepper] { control.isHidden = file.totalParts <= 1 }
+        header.isHidden = textOnly && file.totalParts <= 1
+        let column = NSStackView(views: [header, body, state]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 8
+        content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+        for row in [header, body, state] { row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([
+            column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            column.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+            textScroll.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            textScroll.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            textScroll.topAnchor.constraint(equalTo: body.topAnchor),
+            textScroll.bottomAnchor.constraint(equalTo: body.bottomAnchor)
+        ])
+        if let target { open(target) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func windowWillClose(_ notification: Notification) { job?.cancel(); preview?.close(); preview = nil; item = nil; text.string = "" }
-    @objc private func numberChanged() { number.integerValue = min(max(1, number.integerValue), max(1, file.totalParts)); stepper.integerValue = number.integerValue; mode.selectedSegment = 1; loadPart() }
-    @objc private func stepChanged() { number.integerValue = stepper.integerValue; mode.selectedSegment = 1; loadPart() }
-    @objc private func loadPart() {
-        job?.cancel(); let selected = number.integerValue
+
+    override func settingsDidAppear() {
+        if !started { started = true; loadPart() }
+        pageDidLayout()
+    }
+    func windowDidBecomeKey(_ notification: Notification) { settingsDidAppear() }
+    func windowWillClose(_ notification: Notification) { releaseReader() }
+    override func settingsWillLeave() { releaseReader() }
+    private func releaseReader() {
+        job?.cancel(); job = nil; textReady = false
+        closePreview(); text.string = ""; pendingViewport = nil; pendingLine = nil
+    }
+    private func closePreview() {
+        preview?.close(); preview?.removeFromSuperview(); preview = nil; item = nil
+    }
+    private func setPart(_ part: Int) {
+        number.integerValue = min(max(1, part), max(1, file.totalParts)); stepper.integerValue = number.integerValue
+    }
+    func open(_ target: AgentAttachmentReadingTarget) {
+        pendingViewport = nil; pendingLine = target.line
+        setPart(target.part)
+        mode.selectedSegment = 1
+        if started { loadPart() }
+    }
+    @objc private func numberChanged() { open(.init(part: number.integerValue, line: nil)) }
+    @objc private func stepChanged() { open(.init(part: stepper.integerValue, line: nil)) }
+    @objc private func modeChanged() { pendingViewport = nil; pendingLine = nil; loadPart() }
+    @objc private func scrolled() { if textReady && !applyingPosition { onSettingsRecoveryChange?() } }
+    func textViewDidChangeSelection(_ notification: Notification) { scrolled() }
+
+    private func loadPart() {
+        job?.cancel(); textReady = false
+        let selected = number.integerValue
+        onSettingsRecoveryChange?()
         do {
             let url = try AgentAttachments.source(store: store, taskID: taskID, id: file.id)
             title.stringValue = file.partTitles?.indices.contains(selected - 1) == true ? file.partTitles![selected - 1] : "第 \(selected) 部分"
+            title.toolTip = title.stringValue
             state.stringValue = file.partial ? "部分内容已提取" : ""
-            if mode.selectedSegment == 0 {
+            if !showsText {
                 if preview == nil, let view = QLPreviewView(frame: body.bounds, style: .normal) {
-                    preview = view; view.autostarts = true; view.shouldCloseWithWindow = true; body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
-                    NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor), view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
+                    preview = view; view.autostarts = true; view.shouldCloseWithWindow = true
+                    body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+                        view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)
+                    ])
                 }
-                if let preview { item = AgentPreviewItem(url: url, title: file.name); preview.previewItem = item; preview.isHidden = false; textScroll.isHidden = true; return }
-                mode.selectedSegment = 1; state.stringValue = "系统预览不可用"
+                if let preview {
+                    item = AgentPreviewItem(url: url, title: file.name); preview.previewItem = item
+                    textScroll.isHidden = true; return
+                }
+                mode.selectedSegment = 1
             }
-            preview?.close(); preview?.removeFromSuperview(); preview = nil; item = nil
-            textScroll.isHidden = false; text.string = "读取中…"
+            closePreview(); textScroll.isHidden = false; text.string = ""; state.stringValue = "读取中…"
             job = Task { [weak self] in
                 guard let self else { return }
-                do { let part = try await AgentAttachments.part(store: store, taskID: taskID, id: file.id, number: selected); guard !Task.isCancelled else { return }; text.string = part.text.isEmpty ? "未提取到文字" : part.text; title.stringValue = part.title; state.stringValue = part.ocr == true ? "本机 OCR" : (file.notes ?? []).joined(separator: " · ") }
-                catch { if !Task.isCancelled { text.string = ""; state.stringValue = error.localizedDescription } }
+                do {
+                    let part = try await AgentAttachments.part(store: store, taskID: taskID, id: file.id, number: selected)
+                    try Task.checkCancellation()
+                    text.string = part.text.isEmpty ? "未提取到文字" : part.text
+                    text.setSelectedRange(NSRange(location: 0, length: 0))
+                    textScroll.contentView.scroll(to: .zero); textScroll.reflectScrolledClipView(textScroll.contentView)
+                    title.stringValue = part.title; title.toolTip = part.title
+                    let notes = [part.ocr == true ? "本机 OCR" : nil, file.partial || part.partial ? "部分内容已提取" : nil].compactMap { $0 }
+                    state.stringValue = (notes + (file.notes ?? [])).joined(separator: " · ")
+                    textReady = true
+                    presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout(); onSettingsRecoveryChange?()
+                } catch { if !Task.isCancelled { showError(error) } }
             }
-        } catch { state.stringValue = error.localizedDescription }
+        } catch { showError(error) }
     }
+    private func showError(_ error: Error) {
+        closePreview(); text.string = ""; textScroll.isHidden = false; textReady = false
+        state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error
+    }
+
+    override func pageDidLayout() {
+        guard textReady, showsText, isPageVisible, textScroll.contentSize.width > 0, textScroll.contentSize.height > 0,
+              pendingViewport != nil || pendingLine != nil else { return }
+        applyingPosition = true
+        defer { applyingPosition = false }
+        if let viewport = pendingViewport {
+            if viewport.apply(to: text) { pendingViewport = nil }
+            else if !viewport.matches(text) { state.stringValue = "附件文字已变化，原阅读位置无法应用" }
+        }
+        if let line = pendingLine {
+            pendingLine = nil
+            let lines = text.string.components(separatedBy: "\n")
+            guard lines.indices.contains(line - 1) else { return }
+            let location = lines.prefix(line - 1).reduce(0) { $0 + ($1 as NSString).length + 1 }
+            let range = NSRange(location: location, length: (lines[line - 1] as NSString).length)
+            text.window?.makeFirstResponder(text); text.setSelectedRange(range); text.scrollRangeToVisible(range)
+        }
+    }
+    func captureWorkspaceRecovery() throws -> AgentWorkspaceRecovery.Page {
+        let viewport = try pendingViewport ?? (textReady && showsText ? AgentTextViewport(text) : nil)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let value = ReadingState(attachmentID: file.id, hash: file.sha256, part: number.integerValue, showsText: showsText, viewport: viewport)
+        return .init(taskID: taskID, kind: "attachment", state: try encoder.encode(value), dirty: false, asset: nil)
+    }
+    func restoreWorkspaceRecovery(_ page: AgentWorkspaceRecovery.Page) throws {
+        guard page.kind == "attachment", page.taskID == taskID, !page.dirty, page.asset == nil,
+              let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
+              Set(raw.keys).isSubset(of: ["version", "attachmentID", "hash", "part", "showsText", "viewport"]) else {
+            throw PetError("附件阅读状态与原任务不符")
+        }
+        if let viewport = raw["viewport"] { try AgentTextViewport.validateObject(viewport) }
+        let value = try JSONDecoder().decode(ReadingState.self, from: page.state)
+        guard value.version == 1, value.attachmentID == file.id, value.hash == file.sha256,
+              (1...max(1, file.totalParts)).contains(value.part), value.viewport?.valid != false,
+              value.viewport == nil || value.showsText, !textOnly || value.showsText else {
+            throw PetError("附件内容或阅读位置已变化")
+        }
+        setPart(value.part); mode.selectedSegment = value.showsText ? 1 : 0; pendingViewport = value.viewport
+    }
+
+    func workspaceReadback() async -> [String: Any] {
+        guard AgentTaskWorkspace.readbackEnabled else { return [:] }
+        await job?.value
+        presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout()
+        let range = text.selectedRange(), raw = text.string as NSString
+        let selected = NSMaxRange(range) <= raw.length ? raw.substring(with: range) : ""
+        return ["part": number.integerValue, "mode": showsText ? "text" : "preview", "text": String(text.string.prefix(1000)),
+                "selection": selected, "scrollY": Double(textScroll.contentView.bounds.minY), "readingWidth": Double(body.bounds.width), "readingHeight": Double(body.bounds.height),
+                "quickLook": preview?.previewItem != nil, "visible": isPageVisible, "readOnly": !text.isEditable, "status": state.stringValue]
+    }
+
     func checkText(_ expected: String, output: URL) async -> Bool {
         mode.selectedSegment = 1; loadPart(); await job?.value
-        window?.contentView?.layoutSubtreeIfNeeded()
-        if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("attachment-preview.png")) }
+        saveView(output.appendingPathComponent("attachment-preview.png"))
         return text.string.contains(expected) && !textScroll.isHidden && !text.isEditable
     }
     func captureQuickLook(_ output: URL) async {
-        showWindow(nil); mode.selectedSegment = 0; loadPart()
-        try? await Task.sleep(nanoseconds: 1_200_000_000)
-        window?.contentView?.layoutSubtreeIfNeeded()
-        if let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) { view.cacheDisplay(in: view.bounds, to: bitmap); try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("attachment-quicklook.png")) }
+        mode.selectedSegment = 0; loadPart()
+        try? await Task.sleep(for: .milliseconds(1200))
+        saveView(output.appendingPathComponent("attachment-quicklook.png"))
+    }
+    private func saveView(_ output: URL) {
+        presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+        if let view = pageContentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: output)
+        }
     }
 }

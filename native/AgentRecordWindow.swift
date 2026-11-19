@@ -27,6 +27,7 @@ import UniformTypeIdentifiers
         if onOpenVideo != nil, taskHosted, !documentOnly, let file = openedFile, AgentVideoSnapshot.supports(file) { open.title = "打开标签页" }
     } }
     var onChooseWorkspaceFile: (() -> Void)?
+    var onOpenAttachment: ((String, AgentAttachmentReadingTarget) throws -> Void)?
     private var canAddSelection: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && task.kind != "hook" && !task.isProjectDocumentation && task.agent?.ownerID == nil && task.automation == nil }
     private let markdown = AgentMarkdownReader(), viewer = NSScrollView(), video = AgentVideoPreview()
     private let displayMode = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
@@ -1172,14 +1173,24 @@ import UniformTypeIdentifiers
             if let url = URL(string: value), url.scheme == "attachment", let host = url.host, let id = UUID(uuidString: host)?.uuidString {
                 do {
                     let parts = url.pathComponents, part = parts.count > 2 && parts[1] == "part" ? Int(parts[2]) ?? 1 : 1
-                    attachmentWindow?.window?.performClose(nil); attachmentWindow = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, part: part)
-                    attachmentWindow?.showWindow(nil); attachmentWindow?.window?.makeKeyAndOrderFront(nil)
+                    let line = url.fragment.flatMap { $0.hasPrefix("L") ? Int($0.dropFirst()) : nil }.flatMap { $0 > 0 ? $0 : nil }
+                    let target = AgentAttachmentReadingTarget(part: part, line: line)
+                    if let onOpenAttachment { try onOpenAttachment(id, target) }
+                    else {
+                        let preview = try AgentAttachmentWindow(store: store, taskID: taskID, id: id, target: target)
+                        attachmentWindow?.close(); attachmentWindow = preview
+                        preview.showWindow(nil); preview.window?.makeKeyAndOrderFront(nil)
+                    }
                 } catch { state.stringValue = error.localizedDescription }
             }
             else if let url = URL(string: value), ["https", "http"].contains(url.scheme) { NSWorkspace.shared.open(url) }
             else if let url = URL(string: value), url.isFileURL, let task = store.task(taskID), let files = try? AgentWorkspaceScope.files(task,path:url.path), let safe = try? files.resolve(url.path) { if AgentOffice.supports(safe.path) { showOffice(safe.path) } else { NSWorkspace.shared.open(safe) } }
         }
         else if let task = store.task(taskID), let files = try? AgentWorkspaceScope.files(task,path:value), let url = try? files.resolve(value) { NSWorkspace.shared.open(url) }
+    }
+    func checkOpenSource(_ value: String) {
+        guard AgentTaskWorkspace.readbackEnabled else { return }
+        selectItem(section: 2, value: value); open.performClick(nil)
     }
     private func showOffice(_ path: String) {
         load = Task { [weak self] in guard let self else { return }; do { _ = try await store.offices.show(path, taskID: taskID) } catch { state.stringValue = error.localizedDescription } }
