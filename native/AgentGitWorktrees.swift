@@ -181,7 +181,9 @@ enum AgentWorktreeSnapshot {
             else if entries[i].locked != nil { entries[i].unavailable = "工作树已锁定" }
             else if active { entries[i].unavailable = "关联任务正在运行或等待处理" }
             else if entries[i].prunable != nil, Self.isWorktreeObject(entries[i].head ?? ""), listed == path, (try? missingWorktreePath(path)) != nil { entries[i].missingRegistration = true }
-            else if entries[i].prunable != nil || entries[i].head == nil || !FileManager.default.fileExists(atPath: path) { entries[i].unavailable = "路径不可用，请先在本地 Git 修复" }
+            else if entries[i].prunable != nil || entries[i].head == nil || !FileManager.default.fileExists(atPath: path) {
+                entries[i].unavailable = entries[i].canRelink == true ? "原目录缺失 · 可重新关联" : "路径不可用，请先在本地 Git 修复"
+            }
             else if !entries[i].owned && (listed != path || (try? externalWorktreeURL(path)) == nil) { entries[i].unavailable = "外部路径已变化或不可回收" }
             else if !entries[i].owned && listedPaths.contains(where: { $0.hasPrefix(path + "/") }) { entries[i].unavailable = "包含其他工作树" }
         }
