@@ -227,7 +227,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
                 if current { body.addArrangedSubview(detail); detail.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -40).isActive = true }
             }
         }
-        card.isHidden = events.isEmpty; empty.isHidden = !events.isEmpty
+        card.isHidden = events.isEmpty; empty.isHidden = !events.isEmpty; count.isHidden = events.isEmpty
         minimumDocumentHeight.constant = events.isEmpty ? 154 : 0
         if let content = pageContentView, settingsHostWindow != nil { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
     }
@@ -288,8 +288,9 @@ private struct AgentHookEditTarget: Codable, Equatable {
         presentingWindow?.makeFirstResponder(button)
         var visible = document.convert(button.bounds, from: button)
         if selected?.id == id, detail.superview != nil {
-            let panel = document.convert(detail.bounds, from: detail)
-            visible.size.height = min(scroll.contentSize.height, max(visible.height, min(panel.maxY, panel.minY + 96) - visible.minY))
+            let preview = document.convert(command.bounds, from: command)
+            let previewStart = preview.minY + min(preview.height, 32)
+            visible.size.height = min(scroll.contentSize.height, max(visible.height, previewStart - visible.minY))
         }
         document.scrollToVisible(visible)
     }
