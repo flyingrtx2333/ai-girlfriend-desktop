@@ -72,6 +72,7 @@ import WebKit
         if CommandLine.arguments.contains("--browser-workspace-check") { await runBrowserWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--video-workspace-check") { await runVideoWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--worktree-workspace-check") { await runWorktreeWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--worktree-handoff-check") { await runWorktreeHandoffCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--task-workspace-check") { await runTaskWorkspaceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-recovery-check") { await runWorkspaceRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-edit-recovery-check") { await runEditResendRecoveryCheck(output); NSApp.terminate(nil); return }
@@ -195,6 +196,9 @@ import WebKit
                 if CommandLine.arguments.contains("--artifact-workspace-fixtures") { _ = try await prepareArtifactWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--artifact-workspace-reopen") { try await reopenArtifactWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--worktree-workspace-fixtures") { _ = try await prepareWorktreeWorkspaceUI(output) }
+                if CommandLine.arguments.contains("--worktree-handoff-fixtures") {
+                    _ = try await prepareWorktreeHandoffFixtures(output, multi: CommandLine.arguments.contains("--handoff-multi"))
+                }
                 if CommandLine.arguments.contains("--worktree-workspace-reopen") { try reopenWorktreeWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-fixtures") { _ = try await prepareTaskWorkspaceUI(output) }
                 if CommandLine.arguments.contains("--task-workspace-reopen") { try reopenTaskWorkspaceUI(output) }

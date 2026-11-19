@@ -14,6 +14,7 @@ import AppKit
     private let dependencyButton = NSButton(title: "依赖漏洞…", target: nil, action: nil)
     private var worktreeWindow: AgentWorktreeWindow?
     private var creationWindow: AgentWorktreeCreationWindow?
+    private let handoffButton = NSButton(title: "移交到本地…", target: nil, action: nil)
     private let manageWorktrees = NSButton(title: "工作树…", target: nil, action: nil)
     private let sourcePopup = NSPopUpButton(), revision = AgentDialogTextField(string: "HEAD"), statistics = NSTextField(labelWithString: "")
     private lazy var sourceFrame = AgentSettingsPopupFrame(sourcePopup)
@@ -48,6 +49,7 @@ import AppKit
         for button in [refreshButton, commitButton, worktreeButton, initializeButton, stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, commitPushButton, securityButton] { button.target = self }
         refreshButton.action = #selector(refresh); commitButton.action = #selector(commit); worktreeButton.action = #selector(createWorktree); initializeButton.action = #selector(initialize)
         manageWorktrees.target = self; manageWorktrees.action = #selector(openWorktrees)
+        handoffButton.target = self; handoffButton.action = #selector(openWorktreeHandoff)
         stageButton.action = #selector(stageFile); unstageButton.action = #selector(unstageFile); restoreButton.action = #selector(restoreFile); undoRestoreButton.action = #selector(undoRestore)
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
         securityButton.action = #selector(openSecurityOptions)
@@ -143,7 +145,7 @@ import AppKit
     }
     @objc private func showMore() {
         let menu = NSMenu(); menu.autoenablesItems = false
-        for button in [manageWorktrees, worktreeButton, dependencyButton, securityButton, undoRestoreButton] where !button.isHidden {
+        for button in [manageWorktrees, worktreeButton, handoffButton, dependencyButton, securityButton, undoRestoreButton] where !button.isHidden {
             let item = NSMenuItem(title: button.title, action: button.action, keyEquivalent: ""); item.target = self; item.isEnabled = button.isEnabled; menu.addItem(item)
         }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: moreButton.bounds.maxY), in: moreButton)
@@ -160,6 +162,9 @@ import AppKit
         sourceFrame.refreshEnabledState(); fileFrame.refreshEnabledState()
         worktreeButton.isEnabled = !value && writable() && initializeButton.isHidden
         manageWorktrees.isEnabled = !value && initializeButton.isHidden
+        let handoffTask = store.task(taskID)
+        handoffButton.isHidden = handoffTask?.managedWorktreeOrigins.isEmpty != false
+        handoffButton.isEnabled = !value && handoffTask?.canStartFreshSession == true && initializeButton.isHidden
         initializeButton.isEnabled = !value && writable(); message.isEnabled = !value && writable()
         commitButton.title = source == .staged ? "提交已暂存" : "提交"
         commitButton.isEnabled = !value && writable() && [.uncommitted, .staged].contains(source) && review?.diff.isEmpty == false
@@ -445,6 +450,10 @@ import AppKit
         do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; presentSettingsChild(manager) }
         catch { showError(error) }
     }
+    @objc private func openWorktreeHandoff() {
+        guard handoffButton.isEnabled, !handoffButton.isHidden else { return }
+        presentSettingsChild(AgentWorktreeHandoffWindow(store: store, taskID: taskID, onCompleted: onSelectTask))
+    }
     @objc private func initialize() {
         guard !busy, writable() else { return }; setBusy(true)
         job = Task { [weak self] in
@@ -527,6 +536,7 @@ import AppKit
         case "split": displayMode.selectedSegment = 1; changeDisplay()
         case "refresh": refresh()
         case "worktrees": openWorktrees()
+        case "handoff-worktree": openWorktreeHandoff()
         case "create-worktree": createWorktree()
         default: break
         }

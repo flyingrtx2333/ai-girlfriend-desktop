@@ -340,6 +340,7 @@ import AppKit
             if let annotation = entry.controller as? AgentBrowserAnnotationWindow, !annotation.prepareWorkspaceNavigation() { return false }
             if let review = entry.controller as? AgentKnowledgeReviewWindow, !review.canLeaveSettings() { return false }
             if let creation = entry.controller as? AgentWorktreeCreationWindow, !creation.prepareWorkspaceNavigation() { return false }
+            if let handoff = entry.controller as? AgentWorktreeHandoffWindow, !handoff.canNavigate { return false }
             if let manager = entry.controller as? AgentWorktreeWindow, !manager.prepareWorkspaceNavigation() { return false }
             if let rollback = entry.controller as? AgentRoundRollbackWindow, rollback.hasPendingOperation { return false }
             if let editor = entry.controller as? AgentEditResendWindow, !editor.prepareWorkspaceNavigation() { return false }

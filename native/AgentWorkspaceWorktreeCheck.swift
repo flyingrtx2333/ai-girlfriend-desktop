@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor extension AppDelegate {
-    private func workspaceWorktreeGit(_ args: [String], root: URL, output: URL) async throws -> String {
+    func workspaceWorktreeGit(_ args: [String], root: URL, output: URL) async throws -> String {
         let temporary = output.appendingPathComponent("git-fixture-tmp")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: temporary, network: false, timeout: 30,
