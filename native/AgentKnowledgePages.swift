@@ -43,7 +43,10 @@ import AppKit
     override func layout() { super.layout(); currentController?.pageDidLayout() }
 
     @discardableResult func show(root next: String, identity: String, make: @escaping (String) -> AgentSettingsPageController?) -> Bool {
-        if root == next, self.identity == identity, stacks[root]?.isEmpty == false { displayCurrent(); return true }
+        if root == next, self.identity == identity, let entry = stacks[root]?.last {
+            if !(entry.controller is AgentRepoWikiWindow && entry.controller.isPageVisible) { displayCurrent() }
+            return true
+        }
         guard ["library", "wiki"].contains(next), prepareToLeave() else { return false }
         if self.identity != identity { finish(); self.identity = identity }
         makeRoot = make; root = next

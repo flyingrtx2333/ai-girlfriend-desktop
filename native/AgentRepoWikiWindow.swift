@@ -146,10 +146,13 @@ import AppKit
     }
     private func currentPosition() -> Recovery.Position? {
         let visible = scroll.documentVisibleRect
-        guard visible.minY > 0 else { return nil }
-        for index in collection.indexPathsForVisibleItems().sorted(by: { $0.item < $1.item }) {
-            guard rows.indices.contains(index.item), let item = collection.layoutAttributesForItem(at: index), item.frame.intersects(visible) else { continue }
-            return .init(workspace: rows[index.item].id, y: visible.minY, offset: visible.minY - item.frame.minY)
+        guard !rows.isEmpty, visible.minY > 0 else { return nil }
+        let visibleItems = flow.layoutAttributesForElements(in: visible).compactMap { item -> (row: Int, top: CGFloat)? in
+            guard item.representedElementCategory == .item, let row = item.indexPath?.item, rows.indices.contains(row), item.frame.intersects(visible) else { return nil }
+            return (row, item.frame.minY)
+        }
+        if let first = visibleItems.min(by: { $0.row < $1.row }) {
+            return .init(workspace: rows[first.row].id, y: visible.minY, offset: visible.minY - first.top)
         }
         return .init(workspace: nil, y: visible.minY, offset: 0)
     }
@@ -215,8 +218,10 @@ import AppKit
         item.show(row, grid: layout.selectedSegment == 0 || collection.bounds.width < 700)
         item.onOpen = { [weak self] action in
             guard let self, let current = self.rows.first(where: { $0.id == row.id }) else { return }
+            self.pendingPosition = self.positionToSave
             do { try self.onOpen?(current.project, self.selectedLanguage, action) }
             catch { self.state.stringValue = error.localizedDescription; self.state.textColor = .systemRed }
+            self.scheduleRecovery()
         }; return item
     }
     @objc private func addWorkspace() {
