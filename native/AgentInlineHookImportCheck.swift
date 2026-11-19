@@ -107,17 +107,26 @@ import AppKit
             && toml.warnings.joined().contains("mcp_tool") && toml.warnings.joined().contains("已调整 1 条")
             && !(toml.preview + toml.warnings.joined()).contains(privateMarker) && !fm.fileExists(atPath: grants.path)
 
-        try write(projectScript + "\n# A new source version", to: script, mode: 0o751)
+        try write(projectTOML + "\n# A new configuration version", to: file)
         try importer.begin(.codex, root: incoming, ids: [toml.id, sibling.id], category: .configuration, workspace: project.path)
         try await waitForImport(importer)
-        checks["changedScriptRejectsInlinePackageWithoutBlockingJSON"] = importer.batch?.items.contains(where: {
-            $0.record.id == toml.id && $0.state == "failed" && $0.detail.contains("资源已变化")
+        checks["changedInlineSourceDoesNotBlockIndependentJSON"] = importer.batch?.items.contains(where: {
+            $0.record.id == toml.id && $0.state == "failed" && $0.detail.contains("来源已变化")
         }) == true && importer.batch?.items.contains(where: { $0.record.id == sibling.id && $0.state == "imported" }) == true
-        try write(projectScript, to: script, mode: 0o751)
+        try write(projectTOML, to: file)
         let scriptBytes = try Data(contentsOf: script)
         await importer.detect(.codex, root: incoming, category: .configuration, workspace: project.path)
         let final = try record(importer, "config.toml")
         checks["rediscoveryKeepsTheAlreadyImportedSibling"] = final.issue == nil && importer.preview.contains { $0.id == sibling.id && $0.issue == "已经导入" }
+        try write(projectScript + "\n# A new script version", to: script, mode: 0o751)
+        do {
+            try await AgentStandaloneDataImport.install(final, root: incoming, store: store)
+            checks["changedScriptRejectsTheFrozenPackage"] = false
+        } catch {
+            checks["changedScriptRejectsTheFrozenPackage"] = error.localizedDescription.contains("资源已变化")
+                && (try? AgentStandaloneDataImport.installedURL(final, store: store)) == nil
+        }
+        try write(projectScript, to: script, mode: 0o751)
         try importer.begin(.codex, root: incoming, ids: [final.id], category: .configuration, workspace: project.path)
         try await waitForImport(importer)
         let installed = try AgentStandaloneDataImport.installedURL(final, store: store)
@@ -132,6 +141,7 @@ import AppKit
         try fm.moveItem(at: incoming, to: offline)
         defer { if fm.fileExists(atPath: offline.path) { try? fm.moveItem(at: offline, to: incoming) } }
         let reopened = newStore(), task = reopened.create(title: "项目 Hooks 样例", workspace: project.path, mode: .ask)
+        _ = try await AgentGit(store: reopened, taskID: task, directory: AgentGit.metadata(workspace: project.path, creating: true)).initialize()
         let catalog = try reopened.hooks.catalog(workspace: project.path)
         guard let start = catalog.first(where: { $0.source == installed.path && $0.event == .sessionStart }) else { throw PetError("内联 Hook 离线后未载入") }
         let disabled = try await reopened.hooks.fire(.sessionStart, trigger: "disabled", store: reopened, taskID: task, value: "startup")
