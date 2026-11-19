@@ -176,13 +176,15 @@ final class FormDocumentView: NSView {
     private var removeChatKey = false, removeVoiceKey = false, busy = false
     private var pendingRender: DispatchWorkItem?
     private let taskSidebar = AgentTaskSidebar(), projectButton = NSButton(), modePopup = NSPopUpButton(), permissionPopup = NSPopUpButton()
-    private let resumeButton = NSButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
+    private let resumeButton = AgentDialogButton(title: "继续", target: nil, action: nil), resultsButton = NSButton(title: "记录", target: nil, action: nil)
     private let gitButton = NSButton(title: "Git", target: nil, action: nil)
     private let browserButton = NSButton(title: "浏览器", target: nil, action: nil)
     private let desktopButton = NSButton(title: "电脑操作", target: nil, action: nil)
     private var desktopSettings: AgentDesktopSettingsView?
-    private let approvalPanel = NSStackView(), approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView()
-    private let approveButton = NSButton(title: "允许一次", target: nil, action: nil), denyButton = NSButton(title: "拒绝", target: nil, action: nil)
+    private let approvalPanel = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+    private let approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView(), approvalScroll = NSScrollView()
+    private var approvalHeight: NSLayoutConstraint!
+    private let approveButton = AgentDialogButton(title: "允许一次", target: nil, action: nil), denyButton = AgentDialogButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
     private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
     var agentTaskID: String? { displayedTask ?? companion?.agentStore?.selectedID }
@@ -247,7 +249,7 @@ final class FormDocumentView: NSView {
     private let workbenchEmpty = NSStackView(), emptyBefore = NSView(), emptyAfter = NSView(), emptyProject = AgentWorkbenchButton()
     private var homeGamesView: AgentHomeGamesView?
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
-    private let workbenchLower = NSStackView()
+    private let workbenchFeedback = NSStackView()
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, entryInputHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var entryToolbarGap: NSLayoutConstraint!
@@ -996,16 +998,19 @@ final class FormDocumentView: NSView {
         emptyBeforeHeight = emptyBefore.heightAnchor.constraint(equalToConstant: 90); emptyBeforeHeight.isActive = true
         emptyAfter.setContentHuggingPriority(.defaultLow, for: .vertical)
         modelCaption.font = .systemFont(ofSize: 10); modelCaption.textColor = .tertiaryLabelColor; modelCaption.alignment = .right; modelCaption.lineBreakMode = .byTruncatingTail
-        resumeButton.target = self; resumeButton.action = #selector(resumeAgentTask); resumeButton.bezelStyle = .inline; resumeButton.font = .systemFont(ofSize: 12)
+        resumeButton.target = self; resumeButton.action = #selector(resumeAgentTask); AgentDialogStyle.action(resumeButton)
         taskContext.title = ""; taskContext.isBordered = false; taskContext.font = .systemFont(ofSize: 11); taskContext.contentTintColor = AgentWorkbenchTheme.secondaryText; taskContext.image = NSImage(systemSymbolName: "chart.pie", accessibilityDescription: nil); taskContext.image?.size = NSSize(width: 15, height: 15); taskContext.imagePosition = .imageOnly; taskContext.target = self; taskContext.action = #selector(showTaskContext)
         taskContext.heightAnchor.constraint(equalToConstant: 28).isActive = true; taskContext.widthAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true; taskContext.setContentHuggingPriority(.required, for: .horizontal)
-        let lower = workbenchLower; lower.orientation = .horizontal; lower.spacing = 8; lower.addArrangedSubview(resumeButton); lower.addArrangedSubview(NSView()); lower.addArrangedSubview(modelCaption)
+        workbenchFeedback.orientation = .horizontal; workbenchFeedback.alignment = .centerY; workbenchFeedback.spacing = 8; workbenchFeedback.isHidden = true
+        for view in [status, NSView(), resumeButton] { workbenchFeedback.addArrangedSubview(view) }
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byTruncatingTail; status.isHidden = true
+        status.usesSingleLineMode = false; status.cell?.wraps = true; status.maximumNumberOfLines = 2; status.isSelectable = true
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         configureApprovalPanel()
         mcpInputRow.orientation = .horizontal; mcpInputRow.addArrangedSubview(mcpInputButton); mcpInputRow.addArrangedSubview(NSView()); mcpInputRow.isHidden = true
         mcpInputButton.target = self; mcpInputButton.action = #selector(showMCPUserInput); mcpInputButton.setAccessibilityLabel("回答连接器问询")
         mcpInputButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, status, emptyAfter, entry, lower], vertical: true, spacing: 14)
+        let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, workbenchFeedback, emptyAfter, entry], vertical: true, spacing: 14)
         conversation.addSubview(column)
         workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
         workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
@@ -1065,6 +1070,9 @@ final class FormDocumentView: NSView {
         let conversationWidth = remaining - (fullWorkspace || fullMonitor ? 0 : target)
         let columnInset = max(18, (conversationWidth - maximum) / 2)
         workbenchColumnLeading.constant = columnInset; workbenchColumnTrailing.constant = -columnInset
+        let columnWidth = conversationWidth - columnInset * 2
+        fitApprovalPreview(to: columnWidth)
+        status.preferredMaxLayoutWidth = max(80, columnWidth - (resumeButton.isHidden ? 0 : max(84, resumeButton.fittingSize.width) + 8))
         workbenchInspector.isHidden = !showInspector
         inspectorRule.isHidden = fullMonitor || fullWorkspace || !(showInspector || showWorkspace)
         headerInspectorRule.isHidden = !showInspector || fullMonitor
@@ -1096,7 +1104,6 @@ final class FormDocumentView: NSView {
             taskContext.toolTip = "上次请求占用估算 · " + snapshot.model
         } else { taskContext.title = ""; taskContext.imagePosition = .imageOnly; taskContext.toolTip = "查看上下文估算与任务回顾" }
         taskContext.setAccessibilityLabel("上下文" + (taskContext.title.isEmpty ? "" : " " + taskContext.title))
-        workbenchLower.isHidden = resumeButton.isHidden && modelCaption.isHidden
         let hasMCP = (try? companion?.agentStore?.mcp.availableServers(task: task))?.contains { $0.enabled && (task.agent?.mcpServers.contains($0.id) ?? true) } == true
         taskMCPContext.isHidden = !hasMCP; taskMCPContext.isEnabled = !task.archived && !["hook", "wiki"].contains(task.kind ?? "")
         let preferred = entryLeading.fittingSize.width + entryTrailing.fittingSize.width + 18
@@ -1305,7 +1312,9 @@ final class FormDocumentView: NSView {
         }
         func capture(_ key: String) {
             let views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
-                                           "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer]
+                                           "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer,
+                                           "approval": approvalPanel, "approvalPreview": approvalScroll, "allow": approveButton, "deny": denyButton,
+                                           "status": status, "resume": resumeButton]
             frames[key] = views.mapValues {
                 let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
             }
@@ -1327,10 +1336,38 @@ final class FormDocumentView: NSView {
             switch state {
             case "empty": checks["EmptyWorkbenchOffersExecutorAndNoWorkspaceTerminal"] = visible(workbenchEmptyTitle) && terminalButton.isEnabled && history.isHidden
             case "running": checks["RunningWorkbenchShowsStopForLiveProcess"] = busy && sendButton.accessibilityLabel() == "停止任务" && !taskModel.isEnabled
-            case "waiting": checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
-            case "failed": checks["FailedWorkbenchShowsActualErrorAndFullTitleOnHover"] = visible(status) && !status.stringValue.isEmpty && pageTitle.intrinsicContentSize.width > rect(pageTitle).width
+            case "waiting":
+                checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
+                checks["ApprovalShortPreviewFitsItsActualCommandAndNetworkState"] = approvalText.string == "/usr/bin/wc -c README.md\n网络 关闭"
+                    && rect(approvalScroll).height < 55 && approveButton.prominent && !denyButton.prominent
+                    && !rect(approveButton).intersects(rect(denyButton)) && rect(approvalPanel).contains(rect(approveButton))
+            case "failed":
+                checks["FailedWorkbenchShowsActualErrorAndFullTitleOnHover"] = visible(status) && !status.stringValue.isEmpty && pageTitle.intrinsicContentSize.width > rect(pageTitle).width
+                checks["FailureKeepsFullErrorAndRelatedContinuationTogether"] = visible(resumeButton) && status.toolTip == status.stringValue
+                    && status.stringValue.contains("文件不存在") && abs(rect(status).midY - rect(resumeButton).midY) <= 1 && !rect(status).intersects(rect(resumeButton))
             default: checks["CompletedWorkbenchKeepsConversationAndFollowup"] = visible(history) && composer.isEditable && sendButton.isEnabled
             }
+        }
+        if let long = ids["longApproval"], let question = ids["question"] {
+            showAgentTask(long); root.layoutSubtreeIfNeeded()
+            capture("long-approval")
+            let viewport = approvalScroll.contentView.bounds
+            let documentHeight = approvalText.bounds.height
+            checks["LongApprovalScrollsInsideNarrowCardWithFixedActions"] = visible(approvalScroll) && documentHeight > viewport.height + 40
+                && viewport.height <= 72 && !approvalScroll.hasHorizontalScroller && visible(approveButton) && visible(denyButton)
+                && approvalText.string.contains("所有命令只读取公开 README。") && approvalText.string.contains("第 14 行")
+                && approvalText.string.contains("超时 17 秒") && approvalText.string.contains("\\u{202E}")
+                && !approvalText.string.contains("\u{202E}") && composer.string == "这段补充还未发送。"
+            approvalText.scrollRangeToVisible(NSRange(location: (approvalText.string as NSString).length, length: 0))
+            checks["ApprovalEndCanBeReachedWhileActionsStayPut"] = approvalScroll.contentView.bounds.minY > 0
+                && frames["long-approval"]?["allow"] == [rect(approveButton).minX, rect(approveButton).minY, rect(approveButton).width, rect(approveButton).height]
+            showAgentTask(question); root.layoutSubtreeIfNeeded()
+            capture("question")
+            checks["QuestionShowsReadableTextAndNoPermitAction"] = visible(approvalScroll) && approveButton.isHidden && visible(denyButton) && denyButton.title == "不回答"
+                && composer.isEditable && approvalText.string == "请确认要核对 README 的安装、运行还是许可章节。"
+                && approvalText.font?.fontName == NSFont.systemFont(ofSize: 13).fontName && approvalScroll.contentView.bounds.minY == 0
+            checks["PreviewSwitchingKeepsApprovalUndecidedAndDraftIntact"] = tasks.task(long)?.pendingCalls.count == 1
+                && tasks.task(long)?.approvals.last?.decision == nil && tasks.task(long)?.draft == "这段补充还未发送。"
         }
         showAgentTask(primary)
         if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
@@ -2555,15 +2592,17 @@ final class FormDocumentView: NSView {
         busy = value; updateSendButton(); clearButton.isEnabled = !value
     }
     func setStatus(_ text: String, error: Bool = false) {
-        status.stringValue = text; status.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
+        status.stringValue = text; status.textColor = error ? AgentDialogStyle.error : AgentWorkbenchTheme.secondaryText
+        status.toolTip = text.isEmpty ? nil : text
         status.isHidden = text.isEmpty
+        workbenchFeedback.isHidden = status.isHidden && resumeButton.isHidden
         if settings.isHidden == false {
             savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
         }
     }
     func clearWorkspaceRecoveryStatus(_ failure: String, prefix: String = "工作区恢复未保存：") {
         let message = prefix + failure
-        if status.stringValue == message { status.stringValue = ""; status.isHidden = true }
+        if status.stringValue == message { status.stringValue = ""; status.toolTip = nil; status.isHidden = true; workbenchFeedback.isHidden = resumeButton.isHidden }
         if savedStatus.stringValue == message { savedStatus.stringValue = "" }
     }
     func scheduleRender() {
@@ -4196,17 +4235,47 @@ final class FormDocumentView: NSView {
         }
     }
     func configureApprovalPanel() {
-        approvalPanel.orientation = .vertical; approvalPanel.alignment = .leading; approvalPanel.spacing = 7; approvalPanel.isHidden = true
-        approvalTitle.font = .systemFont(ofSize: 12, weight: .medium); approvalTitle.textColor = AgentDialogStyle.warning; approvalTitle.lineBreakMode = .byTruncatingTail
-        approvalText.isEditable = false; approvalText.isRichText = false; approvalText.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        approvalPanel.layer?.cornerRadius = 10; approvalPanel.layer?.borderWidth = 1; approvalPanel.isHidden = true
+        approvalTitle.font = .systemFont(ofSize: 13, weight: .semibold); approvalTitle.textColor = AgentDialogStyle.warning
+        approvalTitle.lineBreakMode = .byTruncatingTail; approvalTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        approvalText.isEditable = false; approvalText.isRichText = false; approvalText.drawsBackground = false
+        approvalText.textColor = .labelColor; approvalText.textContainerInset = NSSize(width: 0, height: 2)
         approvalText.setAccessibilityLabel("待处理请求详情")
         approvalText.isVerticallyResizable = true; approvalText.autoresizingMask = [.width]; approvalText.textContainer?.widthTracksTextView = true
-        let scroll = NSScrollView(); scroll.documentView = approvalText; scroll.hasVerticalScroller = true
-        scroll.heightAnchor.constraint(equalToConstant: 92).isActive = true
+        approvalText.textContainer?.lineFragmentPadding = 0; approvalText.textContainer?.lineBreakMode = .byCharWrapping
+        approvalScroll.documentView = approvalText; approvalScroll.hasVerticalScroller = true
+        approvalScroll.scrollerStyle = .overlay; approvalScroll.drawsBackground = false
+        approvalHeight = approvalScroll.heightAnchor.constraint(equalToConstant: 24); approvalHeight.priority = .defaultHigh
+        NSLayoutConstraint.activate([approvalHeight, approvalScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 22)])
         approveButton.target = self; approveButton.action = #selector(allowAgentAction)
         denyButton.target = self; denyButton.action = #selector(denyAgentAction)
+        AgentDialogStyle.action(denyButton); AgentDialogStyle.action(approveButton, prominent: true)
         let actions = stack([NSView(), denyButton, approveButton], spacing: 8)
-        for view in [approvalTitle, scroll, actions] { approvalPanel.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: approvalPanel.widthAnchor).isActive = true }
+        let content = stack([approvalTitle, approvalScroll, actions], vertical: true, spacing: 7)
+        approvalPanel.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: approvalPanel.leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: approvalPanel.trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: approvalPanel.topAnchor, constant: 10),
+            content.bottomAnchor.constraint(equalTo: approvalPanel.bottomAnchor, constant: -10)
+        ])
+        for row in content.arrangedSubviews { row.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
+    }
+    private func fitApprovalPreview(to width: CGFloat) {
+        guard !approvalPanel.isHidden, let approvalHeight, let font = approvalText.font else { return }
+        let cap: CGFloat = (window?.contentView?.bounds.height ?? 540) < 650 ? 72 : 116
+        let sample = String(approvalText.string.prefix(4096)) as NSString
+        let height = sample.boundingRect(with: NSSize(width: max(80, width - 24), height: .greatestFiniteMagnitude),
+                                         options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
+        approvalHeight.constant = min(cap, max(22, ceil(height) + 4))
+    }
+    private func terminalApprovalPreview(_ command: String) -> String {
+        command.unicodeScalars.reduce(into: "") { text, scalar in
+            let category = scalar.properties.generalCategory
+            if scalar != "\n", category == .control || category == .format {
+                text += "\\u{" + String(scalar.value, radix: 16, uppercase: true) + "}"
+            } else { text.unicodeScalars.append(scalar) }
+        }
     }
     internal func questionFocused(_ id: String) -> Bool {
         if selectedTab == "attention" { return attentionPageController?.questionFocused(id) == true }
@@ -4526,22 +4595,49 @@ final class FormDocumentView: NSView {
             }
         }
         if let review = companion?.agentRuntime?.pendingReview(task.id), let call = review.pendingCalls.first, let approval = review.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }) {
+            let asking = call.name == "ask_user"
             if visibleApproval?.task != review.id || visibleApproval?.call != call.id {
                 visibleApproval = (review.id, call.id)
-                approvalTitle.stringValue = (review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : "") + (call.name == "ask_user" ? "需要补充信息" : approval.reason.components(separatedBy: "\n").first ?? approval.reason)
-                let mcpCall = AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name)
-                let approvalArguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
-                approvalText.string = (try? JSONSerialization.data(withJSONObject: approvalArguments, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])).flatMap { String(data: $0, encoding: .utf8) } ?? call.arguments
-                if mcpCall { approvalText.string = approval.reason + (approvalArguments.isEmpty ? "" : "\n\n" + approvalText.string) }
-                else if AgentBrowser.tools.contains(call.name) { approvalText.string = approval.reason + "\n\n" + approvalText.string }
-                if call.name == "git_commit", let diff = review.gitReview, diff.hash == call.object["review_hash"] as? String { approvalText.string += "\n\n" + diff.diff }
+                let reason = approval.reason.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                let owner = review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : ""
+                approvalTitle.stringValue = owner + (asking ? "需要补充信息" : reason.first.map(String.init) ?? approval.reason)
                 approvalTitle.toolTip = approval.reason
+                approvalText.font = asking ? .systemFont(ofSize: 13) : .monospacedSystemFont(ofSize: 12, weight: .regular)
+                if !asking {
+                    var arguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
+                    var details: [String] = []
+                    if reason.count > 1, !reason[1].isEmpty { details.append(String(reason[1])) }
+                    if call.name == "run_command", let command = arguments["command"] as? String {
+                        arguments.removeValue(forKey: "command")
+                        details.append(terminalApprovalPreview(command))
+                        if let network = arguments["network"] as? Bool {
+                            arguments.removeValue(forKey: "network")
+                            details.append(network ? "网络 开启" : "网络 关闭")
+                        }
+                        if let seconds = arguments["timeout_seconds"] as? Int, (1...1800).contains(seconds) {
+                            arguments.removeValue(forKey: "timeout_seconds")
+                            details.append("超时 \(seconds) 秒")
+                        }
+                    }
+                    if !arguments.isEmpty {
+                        let json = try? JSONSerialization.data(withJSONObject: arguments, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+                        details.append(json.map { String(decoding: $0, as: UTF8.self) } ?? call.arguments)
+                    }
+                    if call.name == "git_commit", let diff = review.gitReview, diff.hash == call.object["review_hash"] as? String { details.append(diff.diff) }
+                    approvalText.string = details.joined(separator: "\n")
+                }
+                approvalText.setSelectedRange(NSRange(location: 0, length: 0))
+                approvalScroll.contentView.scroll(to: .zero)
+                approvalScroll.reflectScrolledClipView(approvalScroll.contentView)
             }
-            if call.name == "ask_user" {
+            if asking {
                 let body = (call.object["question"] as? String ?? approval.reason) + (companion?.agentRuntime?.questionSkipError(review.id).map { "\n\n" + $0 } ?? "")
                 if approvalText.string != body { approvalText.string = body }
             }
-            approveButton.isHidden = call.name == "ask_user"; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived; approvalPanel.isHidden = false
+            denyButton.title = asking ? "不回答" : "拒绝"
+            approveButton.isHidden = asking; approveButton.isEnabled = !review.archived; denyButton.isEnabled = !review.archived
+            approvalScroll.isHidden = approvalText.string.isEmpty; approvalPanel.isHidden = false
+            fitApprovalPreview(to: history.bounds.width)
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
         let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
         mcpInputRow.isHidden = mcpRequest == nil
@@ -5327,7 +5423,7 @@ extension ControlWindow {
             try? await Task.sleep(nanoseconds: 100_000_000)
             guard let root = window.contentView else { return }
             func rect(_ view: NSView) -> [Double] { let value = root.convert(view.bounds, from: view); return [value.minX, root.bounds.height - value.maxY, value.width, value.height].map(Double.init) }
-            let views: [String: Any] = ["root": [root.bounds.width, root.bounds.height], "history": rect(history), "inspector": rect(workbenchInspector), "composer": rect(entryToolbar.superview!), "leadingControls": rect(entryLeading), "trailingControls": rect(entryTrailing), "contextControl": rect(taskContext), "contextLabel": taskContext.accessibilityLabel() ?? "", "contextVisibleTitle": taskContext.title, "resumeRowVisible": !workbenchLower.isHidden, "systemReduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "inspectorVisible": !workbenchInspector.isHidden, "sidebarWidth": sidebarWidth.constant, "backingScale": window.backingScaleFactor, "windowFrame": NSStringFromRect(window.frame), "windowMinimum": NSStringFromSize(window.minSize), "contentMinimum": NSStringFromSize(window.contentMinSize), "rootFitting": NSStringFromSize(root.fittingSize), "chatFitting": NSStringFromSize(chat.fittingSize), "settingsFitting": NSStringFromSize(settings.fittingSize)]
+            let views: [String: Any] = ["root": [root.bounds.width, root.bounds.height], "history": rect(history), "inspector": rect(workbenchInspector), "composer": rect(entryToolbar.superview!), "leadingControls": rect(entryLeading), "trailingControls": rect(entryTrailing), "contextControl": rect(taskContext), "contextLabel": taskContext.accessibilityLabel() ?? "", "contextVisibleTitle": taskContext.title, "resumeRowVisible": !resumeButton.isHidden, "systemReduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "inspectorVisible": !workbenchInspector.isHidden, "sidebarWidth": sidebarWidth.constant, "backingScale": window.backingScaleFactor, "windowFrame": NSStringFromRect(window.frame), "windowMinimum": NSStringFromSize(window.minSize), "contentMinimum": NSStringFromSize(window.contentMinSize), "rootFitting": NSStringFromSize(root.fittingSize), "chatFitting": NSStringFromSize(chat.fittingSize), "settingsFitting": NSStringFromSize(settings.fittingSize)]
             frames[name] = views
             if let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(root.bounds.width.rounded()), pixelsHigh: Int(root.bounds.height.rounded()), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) {
                 bitmap.size = root.bounds.size; root.cacheDisplay(in: root.bounds, to: bitmap)
@@ -5347,7 +5443,7 @@ extension ControlWindow {
         checks["actualToolRowsRetained"] = !toolRows.isEmpty
         if tasks.task(actualTask)!.events.contains(where: { $0.childTaskID != nil }) { checks["actualChildRowsRetained"] = toolRows.values.contains { $0.subviews.contains { ($0 as? NSButton)?.title == "打开子任务" && !$0.isHidden } } }
         checks["contextControlStaysInsideComposer"] = taskContext.superview === entryTrailing
-        checks["completedComposerDoesNotReserveBlankFooter"] = workbenchLower.isHidden
+        checks["completedComposerDoesNotReserveBlankFooter"] = workbenchFeedback.isHidden
         if let root = window.contentView {
             let frame = root.convert(entryToolbar.superview!.bounds, from: entryToolbar.superview!)
             checks["composerBottomMatchesSelectedReference"] = abs(frame.minY - 30) < 1

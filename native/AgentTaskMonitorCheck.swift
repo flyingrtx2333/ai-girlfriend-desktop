@@ -39,6 +39,8 @@ import AppKit
         guard !git.failed else { throw PetError(git.text) }
         let empty = tasks.tasks.first(where: { $0.title == "新的任务" && $0.workspace == nil && $0.status == .ready })?.id ?? tasks.create()
         let waiting = tasks.create(title: "确认公开说明核对命令", workspace: workspace)
+        let longApproval = tasks.create(title: "审阅长命令和完整参数", workspace: workspace)
+        let question = tasks.create(title: "选择要核对的说明章节", workspace: workspace)
         let failed = tasks.create(title: "逐项核对公开说明的安装章节、依赖版本和示例命令是否齐全", workspace: workspace)
         let completed = tasks.create(title: "已读取公开项目说明", workspace: workspace)
         let read = AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: "{\"path\":\"README.md\",\"limit\":2}")
@@ -52,6 +54,11 @@ import AppKit
         } catch { failure = error.localizedDescription }
         guard !failure.isEmpty else { throw PetError("缺失文件样例未返回错误") }
         let approval = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: "{\"command\":\"/usr/bin/wc -c README.md\",\"network\":false}")
+        let longCommand = (1...14).map { "/usr/bin/wc -c README.md # 核对公开样例的第 \($0) 行" }.joined(separator: "\n")
+        let longArguments = try JSONSerialization.data(withJSONObject: ["command": longCommand + "\n# 格式字符\u{202E}", "network": false,
+                                                                       "timeout_seconds": 17], options: [.sortedKeys])
+        let longCall = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: String(decoding: longArguments, as: UTF8.self))
+        let questionCall = AgentToolCall(id: UUID().uuidString, name: "ask_user", arguments: "{\"question\":\"请确认要核对 README 的安装、运行还是许可章节。\"}")
         tasks.update(running) { task in
             task.status = .running; task.draft = ""
             task.messages = [AgentMessage(role: "user", content: "继续核对公开 README 的后台记录。")]
@@ -60,6 +67,17 @@ import AppKit
             task.status = .waiting; task.pendingCalls = [approval]
             task.approvals = [AgentApproval(call: approval, reason: "确认后统计 README.md 的字节数", workspace: workspace)]
             task.messages = [AgentMessage(role: "user", content: "统计公开 README 的字节数，执行前先确认。")]
+        }
+        tasks.update(longApproval) { task in
+            task.status = .waiting; task.pendingCalls = [longCall]
+            task.approvals = [AgentApproval(call: longCall, reason: "核对多行终端命令\n所有命令只读取公开 README。", workspace: workspace)]
+            task.messages = [AgentMessage(role: "user", content: "请先完整展示命令和超时设置。")]
+            task.draft = "这段补充还未发送。"
+        }
+        tasks.update(question) { task in
+            task.status = .waiting; task.pendingCalls = [questionCall]
+            task.approvals = [AgentApproval(call: questionCall, reason: "选择章节", workspace: workspace)]
+            task.messages = [AgentMessage(role: "user", content: "先问我需要核对哪个章节。")]
         }
         tasks.update(failed) { task in
             task.status = .failed; task.events = [AgentEvent(kind: "tool", title: "read_file", detail: failure, status: "failed", toolCallID: missing.id)]
@@ -70,7 +88,8 @@ import AppKit
             task.messages = [AgentMessage(role: "user", content: "读取公开 README 的头两行。"), AgentMessage(role: "assistant", content: "", toolCalls: [read]), AgentMessage(role: "assistant", content: "已读到 README.md。\n\n```text\n\(proof.text.trimmingCharacters(in: .whitespacesAndNewlines))\n```")]
         }
         if let issue = tasks.writeError { throw PetError(issue) }
-        let states = ["primary": primary, "empty": empty, "running": running, "waiting": waiting, "failed": failed, "completed": completed]
+        let states = ["primary": primary, "empty": empty, "running": running, "waiting": waiting, "failed": failed,
+                      "completed": completed, "longApproval": longApproval, "question": question]
         let report: [String: Any] = ["tasks": states, "appPID": getpid(), "branch": branch, "sourceHash": fixture?["sourceHash"] as? String ?? "", "modelRequests": 0]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("workbench-state-fixtures.json"), options: .atomic)
         control.showAgentTask(primary)
