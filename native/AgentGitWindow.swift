@@ -126,7 +126,8 @@ import AppKit
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !busy else { state.stringValue = "请等待 Git 操作完成"; return false }
         guard workspaceHasUnsavedChanges else { return true }
-        guard AgentUnsavedChanges.discard("放弃提交说明？", discardTitle: "放弃说明", owner: presentingWindow) else { return false }; clearDraft(); return true
+        guard AgentUnsavedChanges.discard("放弃提交说明？", discardTitle: "放弃说明", owner: presentingWindow) else { return false }
+        message.abortEditing(); clearDraft(); return true
     }
     private func clearDraft() {
         message.stringValue = ""; draftScope = nil; draftSelection = nil; draftFocused = false; restoreDraftFocus = false
@@ -507,7 +508,7 @@ import AppKit
             guard let self else { return }
             do {
                 let result = try await git.commit(paths: review.paths, message: value, reviewHash: review.hash, draftScope: scope)
-                log("Git 提交", result: result.commit + "\n" + result.output); clearDraft(); self.review = nil; lastResult = "已提交 " + String(result.commit.prefix(8))
+                log("Git 提交", result: result.commit + "\n" + result.output); message.abortEditing(); clearDraft(); self.review = nil; lastResult = "已提交 " + String(result.commit.prefix(8))
                 setBusy(false); refresh()
                 if openPushAfter { lastResult += " · 待确认推送"; openPush() }
             } catch { log("Git 提交失败", result: error.localizedDescription, failed: true); self.review = nil; showError(error); setBusy(false) }

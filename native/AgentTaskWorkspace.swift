@@ -42,9 +42,12 @@ import AppKit
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
     private let back = NSButton(), expand = NSButton(), hide = NSButton(), add = NSButton()
     private let title = NSTextField(labelWithString: ""), body = NSView(), tabs = NSStackView(), tabScroll = NSScrollView(), breadcrumb = NSStackView()
+    private let recoveryStatus = NSTextField(wrappingLabelWithString: ""), retryButton = AgentDialogButton(title: "重试", target: nil, action: nil)
+    private lazy var recoveryNotice = NSStackView(views: [recoveryStatus, retryButton])
     private var stacks: [String: [Root: [Entry]]] = [:], orders: [String: [Root]] = [:], selected: [String: Root] = [:]
     private var recoveryTabs: [String: [Root: AgentWorkspaceRecovery.Tab]] = [:], recoveryRequested = Set<String>(), pendingRecovery = Set<String>(), permittedRecovery = Set<String>()
     private var recoveredDirty: [String: Bool] = [:]
+    private var recoveryFailures: [String: String] = [:]
     private var opened = Set<String>(), expandedTasks = Set<String>(), tabSignature = "", headerFull: Bool?, closing = false
     private var breadcrumbHeight: NSLayoutConstraint!, tabViews: [(Root, AgentThemeView, NSButton, NSButton, NSLayoutConstraint, NSLayoutConstraint)] = []
     private(set) var taskID: String?
@@ -87,6 +90,14 @@ import AppKit
             breadcrumb.leadingAnchor.constraint(equalTo: header.leadingAnchor), breadcrumb.trailingAnchor.constraint(equalTo: header.trailingAnchor), breadcrumb.topAnchor.constraint(equalTo: rule.bottomAnchor), breadcrumbHeight,
             body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor), body.topAnchor.constraint(equalTo: breadcrumb.bottomAnchor), body.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+        recoveryStatus.font = .systemFont(ofSize: 13); recoveryStatus.textColor = AgentDialogStyle.error; recoveryStatus.isSelectable = true
+        recoveryStatus.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        retryButton.target = self; retryButton.action = #selector(retryCurrentTab); AgentDialogStyle.action(retryButton)
+        recoveryNotice.orientation = .vertical; recoveryNotice.alignment = .leading; recoveryNotice.spacing = 12; recoveryNotice.isHidden = true
+        body.addSubview(recoveryNotice); recoveryNotice.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([recoveryNotice.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18),
+            recoveryNotice.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -18), recoveryNotice.topAnchor.constraint(equalTo: body.topAnchor, constant: 18),
+            recoveryStatus.widthAnchor.constraint(equalTo: recoveryNotice.widthAnchor)])
         breadcrumb.isHidden = true; isHidden = true; updateHeader(full: false)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -144,6 +155,18 @@ import AppKit
     }
     func permitRecovery(_ id: String) { permittedRecovery.insert(id) }
     func retryRecovery(_ id: String) { recoveryRequested.remove(id); permittedRecovery.remove(id); updateTabs() }
+    func reportRecoveryFailure(_ id: String, message: String?) {
+        recoveryFailures[id] = message; updateRecoveryNotice()
+    }
+    private func updateRecoveryNotice() {
+        let tab = taskID.flatMap { recoveryTabs[$0]?[selectedRoot] }
+        let message = entries.isEmpty ? tab.flatMap { recoveryFailures[$0.id] } : nil
+        recoveryStatus.stringValue = message ?? ""; recoveryNotice.isHidden = message == nil
+    }
+    @objc private func retryCurrentTab() {
+        guard let id = taskID, let tab = recoveryTabs[id]?[selectedRoot], entries.isEmpty else { return }
+        recoveryRequested.remove(tab.id); displayCurrent()
+    }
     func applyRecoveredTabStates(_ states: [String: Bool]) {
         let valid = Set(recoveryTabs.values.flatMap { $0.values.map(\.id) })
         for (id, dirty) in states where valid.contains(id) { recoveredDirty[id] = dirty }
@@ -206,13 +229,13 @@ import AppKit
     }
     private func displayCurrent() {
         if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: body) { window?.makeFirstResponder(nil) }
-        body.subviews.forEach { $0.removeFromSuperview() }
+        for view in body.subviews where view !== recoveryNotice { view.removeFromSuperview() }
         if !isHidden, let entry = entries.last {
             body.addSubview(entry.content); entry.content.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([entry.content.leadingAnchor.constraint(equalTo: body.leadingAnchor), entry.content.trailingAnchor.constraint(equalTo: body.trailingAnchor), entry.content.topAnchor.constraint(equalTo: body.topAnchor), entry.content.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
             entry.controller.settingsDidAppear()
         }
-        updateTabs(); updateHeader(full: headerFull ?? expanded); needsLayout = true; window?.recalculateKeyViewLoop()
+        updateRecoveryNotice(); updateTabs(); updateHeader(full: headerFull ?? expanded); needsLayout = true; window?.recalculateKeyViewLoop()
         if !isHidden, entries.isEmpty, let id = taskID, let tab = recoveryTabs[id]?[selectedRoot], recoveryRequested.insert(tab.id).inserted { onRestoreRoot?(id, tab) }
     }
     func setVisible(_ visible: Bool) {
@@ -281,7 +304,7 @@ import AppKit
     }
     private func removeRoot(taskID id: String, root: Root, detaching: Bool = false) {
         let old = stacks[id]?.removeValue(forKey: root) ?? []; old.reversed().forEach { if detaching { $0.controller.detachSettingsHosting() } else { $0.controller.endSettingsHosting() } }; orders[id]?.removeAll { $0 == root }
-        if let tab = recoveryTabs[id]?.removeValue(forKey: root) { recoveryRequested.remove(tab.id); pendingRecovery.remove(tab.id); permittedRecovery.remove(tab.id); recoveredDirty[tab.id] = nil }
+        if let tab = recoveryTabs[id]?.removeValue(forKey: root) { recoveryRequested.remove(tab.id); pendingRecovery.remove(tab.id); permittedRecovery.remove(tab.id); recoveredDirty[tab.id] = nil; recoveryFailures[tab.id] = nil }
         if selected[id] == root { selected[id] = orders[id]?.last }
         if orders[id]?.isEmpty != false { selected[id] = nil; opened.remove(id) }
         if taskID == id { displayCurrent(); onLayoutChange?() }
@@ -385,6 +408,7 @@ import AppKit
     func finish(tasks ids: Set<String>? = nil) {
         for id in ids ?? Set(orders.keys).union(stacks.keys) {
             for entries in (stacks.removeValue(forKey: id) ?? [:]).values { entries.reversed().forEach { $0.controller.endSettingsHosting() } }
+            recoveryTabs[id]?.values.forEach { recoveryFailures[$0.id] = nil }
             orders[id] = nil; selected[id] = nil; opened.remove(id); expandedTasks.remove(id)
             recoveryTabs[id] = nil
         }; displayCurrent(); onLayoutChange?(); onRecoveryChange?()

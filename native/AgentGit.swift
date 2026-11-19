@@ -160,7 +160,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         guard !message.isEmpty, message.utf8.count <= 4000, !message.contains("\0") else { throw PetError("请填写提交说明，最多 4000 字节") }
         guard let saved = store.task(taskID)?.gitReview, saved.paths == selected, saved.hash == reviewHash else { throw PetError("请先审阅这些文件的 Git 差异") }
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "git-commit", name: "git_commit", arguments: "{}"), task: task, store: store) }
-        if saved.commitSource == .staged { return try await commitStaged(saved, message: message) }
+        if saved.commitSource == .staged { return try await commitStaged(saved, message: message, draftScope: draftScope) }
         let current = try await diff(selected)
         guard current.hash == reviewHash else { throw PetError("文件或 HEAD 已变化，请重新审阅差异后提交") }
         guard !current.diff.isEmpty else { throw PetError("所选文件没有可提交的变化") }

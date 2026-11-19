@@ -402,8 +402,12 @@ private actor AgentWorkspaceJournal {
                 guard !stopped, (!activate || owner.agentTaskID == task), owner.taskWorkspace.recoveryLayouts.contains(where: { $0.taskID == task && $0.tabs.contains(where: { $0.id == tab.id }) }) else { return }
                 if let loaded { pageHashes[tab.id] = loaded.saved.hash; pages[tab.id] = loaded.saved.value }
                 try await owner.materializeRecoveryRoot(task: task, tab: tab, loaded: loaded, activate: activate)
-                changed()
-            } catch { owner.setStatus("标签恢复失败，原草稿已保留：" + error.localizedDescription, error: true) }
+                owner.taskWorkspace.reportRecoveryFailure(tab.id, message: nil); changed()
+            } catch {
+                let message = "标签恢复失败，原草稿已保留：" + error.localizedDescription
+                owner.taskWorkspace.reportRecoveryFailure(tab.id, message: error.localizedDescription)
+                owner.setStatus(message, error: true)
+            }
         }
     }
 }

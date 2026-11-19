@@ -3,7 +3,7 @@ import Foundation
 @MainActor extension AgentGit {
     // Git's alternate index lets selected staged blobs become a commit without
     // ever rewriting the user's index or reading their later working versions.
-    func commitStaged(_ reviewed: AgentGitReview, message: String) async throws -> AgentGitCommit {
+    func commitStaged(_ reviewed: AgentGitReview, message: String, draftScope: AgentGitDraftRecovery.Scope?) async throws -> AgentGitCommit {
         let current = try await diff(reviewed.paths, source: .staged)
         guard current.hash == reviewed.hash, !current.diff.isEmpty, let expectedRef = reviewed.branchRef else { throw PetError("暂存区、分支或 HEAD 已变化，请重新审阅后提交") }
         try await validateHooks()
@@ -69,6 +69,7 @@ import Foundation
         let finalReview = try await diff(reviewed.paths, source: .staged)
         guard finalReview.hash == reviewed.hash else { throw PetError("暂存区或 HEAD 已变化，请重新审阅") }
         try validateWorkspace()
+        try draftScope?.requireCurrent(store.task(taskID))
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "git-commit-final", name: "git_commit", arguments: "{}"), task: task, store: store) }
         try Task.checkCancellation()
         store.update(taskID) { $0.gitReview = nil }

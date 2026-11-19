@@ -264,7 +264,9 @@ import AppKit
         editor.string = "保留正在输入的提交说明。"
         await page.checkWorkspace(source: .staged, path: "review.txt")
         checks["visualSourceChangePreservesLiveCommitEditor"] = page.workspaceReadback()["draft"] as? String == "保留正在输入的提交说明。"
-        owner.makeFirstResponder(nil); message.stringValue = ""
+        guard owner.makeFirstResponder(message), let clearingEditor = message.currentEditor() as? NSTextView else { throw PetError("清空提交说明时无法打开实际输入框") }
+        clearingEditor.selectAll(nil); clearingEditor.deleteBackward(nil); message.validateEditing()
+        checks["visualCommitInputActuallyCleared"] = clearingEditor.string.isEmpty && message.stringValue.isEmpty
         guard let commit = gitReviewSubviews(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "提交已暂存" }),
               let refresh = gitReviewSubviews(content).compactMap({ $0 as? NSButton }).first(where: { $0.accessibilityLabel() == "刷新 Git" }) else { throw PetError("Git 原生动作不可用") }
         commit.performClick(nil); await settle()
