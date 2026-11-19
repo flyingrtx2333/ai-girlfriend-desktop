@@ -75,7 +75,7 @@ import AppKit
         if showingBackups {
             guard backups.indices.contains(row) else { return nil }; let item = backups[row]
             let kind = item.registration == nil ? "" : " · Git 登记"
-            name = (item.branch.map { $0.replacingOccurrences(of: "refs/heads/", with: "") } ?? "分离状态") + kind + " · " + backupState(item.state); path = item.origin.path
+            name = (item.branch.map { $0.replacingOccurrences(of: "refs/heads/", with: "") } ?? "分离状态") + kind + " · " + backupState(item); path = item.origin.path
         } else {
             guard entries.indices.contains(row) else { return nil }; let item = entries[row]
             let status = item.unavailable ?? (item.canRelink == true ? "原目录缺失" : item.owned ? nil : "外部工作树")
@@ -89,7 +89,10 @@ import AppKit
         NSLayoutConstraint.activate([first.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8), first.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8), first.topAnchor.constraint(equalTo: cell.topAnchor, constant: 9), second.leadingAnchor.constraint(equalTo: first.leadingAnchor), second.trailingAnchor.constraint(equalTo: first.trailingAnchor), second.topAnchor.constraint(equalTo: first.bottomAnchor, constant: 4)])
         return cell
     }
-    private func backupState(_ value: String) -> String { ["prepared": "备份已保留", "recycled": "已回收", "restoring": "恢复待核对", "restored": "已恢复"][value] ?? value }
+    private func backupState(_ item: AgentWorktreeBackup) -> String {
+        if git.canResumeWorktreeRecycle(item) { return "回收待继续" }
+        return ["prepared": "备份已保留", "recycled": "已回收", "restoring": "恢复待核对", "restored": "已恢复"][item.state] ?? item.state
+    }
     func tableViewSelectionDidChange(_ notification: Notification) {
         if let entry { selectedEntryPath = entry.path }; if let backup { selectedBackupID = backup.id }; showSelection()
     }
@@ -112,9 +115,10 @@ import AppKit
             let status = item.unavailable ?? (item.missingRegistration == true ? "原目录缺失 · 可清理 Git 登记" : item.owned ? "可回收" : "外部工作树 · 可手动备份回收")
             detail.string = [item.branch ?? "分离状态", item.path, item.head.map { "提交 " + $0 } ?? "", item.locked.map { "锁定：" + ($0.isEmpty ? "已锁定" : $0) } ?? "", status, "\n关联任务", ids.compactMap { id in store.task(id).map { $0.title + " · " + ($0.archived ? "已归档" : $0.status.title) } }.joined(separator: "\n")].filter { !$0.isEmpty }.joined(separator: "\n\n")
         } else if let item = backup {
-            detail.string = [backupState(item.state), item.restoredBranch ?? item.branch ?? "分离状态", item.origin.path, "提交 " + item.head, item.created.formatted(date: .numeric, time: .shortened), "\n关联任务", ids.compactMap { store.task($0)?.title }.joined(separator: "\n")].joined(separator: "\n\n")
+            detail.string = [backupState(item), item.restoredBranch ?? item.branch ?? "分离状态", item.origin.path, "提交 " + item.head, item.created.formatted(date: .numeric, time: .shortened), "\n关联任务", ids.compactMap { store.task($0)?.title }.joined(separator: "\n")].joined(separator: "\n\n")
             if restoreReviewID != nil {
-                if item.registration != nil { detail.string += "\n\n恢复原 Git 登记和暂存状态。若原目录仍缺失，可接回原目录或使用 Git 重新关联。" }
+                if git.canResumeWorktreeRecycle(item) { detail.string += "\n\n核对备份和原目录，完成回收并归档关联任务。发现新改动时会暂停。" }
+                else if item.registration != nil { detail.string += "\n\n恢复原 Git 登记和暂存状态。若原目录仍缺失，可接回原目录或使用 Git 重新关联。" }
                 else if item.state == "restoring" { detail.string += "\n\n核对现有文件和暂存状态，补齐缺失内容。若有变化，会停下来请你先处理。" }
                 else { detail.string += "\n\n将文件、暂存状态与关联任务恢复到原位置。原分支已变化或被占用时创建 recovered 分支。" }
             }
@@ -128,10 +132,12 @@ import AppKit
         relinkButton.title = relinkReview == nil ? "重新关联…" : "确认关联目录"
         cancelButton.isHidden = !reviewing; cancelButton.isEnabled = !busy
         recycleButton.title = entry?.missingRegistration == true ? (recycleReview == nil ? "清理登记…" : "备份并清理登记") : (recycleReview == nil ? "回收…" : "备份并回收")
-        if backup?.state == "restoring" { restoreButton.title = restoreReviewID == nil ? "继续恢复…" : "继续恢复" }
+        let resumingRecycle = backup.map(git.canResumeWorktreeRecycle) == true
+        if resumingRecycle { restoreButton.title = restoreReviewID == nil ? "继续回收…" : "继续回收" }
+        else if backup?.state == "restoring" { restoreButton.title = restoreReviewID == nil ? "继续恢复…" : "继续恢复" }
         else { restoreButton.title = restoreReviewID == nil ? "恢复…" : backup?.registration != nil ? "恢复登记" : "恢复工作树" }
         recycleButton.isEnabled = !busy && entry?.unavailable == nil && entry != nil
-        restoreButton.isEnabled = !busy && backup?.canRestore == true
+        restoreButton.isEnabled = !busy && (resumingRecycle || backup?.canRestore == true)
     }
     private func setBusy(_ value: Bool) { busy = value; if value { state.textColor = AgentWorkbenchTheme.secondaryText }; showSelection() }
     private func showError(_ error: Error) { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error }
@@ -156,6 +162,7 @@ import AppKit
     }
     @objc private func reveal() {
         let path = entry?.path ?? backup.map { item in
+            if let held = git.heldWorktreeRecyclePath(item) { return held }
             if item.registration == nil { return store.directory.appendingPathComponent("worktrees/" + item.id + "/files").path }
             if item.state == "restored" { return store.directory.appendingPathComponent("worktrees/" + item.id + "/record.json").path }
             return git.worktreeRegistrationBackupURL(item.id).path
@@ -207,7 +214,11 @@ import AppKit
             recycleReview = nil; setBusy(true)
             job = Task { [weak self] in
                 guard let self else { return }
-                do { try await recycleReviewed(review) } catch { showError(error) }
+                do { try await recycleReviewed(review) }
+                catch {
+                    if let current = try? await git.worktrees(), let saved = try? git.worktreeBackups() { entries = current; backups = saved; reloadRows() }
+                    showError(error)
+                }
                 setBusy(false)
             }; return
         }
@@ -229,12 +240,21 @@ import AppKit
         entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows()
     }
     @objc private func restore() {
-        guard !busy, let item = backup, item.canRestore else { return }
+        guard !busy, let item = backup else { return }
+        let resumingRecycle = git.canResumeWorktreeRecycle(item)
+        guard resumingRecycle || item.canRestore else { return }
         guard restoreReviewID == item.id else { restoreReviewID = item.id; state.stringValue = ""; showSelection(); return }
-        restoreReviewID = nil; setBusy(true); state.stringValue = item.registration == nil ? "恢复工作树…" : "恢复 Git 登记…"
+        restoreReviewID = nil; setBusy(true)
+        state.stringValue = resumingRecycle ? "继续回收工作树…" : item.registration == nil ? "恢复工作树…" : "恢复 Git 登记…"
         job = Task { [weak self] in
             guard let self else { return }
-            do { try await restoreReviewed(item.id) }
+            do {
+                if resumingRecycle {
+                    let result = try await git.resumeWorktreeRecycle(backupID: item.id)
+                    state.stringValue = "已回收 · " + (result.branch?.replacingOccurrences(of: "refs/heads/", with: "") ?? "分离状态")
+                    entries = try await git.worktrees(); backups = try git.worktreeBackups(); reloadRows()
+                } else { try await restoreReviewed(item.id) }
+            }
             catch {
                 if let saved = try? git.worktreeBackups() { backups = saved; reloadRows() }
                 showError(error)

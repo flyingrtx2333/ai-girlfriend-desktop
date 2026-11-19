@@ -604,8 +604,8 @@ struct AgentWorktreeHandoffReview {
 final class AgentWorktreeLease {
     let descriptor: Int32
 
-    init(in directory: URL, label: String = "移交") throws {
-        let path = directory.appendingPathComponent("lease").path
+    init(in directory: URL, label: String = "移交", name: String = "lease") throws {
+        let path = directory.appendingPathComponent(name).path
         let descriptor = open(path, O_RDONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0o600)
         guard descriptor >= 0 else { throw PetError("无法读取" + label + "操作锁") }
         var info = stat()
