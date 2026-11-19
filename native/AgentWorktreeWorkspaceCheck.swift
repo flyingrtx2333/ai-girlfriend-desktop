@@ -132,7 +132,7 @@ import AppKit
             await inspectLayout("manager")
             host.checkExpand(); await inspectLayout("manager-expanded"); host.checkExpand()
             await manager.checkWorkspace(path: fixture.foreign.path)
-            checks["externalCheckoutRemainsVisibleAndNotRecyclable"] = manager.workspaceReadback()["selectedPath"] as? String == fixture.foreign.path && manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+            checks["unmanagedCheckoutRemainsVisibleForManualRecycle"] = manager.workspaceReadback()["selectedPath"] as? String == fixture.foreign.path && manager.workspaceReadback()["recycleEnabled"] as? Bool == true
             await manager.checkWorkspace(path: fixture.child.path, action: "open"); let openedTask = control.agentTaskID; control.showAgentTask(fixture.taskID)
             checks["openAssociatedTaskAndReturnKeepsManagerSelection"] = openedTask == fixture.childID && host.currentController === manager && manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
             let tree = try AgentWorktreeSnapshot.read(fixture.child), index = try await actualIndex(fixture.child)
