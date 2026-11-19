@@ -153,7 +153,7 @@ import AppKit
         func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
         let children = views(content)
         guard let action = children.compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == "knowledge-open-local-video" }),
-              let search = children.compactMap({ $0 as? NSSearchField }).first(where: { $0.placeholderString == "搜索知识库" }) else {
+              let search = children.compactMap({ $0 as? NSSearchField }).first(where: { $0.accessibilityLabel() == "搜索知识库" }) else {
             throw PetError("知识库视频入口或筛选控件缺失")
         }
         let frame = window.frame
@@ -161,7 +161,8 @@ import AppKit
         window.contentView?.layoutSubtreeIfNeeded()
         let buttons = content.convert(action.bounds, from: action)
         var checks = ["localVideoPickerFitsInMinimumWindow": window.frame.size == NSSize(width: 780, height: 540)
-            && action.isEnabled && action.bounds.height == 28 && content.bounds.insetBy(dx: -1, dy: -1).contains(buttons)]
+            && action.isEnabled && action.bounds.height == 28 && content.bounds.insetBy(dx: -1, dy: -1).contains(buttons)
+            && search.placeholderString == "搜索"]
         let query = "公开录像"
         search.stringValue = query; search.sendAction(search.action, to: search.target)
         for (name, invalid) in [("nonVideo", fixture.guide), ("symbolicLink", link)] {
@@ -216,7 +217,7 @@ import AppKit
         guard let parent = host.currentController as? AgentKnowledgeLibraryWindow, let parentContent = parent.pageContentView else {
             throw PetError("视频返回后未显示原知识库")
         }
-        let searchAfter = views(parentContent).compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "搜索知识库" }
+        let searchAfter = views(parentContent).compactMap { $0 as? NSSearchField }.first { $0.accessibilityLabel() == "搜索知识库" }
         checks["backRestoresFilterAndVideoPickerFocus"] = searchAfter?.stringValue == query
             && (window.firstResponder as? NSView)?.identifier?.rawValue == "knowledge-open-local-video"
         checks["explicitBackClearsVideoRecovery"] = try await host.captureWorkspaceRecovery(active: true) == nil

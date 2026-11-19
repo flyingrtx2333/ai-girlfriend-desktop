@@ -32,7 +32,8 @@ import UniformTypeIdentifiers
         window.title = "知识库"; window.minSize = NSSize(width: 900, height: 560); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
-        baseSearch.placeholderString = "搜索知识库"; fileSearch.placeholderString = "搜索文件"
+        baseSearch.placeholderString = "搜索"; baseSearch.setAccessibilityLabel("搜索知识库")
+        fileSearch.placeholderString = "搜索文件"
         for field in [baseSearch, fileSearch] { field.target = self; field.action = #selector(filterChanged); field.sendsSearchStringImmediately = true }
         scope.addItems(withTitles: ["全部范围", "用户", "当前工作区"]); scope.target = self; scope.action = #selector(filterChanged); scope.setAccessibilityLabel("知识库范围")
         scope.autoenablesItems = false; scope.item(at: 2)?.isEnabled = workspace != nil
