@@ -68,7 +68,7 @@ struct AgentWorktreeHandoffReview {
     private let taskID: String
     private var applying = false
     private var confirmed = false
-    private var lease: AgentHandoffLease?
+    private var lease: AgentWorktreeLease?
 
     init(store: AgentStore, taskID: String) {
         self.store = store
@@ -402,15 +402,15 @@ struct AgentWorktreeHandoffReview {
                 try files.fileHash(files.literalURL("transfer.patch"), maximum: 2_000_000))
     }
 
-    private func lock(_ plan: Plan, operation: String, mode: AgentHandoffIndexLock.Mode) throws -> AgentHandoffIndexLock? {
+    private func lock(_ plan: Plan, operation: String, mode: AgentWorktreeIndexLock.Mode) throws -> AgentWorktreeIndexLock? {
         guard try directoryIdentity(plan.source.to.root) == plan.source.to.identity,
               try directoryIdentity(plan.source.to.metadata) == plan.source.to.metadataIdentity else {
             throw PetError("本地目录已变化：" + plan.source.to.root)
         }
-        return try AgentHandoffIndexLock(metadata: plan.source.to.metadata, operation: operation, mode: mode)
+        return try AgentWorktreeIndexLock(metadata: plan.source.to.metadata, operation: operation, mode: mode)
     }
 
-    private func finish(_ directory: URL, locks: [AgentHandoffIndexLock], outcome: String) throws {
+    private func finish(_ directory: URL, locks: [AgentWorktreeIndexLock], outcome: String) throws {
         for lock in locks { try lock.release() }
         try Data(outcome.utf8).write(to: directory.appendingPathComponent("outcome"), options: .atomic)
     }
@@ -418,7 +418,7 @@ struct AgentWorktreeHandoffReview {
     func apply(_ reviewed: AgentWorktreeHandoffReview) async throws -> String {
         guard !applying, !confirmed else { throw PetError("此移交已处理") }
         applying = true; defer { applying = false }
-        lease = try AgentHandoffLease(in: history(create: true)); defer { lease = nil }
+        lease = try AgentWorktreeLease(in: history(create: true)); defer { lease = nil }
         let repeated = try await prepare()
         defer { discard(repeated) }
         guard reviewed.taskVersion == repeated.taskVersion, reviewed.plans.map(\.source) == repeated.plans.map(\.source) else {
@@ -442,7 +442,7 @@ struct AgentWorktreeHandoffReview {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(journal).write(to: repeated.directory.appendingPathComponent("journal.json"), options: .atomic)
         let operation = repeated.directory.lastPathComponent
-        var locks: [AgentHandoffIndexLock] = []
+        var locks: [AgentWorktreeIndexLock] = []
         defer { for lock in locks { try? lock.release() } }
         var mayHaveWritten = false
         do {
@@ -508,7 +508,7 @@ struct AgentWorktreeHandoffReview {
     func recover(_ reviewed: Recovery) async throws -> String? {
         guard !applying else { throw PetError("移交正在进行") }
         applying = true; defer { applying = false }
-        lease = try AgentHandoffLease(in: history()); defer { lease = nil }
+        lease = try AgentWorktreeLease(in: history()); defer { lease = nil }
         guard try pendingRecovery() == reviewed else { throw PetError("移交状态已变化，请重新载入") }
         let journal = reviewed.journal, operation = reviewed.directory.lastPathComponent
         let plans = journal.projects.enumerated().map { i, project in
@@ -520,7 +520,7 @@ struct AgentWorktreeHandoffReview {
         let owner = UUID()
         store.worktreeRetention.setNativeOperation(owner, taskID: taskID, busy: true)
         defer { store.worktreeRetention.setNativeOperation(owner, taskID: taskID, busy: false) }
-        var locks: [AgentHandoffIndexLock] = []
+        var locks: [AgentWorktreeIndexLock] = []
         defer { for lock in locks { lock.endRecoveryAttempt() } }
         for plan in plans {
             if let value = try lock(plan, operation: operation, mode: reviewed.published ? .cleanup : .recover) { locks.append(value) }
@@ -570,7 +570,7 @@ struct AgentWorktreeHandoffReview {
         throw PetError("本地工作文件已有后续改动或写入未完成。请保留这些文件并在 Git 中核对：\n" + to.root)
     }
 
-    private func restore(_ plans: [Plan], journal: Journal, locks: [AgentHandoffIndexLock]) async throws {
+    private func restore(_ plans: [Plan], journal: Journal, locks: [AgentWorktreeIndexLock]) async throws {
         let index = "restore-" + UUID().uuidString + ".index"
         defer {
             for plan in plans { try? FileManager.default.removeItem(at: plan.directory.appendingPathComponent(index)) }
@@ -601,18 +601,18 @@ struct AgentWorktreeHandoffReview {
     }
 }
 
-private final class AgentHandoffLease {
+final class AgentWorktreeLease {
     let descriptor: Int32
 
-    init(in directory: URL) throws {
+    init(in directory: URL, label: String = "移交") throws {
         let path = directory.appendingPathComponent("lease").path
         let descriptor = open(path, O_RDONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0o600)
-        guard descriptor >= 0 else { throw PetError("无法读取移交操作锁") }
+        guard descriptor >= 0 else { throw PetError("无法读取" + label + "操作锁") }
         var info = stat()
         guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
               flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
             close(descriptor)
-            throw PetError("另一进程仍在处理移交。请稍后重试。")
+            throw PetError("另一进程仍在处理" + label + "。请稍后重试。")
         }
         self.descriptor = descriptor
     }
@@ -621,17 +621,18 @@ private final class AgentHandoffLease {
     deinit { close(descriptor) }
 }
 
-private final class AgentHandoffIndexLock {
+final class AgentWorktreeIndexLock {
     enum Mode { case new, recover, cleanup }
     private var parent: Int32
     private var lock: Int32
     private let marker: String
     private let wasPresent: Bool
+    private let label: String
 
-    init?(metadata: String, operation: String, mode: Mode) throws {
+    init?(metadata: String, operation: String, mode: Mode, prefix: String = "handoff", label: String = "移交") throws {
         let files = try AgentFiles(workspace: metadata, followParentLinks: false)
         let (parent, name) = try files.parentDescriptor(files.literalURL("index.lock"), create: false)
-        let marker = "bluefatfish-handoff-" + operation + ".lock"
+        let marker = "bluefatfish-" + prefix + "-" + operation + ".lock"
         let flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
         var lock = mode == .cleanup ? -1 : openat(parent, marker, flags | O_CREAT | O_EXCL, 0o600)
         let created = lock >= 0
@@ -641,7 +642,7 @@ private final class AgentHandoffIndexLock {
         guard lock >= 0, fstat(lock, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
             if lock >= 0 { close(lock) }
             close(parent)
-            throw PetError("本地移交锁无法核对：" + metadata)
+            throw PetError("本地" + label + "锁无法核对：" + metadata)
         }
         let wasPresent = Self.matches(parent, lock, name)
         // The exclusive hard link publishes a Git lock whose owner can still
@@ -650,12 +651,13 @@ private final class AgentHandoffIndexLock {
             let conflict = errno == EEXIST
             if created, Self.matches(parent, lock, marker) { unlinkat(parent, marker, 0) }
             close(lock); close(parent)
-            throw PetError((conflict ? "本地暂存区正被其他 Git 操作使用：" : "无法建立本地移交锁：") + metadata)
+            throw PetError((conflict ? "本地暂存区正被其他 Git 操作使用：" : "无法建立本地" + label + "锁：") + metadata)
         }
         self.parent = parent
         self.lock = lock
         self.marker = marker
         self.wasPresent = wasPresent
+        self.label = label
     }
 
     private static func matches(_ parent: Int32, _ lock: Int32, _ name: String) -> Bool {
@@ -668,7 +670,7 @@ private final class AgentHandoffIndexLock {
     func release() throws {
         guard lock >= 0 else { return }
         if holdsIndex, unlinkat(parent, "index.lock", 0) != 0 { throw PetError("本地 Git 暂存锁无法释放") }
-        if Self.matches(parent, lock, marker), unlinkat(parent, marker, 0) != 0 { throw PetError("本地移交锁无法释放") }
+        if Self.matches(parent, lock, marker), unlinkat(parent, marker, 0) != 0 { throw PetError("本地" + label + "锁无法释放") }
         closeHandles()
     }
     func endRecoveryAttempt() {

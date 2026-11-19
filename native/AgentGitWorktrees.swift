@@ -22,6 +22,21 @@ struct AgentMissingWorktreeRegistration: Codable, Equatable {
     let parent: String
     let metadata: String
 }
+private struct AgentWorktreeRestore: Codable {
+    struct Directory: Codable { var name: String; var identity: String }
+
+    var id = UUID()
+    var parent: String
+    var branch: String?
+    var savedMetadata: [String: String]
+    var checkout: String?
+    var metadata: String?
+    var initialMetadata: [String: String]?
+    var staging: Directory?
+    var readyToUnlock = false
+    var lockReason: String { "BlueFatFish restore " + id.uuidString }
+    var stagingName: String { ".bluefatfish-restore-" + id.uuidString }
+}
 struct AgentWorktreeBackup: Codable {
     var id: String; var origin: AgentWorktreeOrigin; var head: String; var branch: String?
     var treeHash: String; var indexHash: String; var created = Date(); var tasks: [String: Bool]
@@ -29,6 +44,8 @@ struct AgentWorktreeBackup: Codable {
     var objectRefs: [String]?; var indexTree: String?
     var external: AgentExternalWorktreeIdentity? = nil
     var registration: AgentMissingWorktreeRegistration? = nil
+    fileprivate var restore: AgentWorktreeRestore? = nil
+    var canRestore: Bool { ["prepared", "recycled"].contains(state) || (registration == nil && state == "restoring") }
 }
 struct AgentWorktreeRecycleReview: Codable {
     static let processID = UUID().uuidString
@@ -56,8 +73,12 @@ private struct AgentWorktreeRecycleTarget {
 }
 
 enum AgentWorktreeSnapshot {
-    struct Item: Codable { var path: String; var kind: String; var mode: UInt16; var hash: String }
-    struct Value { var hash: String; var count: Int; var bytes: UInt64; var modified: Date }
+    struct Item: Codable, Equatable { var path: String; var kind: String; var mode: UInt16; var hash: String }
+    struct Value {
+        var hash: String; var items: [Item]; var bytes: UInt64; var modified: Date
+        var count: Int { items.count }
+        var topLevel: [String: [Item]] { Dictionary(grouping: items) { String($0.path.prefix { $0 != "/" }) } }
+    }
     static func read(_ root: URL) throws -> Value {
         let fm = FileManager.default
         guard let resolved = realpath(root.path, nil) else { throw PetError("工作树目录不可用") }
@@ -89,7 +110,8 @@ enum AgentWorktreeSnapshot {
         }
         if let enumerationError { throw enumerationError }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        return Value(hash: AgentFiles.hash(try encoder.encode(items.sorted { $0.path < $1.path })), count: items.count, bytes: bytes, modified: modified)
+        let sorted = items.sorted { $0.path < $1.path }
+        return Value(hash: AgentFiles.hash(try encoder.encode(sorted)), items: sorted, bytes: bytes, modified: modified)
     }
 }
 
@@ -122,7 +144,7 @@ enum AgentWorktreeSnapshot {
         }
         return url
     }
-    private func directoryIdentity(_ url: URL) throws -> String {
+    private nonisolated func directoryIdentity(_ url: URL) throws -> String {
         var info = stat()
         guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw PetError("外部工作树目录或上级目录不可用") }
         let volume = (try? url.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? String(info.st_dev)
@@ -214,8 +236,9 @@ enum AgentWorktreeSnapshot {
         try checkWorktreeMetadataIdle(actual)
         return AgentWorktreeRecycleTarget(entry: entry, metadata: actual, external: external)
     }
-    private func checkWorktreeMetadataIdle(_ metadata: URL, allowingLocked: Bool = false) throws {
-        for name in ["index.lock", "HEAD.lock", "gitdir.lock", "locked", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"] where name != "locked" || !allowingLocked {
+    private func checkWorktreeMetadataIdle(_ metadata: URL, allowingLocked: Bool = false, holdingIndex: Bool = false) throws {
+        for name in ["index.lock", "HEAD.lock", "gitdir.lock", "locked", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"] {
+            if (name == "locked" && allowingLocked) || (name == "index.lock" && holdingIndex) { continue }
             guard nonexistentWorktreePath(metadata.appendingPathComponent(name)) else { throw PetError("工作树正在执行 Git 操作或已锁定：" + name) }
         }
     }
@@ -557,11 +580,16 @@ enum AgentWorktreeSnapshot {
         return backup
     }
     func restoreWorktree(backupID: String) async throws -> AgentWorktreeBackup {
-        try validateWorkspace()
-        if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-restore", name: "git_restore_worktree", arguments: "{}"), task: task, store: store) }
+        try validateWorktreeRestore()
+        guard UUID(uuidString: backupID) != nil else { throw PetError("没有当前项目的回收记录") }
+        _ = try worktreeBackup(backupID)
+        let folder = try worktreeFile(backupID)
+        let lease = try AgentWorktreeLease(in: folder, label: "恢复")
+        defer { withExtendedLifetime(lease) {} }
         var backup = try worktreeBackup(backupID)
-        guard ["prepared", "recycled"].contains(backup.state) else { throw PetError("该回收记录已处理或需要手动核对") }
+        guard backup.canRestore else { throw PetError("该回收记录已处理或需要手动核对") }
         if let registration = backup.registration { return try await restoreWorktreeRegistration(backup, registration: registration) }
+        let record = folder.appendingPathComponent("record.json")
         let destination: URL
         if backup.external != nil {
             destination = try externalWorktreeURL(backup.origin.path)
@@ -571,65 +599,239 @@ enum AgentWorktreeSnapshot {
         }
         let externalWorktree = backup.external.map { _ in destination }
         let parent = destination.deletingLastPathComponent()
-        let existing = try await worktrees()
-        guard nonexistentWorktreePath(destination), existing.allSatisfy({ $0.path != destination.path }) else { throw PetError("原路径或工作树登记已存在，未覆盖任何文件") }
-        if let external = backup.external, try directoryIdentity(parent) != external.parent { throw PetError("原上级目录已变化，请接回原目录后重试") }
-        let folder = try worktreeFile(backup.id), copy = folder.appendingPathComponent("files"), index = try Data(contentsOf: folder.appendingPathComponent("metadata/index"))
-        guard try await worktreeSnapshot(copy.path).hash == backup.treeHash, AgentFiles.hash(index) == backup.indexHash else { throw PetError("回收备份已变化，未恢复") }
-        let branch: String?
-        if let old = backup.branch {
-            let current = try await run(["rev-parse", "--verify", old])
-            branch = !current.failed && current.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) == backup.head && !existing.contains(where: { $0.branch == old }) ? old : "refs/heads/recovered/" + backup.id.lowercased()
-        } else { branch = nil }
+        let fm = FileManager.default, copy = folder.appendingPathComponent("files")
+        let backupMetadata = try worktreeRestoreMetadata(folder.appendingPathComponent("metadata"))
+        let hashes = backupMetadata.mapValues(AgentFiles.hash)
+        let tree = try await worktreeSnapshot(copy.path)
+        guard tree.hash == backup.treeHash, hashes["index"] == backup.indexHash,
+              backup.restore?.savedMetadata == nil || backup.restore?.savedMetadata == hashes else { throw PetError("回收备份已变化，未恢复") }
+        try await validateHooks()
+        try validateWorktreeRestore()
+        if let external = backup.external {
+            guard try externalWorktreeURL(destination.path) == destination, try directoryIdentity(parent) == external.parent else { throw PetError("原上级目录已变化，请接回原目录后重试") }
+        } else if backup.restore == nil {
+            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        let parentIdentity = try directoryIdentity(parent)
+        var entries = try await worktrees()
+        if backup.restore == nil {
+            guard nonexistentWorktreePath(destination), entries.allSatisfy({ $0.path != destination.path }) else {
+                throw PetError("原路径或工作树登记已存在，未覆盖任何文件")
+            }
+            let branch: String?
+            if let old = backup.branch {
+                let current = try await run(["rev-parse", "--verify", old])
+                branch = !current.failed && current.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) == backup.head && !entries.contains(where: { $0.branch == old })
+                    ? old : "refs/heads/recovered/" + backup.id.lowercased()
+            } else { branch = nil }
+            backup.restore = AgentWorktreeRestore(parent: parentIdentity, branch: branch, savedMetadata: hashes)
+            backup.state = "restoring"; try saveWorktree(backup, record)
+        }
+        guard var restore = backup.restore, restore.parent == parentIdentity else { throw PetError("原上级目录已变化，请接回原目录后重试") }
+        var addedHere = false
+        if nonexistentWorktreePath(destination), entries.allSatisfy({ $0.path != destination.path }), restore.checkout == nil {
+            let args = try await worktreeRestoreArguments(restore, backup: backup)
+            try validateWorktreeRestore()
+            guard try directoryIdentity(parent) == restore.parent, nonexistentWorktreePath(destination) else { throw PetError("原目录已变化，备份保留") }
+            let added = try await run(args, write: true, externalWorktree: externalWorktree, leaseDescriptor: lease.descriptor)
+            guard !added.failed else { throw PetError("Git 未完成恢复登记，备份保留：" + added.text) }
+            addedHere = true
+            entries = try await worktrees()
+        }
+        guard let entry = entries.first(where: { $0.path == destination.path }),
+              entry.locked == restore.lockReason || (restore.readyToUnlock && entry.locked == nil) else {
+            throw PetError("无法核对这次恢复创建的 Git 登记。原目录与备份已保留。")
+        }
+        let metadata = try await worktreeMetadata(destination.path, externalWorktree: externalWorktree)
+        let checkout = try directoryIdentity(destination), admin = try directoryIdentity(metadata)
+        guard try directoryIdentity(parent) == restore.parent, try registeredCheckoutLink(metadata) == destination.path + "/.git",
+              restore.checkout == nil || restore.checkout == checkout,
+              restore.metadata == nil || restore.metadata == admin else { throw PetError("恢复目录或 Git 登记已变化，备份保留") }
+        if !restore.readyToUnlock {
+            guard entry.head == backup.head, entry.branch == restore.branch else { throw PetError("恢复目录的分支或提交已变化，备份保留") }
+            try validateWorktreeRestore(entry: entry)
+            guard let lock = try AgentWorktreeIndexLock(metadata: metadata.path, operation: restore.id.uuidString, mode: .recover, prefix: "restore", label: "恢复") else { throw PetError("无法建立 Git 恢复锁") }
+            defer { try? lock.release() }
+            try checkWorktreeMetadataIdle(metadata, allowingLocked: true, holdingIndex: lock.holdsIndex)
+            let initial = try worktreeRestoreMetadata(metadata).mapValues(AgentFiles.hash)
+            if restore.checkout == nil {
+                restore.checkout = checkout; restore.metadata = admin
+                // Git may seed a per-worktree config while adding the checkout.
+                // Only take it as a baseline in the attempt that created it.
+                restore.initialMetadata = addedHere ? initial.filter { $0.key == "config.worktree" } : [:]
+                backup.restore = restore; try saveWorktree(backup, record)
+            }
+            let current = try await worktreeSnapshot(destination.path)
+            let groups = tree.topLevel, present = current.topLevel
+            if let conflict = present.keys.sorted().first(where: { present[$0] != groups[$0] }) {
+                throw PetError("目标已有变化：" + conflict + "。请保留这些改动后再继续恢复。")
+            }
+            try validateRestoreMetadata(initial, saved: hashes, initial: restore.initialMetadata ?? [:])
+            let missing = groups.keys.filter { present[$0] == nil }.sorted()
+            if let old = restore.staging {
+                let directory = parent.appendingPathComponent(old.name)
+                guard old.name.hasPrefix(restore.stagingName + "."),
+                      UUID(uuidString: String(old.name.dropFirst(restore.stagingName.count + 1))) != nil,
+                      try directoryIdentity(parent) == restore.parent else { throw PetError("恢复临时目录已变化，备份保留") }
+                if !nonexistentWorktreePath(directory) {
+                    guard try directoryIdentity(directory) == old.identity else { throw PetError("恢复临时目录已变化，备份保留") }
+                    try fm.removeItem(at: directory)
+                }
+                restore.staging = nil
+            }
+            if !missing.isEmpty {
+                let stage = parent.appendingPathComponent(restore.stagingName + "." + UUID().uuidString, isDirectory: true)
+                guard try directoryIdentity(parent) == restore.parent, mkdir(stage.path, 0o700) == 0 else { throw PetError("无法建立恢复临时目录") }
+                restore.staging = try AgentWorktreeRestore.Directory(name: stage.lastPathComponent, identity: directoryIdentity(stage))
+                backup.restore = restore; try saveWorktree(backup, record)
+                let job = Task.detached {
+                    for name in missing {
+                        try Task.checkCancellation()
+                        try FileManager.default.copyItem(at: copy.appendingPathComponent(name), to: stage.appendingPathComponent(name))
+                    }
+                    return try AgentWorktreeSnapshot.read(stage).topLevel
+                }
+                let staged = try await withTaskCancellationHandler { try await job.value } onCancel: { job.cancel() }
+                guard staged == groups.filter({ present[$0.key] == nil }) else { throw PetError("恢复临时文件与备份不一致") }
+                try validateWorktreeRestore(entry: entry)
+                guard let staging = restore.staging, try directoryIdentity(parent) == restore.parent else { throw PetError("恢复上级目录已变化，备份保留") }
+                try installWorktreeFiles(missing, from: stage, stageIdentity: staging.identity, to: destination, checkoutIdentity: checkout)
+                guard try directoryIdentity(stage) == staging.identity else { throw PetError("恢复临时目录已变化，备份保留") }
+                try fm.removeItem(at: stage); restore.staging = nil
+            }
+            guard try await worktreeSnapshot(destination.path).hash == backup.treeHash,
+                  try directoryIdentity(parent) == restore.parent, try directoryIdentity(destination) == checkout,
+                  try directoryIdentity(metadata) == admin, lock.holdsIndex else { throw PetError("恢复结果已变化，备份保留") }
+            let currentMetadata = try worktreeRestoreMetadata(metadata).mapValues(AgentFiles.hash)
+            try validateRestoreMetadata(currentMetadata, saved: hashes, initial: restore.initialMetadata ?? [:])
+            let scope = try AgentFiles(workspace: metadata.path, followParentLinks: false)
+            // Install split-index dependencies before making the saved index visible.
+            let names = backupMetadata.keys.sorted { ($0 == "index" ? 1 : 0, $0) < ($1 == "index" ? 1 : 0, $1) }
+            for name in names where currentMetadata[name] != hashes[name] {
+                let url = try scope.literalURL(name)
+                let signature = try scope.entryMetadata(url).signature
+                if signature != "missing" {
+                    guard AgentFiles.hash(try scope.readPrefix(url, maximum: Int.max).data) == currentMetadata[name] else { throw PetError("Git 暂存状态已变化：" + name) }
+                }
+                try scope.writeData(backupMetadata[name]!, to: url, permissions: 0o600, expectedTarget: signature)
+            }
+            // A retry can reach this point with all files installed but tasks still archived.
+            let expectedMetadata = (restore.initialMetadata ?? [:]).merging(hashes, uniquingKeysWith: { _, saved in saved })
+            guard try worktreeRestoreMetadata(metadata).mapValues(AgentFiles.hash) == expectedMetadata else {
+                throw PetError("恢复后的 Git 暂存状态与备份不一致")
+            }
+            try await verifyRestoredWorktree(backup, restore: restore, destination: destination, externalWorktree: externalWorktree)
+            try validateWorktreeRestore(entry: entry)
+            try restoreWorktreeTasks(backup, restore: restore, destination: destination, folder: folder)
+            restore.readyToUnlock = true; backup.restore = restore; try saveWorktree(backup, record)
+            try lock.release()
+        } else if entry.locked != nil,
+                  let lock = try AgentWorktreeIndexLock(metadata: metadata.path, operation: restore.id.uuidString, mode: .cleanup, prefix: "restore", label: "恢复") {
+            try lock.release()
+        }
+        if entry.locked != nil {
+            let lockFile = metadata.appendingPathComponent("locked")
+            let scope = try AgentFiles(workspace: metadata.path, followParentLinks: false)
+            guard try directoryIdentity(metadata) == admin,
+                  try scope.readData(lockFile, maximum: 1024) == Data((restore.lockReason + "\n").utf8) else {
+                throw PetError("Git 锁已变化，备份保留")
+            }
+            let unlocked = try await run(["worktree", "unlock", "--", destination.path], write: true, externalWorktree: externalWorktree, leaseDescriptor: lease.descriptor)
+            guard !unlocked.failed else { throw PetError("文件与任务已恢复，Git 锁尚未释放：" + unlocked.text) }
+        }
+        backup.state = "restored"; backup.restoredBranch = restore.branch; backup.restore = nil
+        try saveWorktree(backup, record)
+        return backup
+    }
+
+    private func validateWorktreeRestore(entry: AgentWorktreeEntry? = nil) throws {
         try Task.checkCancellation(); try validateWorkspace()
         if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-restore", name: "git_restore_worktree", arguments: "{}"), task: task, store: store) }
-        try await validateHooks()
-        if let external = backup.external {
-            guard try externalWorktreeURL(destination.path) == destination, try directoryIdentity(parent) == external.parent, nonexistentWorktreePath(destination) else { throw PetError("外部目标目录已变化，请重新检查") }
-        } else { try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true) }
-        let previousState = backup.state
-        backup.state = "restoring"; try saveWorktree(backup, folder.appendingPathComponent("record.json"))
-        let args: [String]
-        if let branch, branch != backup.branch { args = ["worktree", "add", "--no-checkout", "-b", String(branch.dropFirst("refs/heads/".count)), destination.path, backup.head] }
-        else { args = ["worktree", "add", "--no-checkout"] + (branch == nil ? ["--detach"] : []) + [destination.path, branch.map { String($0.dropFirst("refs/heads/".count)) } ?? backup.head] }
-        let added = try await run(args, write: true, externalWorktree: externalWorktree)
-        if added.failed {
-            if externalWorktree != nil, nonexistentWorktreePath(destination),
-               let entries = try? await worktrees(), entries.allSatisfy({ $0.path != destination.path }) {
-                backup.state = previousState; try saveWorktree(backup, folder.appendingPathComponent("record.json"))
+        if let entry, entry.taskIDs.contains(where: { id in
+            guard let task = store.task(id) else { return false }
+            return [.running, .waiting].contains(task.status) || task.pendingFileCapture != nil || task.pendingFileRollback != nil || store.hooks.isRunning(id)
+        }) { throw PetError("关联任务正在运行，请结束后继续恢复") }
+    }
+
+    private func worktreeRestoreArguments(_ restore: AgentWorktreeRestore, backup: AgentWorktreeBackup) async throws -> [String] {
+        let args = ["worktree", "add", "--no-checkout", "--lock", "--reason", restore.lockReason]
+        guard let branch = restore.branch else { return args + ["--detach", "--", backup.origin.path, backup.head] }
+        guard branch.hasPrefix("refs/heads/") else { throw PetError("备份分支名称无效") }
+        let name = String(branch.dropFirst("refs/heads/".count))
+        let current = try await run(["rev-parse", "--verify", branch])
+        if !current.failed {
+            guard current.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) == backup.head else { throw PetError("恢复分支已指向其他提交，备份保留") }
+            return args + ["--", backup.origin.path, name]
+        }
+        guard branch != backup.branch else { throw PetError("原分支已变化，请核对备份与 Git 分支") }
+        return args + ["-b", name, "--", backup.origin.path, backup.head]
+    }
+
+    private func worktreeRestoreMetadata(_ directory: URL) throws -> [String: Data] {
+        let files = try AgentFiles(workspace: directory.path, followParentLinks: false)
+        let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        var result: [String: Data] = [:]
+        for name in entries where name == "index" || name == "config.worktree" || name.hasPrefix("sharedindex.") {
+            let url = try files.literalURL(name)
+            guard try files.entryMetadata(url).kind == "file" else { throw PetError("Git 元数据包含特殊文件：" + name) }
+            result[name] = try files.readPrefix(url, maximum: Int.max).data
+        }
+        return result
+    }
+
+    private func validateRestoreMetadata(_ current: [String: String], saved: [String: String], initial: [String: String]) throws {
+        if let name = current.keys.sorted().first(where: { current[$0] != saved[$0] && current[$0] != initial[$0] }) {
+            throw PetError("Git 暂存状态已变化：" + name + "。请先保留这些改动。")
+        }
+    }
+
+    private func installWorktreeFiles(_ names: [String], from stage: URL, stageIdentity: String, to target: URL, checkoutIdentity: String) throws {
+        let stageFD = open(stage.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard stageFD >= 0 else { throw PetError("恢复临时目录不可用") }
+        defer { close(stageFD) }
+        let targetFD = open(target.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard targetFD >= 0 else { throw PetError("原工作树目录不可用") }
+        defer { close(targetFD) }
+        func matches(_ fd: Int32, _ url: URL, _ identity: String) throws -> Bool {
+            var opened = stat(), existing = stat()
+            return try fstat(fd, &opened) == 0 && lstat(url.path, &existing) == 0 && opened.st_ino == existing.st_ino
+                && opened.st_dev == existing.st_dev && directoryIdentity(url) == identity
+        }
+        for name in names {
+            try Task.checkCancellation()
+            guard try matches(stageFD, stage, stageIdentity), try matches(targetFD, target, checkoutIdentity) else { throw PetError("恢复目录已变化，备份保留") }
+            guard renameatx_np(stageFD, name, targetFD, name, UInt32(RENAME_EXCL)) == 0 else {
+                throw PetError("未能放入恢复文件：" + name + "。请检查目标是否已被占用。")
             }
-            throw PetError("恢复未完成，备份保留，请核对实际 Git 状态：" + added.text)
         }
-        let restoredMetadata = try await worktreeMetadata(destination.path, externalWorktree: externalWorktree)
-        if let external = backup.external {
-            guard try externalWorktreeURL(destination.path) == destination, try directoryIdentity(parent) == external.parent else { throw PetError("恢复目录已变化，备份保留") }
+    }
+
+    private func verifyRestoredWorktree(_ backup: AgentWorktreeBackup, restore: AgentWorktreeRestore, destination: URL, externalWorktree: URL?) async throws {
+        let prefix = ["-C", destination.path]
+        let readable = try await run(prefix + ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--numstat", backup.head, "--"], maximumOutput: 1024, externalWorktree: externalWorktree)
+        guard !readable.failed else { throw PetError("恢复的暂存内容无法读取，备份保留：" + readable.text) }
+        let head = try await run(prefix + ["rev-parse", "HEAD"], externalWorktree: externalWorktree)
+        let branch = try await run(prefix + ["symbolic-ref", "--quiet", "HEAD"], externalWorktree: externalWorktree)
+        guard !head.failed, head.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) == backup.head,
+              branch.exitCode == (restore.branch == nil ? 1 : 0),
+              (branch.failed ? nil : branch.stdout?.trimmingCharacters(in: .whitespacesAndNewlines)) == restore.branch else {
+            throw PetError("恢复后的分支或提交已变化，备份保留")
         }
-        // Copy saved bytes without touching the new .git backlink.
-        let job = Task.detached {
-            let fm = FileManager.default
-            for file in try fm.contentsOfDirectory(at: copy, includingPropertiesForKeys: nil) where file.lastPathComponent != ".git" { try Task.checkCancellation(); try fm.copyItem(at: file, to: destination.appendingPathComponent(file.lastPathComponent)) }
-            for file in try fm.contentsOfDirectory(at: folder.appendingPathComponent("metadata"), includingPropertiesForKeys: nil) { try Data(contentsOf: file).write(to: restoredMetadata.appendingPathComponent(file.lastPathComponent), options: .atomic) }
-        }
-        try await withTaskCancellationHandler { try await job.value } onCancel: { job.cancel() }
-        guard try await worktreeSnapshot(destination.path).hash == backup.treeHash, try Data(contentsOf: restoredMetadata.appendingPathComponent("index")) == index else { throw PetError("恢复结果不一致，备份保留，请核对实际目录") }
-        let readable = try await run(["-C", destination.path, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", "--numstat", backup.head, "--"], maximumOutput: 1024, externalWorktree: externalWorktree)
-        guard !readable.failed else { throw PetError("恢复的暂存内容无法读取，文件与备份保留，请核对 Git 状态：" + readable.text) }
-        let currentHead = try await run(["-C", destination.path, "rev-parse", "HEAD"], externalWorktree: externalWorktree)
-        let actualHead = currentHead.stdout?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let actualRef = try await run(["-C", destination.path, "symbolic-ref", "--quiet", "HEAD"], externalWorktree: externalWorktree)
-        let restoredBranch = actualRef.exitCode == 0 ? actualRef.stdout?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-        guard !currentHead.failed, actualHead == backup.head, restoredBranch == branch, actualRef.exitCode == (branch == nil ? 1 : 0) else { throw PetError("恢复后的实际分支或提交不一致，备份保留，请核对 Git 状态") }
-        backup.state = "restored"; backup.restoredBranch = restoredBranch; try saveWorktree(backup, folder.appendingPathComponent("record.json"))
+    }
+
+    private func restoreWorktreeTasks(_ backup: AgentWorktreeBackup, restore: AgentWorktreeRestore, destination: URL, folder: URL) throws {
         for (id, archived) in backup.tasks where store.task(id)?.workspacePaths.contains(where: { canonical($0) == destination.path || canonical($0).hasPrefix(destination.path + "/") }) == true {
-            store.update(id) { task in
-                let available = (try? AgentWorkspaceScope.roots(task)) != nil && task.managedWorktreeOrigins.allSatisfy { origin in
-                    (try? AgentFiles(workspace: origin.path).root.path) == origin.path && (try? Self.metadata(workspace: origin.path).path) == origin.metadata
-                }
-                if available { task.archived = task.worktreeRecycleArchived ?? archived; task.worktreeRecycleArchived = nil }
-                else { task.archived = true }
-                task.gitReview = nil; task.gitPushReview = nil; task.events.append(AgentEvent(kind: "git", title: "工作树已恢复", detail: destination.path + "\n" + (branch ?? "分离状态") + (available ? "" : "\n仍有源文件夹待恢复，任务保持归档。"), status: "completed"))
+            guard var task = store.task(id) else { continue }
+            let version = try store.recordVersion(id)
+            guard !task.events.contains(where: { $0.id == restore.id.uuidString }) else { continue }
+            let available = (try? AgentWorkspaceScope.roots(task)) != nil && task.managedWorktreeOrigins.allSatisfy { origin in
+                (try? AgentFiles(workspace: origin.path).root.path) == origin.path && (try? Self.metadata(workspace: origin.path).path) == origin.metadata
             }
+            if available { task.archived = task.worktreeRecycleArchived ?? archived; task.worktreeRecycleArchived = nil }
+            else { task.archived = true }
+            task.gitReview = nil; task.gitPushReview = nil; task.updated = Date()
+            task.events.append(AgentEvent(id: restore.id.uuidString, kind: "git", title: "工作树已恢复", detail: destination.path + "\n" + (restore.branch ?? "分离状态") + (available ? "" : "\n仍有源文件夹待恢复，任务保持归档。"), status: "completed"))
+            try store.commitTaskRecord(task, expectedHash: version, transaction: folder.appendingPathComponent("task-" + UUID().uuidString), label: "恢复工作树")
         }
-        if let error = store.writeError { throw PetError("文件已恢复，关联任务保存失败：" + error) }; return backup
     }
 }

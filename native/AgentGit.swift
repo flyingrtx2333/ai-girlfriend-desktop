@@ -65,7 +65,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil, externalWorktree: URL? = nil, metadataOnly: Bool = false) async throws -> AgentToolResult {
+    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil, externalWorktree: URL? = nil, metadataOnly: Bool = false, leaseDescriptor: Int32? = nil) async throws -> AgentToolResult {
         guard externalWorktree == nil || allowsExternalWorktrees else { throw PetError("外部工作树需要在管理页操作") }
         let process = AgentCommand(); command = process; defer { command = nil }
         var flags = [try Self.executablePath(), "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
@@ -76,7 +76,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
             invocation = "umask 077; " + invocation + " > " + Self.quote(stdoutFile.path)
         }
         let externalRoots = externalWorktree.map { [$0] } ?? []
-        return try await process.run(command: invocation, workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write || externalWorktree != nil || metadataOnly, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, readRoots: readRoots + externalRoots, writeRoots: write ? externalRoots : [], environment: environment)
+        return try await process.run(command: invocation, workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write || externalWorktree != nil || metadataOnly, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, readRoots: readRoots + externalRoots, writeRoots: write ? externalRoots : [], environment: environment, leaseDescriptor: leaseDescriptor)
     }
     func output(_ args: [String]) async throws -> String {
         let result = try await run(args)
