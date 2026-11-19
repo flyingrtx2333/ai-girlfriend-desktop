@@ -256,6 +256,8 @@ Agent 通过 `mcp` 工具组先读取简短目录，再按名称把工具原始�
 
 `PreModelRequest` 和 `PostModelRequest` 记录任务对话、上下文压缩与手动任务回顾的请求前后状态。同一轮压缩重试沿用 `turn_id`，每次请求各自触发一对事件。输入包含模型、会话和轮次标识，处理器收到的 `transcript_path` 为 `null`。后置事件记录完成、失败或取消，附上脱敏错误和服务实际返回的用量字段。两个事件对所有对应请求生效，处理器输出保存在任务记录中。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#premodelrequest-and-postmodelrequest)
 
+主动停止运行中的主任务会触发 `Interrupt`，保留中断前的会话、轮次、模型和审批方式。可从 Codex `config.toml` 或 `hooks.json` 迁移已兼容的配置，导入后在 Hooks 页审核启用。事件忽略 `matcher`，处理器默认 1 秒，超时取 1 至 3 秒。命令或原任务已有的 MCP 连接可返回 `systemMessage`，提示显示在任务记录中。空输出也有效。任务的停止状态由主动停止操作决定。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#interrupt)
+
 HTTP 处理器 POST 事件 JSON，接收 HookOutput JSON；不跟随重定向、不共享 Cookie 或 HTTP 登录状态，不自动重放失败请求。通过应用保存的 Header 值进入钥匙串，并绑定来源条目和完整地址；导入与编辑使用遮蔽占位符，改地址需重新填写凭据。Header 中的 `${NAME}` 在调用时读取应用环境，`allowedEnvVars` 可指定白名单；省略时允许引用所有变量，空数组禁止插值。缺少变量、不在白名单或展开后包含非法控制字符时，不发送请求。「清除凭据」停用处理器并清除对应钥匙串条目。外部来源文件直接填写的 Header 值仍由该文件所有者管理。HTTP 服务按其自身权限处理数据。
 
 `prompt` 使用任务的模型连接完成一次独立判断，返回 `{ok, reason}`；`agent` 创建可查看的校验任务，按 `tools` 白名单读取项目、搜索或执行只读命令，最后通过 `StructuredOutput` 提交结论。两者仅接收规则和当前事件，可用 `model` 指定同一连接支持的模型。校验任务不接受新的用户任务，不执行写入、交互提问、外部连接器或递归 Agent；终端联网需在 Hook 中显式允许。模型用量、实际工具和判断依据随子任务记录保留，主事件关联该记录。停用或取消会结束活动校验与 HTTP 请求。当前 `FileChanged` 只来自原生文件写入与编辑；完整权限输出、会话级 Hooks、外部文件监听及常规协作事件继续完善。

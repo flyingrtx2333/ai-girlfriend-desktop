@@ -1,5 +1,13 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 主任务中断 Hooks
+
+用户主动停止运行中的主任务时，`Interrupt` 使用停止前的会话、轮次、模型及审批方式。支持从 Codex `config.toml` 和 `hooks.json` 迁移命令及 MCP 工具处理器，导入后停用。处理器忽略匹配条件，默认 1 秒，配置超时限制为 1 至 3 秒。空输出有效，`systemMessage` 在原任务的「记录 → 日志」显示。MCP 处理器沿用原任务已经批准且仍有效的连接，处理完成后释放该次运行的连接。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#interrupt)
+
+- 源码 `e6d5c58` 的同一优化包通过 **88 项**原生检查。中断专项 9 项覆盖实际终端进程、重复停止、超时清理、文字停止、后台取消、空闲任务和侧任务。MCP 专项实际收到一次带原会话和轮次的停止事件，随后释放连接。模型请求专项的 **6 次本机协议请求**复验 `PostModelRequest` 的取消记录和独立 `Interrupt` 记录。真实模型请求 **0 次**。
+- **1320×800 深色**窗口完成配置预览、导入和审核。审核显示「匹配：全部」和最高 3 秒，取消后保持停用。**780×540 浅色**窗口实际点击「停止任务」，核对进行中的 `/bin/sleep` 进程退出，原任务状态为「已停止」，并在「记录 → 日志」读回提示。来源离线时可以从原批次打开全局导入项，验收后还原样例来源。两个进程正常退出，保留 **8 张**原图。索引见 `evidence/agent/interrupt-hooks-r8m6y4q2/accepted.json`。
+- Mac mini 日用已安装并重开 **0.9.4 `e6d5c58`**，构建于 **2026-11-19 10:41（北京时间）**，进程 **46448**。实际读回关于页和 Codex 扩展配置入口，返回原任务的 deepseek-flash 8192／512 模型设置。日用程序与验收包一致，新旧应用各 **228 份**文件已核对。上一版 `40b64e1` 已备份，正式 **14 份**资料的内容和权限一致。安装记录见 `evidence/agent/interrupt-hooks-r8m6y4q2/daily-01/delivery-proof.json`。
+
 ## 2026-11-19 模型请求诊断 Hooks
 
 「设置 → 数据导入 → 扩展配置」可导入 Codex `config.toml` 与 `hooks.json` 中的 `PreModelRequest` 和 `PostModelRequest`。它们观察任务对话、上下文压缩与手动任务回顾。每次请求各自触发一对事件，同一轮重试沿用 `turn_id`。事件提供模型、会话和轮次标识，`transcript_path` 为 `null`。后置事件记录完成、失败或取消，附带脱敏错误与服务实际报告的用量。处理器输出保存在任务记录中。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#premodelrequest-and-postmodelrequest)
