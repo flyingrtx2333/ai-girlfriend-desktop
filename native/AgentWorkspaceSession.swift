@@ -351,6 +351,8 @@ private actor AgentWorkspaceJournal {
                 for (_, _, controller) in editors {
                     if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
                        let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
+                    if let git = controller as? AgentGitWindow, preservedEditors.contains(ObjectIdentifier(git)),
+                       let remote = git.recoveryRemoteForm, remote.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(remote)) }
                 }
                 let records = editors.compactMap { $0.2 as? AgentRecordWindow } + owner.knowledgePageHost.recoveryReaders
                 for record in records where preservedEditors.contains(ObjectIdentifier(record)) {

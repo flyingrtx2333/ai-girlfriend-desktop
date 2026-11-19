@@ -73,6 +73,7 @@ import AppKit
         else if !busy { presentingWindow?.makeFirstResponder(add) }
     }
     var hasDraft: Bool { draft != nil }
+    var recoveryRemoteForm: AgentGitRemotePage? { remotePage }
     func discardDraft() { draft = nil }
     override func settingsWillLeave() { parkDraft() }
     var hasPendingOperation: Bool { busy || remotePage?.hasPendingChanges == true }
@@ -97,7 +98,7 @@ import AppKit
     func windowDidBecomeKey(_ notification: Notification) { controls() }
     func windowWillClose(_ notification: Notification) { parkDraft(); restorePushPage(); job?.cancel(); git.cancel(); busy = false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if let remotePage, !remotePage.canLeaveSettings() { return false }
+        if settingsHostWindow == nil, let remotePage, !remotePage.canLeaveSettings() { return false }
         guard sending else { return true }
         let alert = AgentConfirmation(); alert.messageText = "停止等待并关闭？"; alert.informativeText = "远端可能已收到提交。关闭后请核对上次结果。"; alert.addButton(withTitle: "停止并关闭").hasDestructiveAction = true; alert.addButton(withTitle: "继续等待")
         return alert.runModal() == .alertFirstButtonReturn
@@ -275,12 +276,28 @@ import AppKit
         }
     }
     @objc private func addRemote() {
-        guard !busy, writable else { return }
-        let page = AgentGitRemotePage(git: git, store: store, taskID: taskID) { [weak self] in self?.load(focusRemote: true) }
-        if settingsHostWindow != nil {
-            presentSettingsChild(page); return
+        guard !busy, writable, let scope else { return }
+        do { try presentRemoteForm(scope: scope) }
+        catch { showError(error) }
+    }
+    func restoreRemoteForm(_ saved: AgentGitDraftRecovery.RemoteForm) throws {
+        try presentRemoteForm(scope: saved.scope, recovery: saved)
+    }
+    private func presentRemoteForm(scope: AgentGitDraftRecovery.Scope, recovery: AgentGitDraftRecovery.RemoteForm? = nil) throws {
+        guard remotePage == nil else { throw PetError("当前已打开远端编辑") }
+        try scope.requireCurrent(store.task(taskID), preserving: "添加远端草稿已保留")
+        let page = AgentGitRemotePage(git: git, store: store, taskID: taskID, scope: scope, recovery: recovery) { [weak self] in self?.load(focusRemote: true) }
+        page.onDraftChange = { [weak self] in self?.onDraftChange?() }
+        page.onLeave = { [weak self] in
+            guard let self else { return }
+            remotePage = nil; onDraftChange?()
         }
-        guard let window, remotePage == nil, let original = window.contentView, let body = page.settingsContent(in: window) else { return }
+        if settingsHostWindow != nil {
+            presentSettingsChild(page)
+            guard page.settingsHostWindow != nil else { page.endSettingsHosting(); throw PetError("工作区当前无法打开远端草稿") }
+            remotePage = page; onDraftChange?(); return
+        }
+        guard let window, let original = window.contentView, let body = page.settingsContent(in: window) else { throw PetError("无法打开添加远端表单") }
         let back = NSButton(title: "返回推送", target: self, action: #selector(closeRemotePage))
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil); back.imagePosition = .imageLeading; back.setAccessibilityLabel("返回推送"); back.keyEquivalent = "\u{1b}"
         let heading = NSTextField(labelWithString: "添加 Git 远端"); heading.font = .systemFont(ofSize: 18, weight: .semibold)
@@ -296,9 +313,8 @@ import AppKit
         if add.isEnabled { presentingWindow?.makeFirstResponder(add) }
     }
     private func restorePushPage() {
-        guard let page = remotePage else { return }
-        page.endSettingsHosting(); remotePage = nil
-        if let pushContent { window?.contentView = pushContent }; pushContent = nil
+        guard let pushContent, let page = remotePage else { return }
+        self.pushContent = nil; page.endSettingsHosting(); window?.contentView = pushContent
     }
     func checkLayout(_ output: URL) async -> [String: Bool] {
         let deadline = Date().addingTimeInterval(20)
@@ -319,7 +335,7 @@ import AppKit
             return ["label": view.accessibilityLabel() ?? (view as? NSButton)?.title ?? "", "frame": [rect.minX, rect.minY, rect.width, rect.height], "inside": content.bounds.insetBy(dx: -1, dy: -1).contains(rect)] as [String: Any]
         }
         func frame(_ view: NSView) -> [CGFloat] { let r = content.convert(view.bounds, from: view); return [r.minX, r.minY, r.width, r.height] }
-        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "diff": diffView.patch, "diffReader": diffView.readingReadback(), "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow, "standaloneRemotePage": remotePage != nil, "windowSize": [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)], "contentSize": [content.bounds.width, content.bounds.height], "controls": controls, "popupFrames": [frame(remoteFrame), frame(addressFrame), frame(commitFrame)], "branchFrame": frame(branch), "diffFrame": frame(diffView), "stateFrame": frame(state)]
+        return ["taskID": taskID, "busy": busy, "sending": sending, "remote": remote.titleOfSelectedItem ?? "", "address": address.titleOfSelectedItem ?? "", "branch": branch.stringValue, "count": count.stringValue, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "diff": diffView.patch, "diffReader": diffView.readingReadback(), "reviewHash": review?.hash ?? "", "pushEnabled": push.isEnabled, "usesMainWindow": settingsHostWindow != nil && pageContentView?.window === presentingWindow, "standaloneRemotePage": pushContent != nil, "windowSize": [Double(window?.contentView?.bounds.width ?? 0), Double(window?.contentView?.bounds.height ?? 0)], "contentSize": [content.bounds.width, content.bounds.height], "controls": controls, "popupFrames": [frame(remoteFrame), frame(addressFrame), frame(commitFrame)], "branchFrame": frame(branch), "diffFrame": frame(diffView), "stateFrame": frame(state)]
     }
     func checkPrepare() async {
         guard AgentTaskWorkspace.readbackEnabled else { return }
@@ -330,20 +346,33 @@ import AppKit
     }
 }
 
-@MainActor final class AgentGitRemotePage: AgentSettingsPageController, NSWindowDelegate {
+@MainActor final class AgentGitRemotePage: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate {
+    private typealias Draft = AgentGitDraftRecovery.RemoteForm
     private let git: AgentGit, store: AgentStore, taskID: String, onAdded: () -> Void
+    private let scope: AgentGitDraftRecovery.Scope
     private let name = AgentDialogTextField(string: "origin"), address = AgentDialogTextField(), state = AgentSettingsStatusField("远端保存状态"), save = AgentDialogButton(title: "添加远端", target: nil, action: nil)
     private var job: Task<Void, Never>?
+    private var focus: Draft.Field = .address, selections: [Draft.Field: AgentTextViewport.Selection] = [:]
+    private var applyingFocus = false
     private let activity = UUID()
-    var hasPendingChanges: Bool { job != nil || name.stringValue != "origin" || !address.stringValue.isEmpty }
-    init(git: AgentGit, store: AgentStore, taskID: String, onAdded: @escaping () -> Void) {
-        self.git = git; self.store = store; self.taskID = taskID; self.onAdded = onAdded
+    var onDraftChange: (() -> Void)?
+    var onLeave: (() -> Void)?
+    private var isEdited: Bool { liveValue(name) != "origin" || !liveValue(address).isEmpty }
+    var hasPendingChanges: Bool { job != nil || isEdited }
+    var canPreserveForQuit: Bool { job == nil && isEdited && Draft.canPreserve(name: liveValue(name), address: liveValue(address)) }
+    init(git: AgentGit, store: AgentStore, taskID: String, scope: AgentGitDraftRecovery.Scope, recovery: AgentGitDraftRecovery.RemoteForm?, onAdded: @escaping () -> Void) {
+        self.git = git; self.store = store; self.taskID = taskID; self.scope = scope; self.onAdded = onAdded
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 440), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "添加 Git 远端"; window.isReleasedWhenClosed = false
         super.init(window: window); window.delegate = self
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         name.setAccessibilityLabel("新远端名称"); address.setAccessibilityLabel("新远端地址"); address.placeholderString = "SSH、HTTPS 或本机仓库地址"
-        for field in [name, address] { field.outlined = true; field.heightAnchor.constraint(equalToConstant: 32).isActive = true }
+        for field in [name, address] { field.delegate = self; field.outlined = true; field.heightAnchor.constraint(equalToConstant: 32).isActive = true }
+        NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
+        if let recovery {
+            name.stringValue = recovery.name; address.stringValue = recovery.address
+            focus = recovery.focus; selections = [.name: recovery.nameSelection, .address: recovery.addressSelection].compactMapValues { $0 }
+        }
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.setAccessibilityLabel("远端保存状态")
         save.target = self; save.action = #selector(addRemote); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         AgentDialogStyle.action(save, prominent: true)
@@ -355,22 +384,73 @@ import AppKit
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20), column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20), column.topAnchor.constraint(equalTo: content.topAnchor, constant: 20), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    override func settingsDidAppear() { presentingWindow?.makeFirstResponder(address) }
+    private func liveValue(_ field: NSTextField) -> String { (field.currentEditor() as? NSTextView)?.string ?? field.stringValue }
+    private func rememberSelection() {
+        guard !applyingFocus, let editor = presentingWindow?.firstResponder as? NSTextView else { return }
+        if editor === name.currentEditor() { focus = .name }
+        else if editor === address.currentEditor() { focus = .address }
+        else { return }
+        let range = editor.selectedRange()
+        selections[focus] = .init(location: range.location, length: range.length)
+    }
+    @objc private func selectionChanged(_ notification: Notification) {
+        guard !applyingFocus, let editor = notification.object as? NSTextView,
+              editor === presentingWindow?.firstResponder, editor === name.currentEditor() || editor === address.currentEditor() else { return }
+        rememberSelection(); onDraftChange?()
+    }
+    func controlTextDidChange(_ notification: Notification) {
+        rememberSelection(); state.stringValue = ""; onDraftChange?()
+    }
+    func captureDraft() -> AgentGitDraftRecovery.RemoteForm? {
+        let remote = liveValue(name), url = liveValue(address)
+        guard (remote != "origin" || !url.isEmpty), Draft.canPreserve(name: remote, address: url) else { return nil }
+        rememberSelection()
+        let nameSelection = selections[.name].flatMap { $0.valid(in: remote.utf16.count) ? $0 : nil }
+        let addressSelection = selections[.address].flatMap { $0.valid(in: url.utf16.count) ? $0 : nil }
+        return .init(scope: scope, name: remote, address: url, focus: focus, nameSelection: nameSelection, addressSelection: addressSelection)
+    }
+    override func settingsDidAppear() {
+        if !restoreFocus() { DispatchQueue.main.async { [weak self] in _ = self?.restoreFocus() } }
+    }
+    @discardableResult private func restoreFocus() -> Bool {
+        guard job == nil, isPageVisible, let host = presentingWindow, !host.hasBlockingDialog else { return false }
+        let field = focus == .name ? name : address
+        if let editor = field.currentEditor(), editor === host.firstResponder { return true }
+        applyingFocus = true; defer { applyingFocus = false }
+        guard host.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView else { return false }
+        if let selection = selections[focus], selection.valid(in: editor.string.utf16.count) { editor.setSelectedRange(selection.range) }
+        return true
+    }
+    override func settingsWillLeave() { onLeave?(); onLeave = nil; onDraftChange = nil }
+    private func resetInputs() {
+        name.abortEditing(); address.abortEditing(); name.stringValue = "origin"; address.stringValue = ""
+        focus = .address; selections = [:]; onDraftChange?()
+    }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard job == nil else { state.stringValue = "请等待远端保存完成"; return false }
-        guard hasPendingChanges else { return true }
-        return AgentUnsavedChanges.discard("放弃远端编辑？", discardTitle: "放弃编辑")
+        guard isEdited else { return true }
+        let detail = Draft.canPreserve(name: liveValue(name), address: liveValue(address)) ? "" : "请缩短输入或移除登录信息，以保存草稿。"
+        guard AgentUnsavedChanges.discard("放弃远端编辑？", detail: detail, discardTitle: "放弃编辑", owner: presentingWindow) else { return false }
+        resetInputs(); return true
     }
     func windowWillClose(_ notification: Notification) { job?.cancel(); store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false) }
     @objc private func addRemote() {
         guard job == nil, let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { return }
+        rememberSelection()
         name.validateEditing(); address.validateEditing()
         let remote = name.stringValue, url = address.stringValue
-        save.isEnabled = false; state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "保存远端…"; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: true)
+        for field in [name, address, save] as [NSControl] { field.isEnabled = false }
+        state.stringValue = "保存远端…"; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: true)
         job = Task { [weak self] in
             guard let self else { return }
-            do { try await git.addRemote(name: remote, url: url); job = nil; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false); name.stringValue = "origin"; address.stringValue = ""; onAdded(); close() }
-            catch { job = nil; save.isEnabled = true; state.textColor = AgentDialogStyle.error; state.stringValue = error.localizedDescription; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false) }
+            do {
+                try await git.addRemote(name: remote, url: url, draftScope: scope)
+                job = nil; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false); resetInputs(); onAdded(); close()
+            } catch {
+                job = nil; store.worktreeRetention.setNativeOperation(activity, taskID: taskID, busy: false)
+                for field in [name, address, save] as [NSControl] { field.isEnabled = true }
+                state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error; restoreFocus(); onDraftChange?()
+            }
         }
     }
 }

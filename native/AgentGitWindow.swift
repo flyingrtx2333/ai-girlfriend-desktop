@@ -9,6 +9,7 @@ import AppKit
     private let pushButton = AgentDialogButton(title: "推送…", target: nil, action: nil), commitPushButton = AgentDialogButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
     private var parkedPush: AgentGitDraftRecovery.Push?
+    private var pendingRemoteForm: AgentGitDraftRecovery.RemoteForm?
     private var securityWindow: AgentCodeSecurityWindow?
     private let securityButton = NSButton(title: "安全检查…", target: nil, action: nil)
     private var dependencyWindow: AgentDependencyWindow?
@@ -116,6 +117,7 @@ import AppKit
             source = recovery.source; revision.stringValue = recovery.revision; updateSourceControls()
         }
         parkedPush = recovery?.push
+        pendingRemoteForm = recovery?.remoteForm
         content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -123,12 +125,13 @@ import AppKit
     private var draftText: String { (message.currentEditor() as? NSTextView)?.string ?? message.stringValue }
     private var selectedPaths: [String] { table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path } }
     private var hasPushDraft: Bool { parkedPush != nil || pushWindow?.hasDraft == true }
-    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty || hasPushDraft }
+    var recoveryRemoteForm: AgentGitRemotePage? { pushWindow?.recoveryRemoteForm }
+    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty || hasPushDraft || pendingRemoteForm != nil || recoveryRemoteForm?.hasPendingChanges == true }
     var hasPendingChanges: Bool { busy || workspaceHasUnsavedChanges }
     var canPreserveForQuit: Bool { !busy && workspaceHasUnsavedChanges && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !busy else { state.stringValue = "请等待 Git 操作完成"; return false }
-        guard workspaceHasUnsavedChanges else { return true }
+        guard !draftText.isEmpty || hasPushDraft else { return true }
         let title = hasPushDraft ? (draftText.isEmpty ? "放弃推送草稿？" : "放弃提交说明和推送草稿？") : "放弃提交说明？"
         guard AgentUnsavedChanges.discard(title, discardTitle: hasPushDraft ? "放弃草稿" : "放弃说明", owner: presentingWindow) else { return false }
         discardPushDraft()
@@ -163,12 +166,13 @@ import AppKit
     }
     func captureWorkspaceRecovery(persistClean: Bool) throws -> AgentWorkspaceRecovery.Page? {
         let text = draftText, push = pushWindow?.captureDraft() ?? parkedPush
-        let dirty = !text.isEmpty || push != nil
+        let remoteForm = recoveryRemoteForm?.captureDraft() ?? pendingRemoteForm
+        let dirty = !text.isEmpty || push != nil || remoteForm != nil
         guard dirty || persistClean else { return nil }
         if !restoreDraftFocus, !busy { rememberDraftSelection() }
         let selection = draftSelection.flatMap { $0.valid(in: text.utf16.count) ? $0 : nil }
         let saved = AgentGitDraftRecovery(scope: text.isEmpty ? nil : try bindDraftScope(), message: text, selection: selection, focused: draftFocused,
-                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push)
+                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push, remoteForm: remoteForm)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: dirty, asset: nil)
         _ = try AgentGitDraftRecovery.decode(page); return page
@@ -528,8 +532,12 @@ import AppKit
         catch { showError(error) }
     }
     func restorePushPage() throws {
-        guard parkedPush?.opened == true else { return }
+        guard parkedPush?.opened == true || pendingRemoteForm != nil else { return }
         try presentPush(directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace))
+        if let saved = pendingRemoteForm {
+            guard let pushWindow else { throw PetError("工作区当前无法打开远端草稿") }
+            try pushWindow.restoreRemoteForm(saved); pendingRemoteForm = nil
+        }
     }
     private func presentPush(directory: URL) throws {
         try draftScope?.requireCurrent(store.task(taskID))

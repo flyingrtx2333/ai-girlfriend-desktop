@@ -162,7 +162,24 @@ import AppKit
             checks["taskRemoteBackRestoresPushAndFocus"] = try control.taskWorkspace.currentController === embedded && host.firstResponder === button("添加远端", in: embedded.pageContentView)
             try button("添加远端", in: embedded.pageContentView).performClick(nil)
             guard let savePage = control.taskWorkspace.currentController as? AgentGitRemotePage else { throw PetError("任务远端表单无法重开") }
-            try field("新远端名称", in: savePage.pageContentView).stringValue = "task-review"; try field("新远端地址", in: savePage.pageContentView).stringValue = fixture.receiver.path
+            let draftName = try field("新远端名称", in: savePage.pageContentView), draftAddress = try field("新远端地址", in: savePage.pageContentView)
+            let beforeDraft = try Data(contentsOf: config)
+            guard host.makeFirstResponder(draftAddress), let addressEditor = draftAddress.currentEditor() as? NSTextView else { throw PetError("实际远端草稿编辑器不可用") }
+            let selection = (fixture.receiver.path as NSString).range(of: "公开接收目录", options: .backwards)
+            draftName.stringValue = "bad name 🐋"; addressEditor.string = fixture.receiver.path; addressEditor.setSelectedRange(selection)
+            savePage.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: draftAddress))
+            let saved = try review.captureWorkspaceRecovery(persistClean: true).flatMap { try AgentGitDraftRecovery.decode($0).remoteForm }
+            checks["remoteDraftReadsLiveAddressInvalidNameAndSelection"] = saved?.name == "bad name 🐋" && saved?.address == fixture.receiver.path && saved?.focus == .address && saved?.addressSelection?.range == selection && saved?.scope.checkout?.head == "ref: refs/heads/main" && savePage.canPreserveForQuit
+            let unusableAddress = "https://git:PUBLIC-FIXTURE-ONLY@example.invalid/repository"
+            addressEditor.string = unusableAddress
+            savePage.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: draftAddress))
+            let excluded = try review.captureWorkspaceRecovery(persistClean: true).map(AgentGitDraftRecovery.decode)
+            checks["remoteDraftOmitsEmbeddedCredentialsButRetainsLiveInput"] = excluded?.remoteForm == nil && !savePage.canPreserveForQuit && savePage.hasPendingChanges && addressEditor.string == unusableAddress
+            checks["editingOrCheckpointingRemoteDraftNeverChangesConfig"] = try Data(contentsOf: config) == beforeDraft
+            typealias RemoteDraft = AgentGitDraftRecovery.RemoteForm
+            checks["remoteDraftSupportsLocalSSHAndIncompletePublicURLs"] = ["https://", "https://example.invalid", "ssh://git@[::1]:22/repo", "git@example.invalid:repo", "./公开 路径#样例.git"].allSatisfy { RemoteDraft.canPreserve(name: "draft", address: $0) }
+            checks["remoteDraftRejectsCredentialAndQueryShapes"] = [unusableAddress, "https://PUBLIC-FIXTURE-ONLY@example.invalid/repo", "ssh://git%3APUBLIC@example.invalid/repo", "https://example.invalid/repo?token=PUBLIC", "git:PUBLIC@example.invalid:repo"].allSatisfy { !RemoteDraft.canPreserve(name: "draft", address: $0) }
+            draftName.stringValue = "task-review"; addressEditor.string = fixture.receiver.path
             try button("添加远端", in: savePage.pageContentView).performClick(nil)
             try await until { control.taskWorkspace.currentController === embedded && embedded.workspaceReadback()["busy"] as? Bool == false }
             let after = try await git.remotes()

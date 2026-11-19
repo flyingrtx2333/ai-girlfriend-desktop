@@ -384,6 +384,7 @@ import AppKit
             if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit, editors.contains(ObjectIdentifier(browser)) { guard browser.prepareWorkspaceNavigation() else { return false }; continue }
             if let annotation = controller as? AgentBrowserAnnotationWindow, annotation.canPreserveForQuit, editors.contains(ObjectIdentifier(annotation)) { continue }
             if let git = controller as? AgentGitWindow, git.canPreserveForQuit, editors.contains(ObjectIdentifier(git)) { continue }
+            if let remote = controller as? AgentGitRemotePage, remote.canPreserveForQuit, editors.contains(ObjectIdentifier(remote)) { continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }

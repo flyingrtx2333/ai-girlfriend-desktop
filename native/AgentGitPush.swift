@@ -39,10 +39,11 @@ import Foundation
         let check = try await run(["check-ref-format", "refs/heads/" + branch])
         guard !check.failed else { throw PetError("目标分支名称无效") }; return branch
     }
-    func addRemote(name: String, url: String) async throws {
+    func addRemote(name: String, url: String, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws {
         try validateWorkspace()
         guard !name.isEmpty, name.utf8.count <= 100, !name.hasPrefix("-"), name.rangeOfCharacter(from: .whitespacesAndNewlines) == nil, name.rangeOfCharacter(from: .controlCharacters) == nil else { throw PetError("远端名称无效") }
         let endpoint = try AgentGitEndpoint.parse(url.trimmingCharacters(in: .whitespacesAndNewlines), relativeTo: files.root)
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "添加远端草稿已保留")
         let result = try await run(["remote", "add", name, endpoint.input], write: true)
         guard !result.failed else { throw PetError(String(result.text.prefix(1000))) }
         store.update(taskID) { $0.gitRemoteSnapshot = nil; $0.gitPushReview = nil }

@@ -73,6 +73,41 @@ struct AgentGitDraftRecovery: Codable {
         }
     }
 
+    struct RemoteForm: Codable {
+        enum Field: String, Codable { case name, address }
+        var scope: Scope
+        var name: String, address: String
+        var focus: Field
+        var nameSelection: AgentTextViewport.Selection?, addressSelection: AgentTextViewport.Selection?
+
+        static func canPreserve(name: String, address: String) -> Bool {
+            guard name.utf8.count <= 65_536, address.utf8.count <= 65_536,
+                  !name.contains("\0"), !address.contains("\0") else { return false }
+            let nameValue = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (!nameValue.contains("://") || canPreserveAddress(nameValue)) && canPreserveAddress(address.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        private static func canPreserveAddress(_ value: String) -> Bool {
+            if value.contains("://") {
+                guard let endpoint = URLComponents(string: value), endpoint.password == nil, endpoint.query == nil, endpoint.fragment == nil else { return false }
+                if let host = endpoint.host, host.contains("@") || (host.contains(":") && !host.hasPrefix("[")) { return false }
+                if let user = endpoint.user {
+                    return endpoint.scheme?.lowercased() == "ssh" && user.rangeOfCharacter(from: CharacterSet(charactersIn: ":@/?#\\").union(.whitespacesAndNewlines).union(.controlCharacters)) == nil
+                }
+                return true
+            }
+            if ["/", "./", "../", "~/"].contains(where: value.hasPrefix) { return true }
+            let decoded = value.removingPercentEncoding ?? value
+            guard !decoded.contains("?"), !decoded.contains("#"), !decoded.contains("::") else { return false }
+            guard let colon = decoded.firstIndex(of: ":") else { return true }
+            return !decoded[decoded.index(after: colon)...].prefix(while: { $0 != "/" }).contains("@")
+        }
+
+        func requireCurrent(_ task: AgentTaskRecord?) throws {
+            try scope.requireCurrent(task, preserving: "添加远端草稿已保留")
+        }
+    }
+
     var version = 1
     var scope: Scope?
     var message: String
@@ -82,23 +117,28 @@ struct AgentGitDraftRecovery: Codable {
     var revision: String
     var paths: [String]
     var push: Push? = nil
+    var remoteForm: RemoteForm? = nil
 
     static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
         let unsupported = PetError("Git 草稿恢复格式不受支持，原记录已保留")
         guard page.version == 1, page.kind == "git-draft", page.asset == nil, UUID(uuidString: page.taskID) != nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push"]) else { throw unsupported }
+              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push", "remoteForm"]) else { throw unsupported }
         let push = raw["push"] as? [String: Any]
         if let push, !Set(push.keys).isSubset(of: ["scope", "branch", "upstream", "remote", "addressHash", "selection", "focused", "opened"]) { throw unsupported }
-        for object in [raw, push ?? [:]] {
+        let remoteForm = raw["remoteForm"] as? [String: Any]
+        if let remoteForm, !Set(remoteForm.keys).isSubset(of: ["scope", "name", "address", "focus", "nameSelection", "addressSelection"]) { throw unsupported }
+        for object in [raw, push ?? [:], remoteForm ?? [:]] {
             if let scope = object["scope"] as? [String: Any] {
                 guard Set(scope.keys).isSubset(of: ["workspace", "identity", "checkout"]) else { throw unsupported }
                 if let checkout = scope["checkout"] as? [String: Any], !Set(checkout.keys).isSubset(of: ["directory", "identity", "head"]) { throw unsupported }
             }
-            if let selection = object["selection"] as? [String: Any], !Set(selection.keys).isSubset(of: ["location", "length"]) { throw unsupported }
+            for key in ["selection", "nameSelection", "addressSelection"] {
+                if let selection = object[key] as? [String: Any], !Set(selection.keys).isSubset(of: ["location", "length"]) { throw unsupported }
+            }
         }
         let value = try JSONDecoder().decode(Self.self, from: page.state)
-        guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil), value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
+        guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil || value.remoteForm != nil), value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
               value.selection?.valid(in: value.message.utf16.count) != false,
               value.paths.count <= 100_000, Set(value.paths).count == value.paths.count,
               value.paths.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && $0.utf8.count < 8192 && !$0.contains("\0") }) else { throw unsupported }
@@ -106,6 +146,14 @@ struct AgentGitDraftRecovery: Codable {
             guard push.scope.checkout != nil, push.scope.valid, push.selection?.valid(in: push.branch.utf16.count) != false,
                   push.remote.map({ !$0.isEmpty && $0.utf8.count <= 200 && $0.rangeOfCharacter(from: .controlCharacters) == nil }) != false,
                   push.addressHash.map({ push.remote != nil && $0.utf8.count == 64 && $0.allSatisfy { $0.isASCII && $0.isHexDigit } }) != false else { throw unsupported }
+        }
+        if let remote = value.remoteForm {
+            guard remote.scope.checkout != nil, remote.scope.valid, remote.name != "origin" || !remote.address.isEmpty,
+                  RemoteForm.canPreserve(name: remote.name, address: remote.address),
+                  remote.nameSelection?.valid(in: remote.name.utf16.count) != false,
+                  remote.addressSelection?.valid(in: remote.address.utf16.count) != false,
+                  value.push.map({ $0.opened && $0.scope == remote.scope }) != false,
+                  value.scope.map({ $0.matches(remote.scope) }) != false else { throw unsupported }
         }
         return value
     }

@@ -4096,6 +4096,7 @@ final class FormDocumentView: NSView {
             guard root == .review, page.taskID == id, task.sideTask?.retained != false else { throw PetError("恢复的 Git 草稿与原任务或标签不匹配") }
             let recovery = try AgentGitDraftRecovery.decode(page)
             try recovery.scope?.requireCurrent(task)
+            try recovery.remoteForm?.requireCurrent(task)
             if let push = recovery.push, push.opened { try push.requireCurrent(task) }
             let editor = preparedGitWorkspace(store: store, taskID: id, recovery: recovery)
             guard present(editor) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开 Git 草稿") }
