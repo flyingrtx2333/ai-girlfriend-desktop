@@ -1,5 +1,13 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 模型请求诊断 Hooks
+
+「设置 → 数据导入 → 扩展配置」可导入 Codex `config.toml` 与 `hooks.json` 中的 `PreModelRequest` 和 `PostModelRequest`。它们观察任务对话、上下文压缩与手动任务回顾。每次请求各自触发一对事件，同一轮重试沿用 `turn_id`。事件提供模型、会话和轮次标识，`transcript_path` 为 `null`。后置事件记录完成、失败或取消，附带脱敏错误与服务实际报告的用量。处理器输出保存在任务记录中。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#premodelrequest-and-postmodelrequest)
+
+- 源码 `40b64e1` 的同一优化包通过 **78 项**原生检查，其中请求诊断专项 12 项，另有会话压缩、扩展导入、内联命令与 MCP Hooks 四组回归。专项使用 **6 次本机协议请求**，覆盖流式成功、HTTP 失败、取消、两次同轮压缩尝试和手动回顾。另核对传输前被拒时没有请求记录，以及处理器的停止指令和补充文本留在任务记录。真实模型请求 **0 次**。
+- **1320×800 深色**窗口实际完成两种事件的预览与导入，并打开请求前处理器的审核。**780×540 浅色**窗口在样例来源离线时从原批次打开请求后处理器，核对完整命令、范围与取消后的停用状态。两个进程正常退出，保留 **7 张**原图。验收脚本首次混用了 TOML 原件校验值和导入指纹，修正后分别读回两个值并用同一包的窗口记录复验。来源原件与权限一致。索引见 `evidence/agent/model-request-hooks-q6m4t1v8/accepted.json`。
+- Mac mini 日用已安装并重开 **0.9.4 `40b64e1`**，构建于 **2026-11-19 10:07（北京时间）**，进程 **39652**。实际核对关于页和 Codex 扩展配置入口，再恢复原任务的模型设置，读回 deepseek-flash 及 8192／512。日用程序与验收包一致，新旧应用各 **228 份**文件已核对。上一版 `398459b` 已备份，正式 **14 份**资料的内容和权限一致。安装记录见 `evidence/agent/model-request-hooks-q6m4t1v8/daily-01/delivery-proof.json`。
+
 ## 2026-11-19 会话启动与上下文压缩 Hooks
 
 首次执行、继续已有任务、任务分支首次执行和压缩完成分别匹配 `startup`、`resume`、`fork`、`compact`。审批返回继续使用原会话。手动和自动压缩分别匹配 `manual` 和 `auto`，前后事件提供当轮标识，`PostCompact` 还收到已保存的摘要。压缩前可拦截，压缩后可保留摘要并暂停续跑。主任务的压缩后 Hook 补充资料进入紧接的对话请求。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#sessionstart) [Qoder Hooks](https://docs.qoder.com/cli/hooks)
