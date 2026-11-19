@@ -30,6 +30,7 @@ public struct MCPConnectionError: LocalizedError, Sendable {
 public actor MCPConnection {
     private let client: Client
     private var program: ProgramTransport?
+    private var oauth: ManagedOAuth?
     private var ready = false, closed = false
     private var supportsTools = false
     private var supportsResources = false, supportsPrompts = false, supportsSubscriptions = false
@@ -56,18 +57,41 @@ public actor MCPConnection {
         return try await initialize(transport, timeout: timeout)
     }
     public func connectHTTP(endpoint: URL, bearerToken: String, headers: [String: String] = [:], timeout: Double) async throws -> Data {
+        try await connectHTTP(endpoint: endpoint, bearerToken: bearerToken, headers: headers, timeout: timeout, authorization: nil, interactiveAuthorization: false)
+    }
+    public func connectOAuth(endpoint: URL, clientID: String, grant: Data?, timeout: Double,
+                             browser: (@Sendable (URL) async throws -> Void)? = nil,
+                             authorizationNetwork: URLSession? = nil,
+                             persist: @escaping @Sendable (Data) async throws -> Void) async throws -> Data {
+        let authorization = try ManagedOAuth(endpoint: endpoint, clientID: clientID, grant: grant,
+                                             timeout: timeout, browser: browser, persist: persist, network: authorizationNetwork)
+        oauth = authorization
+        return try await connectHTTP(endpoint: endpoint, bearerToken: "", headers: [:], timeout: timeout,
+                                     authorization: authorization, interactiveAuthorization: browser != nil)
+    }
+    public func oauthCredentialValues() -> [String] { oauth?.credentialValues() ?? [] }
+
+    private func connectHTTP(endpoint: URL, bearerToken: String, headers: [String: String], timeout: Double,
+                             authorization: ManagedOAuth?, interactiveAuthorization: Bool) async throws -> Data {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCache = nil
         let inputTime = elicitationHandler == nil ? 0.0 : 610.0
         configuration.timeoutIntervalForRequest = max(timeout, inputTime); configuration.timeoutIntervalForResource = timeout + max(5, inputTime)
-        let transport = HTTPClientTransport(endpoint: endpoint, configuration: configuration, streaming: true, requestModifier: { request in
+        let transport = HTTPClientTransport(endpoint: endpoint, configuration: configuration, streaming: true, authorizer: authorization, requestModifier: { request in
             var request = request
             for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
             if !bearerToken.isEmpty { request.setValue("Bearer " + bearerToken, forHTTPHeaderField: "Authorization") }
             return request
         })
-        do { return try await initialize(transport, timeout: timeout) }
-        catch { throw MCPConnectionError.localizeAuthentication(error) }
+        let initializeTimeout = timeout + (interactiveAuthorization ? 300 : authorization == nil ? 0 : timeout)
+        do { return try await initialize(transport, timeout: initializeTimeout) }
+        catch {
+            if authorization != nil, case .internalError(let message) = error as? MCPError, let message,
+               message.hasPrefix("Authorization flow failed: ") {
+                throw MCPConnectionError(String(message.dropFirst("Authorization flow failed: ".count)))
+            }
+            throw MCPConnectionError.localizeAuthentication(error)
+        }
     }
     public func connectSSE(endpoint: URL, bearerToken: String, headers: [String: String] = [:], timeout: Double) async throws -> Data {
         let transport = SSETransport(endpoint: endpoint, bearerToken: bearerToken, headers: headers, timeout: timeout) { [weak self] in Task { await self?.transportClosed() } }
@@ -90,13 +114,13 @@ public actor MCPConnection {
             }
             await client.onNotification(ElicitationCompleteNotification.self) { [weak self] message in await self?.completeURL(message.params.elicitationId) }
         }
-        let deadline = Task { [client] in
+        let deadline = Task { [weak self] in
             try await Task.sleep(for: .seconds(timeout))
-            await client.disconnect()
+            await self?.disconnect()
         }
         defer { deadline.cancel() }
         do {
-            let result = try await withTaskCancellationHandler(operation: { try await client.connect(transport: transport) }, onCancel: { [client] in Task { await client.disconnect() } })
+            let result = try await withTaskCancellationHandler(operation: { try await client.connect(transport: transport) }, onCancel: { Task { await self.disconnect() } })
             try Task.checkCancellation()
             guard !closed else { throw MCPConnectionError("连接已关闭") }
             guard Version.supported.contains(result.protocolVersion) else { throw MCPConnectionError("连接器返回了不支持的 MCP 协议版本") }
@@ -251,6 +275,7 @@ public actor MCPConnection {
     }
     public func disconnect() async {
         closed = true; ready = false
+        oauth?.stop()
         pendingURLs = [:]
         for operation in operations.values { operation.question?.cancel() }
         program?.stop()

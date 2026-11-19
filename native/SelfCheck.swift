@@ -118,6 +118,7 @@ import WebKit
         if CommandLine.arguments.contains("--file-icons-check") { await runFileIconsCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-pages-check") { await runSettingsPagesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-sse-check") { await runMCPSSECheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--mcp-oauth-check") { await runMCPOAuthCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--appearance-check") { await runAppearanceCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--manual-ui") || boundedLiveUI {
             // Manual fixtures block transmission; each live workflow requires its own bounded authorization and ledger.
@@ -133,6 +134,7 @@ import WebKit
                     let budget = try prepareAttentionLiveUI(output); requests = budget.used
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
+                if CommandLine.arguments.contains("--mcp-oauth-ui") { try configureMCPOAuthFixture(output, service: tasks.mcp, opensBrowser: true) }
                 if CommandLine.arguments.contains("--automation-draft-ui") {
                     guard !attentionLiveUI else { throw PetError("自动化草稿窗口不调用模型") }
                     tasks.automations.start(store: tasks, runtime: runtime)

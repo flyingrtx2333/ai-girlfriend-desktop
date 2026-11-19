@@ -3,6 +3,8 @@ import AppKit
 @MainActor final class AgentMCPConfigForm: NSObject, NSTextFieldDelegate {
     private(set) var view = NSScrollView()
     private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = AgentSecureTextField(), timeout = AgentDialogTextField()
+    private let authentication = NSPopUpButton(), clientID = AgentDialogTextField()
+    private var authenticationRow = NSView(), clientRow = NSView(), bearerRow = NSView()
     private let arguments = AgentMCPConfigRows(title: "参数", paired: false, secure: false, limit: 100)
     private let environment = AgentMCPConfigRows(title: "环境变量", paired: true, secure: true, limit: 64)
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
@@ -11,20 +13,27 @@ import AppKit
     var onChange: (() -> Void)?
     var firstInput: NSView { name.isEnabled ? name : type == "stdio" ? command : address }
     var type: String { ["stdio", "http", "sse"][max(0, transport.indexOfSelectedItem)] }
+    private var usesOAuth: Bool { type == "http" && authentication.indexOfSelectedItem == 1 }
 
     init(document: String, pluginLocked: Bool) throws {
         guard document.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后再切换。") }
         let value = try AgentConfigurationJSON.object(Data(document.utf8))
         guard let title = value["name"] as? String, let type = value["type"] as? String, ["stdio", "http", "sse"].contains(type) else { throw PetError("请先载入单个连接器的有效 JSON 配置") }
-        let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds"]
+        let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID"]
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("请先在 JSON 中处理未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard value["args"] == nil || value["args"] is [String], value["env"] == nil || value["env"] is [String: String], value["headers"] == nil || value["headers"] is [String: String],
-              ["command", "cwd", "url", "bearerToken"].allSatisfy({ value[$0] == nil || value[$0] is String }), value["timeoutSeconds"] == nil || value["timeoutSeconds"] is Double else { throw PetError("JSON 配置字段格式无效，原文已保留") }
+              ["command", "cwd", "url", "bearerToken", "oauthClientID"].allSatisfy({ value[$0] == nil || value[$0] is String }), value["timeoutSeconds"] == nil || value["timeoutSeconds"] is Double else { throw PetError("JSON 配置字段格式无效，原文已保留") }
+        if value["oauthClientID"] != nil, type != "http" || (value["bearerToken"] as? String)?.isEmpty == false || (value["headers"] as? [String: String])?.isEmpty == false {
+            throw PetError("请先在 JSON 中修正 OAuth 认证配置")
+        }
         if let raw = value["timeoutSeconds"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID() { throw PetError("timeoutSeconds 必须是秒数") }
         original = value
         super.init()
         name.stringValue = title; name.isEnabled = !pluginLocked
         transport.addItems(withTitles: ["STDIO", "HTTP", "SSE"]); transport.selectItem(at: ["stdio", "http", "sse"].firstIndex(of: type)!); transport.isEnabled = !pluginLocked
+        authentication.addItems(withTitles: ["手动凭据", "浏览器授权（OAuth）"])
+        authentication.selectItem(at: value["oauthClientID"] == nil ? 0 : 1)
+        clientID.stringValue = value["oauthClientID"] as? String ?? ""; clientID.placeholderString = "自动注册"
         command.stringValue = value["command"] as? String ?? ""; directory.stringValue = value["cwd"] as? String ?? ""
         address.stringValue = value["url"] as? String ?? ""
         let bearerValue = value["bearerToken"] as? String ?? ""
@@ -36,21 +45,30 @@ import AppKit
         command.placeholderString = "/opt/homebrew/bin/node"; address.placeholderString = "https://example.com/mcp"
         try arguments.load(value["args"] as? [String] ?? []); try environment.load(value["env"] as? [String: String] ?? [:]); try headers.load(value["headers"] as? [String: String] ?? [:])
         local = AgentSettingsStyle.section("本机程序", id: "mcp-stdio", rows: [AgentSettingsStyle.labeledField("命令", command), arguments.view, environment.view, AgentSettingsStyle.labeledField("工作目录", directory)])
-        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), AgentSettingsStyle.labeledField("Bearer Token", bearer), headers.view])
+        authenticationRow = AgentSettingsStyle.formRow("认证", authentication, trailing: true)
+        clientRow = AgentSettingsStyle.labeledField("客户端 ID", clientID)
+        bearerRow = AgentSettingsStyle.labeledField("Bearer Token", bearer)
+        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, bearerRow, headers.view])
         view = AgentSettingsStyle.form([
             AgentSettingsStyle.section("基本信息", id: "mcp-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.formRow("传输方式", transport, trailing: true)]),
             local, remote, AgentSettingsStyle.section("连接选项", id: "mcp-timeout", rows: [AgentSettingsStyle.labeledField("超时（毫秒）", timeout)])
         ], label: "MCP 配置表单")
-        for (field, label) in [(name, "名称"), (command, "命令"), (directory, "工作目录"), (address, "地址"), (bearer, "Bearer Token"), (timeout, "超时毫秒")] { field.delegate = self; field.setAccessibilityLabel("MCP " + label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for (field, label) in [(name, "名称"), (command, "命令"), (directory, "工作目录"), (address, "地址"), (bearer, "Bearer Token"), (clientID, "客户端 ID"), (timeout, "超时毫秒")] { field.delegate = self; field.setAccessibilityLabel("MCP " + label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         transport.setAccessibilityLabel("MCP 传输方式"); transport.target = self; transport.action = #selector(changed)
+        authentication.setAccessibilityLabel("MCP 认证方式"); authentication.target = self; authentication.action = #selector(changed)
         for rows in [arguments, environment, headers] { rows.onChange = { [weak self] in self?.onChange?() } }
         updateTransport()
     }
-    private func updateTransport() { local.isHidden = type != "stdio"; remote.isHidden = type == "stdio" }
+    private func updateTransport() {
+        local.isHidden = type != "stdio"; remote.isHidden = type == "stdio"
+        authenticationRow.isHidden = type != "http"; clientRow.isHidden = !usesOAuth
+        bearerRow.isHidden = usesOAuth; headers.view.isHidden = usesOAuth
+    }
     func controlTextDidChange(_ notification: Notification) { onChange?() }
     @objc private func changed() { updateTransport(); onChange?() }
     func setEnabled(_ enabled: Bool, pluginLocked: Bool) {
-        for field in [name, command, directory, address, bearer, timeout] { field.isEnabled = enabled }
+        for field in [name, command, directory, address, bearer, clientID, timeout] { field.isEnabled = enabled }
+        authentication.isEnabled = enabled
         name.isEnabled = enabled && !pluginLocked; transport.isEnabled = enabled && !pluginLocked
         for rows in [arguments, environment, headers] { rows.setEnabled(enabled) }
     }
@@ -61,8 +79,11 @@ import AppKit
             if !directory.stringValue.isEmpty { value["cwd"] = directory.stringValue }
         } else {
             value["url"] = address.stringValue
-            value["bearerToken"] = bearer.stringValue.isEmpty && original["bearerToken"] as? String == AgentMCP.importPlaceholder ? AgentMCP.importPlaceholder : bearer.stringValue
-            value["headers"] = try headers.pairs()
+            if usesOAuth { value["oauthClientID"] = clientID.stringValue }
+            else {
+                value["bearerToken"] = bearer.stringValue.isEmpty && original["bearerToken"] as? String == AgentMCP.importPlaceholder ? AgentMCP.importPlaceholder : bearer.stringValue
+                value["headers"] = try headers.pairs()
+            }
         }
         // Keep fields of the other transport until it is deliberately changed.
         if original["type"] as? String == type {

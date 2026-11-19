@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil)
     private let detailActions = NSPopUpButton(frame: .zero, pullsDown: true)
     private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
+    private let clearOAuth = NSMenuItem(title: "移除本机授权", action: nil, keyEquivalent: "")
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
     private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
@@ -76,8 +77,9 @@ import UniformTypeIdentifiers
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
         browse.target = self; browse.action = #selector(browseContent); browse.isHidden = true
         remove.target = self; remove.action = #selector(removeConfig)
+        clearOAuth.target = self; clearOAuth.action = #selector(removeAuthorization); clearOAuth.isHidden = true
         detailActions.addItem(withTitle: "更多"); detailActions.setAccessibilityLabel("连接器更多操作")
-        detailActions.menu?.autoenablesItems = false; detailActions.menu?.addItem(browse); detailActions.menu?.addItem(remove)
+        detailActions.menu?.autoenablesItems = false; detailActions.menu?.addItem(browse); detailActions.menu?.addItem(clearOAuth); detailActions.menu?.addItem(remove)
         let actionsFrame = AgentSettingsPopupFrame(detailActions); actionsFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
         let detailToolbar = AgentSettingsDetailActions([connection, actionsFrame, save])
         let header = NSStackView(views: [enabled, state, NSView(), detailToolbar]); header.spacing = 10; header.alignment = .centerY
@@ -159,7 +161,9 @@ import UniformTypeIdentifiers
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     private func refreshDetailActions() {
-        detailActions.isEnabled = !browse.isHidden || remove.isEnabled
+        clearOAuth.isHidden = selected?.oauthClientID == nil
+        clearOAuth.isEnabled = !clearOAuth.isHidden && !dirty && job == nil
+        detailActions.isEnabled = !browse.isHidden || remove.isEnabled || clearOAuth.isEnabled
         (detailActions.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
     }
     func numberOfRows(in tableView: NSTableView) -> Int { catalogRows.count }
@@ -239,7 +243,9 @@ import UniformTypeIdentifiers
         form?.setEnabled(editor.isEditable, pluginLocked: selected?.plugin != nil); configurationKind.isEnabled = job == nil; loadJSON.isEnabled = job == nil
         enabled.isEnabled = current != nil && current?.configured != false && current?.pluginEnabled != false && !dirty && job == nil; enabled.state = current?.enabled == true ? .on : .off
         let canDisconnect = selected != nil && (connected || job != nil)
-        connection.title = canDisconnect ? "断开" : "连接"
+        if connected { connection.title = "断开" }
+        else if selected?.oauthClientID != nil { connection.title = job == nil ? "授权并连接" : "取消授权" }
+        else { connection.title = canDisconnect ? "断开" : "连接" }
         connection.action = canDisconnect ? #selector(stop) : #selector(start)
         connection.isEnabled = canDisconnect || (current?.enabled == true && !dirty && job == nil && !connected)
         remove.isEnabled = selected != nil && selected?.plugin == nil && job == nil; save.isEnabled = (dirty || selected?.configured == false) && job == nil; table.isEnabled = job == nil
@@ -278,11 +284,23 @@ import UniformTypeIdentifiers
         guard let selected, !dirty, job == nil else { return }
         job = Task { [weak self] in
             guard let self else { return }; defer { self.job = nil; self.refreshState() }
-            do { _ = try await self.service.connect(selected.id, revision: selected.revision, owner: self.sessionOwner, workspace: self.workspace); self.showTools() }
+            do {
+                _ = try await self.service.connect(selected.id, revision: selected.revision, owner: self.sessionOwner,
+                    workspace: self.workspace, browserAuthorization: selected.oauthClientID != nil)
+                self.showTools()
+            }
             catch { self.state.stringValue = error.localizedDescription; self.listState.stringValue = error.localizedDescription }
         }; refreshState()
     }
     @objc private func stop() { job?.cancel(); if let selected { service.disconnect(owner: sessionOwner, serverID: selected.id) }; tools.string = ""; refreshState() }
+    @objc private func removeAuthorization() {
+        guard let selected, !dirty, job == nil else { return }
+        let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”的本机授权？"
+        alert.addButton(withTitle: "移除授权").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
+        guard alert.runModal(for: editorWindow) == .alertFirstButtonReturn else { return }
+        do { try service.clearOAuth(selected.id, revision: selected.revision, workspace: workspace); reload(selected.id); state.stringValue = "本机授权已移除" }
+        catch { state.showSaveFailure(error) }
+    }
     @objc private func removeConfig() {
         guard let selected else { return }
         let alert = AgentConfirmation(); alert.messageText = "移除“\(selected.name)”？"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
