@@ -51,7 +51,7 @@ import AppKit
         #!/bin/sh
         IFS= read -r event
         case "$1" in
-          startup|resume|fork|compact)
+          startup|resume|fork|compact|clear|new)
             case "$event" in *'"model":"fixture-loopback"'*) ;; *) exit 11 ;; esac
             case "$event" in *'"hook_event_name":"SessionStart"'*'"source":"'"$1"'"'*) ;; *) exit 12 ;; esac
             if [ "$1" = compact ] && [ -f compact-halt ]; then printf '%s\n' '{"continue":false,"stopReason":"公开样例停止压缩后的续跑"}'; exit 0; fi
@@ -71,11 +71,16 @@ import AppKit
             ["matcher": "^" + matcher + "$", "hooks": [["name": name, "type": "command", "command": "/bin/sh \"$QODER_HOOK_ROOT/lifecycle.sh\" " + args, "timeout": 5]]]
         }
         let codexConfig = try JSONSerialization.data(withJSONObject: ["hooks": [
-            "SessionStart": ["startup", "resume", "fork", "compact"].map { group("start-" + $0, $0, args: $0) },
+            "SessionStart": ["startup", "resume", "fork", "compact", "clear"].map { group("start-" + $0, $0, args: $0) },
             "PreCompact": ["manual", "auto"].map { group("before-" + $0, $0, args: "pre " + $0) },
             "PostCompact": ["manual", "auto"].map { group("after-" + $0, $0, args: "post " + $0) }
         ]], options: [.sortedKeys])
         try codexConfig.write(to: codex.appendingPathComponent("hooks.json"))
+        let qoder = project.appendingPathComponent(".qoder"), qoderScripts = qoder.appendingPathComponent("hooks")
+        try fm.createDirectory(at: qoderScripts, withIntermediateDirectories: true)
+        try Data(hookScript.utf8).write(to: qoderScripts.appendingPathComponent("lifecycle.sh"))
+        try JSONSerialization.data(withJSONObject: ["hooks": ["SessionStart": [group("start-new", "new", args: "new")]]])
+            .write(to: qoder.appendingPathComponent("settings.json"))
         let keychain = PetKeychain(service: "com.xjs.bluefatfish.hook-lifecycle-check",
                                    configurationFile: output.appendingPathComponent("fixture-key.json"), migrateLegacy: false)
         try keychain.write("PUBLIC-FIXTURE-ONLY", account: "chat")
@@ -87,7 +92,8 @@ import AppKit
         guard let item = store.dataImport.preview.first(where: { $0.issue == nil }) else { throw PetError("本机会话 Hooks 无导入预览") }
         try await AgentStandaloneDataImport.install(item, root: source, store: store)
         let handlers = try store.hooks.catalog(workspace: project.path)
-        checks["importedLifecycleHandlersStartDisabled"] = handlers.count == 8 && handlers.allSatisfy { !store.hooks.enabled($0) }
+        checks["importedLifecycleHandlersStartDisabled"] = handlers.count == 10 && handlers.allSatisfy { !store.hooks.enabled($0) }
+            && handlers.first(where: { $0.name == "start-new" })?.source == qoder.appendingPathComponent("settings.json").path
         for handler in handlers { try store.hooks.setEnabled(handler, true, workspace: project.path) }
 
         var admitted = 0
@@ -138,6 +144,10 @@ import AppKit
         }
         branchRuntime.start(question)
         let waiting = try await settle(branchRuntime, question)
+        let waitingCount = branchStore.tasks.count, waitingVersion = try branchStore.recordVersion(question)
+        checks["clearCannotLeaveANonterminalApproval"] = try !branchRuntime.submit("/clear 仍有待确认", taskID: question)
+            && !branchRuntime.submit("/new 仍有待确认", taskID: question) && branchStore.tasks.count == waitingCount
+            && branchStore.recordVersion(question) == waitingVersion && branchStore.task(question)?.pendingCalls.map(\.id) == [ask.id]
         branchRuntime.decide(taskID: question, callID: ask.id, decision: "answer:PUBLIC_CONFIRMED_ANSWER")
         let answered = try await settle(branchRuntime, question)
         checks["approvalContinuationKeepsSessionWithoutReplayingStart"] = try waiting.status == .waiting && waiting.hookSession != nil
@@ -207,10 +217,89 @@ import AppKit
             && stoppedRequests.count == 1 && stoppedRequests.first?["kind"] as? String == "compact"
         try fm.moveItem(at: stopMarker, to: project.appendingPathComponent("compact-permitted"))
         let (ui, _) = seed("公开压缩窗口验收", exchanges: 2)
-        branchStore.selectedID = ui
+
+        let attachmentFile = output.appendingPathComponent("public-previous-note.txt")
+        try Data("PUBLIC_PREVIOUS_ATTACHMENT\n".utf8).write(to: attachmentFile)
+        let attachment = try await AgentAttachments.importFile(attachmentFile, store: branchStore, taskID: first)
+        branchStore.update(first) {
+            $0.draft = "PUBLIC_PREVIOUS_DRAFT"; $0.draftAttachmentIDs = [attachment.id]; $0.contextSummary = "PUBLIC_PREVIOUS_SUMMARY"
+            $0.permission = .review; $0.modelOverride = "fixture-loopback"
+        }
+        let originalVersion = try branchStore.recordVersion(first), requestsBeforeSessionCommands = try requests().count
+        var opened: [String] = []
+        guard branchRuntime.submit("/clear 公开清空会话", taskID: first, attachmentIDs: [attachment.id], onSessionOpened: { opened.append($0) }),
+              branchRuntime.submit("/new 公开新会话", taskID: first, onSessionOpened: { opened.append($0) }), opened.count == 2 else {
+            throw PetError(branchRuntime.submissionError ?? "会话命令未创建目标")
+        }
+        checks["sessionCommandsAreLocalAndPreserveOriginalTaskBytes"] = try requests().count == requestsBeforeSessionCommands
+            && branchStore.recordVersion(first) == originalVersion && branchStore.selectedID == opened[1]
+            && branchStore.slashMenu.recentIDs.prefix(2).elementsEqual(["builtin.new", "builtin.clear"])
+            && Set(opened + [first]).count == 3
+        let sessionStore = AgentStore(directory: profile, legacy: [], extensionHome: home), sessionRuntime = runtime(sessionStore)
+        let originalNote = try AgentAttachments.source(store: sessionStore, taskID: first, id: attachment.id)
+        checks["originalDialogueDraftAndAttachmentCanBeReopened"] = try sessionStore.recordVersion(first) == originalVersion
+            && sessionStore.task(first)?.messages.map(\.id) == resumed.messages.map(\.id)
+            && sessionStore.task(first)?.draft == "PUBLIC_PREVIOUS_DRAFT" && sessionStore.task(first)?.draftAttachmentIDs == [attachment.id]
+            && Data(contentsOf: originalNote) == Data(contentsOf: attachmentFile)
+        let expectations: [(AgentHookStartSource, String, String)] = [
+            (.clear, "公开清空会话", "PUBLIC_FIRST_AFTER_CLEAR"), (.new, "公开新会话", "PUBLIC_FIRST_AFTER_NEW")
+        ]
+        for (id, expected) in zip(opened, expectations) {
+            let (source, title, prompt) = expected
+            let empty = sessionStore.task(id)
+            checks["freshSessionPreservesScopeAndSourceAfterReload-" + source.rawValue] = empty?.pendingFreshSessionSource == source
+                && empty?.nextHookStartSource == nil
+                && empty?.title == title && empty?.workspace == project.path && empty?.mode == .ask && empty?.permission == .review
+                && empty?.modelOverride == "fixture-loopback" && empty?.messages.isEmpty == true && empty?.events.isEmpty == true
+                && empty?.attachments == nil && empty?.draft == nil && empty?.contextSummary == nil && empty?.modelReceipts == nil
+                && empty?.parentID == nil && empty?.inputTokens == 0 && empty?.outputTokens == 0
+            guard sessionRuntime.submit(prompt, taskID: id) else { throw PetError("空白会话的首次输入未执行") }
+            let result = try await settle(sessionRuntime, id)
+            let markers = (try requests().last)?["markers"] as? [String] ?? []
+            checks["sourceHookReadsFirstNewTurnWithoutPriorContext-" + source.rawValue] = result.status == .completed
+                && events(result) == ["start-" + source.rawValue] && markers.contains(prompt) && markers.contains("PUBLIC_HOOK_" + source.rawValue)
+                && !markers.contains("PUBLIC_INITIAL_TURN") && !markers.contains("PUBLIC_REOPENED_TURN") && !markers.contains("PUBLIC_PREVIOUS_SUMMARY")
+                && !markers.contains("PUBLIC_HOOK_startup") && result.nextHookStartSource == .resume && result.pendingFreshSessionSource == nil
+        }
+        guard sessionRuntime.submit("PUBLIC_AFTER_FRESH_SESSION", taskID: opened[0]) else { throw PetError("已执行的新会话未继续") }
+        let continued = try await settle(sessionRuntime, opened[0])
+        checks["subsequentTurnUsesResumeWithoutReplayingClear"] = try events(continued) == ["start-clear", "start-resume"]
+            && lastRequest("PUBLIC_HOOK_resume") && continued.status == .completed
+        let general = sessionStore.create(title: "无工作区旧会话", mode: .ask, workMode: .general)
+        sessionStore.update(general) { $0.messages = [.init(role: "user", content: "公开原记录")]; $0.status = .completed }
+        let count = sessionStore.tasks.count
+        checks["noWorkspaceSupportsNewAndRejectsInvalidTitle"] = !sessionRuntime.submit("/clear " + String(repeating: "字", count: 121), taskID: general)
+            && sessionStore.tasks.count == count && sessionRuntime.submit("/new", taskID: general)
+            && sessionStore.selected?.pendingFreshSessionSource == .new && sessionStore.selected?.workspace == nil
+            && sessionStore.selected?.organizationMode == .general && sessionStore.selected?.messages.isEmpty == true
+        sessionStore.selectedID = ui
         let received = try requests()
         checks["allFixtureTrafficIsLocalAndAccountedFor"] = received.count == admitted && received.contains { $0["kind"] as? String == "compact" }
         try JSONSerialization.data(withJSONObject: ["taskID": ui, "loopbackRequests": received.count], options: [.sortedKeys]).write(
             to: output.appendingPathComponent("hook-lifecycle-fixture.json"), options: .atomic)
+    }
+
+    func prepareFreshSessionWindow(_ output: URL, tasks: AgentStore) throws {
+        let project = output.appendingPathComponent("SessionWindow")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try tasks.organization.register(project.path, mode: .coding)
+        let id = tasks.create(title: "公开原会话", workspace: project.path, mode: .ask)
+        let history = [AgentMessage(role: "user", content: "公开原会话的可恢复正文"),
+                       AgentMessage(role: "assistant", content: "公开原会话的历史答复")]
+        tasks.update(id) { $0.messages = history; $0.status = .completed; $0.permission = .review }
+        let groups = try ["clear", "new"].map { source -> [String: Any] in
+            let output = try JSONSerialization.data(withJSONObject: ["continue": false, "stopReason": "公开样例已记录 " + source + " 来源"])
+            return ["matcher": "^" + source + "$", "hooks": [["name": "公开会话来源 " + source, "type": "command", "command": "/usr/bin/printf",
+                    "args": ["%s", String(decoding: output, as: UTF8.self)]]]]
+        }
+        let config = try JSONSerialization.data(withJSONObject: ["hooks": ["SessionStart": groups]], options: [.sortedKeys])
+        try tasks.hooks.save(String(decoding: config, as: UTF8.self), project: true, workspace: project.path, expectedHash: nil)
+        for handler in try tasks.hooks.catalog(workspace: project.path) where handler.name.hasPrefix("公开会话来源 ") {
+            try tasks.hooks.setEnabled(handler, true, workspace: project.path)
+        }
+        let proof = ["taskID": id, "workspace": project.path, "messageIDs": history.map(\.id).joined(separator: ",")]
+        try JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]).write(
+            to: output.appendingPathComponent("fresh-session-window-fixture.json"), options: .atomic)
+        control.showAgentTask(id)
     }
 }

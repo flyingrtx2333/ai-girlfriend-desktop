@@ -622,7 +622,10 @@ final class PetWebView: WKWebView {
             ensureAgent(); screenCompanion.interaction()
             guard !text.isEmpty || !attachmentIDs.isEmpty, let runtime = agentRuntime else { return false }
             stopSpeech()
-            let accepted = runtime.submit(text, taskID: taskID, attachmentIDs: attachmentIDs)
+            let origin = taskID ?? runtime.store.selectedID
+            let accepted = runtime.submit(text, taskID: taskID, attachmentIDs: attachmentIDs) { target in
+                (origin.map { self.taskControl(for: $0) } ?? self.inputControl).showAgentTask(target)
+            }
             if accepted { refreshTaskWindows(); refreshVoiceBusy() }
             else if let error = runtime.submissionError { (taskID.map { taskControl(for: $0) } ?? inputControl).setStatus(error, error: true) }
             return accepted

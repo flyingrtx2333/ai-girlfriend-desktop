@@ -935,7 +935,17 @@ final class FormDocumentView: NSView {
         composer.onSend = { [weak self] in self?.send() }; composer.onInputChanged = { [weak self] in self?.composerChanged() }; composer.onEditingEnded = { [weak self] in self?.dismissExtensionCandidates() }
         composer.onExtensionKey = { [weak self] key in
             guard let self, extensionPickerTask != nil, extensionPanel.isVisible else { return false }
-            switch key { case 125: extensionPicker.move(1); case 126: extensionPicker.move(-1); case 123, 124: return extensionPicker.moveCategory(key == 124 ? 1 : -1); case 36, 48, 76: extensionPicker.pick(); case 53: if !extensionPicker.goBack() { dismissExtensionCandidates() }; default: return false }; return true
+            switch key {
+            case 125: extensionPicker.move(1)
+            case 126: extensionPicker.move(-1)
+            case 123, 124: return extensionPicker.moveCategory(key == 124 ? 1 : -1)
+            case 36, 76:
+                if AgentSlashBuiltin.sessionCommand(composer.string) != nil { send() }
+                else { extensionPicker.pick() }
+            case 48: extensionPicker.pick()
+            case 53: if !extensionPicker.goBack() { dismissExtensionCandidates() }
+            default: return false
+            }; return true
         }
         let input = NSScrollView(); input.documentView = composer; input.hasVerticalScroller = true; input.drawsBackground = false; input.borderType = .noBorder
         for mode in AgentMode.allCases { modePopup.addItem(withTitle: mode.title) }; for mode in AgentPermissionMode.allCases { permissionPopup.addItem(withTitle: mode.title) }
@@ -1903,7 +1913,10 @@ final class FormDocumentView: NSView {
             case 125: extensionPicker.move(1)
             case 126: extensionPicker.move(-1)
             case 123, 124: return extensionPicker.moveCategory(key == 124 ? 1 : -1)
-            case 36, 48, 76: extensionPicker.pick()
+            case 36, 76:
+                if AgentSlashBuiltin.sessionCommand(composer.string) != nil { send() }
+                else { extensionPicker.pick() }
+            case 48: extensionPicker.pick()
             case 53: if !extensionPicker.goBack() { dismissExtensionCandidates() }
             default: return false
             }; return true
@@ -2499,6 +2512,19 @@ final class FormDocumentView: NSView {
         guard importTaskID != agentTaskID || attachmentImport == nil else { return }
         if let task = currentAgentTask, task.kind == "hook" { companion.agentRuntime?.cancel(task.id); return }
         let files = currentAgentTask?.draftAttachmentIDs ?? []
+        if companion.usesAgent, let runtime = companion.agentRuntime, let id = agentTaskID,
+           AgentSlashBuiltin.sessionCommand(composer.string) != nil {
+            guard canLeaveMainPage() else { return }
+            let input = composer.string
+            let accepted = runtime.submit(input, taskID: id, attachmentIDs: files) { [self] target in
+                let draft = runtime.store.task(id)?.draft ?? ""
+                composer.string = draft == input ? "" : draft
+                composer.undoManager?.removeAllActions(); composer.didChangeText()
+                selectAgentTask(target)
+            }
+            if !accepted, let error = runtime.submissionError { setStatus(error, error: true) }
+            return
+        }
         if companion.usesAgent, files.isEmpty, composer.string.trimmingCharacters(in: .whitespacesAndNewlines) == "/compact" {
             if companion.agentRuntime?.submit(composer.string, taskID: agentTaskID) == true { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
             presentTaskContext(section: 0); return

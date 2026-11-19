@@ -502,7 +502,7 @@ import Foundation
             original.skillEvolutionJob = nil; original.skillDraft = nil; original.skillDraftHistory = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
-            original.nextHookStartSource = .fork
+            original.nextHookStartSource = .fork; original.pendingFreshSessionSource = nil
             original.hookRewakePromptID = nil; original.hookRewakeCount = nil
             for i in original.events.indices where original.events[i].status == "running" && original.events[i].hook?.asynchronous == true {
                 original.events[i].status = "stopped"; original.events[i].hook?.delivery = "fork-history"
@@ -521,6 +521,31 @@ import Foundation
         try installNewRecord(record, label: label) {
             guard self.refreshDeletedRecords(), try self.recordVersion(sourceID) == expectedHash else { throw PetError("原任务已变化，未创建新任务") }
         }
+    }
+    func startFreshSession(from id: String, title: String, source: AgentHookStartSource) throws -> String {
+        guard !title.isEmpty, title.count <= 120, !title.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            throw PetError("请输入不超过120字的任务名称")
+        }
+        guard refreshDeletedRecords(), let previous = task(id), previous.canStartFreshSession else {
+            throw PetError("请先结束当前执行或待确认操作，再开启空白会话")
+        }
+        let version = try recordVersion(id)
+        var fresh = AgentTaskRecord(title: title, mode: previous.mode)
+        AgentWorkspaceScope.copy(previous, to: &fresh)
+        fresh.workMode = previous.workMode; fresh.permission = previous.permission; fresh.modelOverride = previous.modelOverride
+        fresh.agent = previous.agent; fresh.team = previous.team; fresh.inheritedLimits = previous.inheritedLimits
+        fresh.gitDirectory = previous.gitDirectory; fresh.worktreeOrigin = previous.worktreeOrigin; fresh.worktreeOrigins = previous.worktreeOrigins
+        fresh.pendingFreshSessionSource = source
+        try installNewRecord(fresh, label: source == .clear ? "清空会话" : "新建会话") {
+            guard self.organization.archiveID(fresh.organizationWorkspace, mode: fresh.organizationMode) == nil else {
+                throw PetError("工作区已归档，请先恢复")
+            }
+            guard try self.recordVersion(id) == version else { throw PetError("原任务已变化，请重新打开后重试") }
+            guard try AgentWorkspaceScope.roots(fresh).map(\.root.path) == fresh.workspacePaths else {
+                throw PetError("项目目录已变化，请重新选择工作区")
+            }
+        }
+        return fresh.id
     }
     func installSkillCreationRecord(_ record: AgentTaskRecord, validating: () throws -> Void = {}) throws {
         guard record.skillEvolutionJob?.creation != nil, record.parentID == nil, record.status == .ready,

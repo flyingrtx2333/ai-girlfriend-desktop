@@ -137,6 +137,7 @@ import WebKit
                 }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
                 if CommandLine.arguments.contains("--interrupt-window-fixtures"), !boundedLiveUI { try await prepareInterruptWindow(output, tasks: tasks, runtime: runtime) }
+                if CommandLine.arguments.contains("--fresh-session-window-fixtures"), !boundedLiveUI { try prepareFreshSessionWindow(output, tasks: tasks) }
                 if CommandLine.arguments.contains("--question-auto-skip-fixtures") || CommandLine.arguments.contains("--question-auto-skip-reopen") { try prepareQuestionAutoSkipUI(output, seed: CommandLine.arguments.contains("--question-auto-skip-fixtures")) }
                 if CommandLine.arguments.contains("--conversation-display-fixtures") || CommandLine.arguments.contains("--conversation-display-reopen") { try prepareConversationDisplayUI(output, seed: CommandLine.arguments.contains("--conversation-display-fixtures")) }
                 if CommandLine.arguments.contains("--thinking-status-fixtures") || CommandLine.arguments.contains("--thinking-status-reopen") { try prepareThinkingStatusUI(output, seed: CommandLine.arguments.contains("--thinking-status-fixtures")) }

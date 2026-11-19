@@ -228,7 +228,8 @@ import Foundation
             throw error
         }
     }
-    @discardableResult func submit(_ text: String, taskID: String? = nil, attachmentIDs: [String] = [], startImmediately: Bool = true) -> Bool {
+    @discardableResult func submit(_ text: String, taskID: String? = nil, attachmentIDs: [String] = [], startImmediately: Bool = true,
+                                   onSessionOpened: ((String) -> Void)? = nil) -> Bool {
         submissionError = nil
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty && !attachmentIDs.isEmpty { text = "请查看附件。" }
@@ -239,6 +240,15 @@ import Foundation
         guard task.worktreeSetup == nil else { submissionError = "多源工作树尚未创建完成，请重新预览并继续创建"; return false }
         guard task.pendingFileRollback == nil else { submissionError = "请先恢复未完成的文件撤回"; return false }
         do { try store.sideTasks.requireCanRun(task) } catch { submissionError = error.localizedDescription; return false }
+        if let command = AgentSlashBuiltin.sessionCommand(text) {
+            do {
+                guard !isBusy(id) else { throw PetError("请先结束当前执行，再开启空白会话") }
+                let target = try store.startFreshSession(from: id, title: command.title, source: command.source)
+                store.slashMenu.recordBuiltin(command.builtin)
+                onSessionOpened?(target)
+                return true
+            } catch { submissionError = error.localizedDescription; return false }
+        }
         if text == "/compact", attachmentIDs.isEmpty {
             let started = analyze(id, recap: false)
             if started { store.slashMenu.recordBuiltin(.compact) }
@@ -329,7 +339,7 @@ import Foundation
         if task.hookSession == nil {
             let existing = task.hookCwd != nil || task.importOrigin != nil || task.status != .ready
                 || task.messages.contains { $0.role == "assistant" || $0.role == "tool" }
-            startSource = task.nextHookStartSource ?? (existing ? .resume : .startup)
+            startSource = task.pendingFreshSessionSource ?? task.nextHookStartSource ?? (existing ? .resume : .startup)
         } else { startSource = nil }
         let run = Run(store: store, id: id, startSource: startSource); active[id] = run
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
@@ -847,7 +857,7 @@ import Foundation
             let key = try delegatedModels[id]?.key ?? keychain.read("chat")
             store.update(id) {
                 $0.model = p.model
-                if run.startSource != nil { $0.nextHookStartSource = .resume }
+                if run.startSource != nil { $0.nextHookStartSource = .resume; $0.pendingFreshSessionSource = nil }
             }
             run.key = key
             hookSecret = key

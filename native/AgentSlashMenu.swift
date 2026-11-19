@@ -9,9 +9,34 @@ enum AgentSlashCategory: String, CaseIterable {
     var title: String { switch self { case .recent: return "最近使用"; case .modes: return "模式"; case .skills: return "技能"; case .plugins: return "插件"; case .connectors: return "连接器"; case .commands: return "命令" } }
 }
 enum AgentSlashBuiltin: String, CaseIterable {
-    case compact, canvas, knowledgeEdit = "knowledge-edit", automation
-    var title: String { switch self { case .compact: return "压缩上下文"; case .canvas: return "创建画布"; case .knowledgeEdit: return "编辑项目知识"; case .automation: return "创建自动化" } }
-    var detail: String { switch self { case .compact: return "压缩当前任务的上下文"; case .canvas: return "生成可交互的画布产物"; case .knowledgeEdit: return "编辑当前项目的 Wiki 与知识卡片"; case .automation: return "按目标与时间起草计划" } }
+    case compact, clear, new, canvas, knowledgeEdit = "knowledge-edit", automation
+    var title: String {
+        switch self {
+        case .compact: return "压缩上下文"
+        case .clear: return "清空会话"
+        case .new: return "新建会话"
+        case .canvas: return "创建画布"
+        case .knowledgeEdit: return "编辑项目知识"
+        case .automation: return "创建自动化"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .compact: return "压缩当前任务的上下文"
+        case .clear: return "/clear · 开始空白会话，原记录保留在侧栏"
+        case .new: return "/new · 在当前工作区新建会话"
+        case .canvas: return "生成可交互的画布产物"
+        case .knowledgeEdit: return "编辑当前项目的 Wiki 与知识卡片"
+        case .automation: return "按目标与时间起草计划"
+        }
+    }
+    static func sessionCommand(_ text: String) -> (builtin: Self, source: AgentHookStartSource, title: String)? {
+        let parts = text.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        guard let name = parts.first, name.hasPrefix("/"), let builtin = Self(rawValue: String(name.dropFirst())),
+              builtin == .clear || builtin == .new else { return nil }
+        let title = parts.dropFirst().first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (builtin, builtin == .clear ? .clear : .new, title.isEmpty ? "新的任务" : title)
+    }
 }
 enum AgentSlashEntry {
     case item(AgentExtensionItem), builtin(AgentSlashBuiltin), mode(AgentMode)
@@ -94,6 +119,7 @@ enum AgentSlashEntry {
         let enabled = items.filter { $0.enabled && ($0.kind != .skill || task.agent == nil || task.agent!.skills.contains($0.id)) }
         var result: [AgentSlashEntry] = canChangeMode && ![.running, .waiting].contains(task.status) && task.automation == nil && task.agent?.ownerID == nil ? [.mode(.goal), .mode(.plan)] : []
         if idle, !task.messages.isEmpty { result.append(.builtin(.compact)) }
+        if idle, task.canStartFreshSession { result += [.builtin(.clear), .builtin(.new)] }
         if [.agent, .goal].contains(task.mode) {
             result.append(.builtin(.canvas)); if task.workspace != nil { result.append(.builtin(.knowledgeEdit)) }
         }

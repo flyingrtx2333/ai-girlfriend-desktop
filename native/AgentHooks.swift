@@ -1,6 +1,6 @@
 import Foundation
 
-enum AgentHookStartSource: String, Codable { case startup, resume, compact, fork }
+enum AgentHookStartSource: String, Codable { case startup, resume, compact, fork, clear, new }
 
 enum AgentHookEvent: String, Codable, CaseIterable {
     case sessionStart = "SessionStart", sessionEnd = "SessionEnd", prompt = "UserPromptSubmit"

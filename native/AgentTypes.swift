@@ -242,6 +242,8 @@ struct AgentTaskRecord: Codable, Identifiable {
     var instructionGrants: [AgentInstructionGrant]?
     var hookSession: String?, hookCwd: String?
     var nextHookStartSource: AgentHookStartSource?
+    // Older versions only decode startup, resume, compact and fork in nextHookStartSource.
+    var pendingFreshSessionSource: AgentHookStartSource?
     var hookContexts: [String: String]?, hookRejectedAnswers: [AgentMessage]?
     var hookStopBlocks: Int?
     var hookRewakePromptID: String?, hookRewakeCount: Int?
@@ -250,6 +252,11 @@ struct AgentTaskRecord: Codable, Identifiable {
     var agent: AgentProfileAssignment?
     var team: AgentTeamAssignment?
     var automation: AgentAutomationAssignment?
+    var canStartFreshSession: Bool {
+        !archived && ![.running, .waiting].contains(status) && pendingCalls.isEmpty && queuedCount == 0 && pendingFileCapture == nil
+            && worktreeSetup == nil && pendingFileRollback == nil && agent?.ownerID == nil && sideTask == nil && automation == nil
+            && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation && !isKnowledgeEditing
+    }
     var canChooseExecutor: Bool {
         status == .ready && !archived && messages.isEmpty && events.isEmpty && pendingCalls.isEmpty && agent?.ownerID == nil && automation == nil && skillEvolutionJob == nil && kind != "hook" && !isProjectDocumentation
     }
