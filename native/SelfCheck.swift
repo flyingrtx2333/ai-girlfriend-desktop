@@ -391,6 +391,7 @@ import WebKit
         if CommandLine.arguments.contains("--inline-hook-import-check") { await runInlineHookImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-hook-check") { await runMCPHookCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--hook-lifecycle-check") { await runHookLifecycleCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--model-request-hook-check") { await runModelRequestHookCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--memory-import-check") { await runMemoryImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-import-check") { await runSkillImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-data-import-check") { await runMCPDataImportCheck(output); NSApp.terminate(nil); return }

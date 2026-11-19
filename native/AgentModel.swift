@@ -1,5 +1,23 @@
 import Foundation
 
+@MainActor struct AgentModelRequestHooks {
+    let store: AgentStore
+    let taskID: String
+    let turnID: String
+
+    func fire(_ event: AgentHookEvent, attempt: String, origin: AgentTaskRecord, model: String, key: String, outcome: [String: Any] = [:]) async {
+        var fields = outcome
+        fields["session_id"] = origin.hookSession ?? origin.id
+        fields["turn_id"] = turnID
+        fields["model"] = model
+        if let agent = origin.agent {
+            fields["agent_id"] = origin.id
+            fields["agent_type"] = agent.profile.name
+        }
+        await store.hooks.observeModelRequest(event, attempt: attempt, origin: origin, store: store, fields: fields, secret: key)
+    }
+}
+
 enum AgentModel {
     @MainActor static func requestBody(preferences: PetPreferences, system: String, messages: [AgentMessage], tools: [[String: Any]], requiredTool: String? = nil, visuals: [String: [AgentVisualInput]] = [:]) throws -> [String: Any] {
         let snapshot = try AgentContext.snapshot(preferences: preferences, system: system, skills: "", messages: messages, tools: tools, loadedSkills: 0)
@@ -17,13 +35,46 @@ enum AgentModel {
         return body
     }
     @MainActor static func turn(preferences: PetPreferences, key: String, system: String, messages: [AgentMessage], tools: [[String: Any]], requiredTool: String? = nil, visuals: [String: [AgentVisualInput]] = [:], allowPartialContent: Bool = false,
-                                purpose: String = "conversation", messageID: String? = nil, onReceipt: ((AgentModelReceipt) -> Void)? = nil,
+                                purpose: String = "conversation", messageID: String? = nil, requestHooks: AgentModelRequestHooks? = nil, onReceipt: ((AgentModelReceipt) -> Void)? = nil,
                                 onText: @escaping (String) -> Void) async throws -> AgentTurn {
         let url = try CompanionService.endpoint(preferences.endpoint, chat: true)
         guard !key.isEmpty || CompanionService.isLocal(url.host ?? "") else { throw PetError("请先填写对话 Token") }
-        let p = preferences
-        let body = try requestBody(preferences: p, system: system, messages: messages, tools: tools, requiredTool: requiredTool, visuals: visuals)
+        let body = try requestBody(preferences: preferences, system: system, messages: messages, tools: tools, requiredTool: requiredTool, visuals: visuals)
         let request = try CompanionService.request(url: url, key: key, body: body)
+        try Task.checkCancellation()
+        let model = preferences.model, attempt = UUID().uuidString
+        let origin = requestHooks.flatMap { $0.store.task($0.taskID) }
+        if let requestHooks, let origin { await requestHooks.fire(.preModelRequest, attempt: attempt, origin: origin, model: model, key: key) }
+        var tokens: [String: Int] = [:]
+        func finish(_ status: String, error: Error? = nil) async {
+            guard let requestHooks, let origin else { return }
+            let message = error?.localizedDescription
+            let redacted = key.isEmpty ? message : message?.replacingOccurrences(of: key, with: "[凭据已隐藏]")
+            let outcome: [String: Any] = ["status": status, "error": redacted.map { String($0.prefix(1000)) } as Any? ?? NSNull(),
+                                          "token_usage": tokens.isEmpty ? NSNull() as Any : tokens]
+            if Task.isCancelled || status == "cancelled" {
+                // Finishing an audit must not delay releasing the cancelled task.
+                Task { @MainActor in await requestHooks.fire(.postModelRequest, attempt: attempt, origin: origin, model: model, key: key, outcome: outcome) }
+            } else {
+                await requestHooks.fire(.postModelRequest, attempt: attempt, origin: origin, model: model, key: key, outcome: outcome)
+            }
+        }
+        do {
+            try Task.checkCancellation()
+            let result = try await receive(request, model: model, key: key, allowPartialContent: allowPartialContent,
+                                           purpose: purpose, messageID: messageID, tokens: &tokens, onReceipt: onReceipt, onText: onText)
+            await finish("completed")
+            return result
+        } catch {
+            let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+            await finish(cancelled ? "cancelled" : "failed", error: cancelled ? nil : error)
+            throw error
+        }
+    }
+
+    @MainActor private static func receive(_ request: URLRequest, model: String, key: String, allowPartialContent: Bool,
+                                           purpose: String, messageID: String?, tokens: inout [String: Int],
+                                           onReceipt: ((AgentModelReceipt) -> Void)?, onText: (String) -> Void) async throws -> AgentTurn {
         let started = Date()
         let (bytes, response) = try await CompanionService.session.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw PetError("模型响应无法读取") }
@@ -34,7 +85,7 @@ enum AgentModel {
         var result = AgentTurn(), calls: [Int: AgentToolCall] = [:]
         var completed = false
         defer {
-            onReceipt?(AgentModelReceipt(purpose: purpose, requestedModel: p.model, returnedModel: result.returnedModel,
+            onReceipt?(AgentModelReceipt(purpose: purpose, requestedModel: model, returnedModel: result.returnedModel,
                 inputTokens: result.inputTokensReported ? result.inputTokens : nil, outputTokens: result.outputTokensReported ? result.outputTokens : nil,
                 finishReason: result.finishReason.isEmpty ? "interrupted" : result.finishReason,
                 duration: Date().timeIntervalSince(started), completed: completed, messageID: messageID))
@@ -44,6 +95,13 @@ enum AgentModel {
             if let value = object["usage"] as? [String: Any] {
                 if let count = value["prompt_tokens"] as? Int, count >= 0 { result.inputTokens = count; result.inputTokensReported = true }
                 if let count = value["completion_tokens"] as? Int, count >= 0 { result.outputTokens = count; result.outputTokensReported = true }
+                let input = value["prompt_tokens_details"] as? [String: Any], output = value["completion_tokens_details"] as? [String: Any]
+                let reported: [(String, Any?)] = [("input_tokens", value["prompt_tokens"]), ("output_tokens", value["completion_tokens"]),
+                    ("total_tokens", value["total_tokens"]), ("cached_input_tokens", input?["cached_tokens"] ?? value["prompt_cache_hit_tokens"]),
+                    ("cache_write_input_tokens", value["cache_write_input_tokens"]), ("reasoning_output_tokens", output?["reasoning_tokens"])]
+                for (field, raw) in reported {
+                    if let raw, CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(), let count = raw as? Int, count >= 0 { tokens[field] = count }
+                }
             }
         }
         func consume(_ object: [String: Any], streamed: Bool) throws {

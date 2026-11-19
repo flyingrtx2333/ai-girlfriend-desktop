@@ -42,6 +42,9 @@ import AppKit
         [[hooks.PreModelRequest]]
         hooks = [{ type = "command", command = "/usr/bin/true" }]
 
+        [[hooks.Interrupt]]
+        hooks = [{ type = "command", command = "/usr/bin/true" }]
+
         [[hooks.PostToolUse]]
         hooks = [{ type = "mcp_tool", server = "elsewhere", tool = "fixture", input = { api_key = "\(privateMarker)" } }]
 
@@ -103,7 +106,7 @@ import AppKit
         let toml = try record(importer, "config.toml"), sibling = try record(importer, "hooks.json")
         checks["detectsInlineGroupsAlongsideStandaloneJSON"] = toml.issue == nil && sibling.issue == nil && toml.preview.contains("SessionStart")
             && toml.preview.contains("Write|Edit") && sibling.preview.contains("公开 JSON 命令")
-        checks["previewReportsUnsupportedHandlersAndNeverCopiesTrustOrSecrets"] = toml.warnings.joined().contains("PreModelRequest")
+        checks["previewReportsUnsupportedHandlersAndNeverCopiesTrustOrSecrets"] = toml.preview.contains("PreModelRequest") && toml.warnings.joined().contains("Interrupt")
             && toml.warnings.joined().contains("已调整 1 条")
             && importer.preview.contains { $0.standaloneMCPHooks == true && $0.issue?.contains("内嵌凭据") == true && $0.issue?.contains(privateMarker) == false }
             && !(toml.preview + toml.warnings.joined()).contains(privateMarker) && !fm.fileExists(atPath: grants.path)

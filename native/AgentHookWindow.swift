@@ -14,6 +14,8 @@ private extension AgentHookEvent {
         case .denied: return "执行授权被拒绝时"
         case .stop: return "Agent 结束本轮响应前"
         case .stopFailure: return "结束响应失败时"
+        case .preModelRequest: return "每次模型请求前"
+        case .postModelRequest: return "每次模型请求结束后"
         case .preCompact: return "压缩上下文前"
         case .postCompact: return "压缩上下文后"
         case .cwd: return "工作目录变化时"
@@ -287,7 +289,8 @@ private struct AgentHookEditTarget: Codable, Equatable {
         case "agent": consequence = "将创建独立模型校验任务，只读项目，按工具白名单执行，产生模型用量。" + (item.network ? "允许终端联网。" : "终端不联网。")
         default: consequence = "此命令将自动运行，可修改任务项目、读取应用进程环境。" + (item.network ? "允许访问网络。" : "不允许访问网络。")
         }
-        let notice = consequence + (item.runsInBackground ? "\n在后台运行，结果不改变审批或工具参数。" : "") + (item.asyncRewake == true ? "退出码为 2 时可继续任务并产生模型用量。" : "")
+        let diagnostic = item.event.observesModelRequest ? "\n处理器输出留在任务记录。" : ""
+        let notice = consequence + diagnostic + (item.runsInBackground ? "\n在后台运行，结果不改变审批或工具参数。" : "") + (item.asyncRewake == true ? "退出码为 2 时可继续任务并产生模型用量。" : "")
         let timeout = item.timeout.isFinite && (1...600).contains(item.timeout) ? "\(Int(item.timeout)) 秒" : "无效"
         var definition = item.display + "\n\n匹配：" + (item.matcher.isEmpty ? "全部" : item.matcher) + "\n超时：" + timeout + "\n来源：" + item.source
         if item.type == "agent", let turns = item.maxTurns { definition += "\n最多 \(turns) 轮" }
