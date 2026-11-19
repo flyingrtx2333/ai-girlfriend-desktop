@@ -29,12 +29,17 @@ struct AgentExtensionItem: Identifiable, Codable, Sendable {
     var manualOnly: Bool
     var sha256: String
     var pluginName: String? = nil
+    var argumentHint: String? = nil
     var invocation: String { kind.rawValue + ":" + name }
 }
 
 struct AgentExtensionDocument: Sendable {
     var metadata: [String: String]
     var body: String
+    var customArgumentHint: String? {
+        guard let value = metadata["argument-hint"] ?? metadata["argument_hint"], !value.isEmpty else { return nil }
+        return value
+    }
     init(_ text: String) throws {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
         guard !normalized.contains("\0"), normalized.utf8.count <= 65_536 else { throw PetError("扩展说明必须是 64KB 以内的 UTF-8 文本") }
@@ -131,7 +136,10 @@ struct AgentExtensionDocument: Sendable {
                             guard seen.insert(key).inserted else { continue }
                             let id = String(AgentFiles.hash(Data(file.standardizedFileURL.path.utf8)).prefix(24))
                             let description = document.metadata["description"] ?? String(document.body.split(separator: "\n").first ?? "")
-                            let item = AgentExtensionItem(id: id, name: name, description: String(description.prefix(500)), kind: kind, file: file, root: kind == .skill ? file.deletingLastPathComponent() : files.root, scope: scope, managed: managed, enabled: !disabled.contains(id), manualOnly: document.metadata["disable-model-invocation"]?.lowercased() == "true", sha256: AgentFiles.hash(data))
+                            var item = AgentExtensionItem(id: id, name: name, description: String(description.prefix(500)), kind: kind, file: file, root: kind == .skill ? file.deletingLastPathComponent() : files.root, scope: scope, managed: managed, enabled: !disabled.contains(id), manualOnly: document.metadata["disable-model-invocation"]?.lowercased() == "true", sha256: AgentFiles.hash(data))
+                            if kind == .command, document.metadata[AgentCodexPrompt.argumentFormat] == "codex" {
+                                item.argumentHint = (document.customArgumentHint ?? AgentCodexPrompt(document.body).argumentHint).map { String($0.prefix(300)) }
+                            }
                             if includeDisabled || item.enabled { items.append(item) }
                         } catch { warnings.append(file.path + "：" + error.localizedDescription) }
                     }
@@ -297,8 +305,9 @@ struct AgentExtensionDocument: Sendable {
             result.extensionReferences = [reference]; result.extensionInstructions = instructions
         } else {
             let (raw, document) = try document(item), arguments = selection?.arguments ?? (parts.count > 1 ? String(parts[1]) : "")
+            let instructions = document.metadata[AgentCodexPrompt.argumentFormat] == "codex" ? try AgentCodexPrompt(document.body).expand(arguments) : document.body.replacingOccurrences(of: "$ARGUMENTS", with: arguments)
             result.extensionReferences = [AgentExtensionReference(id: item.id, name: item.name, kind: .command, source: item.file.path, sha256: AgentFiles.hash(Data(raw.utf8)), pluginName: item.pluginName)]
-            result.extensionInstructions = "[用户选择的命令 /\(item.name)，来源 \(item.file.path)。权限、审批与用户后续要求不变。]\n" + document.body.replacingOccurrences(of: "$ARGUMENTS", with: arguments)
+            result.extensionInstructions = "[用户选择的命令 /\(item.name)，来源 \(item.file.path)。权限、审批与用户后续要求不变。]\n" + instructions
         }
         return result
     }

@@ -164,22 +164,91 @@ import AppKit
             try write(codex, "AGENTS.md", "CODEX LOWER PRIORITY\n")
             try write(codex, "AGENTS.override.md", "CODEX EFFECTIVE INSTRUCTIONS\n")
             try write(codex, "prompts/outline.md", "---\ndescription: Public outline\n---\nBuild a short outline.\n")
-            try write(codex, "prompts/with-arg.md", "Refer to $1 and $FILE.\n")
+            let namedBody = "---\r\ndescription: Public review\r\nargument-hint: FILE=<path> TITLE=<title>\r\n---\r\n文件 $FILE\r\n标题 $TITLE\r\n示例 $$FILE\r\n字面位置 $1\r\n"
+            let positionalBody = "一 $1\n二 $2\n三 $3\n九 $9\n全部 $ARGUMENTS\n价格 $$12\n"
+            try write(codex, "prompts/with-arg.md", namedBody)
+            try write(codex, "prompts/positional.md", positionalBody)
             try write(codex, "rules/default.rules", "# Public policy sample\n")
             await resumed.detect(.codex, root: codex, category: category)
-            checks["codexUsesEffectiveOverrideAndReportsUnsupportedPoliciesAndParameters"] = resumed.preview.count == 4
+            guard let namedRow = resumed.preview.first(where: { $0.title == "/prompts:with-arg" }),
+                  let positionalRow = resumed.preview.first(where: { $0.title == "/prompts:positional" }) else { throw PetError("参数提示词未进入预览") }
+            checks["codexUsesEffectiveOverrideAndReportsUnsupportedPolicies"] = resumed.preview.count == 5
                 && resumed.preview.contains { $0.title == "AGENTS.override.md" && $0.configuration?.relative == "AGENTS.md" && $0.issue == nil }
                 && resumed.preview.contains { $0.issue?.contains("审批策略") == true }
-                && resumed.preview.contains { $0.issue?.contains("参数占位符") == true }
+            checks["codexParameterPreviewShowsTheSourceAndBothArgumentHints"] = namedRow.issue == nil && positionalRow.issue == nil
+                && namedRow.preview.contains("文件 $FILE") && namedRow.warnings == ["参数 FILE=<path> TITLE=<title>"]
+                && positionalRow.preview.contains("全部 $ARGUMENTS") && positionalRow.warnings == ["参数 [参数…]"]
+                && namedRow.rawHash != namedRow.sourceHash && positionalRow.rawHash != positionalRow.sourceHash
             try resumed.begin(.codex, root: codex, ids: Set(resumed.preview.filter { $0.issue == nil }.map(\.id)), category: category)
             try await idle(resumed)
             let prompt = try reopened.extensions.expand(AgentMessage(role: "user", content: "/prompts:outline"), store: reopened, taskID: generalTask)
             checks["globalCodexInstructionsAndStaticPromptWorkWithNoWorkspace"] = reopened.instructions.report(general).text.contains("CODEX EFFECTIVE INSTRUCTIONS")
                 && prompt.extensionInstructions?.contains("Build a short outline.") == true
                 && resumed.batch?.items.allSatisfy { $0.state == "imported" } == true
-            checks["policyAndParameterizedPromptWereNeverPublished"] = !fm.fileExists(atPath: profile.appendingPathComponent("extensions/commands/prompts/with-arg.md").path)
-                && !fm.fileExists(atPath: profile.appendingPathComponent("extensions/rules/default.rules").path)
+            checks["policyWasNeverPublished"] = !fm.fileExists(atPath: profile.appendingPathComponent("extensions/rules/default.rules").path)
                 && !fm.fileExists(atPath: output.appendingPathComponent("fixture-keychain.json").path)
+
+            let namedMessage = #"/prompts:with-arg FILE="季度 汇总=甲.md" TITLE='交接 $FILE "稿"'"#
+            let namedExpected = "文件 季度 汇总=甲.md\n标题 交接 $FILE \"稿\"\n示例 $FILE\n字面位置 $1"
+            let positionalMessage = #"/prompts:positional "部门 甲" second\ part "$2 表情 🧭""#
+            let positionalExpected = "一 部门 甲\n二 second part\n三 $2 表情 🧭\n九 \n全部 部门 甲 second part $2 表情 🧭\n价格 $12"
+            let named = try reopened.extensions.expand(AgentMessage(role: "user", content: namedMessage), store: reopened, taskID: generalTask)
+            let positional = try reopened.extensions.expand(AgentMessage(role: "user", content: positionalMessage), store: reopened, taskID: generalTask)
+            checks["namedArgumentsExpandOnceWithQuotesCaseAndLiteralDollars"] = named.content == namedMessage
+                && named.extensionInstructions?.hasSuffix(namedExpected) == true
+                && named.extensionReferences?.first?.sha256 == namedRow.sourceHash
+            checks["positionalArgumentsExpandQuotedAndEscapedValuesAndTheWholeList"] = positional.content == positionalMessage
+                && positional.extensionInstructions?.hasSuffix(positionalExpected) == true
+                && positional.extensionReferences?.first?.sha256 == positionalRow.sourceHash
+
+            let localRuntime = AgentRuntime(store: reopened, keychain: PetKeychain(service: "com.xjs.bluefatfish.standalone-prompt-check",
+                configurationFile: output.appendingPathComponent("fixture-keychain.json"), migrateLegacy: false), preferences: { .init() })
+            var attemptedRequests = 0
+            localRuntime.modelRequestCheck = { attemptedRequests += 1; throw PetError("本机参数检查禁止模型请求") }
+            let incomplete = #"/prompts:with-arg FILE="季度 汇总=甲.md""#
+            reopened.update(generalTask) { $0.draft = incomplete }
+            checks["missingNamedArgumentKeepsDraftAndDoesNotQueue"] = !localRuntime.submit(incomplete, taskID: generalTask, startImmediately: false)
+                && localRuntime.submissionError?.contains("缺少参数 TITLE") == true
+                && reopened.task(generalTask)?.draft == incomplete && reopened.task(generalTask)?.messages.isEmpty == true
+            checks["invalidQuotesAndCaseAreRejectedBeforeSubmission"] = refuses {
+                _ = try reopened.extensions.expand(AgentMessage(role: "user", content: #"/prompts:with-arg FILE="未闭合"#), store: reopened, taskID: generalTask)
+            } && refuses {
+                _ = try reopened.extensions.expand(AgentMessage(role: "user", content: "/prompts:with-arg file=lower TITLE=ok"), store: reopened, taskID: generalTask)
+            }
+            checks["correctedCommandUsesNormalSubmissionAndKeepsOriginalUserText"] = localRuntime.submit(namedMessage, taskID: generalTask, startImmediately: false)
+                && reopened.task(generalTask)?.messages.last?.content == namedMessage
+                && reopened.task(generalTask)?.messages.last?.extensionInstructions?.hasSuffix(namedExpected) == true
+                && attemptedRequests == 0
+            let escapedOnly = AgentCodexPrompt("$$FILE $$1 $1 $2 $ARGUMENTS")
+            checks["literalDollarAndEmptyArgumentArePreservedAndOutputIsBounded"] = try escapedOnly.expand(#""" "甲""#) == "$FILE $1  甲  甲"
+                && refuses { _ = try AgentCodexPrompt("$1$1").expand(String(repeating: "a", count: 51_000)) }
+
+            let namedFile = try AgentStandaloneDataImport.installedURL(namedRow, store: reopened)
+            let positionalFile = try AgentStandaloneDataImport.installedURL(positionalRow, store: reopened)
+            let namedInstalled = try Data(contentsOf: namedFile), positionalInstalled = try Data(contentsOf: positionalFile)
+            let namedCopy = "---\r\nbluefatfish-argument-format: codex\r\n" + namedBody.dropFirst(4)
+            let positionalCopy = "---\nbluefatfish-argument-format: codex\n---\n" + positionalBody
+            let originalNamed = try contents(codex, "prompts/with-arg.md"), originalPositional = try contents(codex, "prompts/positional.md")
+            checks["onlyInstalledCopiesGetModeMarkerAndKeepOriginalLineEndings"] = namedInstalled == Data(namedCopy.utf8)
+                && positionalInstalled == Data(positionalCopy.utf8)
+                && originalNamed == namedBody && originalPositional == positionalBody
+            await resumed.detect(.codex, root: codex, category: category)
+            let existingPrompts = resumed.preview.filter { $0.title == namedRow.title || $0.title == positionalRow.title }
+            checks["parameterizedCommandsRecognizeAlreadyImportedExactCopies"] = existingPrompts.count == 2 && existingPrompts.allSatisfy { $0.issue == "已经导入" }
+            let offlineCodex = codex.deletingLastPathComponent().appendingPathComponent("offline-codex")
+            try fm.moveItem(at: codex, to: offlineCodex)
+            do {
+                let offlineStore = makeStore()
+                try await AgentStandaloneDataImport.install(namedRow, root: codex, store: offlineStore)
+                let offlineItem = try offlineStore.extensions.catalog(workspace: nil).first { $0.name == "prompts:with-arg" }
+                let offlinePrompt = try offlineStore.extensions.expand(AgentMessage(role: "user", content: namedMessage), store: offlineStore, taskID: generalTask)
+                checks["importedCommandCanResumeOfflineAndKeepsItsMenuHint"] = offlineItem?.argumentHint == "FILE=<path> TITLE=<title>"
+                    && offlinePrompt.extensionInstructions?.hasSuffix(namedExpected) == true
+            } catch {
+                try fm.moveItem(at: offlineCodex, to: codex)
+                throw error
+            }
+            try fm.moveItem(at: offlineCodex, to: codex)
 
             let moving = output.appendingPathComponent("fresh-export")
             try write(moving, ".qoder/commands/changed.md", "Before detection\n")

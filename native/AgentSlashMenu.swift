@@ -47,7 +47,7 @@ enum AgentSlashEntry {
     }
     var title: String { switch self { case .item(let item): return item.name; case .builtin(let value): return value.title; case .mode(let value): return value.title; case .plugin(_, let title, _): return title; case .connector(let server): return server.name } }
     var detail: String {
-        switch self { case .item(let item): return item.description; case .builtin(let value): return value.detail; case .mode(let value): return value == .goal ? "持续推进目标，依据实际结果核对完成" : "先制定计划，再决定如何执行"; case .plugin(_, _, let items): return "\(items.count) 项能力"; case .connector(let server): return server.type == "stdio" ? "本机连接器" : "远程连接器" }
+        switch self { case .item(let item): return [item.argumentHint, item.description].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "); case .builtin(let value): return value.detail; case .mode(let value): return value == .goal ? "持续推进目标，依据实际结果核对完成" : "先制定计划，再决定如何执行"; case .plugin(_, _, let items): return "\(items.count) 项能力"; case .connector(let server): return server.type == "stdio" ? "本机连接器" : "远程连接器" }
     }
     var scope: String { switch self { case .item(let item): return item.scope; case .builtin: return "内置命令"; case .mode: return "任务模式"; case .plugin(_, _, let items): return items.first?.scope ?? "插件"; case .connector(let server): return AgentMCPSelection.scope(server) } }
     var kindTitle: String { switch self { case .item(let item): return item.kind == .skill ? "技能" : "命令"; case .builtin: return "命令"; case .mode: return "模式"; case .plugin: return "插件"; case .connector: return "连接器" } }

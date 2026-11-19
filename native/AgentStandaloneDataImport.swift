@@ -192,6 +192,24 @@ enum AgentStandaloneDataImport {
         return value
     }
 
+    private static func commandPayload(_ bytes: Data, text: String, plan: AgentStandaloneImportPlan, source: AgentImportSource) throws -> (data: Data, hint: String?) {
+        let document = try AgentExtensionDocument(text)
+        guard AgentExtensions.validName(plan.commandName), !text.hasPrefix("\u{FEFF}"),
+              Set(document.metadata.keys).isSubset(of: ["name", "description", "argument-hint", "argument_hint", "disable-model-invocation"]) else {
+            throw PetError("命令名称或附加的执行配置尚不兼容")
+        }
+        guard source == .codex else { return (bytes, nil) }
+        let prompt = AgentCodexPrompt(document.body)
+        guard prompt.hasPlaceholders else { return (bytes, nil) }
+        let marked = AgentCodexPrompt.markCommand(text)
+        _ = try AgentExtensionDocument(marked)
+        return (Data(marked.utf8), document.customArgumentHint ?? prompt.argumentHint)
+    }
+
+    private static func installedHash(_ record: AgentImportCandidate, _ plan: AgentStandaloneImportPlan) -> String {
+        plan.kind == .command ? record.sourceHash : record.rawHash
+    }
+
     // Compare the entire chain without copying or granting access to any referenced files.
     @MainActor private static func fingerprint(_ bytes: Data, at url: URL, files: AgentFiles, kind: AgentStandaloneImportPlan.Kind,
                                                source: AgentImportSource) throws -> String {
@@ -293,6 +311,7 @@ enum AgentStandaloneDataImport {
                     continue
                 }
                 let body = try text(bytes)
+                var commandHash: String?
                 switch plan.kind {
                 case .rule:
                     let name = String(plan.relative.dropLast(3)).replacingOccurrences(of: "/", with: ":")
@@ -300,14 +319,9 @@ enum AgentStandaloneDataImport {
                     record.title = rule.key
                     record.warnings = [rule.trigger.title] + rule.patterns
                 case .command:
-                    let document = try AgentExtensionDocument(body)
-                    guard AgentExtensions.validName(plan.commandName), !body.hasPrefix("\u{FEFF}"),
-                          Set(document.metadata.keys).isSubset(of: ["name", "description", "argument-hint", "argument_hint", "disable-model-invocation"]) else {
-                        throw PetError("命令名称或附加的执行配置尚不兼容")
-                    }
-                    if source == .codex, document.body.range(of: #"\$(?:[A-Z_][A-Z_0-9]*|[1-9]|\$)"#, options: .regularExpression) != nil {
-                        throw PetError("Codex 命令含参数占位符，暂不支持转换")
-                    }
+                    let payload = try commandPayload(bytes, text: body, plan: plan, source: source)
+                    commandHash = AgentFiles.hash(payload.data)
+                    if let hint = payload.hint { record.warnings = ["参数 " + String(hint.prefix(300))] }
                     record.title = "/" + plan.commandName
                 case .instruction:
                     record.warnings = ["导入后按原目录载入"]
@@ -324,10 +338,9 @@ enum AgentStandaloneDataImport {
                     if plan.kind == .command, commands.contains(where: { $0.name.caseInsensitiveCompare(plan.commandName) == .orderedSame && $0.file.path != target.path }) {
                         throw PetError("同名命令已存在，保留现有配置")
                     }
-                    let fingerprint = try fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: source)
-                    record.sourceHash = fingerprint
+                    record.sourceHash = try commandHash ?? fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: source)
                     if current.kind != "missing" {
-                        guard current.kind == "file", try files.fileHash(target, maximum: 65_536) == record.rawHash else {
+                        guard current.kind == "file", try files.fileHash(target, maximum: 65_536) == installedHash(record, plan) else {
                             throw PetError(plan.kind == .command ? "同名命令已存在，保留现有配置" : "目标文件已存在，保留现有内容")
                         }
                         record.issue = "已经导入"
@@ -424,7 +437,7 @@ enum AgentStandaloneDataImport {
             guard try sharedFiles.fileHash(file, maximum: 65_536) == record.rawHash else { throw PetError("共享配置已变化，请重新检测") }
             return file
         }
-        guard try files.entryMetadata(target).kind == "file", try files.fileHash(target, maximum: 65_536) == record.rawHash else {
+        guard try files.entryMetadata(target).kind == "file", try files.fileHash(target, maximum: 65_536) == installedHash(record, plan) else {
             throw PetError("目标配置已移除或变化")
         }
         return target
@@ -446,7 +459,7 @@ enum AgentStandaloneDataImport {
                 throw PetError("目标文件已存在，保留现有内容")
             }
             bytes = try read(target, from: files)
-            guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("目标文件已存在，保留现有内容") }
+            guard AgentFiles.hash(bytes) == installedHash(record, plan) else { throw PetError("目标文件已存在，保留现有内容") }
             try validateReferences(bytes, target: target, files: files, record: record, plan: plan)
             return
         }
@@ -454,10 +467,10 @@ enum AgentStandaloneDataImport {
         let file = try location.files.literalURL(record.file)
         guard try location.entry(file) == plan, !location.project || plan.workspace != nil else { throw PetError("来源或项目已变化，请重新检测") }
         bytes = try read(file, from: location.files)
-        guard AgentFiles.hash(bytes) == record.rawHash,
-              try fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: record.source) == record.sourceHash else {
-            throw PetError("来源已变化，请重新检测")
-        }
+        guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("来源已变化，请重新检测") }
+        let payload = plan.kind == .command ? try commandPayload(bytes, text: text(bytes), plan: plan, source: record.source).data : bytes
+        let observedHash = plan.kind == .command ? AgentFiles.hash(payload) : try fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: record.source)
+        guard observedHash == record.sourceHash else { throw PetError("来源已变化，请重新检测") }
         try validateReferences(bytes, target: target, files: files, record: record, plan: plan)
         var rule: AgentRuleDefinition?
         if plan.kind == .rule {
@@ -469,7 +482,11 @@ enum AgentStandaloneDataImport {
                 throw PetError("同名命令已存在，保留现有配置")
             }
         }
-        try files.copyFile(file, from: location.files, to: target, expectedHash: record.rawHash, expectedTarget: "missing", maximum: 65_536)
+        if payload == bytes {
+            try files.copyFile(file, from: location.files, to: target, expectedHash: record.rawHash, expectedTarget: "missing", maximum: 65_536)
+        } else {
+            try files.writeData(payload, to: target, permissions: 0o600, expectedTarget: "missing")
+        }
         if let rule {
             let id = "local-rule-" + AgentFiles.hash(Data(target.path.utf8)).prefix(32)
             store.rules.onChange?(id, plan.workspace, rule.trigger == .always || rule.trigger == .decision)
