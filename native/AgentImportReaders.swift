@@ -71,6 +71,7 @@ struct AgentImportCandidate: Codable, Identifiable {
     var automation: AgentAutomationImportPlan?
     var plugin: AgentPluginImportPlan?
     var configuration: AgentStandaloneImportPlan?
+    var standaloneMCPHooks: Bool?
     var id: String { source.rawValue + ":" + sourceID.lowercased() }
     var category: AgentImportCategory {
         if automation != nil { return .automations }

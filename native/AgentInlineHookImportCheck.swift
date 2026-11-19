@@ -43,7 +43,7 @@ import AppKit
         hooks = [{ type = "command", command = "/usr/bin/true" }]
 
         [[hooks.PostToolUse]]
-        hooks = [{ type = "mcp_tool", server = "elsewhere", tool = "fixture", input = { hidden = "\(privateMarker)" } }]
+        hooks = [{ type = "mcp_tool", server = "elsewhere", tool = "fixture", input = { api_key = "\(privateMarker)" } }]
 
         [hooks.state."old-approval"]
         enabled = true
@@ -97,14 +97,15 @@ import AppKit
         let grants = profile.appendingPathComponent("extensions/hook-settings.json")
 
         await importer.detect(.codex, root: incoming, category: .configuration)
-        checks["projectConfigAndJSONRequireDestination"] = importer.preview.count == 2
+        checks["projectConfigAndJSONRequireDestination"] = importer.preview.count == 3
             && importer.preview.allSatisfy { $0.issue?.contains("选择目标项目") == true }
         await importer.detect(.codex, root: incoming, category: .configuration, workspace: project.path)
         let toml = try record(importer, "config.toml"), sibling = try record(importer, "hooks.json")
         checks["detectsInlineGroupsAlongsideStandaloneJSON"] = toml.issue == nil && sibling.issue == nil && toml.preview.contains("SessionStart")
             && toml.preview.contains("Write|Edit") && sibling.preview.contains("公开 JSON 命令")
         checks["previewReportsUnsupportedHandlersAndNeverCopiesTrustOrSecrets"] = toml.warnings.joined().contains("PreModelRequest")
-            && toml.warnings.joined().contains("mcp_tool") && toml.warnings.joined().contains("已调整 1 条")
+            && toml.warnings.joined().contains("已调整 1 条")
+            && importer.preview.contains { $0.standaloneMCPHooks == true && $0.issue?.contains("内嵌凭据") == true && $0.issue?.contains(privateMarker) == false }
             && !(toml.preview + toml.warnings.joined()).contains(privateMarker) && !fm.fileExists(atPath: grants.path)
 
         try write(projectTOML + "\n# A new configuration version", to: file)

@@ -61,7 +61,7 @@ import Foundation
         rules = AgentRules(profile: directory, sharedHome: extensionHome, plugins: extensions.plugins)
         instructions = AgentInstructions(profile: directory, sharedHome: extensionHome)
         mcp = AgentMCP(profile: directory, keychain: mcpKeychain, plugins: extensions.plugins)
-        hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain, plugins: extensions.plugins)
+        hooks = AgentHooks(profile: directory, sharedHome: extensionHome, keychain: hookKeychain, plugins: extensions.plugins, mcp: mcp)
         agents = AgentProfiles(profile: directory, plugins: extensions.plugins)
         teams = AgentTeams(profile: directory)
         automations = AgentAutomations(profile: directory)

@@ -18,10 +18,12 @@ struct AgentHookDefinition: Codable, Identifiable {
     var shell: String?, arguments: [String]?, environmentNames: [String]?, condition: String?, allowedEnvVars: [String]?, once: Bool?
     var plugin: AgentPluginHookReference?, pluginEnabled: Bool?
     var additionalContextLimit: Int?
+    var mcpHook: AgentMCPHook?
     var runsInBackground: Bool { asynchronous == true || asyncRewake == true }
     var display: String {
         let body: String
         switch type {
+        case AgentMCPHook.type: body = mcpHook?.display ?? ""
         case "http": body = "POST " + (url ?? "") + ((headerNames ?? []).isEmpty ? "" : "\nHeaders: " + (headerNames ?? []).joined(separator: ", ")) + (allowedEnvVars.map { "\n环境变量：" + ($0.isEmpty ? "不允许插值" : $0.joined(separator: ", ")) } ?? "")
         case "prompt", "agent": body = (model.map { "模型：" + $0 + "\n" } ?? "") + (tools.map { "工具：" + $0.joined(separator: ", ") + "\n" } ?? "") + (prompt ?? "")
         default:
@@ -55,6 +57,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
 @MainActor final class AgentHooks {
     let profile: URL, sharedHome: URL?
     let plugins: AgentPlugins
+    private weak var mcp: AgentMCP?
     private var settings: [String: AgentHookSetting] = [:]
     @MainActor private final class Job {
         let hookID: String, background: Bool, title: String, source: String
@@ -69,8 +72,9 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     private(set) var loadError: String?
     private(set) var warnings: [String] = []
     var onAsyncResult: ((String, String, String?, Bool) -> Void)?
-    init(profile: URL, sharedHome: URL?, keychain: PetKeychain? = nil, plugins: AgentPlugins? = nil) {
+    init(profile: URL, sharedHome: URL?, keychain: PetKeychain? = nil, plugins: AgentPlugins? = nil, mcp: AgentMCP? = nil) {
         self.profile = profile; self.sharedHome = sharedHome; self.plugins = plugins ?? AgentPlugins(profile: profile)
+        self.mcp = mcp
         credentials = AgentHookCredentials(profile: profile, keychain: keychain); http = AgentHookHTTP(credentials: credentials)
         let file = profile.appendingPathComponent("extensions/hook-settings.json")
         do { if FileManager.default.fileExists(atPath: file.path) { settings = try JSONDecoder().decode([String: AgentHookSetting].self, from: Data(contentsOf: file)); guard settings.count <= 256 else { throw PetError("Hooks 数量超过 256") } } }
@@ -149,7 +153,8 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                 guard let handlers = group["hooks"] as? [[String: Any]], handlers.count <= 32 else { throw PetError("Hook matcher 需要 hooks 数组") }
                 let matcher = group["matcher"] as? String ?? ""
                 for (index, handler) in handlers.enumerated() {
-                    let type = handler["type"] as? String ?? "command", command = handler["command"] as? String ?? "", timeout = handler["timeout"] as? Double ?? group["timeout"] as? Double ?? (handler["type"] as? String == "prompt" ? 30 : 60)
+                    let type = handler["type"] as? String ?? "command", command = handler["command"] as? String ?? ""
+                    let timeout = handler["timeout"] as? Double ?? group["timeout"] as? Double ?? (type == "prompt" ? 30 : type == AgentMCPHook.type ? 600 : 60)
                     let name = handler["name"] as? String ?? eventName + " · " + String((type == "command" ? command : type).prefix(45))
                     let id = AgentHookHTTP.id(file, eventName, groupIndex, index)
                     var item = AgentHookDefinition(id: id, name: name, event: event, matcher: matcher, type: type, command: command, timeout: timeout, network: handler["network"] as? Bool ?? false, source: file.path, root: resource.path, scope: scope, workspace: workspace)
@@ -164,8 +169,15 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     item.url = handler["url"] as? String; item.prompt = handler["prompt"] as? String; item.model = handler["model"] as? String
                     item.tools = handler["tools"] as? [String] ?? (type == "agent" ? ["Read", "Glob", "Grep", "Bash"] : nil); item.maxTurns = handler["maxTurns"] as? Int ?? 50
                     item.headerNames = (handler["headers"] as? [String: String])?.keys.sorted()
-                    if !["command", "http", "prompt", "agent"].contains(type) { item.diagnostic = "未知处理器：\(type)" }
+                    if !["command", "http", "prompt", "agent", AgentMCPHook.type].contains(type) { item.diagnostic = "未知处理器：\(type)" }
                     else if type == "command" && (command.isEmpty || command.utf8.count > 16_000 || command.contains("\0")) { item.diagnostic = "命令为空或超过 16KB" }
+                    else if type == AgentMCPHook.type {
+                        do {
+                            guard event != .sessionEnd else { throw PetError("SessionEnd 不支持 MCP 工具处理器") }
+                            guard !item.runsInBackground, item.once != true else { throw PetError("MCP 工具处理器需要同步运行") }
+                            item.mcpHook = try AgentMCPHook(handler)
+                        } catch { item.diagnostic = error.localizedDescription }
+                    }
                     else if type == "http" {
                         do {
                             _ = try AgentHookHTTP.endpoint(item.url); try AgentHookHTTP.validateHeaders(handler["headers"])
@@ -241,6 +253,15 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             } catch { warnings.append(file.lastPathComponent + "：" + error.localizedDescription) }
         }
         items += try pluginItems(workspace: workspace)
+        for index in items.indices where items[index].diagnostic == nil {
+            guard let definition = items[index].mcpHook else { continue }
+            do {
+                guard let mcp else { throw PetError("连接器服务不可用") }
+                let target = try mcp.hookTarget(definition.server, workspace: items[index].workspace)
+                items[index].mcpHook?.target = target
+                items[index].signature = AgentFiles.hash(Data((items[index].signature + "\0" + target.fingerprint).utf8))
+            } catch { items[index].diagnostic = error.localizedDescription }
+        }
         let present = Set(items.map(\.id))
         for setting in settings.values where setting.enabled && !present.contains(setting.definition.id) && (setting.definition.workspace == nil || setting.definition.workspace == workspace) {
             if let reference = setting.definition.plugin, !plugins.isEffective(reference.name, workspace: workspace) { continue }
@@ -309,23 +330,38 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         var combined = AgentHookEffect()
         for hook in hooks {
             try Task.checkCancellation()
-            guard trusted(hook) else { throw AgentHookHalt("Hook 需要重新审核：" + hook.name + "。" + (hook.diagnostic ?? "配置或 hooks 目录已变化，请在管理界面重新启用")) }
+            if hook.type != AgentMCPHook.type, !trusted(hook) {
+                throw AgentHookHalt("Hook 需要重新审核：" + hook.name + "。" + (hook.diagnostic ?? "配置或 hooks 目录已变化，请在管理界面重新启用"))
+            }
             guard try matches(hook.matcher, value, name: hook.name) else { continue }
             if let text = hook.condition {
                 let condition = try AgentHookCondition(text)
                 guard try matches(condition.selector, value, name: hook.name), condition.argumentMatches(fields) else { continue }
             }
             let key = AgentFiles.hash(Data((trigger + ":" + event.rawValue + ":" + hook.id + ":" + hook.signature).utf8))
+            if hook.type == AgentMCPHook.type, !trusted(hook) {
+                if store.task(taskID)?.events.contains(where: { $0.hook?.key == key }) != true {
+                    let info = AgentHookExecution(key: key, hookID: hook.id, event: event, signature: hook.signature, effect: AgentHookEffect())
+                    let reason = hook.diagnostic ?? "MCP Hook 或连接器已变化，请重新审核"
+                    store.update(taskID) { $0.events.append(AgentEvent(kind: "hook", title: hook.name, detail: reason, status: "failed", hook: info)) }
+                    onChange()
+                }
+                continue
+            }
             if let prior = store.task(taskID)?.events.last(where: { $0.hook?.key == key }) {
                 // Background work is scheduled once, including interrupted or
                 // still-running work. Its result is delivered separately.
                 if prior.hook?.asynchronous == true { continue }
-                guard let effect = prior.hook?.effect else { throw AgentHookHalt("上次 Hook 结果未确认，请先核对实际状态后重新发起操作：" + hook.name) }
+                guard let effect = prior.hook?.effect else {
+                    if hook.type == AgentMCPHook.type { continue }
+                    throw AgentHookHalt("上次 Hook 结果未确认，请先核对实际状态后重新发起操作：" + hook.name)
+                }
                 combined.merge(effect); continue
             }
             let eventID = UUID().uuidString, origin = task.messages.last(where: \.isHumanInput)?.id
             let execution = AgentHookExecution(key: key, hookID: hook.id, event: event, signature: hook.signature, asynchronous: hook.runsInBackground, originPromptID: origin)
-            let display = secret.isEmpty ? hook.display : hook.display.replacingOccurrences(of: secret, with: "[Token 已隐藏]")
+            let summary = hook.mcpHook.map { $0.server + " / " + $0.tool } ?? hook.display
+            let display = secret.isEmpty ? summary : summary.replacingOccurrences(of: secret, with: "[Token 已隐藏]")
             if hook.runsInBackground, (jobs[taskID]?.count ?? 0) >= 16 || jobs.values.reduce(0, { $0 + $1.count }) >= 32 {
                 var skipped = execution; skipped.delivery = "not-started"
                 store.update(taskID) { $0.events.append(AgentEvent(id: eventID, kind: "hook", title: hook.name, detail: "后台 Hook 已达并发上限，此次未启动", status: "failed", hook: skipped)) }; onChange(); continue
@@ -346,7 +382,19 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     private func execute(_ hook: AgentHookDefinition, eventID: String, task: AgentTaskRecord, store: AgentStore, fields: [String: Any], secret: String, preferences: PetPreferences?, job: Job, onChange: @escaping () -> Void) async throws -> AgentHookEffect {
         let taskID = task.id, event = hook.event, started = Date()
         var secretValues = [secret]
-        func redact(_ text: String) -> String { secretValues.filter { !$0.isEmpty }.sorted { $0.count > $1.count }.reduce(text) { $0.replacingOccurrences(of: $1, with: "[凭据已隐藏]") } }
+        func redact(_ text: String) -> String {
+            var protected = Set(secretValues.filter { !$0.isEmpty })
+            if hook.type == AgentMCPHook.type {
+                for value in secretValues where !value.isEmpty {
+                    for options: JSONSerialization.WritingOptions in [.fragmentsAllowed, [.fragmentsAllowed, .withoutEscapingSlashes]] {
+                        if let bytes = try? JSONSerialization.data(withJSONObject: value, options: options) {
+                            protected.insert(String(String(decoding: bytes, as: UTF8.self).dropFirst().dropLast()))
+                        }
+                    }
+                }
+            }
+            return protected.sorted { $0.count > $1.count }.reduce(text) { $0.replacingOccurrences(of: $1, with: "[凭据已隐藏]") }
+        }
         defer {
             if store.task(taskID)?.events.first(where: { $0.id == eventID })?.status == "running" {
                 store.update(taskID) { record in if let i = record.events.firstIndex(where: { $0.id == eventID }) { record.events[i].status = Task.isCancelled || job.cancelReason == "user" ? "stopped" : "failed"; record.events[i].duration = Date().timeIntervalSince(started) } }
@@ -388,6 +436,17 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             let work = Task { @MainActor [self] () throws -> AgentToolResult in
                 try Task.checkCancellation()
                 switch hook.type {
+                case AgentMCPHook.type:
+                    guard let definition = hook.mcpHook else { throw PetError("MCP Hook 配置无效") }
+                    do {
+                        return try await store.mcp.callHook(definition, owner: taskID, payload: safeInput, timeout: hook.timeout, store: store, checkReview: {
+                            guard let fresh = try catalog(workspace: current.workspace).first(where: { $0.id == hook.id }),
+                                  fresh.signature == hook.signature, trusted(fresh) else { throw PetError("MCP Hook 或连接器已变化，请重新审核") }
+                        }, onSecrets: { secretValues += $0 })
+                    } catch {
+                        try Task.checkCancellation()
+                        return AgentToolResult(text: "", failed: true, stderr: redact(error.localizedDescription), exitCode: 1)
+                    }
                 case "http": return try await http.send(safeInput, hook: hook, secret: secret) { secretValues += $0 }
                 case "prompt", "agent":
                     guard let preferences else { throw AgentHookHalt("模型 Hook 需要当前任务的模型配置") }
@@ -407,8 +466,8 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     return try await AgentCommand().run(command: command, workspace: task.workspace.map { URL(fileURLWithPath: $0) } ?? scratch, scratch: scratch, network: hook.network, timeout: hook.timeout, readOnly: limits.readOnly, maximumOutput: 64_000, protectedData: profile, inputFile: input, readRoots: [URL(fileURLWithPath: hook.root)], environment: environment, arguments: hook.arguments, shell: shell, inheritEnvironment: true)
                 }
             }
-            let result = try await withTaskCancellationHandler(operation: {
-                if hook.type == "command" { return try await work.value }
+            var result = try await withTaskCancellationHandler(operation: {
+                if ["command", AgentMCPHook.type].contains(hook.type) { return try await work.value }
                 return try await withThrowingTaskGroup(of: AgentToolResult.self) { group in
                     group.addTask { try await work.value }
                     group.addTask {
@@ -431,8 +490,18 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             }
             // Interpret protocol values before hiding text. An env value such
             // as "block" or "false" must never alter the execution decision.
-            var effect = hook.runsInBackground ? try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") : try interpret(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "")
-            if let input = effect.updatedInput, redact(input) != input { throw AgentHookHalt("Hook 参数包含受保护的凭据或环境值，未继续执行") }
+            var effect: AgentHookEffect
+            do {
+                effect = hook.runsInBackground ? try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "")
+                    : try interpret(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "")
+                if let input = effect.updatedInput, redact(input) != input {
+                    throw AgentHookHalt(hook.type == AgentMCPHook.type ? "MCP Hook 的参数改写含受保护的值，未采用" : "Hook 参数包含受保护的凭据或环境值，未继续执行")
+                }
+            } catch {
+                guard hook.type == AgentMCPHook.type else { throw error }
+                effect = AgentHookEffect()
+                result = AgentToolResult(text: "", failed: true, stderr: error.localizedDescription, exitCode: 1)
+            }
             effect.context = redact(effect.context); effect.systemMessage = effect.systemMessage.map(redact)
             effect.deny = effect.deny.map(redact); effect.halt = effect.halt.map(redact); effect.sessionTitle = effect.sessionTitle.map(redact)
             let stdout = redact(result.stdout ?? ""), stderr = redact(result.stderr ?? "")
@@ -463,7 +532,9 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         } catch {
             let cancelled = job.cancelReason != "timeout" && (job.cancelReason == "user" || Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled)
             let detail = cancelled ? "Hook 已停止" : job.cancelReason == "timeout" ? "Hook 执行超时：" + hook.name : error.localizedDescription
-            store.update(taskID) { record in if let i = record.events.firstIndex(where: { $0.id == eventID }) { record.events[i].status = cancelled ? "stopped" : "failed"; record.events[i].duration = Date().timeIntervalSince(started); record.events[i].detail += "\n" + redact(detail); if hook.runsInBackground { record.events[i].hook?.delivery = cancelled ? "cancelled" : "not-delivered" } } }; onChange(); throw error
+            store.update(taskID) { record in if let i = record.events.firstIndex(where: { $0.id == eventID }) { record.events[i].status = cancelled ? "stopped" : "failed"; record.events[i].duration = Date().timeIntervalSince(started); record.events[i].detail += "\n" + redact(detail); if hook.runsInBackground { record.events[i].hook?.delivery = cancelled ? "cancelled" : "not-delivered" } } }; onChange()
+            if !cancelled && hook.type == AgentMCPHook.type { return AgentHookEffect() }
+            throw error
         }
     }
     private func backgroundEffect(_ hook: AgentHookDefinition, result: AgentToolResult, stdout: String, stderr: String) throws -> AgentHookEffect {

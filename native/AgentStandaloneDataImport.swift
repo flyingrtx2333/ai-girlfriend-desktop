@@ -267,9 +267,28 @@ enum AgentStandaloneDataImport {
                 guard plan.kind != .policy else { throw PetError("Codex 终端审批策略需要单独配置") }
                 let bytes = try read(file, from: location.files, maximum: plan.maximumReadBytes)
                 record.rawHash = AgentFiles.hash(bytes)
-                if plan.kind == .agent || plan.kind == .hooks {
-                    if try previewExtension(&record, plan: plan, file: file, bytes: bytes, location: location, store: store) {
-                        rows.append(record)
+                if plan.kind == .agent {
+                    if try previewExtension(&record, plan: plan, file: file, bytes: bytes, location: location, store: store) { rows.append(record) }
+                    continue
+                }
+                if plan.kind == .hooks {
+                    guard let events = try AgentStandaloneHookPackage.events(bytes, source: source, file: file) else { continue }
+                    let types = AgentStandaloneHookPackage.handlerTypes(events)
+                    var candidates: [AgentImportCandidate] = []
+                    if source != .codex || types.other || !types.mcp { candidates.append(record) }
+                    if source == .codex, types.mcp {
+                        var companion = record
+                        companion.sourceID += ":mcp-hooks"
+                        companion.title += " · MCP 工具 Hooks"
+                        companion.standaloneMCPHooks = true
+                        candidates.append(companion)
+                    }
+                    for var candidate in candidates {
+                        do {
+                            if try previewExtension(&candidate, plan: plan, file: file, bytes: bytes, location: location, store: store, hookEvents: events) {
+                                rows.append(candidate)
+                            }
+                        } catch { candidate.issue = error.localizedDescription; rows.append(candidate) }
                     }
                     continue
                 }
@@ -334,10 +353,9 @@ enum AgentStandaloneDataImport {
     }
 
     @MainActor private static func previewExtension(_ record: inout AgentImportCandidate, plan: AgentStandaloneImportPlan, file: URL,
-                                                   bytes: Data, location: Location, store: AgentStore) throws -> Bool {
-        record.targetID = AgentPlugins.mcpUUID("standalone:" + plan.kind.rawValue + ":" + record.source.rawValue + "\0" + file.path + "\0" + (plan.workspace ?? ""))
-        let hookEvents = try plan.kind == .hooks ? AgentStandaloneHookPackage.events(bytes, source: record.source, file: file) : nil
-        if plan.kind == .hooks, hookEvents == nil { return false }
+                                                   bytes: Data, location: Location, store: AgentStore, hookEvents: [String: Any]? = nil) throws -> Bool {
+        let variant = record.standaloneMCPHooks == true ? "\0mcp-hooks" : ""
+        record.targetID = AgentPlugins.mcpUUID("standalone:" + plan.kind.rawValue + ":" + record.source.rawValue + "\0" + file.path + "\0" + (plan.workspace ?? "") + variant)
         guard !location.project || plan.workspace != nil else { throw PetError("项目来源，请选择目标项目") }
         guard plan.directory.isEmpty else { throw PetError("请选择对应的子目录作为来源和目标项目") }
         if plan.kind == .agent {
@@ -356,7 +374,8 @@ enum AgentStandaloneDataImport {
             }
             let (files, target) = try store.hooks.importedConfiguration(record.targetID, workspace: plan.workspace)
             guard let hookEvents, let package = try AgentStandaloneHookPackage.prepare(hookEvents, source: record.source, file: file,
-                files: location.files, projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks) else { return false }
+                files: location.files, projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks,
+                mcpOnly: record.standaloneMCPHooks == true) else { return false }
             record.preview = package.events.joined(separator: "\n")
             record.warnings = package.warnings
             record.sourceHash = AgentFiles.hash(Data((record.rawHash + package.fingerprint).utf8))
@@ -497,7 +516,8 @@ enum AgentStandaloneDataImport {
         guard try store.hooks.importedConfigurations(workspace: plan.workspace).count < 128 else { throw PetError("同一范围最多 128 份独立 Hooks 配置") }
         guard let events = try AgentStandaloneHookPackage.events(bytes, source: record.source, file: file),
               var bundle = try AgentStandaloneHookPackage.prepare(events, source: record.source, file: file, files: location.files,
-                projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks),
+                projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks,
+                mcpOnly: record.standaloneMCPHooks == true),
               AgentFiles.hash(Data((record.rawHash + bundle.fingerprint).utf8)) == record.sourceHash else {
             throw PetError("来源 Hooks 或资源已变化，请重新检测")
         }

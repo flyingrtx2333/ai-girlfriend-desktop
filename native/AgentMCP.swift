@@ -305,6 +305,80 @@ struct AgentMCPServer: Codable, Identifiable {
     }
     func connected(_ id: String, owner: String) -> Bool { guard let session = sessions[key(owner, id)], let current = try? server(id, workspace: session.workspace) else { return false }; return session.connected && session.revision == current.revision }
     func token(_ id: String, owner: String) -> String? { connected(id, owner: owner) ? sessions[key(owner, id)]?.token : nil }
+    func hookTarget(_ name: String, workspace: String?) throws -> AgentMCPHook.Target {
+        if let loadError { throw PetError(loadError) }
+        let named = availableServers(workspace: workspace).filter { $0.name == name }
+        let scoped = named.filter { AgentMCPSelection.sourceWorkspace($0) == workspace }
+        let matches = scoped.isEmpty ? named.filter { AgentMCPSelection.sourceWorkspace($0) == nil } : scoped
+        guard matches.count == 1, let match = matches.first else {
+            throw PetError(matches.isEmpty ? "请先配置连接器 " + name : "有多份同名连接器，请在 Hooks 中选择唯一名称")
+        }
+        return try AgentMCPHook.Target(server(match.id, revision: match.revision, workspace: workspace))
+    }
+
+    func callHook(_ hook: AgentMCPHook, owner: String, payload: Data, timeout: Double, store: AgentStore,
+                  checkReview: () throws -> Void, onSecrets: ([String]) -> Void) async throws -> AgentToolResult {
+        guard let target = hook.target, let token = token(target.id, owner: owner) else {
+            throw PetError("当前任务尚未连接 " + hook.server)
+        }
+        let (server, connection) = try session(target.id, owner: owner, token: token)
+        onSecrets(connection.redactions)
+        let arguments = try hook.arguments(payload)
+        let wrapper: [String: Any] = ["server_id": target.id, "connection": token, "tool": hook.tool,
+                                      "arguments": try JSONSerialization.jsonObject(with: arguments)]
+        let call = AgentToolCall(id: UUID().uuidString, name: "call_mcp_tool",
+            arguments: String(decoding: try JSONSerialization.data(withJSONObject: wrapper), as: UTF8.self))
+
+        func validate() throws {
+            try Task.checkCancellation()
+            guard let task = store.task(owner), AgentMCPSelection.eligible(task) else { throw PetError("当前任务模式不能调用 MCP Hook") }
+            guard try workspaceForServer(target.id, task: task).map({ try AgentFiles(workspace: $0).root.path }) == connection.workspace,
+                  try AgentMCPHook.Target(self.server(target.id, revision: target.revision, task: task)) == target,
+                  try session(target.id, owner: owner, token: token).1 === connection else { throw PetError("MCP Hook 的连接或授权范围已变化") }
+            try AgentMCPSelection.validate(task, store: store)
+            try AgentSkillDrafts.check(call, task: task, store: store)
+            try store.agents.check(call, task: task, store: store)
+            let limits = try store.agents.limits(task, store: store)
+            guard !limits.readOnly, limits.network else { throw PetError("当前任务限制了外部工具") }
+            let permission = try store.agents.executionPermission(task, store: store)
+            let rule = try store.agents.permission(call, task: task, store: store)
+            let explicitAllow = try rule == .allow && store.agents.canAutoApprove(task, store: store)
+            guard permission != .review, rule != .ask, rule != .deny,
+                  task.agent == nil && task.automation == nil || explicitAllow else { throw PetError("当前任务要求逐次确认 MCP 调用") }
+        }
+
+        try validate()
+        let known = try JSONSerialization.jsonObject(with: connection.catalog) as? [[String: Any]] ?? []
+        guard known.filter({ $0["name"] as? String == hook.tool }).count == 1 else { throw PetError("当前连接没有唯一的工具 " + hook.tool) }
+        let budget = min(timeout, server.timeoutSeconds)
+        let deadline = ProcessInfo.processInfo.systemUptime + budget
+        let fresh = try await connection.client.tools(timeout: budget, totalBudget: true)
+        guard fresh == connection.catalog else { throw PetError("MCP 工具目录已变化，请重新连接后核对") }
+        try checkReview()
+        try validate()
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        guard remaining > 0 else { throw PetError("MCP Hook 等待工具目录超时") }
+        let result = try await connection.client.call(name: hook.tool, arguments: arguments, timeout: remaining, interactive: false)
+        try checkReview()
+        try validate()
+
+        guard let value = try JSONSerialization.jsonObject(with: result) as? [String: Any] else {
+            throw PetError("MCP Hook 返回格式无效")
+        }
+        let texts = (value["content"] as? [[String: Any]] ?? []).compactMap { $0["text"] as? String }
+        if value["isError"] as? Bool == true {
+            let reason = texts.first.map { String($0.prefix(1200)) } ?? "MCP 工具返回错误"
+            throw PetError(reason)
+        }
+        let response: Data
+        if let structured = value["structuredContent"] as? [String: Any] {
+            response = try JSONSerialization.data(withJSONObject: structured, options: [.sortedKeys, .withoutEscapingSlashes])
+        } else {
+            response = Data(texts.joined(separator: "\n").utf8)
+        }
+        guard response.count <= 64_000 else { throw PetError("MCP Hook 结果超过 64KB") }
+        return AgentToolResult(text: "", stdout: String(decoding: response, as: UTF8.self), exitCode: 0)
+    }
     @discardableResult func connect(_ id: String, revision: String, owner: String, workspace: String?) async throws -> [String: Any] {
         let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }
         let server = try server(id, revision: revision, workspace: workspace), sessionKey = key(owner, id)

@@ -166,13 +166,16 @@ public actor MCPConnection {
         return data
     }
     private func parameters<T: Decodable>(_ values: [String: Any]) throws -> T { try JSONDecoder().decode(T.self, from: JSONSerialization.data(withJSONObject: values)) }
-    public func tools(timeout: Double) async throws -> Data {
+    public func tools(timeout: Double, totalBudget: Bool = false) async throws -> Data {
         guard ready, !closed else { throw MCPConnectionError("连接已断开，请重新连接") }
         guard supportsTools else { return Data("[]".utf8) }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
         var tools: [Tool] = [], cursor: String?, cursors = Set<String>()
         repeat {
             guard cursors.count < 64 else { throw MCPConnectionError("工具目录分页超过 64 页") }
-            let result = try await request(ListTools.request(cursor.map { .init(cursor: $0) } ?? .init()), timeout: timeout)
+            let remaining = totalBudget ? deadline - ProcessInfo.processInfo.systemUptime : timeout
+            guard remaining > 0 else { throw MCPConnectionError("读取工具目录超时") }
+            let result = try await request(ListTools.request(cursor.map { .init(cursor: $0) } ?? .init()), timeout: remaining)
             tools += result.tools
             guard tools.count <= 256 else { throw MCPConnectionError("连接器工具数量超过 256") }
             cursor = result.nextCursor
@@ -183,10 +186,10 @@ public actor MCPConnection {
         guard data.count <= 1_000_000 else { throw MCPConnectionError("工具目录超过 1MB") }
         return data
     }
-    public func call(name: String, arguments: Data, timeout: Double) async throws -> Data {
+    public func call(name: String, arguments: Data, timeout: Double, interactive: Bool = true) async throws -> Data {
         guard ready, !closed, supportsTools else { throw MCPConnectionError("连接器尚未连接或不提供工具") }
         let values = try JSONDecoder().decode([String: Value].self, from: arguments)
-        let result = try await request(CallTool.request(.init(name: name, arguments: values)), timeout: timeout, interactive: true)
+        let result = try await request(CallTool.request(.init(name: name, arguments: values)), timeout: timeout, interactive: interactive)
         let data = try JSONEncoder().encode(result)
         guard data.count <= 8_000_000 else { throw MCPConnectionError("工具结果超过 8MB；操作可能已执行，请核对实际状态") }
         return data

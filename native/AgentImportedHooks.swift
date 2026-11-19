@@ -80,20 +80,37 @@ struct AgentStandaloneHookPackage {
         return events
     }
 
+    static func handlerTypes(_ events: [String: Any]) -> (mcp: Bool, other: Bool) {
+        var mcp = false, other = false
+        for value in events.values {
+            guard let groups = value as? [[String: Any]], !groups.isEmpty else { other = true; continue }
+            for group in groups {
+                guard let handlers = group["hooks"] as? [[String: Any]], !handlers.isEmpty else { other = true; continue }
+                for handler in handlers {
+                    if handler["type"] as? String == AgentMCPHook.type { mcp = true }
+                    else { other = true }
+                }
+            }
+        }
+        return (mcp, other)
+    }
+
     @MainActor static func prepare(_ events: [String: Any], source: AgentImportSource, file: URL, files: AgentFiles,
-                                  projectSource: Bool, target: URL, workspace: String?, service: AgentHooks) throws -> Self? {
+                                  projectSource: Bool, target: URL, workspace: String?, service: AgentHooks, mcpOnly: Bool = false) throws -> Self? {
         guard !events.isEmpty else { return nil }
         let inline = source == .codex && file.lastPathComponent == "config.toml"
         let resourceRoot = file.deletingLastPathComponent().appendingPathComponent("hooks")
-        let inlineResources = inline ? try resources(resourceRoot, files: files) : nil
+        let inlineResources = inline && !mcpOnly ? try resources(resourceRoot, files: files) : nil
         var normalized: [String: [[String: Any]]] = [:], skipped: [String] = [], labels: [String] = []
         var count = 0, relocated = 0, hasOriginalScriptPath = false
         var handlerFields: Set<String> = ["name", "type", "command", "timeout", "shell", "args", "env", "network", "if", "allowedEnvVars",
             "url", "headers", "prompt", "model", "tools", "maxTurns", "async", "asyncRewake", "rewakeMessage", "rewakeSummary", "statusMessage", "once"]
         if inline { handlerFields.insert("additionalContextLimit") }
-        for key in events.keys.sorted() {
+        if mcpOnly { handlerFields = ["name", "type", "server", "tool", "input", "timeout", "statusMessage", "async"] }
+        for (key, value) in events.sorted(by: { $0.key < $1.key }) {
+            if mcpOnly, !handlerTypes([key: value]).mcp { continue }
             guard AgentHookEvent(rawValue: key) != nil else { skipped.append(key); continue }
-            guard let groups = events[key] as? [[String: Any]], groups.count <= 64 else { throw PetError("Hooks 的事件分组无效：" + key) }
+            guard let groups = value as? [[String: Any]], groups.count <= 64 else { throw PetError("Hooks 的事件分组无效：" + key) }
             for group in groups {
                 guard Set(group.keys).isSubset(of: ["matcher", "hooks", "timeout", "async"]),
                       let handlers = group["hooks"] as? [[String: Any]], handlers.count <= 32 else {
@@ -104,13 +121,19 @@ struct AgentStandaloneHookPackage {
                     count += 1
                     guard count <= 128 else { throw PetError("单份来源超过 128 个 Hooks") }
                     let type = handler["type"] as? String ?? "command"
-                    if source == .codex {
+                    if mcpOnly {
+                        guard type == AgentMCPHook.type else { continue }
+                        if let input = handler["input"], AgentMCPHook.containsLiteralCredential(input) {
+                            skipped.append(key + " · MCP 参数含内嵌凭据字段"); continue
+                        }
+                    } else if source == .codex {
+                        if type == AgentMCPHook.type { continue }
                         guard type == "command" else { skipped.append(key + " · " + type); continue }
                         handler.removeValue(forKey: "commandWindows"); handler.removeValue(forKey: "command_windows")
                         if handler["timeout"] == nil && group["timeout"] == nil { handler["timeout"] = key == "SessionEnd" ? 1 : 600 }
                     }
                     guard Set(handler.keys).isSubset(of: handlerFields), handler["once"] as? Bool != true,
-                          ["command", "http", "prompt", "agent"].contains(type) else { skipped.append(key + " · 处理器格式"); continue }
+                          mcpOnly || ["command", "http", "prompt", "agent"].contains(type) else { skipped.append(key + " · 处理器格式"); continue }
                     if let command = handler["command"] as? String,
                        command.range(of: #"(?i)(?:\b[a-z_]*(?:token|password|secret|api[_-]?key)\s*=|--(?:token|password|secret|api-key)(?:=|\s)|\bAuthorization\s*:|https?://[^\s'"]*\?)"#,
                                      options: .regularExpression) != nil {
@@ -137,6 +160,7 @@ struct AgentStandaloneHookPackage {
                         let clean = try AgentImportedPlugin.cleanHooks(["hooks": [key: [candidate]]])
                         let encoded = try JSONSerialization.data(withJSONObject: clean, options: [.sortedKeys, .withoutEscapingSlashes])
                         let parsed = try service.parse(encoded, file: target, scope: "导入", workspace: workspace, inspectResources: false, inspectCredentials: false)
+                        if let failure = parsed.first?.diagnostic, mcpOnly { skipped.append(key + " · " + failure); continue }
                         guard let check = parsed.first, check.diagnostic == nil,
                               let cleaned = (clean["hooks"] as? [String: [[String: Any]]])?[key]?.first?["hooks"] as? [[String: Any]] else {
                             throw PetError("处理器配置无法载入")
@@ -144,7 +168,8 @@ struct AgentStandaloneHookPackage {
                         kept += cleaned
                         if movedScript { relocated += 1 }
                         hasOriginalScriptPath = hasOriginalScriptPath || originalPath
-                        labels.append(check.name + "\n" + key + " · " + type + (check.matcher.isEmpty ? "" : " · " + check.matcher))
+                        let handlerLabel = check.mcpHook.map { $0.server + " / " + $0.tool } ?? type
+                        labels.append(check.name + "\n" + key + " · " + handlerLabel + (check.matcher.isEmpty ? "" : " · " + check.matcher))
                     } catch { skipped.append(key + " · 处理器需要调整") }
                 }
                 if !kept.isEmpty {
@@ -162,7 +187,7 @@ struct AgentStandaloneHookPackage {
         }
         let config = try JSONSerialization.data(withJSONObject: ["hooks": normalized], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         guard config.count <= 128_000 else { throw PetError("Hooks 配置超过 128KB") }
-        var payload = try inlineResources ?? resources(resourceRoot, files: files)
+        var payload = mcpOnly ? (contents: [String: Data](), executable: Set<String>()) : try inlineResources ?? resources(resourceRoot, files: files)
         payload.contents["hooks.json"] = config
         var warnings = ["导入后为停用状态"]
         if !skipped.isEmpty { warnings.append("跳过 " + String(skipped.count) + " 项 · " + Array(Set(skipped)).sorted().prefix(5).joined(separator: "、")) }

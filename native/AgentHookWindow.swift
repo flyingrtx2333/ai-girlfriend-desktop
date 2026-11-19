@@ -197,7 +197,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         location.stringValue = item.type + " · " + item.event.rawValue + (item.matcher.isEmpty ? "" : " · " + item.matcher) + timeout + (item.runsInBackground ? item.asyncRewake == true ? " · 后台唤醒" : " · 后台" : "") + (item.network ? " · 联网" : ""); location.toolTip = item.source
         if item.pluginEnabled == false { selectionState.stringValue = "所属插件已停用，请先在插件管理中启用" }
         else if let diagnostic = item.diagnostic { selectionState.stringValue = diagnostic }
-        else if service.enabled(item) && !service.trusted(item) { selectionState.stringValue = "配置或脚本已变化，重新启用前需审核" }
+        else if service.enabled(item) && !service.trusted(item) { selectionState.stringValue = item.type == AgentMCPHook.type ? "Hook 或连接器已变化，重新启用前需审核" : "配置或脚本已变化，重新启用前需审核" }
         selectionState.isHidden = selectionState.stringValue.isEmpty
     }
     private func reload(select id: String? = nil) {
@@ -281,6 +281,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
         guard item.diagnostic == nil, presentingWindow != nil else { reload(select: item.id); return }
         let consequence: String
         switch item.type {
+        case AgentMCPHook.type: consequence = "在当前任务的已有连接上调用此工具，发送下列模板指定的事件数据。逐次确认的任务会跳过自动调用。"
         case "http": consequence = "将自动向此地址发送当前事件数据。Header 可按 allowedEnvVars 引用应用环境；未指定白名单时允许所有变量。重定向不会跟随。"
         case "prompt": consequence = "将使用任务的模型连接独立判断当前事件，产生模型用量。"
         case "agent": consequence = "将创建独立模型校验任务，只读项目，按工具白名单执行，产生模型用量。" + (item.network ? "允许终端联网。" : "终端不联网。")
