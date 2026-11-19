@@ -42,6 +42,7 @@ import AppKit
 }
 
 @MainActor final class AgentRepoWikiWindow: AgentSettingsPageController, NSWindowDelegate, NSCollectionViewDataSource, NSSearchFieldDelegate {
+    private typealias Recovery = AgentWorkspaceRecovery.WikiCatalog
     private let store: AgentStore, collection = NSCollectionView(), flow = NSCollectionViewFlowLayout(), scroll = NSScrollView()
     private let search = NSSearchField(), status = NSPopUpButton(), language = NSPopUpButton()
     private let layout = NSSegmentedControl(labels: ["网格", "列表"], trackingMode: .selectOne, target: nil, action: nil)
@@ -49,7 +50,10 @@ import AppKit
     private var summaries: [AgentRepoWikiSummary] = [], rows: [AgentRepoWikiSummary] = []
     private var load: Task<Void, Never>?, worker: Task<[AgentRepoWikiSummary], Error>?, loading = false, generationSignature = ""
     private var lastWidth: CGFloat = 0
+    private var pendingPosition: Recovery.Position?, lastPosition: Recovery.Position?, querySelection: AgentTextViewport.Selection?
+    private var restoreSearchSelection = false, recoveryScheduled = false, applyingRecovery = false
     var onOpen: ((AgentRepoWikiProject, String, String) throws -> Void)?
+    var onWorkspaceChange: (() -> Void)?
     private var selectedLanguage: String { language.indexOfSelectedItem == 1 ? "en" : "zh" }
     init(store: AgentStore) {
         self.store = store
@@ -73,6 +77,9 @@ import AppKit
         collection.register(AgentRepoWikiItem.self, forItemWithIdentifier: .init("repository"))
         flow.minimumInteritemSpacing = 12; flow.minimumLineSpacing = 12; flow.sectionInset = NSEdgeInsets(top: 0, left: 0, bottom: 12, right: 0)
         scroll.documentView = collection; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(clipChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(searchSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         collection.frame = NSRect(x: 0, y: 0, width: 1064, height: 500); collection.autoresizingMask = [.width]
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
         empty.font = .systemFont(ofSize: 15); empty.textColor = AgentWorkbenchTheme.secondaryText; empty.setAccessibilityLabel("Wiki 项目筛选状态")
@@ -88,8 +95,9 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func windowWillClose(_ notification: Notification) { load?.cancel(); worker?.cancel(); loading = false }
     func windowDidBecomeKey(_ notification: Notification) { if !loading { reload() } }
-    func windowDidResize(_ notification: Notification) { window?.contentView?.layoutSubtreeIfNeeded(); updateLayout() }
+    func windowDidResize(_ notification: Notification) { window?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout() }
     @objc func reload() {
+        if pendingPosition == nil, !loading { pendingPosition = positionToSave }
         load?.cancel(); worker?.cancel(); loading = true; summaries = []; rows = []; collection.reloadData(); empty.isHidden = true; state.stringValue = "正在读取项目…"; state.textColor = AgentWorkbenchTheme.secondaryText
         let projects = AgentRepoWikiOverview.projects(store), storage = store.directory, selected = selectedLanguage
         generationSignature = currentGenerationSignature
@@ -105,11 +113,21 @@ import AppKit
         store.tasks.filter { $0.kind == "wiki" }.sorted { $0.id < $1.id }.map { "\($0.id)|\($0.status.rawValue)|\($0.archived)|\($0.wikiJob?.branch ?? "")|\($0.wikiJob?.language ?? "zh")|\(AgentWiki.isFinalizing($0.id))" }.joined(separator: "\n") + "\n\(store.organization.revision)"
     }
     func refreshLiveState() { guard presentingWindow?.isKeyWindow == true, isPageVisible, !loading, currentGenerationSignature != generationSignature else { return }; reload() }
-    override func pageDidLayout() { updateLayout() }
-    @objc private func filterChanged() { applyFilter() }
-    func controlTextDidChange(_ obj: Notification) { applyFilter() }
-    @objc private func languageChanged() { reload() }
-    @objc private func layoutChanged() { lastWidth = 0; updateLayout(); collection.reloadData() }
+    override func settingsDidAppear() {
+        if querySelection != nil { restoreSearchSelection = true }
+        super.settingsDidAppear()
+    }
+    override func pageDidLayout() { updateLayout(); scheduleRecovery() }
+    @objc private func filterChanged() { pendingPosition = nil; lastPosition = nil; applyFilter(); onWorkspaceChange?() }
+    func controlTextDidChange(_ obj: Notification) {
+        guard !applyingRecovery else { return }
+        restoreSearchSelection = false; querySelection = nil; rememberSearchSelection(); filterChanged()
+    }
+    @objc private func languageChanged() { reload(); onWorkspaceChange?() }
+    @objc private func layoutChanged() {
+        if pendingPosition == nil, !loading { pendingPosition = positionToSave }
+        lastWidth = 0; updateLayout(); collection.reloadData(); scheduleRecovery(); onWorkspaceChange?()
+    }
     private func updateLayout() {
         let width = max(1, scroll.contentView.bounds.width); collection.frame.size.width = width
         guard width != lastWidth else { return }; lastWidth = width
@@ -124,6 +142,71 @@ import AppKit
         collection.reloadData(); updateLayout()
         empty.isHidden = loading || !rows.isEmpty; empty.stringValue = summaries.isEmpty ? "暂无工作区" : "没有匹配的项目"
         if !loading { state.stringValue = "\(rows.count) 个项目"; state.textColor = AgentWorkbenchTheme.secondaryText }
+        scheduleRecovery()
+    }
+    private func currentPosition() -> Recovery.Position? {
+        let visible = scroll.documentVisibleRect
+        guard visible.minY > 0 else { return nil }
+        for index in collection.indexPathsForVisibleItems().sorted(by: { $0.item < $1.item }) {
+            guard rows.indices.contains(index.item), let item = collection.layoutAttributesForItem(at: index), item.frame.intersects(visible) else { continue }
+            return .init(workspace: rows[index.item].id, y: visible.minY, offset: visible.minY - item.frame.minY)
+        }
+        return .init(workspace: nil, y: visible.minY, offset: 0)
+    }
+    private var positionToSave: Recovery.Position? { pendingPosition ?? (isPageVisible ? currentPosition() : lastPosition) }
+    private func rememberSearchSelection() {
+        guard let editor = search.currentEditor() as? NSTextView else { return }
+        let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+        if selection.valid(in: search.stringValue.utf16.count) { querySelection = selection }
+    }
+    @objc private func clipChanged() {
+        guard !loading, !applyingRecovery, pendingPosition == nil, isPageVisible else { return }
+        lastPosition = currentPosition(); onWorkspaceChange?()
+    }
+    @objc private func searchSelectionChanged(_ notification: Notification) {
+        guard !restoreSearchSelection, !applyingRecovery, let editor = notification.object as? NSTextView,
+              editor === search.currentEditor(), editor === presentingWindow?.firstResponder else { return }
+        rememberSearchSelection(); onWorkspaceChange?()
+    }
+    func captureWorkspaceRecovery() -> AgentWorkspaceRecovery.WikiCatalog? {
+        if !restoreSearchSelection { rememberSearchSelection() }
+        let value = Recovery(query: search.stringValue, filter: status.indexOfSelectedItem, language: selectedLanguage, list: layout.selectedSegment == 1,
+                             position: positionToSave, querySelection: querySelection)
+        guard value.valid, !value.query.isEmpty || value.filter != 0 || value.language != "zh" || value.list || value.position != nil else { return nil }
+        return value
+    }
+    func restoreWorkspaceRecovery(_ value: AgentWorkspaceRecovery.WikiCatalog) throws {
+        guard value.valid else { throw PetError("Wiki 项目总览恢复格式无效，原记录已保留") }
+        search.stringValue = value.query; status.selectItem(at: value.filter); language.selectItem(at: value.language == "en" ? 1 : 0)
+        layout.selectedSegment = value.list ? 1 : 0; lastWidth = 0
+        pendingPosition = value.position; lastPosition = nil; querySelection = value.querySelection; restoreSearchSelection = querySelection != nil
+        reload()
+    }
+    private func scheduleRecovery() {
+        guard !recoveryScheduled, !applyingRecovery, (pendingPosition != nil && !loading && !rows.isEmpty) || restoreSearchSelection else { return }
+        recoveryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { recoveryScheduled = false }
+            guard isPageVisible, presentingWindow?.hasBlockingDialog != true else { return }
+            applyingRecovery = true; defer { applyingRecovery = false }
+            if restoreSearchSelection, let querySelection {
+                presentingWindow?.makeFirstResponder(search)
+                if let editor = search.currentEditor() as? NSTextView { editor.setSelectedRange(querySelection.range); restoreSearchSelection = false }
+            }
+            let clip = scroll.contentView
+            if !loading, let position = pendingPosition, !rows.isEmpty, clip.bounds.width > 1, clip.bounds.height > 1 {
+                collection.layoutSubtreeIfNeeded()
+                var y = position.y
+                if let index = rows.firstIndex(where: { $0.id == position.workspace }),
+                   let item = collection.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
+                    y = item.frame.minY + min(position.offset, item.frame.height - 1)
+                }
+                let proposed = NSRect(origin: NSPoint(x: 0, y: y), size: clip.bounds.size)
+                clip.scroll(to: clip.constrainBoundsRect(proposed).origin); scroll.reflectScrolledClipView(clip)
+                pendingPosition = nil; lastPosition = currentPosition()
+            }
+            onWorkspaceChange?()
+        }
     }
     func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
     func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { rows.count }

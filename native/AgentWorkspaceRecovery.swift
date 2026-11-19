@@ -33,10 +33,30 @@ struct AgentWorkspaceRecovery: Sendable {
         var active: Bool
         var readers: [Page]
         var library: KnowledgeLibrary? = nil
+        var wikiCatalog: WikiCatalog? = nil
+        var hasContent: Bool { !readers.isEmpty || library != nil || wikiCatalog != nil }
     }
     struct KnowledgeLibrary: Codable, Equatable, Sendable {
         var state: Data
         var dirty: Bool
+    }
+    struct WikiCatalog: Codable, Equatable, Sendable {
+        struct Position: Codable, Equatable, Sendable {
+            var workspace: String?
+            var y: Double, offset: Double
+            var valid: Bool {
+                y.isFinite && (0...1_000_000_000).contains(y) && offset.isFinite && abs(offset) <= 1_000_000_000 &&
+                (workspace.map { $0.hasPrefix("/") && $0.utf8.count <= 16_384 && !$0.contains("\0") } ?? true)
+            }
+        }
+        var version = 1
+        var query: String, filter: Int, language: String, list: Bool
+        var position: Position?
+        var querySelection: AgentTextViewport.Selection?
+        var valid: Bool {
+            version == 1 && query.utf8.count <= 1_000_000 && (0...2).contains(filter) && ["zh", "en"].contains(language) &&
+            position?.valid != false && querySelection?.valid(in: query.utf16.count) != false
+        }
     }
     struct Automation: Codable, Equatable, Sendable {
         var context: AgentSettingsRecovery.Context
@@ -137,8 +157,8 @@ struct AgentWorkspaceRecovery: Sendable {
         }
         if let knowledge = value.knowledge {
             guard knowledge.version == 1, knowledge.identity == "standalone" || UUID(uuidString: knowledge.identity) != nil,
-                  ["library", "wiki"].contains(knowledge.root), !knowledge.readers.isEmpty || knowledge.library != nil, knowledge.readers.count <= 32,
-                  knowledge.library.map({ $0.state.count <= Self.maximumState }) ?? true else { throw PetError("知识中心恢复格式无效或版本不受支持") }
+                  ["library", "wiki"].contains(knowledge.root), knowledge.hasContent, knowledge.readers.count <= 32,
+                  knowledge.library.map({ $0.state.count <= Self.maximumState }) ?? true, knowledge.wikiCatalog?.valid != false else { throw PetError("知识中心恢复格式无效或版本不受支持") }
             for page in knowledge.readers {
                 try validate(page)
                 guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
@@ -173,8 +193,13 @@ struct AgentWorkspaceRecovery: Sendable {
             if let value = page["tab"] { try tab(value) }; try frame(page["frame"])
         }
         if let raw = object["knowledge"], !(raw is NSNull) {
-            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers", "library"])
+            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers", "library", "wikiCatalog"])
             if let library = knowledge["library"], !(library is NSNull) { _ = try keys(library, ["state", "dirty"]) }
+            if let rawCatalog = knowledge["wikiCatalog"], !(rawCatalog is NSNull) {
+                let catalog = try keys(rawCatalog, ["version", "query", "filter", "language", "list", "position", "querySelection"])
+                if let position = catalog["position"], !(position is NSNull) { _ = try keys(position, ["workspace", "y", "offset"]) }
+                if let selection = catalog["querySelection"], !(selection is NSNull) { _ = try keys(selection, ["location", "length"]) }
+            }
             for raw in knowledge["readers"] as? [Any] ?? [] {
                 let page = try keys(raw, ["version", "taskID", "kind", "state", "dirty", "asset"])
                 if let asset = page["asset"], !(asset is NSNull) { _ = try keys(asset, ["slot", "hash"]) }

@@ -62,6 +62,7 @@ import AppKit
         (controller as? AgentKnowledgeCardWindow)?.onWorkspaceChange = changed
         (controller as? AgentKnowledgeWindow)?.onWorkspaceChange = changed
         (controller as? AgentKnowledgeLibraryWindow)?.onWorkspaceChange = changed
+        (controller as? AgentRepoWikiWindow)?.onWorkspaceChange = { [weak self] in self?.recoveryChanged() }
         stacks[ownerRoot, default: []].append(Entry(controller: controller, content: content))
         if ownerRoot == root { displayCurrent() }; recoveryChanged(); return true
     }
@@ -126,21 +127,22 @@ import AppKit
     }
     func captureWorkspaceRecovery(active: Bool) async throws -> AgentWorkspaceRecovery.Knowledge? {
         while true {
-            let revision = recoveryRevision, identity = identity, root = root, readers = recoveryEditors
-            guard !readers.isEmpty else { return nil }
+            let revision = recoveryRevision, identity = identity, root = root
+            let catalog = (stacks["wiki"]?.first?.controller as? AgentRepoWikiWindow)?.captureWorkspaceRecovery()
             var pages: [AgentWorkspaceRecovery.Page] = []
             var library: AgentWorkspaceRecovery.KnowledgeLibrary?
-            for reader in readers {
+            for reader in recoveryEditors {
                 if let reader = reader as? AgentRecordWindow { pages.append(try await reader.captureWorkspaceRecovery()) }
                 else if let reader = reader as? AgentKnowledgeCardWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
                 else if let reader = reader as? AgentKnowledgeWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
                 else if let reader = reader as? AgentKnowledgeLibraryWindow { library = try reader.captureWorkspaceRecovery() }
             }
             guard revision == recoveryRevision else { continue }
-            guard !pages.isEmpty || library != nil else { return nil }
             let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow ||
                 (currentController as? AgentKnowledgeReviewWindow)?.isRecoverableVersionReview == true
-            return .init(identity: identity, root: root, active: active && (visibleReader || currentController is AgentKnowledgeLibraryWindow && library != nil), readers: pages, library: library)
+            let visibleCatalog = currentController is AgentRepoWikiWindow && catalog != nil || currentController is AgentKnowledgeLibraryWindow && library != nil
+            let value = AgentWorkspaceRecovery.Knowledge(identity: identity, root: root, active: active && (visibleReader || visibleCatalog), readers: pages, library: library, wikiCatalog: catalog)
+            return value.hasContent ? value : nil
         }
     }
     func restoreWorkspaceRecovery(_ value: AgentWorkspaceRecovery.Knowledge,
@@ -151,9 +153,11 @@ import AppKit
         do {
             for page in value.readers { restored.append(try reader(page)) }
             identity = value.identity; makeRoot = make
-            if !restored.isEmpty || value.root == "wiki" {
+            if !restored.isEmpty || value.root == "wiki" || value.wikiCatalog != nil {
                 root = "wiki"
-                guard let catalog = make("wiki"), push(catalog) else { throw PetError("知识目录暂不能显示") }
+                guard let catalog = make("wiki") as? AgentRepoWikiWindow else { throw PetError("知识目录暂不能显示") }
+                if let position = value.wikiCatalog { try catalog.restoreWorkspaceRecovery(position) }
+                guard push(catalog) else { throw PetError("知识目录暂不能显示") }
                 for controller in restored { guard push(controller) else { throw PetError("知识阅读器暂不能显示") } }
             }
             if value.library != nil || value.root == "library" {

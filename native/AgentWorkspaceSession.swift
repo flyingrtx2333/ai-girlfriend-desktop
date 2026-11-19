@@ -248,7 +248,7 @@ private actor AgentWorkspaceJournal {
         coldFloating.removeAll { ids.contains($0.taskID) }
         if var knowledge = coldKnowledge {
             knowledge.readers.removeAll { ids.contains($0.taskID) }
-            coldKnowledge = ids.contains(knowledge.identity) || knowledge.readers.isEmpty && knowledge.library == nil ? nil : knowledge
+            coldKnowledge = ids.contains(knowledge.identity) || !knowledge.hasContent ? nil : knowledge
         }
         for (_, entry) in Array(floating) where ids.contains(entry.0.taskID) { releaseFloating(entry.1); entry.1.endSettingsHosting() }
         changed()
