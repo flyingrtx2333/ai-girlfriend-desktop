@@ -104,7 +104,28 @@ import AppKit
             await push.checkPrepare()
             let pushState = push.workspaceReadback(); report["preparedPush"] = pushState
             checks["inlinePushPreparationReadsRealRemote"] = pushState["usesMainWindow"] as? Bool == true && pushState["pushEnabled"] as? Bool == true && (pushState["reviewHash"] as? String)?.isEmpty == false
+            guard let pushContent = push.pageContentView,
+                  let targetField = gitReviewSubviews(pushContent).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "推送目标分支" }),
+                  control.window?.makeFirstResponder(targetField) == true,
+                  let targetEditor = targetField.currentEditor() as? NSTextView else { throw PetError("推送目标分支输入框不可用") }
+            let target = "release/中文😀", selection = (target as NSString).range(of: "中文😀")
+            targetEditor.string = target; targetEditor.setSelectedRange(selection)
+            push.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: targetField))
+            if let page = try git.captureWorkspaceRecovery(persistClean: false), let draft = try AgentGitDraftRecovery.decode(page).push {
+                let addressHash = (pushState["address"] as? String).map { AgentFiles.hash(Data($0.utf8)) }
+                checks["pushDraftRecordsLiveBranchSelectionAndDestination"] = page.dirty && draft.opened && draft.branch == target && draft.selection?.range == selection && draft.focused && draft.remote == "origin" && addressHash != nil && draft.addressHash == addressHash
+            } else { checks["pushDraftRecordsLiveBranchSelectionAndDestination"] = false }
             host.checkBack(); checks["pushBackReturnsToSameReview"] = host.currentController === git
+            if let page = try git.captureWorkspaceRecovery(persistClean: false), let draft = try AgentGitDraftRecovery.decode(page).push {
+                checks["pushBackParksTheDraftForReopening"] = page.dirty && !draft.opened && draft.branch == target
+            } else { checks["pushBackParksTheDraftForReopening"] = false }
+            await git.checkWorkspace(action: "push")
+            guard let reopenedPush = host.currentController as? AgentGitPushWindow else { throw PetError("推送草稿未重新打开") }
+            let deadline = Date().addingTimeInterval(15)
+            while reopenedPush.workspaceReadback()["busy"] as? Bool == true && Date() < deadline { await wait(0.05) }
+            let reopened = reopenedPush.workspaceReadback()
+            checks["reopenedPushRequiresFreshReviewOfTheDraft"] = reopened["branch"] as? String == target && reopened["remote"] as? String == "origin" && reopened["address"] as? String == pushState["address"] as? String && reopened["reviewHash"] as? String == "" && reopened["pushEnabled"] as? Bool == false
+            host.checkBack()
             await git.checkWorkspace(source: .unstaged, path: "client.js", action: "security")
             checks["actualSecurityReportUsesSameWorkspace"] = host.currentController is AgentCodeSecurityWindow && host.currentController?.presentingWindow === control.window
             host.checkBack(); await git.checkWorkspace(action: "dependencies")

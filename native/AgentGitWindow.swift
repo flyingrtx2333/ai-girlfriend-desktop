@@ -8,6 +8,7 @@ import AppKit
     private let worktreeButton = NSButton(title: "新建工作树", target: nil, action: nil), initializeButton = AgentDialogButton(title: "初始化 Git", target: nil, action: nil)
     private let pushButton = AgentDialogButton(title: "推送…", target: nil, action: nil), commitPushButton = AgentDialogButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
+    private var parkedPush: AgentGitDraftRecovery.Push?
     private var securityWindow: AgentCodeSecurityWindow?
     private let securityButton = NSButton(title: "安全检查…", target: nil, action: nil)
     private var dependencyWindow: AgentDependencyWindow?
@@ -114,19 +115,23 @@ import AppKit
             draftFocused = recovery.focused; restoreDraftFocus = draftFocused; pendingDraftPaths = recovery.paths
             source = recovery.source; revision.stringValue = recovery.revision; updateSourceControls()
         }
+        parkedPush = recovery?.push
         content.onResize = { [weak self] in self?.pageDidLayout() }; pageDidLayout(); refresh()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func windowWillClose(_ notification: Notification) { job?.cancel(); git?.cancel(); dependencyWindow?.close(); busy = false }
     private var draftText: String { (message.currentEditor() as? NSTextView)?.string ?? message.stringValue }
     private var selectedPaths: [String] { table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path } }
-    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty }
+    private var hasPushDraft: Bool { parkedPush != nil || pushWindow?.hasDraft == true }
+    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty || hasPushDraft }
     var hasPendingChanges: Bool { busy || workspaceHasUnsavedChanges }
     var canPreserveForQuit: Bool { !busy && workspaceHasUnsavedChanges && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !busy else { state.stringValue = "请等待 Git 操作完成"; return false }
         guard workspaceHasUnsavedChanges else { return true }
-        guard AgentUnsavedChanges.discard("放弃提交说明？", discardTitle: "放弃说明", owner: presentingWindow) else { return false }
+        let title = hasPushDraft ? (draftText.isEmpty ? "放弃推送草稿？" : "放弃提交说明和推送草稿？") : "放弃提交说明？"
+        guard AgentUnsavedChanges.discard(title, discardTitle: hasPushDraft ? "放弃草稿" : "放弃说明", owner: presentingWindow) else { return false }
+        parkedPush = nil; pushWindow?.discardDraft()
         message.abortEditing(); clearDraft(); return true
     }
     private func clearDraft() {
@@ -156,14 +161,15 @@ import AppKit
         restoreDraftFocus = false; rememberDraftSelection(); onWorkspaceChange?()
     }
     func captureWorkspaceRecovery(persistClean: Bool) throws -> AgentWorkspaceRecovery.Page? {
-        let text = draftText
-        guard !text.isEmpty || persistClean else { return nil }
+        let text = draftText, push = pushWindow?.captureDraft() ?? parkedPush
+        let dirty = !text.isEmpty || push != nil
+        guard dirty || persistClean else { return nil }
         if !restoreDraftFocus, !busy { rememberDraftSelection() }
         let selection = draftSelection.flatMap { $0.valid(in: text.utf16.count) ? $0 : nil }
         let saved = AgentGitDraftRecovery(scope: text.isEmpty ? nil : try bindDraftScope(), message: text, selection: selection, focused: draftFocused,
-                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths)
+                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: !text.isEmpty, asset: nil)
+        let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: dirty, asset: nil)
         _ = try AgentGitDraftRecovery.decode(page); return page
     }
     private func requestDraftTextFocus() {
@@ -289,7 +295,7 @@ import AppKit
     }
     @objc private func refresh() {
         guard !busy else { return }
-        if pendingDraftPaths == nil, workspaceHasUnsavedChanges { pendingDraftPaths = selectedPaths }
+        if pendingDraftPaths == nil, !draftText.isEmpty { pendingDraftPaths = selectedPaths }
         review = nil; inspection = nil; changes = []; table.reloadData(); updateFilePicker(); showDiff(""); statistics.stringValue = ""; branch.stringValue = "Git"; setBusy(true); state.stringValue = "读取 Git…"
         job = Task { [weak self] in
             guard let self else { return }
@@ -517,15 +523,33 @@ import AppKit
     }
     @objc private func openPush() {
         guard let git else { return }
-        do {
-            let controller = try AgentGitPushWindow(store: store, taskID: taskID, directory: git.directory)
-            controller.onReceipt = { [weak self] receipt in
-                guard let self else { return }
-                lastResult = receipt.verified ? "远端已核对 · " + receipt.remote + "/" + receipt.branch + " · " + String(receipt.sourceHead.prefix(12)) : "推送结果待核对"
-                if !busy { refresh() }
-            }
-            pushWindow = controller; presentSettingsChild(controller)
-        } catch { showError(error) }
+        do { try presentPush(directory: git.directory) }
+        catch { showError(error) }
+    }
+    func restorePushPage() throws {
+        guard parkedPush?.opened == true else { return }
+        try presentPush(directory: AgentGit.metadata(workspace: store.task(taskID)?.workspace))
+    }
+    private func presentPush(directory: URL) throws {
+        try draftScope?.requireCurrent(store.task(taskID))
+        try parkedPush?.requireCurrent(store.task(taskID))
+        let controller = try AgentGitPushWindow(store: store, taskID: taskID, directory: directory, recovery: parkedPush)
+        controller.onReceipt = { [weak self] receipt in
+            guard let self else { return }
+            lastResult = receipt.verified ? "远端已核对 · " + receipt.remote + "/" + receipt.branch + " · " + String(receipt.sourceHead.prefix(12)) : "推送结果待核对"
+            if !busy { refresh() }
+        }
+        presentSettingsChild(controller)
+        guard controller.settingsHostWindow != nil || controller.window?.isVisible == true else {
+            controller.endSettingsHosting(); throw PetError("工作区当前无法打开推送草稿")
+        }
+        pushWindow = controller; parkedPush = nil
+        controller.onDraftChange = { [weak self] in self?.onWorkspaceChange?() }
+        controller.onDraftClose = { [weak self] saved in
+            guard let self else { return }
+            pushWindow = nil; parkedPush = saved; onWorkspaceChange?()
+        }
+        onWorkspaceChange?()
     }
     @objc private func createWorktree() {
         guard !busy, writable(), let git else { return }

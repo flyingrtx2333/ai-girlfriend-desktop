@@ -93,8 +93,9 @@ import Foundation
         var copy = value; copy.hash = ""; copy.created = Date(timeIntervalSince1970: 0)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return AgentFiles.hash(try encoder.encode(copy))
     }
-    func preparePush(remote: String, urlIndex: Int, branch: String, setUpstream: Bool, remoteHash: String? = nil) async throws -> AgentGitPushReview {
+    func preparePush(remote: String, urlIndex: Int, branch: String, setUpstream: Bool, remoteHash: String? = nil, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitPushReview {
         try validateWorkspace()
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         guard let task = store.task(taskID), !task.archived else { throw PetError("任务不存在或已归档") }
         try store.agents.check(AgentToolCall(id: "git-push-prepare", name: "git_prepare_push", arguments: "{}"), task: task, store: store)
         let input = try await pushInput(remote: remote, urlIndex: urlIndex), target = try await pushBranch(branch), state = try await status()
@@ -110,6 +111,7 @@ import Foundation
         try await transport.initialize(format: format)
         let endpoint = try await transport.effective(input.endpoint)
         guard endpoint.location == cached.urls[urlIndex] else { throw PetError("Git 连接目标已变化，请先刷新远端列表，再确认连接") }
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         let before = try await transport.remoteHead(input: input.endpoint, endpoint: endpoint, branch: target)
         let bundle = scratch.appendingPathComponent("push-" + sessionID + ".bundle")
         defer { try? FileManager.default.removeItem(at: bundle) }
@@ -139,6 +141,7 @@ import Foundation
         var review = AgentGitPushReview(sessionID: sessionID, processID: AgentGitTransport.processID, taskID: taskID, promptID: task.messages.last(where: \.isHumanInput)?.id ?? task.id, workspace: files.root.path, gitDirectory: directory.path, remote: remote, urlIndex: urlIndex, configuredURL: input.raw, endpoint: endpoint, sourceBranch: symbolic.failed ? "HEAD（分离状态）" : state.branch, sourceRef: sourceRef, sourceHead: head, targetBranch: target, remoteHead: before, configHash: configuration, transportConfigHash: try await transport.configurationHash(), scopeHash: scope, hookPath: hook.path, hookHash: hook.hash, trackingRef: tracking.0, trackingHead: tracking.1, setUpstream: setUpstream, commitCount: total, commits: commits, diff: diff.stdout ?? "", diffTruncated: diff.truncated == true, uncommittedFiles: state.changes.count, hash: "")
         review.hash = try reviewHash(review)
         guard try await pushConfigHash() == configuration, try await status().head == head else { throw PetError("本地提交或配置已变化，请重新准备推送") }
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         let previous = store.task(taskID)?.gitPushReview
         store.update(taskID) { $0.gitPushReview = review }
         guard store.writeError == nil else { throw PetError("无法保存推送审阅：" + (store.writeError ?? "")) }
@@ -167,7 +170,8 @@ import Foundation
         guard try await transport.output(["-C", transport.repository.path, "rev-parse", "refs/heads/source"]).trimmingCharacters(in: .whitespacesAndNewlines) == review.sourceHead else { throw PetError("推送快照校验失败") }
         guard try await transport.remoteHead(input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch) == review.remoteHead else { throw PetError("远端分支已变化，请重新检查后推送") }
     }
-    func push(reviewHash: String, timeout: Double = 180) async throws -> AgentGitPushReceipt {
+    func push(reviewHash: String, timeout: Double = 180, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitPushReceipt {
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "请回到原分支重新检查远端")
         let review = try storedPushReview(hash: reviewHash), transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: review.sessionID)
         pushTransport = transport
         defer {
@@ -175,6 +179,7 @@ import Foundation
             if store.task(taskID)?.gitPushReview?.hash == review.hash { store.update(taskID) { $0.gitPushReview = nil } }
         }
         try await validatePush(review, transport: transport)
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         let input = try await pushInput(remote: review.remote, urlIndex: review.urlIndex)
         if review.commitCount == 0 {
             let receipt = AgentGitPushReceipt(taskID: taskID, remote: review.remote, input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch, sourceHead: review.sourceHead, beforeHead: review.remoteHead, afterHead: review.remoteHead, verified: true, output: "远端已包含此提交", exitCode: 0)
@@ -190,6 +195,7 @@ import Foundation
             guard !result.failed else { throw PetError("pre-push 检查未通过，未推送：\n" + String(result.text.prefix(3000))) }
         }
         try await validatePush(review, transport: transport)
+        try draftScope?.requireCurrent(store.task(taskID), preserving: "请回到原分支重新检查远端")
         var receipt = AgentGitPushReceipt(taskID: taskID, remote: review.remote, input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch, sourceHead: review.sourceHead, beforeHead: review.remoteHead)
         store.update(taskID) { $0.gitPushReview = nil; $0.gitPushReceipt = receipt }
         guard store.writeError == nil else { throw PetError("无法保存推送状态，未发送提交") }

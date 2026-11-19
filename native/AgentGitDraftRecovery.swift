@@ -42,8 +42,8 @@ struct AgentGitDraftRecovery: Codable {
             return workspace == current.workspace && identity == current.identity && (checkout == nil || checkout == current.checkout)
         }
 
-        func requireCurrent(_ task: AgentTaskRecord?) throws {
-            guard matches(try? Self.current(task)) else { throw PetError("请回到 Git 草稿的原项目、仓库和分支后重试，原说明已保留") }
+        func requireCurrent(_ task: AgentTaskRecord?, preserving detail: String = "原说明已保留") throws {
+            guard matches(try? Self.current(task)) else { throw PetError("请回到 Git 草稿的原项目、仓库和分支后重试，" + detail) }
         }
 
         fileprivate var valid: Bool {
@@ -58,6 +58,21 @@ struct AgentGitDraftRecovery: Codable {
         }
     }
 
+    struct Push: Codable {
+        var scope: Scope
+        var branch: String
+        var upstream: Bool
+        var remote: String?
+        var addressHash: String?
+        var selection: AgentTextViewport.Selection?
+        var focused = false
+        var opened = true
+
+        func requireCurrent(_ task: AgentTaskRecord?) throws {
+            try scope.requireCurrent(task, preserving: "推送草稿已保留")
+        }
+    }
+
     var version = 1
     var scope: Scope?
     var message: String
@@ -66,22 +81,32 @@ struct AgentGitDraftRecovery: Codable {
     var source: AgentGitSource
     var revision: String
     var paths: [String]
+    var push: Push? = nil
 
     static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
         let unsupported = PetError("Git 草稿恢复格式不受支持，原记录已保留")
         guard page.version == 1, page.kind == "git-draft", page.asset == nil, UUID(uuidString: page.taskID) != nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths"]) else { throw unsupported }
-        if let scope = raw["scope"] as? [String: Any] {
-            guard Set(scope.keys).isSubset(of: ["workspace", "identity", "checkout"]) else { throw unsupported }
-            if let checkout = scope["checkout"] as? [String: Any], !Set(checkout.keys).isSubset(of: ["directory", "identity", "head"]) { throw unsupported }
+              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push"]) else { throw unsupported }
+        let push = raw["push"] as? [String: Any]
+        if let push, !Set(push.keys).isSubset(of: ["scope", "branch", "upstream", "remote", "addressHash", "selection", "focused", "opened"]) { throw unsupported }
+        for object in [raw, push ?? [:]] {
+            if let scope = object["scope"] as? [String: Any] {
+                guard Set(scope.keys).isSubset(of: ["workspace", "identity", "checkout"]) else { throw unsupported }
+                if let checkout = scope["checkout"] as? [String: Any], !Set(checkout.keys).isSubset(of: ["directory", "identity", "head"]) { throw unsupported }
+            }
+            if let selection = object["selection"] as? [String: Any], !Set(selection.keys).isSubset(of: ["location", "length"]) { throw unsupported }
         }
-        if let selection = raw["selection"] as? [String: Any], !Set(selection.keys).isSubset(of: ["location", "length"]) { throw unsupported }
         let value = try JSONDecoder().decode(Self.self, from: page.state)
-        guard value.version == 1, page.dirty == !value.message.isEmpty, page.dirty == (value.scope != nil), value.scope?.valid != false,
+        guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil), value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
               value.selection?.valid(in: value.message.utf16.count) != false,
               value.paths.count <= 100_000, Set(value.paths).count == value.paths.count,
               value.paths.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && $0.utf8.count < 8192 && !$0.contains("\0") }) else { throw unsupported }
+        if let push = value.push {
+            guard push.scope.checkout != nil, push.scope.valid, push.selection?.valid(in: push.branch.utf16.count) != false,
+                  push.remote.map({ !$0.isEmpty && $0.utf8.count <= 200 && $0.rangeOfCharacter(from: .controlCharacters) == nil }) != false,
+                  push.addressHash.map({ push.remote != nil && $0.utf8.count == 64 && $0.allSatisfy { $0.isASCII && $0.isHexDigit } }) != false else { throw unsupported }
+        }
         return value
     }
 }

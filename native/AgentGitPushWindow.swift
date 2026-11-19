@@ -14,11 +14,16 @@ import AppKit
     private lazy var commitFrame = AgentSettingsPopupFrame(inspectCommit, outlined: true, maximumWidth: nil)
     private var remotes: [AgentGitRemote] = [], remoteHash = "", review: AgentGitPushReview?, job: Task<Void, Never>?, sending = false
     private var remotePage: AgentGitRemotePage?, pushContent: NSView?
+    private var draft: AgentGitDraftRecovery.Push?, scope: AgentGitDraftRecovery.Scope?
+    private var restoreDraftFocus = false
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
     var onReceipt: ((AgentGitPushReceipt) -> Void)?
-    init(store: AgentStore, taskID: String, directory: URL) throws {
+    var onDraftChange: (() -> Void)?
+    var onDraftClose: ((AgentGitDraftRecovery.Push?) -> Void)?
+    init(store: AgentStore, taskID: String, directory: URL, recovery: AgentGitDraftRecovery.Push? = nil) throws {
         self.store = store; self.taskID = taskID; git = try AgentGit(store: store, taskID: taskID, directory: directory)
+        draft = recovery; draft?.opened = true; restoreDraftFocus = recovery?.focused == true
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "推送 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 460); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
@@ -27,9 +32,10 @@ import AppKit
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText; count.lineBreakMode = .byTruncatingTail
         branch.placeholderString = "目标分支"; branch.setAccessibilityLabel("推送目标分支"); branch.target = self; branch.action = #selector(invalidate)
         branch.delegate = self; branch.outlined = true; branch.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        NotificationCenter.default.addObserver(self, selector: #selector(branchSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         remote.setAccessibilityLabel("推送远端"); address.setAccessibilityLabel("推送地址"); inspectCommit.setAccessibilityLabel("待推送提交")
-        remote.target = self; remote.action = #selector(changeRemote); address.target = self; address.action = #selector(invalidate)
-        upstream.target = self; upstream.action = #selector(invalidate); inspectCommit.target = self; inspectCommit.action = #selector(selectCommit)
+        remote.target = self; remote.action = #selector(changeRemote); address.target = self; address.action = #selector(changeAddress)
+        upstream.target = self; upstream.action = #selector(changeUpstream); inspectCommit.target = self; inspectCommit.action = #selector(selectCommit)
         for button in [add, prepare, push, stop, verify, refresh] { button.target = self; AgentDialogStyle.action(button, prominent: button === push) }
         add.action = #selector(addRemote); prepare.action = #selector(preparePush); push.action = #selector(sendPush); stop.action = #selector(stopJob); verify.action = #selector(verifyPush)
         refresh.action = #selector(reload)
@@ -62,12 +68,22 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override func settingsDidAppear() {
-        super.settingsDidAppear(); if !busy { presentingWindow?.makeFirstResponder(add) }
+        super.settingsDidAppear()
+        if restoreDraftFocus { requestDraftFocus() }
+        else if !busy { presentingWindow?.makeFirstResponder(add) }
     }
+    var hasDraft: Bool { draft != nil }
+    func discardDraft() { draft = nil }
+    override func settingsWillLeave() { parkDraft() }
     var hasPendingOperation: Bool { busy || remotePage?.hasPendingChanges == true }
     private var writable: Bool { guard let task = store.task(taskID) else { return false }; return !task.archived && ![.running, .waiting].contains(task.status) }
     private func controls() {
-        for control in [remote, address, branch, upstream, prepare, add, refresh] as [NSControl] { control.isEnabled = !busy && writable }
+        let mayEdit = !busy && writable && scope != nil
+        for control in [branch, upstream, add] as [NSControl] { control.isEnabled = mayEdit }
+        refresh.isEnabled = !busy && writable
+        remote.isEnabled = mayEdit && remote.numberOfItems > 0
+        address.isEnabled = mayEdit && address.numberOfItems > 0
+        prepare.isEnabled = mayEdit && remotes.indices.contains(remote.indexOfSelectedItem) && address.indexOfSelectedItem >= 0
         inspectCommit.isEnabled = !busy && review != nil
         displayMode.isHidden = review == nil; displayMode.isEnabled = !busy
         wrap.isHidden = diffView.patch.isEmpty; wrap.isEnabled = !busy
@@ -77,9 +93,9 @@ import AppKit
         stop.isHidden = !busy
         for frame in [remoteFrame, addressFrame, commitFrame] { frame.refreshEnabledState() }
     }
-    private func showError(_ error: Error) { state.textColor = AgentDialogStyle.error; state.stringValue = error.localizedDescription }
+    private func showError(_ error: Error) { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error }
     func windowDidBecomeKey(_ notification: Notification) { controls() }
-    func windowWillClose(_ notification: Notification) { restorePushPage(); job?.cancel(); git.cancel(); busy = false }
+    func windowWillClose(_ notification: Notification) { parkDraft(); restorePushPage(); job?.cancel(); git.cancel(); busy = false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if let remotePage, !remotePage.canLeaveSettings() { return false }
         guard sending else { return true }
@@ -88,30 +104,93 @@ import AppKit
     }
     @objc private func reload() { if !busy { load() } }
     private func load(focusRemote: Bool = false) {
-        invalidate(); busy = true; controls(); state.stringValue = "读取 Git…"
+        let saved = captureDraft()
+        restoreDraftFocus = saved?.focused == true
+        scope = nil; invalidate(); busy = true; controls(); state.stringValue = "读取 Git…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await git.status(); remotes = try await git.remotes(); remoteHash = store.task(taskID)?.gitRemoteSnapshot?.hash ?? ""
+                try saved?.requireCurrent(store.task(taskID))
+                let current = try AgentGitDraftRecovery.Scope.current(store.task(taskID))
+                guard let checkout = current.checkout else { throw PetError("请先连接当前 Git 仓库") }
+                let status = try await git.status(), options = try await git.remotes()
+                try Task.checkCancellation(); try current.requireCurrent(store.task(taskID), preserving: "请刷新后重试")
+                remotes = options; scope = current; remoteHash = store.task(taskID)?.gitRemoteSnapshot?.hash ?? ""
                 source.stringValue = status.branch + (status.head.map { " · " + String($0.prefix(12)) } ?? " · 尚无提交")
                 remote.removeAllItems(); remote.addItems(withTitles: remotes.map(\.name)); updateAddresses()
                 branch.stringValue = status.branch == "分离状态" ? "" : status.branch; upstream.state = status.branch == "分离状态" ? .off : .on
-                if let saved = store.task(taskID)?.gitPushReview, saved.processID == AgentGitTransport.processID, saved.sourceHead == status.head, saved.configHash == store.task(taskID)?.gitRemoteSnapshot?.configHash,
+                let sourceRef = checkout.head.hasPrefix("ref: ") ? String(checkout.head.dropFirst(5)) : "HEAD"
+                if let saved {
+                    restoreDestination(saved)
+                    state.stringValue = remotes.isEmpty ? "请添加 Git 远端" : address.indexOfSelectedItem < 0 ? "请选择推送草稿的远端和地址" : "推送草稿已恢复，请检查远端"
+                } else if let saved = store.task(taskID)?.gitPushReview, saved.processID == AgentGitTransport.processID, saved.sourceHead == status.head, saved.sourceRef == sourceRef,
+                   saved.gitDirectory == git.directory.path, saved.configHash == store.task(taskID)?.gitRemoteSnapshot?.configHash,
                    let i = remotes.firstIndex(where: { $0.name == saved.remote }), remotes[i].urls.indices.contains(saved.urlIndex), remotes[i].urls[saved.urlIndex] == saved.endpoint.location {
                     remote.selectItem(at: i); updateAddresses(); address.selectItem(at: saved.urlIndex); branch.stringValue = saved.targetBranch; upstream.state = saved.setUpstream ? .on : .off; show(saved)
-                }
-                if review == nil { state.stringValue = remotes.isEmpty ? "请添加 Git 远端" : "" }
-            } catch { showError(error) }
+                } else { state.stringValue = remotes.isEmpty ? "请添加 Git 远端" : "" }
+            } catch { if !Task.isCancelled { showError(error) } }
             busy = false; controls()
             if focusRemote, remotePage == nil, isPageVisible { presentingWindow?.makeFirstResponder(remote) }
+            else { requestDraftFocus() }
         }
     }
     private func updateAddresses() {
         address.removeAllItems()
         if remotes.indices.contains(remote.indexOfSelectedItem) { address.addItems(withTitles: remotes[remote.indexOfSelectedItem].urls) }
     }
-    @objc private func changeRemote() { updateAddresses(); invalidate() }
-    func controlTextDidChange(_ obj: Notification) { invalidate() }
+    private func restoreDestination(_ saved: AgentGitDraftRecovery.Push) {
+        branch.stringValue = saved.branch; upstream.state = saved.upstream ? .on : .off
+        remote.select(nil)
+        if let i = remotes.firstIndex(where: { $0.name == saved.remote }) { remote.selectItem(at: i) }
+        updateAddresses(); address.select(nil)
+        if let hash = saved.addressHash, let i = address.itemTitles.firstIndex(where: { Self.addressHash($0) == hash }) { address.selectItem(at: i) }
+    }
+    private static func addressHash(_ value: String) -> String { AgentFiles.hash(Data(value.utf8)) }
+    @objc private func changeRemote() { updateAddresses(); editDraft(destinationChanged: true) }
+    @objc private func changeAddress() { editDraft(destinationChanged: true) }
+    @objc private func changeUpstream() { editDraft() }
+    func controlTextDidChange(_ obj: Notification) { editDraft() }
+    private func editDraft(destinationChanged: Bool = false) {
+        guard !busy, writable, let scope else { return }
+        if draft == nil || destinationChanged {
+            let name = remote.titleOfSelectedItem, hash = address.titleOfSelectedItem.map(Self.addressHash)
+            if draft == nil { draft = .init(scope: scope, branch: "", upstream: false) }
+            draft?.remote = name; draft?.addressHash = hash
+        }
+        draft?.branch = (branch.currentEditor() as? NSTextView)?.string ?? branch.stringValue
+        draft?.upstream = upstream.state == .on
+        restoreDraftFocus = false; _ = captureDraft(); invalidate(); onDraftChange?()
+    }
+    func captureDraft() -> AgentGitDraftRecovery.Push? {
+        if draft != nil, !restoreDraftFocus {
+            if let editor = branch.currentEditor() as? NSTextView {
+                let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+                if selection.valid(in: draft?.branch.utf16.count ?? 0) { draft?.selection = selection }
+                draft?.focused = presentingWindow?.firstResponder === editor
+            } else if isPageVisible, !busy { draft?.focused = false }
+        }
+        return draft
+    }
+    @objc private func branchSelectionChanged(_ notification: Notification) {
+        guard draft != nil, !restoreDraftFocus, let editor = notification.object as? NSTextView,
+              editor === branch.currentEditor(), editor === presentingWindow?.firstResponder else { return }
+        _ = captureDraft(); onDraftChange?()
+    }
+    private func requestDraftFocus() {
+        guard restoreDraftFocus, !busy else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, restoreDraftFocus, !busy, isPageVisible, branch.isEnabled,
+                  let window = presentingWindow, !window.hasBlockingDialog,
+                  window.makeFirstResponder(branch), let editor = branch.currentEditor() as? NSTextView else { return }
+            if let selection = draft?.selection { editor.setSelectedRange(selection.range) }
+            restoreDraftFocus = false
+        }
+    }
+    private func parkDraft() {
+        guard let onDraftClose else { return }
+        self.onDraftClose = nil
+        var saved = captureDraft(); saved?.opened = false; onDraftClose(saved)
+    }
     @objc private func invalidate() { review = nil; render(""); count.stringValue = ""; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更"); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = ""; controls() }
     @objc private func changeDisplay() {
         let split = review != nil && displayMode.selectedSegment == 1, wraps = wrap.state == .on
@@ -137,26 +216,30 @@ import AppKit
         controls()
     }
     @objc private func preparePush() {
-        guard !busy, writable, remotes.indices.contains(remote.indexOfSelectedItem), address.indexOfSelectedItem >= 0 else { return }
+        guard !busy, writable, let scope, remotes.indices.contains(remote.indexOfSelectedItem), address.indexOfSelectedItem >= 0 else { return }
         branch.validateEditing()
+        editDraft()
         let name = remotes[remote.indexOfSelectedItem].name, index = address.indexOfSelectedItem, target = branch.stringValue, wantsUpstream = upstream.state == .on, hash = remoteHash
         review = nil; busy = true; controls(); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "检查远端并准备提交…"
         job = Task { [weak self] in
             guard let self else { return }
-            do { let value = try await git.preparePush(remote: name, urlIndex: index, branch: target, setUpstream: wantsUpstream, remoteHash: hash); show(value) }
+            do { let value = try await git.preparePush(remote: name, urlIndex: index, branch: target, setUpstream: wantsUpstream, remoteHash: hash, draftScope: scope); show(value) }
             catch { showError(error) }
             busy = false; controls()
         }
     }
     @objc private func sendPush() {
-        guard !busy, writable, let value = review, value.commitCount > 0 else { return }
+        guard !busy, writable, let scope, let value = review, value.commitCount > 0 else { return }
+        do { try scope.requireCurrent(store.task(taskID), preserving: "请重新检查远端") }
+        catch { invalidate(); showError(error); return }
         let alert = AgentConfirmation(); alert.messageText = "推送 \(value.commitCount) 项提交？"; alert.informativeText = value.summary; alert.addButton(withTitle: "推送"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         busy = true; sending = true; controls(); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "推送中…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let receipt = try await git.push(reviewHash: value.hash)
+                let receipt = try await git.push(reviewHash: value.hash, draftScope: scope)
+                if receipt.verified { discardDraft(); onDraftChange?() }
                 state.stringValue = receipt.verified ? "远端已核对 · " + String(receipt.sourceHead.prefix(12)) + (receipt.localUpdate.isEmpty ? "" : " · " + receipt.localUpdate) : "结果待核对，请核对上次结果"
                 count.stringValue = receipt.verified ? "已推送 \(value.commitCount) 项" : ""
                 inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "推送结果")
