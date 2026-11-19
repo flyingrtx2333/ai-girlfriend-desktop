@@ -62,7 +62,10 @@ import AppKit
             control.checkOpenAttachment(taskID: f.taskID, id: f.pdfID)
             guard let pdf = host.currentController as? AgentAttachmentWindow else { throw PetError("历史 PDF 没有打开") }
             let normal = await pdf.workspaceReadback()
-            checks["pdfKeepsNativePreviewAndTextTabStaysOpen"] = host.selectedRoot == pdfRoot && normal["quickLook"] as? Bool == true && normal["mode"] as? String == "preview" && host.rootController(textRoot) === text
+            checks["pdfKeepsNativePreviewAndTextTabStaysOpen"] = host.selectedRoot == pdfRoot && normal["previewPDFPart"] as? Int == 1 && normal["mode"] as? String == "preview" && host.rootController(textRoot) === text
+            pdf.checkChoosePart(2)
+            let visualPage = await pdf.workspaceReadback(); report["visualPage"] = visualPage
+            checks["visualPageControlMatchesTheRenderedPDFPage"] = visualPage["previewPDFPart"] as? Int == 2 && visualPage["part"] as? Int == 2 && (visualPage["previewPDFText"] as? String)?.contains("WHALE-202") == true && visualPage["mode"] as? String == "preview"
             control.presentAgentRecords(section: 2)
             guard let record = host.currentController as? AgentRecordWindow else { throw PetError("附件引用没有从记录打开") }
             record.checkOpenSource(f.citation)

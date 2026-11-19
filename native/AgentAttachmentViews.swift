@@ -66,8 +66,10 @@ struct AgentAttachmentReadingTarget {
     private let mode = NSSegmentedControl(labels: ["预览", "文字"], trackingMode: .selectOne, target: nil, action: nil)
     private let number = AgentDialogTextField(string: "1"), stepper = NSStepper()
     private let title = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("附件状态")
+    private let partControls = NSStackView()
     private let body = NSView(), text = NSTextView(), textScroll = NSScrollView()
     private var preview: QLPreviewView?, item: AgentPreviewItem?, job: Task<Void, Never>?
+    private var pdfPreview: PDFView?, pendingPDFPage: Int?
     private var started = false, textReady = false, applyingPosition = false
     private var pendingViewport: AgentTextViewport?, pendingLine: Int?
     private var textOnly: Bool { AgentDocument.textTypes.contains(file.fileExtension) }
@@ -100,8 +102,9 @@ struct AgentAttachmentReadingTarget {
         body.addSubview(textScroll); textScroll.translatesAutoresizingMaskIntoConstraints = false
         let count = NSTextField(labelWithString: "/ \(file.totalParts)")
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText
-        let header = NSStackView(views: [mode, NSView(), title, number, count, stepper]); header.spacing = 8
-        for control in [title, number, count, stepper] { control.isHidden = file.totalParts <= 1 }
+        for control in [title, number, count, stepper] { partControls.addArrangedSubview(control) }
+        partControls.spacing = 8; partControls.alignment = .centerY
+        let header = NSStackView(views: [mode, NSView(), partControls]); header.spacing = 8
         header.isHidden = textOnly && file.totalParts <= 1
         let column = NSStackView(views: [header, body, state]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 8
         content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
@@ -133,6 +136,11 @@ struct AgentAttachmentReadingTarget {
     }
     private func closePreview() {
         preview?.close(); preview?.removeFromSuperview(); preview = nil; item = nil
+        if let pdfPreview {
+            NotificationCenter.default.removeObserver(self, name: .PDFViewPageChanged, object: pdfPreview)
+            pdfPreview.removeFromSuperview(); self.pdfPreview = nil
+        }
+        pendingPDFPage = nil
     }
     private func setPart(_ part: Int) {
         number.integerValue = min(max(1, part), max(1, file.totalParts)); stepper.integerValue = number.integerValue
@@ -143,8 +151,13 @@ struct AgentAttachmentReadingTarget {
         mode.selectedSegment = 1
         if started { loadPart() }
     }
-    @objc private func numberChanged() { open(.init(part: number.integerValue, line: nil)) }
-    @objc private func stepChanged() { open(.init(part: stepper.integerValue, line: nil)) }
+    private func choosePart(_ part: Int) {
+        if pdfPreview != nil {
+            setPart(part); pendingPDFPage = number.integerValue; pageDidLayout()
+        } else { open(.init(part: part, line: nil)) }
+    }
+    @objc private func numberChanged() { choosePart(number.integerValue) }
+    @objc private func stepChanged() { choosePart(stepper.integerValue) }
     @objc private func modeChanged() { pendingViewport = nil; pendingLine = nil; loadPart() }
     @objc private func scrolled() { if textReady && !applyingPosition { onSettingsRecoveryChange?() } }
     func textViewDidChangeSelection(_ notification: Notification) { scrolled() }
@@ -155,23 +168,24 @@ struct AgentAttachmentReadingTarget {
         onSettingsRecoveryChange?()
         do {
             let url = try AgentAttachments.source(store: store, taskID: taskID, id: file.id)
-            title.stringValue = file.partTitles?.indices.contains(selected - 1) == true ? file.partTitles![selected - 1] : "第 \(selected) 部分"
-            title.toolTip = title.stringValue
+            updatePartTitle(selected)
+            partControls.isHidden = file.totalParts <= 1 || !showsText && file.fileExtension != "pdf"
             state.stringValue = file.partial ? "部分内容已提取" : ""
             if !showsText {
+                if file.fileExtension == "pdf" {
+                    try showPDF(url, page: selected)
+                    return
+                }
                 if preview == nil, let view = QLPreviewView(frame: body.bounds, style: .normal) {
                     preview = view; view.autostarts = true; view.shouldCloseWithWindow = true
-                    body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
-                    NSLayoutConstraint.activate([
-                        view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor),
-                        view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)
-                    ])
+                    installPreview(view)
                 }
                 if let preview {
                     item = AgentPreviewItem(url: url, title: file.name); preview.previewItem = item
                     textScroll.isHidden = true; return
                 }
                 mode.selectedSegment = 1
+                partControls.isHidden = file.totalParts <= 1
             }
             closePreview(); textScroll.isHidden = false; text.string = ""; state.stringValue = "读取中…"
             job = Task { [weak self] in
@@ -191,12 +205,45 @@ struct AgentAttachmentReadingTarget {
             }
         } catch { showError(error) }
     }
+    private func updatePartTitle(_ part: Int) {
+        title.stringValue = file.partTitles?.indices.contains(part - 1) == true ? file.partTitles![part - 1] : "第 \(part) 部分"
+        title.toolTip = title.stringValue
+    }
+    private func installPreview(_ view: NSView) {
+        body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)
+        ])
+    }
+    private func showPDF(_ url: URL, page part: Int) throws {
+        guard let document = PDFDocument(url: url), !document.isLocked, document.page(at: part - 1) != nil else { throw PetError("PDF 无法读取或页码无效") }
+        closePreview(); textScroll.isHidden = true
+        let view = PDFView(); view.displayMode = .singlePage; view.autoScales = true
+        view.setAccessibilityLabel("附件 PDF 预览")
+        pdfPreview = view; pendingPDFPage = part
+        NotificationCenter.default.addObserver(self, selector: #selector(pdfPageChanged), name: .PDFViewPageChanged, object: view)
+        view.document = document; installPreview(view)
+        presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout()
+    }
+    @objc private func pdfPageChanged() {
+        guard pendingPDFPage == nil, let view = pdfPreview, let document = view.document, let page = view.currentPage else { return }
+        let index = document.index(for: page)
+        guard (0..<max(1, file.totalParts)).contains(index), index + 1 != number.integerValue else { return }
+        let part = index + 1
+        setPart(part); updatePartTitle(part); onSettingsRecoveryChange?()
+    }
     private func showError(_ error: Error) {
         closePreview(); text.string = ""; textScroll.isHidden = false; textReady = false
         state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error
     }
 
     override func pageDidLayout() {
+        if isPageVisible, let part = pendingPDFPage, let view = pdfPreview, view.bounds.width > 0, view.bounds.height > 0,
+           let target = view.document?.page(at: part - 1) {
+            view.go(to: target); pendingPDFPage = nil
+            updatePartTitle(part); onSettingsRecoveryChange?()
+        }
         guard textReady, showsText, isPageVisible, textScroll.contentSize.width > 0, textScroll.contentSize.height > 0,
               pendingViewport != nil || pendingLine != nil else { return }
         applyingPosition = true
@@ -242,9 +289,16 @@ struct AgentAttachmentReadingTarget {
         presentingWindow?.contentView?.layoutSubtreeIfNeeded(); pageDidLayout()
         let range = text.selectedRange(), raw = text.string as NSString
         let selected = NSMaxRange(range) <= raw.length ? raw.substring(with: range) : ""
+        let pdfPart = pdfPreview.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) }.map { $0 + 1 } }
         return ["part": number.integerValue, "mode": showsText ? "text" : "preview", "text": String(text.string.prefix(1000)),
                 "selection": selected, "scrollY": Double(textScroll.contentView.bounds.minY), "readingWidth": Double(body.bounds.width), "readingHeight": Double(body.bounds.height),
-                "quickLook": preview?.previewItem != nil, "visible": isPageVisible, "readOnly": !text.isEditable, "status": state.stringValue]
+                "previewPDFPart": pdfPart as Any? ?? NSNull(), "previewPDFText": pdfPreview?.currentPage?.string ?? "",
+                "visible": isPageVisible, "readOnly": !text.isEditable, "status": state.stringValue]
+    }
+
+    func checkChoosePart(_ part: Int) {
+        guard AgentTaskWorkspace.readbackEnabled else { return }
+        number.integerValue = part; numberChanged()
     }
 
     func checkText(_ expected: String, output: URL) async -> Bool {
