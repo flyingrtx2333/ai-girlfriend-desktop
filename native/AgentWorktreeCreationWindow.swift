@@ -8,10 +8,10 @@ import AppKit
     private let state = AgentSettingsStatusField("工作树创建状态"), diff = AgentGitDiffView()
     private lazy var startFrame = AgentSettingsPopupFrame(start, outlined: true, maximumWidth: nil)
     private var sourceFrames: [AgentSettingsPopupFrame] = []
-    private var points: [AgentWorktreeStart] = [], review: AgentWorktreeCreationReview?, job: Task<Void, Never>?
+    private var review: AgentWorktreeCreationReview?, job: Task<Void, Never>?
     private let content = AgentWorkspacePageView(fill: AgentWorkbenchTheme.surface)
     private let sourceOptions = NSStackView(), optionsScroll = NSScrollView()
-    private var sourceStarts: [String: NSPopUpButton] = [:], sourcePoints: [String: [AgentWorktreeStart]] = [:]
+    private var sourceStarts: [String: NSPopUpButton] = [:]
     private var retainedRoots = Set<String>(), sourceRoots: [String] = [], resumeTaskID: String?
     private var originalInclude = false, originalStarts: [String: String] = [:]
     private var originalBranch = "", completed = false
@@ -64,12 +64,17 @@ import AppKit
                 let values = try await git.workspaceWorktreeStartingPoints(); sourceRoots = values.map(\.root)
                 let setup = resumeTaskID.flatMap { store.task($0)?.worktreeSetup }
                 for (index, value) in values.enumerated() {
-                    let popup = index == 0 ? start : NSPopUpButton(); popup.addItems(withTitles: value.points.map { $0.title + " · " + String($0.commit.prefix(8)) })
+                    let popup = index == 0 ? start : NSPopUpButton()
+                    for point in value.points {
+                        let scope = point.ref == "HEAD" ? "" : point.ref.hasPrefix("refs/heads/") ? "本地 · " : "远程 · "
+                        let item = NSMenuItem(title: scope + point.title, action: nil, keyEquivalent: "")
+                        item.representedObject = point.ref; item.toolTip = point.ref; popup.menu?.addItem(item)
+                    }
                     popup.target = self; popup.action = #selector(changed); popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); popup.cell?.lineBreakMode = .byTruncatingMiddle
-                    if let selected = setup?.startPoints[value.root], let index = value.points.firstIndex(where: { $0.ref == selected }) { popup.selectItem(at: index) }
-                    sourceStarts[value.root] = popup; sourcePoints[value.root] = value.points
-                    if index == 0 { points = value.points }
-                    else {
+                    let selected = setup?.startPoints[value.root] ?? "HEAD"
+                    popup.select(popup.itemArray.first { $0.representedObject as? String == selected } ?? popup.item(at: 0))
+                    sourceStarts[value.root] = popup
+                    if index > 0 {
                         popup.setAccessibilityLabel("起点分支 · " + value.root)
                         let label = NSTextField(labelWithString: URL(fileURLWithPath: value.root).lastPathComponent); label.font = .systemFont(ofSize: 13); label.toolTip = value.root; label.lineBreakMode = .byTruncatingMiddle; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                         let frame = AgentSettingsPopupFrame(popup, outlined: true, maximumWidth: nil); sourceFrames.append(frame)
@@ -85,7 +90,8 @@ import AppKit
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     var boundTaskID: String { resumeTaskID ?? taskID }
-    private var selectedStarts: [String: String] { Dictionary(uniqueKeysWithValues: sourceRoots.compactMap { root in guard let popup = sourceStarts[root], let values = sourcePoints[root], values.indices.contains(popup.indexOfSelectedItem) else { return nil }; return (root, values[popup.indexOfSelectedItem].ref) }) }
+    private var selectedStart: String? { start.selectedItem?.representedObject as? String }
+    private var selectedStarts: [String: String] { sourceStarts.compactMapValues { $0.selectedItem?.representedObject as? String } }
     private func refreshRetainedRoots() { retainedRoots = Set(resumeTaskID.flatMap { store.task($0)?.managedWorktreeOrigins.map(\.root) } ?? []); create.title = resumeTaskID == nil ? "创建任务" : "继续创建" }
     var hasPendingChanges: Bool { busy || !completed && (branch.stringValue != originalBranch || (include.state == .on) != originalInclude || selectedStarts != originalStarts || review != nil) }
     func prepareWorkspaceNavigation() -> Bool { !busy }
@@ -100,10 +106,11 @@ import AppKit
     func controlTextDidChange(_ obj: Notification) { changed() }
     @objc private func changed() { review = nil; create.isEnabled = false; state.stringValue = ""; diff.show("", oldTitle: "起点", newTitle: "当前修改") }
     private func setBusy(_ value: Bool) {
-        busy = value; start.isEnabled = !value && !points.isEmpty; branch.isEnabled = !value && !points.isEmpty && resumeTaskID == nil; include.isEnabled = !value && !points.isEmpty
+        let hasStart = selectedStart != nil
+        busy = value; start.isEnabled = !value && hasStart; branch.isEnabled = !value && hasStart && resumeTaskID == nil; include.isEnabled = !value && hasStart
         if value { state.textColor = AgentWorkbenchTheme.secondaryText }
         for (root, popup) in sourceStarts { popup.isEnabled = !value && !retainedRoots.contains(root) }
-        preview.isEnabled = !value && !points.isEmpty; create.isEnabled = !value && review != nil
+        preview.isEnabled = !value && hasStart; create.isEnabled = !value && review != nil
         for frame in [startFrame] + sourceFrames { frame.refreshEnabledState() }
     }
     private func showFailure(_ message: String, title: String) {
@@ -114,14 +121,13 @@ import AppKit
         guard let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("来源任务正在执行或已归档，请稍后重试") }
     }
     private func matchesInputs(_ value: AgentWorktreeCreationReview) -> Bool {
-        guard points.indices.contains(start.indexOfSelectedItem), value.branch == branch.stringValue,
-              value.startPoint == points[start.indexOfSelectedItem].ref, value.includeChanges == (include.state == .on) else { return false }
+        guard value.branch == branch.stringValue, value.startPoint == selectedStart, value.includeChanges == (include.state == .on) else { return false }
         return value.sources?.allSatisfy { selectedStarts[$0.root] == $0.startPoint } ?? true
     }
     @objc private func previewCreation() {
-        guard !busy, points.indices.contains(start.indexOfSelectedItem) else { return }
+        guard !busy, let base = selectedStart else { return }
         branch.validateEditing()
-        let name = branch.stringValue, base = points[start.indexOfSelectedItem].ref, carry = include.state == .on, starts = selectedStarts
+        let name = branch.stringValue, carry = include.state == .on, starts = selectedStarts
         review = nil; setBusy(true); state.stringValue = "正在预览…"
         job = Task { [weak self] in
             guard let self else { return }
@@ -129,7 +135,13 @@ import AppKit
                 try checkTask(); let value = try await git.prepareWorktreeCreation(branch: name, startPoint: base, includeChanges: carry, sourceStartPoints: starts, resumeTaskID: resumeTaskID)
                 try Task.checkCancellation()
                 guard selectedStarts == starts, matchesInputs(value) else { throw PetError("创建选项已变化，请重新预览") }
-                review = value; state.stringValue = value.sources.map { "\($0.count) 个待创建源 · 已保留 \(value.retained?.count ?? 0) 个 · \(value.paths.count) 个文件" } ?? (value.includeChanges ? "将带入 \(value.paths.count) 个文件 · 保持未暂存" : "预览完成")
+                review = value
+                if let sources = value.sources {
+                    state.stringValue = "\(sources.count) 个待创建源 · 已保留 \(value.retained?.count ?? 0) 个 · \(value.paths.count) 个文件"
+                } else {
+                    let commit = "起点 " + String(value.baseCommit.prefix(12))
+                    state.stringValue = value.includeChanges ? "\(commit) · 将带入 \(value.paths.count) 个文件 · 保持未暂存" : commit
+                }
                 diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树")
             } catch { showFailure(error.localizedDescription, title: "预览失败"); review = nil }
             setBusy(false)
@@ -166,13 +178,13 @@ import AppKit
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
         let frames = [start, branch, include, preview, create].map { content.convert($0.bounds, from: $0) }
         func frame(_ view: NSView) -> [CGFloat] { let r = content.convert(view.bounds, from: view); return [r.minX, r.minY, r.width, r.height] }
-        return ["taskID": taskID, "resumeTaskID": resumeTaskID ?? "", "sources": sourceRoots, "sourceStartPoints": selectedStarts, "retainedRoots": retainedRoots.sorted(), "branch": branch.stringValue, "startPoint": points.indices.contains(start.indexOfSelectedItem) ? points[start.indexOfSelectedItem].ref : "", "includeChanges": include.state == .on, "reviewHash": review?.hash ?? "", "patch": diff.patch, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "busy": busy, "hasPendingChanges": hasPendingChanges, "createEnabled": create.isEnabled, "inputFrames": [frame(startFrame), frame(branch)], "actionFrames": [frame(preview), frame(create)], "diffFrame": frame(diff),
+        return ["taskID": taskID, "resumeTaskID": resumeTaskID ?? "", "sources": sourceRoots, "sourceStartPoints": selectedStarts, "retainedRoots": retainedRoots.sorted(), "branch": branch.stringValue, "startPoint": selectedStart ?? "", "includeChanges": include.state == .on, "reviewHash": review?.hash ?? "", "patch": diff.patch, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "busy": busy, "hasPendingChanges": hasPendingChanges, "createEnabled": create.isEnabled, "inputFrames": [frame(startFrame), frame(branch)], "actionFrames": [frame(preview), frame(create)], "diffFrame": frame(diff),
                 "checks": ["creationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "creationHasNoFloatingWindow": window?.isVisible != true, "creationControlsFit": frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "creationPreviewHasUsableHeight": diff.bounds.height >= 120]]
     }
     func checkWorkspace(branch name: String? = nil, startPoint: String? = nil, includeChanges: Bool? = nil, action: String = "") async {
         guard AgentTaskWorkspace.readbackEnabled else { return }; await job?.value
         if let name { branch.stringValue = name; changed() }
-        if let startPoint, let index = points.firstIndex(where: { $0.ref == startPoint }) { start.selectItem(at: index); changed() }
+        if let startPoint, let item = start.itemArray.first(where: { $0.representedObject as? String == startPoint }) { start.select(item); changed() }
         if let includeChanges { include.state = includeChanges ? .on : .off; changed() }
         if action == "preview" { previewCreation(); await job?.value }
         if action == "create" { confirm(); await job?.value }

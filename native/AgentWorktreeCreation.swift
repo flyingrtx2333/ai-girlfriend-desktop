@@ -82,18 +82,21 @@ struct AgentWorktreeCreationReview: Codable {
     func worktreeStartingPoints() async throws -> [AgentWorktreeStart] {
         try validateWorkspace()
         let head = try await output(["rev-parse", "--verify", "HEAD^{commit}"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let raw = try await output(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/heads/", "refs/remotes/"])
+        let raw = try await output(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "refs/heads/", "refs/remotes/"])
         var result = [AgentWorktreeStart(ref: "HEAD", title: "当前提交", commit: head)]
         for line in raw.split(separator: "\n") {
             let parts = line.split(separator: "\0", omittingEmptySubsequences: false)
-            guard parts.count == 2 else { throw PetError("分支列表格式无效") }
-            let ref = String(parts[0]); if ref.hasSuffix("/HEAD") { continue }
+            guard parts.count == 3 else { throw PetError("分支列表格式无效") }
+            let ref = String(parts[0])
+            if ref.hasPrefix("refs/remotes/"), ref.hasSuffix("/HEAD"), !parts[2].isEmpty { continue }
             result.append(AgentWorktreeStart(ref: ref, title: ref.hasPrefix("refs/heads/") ? String(ref.dropFirst(11)) : String(ref.dropFirst(13)), commit: String(parts[1])))
         }
         return result
     }
-    private func startingPoint(_ value: String) async throws -> AgentWorktreeStart {
-        let matches = try await worktreeStartingPoints().filter { $0.ref == value || $0.title == value }
+    func worktreeStartingPoint(_ value: String) async throws -> AgentWorktreeStart {
+        let points = try await worktreeStartingPoints()
+        if let exact = points.first(where: { $0.ref == value }) { return exact }
+        let matches = points.filter { $0.title == value }
         guard matches.count == 1, let result = matches.first else { throw PetError("起点分支不存在或名称不明确，请重新选择") }
         return result
     }
@@ -165,7 +168,7 @@ struct AgentWorktreeCreationReview: Codable {
         guard !branch.isEmpty, branch.utf8.count <= 200, !branch.hasPrefix("-"), !branch.contains("\0"),
               try await run(["check-ref-format", "--branch", branch]).exitCode == 0 else { throw PetError("分支名称无效") }
         guard try await run(["show-ref", "--verify", "--quiet", "refs/heads/" + branch]).exitCode == 1 else { throw PetError("新分支已存在，请更换名称") }
-        let base = try await startingPoint(startPoint), hash = UUID().uuidString, session = try creationDirectory(hash)
+        let base = try await worktreeStartingPoint(startPoint), hash = UUID().uuidString, session = try creationDirectory(hash)
         try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let baseTree = try await output(["rev-parse", base.commit + "^{tree}"]).trimmingCharacters(in: .whitespacesAndNewlines)
         var review = AgentWorktreeCreationReview(taskID: taskID, root: files.root.path, scope: scope, branch: branch, startPoint: base.ref, baseCommit: base.commit,
@@ -188,13 +191,13 @@ struct AgentWorktreeCreationReview: Codable {
         }
         let after = try await creationState()
         guard after.head == state.head, after.ref == state.ref, after.index == state.index, try creationScope() == scope,
-              try await startingPoint(base.ref).commit == base.commit else { throw PetError("来源或起点已变化，请重新预览") }
+              try await worktreeStartingPoint(base.ref).commit == base.commit else { throw PetError("来源或起点已变化，请重新预览") }
         try saveCreation(review); return review
     }
     private func validateCreation(_ review: AgentWorktreeCreationReview) async throws -> (head: String, ref: String, index: String, protected: [URL]) {
         let scope = try creationScope(), state = try await creationState()
         guard scope == review.scope, state.head == review.sourceHead, state.ref == review.sourceRef, state.index == review.sourceIndex,
-              try await startingPoint(review.startPoint).commit == review.baseCommit else { throw PetError("分支、暂存区或任务范围已变化，请重新预览") }
+              try await worktreeStartingPoint(review.startPoint).commit == review.baseCommit else { throw PetError("分支、暂存区或任务范围已变化，请重新预览") }
         if review.includeChanges {
             let session = scratch.appendingPathComponent("worktree-verify-" + UUID().uuidString)
             try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

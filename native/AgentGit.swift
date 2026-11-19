@@ -188,9 +188,8 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     func createWorktree(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false, reviewHash: String? = nil) async throws -> AgentGitWorktree {
         if let reviewHash {
             let review = try storedWorktreeCreation(reviewHash)
-            let matches = try await worktreeStartingPoints().filter { $0.ref == startPoint || $0.title == startPoint }
             guard review.branch == branch, review.includeChanges == includeChanges,
-                  matches.count == 1, matches.first?.ref == review.startPoint else { throw PetError("创建选项与审阅不一致，请重新预览") }
+                  try await worktreeStartingPoint(startPoint).ref == review.startPoint else { throw PetError("创建选项与审阅不一致，请重新预览") }
             return try await createReviewedWorktree(reviewHash)
         }
         guard (store.task(taskID)?.workspacePaths.count ?? 0) <= 1 else { throw PetError("多源工作树需要先使用 git_prepare_worktree 核对各源起点，并传入 review_hash") }

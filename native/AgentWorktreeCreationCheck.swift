@@ -23,6 +23,13 @@ import AppKit
             _ = try await git(["add", "."]); _ = try await git(["commit", "-m", "conflicting branch"])
             let conflictHead = try await git(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try await git(["checkout", "main"])
+            let remoteRelease = "refs/remotes/origin/release"
+            for (ref, head) in [(remoteRelease, releaseHead), ("refs/heads/origin/release", releaseHead),
+                                ("refs/heads/" + remoteRelease, mainHead), ("refs/heads/feature/HEAD", mainHead),
+                                ("refs/remotes/origin/feature/HEAD", releaseHead)] {
+                _ = try await git(["update-ref", ref, head])
+            }
+            _ = try await git(["symbolic-ref", "refs/remotes/origin/HEAD", remoteRelease])
             try Data("staged-public\n".utf8).write(to: repo.appendingPathComponent("public.txt")); _ = try await git(["add", "public.txt"])
             try Data("working-public\n".utf8).write(to: repo.appendingPathComponent("public.txt")); try fm.removeItem(at: repo.appendingPathComponent("delete.txt"))
             let odd = "renamed'中文\nfile.txt"; _ = try await git(["mv", "rename.txt", odd])
@@ -37,6 +44,17 @@ import AppKit
             let index = try Data(contentsOf: repo.appendingPathComponent(".git/index"))
             let points = try await helper.worktreeStartingPoints()
             checks["actualBranchesExposeExactStartingCommits"] = points.contains { $0.ref == "refs/heads/release" && $0.commit == releaseHead } && points.contains { $0.ref == "HEAD" && $0.commit == mainHead }
+            checks["branchNamesEndingInHEADStaySelectable"] = points.contains { $0.ref == "refs/heads/feature/HEAD" && $0.commit == mainHead }
+                && points.contains { $0.ref == "refs/remotes/origin/feature/HEAD" && $0.commit == releaseHead }
+                && !points.contains { $0.ref == "refs/remotes/origin/HEAD" }
+            do { _ = try await helper.worktreeStartingPoint("origin/release"); checks["ambiguousShortStartingPointRejected"] = false }
+            catch { checks["ambiguousShortStartingPointRejected"] = error.localizedDescription.contains("名称不明确") }
+            let localNamedLikeRemote = try await helper.worktreeStartingPoint("refs/heads/" + remoteRelease)
+            let remoteReview = try await helper.prepareWorktreeCreation(branch: "remote-release", startPoint: remoteRelease)
+            let remote = try await helper.createWorktree(branch: remoteReview.branch, startPoint: remoteRelease, reviewHash: remoteReview.hash)
+            let remoteHead = try await git(["rev-parse", "HEAD"], at: URL(fileURLWithPath: remote.workspace)).trimmingCharacters(in: .newlines)
+            checks["qualifiedRemoteRefWinsOverMatchingLocalAlias"] = localNamedLikeRemote.commit == mainHead
+                && remoteReview.startPoint == remoteRelease && remoteReview.baseCommit == releaseHead && remoteHead == releaseHead
             let clean = try await helper.createWorktree(branch: "clean-release", startPoint: "refs/heads/release"), cleanURL = URL(fileURLWithPath: clean.workspace)
             checks["selectedBranchCreatesExactCleanBase"] = try await git(["rev-parse", "HEAD"], at: cleanURL).trimmingCharacters(in: .whitespacesAndNewlines) == releaseHead && String(contentsOf: cleanURL.appendingPathComponent("public.txt"), encoding: .utf8) == "base-public\n" && fm.fileExists(atPath: cleanURL.appendingPathComponent("release-only.txt").path)
             checks["defaultCreationExcludesUncommittedAndIgnoredFiles"] = !fm.fileExists(atPath: cleanURL.appendingPathComponent("untracked.bin").path) && !fm.fileExists(atPath: cleanURL.appendingPathComponent("local-only.txt").path)
