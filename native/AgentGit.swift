@@ -37,15 +37,17 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     var workspaceWorktreeHelpers: [AgentGit] = []
     var lastCreatedWorktreeTaskID: String?
     let allowsArchivedWorktreeSource: Bool
+    let allowsExternalWorktrees: Bool
     private let selectedWorkspace: String?
     var worktreeEligibilityCheck: ((AgentWorktreeEntry, Date) throws -> Void)?
-    init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false, workspace: String? = nil) throws {
+    init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false, workspace: String? = nil, allowsExternalWorktrees: Bool = false) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         let selectedFiles = try AgentFiles(workspace: workspace ?? task.workspace)
         self.store = store; self.taskID = taskID; files = selectedFiles; self.directory = directory
         selectedWorkspace = workspace == nil ? nil : selectedFiles.root.path
         if workspace != nil { guard task.includesWorkspaceRoot(selectedFiles.root.path) else { throw PetError("Git 来源超出当前任务的源文件夹") } }
         self.allowsArchivedWorktreeSource = allowsArchivedWorktreeSource
+        self.allowsExternalWorktrees = allowsExternalWorktrees
         scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
@@ -63,7 +65,8 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     }
     func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil) async throws -> AgentToolResult {
+    func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil, externalWorktree: URL? = nil) async throws -> AgentToolResult {
+        guard externalWorktree == nil || allowsExternalWorktrees else { throw PetError("外部工作树需要在管理页操作") }
         let process = AgentCommand(); command = process; defer { command = nil }
         var flags = [try Self.executablePath(), "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"]
         if literalPaths { flags.append("--literal-pathspecs") }
@@ -72,7 +75,8 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
             guard stdoutFile.deletingLastPathComponent().path == scratch.path else { throw PetError("Git 输出目录无效") }
             invocation = "umask 077; " + invocation + " > " + Self.quote(stdoutFile.path)
         }
-        return try await process.run(command: invocation, workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, readRoots: readRoots, environment: environment)
+        let externalRoots = externalWorktree.map { [$0] } ?? []
+        return try await process.run(command: invocation, workspace: files.root, scratch: scratch, network: false, timeout: timeout ?? (write ? 90 : 15), readOnly: !write || externalWorktree != nil, gitDirectory: directory, gitWrite: write, gitConfiguration: true, maximumOutput: maximumOutput, protectedData: store.directory.deletingLastPathComponent(), inputFile: inputFile, readRoots: readRoots + externalRoots, writeRoots: write ? externalRoots : [], environment: environment)
     }
     func output(_ args: [String]) async throws -> String {
         let result = try await run(args)

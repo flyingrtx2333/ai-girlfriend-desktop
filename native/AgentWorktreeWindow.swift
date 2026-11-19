@@ -16,7 +16,7 @@ import AppKit
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: git.taskID, busy: busy) } } }
     init(store: AgentStore, taskID: String, allowsArchivedSource: Bool = false, workspace: String? = nil, onSelectTask: @escaping (String) -> Void) throws {
         self.store = store; self.onSelectTask = onSelectTask
-        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: workspace ?? store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource, workspace: workspace)
+        git = try AgentGit(store: store, taskID: taskID, directory: AgentGit.metadata(workspace: workspace ?? store.task(taskID)?.workspace), allowsArchivedWorktreeSource: allowsArchivedSource, workspace: workspace, allowsExternalWorktrees: true)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 520), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 400); window.isReleasedWhenClosed = false
         window.center(); super.init(window: window); window.delegate = self
@@ -73,7 +73,8 @@ import AppKit
             name = (item.branch.map { $0.replacingOccurrences(of: "refs/heads/", with: "") } ?? "分离状态") + " · " + backupState(item.state); path = item.origin.path
         } else {
             guard entries.indices.contains(row) else { return nil }; let item = entries[row]
-            name = (item.branch.map { $0.replacingOccurrences(of: "refs/heads/", with: "") } ?? (item.bare ? "裸仓库" : "分离状态")) + (item.unavailable.map { " · " + $0 } ?? "")
+            let status = item.unavailable ?? (item.owned ? nil : "外部工作树")
+            name = (item.branch.map { $0.replacingOccurrences(of: "refs/heads/", with: "") } ?? (item.bare ? "裸仓库" : "分离状态")) + (status.map { " · " + $0 } ?? "")
             path = item.path
         }
         let cell = NSTableCellView(), first = NSTextField(labelWithString: name), second = NSTextField(labelWithString: path.replacingOccurrences(of: "\n", with: "↵").replacingOccurrences(of: "\r", with: "↵"))
@@ -93,12 +94,13 @@ import AppKit
     private func showSelection() {
         let ids = entry?.taskIDs ?? backup.map { Array($0.tasks.keys).sorted() } ?? []
         if let review = recycleReview {
-            detail.string = ["回收工作树", review.branch?.replacingOccurrences(of: "refs/heads/", with: "") ?? "分离状态", review.path, "提交 " + String(review.head.prefix(12)), "备份 \(review.files) 项 · " + ByteCountFormatter.string(fromByteCount: Int64(clamping: review.bytes), countStyle: .file), "包括忽略文件和暂存状态。分支保留，归档 \(review.taskIDs.count) 个关联任务。"].joined(separator: "\n\n")
+            detail.string = [review.external == nil ? "回收工作树" : "回收外部工作树", review.branch?.replacingOccurrences(of: "refs/heads/", with: "") ?? "分离状态", review.path, "提交 " + String(review.head.prefix(12)), "备份 \(review.files) 项 · " + ByteCountFormatter.string(fromByteCount: Int64(clamping: review.bytes), countStyle: .file), "备份包括忽略文件和暂存状态。回收后移除原目录，保留分支，并归档 \(review.taskIDs.count) 个关联任务。"].joined(separator: "\n\n")
         } else if let item = entry {
-            detail.string = [item.branch ?? "分离状态", item.path, item.head.map { "提交 " + $0 } ?? "", item.locked.map { "锁定：" + ($0.isEmpty ? "已锁定" : $0) } ?? "", item.unavailable ?? "可回收", "\n关联任务", ids.compactMap { id in store.task(id).map { $0.title + " · " + ($0.archived ? "已归档" : $0.status.title) } }.joined(separator: "\n")].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let status = item.unavailable ?? (item.owned ? "可回收" : "外部工作树 · 可手动备份回收")
+            detail.string = [item.branch ?? "分离状态", item.path, item.head.map { "提交 " + $0 } ?? "", item.locked.map { "锁定：" + ($0.isEmpty ? "已锁定" : $0) } ?? "", status, "\n关联任务", ids.compactMap { id in store.task(id).map { $0.title + " · " + ($0.archived ? "已归档" : $0.status.title) } }.joined(separator: "\n")].filter { !$0.isEmpty }.joined(separator: "\n\n")
         } else if let item = backup {
             detail.string = [backupState(item.state), item.restoredBranch ?? item.branch ?? "分离状态", item.origin.path, "提交 " + item.head, item.created.formatted(date: .numeric, time: .shortened), "\n关联任务", ids.compactMap { store.task($0)?.title }.joined(separator: "\n")].joined(separator: "\n\n")
-            if restoreReviewID != nil { detail.string += "\n\n恢复文件、暂存状态与关联任务。原分支已变化或被占用时创建 recovered 分支。" }
+            if restoreReviewID != nil { detail.string += "\n\n将文件、暂存状态与关联任务恢复到原位置。原分支已变化或被占用时创建 recovered 分支。" }
         } else { detail.string = showingBackups ? "暂无回收记录" : "暂无工作树" }
         table.isEnabled = !busy && !reviewing; refreshButton.isEnabled = !busy && !reviewing; scope.isEnabled = !busy && !reviewing
         openButton.isEnabled = !busy && !reviewing && ids.contains { store.task($0)?.archived == false }
@@ -110,7 +112,7 @@ import AppKit
         restoreButton.isEnabled = !busy && backup.map { ["prepared", "recycled"].contains($0.state) } == true
     }
     private func setBusy(_ value: Bool) { busy = value; if value { state.textColor = AgentWorkbenchTheme.secondaryText }; showSelection() }
-    private func showError(_ error: Error) { state.textColor = AgentDialogStyle.error; state.stringValue = error.localizedDescription }
+    private func showError(_ error: Error) { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error }
     @objc private func cancelReview() { guard !busy else { return }; recycleReview = nil; restoreReviewID = nil; state.stringValue = ""; showSelection() }
     private func reloadRows() {
         let row = showingBackups ? backups.firstIndex { $0.id == selectedBackupID } : entries.firstIndex { $0.path == selectedEntryPath }

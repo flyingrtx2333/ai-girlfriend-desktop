@@ -1,7 +1,11 @@
 import AppKit
 
 @MainActor extension AppDelegate {
-    struct WorktreeWorkspaceFixture { let taskID: String, secondID: String, standaloneID: String, childID: String, workspace: URL, child: URL, foreign: URL, releaseHead: String, indexHash: String }
+    struct WorktreeWorkspaceFixture {
+        let taskID: String, secondID: String, standaloneID: String, childID: String, externalTaskID: String
+        let workspace: URL, child: URL, foreign: URL, eligibleExternal: URL
+        let releaseHead: String, indexHash: String
+    }
     func prepareWorktreeWorkspaceUI(_ output: URL) async throws -> WorktreeWorkspaceFixture {
         guard !CommandLine.arguments.contains("--live-agent") else { throw PetError("工作树页面验收不调用模型") }
         ensureAgent(); guard let tasks = agentStore else { throw PetError("任务未初始化") }
@@ -9,8 +13,10 @@ import AppKit
         tasks.worktreeRetention.start(store: tasks)
         let fm = FileManager.default, repo = output.appendingPathComponent("public-project"), tmp = output.appendingPathComponent("tmp")
         try fm.createDirectory(at: repo, withIntermediateDirectories: true); try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let externalParent = output.deletingLastPathComponent().appendingPathComponent(output.lastPathComponent + "-external-fixture", isDirectory: true)
+        try fm.createDirectory(at: externalParent, withIntermediateDirectories: false)
         func git(_ args: [String], at root: URL? = nil) async throws -> String {
-            let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: tmp, network: false, timeout: 20, gitDirectory: repo.appendingPathComponent(".git"), gitWrite: true, protectedData: store.directory, arguments: ["-C", (root ?? repo).path] + args)
+            let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: tmp, network: false, timeout: 20, gitDirectory: repo.appendingPathComponent(".git"), gitWrite: true, protectedData: store.directory, readRoots: [externalParent], writeRoots: [externalParent], arguments: ["-C", (root ?? repo).path] + args)
             guard !result.failed else { throw PetError(result.text) }; return result.stdout ?? ""
         }
         _ = try await git(["init", "-b", "main"])
@@ -30,9 +36,18 @@ import AppKit
         try Data("child-working\n".utf8).write(to: childURL.appendingPathComponent("public.txt")); try Data("child-ignored\n".utf8).write(to: childURL.appendingPathComponent("local-only.txt"))
         try Data([0, 1, 200, 255]).write(to: childURL.appendingPathComponent("untracked.bin"))
         let foreign = output.appendingPathComponent("external-checkout"); _ = try await git(["worktree", "add", "-b", "acceptance/external", foreign.path, "HEAD"])
+        let eligible = externalParent.appendingPathComponent("外部 检出", isDirectory: true)
+        try Data("independent public file\n".utf8).write(to: externalParent.appendingPathComponent("keep.txt"))
+        _ = try await git(["worktree", "add", "-b", "acceptance/manual-external", eligible.path, "HEAD"])
+        try Data("external-staged\n".utf8).write(to: eligible.appendingPathComponent("public.txt")); _ = try await git(["add", "public.txt"], at: eligible)
+        try Data("external-working\n".utf8).write(to: eligible.appendingPathComponent("public.txt"))
+        try Data("external-ignored\n".utf8).write(to: eligible.appendingPathComponent("local-only.txt"))
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: eligible.appendingPathComponent("local-only.txt").path)
+        let externalTask = tasks.create(title: "外部工作树公开任务", workspace: eligible.path)
+        tasks.update(externalTask) { $0.draft = "外部工作树原输入。" }
         let indexHash = AgentFiles.hash(try Data(contentsOf: repo.appendingPathComponent(".git/index")))
-        let fixture = WorktreeWorkspaceFixture(taskID: first, secondID: second, standaloneID: standalone, childID: child.taskID, workspace: repo, child: childURL, foreign: foreign, releaseHead: releaseHead, indexHash: indexHash)
-        try JSONSerialization.data(withJSONObject: ["taskID": first, "secondID": second, "standaloneID": standalone, "childID": child.taskID, "workspace": repo.path, "child": childURL.path, "foreign": foreign.path, "releaseHead": releaseHead, "sourceIndexSHA256": indexHash, "modelTransmissions": 0], options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-fixtures.json"))
+        let fixture = WorktreeWorkspaceFixture(taskID: first, secondID: second, standaloneID: standalone, childID: child.taskID, externalTaskID: externalTask, workspace: repo, child: childURL, foreign: foreign, eligibleExternal: eligible, releaseHead: releaseHead, indexHash: indexHash)
+        try JSONSerialization.data(withJSONObject: ["taskID": first, "secondID": second, "standaloneID": standalone, "childID": child.taskID, "workspace": repo.path, "child": childURL.path, "foreign": foreign.path, "eligibleExternal": eligible.path, "externalTaskID": externalTask, "releaseHead": releaseHead, "sourceIndexSHA256": indexHash, "modelTransmissions": 0], options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-fixtures.json"))
         control.showAgentTask(first); control.show(tab: "chat"); control.showAgentGit(); return fixture
     }
     func reopenWorktreeWorkspaceUI(_ output: URL) throws {
@@ -51,7 +66,7 @@ import AppKit
             runtime.modelRequestCheck = { requests += 1; throw PetError("工作树页面验收禁止模型请求") }
             let fixture = try await prepareWorktreeWorkspaceUI(output), host = control.taskWorkspace
             func actualIndex(_ root: URL) async throws -> Data {
-                let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 10, gitDirectory: AgentGit.metadata(workspace: root.path), protectedData: store.directory, arguments: ["-C", root.path, "rev-parse", "--absolute-git-dir"])
+                let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 10, gitDirectory: AgentGit.metadata(workspace: root.path), protectedData: store.directory, readRoots: [root], arguments: ["-C", root.path, "rev-parse", "--absolute-git-dir"])
                 guard !result.failed, let path = result.stdout?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else { throw PetError(result.text) }
                 return try Data(contentsOf: URL(fileURLWithPath: path).appendingPathComponent("index"))
             }
@@ -138,6 +153,8 @@ import AppKit
             checks["managerRestoresExactFilesIndexAndTask"] = try FileManager.default.fileExists(atPath: fixture.child.path) && AgentWorktreeSnapshot.read(fixture.child).hash == tree.hash && restoredIndex == index && tasks.task(fixture.childID)?.archived == false
             await manager.checkWorkspace(action: "refresh")
             checks["refreshRetainsRestoredCheckoutSelection"] = manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
+            let external = try await checkExternalWorktree(fixture, manager: manager, tasks: tasks, index: actualIndex)
+            checks.merge(external.0) { _, next in next }; report["externalWorktree"] = external.1
             host.checkBack(); checks["managerBackReturnsToOriginalGitDraft"] = host.currentController === gitPage && gitPage.workspaceReadback()["draft"] as? String == "保留原任务的 Git 提交说明"
             control.showAgentTask(fixture.standaloneID); control.createTaskWorktree()
             checks["noWorkspaceDoesNotOpenInvalidCreationPage"] = !(host.currentController is AgentWorktreeCreationWindow)
@@ -151,6 +168,81 @@ import AppKit
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["modelRequests"] = requests; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-report.json"))
+    }
+
+    private func checkExternalWorktree(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow, tasks: AgentStore,
+                                       index: (URL) async throws -> Data) async throws -> ([String: Bool], [String: Any]) {
+        let fm = FileManager.default, path = fixture.eligibleExternal, parent = path.deletingLastPathComponent()
+        let repo = try AgentGit.metadata(workspace: fixture.workspace.path)
+        let ordinary = try AgentGit(store: tasks, taskID: fixture.taskID, directory: repo)
+        var checks: [String: Bool] = [:]
+        var report: [String: Any] = [:]
+        let beforeIndex = try await index(path), original = try AgentWorktreeSnapshot.read(path)
+        let branch = "refs/heads/acceptance/manual-external"
+        let initialHead = try await ordinary.output(["rev-parse", branch])
+        let restoreHelper = try AgentGit(store: tasks, taskID: fixture.taskID, directory: repo, allowsExternalWorktrees: true)
+        let helperOnExternal = try AgentGit(store: tasks, taskID: fixture.externalTaskID, directory: repo, allowsExternalWorktrees: true)
+        checks["externalManagerProtectsPrimaryAndCurrentFromLinkedCheckout"] = try await helperOnExternal.worktrees().filter { $0.path == fixture.workspace.path || $0.path == path.path }.compactMap(\.unavailable).sorted() == ["主工作树", "当前工作树"].sorted()
+        checks["modelAndRetentionHelpersStillSeeExternalAsReadOnly"] = try await ordinary.worktrees().contains { $0.path == path.path && !$0.owned && $0.unavailable == "外部工作树" }
+        tasks.update(fixture.externalTaskID) { $0.status = .running }
+        await manager.checkWorkspace(path: path.path, action: "refresh")
+        checks["runningExternalWorktreeTaskPreventsManualRecycle"] = manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+        tasks.update(fixture.externalTaskID) { $0.status = .ready }
+        let locked = try await restoreHelper.run(["worktree", "lock", "--reason", "public fixture", path.path], write: true, externalWorktree: path)
+        guard !locked.failed else { throw PetError(locked.text) }
+        await manager.checkWorkspace(path: path.path, action: "refresh")
+        checks["lockedExternalWorktreeDisablesManualRecycle"] = manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+        let unlocked = try await restoreHelper.run(["worktree", "unlock", path.path], write: true, externalWorktree: path)
+        guard !unlocked.failed else { throw PetError(unlocked.text) }
+        await manager.checkWorkspace(path: path.path, action: "refresh")
+        await manager.checkWorkspace(action: "prepare-recycle")
+        let reviewed = manager.workspaceReadback()
+        guard let reviewHash = reviewed["recycleReviewHash"] as? String, !reviewHash.isEmpty else { throw PetError("外部工作树未进入审阅：" + (reviewed["state"] as? String ?? "")) }
+        let review = try restoreHelper.storedWorktreeReview(hash: reviewHash)
+        checks["externalReviewNamesActualTargetAndBackupSize"] = review.external != nil && review.path == path.path && review.branch == branch && review.files == original.count && review.bytes == original.bytes && (reviewed["detail"] as? String)?.contains("回收外部工作树") == true
+        do { _ = try ordinary.storedWorktreeReview(hash: reviewHash); checks["ordinaryHelperCannotUseManualReview"] = false }
+        catch { checks["ordinaryHelperCannotUseManualReview"] = true }
+        await manager.checkWorkspace(action: "cancel")
+        let afterCancelIndex = try await index(path)
+        checks["cancelKeepsExternalTreeAndOriginalIndex"] = try AgentWorktreeSnapshot.read(path).hash == original.hash && afterCancelIndex == beforeIndex
+        await manager.checkWorkspace(action: "prepare-recycle")
+        let workingFile = path.appendingPathComponent("public.txt")
+        try Data("edited after review\n".utf8).write(to: workingFile)
+        await manager.checkWorkspace(action: "recycle")
+        checks["externalReviewRejectsEditsMadeAfterReview"] = try Data(contentsOf: workingFile) == Data("edited after review\n".utf8) && manager.workspaceReadback()["stateIsError"] as? Bool == true
+        try Data("external-working\n".utf8).write(to: workingFile)
+        await manager.checkWorkspace(path: path.path, action: "recycle")
+        await manager.checkWorkspace(scope: 1)
+        guard let backupID = manager.workspaceReadback()["selectedBackupID"] as? String, !backupID.isEmpty else { throw PetError("外部工作树回收记录不可用") }
+        let backup = try restoreHelper.worktreeBackup(backupID)
+        report["backupID"] = backupID; report["path"] = path.path
+        checks["externalRecycleKeepsBranchAndArchivesOnlyItsTask"] = try await ordinary.output(["rev-parse", branch]) == initialHead && !fm.fileExists(atPath: path.path) && backup.state == "recycled" && backup.external == review.external && tasks.task(fixture.externalTaskID)?.archived == true && tasks.task(fixture.taskID)?.archived == false
+        checks["externalBackupUnavailableToModelTools"] = try ordinary.worktreeBackups().allSatisfy { $0.id != backupID }
+        do { _ = try await ordinary.restoreWorktree(backupID: backupID); checks["ordinaryHelperCannotRestoreExternalPath"] = false }
+        catch { checks["ordinaryHelperCannotRestoreExternalPath"] = !fm.fileExists(atPath: path.path) }
+        // An occupied path and a replacement parent must both leave the backup available.
+        try fm.createDirectory(at: path, withIntermediateDirectories: false)
+        let occupied = path.appendingPathComponent("keep.txt")
+        try Data("occupied public path\n".utf8).write(to: occupied)
+        do { _ = try await restoreHelper.restoreWorktree(backupID: backupID); checks["occupiedExternalPathIsNeverOverwritten"] = false }
+        catch { checks["occupiedExternalPathIsNeverOverwritten"] = try Data(contentsOf: occupied) == Data("occupied public path\n".utf8) }
+        try fm.moveItem(at: path, to: parent.appendingPathComponent("occupied-fixture-saved"))
+        let relocated = parent.deletingLastPathComponent().appendingPathComponent(parent.lastPathComponent + "-moved", isDirectory: true)
+        try fm.moveItem(at: parent, to: relocated); try fm.createDirectory(at: parent, withIntermediateDirectories: false)
+        do { _ = try await restoreHelper.restoreWorktree(backupID: backupID); checks["replacementExternalParentRequiresOriginalDirectory"] = false }
+        catch { checks["replacementExternalParentRequiresOriginalDirectory"] = try !fm.fileExists(atPath: path.path) && restoreHelper.worktreeBackup(backupID).state == "recycled" }
+        try fm.moveItem(at: parent, to: parent.deletingLastPathComponent().appendingPathComponent(parent.lastPathComponent + "-replacement"))
+        try fm.moveItem(at: relocated, to: parent)
+        await manager.checkWorkspace(action: "prepare-restore"); await manager.checkWorkspace(action: "cancel")
+        checks["cancellingExternalRestorePreservesArchivedTask"] = !fm.fileExists(atPath: path.path) && tasks.task(fixture.externalTaskID)?.archived == true
+        await manager.checkWorkspace(action: "restore"); await manager.checkWorkspace(scope: 0)
+        let afterIndex = try await index(path)
+        checks["externalRestoreKeepsExactFilesIndexAndTaskDraft"] = try AgentWorktreeSnapshot.read(path).hash == original.hash && afterIndex == beforeIndex && tasks.task(fixture.externalTaskID)?.archived == false && tasks.task(fixture.externalTaskID)?.draft == "外部工作树原输入。"
+        let ref = try await restoreHelper.run(["-C", path.path, "symbolic-ref", "HEAD"], externalWorktree: path)
+        checks["externalRestoreKeepsOriginalCheckoutAndReturnSelection"] = try !ref.failed && ref.stdout?.trimmingCharacters(in: .newlines) == branch && restoreHelper.worktreeBackup(backupID).state == "restored" && manager.workspaceReadback()["selectedPath"] as? String == path.path
+        checks["externalLifecyclePreservesSiblingFilesAndProtectedCheckout"] = try Data(contentsOf: parent.appendingPathComponent("keep.txt")) == Data("independent public file\n".utf8) && fm.fileExists(atPath: fixture.foreign.path)
+        report["treeSHA256"] = original.hash; report["indexSHA256"] = AgentFiles.hash(afterIndex)
+        return (checks, report)
     }
 
     private func checkGlobalWorktreeSettings(_ fixture: WorktreeWorkspaceFixture) async throws -> ([String: Bool], [String: Any]) {
