@@ -617,6 +617,9 @@ final class FormDocumentView: NSView {
             settingsSearch.stringValue = ""; updateSettingsSections()
             checks["ClearingSearchRestoresOriginalCatalogActions"] = settingsPageHost.currentController === manager && !settingsWindowActions.isHidden && settingsWindowActions.arrangedSubviews.elementsEqual(originalActions, by: { $0 === $1 })
         }
+        checks["GitSearchFindsPreferencesByNameAndInstruction"] = ["git", "提交说明指令"].allSatisfy { query in
+            settingsSearchMatches(query).contains { $0.category == "git" && $0.key == "git" && $0.title == "分支前缀与提交说明" }
+        }
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
         for (category, kind, title, entryLabel, contentID, actions) in [
             ("extensions", "mcp", "设置连接器", "配置连接器 设置连接器", "settings-card-mcp-basic", ["连接", "保存"]),
@@ -2172,7 +2175,7 @@ final class FormDocumentView: NSView {
             ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
             ("memory", "memory", "记忆与指令", "AGENTS 全局 全部项目 项目记忆 用户指令"),
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
-            ("git", "git", "分支前缀与提交说明", "工作树 提交说明指令 生成提交说明"),
+            ("git", "git", "分支前缀与提交说明", "Git 工作树 提交说明指令 生成提交说明"),
             ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {
             guard settingsCategories.contains(where: { $0.0 == category }) else { continue }
