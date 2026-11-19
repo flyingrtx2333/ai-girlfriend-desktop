@@ -212,6 +212,8 @@ import AppKit
         checks["relinkCancellationPreservesLinksAndTask"] = try Data(contentsOf: backlink) == beforeBacklink && Data(contentsOf: destination.appendingPathComponent(".git")) == beforeForward && tasks.task(nestedID)?.workspace == nested.path
         await manager.checkWorkspace(relinkDestination: destination.path)
         tasks.update(fixture.externalTaskID, persist: false) { $0.draft = "保留审阅后编辑的新输入。" }
+        for task in tasks.tasks where task.id != fixture.externalTaskID { _ = tasks.task(task.id) }
+        checks["draftVersionSurvivesCacheEvictionBeforeRelink"] = tasks.task(fixture.externalTaskID)?.draft == "保留审阅后编辑的新输入。"
         await manager.checkWorkspace(action: "relink")
         checks["relinkRequiresFreshTaskVersion"] = try manager.workspaceReadback()["stateIsError"] as? Bool == true && Data(contentsOf: backlink) == beforeBacklink && tasks.task(fixture.externalTaskID)?.workspace == source.path
         await manager.checkWorkspace(relinkDestination: destination.path)
