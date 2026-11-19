@@ -5,6 +5,24 @@ public struct MCPConnectionError: LocalizedError, Sendable {
     public let errorDescription: String?
     public let keepConnection: Bool
     init(_ message: String, keepConnection: Bool = false) { errorDescription = message; self.keepConnection = keepConnection }
+
+    static func authenticationRejected(_ status: Int) -> Self? {
+        switch status {
+        case 401: return Self("认证失败（HTTP 401）。请检查 Bearer Token 或认证请求头")
+        case 403: return Self("连接器拒绝访问（HTTP 403）。请核对凭据的权限范围")
+        default: return nil
+        }
+    }
+
+    fileprivate static func localizeAuthentication(_ error: Error) -> Error {
+        // The pinned SDK represents HTTP authorization failures as internal errors.
+        guard case .internalError(let message) = error as? MCPError else { return error }
+        switch message {
+        case "Authentication required": return authenticationRejected(401) ?? error
+        case "Access forbidden": return authenticationRejected(403) ?? error
+        default: return error
+        }
+    }
 }
 
 // Keep SDK types behind the library boundary so the AppKit executable can
@@ -48,7 +66,8 @@ public actor MCPConnection {
             if !bearerToken.isEmpty { request.setValue("Bearer " + bearerToken, forHTTPHeaderField: "Authorization") }
             return request
         })
-        return try await initialize(transport, timeout: timeout)
+        do { return try await initialize(transport, timeout: timeout) }
+        catch { throw MCPConnectionError.localizeAuthentication(error) }
     }
     public func connectSSE(endpoint: URL, bearerToken: String, headers: [String: String] = [:], timeout: Double) async throws -> Data {
         let transport = SSETransport(endpoint: endpoint, bearerToken: bearerToken, headers: headers, timeout: timeout) { [weak self] in Task { await self?.transportClosed() } }
@@ -226,7 +245,8 @@ public actor MCPConnection {
             }
             if preserveProtocolErrors, !Task.isCancelled, let protocolError = error as? MCPError, [-32601, -32602, -32002].contains(protocolError.code) { throw protocolError }
             await disconnect()
-            throw MCPConnectionError("MCP 调用失败或超时，执行结果需核对：" + error.localizedDescription)
+            let reason = MCPConnectionError.localizeAuthentication(error).localizedDescription
+            throw MCPConnectionError("MCP 调用失败或超时，执行结果需核对：" + reason)
         }
     }
     public func disconnect() async {

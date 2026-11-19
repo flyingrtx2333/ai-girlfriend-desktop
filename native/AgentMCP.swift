@@ -11,6 +11,12 @@ struct AgentMCPServer: Codable, Identifiable {
     var credentialRevision: String? = nil, configured: Bool? = nil, pluginEnabled: Bool? = nil
     var workspace: String? = nil
     var destination: String { type == "stdio" ? ([command ?? ""] + args).map(AgentGit.quote).joined(separator: " ") : url ?? "" }
+    var credentialKeys: Set<String> {
+        if type == "stdio" { return Set(environmentKeys) }
+        var keys = Set((headerKeys ?? []).map { "header:" + $0 })
+        if hasBearerToken { keys.insert("bearerToken") }
+        return keys
+    }
 }
 
 @MainActor final class AgentMCP {
@@ -183,14 +189,7 @@ struct AgentMCPServer: Codable, Identifiable {
         guard timeout.isFinite, (1...600).contains(timeout) else { throw PetError("超时范围为 1 至 600 秒") }
         var server = AgentMCPServer(name: name, type: type); server.id = old?.id ?? server.id; server.plugin = old?.plugin; server.workspace = old?.workspace
         server.enabled = savedServers.first(where: { $0.id == old?.id })?.enabled ?? (old?.plugin == nil); server.timeoutSeconds = timeout
-        var secrets: [String: String] = [:], previous: [String: String]?
-        func resolve(_ value: String, key: String) throws -> String {
-            guard value.utf8.count <= 16_000, !value.contains("\0") else { throw PetError("凭据值无效或过长") }
-            if completingImport, value == Self.importPlaceholder { throw PetError("请填写凭据：" + key) }
-            if value != Self.placeholder { return value }
-            if previous == nil, let old, old.configured != false { previous = try credentials(old) }
-            guard let existing = previous?[key] else { throw PetError("没有已保存的凭据：" + key) }; return existing
-        }
+        let submitted: [String: String]
         if type == "stdio" {
             guard let command = value["command"] as? String, command.hasPrefix("/"), !command.contains("\0"), FileManager.default.isExecutableFile(atPath: command),
                   let args = value["args"] as? [String], args.count <= 100, args.allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4000 }),
@@ -200,30 +199,53 @@ struct AgentMCPServer: Codable, Identifiable {
                 guard let path = directory as? String, path.hasPrefix("/"), path.utf8.count <= 4000, !path.contains("\0"), (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { throw PetError("cwd 需要本机现有文件夹的绝对路径") }; server.workingDirectory = path
             }
             server.command = command; server.args = args; server.environmentKeys = env.keys.sorted()
-            for (key, value) in env { secrets[key] = try resolve(value, key: key) }
+            submitted = env
         } else {
             guard let address = value["url"] as? String, let url = URL(string: address), let host = url.host?.lowercased(), !host.isEmpty, url.user == nil, url.password == nil, url.fragment == nil,
                   url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else { throw PetError("HTTP 连接器需要 HTTPS 地址；本机可用 HTTP") }
-            let token = try resolve(value["bearerToken"] as? String ?? "", key: "bearerToken")
-            guard !token.unicodeScalars.contains(where: { $0.value == 10 || $0.value == 13 }) else { throw PetError("Token 不能包含换行") }
+            guard value["bearerToken"] == nil || value["bearerToken"] is String else { throw PetError("Bearer Token 必须是文字") }
+            let token = value["bearerToken"] as? String ?? ""
+            try Self.validateBearerToken(token)
             server.url = url.absoluteString; server.hasBearerToken = !token.isEmpty
-            if !token.isEmpty { secrets["bearerToken"] = token }
             guard value["headers"] == nil || value["headers"] is [String: String] else { throw PetError("headers 必须是文字对象") }
             let headers = value["headers"] as? [String: String] ?? [:]; try Self.validateHeaders(headers)
             guard token.isEmpty || !headers.keys.contains(where: { $0.lowercased() == "authorization" }) else { throw PetError("Authorization 请求头和 bearerToken 只能配置一项") }
             server.headerKeys = headers.keys.sorted()
-            var resolvedHeaders: [String: String] = [:]
-            for (key, value) in headers { let resolved = try resolve(value, key: "header:" + key); resolvedHeaders[key] = resolved; secrets["header:" + key] = resolved }
-            try Self.validateHeaders(resolvedHeaders)
+            var fields = Dictionary(uniqueKeysWithValues: headers.map { ("header:" + $0.key, $0.value) })
+            if !token.isEmpty { fields["bearerToken"] = token }
+            submitted = fields
         }
-        let secretText = String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self)
-        if !secrets.isEmpty { try keychain.write(secretText, account: account(server)) }
+        for (key, value) in submitted {
+            guard value.utf8.count <= 16_000, !value.contains("\0") else { throw PetError("凭据值无效或过长") }
+            if completingImport, value == Self.importPlaceholder { throw PetError("请填写凭据：" + key) }
+        }
+        let placeholders = submitted.filter { $0.value == Self.placeholder }
+        let configured = old.flatMap { $0.configured == false ? nil : $0 }
+        if !placeholders.isEmpty, let configured,
+           configured.type != server.type || configured.url != server.url {
+            throw PetError("地址或传输方式已更改，请重新填写或清除已保存的凭据")
+        }
+        var wroteCredentials = false
+        if let configured, !placeholders.isEmpty, placeholders.count == submitted.count, Set(placeholders.keys) == configured.credentialKeys {
+            server.credentialRevision = configured.credentialRevision ?? configured.revision
+        } else if !submitted.isEmpty {
+            let previous = placeholders.isEmpty ? [:] : try (configured.map(credentials) ?? [:])
+            var secrets = submitted
+            for key in placeholders.keys {
+                let savedKey = key.hasPrefix("header:") ? previous.keys.first { $0.hasPrefix("header:") && $0.lowercased() == key.lowercased() } : key
+                guard let savedKey, let existing = previous[savedKey] else { throw PetError("没有已保存的凭据：" + key) }
+                secrets[key] = existing
+            }
+            let secretText = String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self)
+            try keychain.write(secretText, account: account(server)); wroteCredentials = true
+        }
         var updated = savedServers.filter { $0.id != server.id }; updated.append(server)
         do { try persist(updated, project: server.workspace != nil) }
-        catch { if !secrets.isEmpty { try? keychain.write("", account: account(server)) }; throw error }
+        catch { if wroteCredentials { try? keychain.write("", account: account(server)) }; throw error }
         savedServers = updated.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         disconnect(serverID: server.id)
-        if let old, old.configured != false { try? keychain.write("", account: account(old)) }
+        states = states.filter { !$0.key.hasSuffix("/" + server.id) }
+        if let configured, account(configured) != account(server) { try? keychain.write("", account: account(configured)) }
         notify(); return availableServers(workspace: workspace).first(where: { $0.id == server.id }) ?? server
     }
     func containsImported(_ id: String, workspace: String?) -> Bool {
@@ -252,12 +274,12 @@ struct AgentMCPServer: Codable, Identifiable {
             var updated = savedServers; updated[index].enabled = false
             try persist(updated, project: updated[index].workspace != nil); savedServers = updated; disconnect(serverID: id); notify(); return
         }
-        let old = savedServers[index], secrets = try credentials(old)
+        let old = savedServers[index]
+        _ = try credentials(old)
         var updated = savedServers; updated[index].enabled = enabled; updated[index].revision = UUID().uuidString
-        if !secrets.isEmpty { try keychain.write(String(decoding: try JSONSerialization.data(withJSONObject: secrets), as: UTF8.self), account: account(updated[index])) }
-        do { try persist(updated, project: old.workspace != nil) } catch { if !secrets.isEmpty { try? keychain.write("", account: account(updated[index])) }; throw error }
+        if !old.credentialKeys.isEmpty { updated[index].credentialRevision = old.credentialRevision ?? old.revision }
+        try persist(updated, project: old.workspace != nil)
         savedServers = updated; disconnect(serverID: id)
-        if !secrets.isEmpty { try? keychain.write("", account: account(old)) }
         notify()
     }
     func remove(_ id: String, revision: String, workspace: String? = nil) throws {
@@ -281,11 +303,18 @@ struct AgentMCPServer: Codable, Identifiable {
         savedHashes[project] = AgentFiles.hash(data)
     }
     private func account(_ server: AgentMCPServer) -> String { "mcp-" + server.id + "-" + (server.credentialRevision ?? server.revision) }
+    private static func validateBearerToken(_ token: String) throws {
+        guard !token.unicodeScalars.contains(where: { [0, 10, 13].contains($0.value) }) else { throw PetError("Bearer Token 含有无效字符") }
+    }
     private func credentials(_ server: AgentMCPServer) throws -> [String: String] {
-        if server.environmentKeys.isEmpty && !server.hasBearerToken && (server.headerKeys ?? []).isEmpty { return [:] }
+        let keys = server.credentialKeys
+        guard !keys.isEmpty else { return [:] }
         let value = try keychain.read(account(server))
-        guard let secrets = try JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: String] else { throw PetError("连接器凭据不可用，请重新保存") }
-        return secrets
+        guard let secrets = try? JSONDecoder().decode([String: String].self, from: Data(value.utf8)), keys.isSubset(of: secrets.keys),
+              !server.hasBearerToken || secrets["bearerToken"]?.isEmpty == false else { throw PetError("连接器凭据缺失或无法读取，请在设置中重新填写") }
+        let credentials = secrets.filter { keys.contains($0.key) }
+        if server.type != "stdio" { try Self.validateBearerToken(credentials["bearerToken"] ?? "") }
+        return credentials
     }
     private func key(_ owner: String, _ server: String) -> String { owner + "/" + server }
     func status(_ id: String, owner: String, workspace: String? = nil) -> String {

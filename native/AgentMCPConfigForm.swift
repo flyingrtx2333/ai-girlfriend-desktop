@@ -30,6 +30,7 @@ import AppKit
         let bearerValue = value["bearerToken"] as? String ?? ""
         bearer.stringValue = bearerValue == AgentMCP.importPlaceholder ? "" : bearerValue
         if bearerValue == AgentMCP.importPlaceholder { bearer.placeholderString = "待填写" }
+        if bearerValue == AgentMCP.placeholder { bearer.toolTip = "已保存的凭据。可以清空或填写新值。" }
         if let seconds = value["timeoutSeconds"] as? Double { timeout.stringValue = NSNumber(value: seconds * 1000).stringValue }
         timeout.placeholderString = "60000"; timeout.toolTip = "1000 至 600000 毫秒"; directory.placeholderString = "默认当前项目或用户目录"
         command.placeholderString = "/opt/homebrew/bin/node"; address.placeholderString = "https://example.com/mcp"
@@ -97,6 +98,7 @@ import AppKit
         let input: NSTextField = secure ? AgentSecureTextField() : AgentDialogTextField(); input.stringValue = awaitsValue ? "" : value
         let name: NSTextField? = paired ? AgentDialogTextField() : nil; name?.stringValue = key ?? ""; name?.placeholderString = "名称"
         input.placeholderString = awaitsValue ? "待填写" : "值"
+        if secure && value == AgentMCP.placeholder { input.toolTip = "已保存的凭据。可以移除此行或填写新值。" }
         for field in [name, input].compactMap({ $0 }) { AgentSettingsStyle.field(field); field.delegate = self; field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         let remove = NSButton(image: NSImage(systemSymbolName: "minus.circle", accessibilityDescription: nil)!, target: self, action: #selector(removeRow(_:))); remove.isBordered = false; remove.setAccessibilityLabel("移除 MCP " + title + "行")
         let row = NSStackView(views: [name, input, remove].compactMap { $0 }); row.spacing = 8

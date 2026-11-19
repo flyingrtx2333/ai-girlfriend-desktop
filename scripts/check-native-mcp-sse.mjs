@@ -31,15 +31,31 @@ try {
   const status = await exited(child); clearTimeout(timer);
   const report = JSON.parse(await readFile(path.join(output, 'mcp-sse-report.json'), 'utf8'));
   await delay(150);
-  const records = (await readFile(path.join(output, 'server/requests.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  const requestLog = await readFile(path.join(output, 'server/requests.jsonl'), 'utf8');
+  const records = requestLog.trim().split('\n').map(JSON.parse);
   const rpc = records.filter(value => value.kind === 'rpc');
   const profile = path.join(output, 'profile/agent');
   const tasks = await Promise.all((await readdir(profile)).filter(name => name.endsWith('.json') && name !== 'index.json').map(name => readFile(path.join(profile, name), 'utf8').then(JSON.parse)));
+  const stock = JSON.parse(await readFile(path.join(output, 'server/inventory.json'), 'utf8'));
+  const accepted = (channel, method, generation) => records.some(value => value.kind === 'authenticated-request' && value.channel === channel && value.method === method && value.generation === generation && value.status === 200);
+  const matchingResult = (label, row) => (report.authenticatedInventory?.[label] ?? '').split('\n').some(line => {
+    try { const actual = JSON.parse(line); return actual.sku === row.sku && actual.item === row.item && actual.available === row.available; }
+    catch { return false; }
+  });
   const independent = {
     sameApplication: report.appPID === child.pid && hash(await readFile(binary)) === binaryHash,
     sameActualServer: report.fixtureServerPID === server.pid,
     actualSSEToolRequestAndAnswer: rpc.some(value => value.mode === 'split' && value.message.method === 'tools/call' && value.message.params.arguments.value === '应用实际 SSE 原文 🧭') && report.actualResult?.includes('应用实际 SSE 原文 🧭') === true,
     actualHTTPRemainsSeparate: records.some(value => value.kind === 'http-rpc' && value.message.method === 'tools/call' && value.message.params.arguments.value === 'HTTP 公开回归'),
+    authenticatedRequestsUseBothProtocols: ['initial', 'replacement'].every(generation => accepted('http', 'POST', generation) && accepted('sse', 'GET', generation) && accepted('sse', 'POST', generation)),
+    fixtureDistinguishesMissingCredentialsAndPermissions: ['http', 'sse'].every(channel => [401, 403].every(status => records.some(value => value.kind === 'authenticated-request' && value.channel === channel && value.status === status))),
+    authenticatedLookupsMatchSource: stock.length === 2 && ['http', 'sse'].every(channel => stock.every((row, index) => {
+      const generation = index === 0 ? 'initial' : 'replacement';
+      const invoked = records.some(value => value.message?.method === 'tools/call' && value.message.params.name === 'lookup_stock' && value.message.params.arguments.sku === row.sku
+        && (channel === 'http' ? value.kind === 'http-rpc' && value.generation === generation : value.kind === 'rpc' && value.mode === (index === 0 ? 'auth' : 'auth-next')));
+      return invoked && matchingResult(channel + (index === 0 ? 'Initial' : 'Replacement'), row);
+    })),
+    credentialValuesOmittedFromNetworkEvidence: !requestLog.includes('public-fixture-token-') && !requestLog.includes('public-fixture-header-'),
     unapprovedAddressesNeverContacted: !records.some(value => value.kind === 'unapproved'),
     allStreamsClosed: records.filter(value => value.kind === 'opened').length === records.filter(value => value.kind === 'closed').length,
     noModels: report.modelRequests === 0 && tasks.every(task => !task.inputTokens && !task.outputTokens && !(task.modelReceipts ?? []).length)

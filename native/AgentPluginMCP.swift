@@ -105,7 +105,7 @@ extension AgentPluginInstallation {
                     server.environmentKeys = (value["env"] as? [String: String] ?? [:]).keys.sorted(); server.headerKeys = (value["headers"] as? [String: String] ?? [:]).keys.sorted(); server.timeoutSeconds = value["timeoutSeconds"] as? Double ?? 60
                 }
                 server.id = id; server.plugin = reference; server.configured = existing != nil; server.pluginEnabled = item.enabled
-                server.credentialRevision = existing?.revision
+                server.credentialRevision = existing?.credentialRevision ?? existing?.revision
                 server.revision = Self.mcpUUID((existing?.revision ?? "unconfigured") + item.activationID + item.receipt.sourceHash)
                 server.enabled = item.enabled && existing?.enabled == true
                 result.append(server)

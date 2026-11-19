@@ -59,6 +59,7 @@ actor SSETransport: Transport {
             var request = request(endpoint); request.setValue("text/event-stream", forHTTPHeaderField: "Accept"); request.timeoutInterval = 604_800
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
+            if let http = response as? HTTPURLResponse, let failure = MCPConnectionError.authenticationRejected(http.statusCode) { throw failure }
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   http.mimeType?.lowercased() == "text/event-stream" else { throw MCPConnectionError("SSE 服务未返回有效事件流") }
             let parser = EventSource.Parser()
@@ -111,6 +112,7 @@ actor SSETransport: Transport {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("application/json", forHTTPHeaderField: "Accept")
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
+            if let http = response as? HTTPURLResponse, let failure = MCPConnectionError.authenticationRejected(http.statusCode) { throw failure }
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw MCPConnectionError("SSE 服务未接受请求；操作可能已执行，请核对实际状态") }
             var count = 0
             for try await _ in bytes { count += 1; guard count <= 64_000 else { throw MCPConnectionError("SSE 发送回执超过 64KB") } }
