@@ -11,6 +11,7 @@ struct AgentWorktreeEntry: Codable {
     var path: String; var head: String?; var branch: String?; var locked: String?; var prunable: String?
     var bare = false; var owned = false; var taskIDs: [String] = []; var unavailable: String?
     var missingRegistration: Bool? = nil
+    var canRelink: Bool? = nil
 }
 struct AgentExternalWorktreeIdentity: Codable, Equatable {
     var parent: String
@@ -37,6 +38,15 @@ struct AgentWorktreeRecycleReview: Codable {
     var external: AgentExternalWorktreeIdentity? = nil
     var registration: AgentMissingWorktreeRegistration? = nil
 }
+
+struct AgentWorktreeRelinkReview {
+    let taskID: String
+    let source: String, destination: String, metadata: URL, folderIdentity: String, metadataIdentity: String
+    let head: String?, branch: String?, versions: [String: AgentTaskRelinkVersion]
+    let writes: [AgentKnowledgeFileWrite]
+    let created = Date()
+}
+struct AgentTaskRelinkVersion: Equatable { let file: String; let value: String }
 
 private struct AgentWorktreeRecycleTarget {
     let entry: AgentWorktreeEntry
@@ -155,17 +165,21 @@ enum AgentWorktreeSnapshot {
                 }
             }
             entries[i].taskIDs = related.map(\.id).sorted()
-            entries[i].owned = store.tasks.contains { task in
+            let managedLocation = path.hasPrefix(files.root.path + "/.bluefatfish/worktrees/") && UUID(uuidString: URL(fileURLWithPath: path).lastPathComponent) != nil
+            entries[i].owned = managedLocation && store.tasks.contains { task in
                 if !task.managedWorktreeOrigins.isEmpty { return task.managedWorktreeOrigins.contains { canonical($0.root) == files.root.path && canonical($0.metadata) == canonical(directory.path) && canonical($0.path) == path } }
                 // Earlier releases recorded native creation in the task history.
-                guard task.parentID != nil, canonical(task.gitDirectory ?? "") == canonical(directory.path), path.hasPrefix(files.root.path + "/.bluefatfish/worktrees/"), UUID(uuidString: URL(fileURLWithPath: path).lastPathComponent) != nil else { return false }
+                guard task.parentID != nil, canonical(task.gitDirectory ?? "") == canonical(directory.path) else { return false }
                 return store.task(task.id)?.events.contains { $0.kind == "git" && $0.title == "已创建工作树" && $0.detail.hasSuffix("\n" + path) } == true
             }
+            let active = related.contains { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }
+            if allowsExternalWorktrees, i != 0, !entries[i].bare, !active, listed == path, (try? externalWorktreeURL(path)) != nil,
+               nonexistentWorktreePath(URL(fileURLWithPath: path)) { entries[i].canRelink = true }
             if path == files.root.path { entries[i].unavailable = "当前工作树" }
             else if i == 0 || entries[i].bare { entries[i].unavailable = "主工作树" }
             else if !entries[i].owned && !allowsExternalWorktrees { entries[i].unavailable = "外部工作树" }
             else if entries[i].locked != nil { entries[i].unavailable = "工作树已锁定" }
-            else if related.contains(where: { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }) { entries[i].unavailable = "关联任务正在运行或等待处理" }
+            else if active { entries[i].unavailable = "关联任务正在运行或等待处理" }
             else if entries[i].prunable != nil, Self.isWorktreeObject(entries[i].head ?? ""), listed == path, (try? missingWorktreePath(path)) != nil { entries[i].missingRegistration = true }
             else if entries[i].prunable != nil || entries[i].head == nil || !FileManager.default.fileExists(atPath: path) { entries[i].unavailable = "路径不可用，请先在本地 Git 修复" }
             else if !entries[i].owned && (listed != path || (try? externalWorktreeURL(path)) == nil) { entries[i].unavailable = "外部路径已变化或不可回收" }
@@ -192,8 +206,8 @@ enum AgentWorktreeSnapshot {
         try checkWorktreeMetadataIdle(actual)
         return AgentWorktreeRecycleTarget(entry: entry, metadata: actual, external: external)
     }
-    private func checkWorktreeMetadataIdle(_ metadata: URL) throws {
-        for name in ["index.lock", "HEAD.lock", "locked", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"] {
+    private func checkWorktreeMetadataIdle(_ metadata: URL, allowingLocked: Bool = false) throws {
+        for name in ["index.lock", "HEAD.lock", "gitdir.lock", "locked", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"] where name != "locked" || !allowingLocked {
             guard nonexistentWorktreePath(metadata.appendingPathComponent(name)) else { throw PetError("工作树正在执行 Git 操作或已锁定：" + name) }
         }
     }
@@ -310,14 +324,115 @@ enum AgentWorktreeSnapshot {
         let matches = try await worktrees().filter { $0.path == path }
         guard matches.count == 1, let entry = matches.first, entry.missingRegistration == true else { throw PetError("工作树登记状态已变化，请刷新后重试") }
         let checkout = try missingWorktreePath(path)
-        let worktrees = try protectedRegistrationPath(directory.appendingPathComponent("worktrees", isDirectory: true))
-        let candidates = try FileManager.default.contentsOfDirectory(at: worktrees, includingPropertiesForKeys: nil).filter { url in
-            (try? directoryIdentity(url)) != nil && (try? registeredCheckoutLink(url)) == path + "/.git"
-        }
-        guard candidates.count == 1, let metadata = candidates.first else { throw PetError("无法唯一确认这条 Git 登记") }
+        let metadata = try registrationMetadata(for: path)
         try checkWorktreeMetadataIdle(metadata)
         let registration = try AgentMissingWorktreeRegistration(name: metadata.lastPathComponent, parent: directoryIdentity(checkout.deletingLastPathComponent()), metadata: directoryIdentity(metadata))
         return (entry, metadata, registration)
+    }
+    private func registrationMetadata(for path: String) throws -> URL {
+        let worktrees = try protectedRegistrationPath(directory.appendingPathComponent("worktrees", isDirectory: true))
+        let matches = try FileManager.default.contentsOfDirectory(at: worktrees, includingPropertiesForKeys: nil).filter {
+            (try? directoryIdentity($0)) != nil && (try? registeredCheckoutLink($0)) == path + "/.git"
+        }
+        guard matches.count == 1, let metadata = matches.first else { throw PetError("无法唯一确认这条 Git 登记") }
+        return metadata
+    }
+    private func relinkFile(_ name: String, in files: AgentFiles, prefix: String = "") throws -> (String, Data) {
+        let url = try files.literalURL(name)
+        let data = try files.readData(url, maximum: 8192)
+        guard let text = String(data: data, encoding: .utf8), text.hasPrefix(prefix) else { throw PetError("工作树链接格式无效") }
+        let path = String(text.dropFirst(prefix.count)).trimmingCharacters(in: .newlines)
+        guard !path.isEmpty, !path.contains("\0") else { throw PetError("工作树链接无效") }
+        return (path, data)
+    }
+    private func updatedRelinkPath(to target: URL, from base: URL, previous: String) -> String {
+        guard !previous.hasPrefix("/") else { return target.path }
+        let baseParts = base.pathComponents, targetParts = target.pathComponents
+        let shared = zip(baseParts, targetParts).prefix { $0.0 == $0.1 }.count
+        return (Array(repeating: "..", count: baseParts.count - shared) + targetParts.dropFirst(shared)).joined(separator: "/")
+    }
+    func prepareWorktreeRelink(from source: String, to destination: String) async throws -> AgentWorktreeRelinkReview {
+        try validateWorkspace()
+        let original = try externalWorktreeURL(source), checkout = try externalWorktreeURL(destination)
+        let entries = try await worktrees(), matches = entries.filter { $0.path == source }
+        guard matches.count == 1, let entry = matches.first, entry.canRelink == true, nonexistentWorktreePath(original) else { throw PetError("原目录或工作树状态已变化，请刷新后重试") }
+        guard !entries.contains(where: { $0.path == destination }), !entries.dropFirst().contains(where: {
+            $0.path != source && ($0.path.hasPrefix(destination + "/") || destination.hasPrefix($0.path + "/"))
+        }) else { throw PetError("新目录与另一条工作树登记重叠") }
+        let metadata = try registrationMetadata(for: source)
+        try checkWorktreeMetadataIdle(metadata, allowingLocked: true)
+        let checkoutFiles = try AgentFiles(workspace: checkout.path, followParentLinks: false), admin = try AgentFiles(workspace: metadata.path, followParentLinks: false)
+        let (pointer, pointerBytes) = try relinkFile(".git", in: checkoutFiles, prefix: "gitdir: ")
+        let (backlink, backlinkBytes) = try relinkFile("gitdir", in: admin)
+        let (common, _) = try relinkFile("commondir", in: admin)
+        let locations: [String] = [original, checkout].map { URL(fileURLWithPath: pointer, relativeTo: $0).standardizedFileURL.path }
+        guard locations.contains(metadata.path), URL(fileURLWithPath: common, relativeTo: metadata).standardizedFileURL.path == canonical(directory.path) else { throw PetError("所选目录的 Git 链接不属于这条工作树登记") }
+        guard locations[1] == metadata.path || nonexistentWorktreePath(URL(fileURLWithPath: locations[1])) else { throw PetError("所选目录已关联到另一个 Git 目录") }
+        let configured = try await run(["--git-dir=" + metadata.path, "config", "--path", "--get", "core.worktree"])
+        if configured.exitCode != 1 {
+            let path = (configured.stdout ?? "").trimmingCharacters(in: .newlines)
+            guard !configured.failed, !path.isEmpty, URL(fileURLWithPath: path, relativeTo: metadata).standardizedFileURL.path == checkout.path else { throw PetError("此 Git 登记配置了其他工作目录，请先处理 core.worktree") }
+        }
+        let label = "重新关联工作树"
+        let forward = "gitdir: " + updatedRelinkPath(to: metadata, from: checkout, previous: pointer) + "\n"
+        let reverse = updatedRelinkPath(to: checkout.appendingPathComponent(".git"), from: metadata, previous: backlink) + "\n"
+        let writes = [try AgentKnowledgeFileWrite(files: checkoutFiles, path: ".git", data: Data(forward.utf8), expectedHash: AgentFiles.hash(pointerBytes), label: label),
+                      try AgentKnowledgeFileWrite(files: admin, path: "gitdir", data: Data(reverse.utf8), expectedHash: AgentFiles.hash(backlinkBytes), label: label)]
+        var versions: [String: AgentTaskRelinkVersion] = [:]
+        for id in entry.taskIDs {
+            let current = try store.worktreeRelinkRecord(id)
+            _ = try relinkedTask(current.task, from: source, to: destination)
+            versions[id] = current.version
+        }
+        return try AgentWorktreeRelinkReview(taskID: taskID, source: source, destination: destination, metadata: metadata,
+            folderIdentity: directoryIdentity(checkout), metadataIdentity: directoryIdentity(metadata), head: entry.head, branch: entry.branch, versions: versions, writes: writes)
+    }
+    private func relinkedTask(_ original: AgentTaskRecord, from source: String, to destination: String) throws -> AgentTaskRecord {
+        func relocated(_ path: String) -> String {
+            let actual = canonical(path)
+            guard actual == source || actual.hasPrefix(source + "/") else { return path }
+            return destination + String(actual.dropFirst(source.count))
+        }
+        var value = original
+        value.workspace = value.workspace.map(relocated)
+        if var scope = value.workspaceScope {
+            scope.primary = relocated(scope.primary); scope.group = relocated(scope.group); scope.folders = scope.folders.map(relocated)
+            let paths = scope.folders.map(canonical)
+            guard scope.folders.contains(scope.primary), Set(paths).count == paths.count,
+                  !paths.contains(where: { path in paths.contains { path.hasPrefix($0 + "/") } }) else { throw PetError("关联后任务的源文件夹会重叠，请先调整任务工作区") }
+            value.workspaceScope = scope
+        }
+        for (before, after) in zip(original.workspacePaths, value.workspacePaths) where before != after {
+            guard try AgentFiles(workspace: after).root.path == after else { throw PetError("新目录中的任务源文件夹不可用：" + after) }
+        }
+        func movedOrigin(_ origin: AgentWorktreeOrigin) -> AgentWorktreeOrigin {
+            var value = origin; value.path = relocated(value.path); return value
+        }
+        value.worktreeOrigin = value.worktreeOrigin.map(movedOrigin); value.worktreeOrigins = value.worktreeOrigins?.map(movedOrigin)
+        if var assignment = value.agent { assignment.workspace = assignment.workspace.map(relocated); value.agent = assignment }
+        value.gitDirectory = nil; value.gitReview = nil; value.gitPushReview = nil; value.gitRemoteSnapshot = nil
+        value.updated = Date()
+        return value
+    }
+    func relinkWorktree(_ reviewed: AgentWorktreeRelinkReview) async throws {
+        guard allowsExternalWorktrees, reviewed.taskID == taskID, Date().timeIntervalSince(reviewed.created) < 900 else { throw PetError("请在管理页重新审阅工作树链接") }
+        let current = try await prepareWorktreeRelink(from: reviewed.source, to: reviewed.destination)
+        guard current.metadata == reviewed.metadata, current.metadataIdentity == reviewed.metadataIdentity, current.folderIdentity == reviewed.folderIdentity,
+              current.head == reviewed.head, current.branch == reviewed.branch, current.versions == reviewed.versions,
+              current.writes.map(\.signature) == reviewed.writes.map(\.signature) else { throw PetError("Git 链接或关联任务已变化，请重新审阅") }
+        if let task = store.task(taskID) { try store.agents.check(AgentToolCall(id: "worktree-relink", name: "git_restore_worktree", arguments: "{}"), task: task, store: store) }
+        let records = try reviewed.versions.keys.sorted().map { id in
+            try relinkedTask(store.worktreeRelinkRecord(id).task, from: reviewed.source, to: reviewed.destination)
+        }
+        let target = URL(fileURLWithPath: reviewed.destination, isDirectory: true)
+        try store.commitWorktreeRelink(records, versions: reviewed.versions, links: reviewed.writes) {
+            try self.validateWorkspace(); try self.checkWorktreeMetadataIdle(reviewed.metadata, allowingLocked: true)
+            guard self.nonexistentWorktreePath(URL(fileURLWithPath: reviewed.source)),
+                  try self.directoryIdentity(target) == reviewed.folderIdentity,
+                  try self.directoryIdentity(reviewed.metadata) == reviewed.metadataIdentity else { throw PetError("工作树目录已变化，请重新审阅") }
+        }
+        let check = try await run(["-C", target.path, "rev-parse", "--absolute-git-dir", "--show-toplevel"], externalWorktree: target)
+        guard !check.failed, check.stdout == reviewed.metadata.path + "\n" + target.path + "\n" else { throw PetError("已保存工作树链接，请刷新并核对 Git 读取结果：" + check.text) }
     }
     func prepareMissingWorktreeRecycle(path: String) async throws -> AgentWorktreeRecycleReview {
         let target = try await missingRegistrationTarget(path), snapshot = try await worktreeSnapshot(target.metadata.path)

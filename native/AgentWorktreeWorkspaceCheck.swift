@@ -157,6 +157,8 @@ import AppKit
             checks.merge(external.0) { _, next in next }; report["externalWorktree"] = external.1
             let missing = try await checkMissingWorktreeRegistration(fixture, manager: manager, tasks: tasks)
             checks.merge(missing.0) { _, next in next }; report["missingRegistration"] = missing.1
+            let relink = try await checkMovedWorktreeRelink(fixture, manager: manager, tasks: tasks)
+            checks.merge(relink.0) { _, next in next }; report["worktreeRelink"] = relink.1
             host.checkBack(); checks["managerBackReturnsToOriginalGitDraft"] = host.currentController === gitPage && gitPage.workspaceReadback()["draft"] as? String == "保留原任务的 Git 提交说明"
             control.showAgentTask(fixture.standaloneID); control.createTaskWorktree()
             checks["noWorkspaceDoesNotOpenInvalidCreationPage"] = !(host.currentController is AgentWorktreeCreationWindow)
@@ -170,6 +172,58 @@ import AppKit
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["modelRequests"] = requests; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-report.json"))
+    }
+
+    private func checkMovedWorktreeRelink(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow,
+                                        tasks: AgentStore) async throws -> ([String: Bool], [String: Any]) {
+        var checks: [String: Bool] = [:]
+        let source = fixture.eligibleExternal, base = source.deletingLastPathComponent(), fm = FileManager.default
+        let newParent = base.appendingPathComponent("目标层级"), destination = newParent.appendingPathComponent("移动 工作树")
+        let nested = source.appendingPathComponent("多源子目录"), untouched = base.appendingPathComponent("另一源文件夹")
+        let different = base.appendingPathComponent("不同登记样例")
+        for url in [newParent, nested, untouched, different] { try fm.createDirectory(at: url, withIntermediateDirectories: true) }
+        let scoped = AgentWorkspaceScope(group: source.path, folders: [nested.path, untouched.path], primary: nested.path)
+        let nestedID = tasks.create(title: "关联的多源公开任务", workspace: nested.path, workspaceScope: scoped)
+        tasks.update(nestedID) { $0.draft = "保留多源任务输入。" }
+        let common = try AgentGit.metadata(workspace: fixture.workspace.path)
+        let manual = try AgentGit(store: tasks, taskID: fixture.taskID, directory: common, allowsExternalWorktrees: true)
+        let ordinary = try AgentGit(store: tasks, taskID: fixture.taskID, directory: common)
+        let gitDir = try await manual.run(["-C", source.path, "rev-parse", "--absolute-git-dir"], externalWorktree: source)
+        guard !gitDir.failed, let raw = gitDir.stdout, raw.hasSuffix("\n") else { throw PetError("移动样例的 Git 登记不可用") }
+        let metadata = URL(fileURLWithPath: String(raw.dropLast()), isDirectory: true)
+        let index = try Data(contentsOf: metadata.appendingPathComponent("index")), before = try AgentWorktreeSnapshot.read(source)
+        let backlink = metadata.appendingPathComponent("gitdir"), beforeBacklink = try Data(contentsOf: backlink)
+        let peer = fixture.child.appendingPathComponent(".git"), peerBefore = try Data(contentsOf: peer)
+        try peerBefore.write(to: different.appendingPathComponent(".git"))
+        let lock = try await manual.run(["worktree", "lock", "--reason", "public portable checkout", source.path], write: true, externalWorktree: source)
+        guard !lock.failed else { throw PetError(lock.text) }
+        try fm.moveItem(at: source, to: destination)
+        await manager.checkWorkspace(path: source.path, action: "refresh")
+        checks["movedPortableWorktreeOffersRelinkDespitePreservedLock"] = manager.workspaceReadback()["relinkEnabled"] as? Bool == true && manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+        let beforeForward = try Data(contentsOf: destination.appendingPathComponent(".git"))
+        do { _ = try await ordinary.prepareWorktreeRelink(from: source.path, to: destination.path); checks["relinkUnavailableToModel"] = false }
+        catch { checks["relinkUnavailableToModel"] = true }
+        await manager.checkWorkspace(relinkDestination: different.path)
+        checks["checkoutForDifferentRegistryIsRejected"] = manager.workspaceReadback()["stateIsError"] as? Bool == true && manager.workspaceReadback()["relinkDestination"] as? String == ""
+        await manager.checkWorkspace(relinkDestination: destination.path)
+        let review = manager.workspaceReadback(), detail = review["detail"] as? String ?? ""
+        checks["relinkReviewShowsBothPathsAndAffectedTasks"] = review["relinkDestination"] as? String == destination.path && review["selectionEnabled"] as? Bool == false && detail.contains(source.path) && detail.contains(destination.path) && detail.contains("关联的多源公开任务")
+        await manager.checkWorkspace(action: "cancel")
+        checks["relinkCancellationPreservesLinksAndTask"] = try Data(contentsOf: backlink) == beforeBacklink && Data(contentsOf: destination.appendingPathComponent(".git")) == beforeForward && tasks.task(nestedID)?.workspace == nested.path
+        await manager.checkWorkspace(relinkDestination: destination.path)
+        tasks.update(fixture.externalTaskID, persist: false) { $0.draft = "保留审阅后编辑的新输入。" }
+        await manager.checkWorkspace(action: "relink")
+        checks["relinkRequiresFreshTaskVersion"] = try manager.workspaceReadback()["stateIsError"] as? Bool == true && Data(contentsOf: backlink) == beforeBacklink && tasks.task(fixture.externalTaskID)?.workspace == source.path
+        await manager.checkWorkspace(relinkDestination: destination.path)
+        await manager.checkWorkspace(action: "relink")
+        let list = try await manual.worktrees(), selected = list.first { $0.path == destination.path }
+        checks["sameRegistryBranchAndLockAreLinkedToDestination"] = selected?.branch == "refs/heads/acceptance/manual-external" && selected?.locked == "public portable checkout" && !list.contains { $0.path == source.path } && manager.workspaceReadback()["selectedPath"] as? String == destination.path
+        let staged = try await manual.run(["-C", destination.path, "show", ":public.txt"], externalWorktree: destination)
+        checks["relinkPreservesMovedFilesIndexAndPeerPointer"] = try staged.stdout == "external-staged\n" && AgentWorktreeSnapshot.read(destination).hash == before.hash && Data(contentsOf: metadata.appendingPathComponent("index")) == index && Data(contentsOf: peer) == peerBefore
+        let newNested = destination.appendingPathComponent(nested.lastPathComponent).path
+        checks["relinkMigratesWorktreeTasksAndNestedRoots"] = tasks.task(fixture.externalTaskID)?.workspace == destination.path && tasks.task(fixture.externalTaskID)?.draft == "保留审阅后编辑的新输入。" && tasks.task(nestedID)?.workspacePaths == [newNested, untouched.path] && tasks.task(nestedID)?.workspace == newNested && tasks.task(nestedID)?.draft == "保留多源任务输入。" && tasks.task(fixture.taskID)?.workspace == fixture.workspace.path
+        checks["relinkCommitsBothTaskRecords"] = try tasks.recordIsPersisted(nestedID) && tasks.recordIsPersisted(fixture.externalTaskID)
+        return (checks, ["source": source.path, "destination": destination.path, "metadata": metadata.path, "indexSHA256": AgentFiles.hash(index), "nestedTaskID": nestedID])
     }
 
     private func checkMissingWorktreeRegistration(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow,

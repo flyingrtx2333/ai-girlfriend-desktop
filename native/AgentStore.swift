@@ -327,6 +327,44 @@ import Foundation
         }
         offices.changed(record.id); worktreeRetention.tasksChanged(record.id); onChange?(); return AgentFiles.hash(data)
     }
+    func worktreeRelinkRecord(_ id: String) throws -> (task: AgentTaskRecord, version: AgentTaskRelinkVersion) {
+        guard let task = task(id), task.status != .waiting, task.worktreeSetup == nil else { throw PetError("关联任务正在等待处理或创建工作树") }
+        try requireArchivable(task)
+        try sideTasks.requireOpen(task)
+        let version = try AgentTaskRelinkVersion(file: recordVersion(id), value: AgentFiles.hash(encoder.encode(task)))
+        return (task, version)
+    }
+    func commitWorktreeRelink(_ records: [AgentTaskRecord], versions: [String: AgentTaskRelinkVersion], links: [AgentKnowledgeFileWrite],
+                              validating: () throws -> Void) throws {
+        let label = "重新关联工作树", files = try AgentFiles(workspace: directory.path, followParentLinks: false)
+        var writes = links, next = tasks, hashes: [String: String] = [:]
+        for record in records {
+            guard let version = versions[record.id], let index = next.firstIndex(where: { $0.id == record.id }) else { throw PetError("关联任务已变化") }
+            let data = try encoder.encode(record)
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: record.id + ".json", data: data, expectedHash: version.file, permissions: 0o600, label: label))
+            next[index] = Self.metadata(record); hashes[record.id] = AgentFiles.hash(data)
+        }
+        let index = try records.isEmpty ? nil : encoder.encode(Index(selectedID: selectedID, tasks: next))
+        if let index {
+            writes.append(try AgentKnowledgeFileWrite(files: files, path: "index.json", data: index, expectedHash: indexHash, missing: indexHash == nil, permissions: 0o600, label: label))
+        }
+        let backup = directory.deletingLastPathComponent().appendingPathComponent("worktree-relink-transactions/" + UUID().uuidString)
+        try AgentKnowledgeFileBatch.commit(writes, backup: backup, label: label) {
+            try validating()
+            for record in records {
+                guard try self.worktreeRelinkRecord(record.id).version == versions[record.id] else { throw PetError("关联任务已变化，请重新审阅") }
+            }
+        }
+        if let index { tasks = next; indexHash = AgentFiles.hash(index) }
+        for record in records {
+            let id = record.id
+            cache[id] = record; taskHashes[id] = hashes[id]
+            taskSearchRevision &+= 1; taskSearchRevisions[id] = taskSearchRevision
+            hooks.cancel(id); offices.changed(id)
+        }
+        writeError = nil
+        trimCache(keeping: selectedID ?? ""); worktreeRetention.tasksChanged(); onChange?()
+    }
     private func saveIndex() throws {
         guard refreshDeletedRecords() else { throw PetError(deletions.issue ?? "永久删除记录不可用") }
         let file = directory.appendingPathComponent("index.json")
