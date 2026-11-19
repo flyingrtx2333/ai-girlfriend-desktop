@@ -82,9 +82,22 @@ import AppKit
     }
     private func presentCardReview(_ review: AgentKnowledgeReviewWindow) {
         guard reviewWindow?.hasPendingOperation != true else { state.stringValue = "请等待当前知识操作完成"; return }
-        reviewWindow?.close(); reviewWindow = review
-        review.onClose = { [weak self, weak review] in if self?.reviewWindow === review { self?.reviewWindow = nil } }
-        presentSettingsChild(review)
+        reviewWindow?.close(); retainCardReview(review)
+        presentSettingsChild(review); onWorkspaceChange?()
+    }
+    private func retainCardReview(_ review: AgentKnowledgeReviewWindow) {
+        reviewWindow = review
+        review.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
+        review.onClose = { [weak self, weak review] in
+            guard let self, reviewWindow === review else { return }
+            reviewWindow = nil; onWorkspaceChange?()
+        }
+    }
+    func restoreCardVersionReview(_ position: AgentKnowledgeVersionPosition?) throws {
+        guard let position else { return }
+        let review = try makeCardVersionReview(language: position.context.language)
+        try review.restoreVersionPosition(position)
+        retainCardReview(review)
     }
     private func reviewedCardTask(_ original: AgentTaskRecord, readOnly: Bool) throws -> AgentTaskRecord {
         guard let current = task, !current.archived, !dirty, current.workspace == original.workspace, current.mode == original.mode, current.permission == original.permission,
@@ -113,24 +126,31 @@ import AppKit
     }
     @objc func restoreVersion() {
         do { try requireOriginalCardScope() } catch { state.stringValue = error.localizedDescription; return }
-        guard let task, discard() else { return }
-        do {
-            let language = selectedLanguage, versions = try cards.history(task, language: language).filter { $0.id != value?.id }
-            guard !versions.isEmpty else { throw PetError("暂无其他版本") }
-            let choices = versions.map { AgentKnowledgeReviewVersion(id: $0.id, title: AgentKnowledgeReviewSnapshot.versionTitle($0.created, count: "\($0.cards.count) 张"), detail: String($0.id.prefix(8))) }
-            let review = AgentKnowledgeReviewWindow(title: "恢复知识卡片", action: "恢复", scope: language == "zh" ? "简体中文" : "English", versions: choices, load: { [weak self] index in
-                guard let self, let original = self.task, !self.dirty, let index, versions.indices.contains(index) else { throw PetError("请选择实际存在的卡片版本") }
-                let version = versions[index], expected = try self.cards.book(original, language: language).1
-                let readOnly = try self.store.agents.limits(original, store: self.store).readOnly
-                return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(version.branch, language: language), impact: "\(version.cards.count) 张卡片；替换当前语言，原版本保留。恢复后使用前请核对源码。", items: AgentKnowledgeReviewSnapshot.cardItems(version)) { [weak self] in
-                    guard let self else { throw PetError("知识卡片页面已关闭") }
-                    let current = try self.reviewedCardTask(original, readOnly: readOnly)
-                    try self.cards.restore(version, task: current, expected: expected)
-                    return "已恢复 \(version.cards.count) 张卡片"
-                }
-            }, onApplied: { [weak self] message in self?.resetRecoverySnapshot(); self?.reload(); self?.state.stringValue = message })
-            presentCardReview(review)
-        } catch { state.stringValue = error.localizedDescription }
+        guard discard() else { return }
+        do { presentCardReview(try makeCardVersionReview(language: selectedLanguage)) }
+        catch { state.stringValue = error.localizedDescription }
+    }
+    private func makeCardVersionReview(language: String) throws -> AgentKnowledgeReviewWindow {
+        guard let task else { throw PetError("卡片原任务不可用") }
+        let context = try AgentKnowledgeVersionContext(.cards, store: store, taskID: taskID, language: language)
+        let versions = try cards.history(task, language: language).filter { $0.id != value?.id }
+        guard !versions.isEmpty else { throw PetError("暂无其他版本") }
+        let choices = versions.map { AgentKnowledgeReviewVersion(id: $0.id, title: AgentKnowledgeReviewSnapshot.versionTitle($0.created, count: "\($0.cards.count) 张"), detail: String($0.id.prefix(8))) }
+        return AgentKnowledgeReviewWindow(title: "恢复知识卡片", action: "恢复", scope: language == "zh" ? "简体中文" : "English", versions: choices, context: context, load: { [weak self] index in
+            guard let self, let original = self.task, !dirty, let index, versions.indices.contains(index) else { throw PetError("请选择实际存在的卡片版本") }
+            try context.require(store)
+            let version = versions[index], expected = try cards.book(original, language: language).1
+            let readOnly = try store.agents.limits(original, store: store).readOnly
+            return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(version.branch, language: language),
+                impact: "\(version.cards.count) 张卡片；替换当前语言，原版本保留。恢复后使用前请核对源码。",
+                items: AgentKnowledgeReviewSnapshot.cardItems(version), targetSignature: expected) { [weak self] in
+                guard let self else { throw PetError("知识卡片页面已关闭") }
+                try requireOriginalCardScope()
+                let current = try reviewedCardTask(original, readOnly: readOnly)
+                try cards.restore(version, task: current, expected: expected)
+                return "已恢复 \(version.cards.count) 张卡片"
+            }
+        }, onApplied: { [weak self] message in self?.resetRecoverySnapshot(); self?.reload(); self?.state.stringValue = message })
     }
     @objc func openSource() {
         guard let task, let selected, selected.sources.indices.contains(sources.indexOfSelectedItem) else { return }

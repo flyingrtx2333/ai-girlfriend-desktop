@@ -10,11 +10,12 @@ import AppKit
         var title: String, body: String?, dirty: Bool
         var views: [String: AgentTextViewport], fields: [String: AgentTextViewport.Selection], active: String
         var source: AgentKnowledgeSourcePage.RecoveryState?, sourceOwner: AgentKnowledgeCard?
+        var versionReview: AgentKnowledgeVersionPosition? = nil
     }
     static func recoveryState(_ page: AgentWorkspaceRecovery.Page) throws -> RecoveryState {
         guard page.kind == "knowledge-cards", page.asset == nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "taskID", "scope", "language", "revision", "book", "selected", "query", "category", "focus", "mode", "reference", "title", "body", "dirty", "views", "fields", "active", "source", "sourceOwner"]),
+              Set(raw.keys).isSubset(of: ["version", "taskID", "scope", "language", "revision", "book", "selected", "query", "category", "focus", "mode", "reference", "title", "body", "dirty", "views", "fields", "active", "source", "sourceOwner", "versionReview"]),
               let scope = raw["scope"] as? [String: Any], Set(scope.keys).isSubset(of: ["root", "branch"]) else { throw PetError("知识卡片恢复格式不受支持，原编辑已保留") }
         func card(_ raw: Any) throws {
             guard let card = raw as? [String: Any], Set(card.keys).isSubset(of: ["id", "title", "kind", "body", "sources", "manual", "updated"]), let sources = card["sources"] as? [[String: Any]], sources.allSatisfy({ Set($0.keys).isSubset(of: ["path", "line", "endLine", "sha256"]) }) else { throw PetError("卡片原版本格式不受支持，原编辑已保留") }
@@ -25,6 +26,7 @@ import AppKit
         }
         if let value = raw["sourceOwner"], !(value is NSNull) { try card(value) }
         if let value = raw["source"], !(value is NSNull) { try AgentKnowledgeSourcePage.RecoveryState.validateObject(value) }
+        if let value = raw["versionReview"], !(value is NSNull) { try AgentKnowledgeVersionPosition.validateObject(value) }
         for value in (raw["views"] as? [String: Any] ?? [:]).values { try AgentTextViewport.validateObject(value) }
         for value in (raw["fields"] as? [String: Any] ?? [:]).values { guard let field = value as? [String: Any], Set(field.keys).isSubset(of: ["location", "length"]) else { throw PetError("卡片输入位置格式不受支持") } }
         let value = try JSONDecoder().decode(RecoveryState.self, from: page.state), root = value.scope.root
@@ -53,6 +55,12 @@ import AppKit
         if let source = value.source {
             guard let owner = value.sourceOwner, owner.sources.contains(where: { URL(fileURLWithPath: $0.path, relativeTo: URL(fileURLWithPath: root, isDirectory: true)).standardizedFileURL.path == URL(fileURLWithPath: source.path, relativeTo: URL(fileURLWithPath: root, isDirectory: true)).standardizedFileURL.path && $0.sha256 == source.citationHash && $0.line == source.line }) else { throw PetError("卡片来源与原引用不符") }
         }
+        if let review = value.versionReview {
+            guard review.valid, !value.dirty, review.context.kind == .cards, review.context.taskID == value.taskID,
+                  review.context.workspace == root, review.context.branch == value.scope.branch, review.context.language == value.language else {
+                throw PetError("恢复的卡片版本与原任务、项目或语言不符")
+            }
+        }
         return value
     }
     var canPreserveForQuit: Bool { openedScope != nil && task?.sideTask?.retained != false && task != nil }
@@ -64,7 +72,7 @@ import AppKit
         let state = RecoveryState(taskID: taskID, scope: scope, language: selectedLanguage, revision: revision, book: value, selected: selected?.id,
             query: search.stringValue, category: category.indexOfSelectedItem, focus: focus.stringValue, mode: format.selectedSegment, reference: sources.indexOfSelectedItem, title: titleField.stringValue,
             body: format.selectedSegment == 1 ? preview.string : nil, dirty: dirty, views: savedViews, fields: fieldSelections, active: lastContentFocus,
-            source: try sourceWindow?.captureWorkspaceRecovery(), sourceOwner: sourceOwner)
+            source: try sourceWindow?.captureWorkspaceRecovery(), sourceOwner: sourceOwner, versionReview: try reviewWindow?.captureVersionPosition())
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "knowledge-cards", state: try encoder.encode(state), dirty: dirty, asset: nil)
         _ = try Self.recoveryState(page); return page
@@ -84,6 +92,7 @@ import AppKit
         let branch = state.scope.branch == "folder" ? "文件夹" : state.scope.branch.replacingOccurrences(of: "refs/heads/", with: "")
         scopeLabel.stringValue = URL(fileURLWithPath: state.scope.root).lastPathComponent + " · " + branch; scopeLabel.toolTip = state.scope.root
         if let source = state.source { sourceOwner = state.sourceOwner; retainSource(try AgentKnowledgeSourcePage(store: store, restoring: source)); if source.presentation == "window" { sourceWindow?.presentRecoveredWindow() } }
+        try restoreCardVersionReview(state.versionReview)
         checkRestoredContext()
     }
     func requireOriginalCardScope(checkLanguage: Bool = true) throws {

@@ -138,7 +138,8 @@ import AppKit
             }
             guard revision == recoveryRevision else { continue }
             guard !pages.isEmpty || library != nil else { return nil }
-            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow
+            let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow ||
+                (currentController as? AgentKnowledgeReviewWindow)?.isRecoverableVersionReview == true
             return .init(identity: identity, root: root, active: active && (visibleReader || currentController is AgentKnowledgeLibraryWindow && library != nil), readers: pages, library: library)
         }
     }

@@ -78,7 +78,10 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     func row(_ views: [NSView]) -> NSStackView { let value = NSStackView(views: views); value.spacing = 8; return value }
     func windowShouldClose(_ sender: NSWindow) -> Bool { reviewWindow?.canLeaveSettings() != false && discard() }
-    func windowDidBecomeKey(_ notification: Notification) { if hasRestoredSnapshot { checkRestoredContext() } else { reload() }; scheduleCardViewport() }
+    func windowDidBecomeKey(_ notification: Notification) {
+        if hasRestoredSnapshot { checkRestoredContext() } else { reload() }
+        scheduleCardViewport(); reviewWindow?.presentRecoveredVersion(from: self)
+    }
     private func closeContent() { job?.cancel(); NotificationCenter.default.removeObserver(self); sourceWindow?.onClose = nil; sourceWindow?.endSettingsHosting(); sourceWindow = nil; sourceOwner = nil; reviewWindow?.close(); reviewWindow = nil }
     func windowWillClose(_ notification: Notification) { closeContent() }
     override func settingsWillLeave() { closeContent() }
