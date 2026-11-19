@@ -252,6 +252,8 @@ Agent 通过 `mcp` 工具组先读取简短目录，再按名称把工具原始�
 
 「设置 → 数据导入 → 扩展配置」可从 Codex `config.toml` 或 `hooks.json` 导入 `mcp_tool`。与同文件的命令处理器分开勾选，导入后停用。在 Hooks 页审核连接器、工具和 `input` 模板后启用。`${tool_input.file_path}` 取事件字段，独立占位符保留原值的 JSON 类型。处理器同步使用当前 Agent／目标任务已连接的工具，遵循任务的联网、只读和逐次确认限制。连接配置改变后需重新审核。缺少字段或工具返回错误时，记录本次失败并继续原任务。导入时跳过 `SessionEnd` 的 MCP 处理器。[Codex Hooks](https://learn.chatgpt.com/docs/hooks)
 
+`SessionStart` 的 `source` 区分首次执行 `startup`、继续已有任务 `resume`、任务分支首次执行 `fork` 和压缩完成 `compact`，同时提供实际使用的模型。逐次确认后沿用原会话。`PreCompact` 和 `PostCompact` 用 `trigger` 区分手动 `manual` 和自动 `auto`，并提供本轮 `turn_id`。前置命令可用退出码 2 阻止压缩，后置处理器在摘要保存后收到 `compact_summary`。主任务随后执行 `SessionStart` 的 `compact` 处理器，补充资料可进入下一次对话请求。处理器要求停止时，系统结束本次继续执行并保留已保存的记录。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#sessionstart) [Qoder Hooks](https://docs.qoder.com/cli/hooks)
+
 HTTP 处理器 POST 事件 JSON，接收 HookOutput JSON；不跟随重定向、不共享 Cookie 或 HTTP 登录状态，不自动重放失败请求。通过应用保存的 Header 值进入钥匙串，并绑定来源条目和完整地址；导入与编辑使用遮蔽占位符，改地址需重新填写凭据。Header 中的 `${NAME}` 在调用时读取应用环境，`allowedEnvVars` 可指定白名单；省略时允许引用所有变量，空数组禁止插值。缺少变量、不在白名单或展开后包含非法控制字符时，不发送请求。「清除凭据」停用处理器并清除对应钥匙串条目。外部来源文件直接填写的 Header 值仍由该文件所有者管理。HTTP 服务按其自身权限处理数据。
 
 `prompt` 使用任务的模型连接完成一次独立判断，返回 `{ok, reason}`；`agent` 创建可查看的校验任务，按 `tools` 白名单读取项目、搜索或执行只读命令，最后通过 `StructuredOutput` 提交结论。两者仅接收规则和当前事件，可用 `model` 指定同一连接支持的模型。校验任务不接受新的用户任务，不执行写入、交互提问、外部连接器或递归 Agent；终端联网需在 Hook 中显式允许。模型用量、实际工具和判断依据随子任务记录保留，主事件关联该记录。停用或取消会结束活动校验与 HTTP 请求。当前 `FileChanged` 只来自原生文件写入与编辑；完整权限输出、会话级 Hooks、外部文件监听及常规协作事件继续完善。
