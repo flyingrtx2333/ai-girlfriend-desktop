@@ -179,6 +179,8 @@ import AppKit
             typealias RemoteDraft = AgentGitDraftRecovery.RemoteForm
             checks["remoteDraftSupportsLocalSSHAndIncompletePublicURLs"] = ["https://", "https://example.invalid", "ssh://git@[::1]:22/repo", "git@example.invalid:repo", "./公开 路径#样例.git"].allSatisfy { RemoteDraft.canPreserve(name: "draft", address: $0) }
             checks["remoteDraftRejectsCredentialAndQueryShapes"] = [unusableAddress, "https://PUBLIC-FIXTURE-ONLY@example.invalid/repo", "ssh://git%3APUBLIC@example.invalid/repo", "https://example.invalid/repo?token=PUBLIC", "git:PUBLIC@example.invalid:repo"].allSatisfy { !RemoteDraft.canPreserve(name: "draft", address: $0) }
+            let encodedAddress = "https%3A%2F%2Fgit%3APUBLIC%40example.invalid%2Frepo"
+            checks["remoteDraftRejectsWrappedOrEncodedCredentialAddresses"] = ["[" + unusableAddress + "]", "://git:PUBLIC@example.invalid/repo", encodedAddress].allSatisfy { !RemoteDraft.canPreserve(name: "draft", address: $0) } && !RemoteDraft.canPreserve(name: encodedAddress, address: "")
             draftName.stringValue = "task-review"; addressEditor.string = fixture.receiver.path
             try button("添加远端", in: savePage.pageContentView).performClick(nil)
             try await until { control.taskWorkspace.currentController === embedded && embedded.workspaceReadback()["busy"] as? Bool == false }

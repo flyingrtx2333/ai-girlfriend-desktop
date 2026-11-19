@@ -84,20 +84,23 @@ struct AgentGitDraftRecovery: Codable {
             guard name.utf8.count <= 65_536, address.utf8.count <= 65_536,
                   !name.contains("\0"), !address.contains("\0") else { return false }
             let nameValue = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (!nameValue.contains("://") || canPreserveAddress(nameValue)) && canPreserveAddress(address.trimmingCharacters(in: .whitespacesAndNewlines))
+            let nameLooksLikeURL = nameValue.contains("://") || nameValue.removingPercentEncoding?.contains("://") == true
+            return (!nameLooksLikeURL || canPreserveAddress(nameValue)) && canPreserveAddress(address.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
         private static func canPreserveAddress(_ value: String) -> Bool {
-            if value.contains("://") {
-                guard let endpoint = URLComponents(string: value), endpoint.password == nil, endpoint.query == nil, endpoint.fragment == nil else { return false }
+            let decoded = value.removingPercentEncoding ?? value
+            if value.contains("://") || decoded.contains("://") {
+                let url = value.contains("://") ? value : decoded
+                guard let endpoint = URLComponents(string: url), let scheme = endpoint.scheme?.lowercased(),
+                      endpoint.password == nil, endpoint.query == nil, endpoint.fragment == nil else { return false }
                 if let host = endpoint.host, host.contains("@") || (host.contains(":") && !host.hasPrefix("[")) { return false }
                 if let user = endpoint.user {
-                    return endpoint.scheme?.lowercased() == "ssh" && user.rangeOfCharacter(from: CharacterSet(charactersIn: ":@/?#\\").union(.whitespacesAndNewlines).union(.controlCharacters)) == nil
+                    return scheme == "ssh" && user.rangeOfCharacter(from: CharacterSet(charactersIn: ":@/?#\\").union(.whitespacesAndNewlines).union(.controlCharacters)) == nil
                 }
                 return true
             }
             if ["/", "./", "../", "~/"].contains(where: value.hasPrefix) { return true }
-            let decoded = value.removingPercentEncoding ?? value
             guard !decoded.contains("?"), !decoded.contains("#"), !decoded.contains("::") else { return false }
             guard let colon = decoded.firstIndex(of: ":") else { return true }
             return !decoded[decoded.index(after: colon)...].prefix(while: { $0 != "/" }).contains("@")
