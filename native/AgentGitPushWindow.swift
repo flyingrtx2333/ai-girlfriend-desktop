@@ -353,7 +353,7 @@ import AppKit
     private let name = AgentDialogTextField(string: "origin"), address = AgentDialogTextField(), state = AgentSettingsStatusField("远端保存状态"), save = AgentDialogButton(title: "添加远端", target: nil, action: nil)
     private var job: Task<Void, Never>?
     private var focus: Draft.Field = .address, selections: [Draft.Field: AgentTextViewport.Selection] = [:]
-    private var applyingFocus = false
+    private var applyingFocus = false, restorePending = false
     private let activity = UUID()
     var onDraftChange: (() -> Void)?
     var onLeave: (() -> Void)?
@@ -372,6 +372,7 @@ import AppKit
         if let recovery {
             name.stringValue = recovery.name; address.stringValue = recovery.address
             focus = recovery.focus; selections = [.name: recovery.nameSelection, .address: recovery.addressSelection].compactMapValues { $0 }
+            restorePending = true
         }
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.setAccessibilityLabel("远端保存状态")
         save.target = self; save.action = #selector(addRemote); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
@@ -386,7 +387,7 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func liveValue(_ field: NSTextField) -> String { (field.currentEditor() as? NSTextView)?.string ?? field.stringValue }
     private func rememberSelection() {
-        guard !applyingFocus, let editor = presentingWindow?.firstResponder as? NSTextView else { return }
+        guard !applyingFocus, !restorePending, let editor = presentingWindow?.firstResponder as? NSTextView else { return }
         if editor === name.currentEditor() { focus = .name }
         else if editor === address.currentEditor() { focus = .address }
         else { return }
@@ -394,12 +395,12 @@ import AppKit
         selections[focus] = .init(location: range.location, length: range.length)
     }
     @objc private func selectionChanged(_ notification: Notification) {
-        guard !applyingFocus, let editor = notification.object as? NSTextView,
+        guard !applyingFocus, !restorePending, let editor = notification.object as? NSTextView,
               editor === presentingWindow?.firstResponder, editor === name.currentEditor() || editor === address.currentEditor() else { return }
         rememberSelection(); onDraftChange?()
     }
     func controlTextDidChange(_ notification: Notification) {
-        rememberSelection(); state.stringValue = ""; onDraftChange?()
+        restorePending = false; rememberSelection(); state.stringValue = ""; onDraftChange?()
     }
     func captureDraft() -> AgentGitDraftRecovery.RemoteForm? {
         let remote = liveValue(name), url = liveValue(address)
@@ -410,21 +411,30 @@ import AppKit
         return .init(scope: scope, name: remote, address: url, focus: focus, nameSelection: nameSelection, addressSelection: addressSelection)
     }
     override func settingsDidAppear() {
-        if !restoreFocus() { DispatchQueue.main.async { [weak self] in _ = self?.restoreFocus() } }
+        if restorePending || !selections.isEmpty {
+            restorePending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, restorePending else { return }
+                _ = restoreFocus()
+            }
+        } else if !restoreFocus() { DispatchQueue.main.async { [weak self] in _ = self?.restoreFocus() } }
     }
     @discardableResult private func restoreFocus() -> Bool {
         guard job == nil, isPageVisible, let host = presentingWindow, !host.hasBlockingDialog else { return false }
         let field = focus == .name ? name : address
-        if let editor = field.currentEditor(), editor === host.firstResponder { return true }
         applyingFocus = true; defer { applyingFocus = false }
-        guard host.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView else { return false }
+        if field.currentEditor() == nil || field.currentEditor() !== host.firstResponder {
+            guard host.makeFirstResponder(field) else { return false }
+        }
+        guard let editor = field.currentEditor() as? NSTextView else { return false }
         if let selection = selections[focus], selection.valid(in: editor.string.utf16.count) { editor.setSelectedRange(selection.range) }
+        restorePending = false
         return true
     }
     override func settingsWillLeave() { onLeave?(); onLeave = nil; onDraftChange = nil }
     private func resetInputs() {
         name.abortEditing(); address.abortEditing(); name.stringValue = "origin"; address.stringValue = ""
-        focus = .address; selections = [:]; onDraftChange?()
+        focus = .address; selections = [:]; restorePending = false; onDraftChange?()
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard job == nil else { state.stringValue = "请等待远端保存完成"; return false }

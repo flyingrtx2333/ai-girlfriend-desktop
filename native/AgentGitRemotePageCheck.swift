@@ -185,6 +185,19 @@ import AppKit
             let after = try await git.remotes()
             report["taskRemoteReturn"] = ["windowVisible": host.isVisible, "pageVisible": embedded.isPageVisible, "sameController": control.taskWorkspace.currentController === embedded, "firstResponder": host.firstResponder.map { String(describing: type(of: $0)) } ?? "nil", "focusLabel": (host.firstResponder as? NSView)?.accessibilityLabel() ?? "", "remotes": after.map(\.name)] as [String: Any]
             checks["taskRemoteSavePersistsAndReturnsToSamePushPage"] = after.count == 3 && after.contains { $0.name == "task-review" && $0.urls == [fixture.receiver.path] } && (host.firstResponder as? NSPopUpButton)?.accessibilityLabel() == "推送远端"
+            if let saved {
+                let recovered = AgentGitRemotePage(git: git, store: tasks, taskID: fixture.taskID, scope: saved.scope, recovery: saved) {}
+                guard let resumedWindow = recovered.window else { throw PetError("恢复的远端窗口不可用") }
+                defer { resumedWindow.close(); host.makeKeyAndOrderFront(nil) }
+                recovered.showWindow(nil); resumedWindow.makeKeyAndOrderFront(nil)
+                let field = try field("新远端地址", in: recovered.pageContentView)
+                guard resumedWindow.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView else { throw PetError("恢复远端的地址编辑器不可用") }
+                let defaultSelection = NSRange(location: 0, length: editor.string.utf16.count)
+                editor.setSelectedRange(defaultSelection)
+                recovered.settingsDidAppear()
+                try await until { editor.selectedRange() == selection }
+                checks["restoredAddressOverridesAppKitDefaultSelection"] = selection != defaultSelection && resumedWindow.firstResponder === editor && editor.string == fixture.receiver.path
+            } else { checks["restoredAddressOverridesAppKitDefaultSelection"] = false }
             func readerGit(_ arguments: [String], write: Bool = false) async throws -> String {
                 let result = try await AgentCommand().run(command: try AgentGit.executablePath(), workspace: output, scratch: output.appendingPathComponent("tmp"), network: false, timeout: 20, gitDirectory: git.directory, gitWrite: write, protectedData: store.directory, arguments: ["-C", fixture.workspace.path] + arguments)
                 guard !result.failed else { throw PetError(result.text) }; return result.stdout ?? ""
