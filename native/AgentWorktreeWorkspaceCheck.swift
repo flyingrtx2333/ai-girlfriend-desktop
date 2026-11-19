@@ -155,6 +155,8 @@ import AppKit
             checks["refreshRetainsRestoredCheckoutSelection"] = manager.workspaceReadback()["selectedPath"] as? String == fixture.child.path
             let external = try await checkExternalWorktree(fixture, manager: manager, tasks: tasks, index: actualIndex)
             checks.merge(external.0) { _, next in next }; report["externalWorktree"] = external.1
+            let missing = try await checkMissingWorktreeRegistration(fixture, manager: manager, tasks: tasks)
+            checks.merge(missing.0) { _, next in next }; report["missingRegistration"] = missing.1
             host.checkBack(); checks["managerBackReturnsToOriginalGitDraft"] = host.currentController === gitPage && gitPage.workspaceReadback()["draft"] as? String == "保留原任务的 Git 提交说明"
             control.showAgentTask(fixture.standaloneID); control.createTaskWorktree()
             checks["noWorkspaceDoesNotOpenInvalidCreationPage"] = !(host.currentController is AgentWorktreeCreationWindow)
@@ -168,6 +170,73 @@ import AppKit
         } catch { report["error"] = error.localizedDescription }
         report["checks"] = checks; report["modelRequests"] = requests; report["success"] = report["error"] == nil && !checks.isEmpty && checks.values.allSatisfy { $0 }
         try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-workspace-report.json"))
+    }
+
+    private func checkMissingWorktreeRegistration(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow,
+                                                  tasks: AgentStore) async throws -> ([String: Bool], [String: Any]) {
+        var checks: [String: Bool] = [:]
+        let fm = FileManager.default, target = fixture.eligibleExternal, peer = fixture.foreign
+        let parent = target.deletingLastPathComponent(), parked = parent.appendingPathComponent("保留工作树原文件")
+        let parkedPeer = peer.deletingLastPathComponent().appendingPathComponent("保留另一工作树的文件")
+        let common = try AgentGit.metadata(workspace: fixture.workspace.path)
+        let manual = try AgentGit(store: tasks, taskID: fixture.taskID, directory: common, allowsExternalWorktrees: true)
+        let ordinary = try AgentGit(store: tasks, taskID: fixture.taskID, directory: common)
+        let gitDir = try await manual.run(["-C", target.path, "rev-parse", "--absolute-git-dir"], externalWorktree: target)
+        guard !gitDir.failed, let path = gitDir.stdout?.trimmingCharacters(in: .newlines), !path.isEmpty else { throw PetError("缺失登记的验收元数据未找到") }
+        let metadata = URL(fileURLWithPath: path, isDirectory: true), original = try AgentWorktreeSnapshot.read(metadata)
+        let taskDraft = tasks.task(fixture.externalTaskID)?.draft
+        try fm.moveItem(at: target, to: parked); try fm.moveItem(at: peer, to: parkedPeer)
+        await manager.checkWorkspace(path: target.path, action: "refresh")
+        checks["manualManagerOffersOneMissingRegistration"] = manager.workspaceReadback()["recycleEnabled"] as? Bool == true && (manager.workspaceReadback()["detail"] as? String)?.contains("原目录缺失") == true
+        let locked = try await manual.run(["worktree", "lock", "--reason", "public missing fixture", target.path], write: true, metadataOnly: true)
+        guard !locked.failed else { throw PetError(locked.text) }
+        await manager.checkWorkspace(path: target.path, action: "refresh")
+        checks["lockedMissingRegistrationIsProtected"] = manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+        let unlocked = try await manual.run(["worktree", "unlock", target.path], write: true, metadataOnly: true)
+        guard !unlocked.failed else { throw PetError(unlocked.text) }
+        let offline = parent.deletingLastPathComponent().appendingPathComponent(parent.lastPathComponent + "-temporarily-unavailable")
+        try fm.moveItem(at: parent, to: offline)
+        await manager.checkWorkspace(path: target.path, action: "refresh")
+        checks["missingParentPreventsRegistrationCleanup"] = manager.workspaceReadback()["recycleEnabled"] as? Bool == false
+        try fm.moveItem(at: offline, to: parent)
+        await manager.checkWorkspace(path: target.path, action: "refresh")
+        await manager.checkWorkspace(action: "prepare-recycle")
+        let preview = manager.workspaceReadback()
+        checks["missingReviewExplainsRegistrationOnly"] = (preview["detail"] as? String)?.contains("只清理这条 Git 登记") == true && preview["selectionEnabled"] as? Bool == false
+        await manager.checkWorkspace(action: "cancel")
+        checks["cancelPreservesGitRegistrationBytes"] = try AgentWorktreeSnapshot.read(metadata).hash == original.hash
+        await manager.checkWorkspace(action: "prepare-recycle")
+        try fm.moveItem(at: parked, to: target)
+        await manager.checkWorkspace(action: "recycle")
+        checks["returnedCheckoutBlocksConfirmedCleanup"] = try AgentWorktreeSnapshot.read(metadata).hash == original.hash && fm.fileExists(atPath: target.path) && manager.workspaceReadback()["stateIsError"] as? Bool == true
+        try fm.moveItem(at: target, to: parked)
+        await manager.checkWorkspace(path: target.path, action: "refresh")
+        await manager.checkWorkspace(action: "recycle"); await manager.checkWorkspace(scope: 1)
+        guard let id = manager.workspaceReadback()["selectedBackupID"] as? String, let record = try? manual.worktreeBackup(id), record.registration != nil else { throw PetError("缺失的工作树登记未进入回收记录") }
+        let archive = manual.worktreeRegistrationBackupURL(id), remaining = try await manual.worktrees()
+        checks["cleanupMovesOnlyTheSelectedGitRegistration"] = try !fm.fileExists(atPath: metadata.path) && AgentWorktreeSnapshot.read(archive).hash == original.hash && remaining.contains { $0.path == peer.path } && !remaining.contains { $0.path == target.path }
+        checks["registrationBackupIsManualOnly"] = try ordinary.worktreeBackups().allSatisfy { $0.id != id }
+        let displaced = parked.appendingPathComponent("public.txt")
+        checks["registrationCleanupLeavesTaskAndDisplacedFiles"] = try tasks.task(fixture.externalTaskID)?.archived == false && tasks.task(fixture.externalTaskID)?.draft == taskDraft && Data(contentsOf: displaced) == Data("external-working\n".utf8)
+        try fm.createDirectory(at: target, withIntermediateDirectories: false)
+        let collision = target.appendingPathComponent("保留原件.txt")
+        try Data("unrelated public file\n".utf8).write(to: collision)
+        await manager.checkWorkspace(action: "restore")
+        checks["differentContentsAtOriginalPathBlockRestore"] = try Data(contentsOf: collision) == Data("unrelated public file\n".utf8) && fm.fileExists(atPath: archive.path) && !fm.fileExists(atPath: metadata.path) && manager.workspaceReadback()["stateIsError"] as? Bool == true
+        try fm.moveItem(at: target, to: parent.appendingPathComponent("原路径冲突样例"))
+        try fm.moveItem(at: parked, to: target); try fm.moveItem(at: parkedPeer, to: peer)
+        await manager.checkWorkspace(action: "prepare-restore")
+        checks["missingRegistrationHasDistinctRestoreReview"] = (manager.workspaceReadback()["detail"] as? String)?.contains("恢复原 Git 登记") == true
+        await manager.checkWorkspace(action: "restore"); await manager.checkWorkspace(scope: 0)
+        let checkGit = try await manual.run(["-C", target.path, "show", ":public.txt"], externalWorktree: target)
+        checks["restoredRegistrationReconnectsExactIndexAndTask"] = try manual.worktreeBackup(id).state == "restored" && AgentWorktreeSnapshot.read(metadata).hash == original.hash && checkGit.stdout == "external-staged\n" && tasks.task(fixture.externalTaskID)?.draft == taskDraft && manager.workspaceReadback()["selectedPath"] as? String == target.path
+        // Leave a separate recoverable record for the manual window's restore flow.
+        try fm.moveItem(at: peer, to: parkedPeer)
+        let peerReview = try await manual.prepareMissingWorktreeRecycle(path: peer.path)
+        let peerRecord = try await manual.recycleMissingWorktree(peerReview)
+        try fm.moveItem(at: parkedPeer, to: peer)
+        checks["manualWindowCanReattachReturnedCheckout"] = fm.fileExists(atPath: peer.path) && peerRecord.state == "recycled" && peerRecord.registration != nil
+        return (checks, ["backupID": id, "checkout": target.path, "metadata": metadata.path, "metadataSHA256": original.hash, "peer": peer.path, "windowRestoreBackupID": peerRecord.id])
     }
 
     private func checkExternalWorktree(_ fixture: WorktreeWorkspaceFixture, manager: AgentWorktreeWindow, tasks: AgentStore,
