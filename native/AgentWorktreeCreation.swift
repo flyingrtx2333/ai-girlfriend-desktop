@@ -279,6 +279,15 @@ struct AgentWorktreeCreationReview: Codable {
         _ = try AgentWorkspaceScope.roots(task)
         return [primary] + task.workspacePaths.filter { $0 != primary }
     }
+    func worktreeDraftSources(resumeTaskID: String?) throws -> [AgentGitDraftRecovery.WorktreeForm.Source] {
+        try validateWorkspace()
+        let roots = try workspaceSources()
+        if let resumeTaskID { _ = try resumeWorkspaceTask(resumeTaskID, roots: roots, scope: creationScope()) }
+        return try roots.map { root in
+            do { return try AgentGitDraftRecovery.WorktreeForm.Source.current(root) }
+            catch { throw PetError("无法隔离源文件夹：" + root + "\n" + error.localizedDescription) }
+        }
+    }
     private func sourceHelper(_ root: String) throws -> AgentGit {
         do {
             let value = try AgentGit(store: store, taskID: taskID, directory: Self.metadata(workspace: root), workspace: root)

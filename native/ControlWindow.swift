@@ -204,7 +204,6 @@ final class FormDocumentView: NSView {
     private let taskMCPContext = AgentWorkbenchButton()
     private let taskContext = AgentWorkbenchButton()
     private var worktreeWindow: AgentWorktreeWindow?
-    private var worktreeCreationWindow: AgentWorktreeCreationWindow?
     private weak var worktreePolicyPanel: AgentWorktreePolicyView?
     private var dataImportView: AgentDataImportView?
     private var taskSwitcher: AgentTaskSwitcher?
@@ -2761,7 +2760,7 @@ final class FormDocumentView: NSView {
                 record.window?.close()
             }
         }
-        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, worktreeCreationWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
@@ -3691,10 +3690,9 @@ final class FormDocumentView: NSView {
                 guard alert.runModal(for: window) == .alertFirstButtonReturn else { return }; tasks.update(source.id) { $0.gitDirectory = directory.path }
             }
             showAgentGit()
-            guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(), let parent = taskWorkspace.currentController else { return }
-            if parent is AgentWorktreeCreationWindow { return }
-            let controller = try AgentWorktreeCreationWindow(store: tasks, taskID: source.id, directory: directory, resumeTaskID: task.worktreeSetup == nil ? nil : task.id) { [weak self] id in self?.selectAgentTask(id); self?.show(tab: "chat") }
-            worktreeCreationWindow = controller; parent.presentSettingsChild(controller)
+            guard taskWorkspace.taskID == task.id, taskWorkspace.selectedRoot == .review, taskWorkspace.prepareToNavigate(),
+                  let editor = taskWorkspace.rootController(.review) as? AgentGitWindow else { return }
+            try editor.presentWorktreeCreation(sourceTaskID: source.id, directory: directory, resumeTaskID: task.worktreeSetup == nil ? nil : task.id)
         } catch { setStatus(error.localizedDescription, error: true) }
     }
     @objc private func selectLocalEnvironment() {
@@ -4100,7 +4098,10 @@ final class FormDocumentView: NSView {
             if let push = recovery.push, push.opened { try push.requireCurrent(task) }
             let editor = preparedGitWorkspace(store: store, taskID: id, recovery: recovery)
             guard present(editor) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开 Git 草稿") }
-            do { try editor.restorePushPage() }
+            do {
+                try editor.restorePushPage()
+                if let form = recovery.worktreeForm { try editor.restoreWorktreeCreation(form) }
+            }
             catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
             editor.window?.orderOut(nil)
         } else if let page = loaded?.saved.value {

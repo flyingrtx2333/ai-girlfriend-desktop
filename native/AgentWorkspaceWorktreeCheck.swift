@@ -155,6 +155,18 @@ import AppKit
             try FileManager.default.setAttributes([.posixPermissions: parentMode], ofItemAtPath: blockedParent.path)
             guard let missingID = helper.lastCreatedWorktreeTaskID, let firstPath = tasks.task(missingID)?.workspace else { throw PetError("未保留首个实际检出") }
             let originalBranchExists = try await secondary.run(["show-ref", "--verify", "--quiet", "refs/heads/missing-source-2"]).exitCode == 0
+            let pending = try AgentWorktreeCreationWindow(store: tasks, taskID: id, directory: helper.directory, resumeTaskID: missingID) { _ in }
+            await pending.checkWorkspace(includeChanges: true)
+            guard let form = pending.captureDraft() else { throw PetError("未保存待续建任务的选项") }
+            pending.endSettingsHosting()
+            let reopened = try AgentWorktreeCreationWindow(store: tasks, taskID: id, directory: helper.directory, resumeTaskID: missingID, recovery: form) { _ in }
+            await reopened.checkWorkspace()
+            let readback = reopened.workspaceReadback()
+            checks["partialCreationDraftRetainsTaskAndExistingCheckout"] = readback["resumeTaskID"] as? String == missingID &&
+                readback["retainedRoots"] as? [String] == [beta.path] && readback["branch"] as? String == "missing-source" &&
+                readback["includeChanges"] as? Bool == true && readback["createEnabled"] as? Bool == false &&
+                tasks.task(missingID)?.worktreeSetup?.includeChanges == false
+            reopened.endSettingsHosting()
             let remaining = try await helper.prepareWorktreeCreation(branch: "missing-source", resumeTaskID: missingID)
             checks["remainingSourceIsRepreviewedWithRetainedFirstCheckout"] = remaining.sources?.count == 1 && remaining.retained?.count == 1 && remaining.sources?.first?.root == alpha.path
             checks["leftoverBranchIsPreservedAndNewNameExplicitInPreview"] = !originalBranchExists || (remaining.sources?.first?.branch.hasPrefix("missing-source-2-retry-") == true && remaining.patch.contains(remaining.sources!.first!.branch))

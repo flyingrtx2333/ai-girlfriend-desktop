@@ -95,6 +95,7 @@ import AppKit
             control.createTaskWorktree()
             guard let creation = host.currentController as? AgentWorktreeCreationWindow else { throw PetError("输入区工作树入口未进入页内") }
             await creation.checkWorkspace(startPoint: "refs/heads/release", includeChanges: true)
+            await wait(0.1)
             func views(_ root: NSView) -> [NSView] { [root] + root.subviews.flatMap(views) }
             guard let content = creation.pageContentView, let branchField = views(content).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "新分支" }), let previewButton = views(content).compactMap({ $0 as? NSButton }).first(where: { $0.title == "预览" }), control.window?.makeFirstResponder(branchField) == true, let editor = branchField.currentEditor() as? NSTextView else { throw PetError("新分支实际输入编辑器不可用") }
             let longBranch = "acceptance/" + String(repeating: "worktree-", count: 30)
@@ -103,6 +104,13 @@ import AppKit
             layout.ensureLayout(for: container); var editingLines = 0
             layout.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)) { _, _, _, _, _ in editingLines += 1 }
             checks["longWorktreeBranchUsesOneVisibleEditingLine"] = editingLines == 1 && editor.string == longBranch
+            let unfinished = " draft/蓝🐋 ", selection = NSRange(location: 8, length: 2)
+            editor.string = unfinished; editor.setSelectedRange(selection)
+            guard let checkpoint = try gitPage.captureWorkspaceRecovery(persistClean: false),
+                  let form = try AgentGitDraftRecovery.decode(checkpoint).worktreeForm else { throw PetError("新建工作树草稿未写入 Git 会话") }
+            checks["worktreeCheckpointKeepsUnfinishedTextAndSelection"] = form.branch == unfinished && form.branchSelection?.range == selection && form.focus == "branch"
+            checks["worktreeCheckpointKeepsExactStartingRefAndCarry"] = checkpoint.dirty && form.sourceTaskID == fixture.taskID &&
+                form.startPoints == [fixture.workspace.path: "refs/heads/release"] && form.includeChanges
             editor.string = "acceptance/page-carry"; previewButton.performClick(nil); await creation.checkWorkspace()
             checks["previewReadsActualBranchFieldEditor"] = creation.workspaceReadback()["branch"] as? String == "acceptance/page-carry" && creation.workspaceReadback()["createEnabled"] as? Bool == true
             await inspectLayout("creation")

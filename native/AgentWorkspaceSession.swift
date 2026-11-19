@@ -351,8 +351,10 @@ private actor AgentWorkspaceJournal {
                 for (_, _, controller) in editors {
                     if let browser = controller as? AgentBrowserWindow, preservedEditors.contains(ObjectIdentifier(browser)),
                        let annotation = browser.recoveryAnnotation, annotation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(annotation)) }
-                    if let git = controller as? AgentGitWindow, preservedEditors.contains(ObjectIdentifier(git)),
-                       let remote = git.recoveryRemoteForm, remote.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(remote)) }
+                    if let git = controller as? AgentGitWindow, preservedEditors.contains(ObjectIdentifier(git)) {
+                        if let remote = git.recoveryRemoteForm, remote.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(remote)) }
+                        if let creation = git.recoveryWorktreeForm, creation.canPreserveForQuit { preservedEditors.insert(ObjectIdentifier(creation)) }
+                    }
                 }
                 let records = editors.compactMap { $0.2 as? AgentRecordWindow } + owner.knowledgePageHost.recoveryReaders
                 for record in records where preservedEditors.contains(ObjectIdentifier(record)) {
@@ -373,6 +375,7 @@ private actor AgentWorkspaceJournal {
         for root in Array(roots.values) { await root.value }
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
+        if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
         if !terminalRecoveryReadOnly, let terminals = owner?.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value { revision &+= 1 }
         if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }

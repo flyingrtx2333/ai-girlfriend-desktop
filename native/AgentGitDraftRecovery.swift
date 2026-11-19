@@ -8,7 +8,7 @@ struct AgentGitDraftRecovery: Codable {
         var workspace: String, identity: String
         var checkout: Checkout?
 
-        private static func identity(of directory: URL) throws -> String {
+        fileprivate static func identity(of directory: URL) throws -> String {
             let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
             let volume = (try? directory.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? (attributes[.systemNumber] as? NSNumber)?.stringValue
             guard let volume, let inode = attributes[.systemFileNumber] as? NSNumber else { throw PetError("无法确认 Git 草稿的原目录") }
@@ -24,7 +24,13 @@ struct AgentGitDraftRecovery: Codable {
             guard shared.path.hasPrefix(files.root.path + "/") || shared == files.root || shared.path == task.gitDirectory else {
                 throw PetError("请在原任务中连接 Git 仓库后重试")
             }
-            let metadata = try AgentFiles(workspace: AgentGit.metadata(workspace: files.root.path, checkout: true).path)
+            value.checkout = try currentCheckout(workspace: files.root.path)
+            guard value.valid else { throw PetError("无法确认 Git 草稿的原分支") }
+            return value
+        }
+
+        fileprivate static func currentCheckout(workspace: String) throws -> Checkout {
+            let metadata = try AgentFiles(workspace: AgentGit.metadata(workspace: workspace, checkout: true).path)
             let headURL = try metadata.literalURL("HEAD")
             let head: String
             if try metadata.entryMetadata(headURL).kind == "link" {
@@ -32,9 +38,7 @@ struct AgentGitDraftRecovery: Codable {
             } else {
                 head = String(decoding: try metadata.readData(headURL, maximum: 8192), as: UTF8.self).trimmingCharacters(in: .newlines)
             }
-            value.checkout = Checkout(directory: metadata.root.path, identity: try identity(of: metadata.root), head: head)
-            guard value.valid else { throw PetError("无法确认 Git 草稿的原分支") }
-            return value
+            return Checkout(directory: metadata.root.path, identity: try identity(of: metadata.root), head: head)
         }
 
         func matches(_ current: Scope?) -> Bool {
@@ -46,15 +50,16 @@ struct AgentGitDraftRecovery: Codable {
             guard matches(try? Self.current(task)) else { throw PetError("请回到 Git 草稿的原项目、仓库和分支后重试，" + detail) }
         }
 
+        fileprivate static func validPath(_ value: String) -> Bool { value.hasPrefix("/") && value.utf8.count < 8192 && !value.contains("\0") }
+        fileprivate static func validIdentity(_ value: String) -> Bool { !value.isEmpty && value.utf8.count <= 128 && !value.contains("\0") }
+
         fileprivate var valid: Bool {
-            func path(_ value: String) -> Bool { value.hasPrefix("/") && value.utf8.count < 8192 && !value.contains("\0") }
-            func validIdentity(_ value: String) -> Bool { !value.isEmpty && value.utf8.count <= 128 && !value.contains("\0") }
-            guard path(workspace), validIdentity(identity) else { return false }
+            guard Self.validPath(workspace), Self.validIdentity(identity) else { return false }
             guard let checkout else { return true }
             let head = checkout.head
             let symbolic = head.hasPrefix("ref: refs/") && head.utf8.count < 8192 && !head.dropFirst(5).utf8.contains { $0 <= 32 || $0 == 127 }
             let detached = [40, 64].contains(head.count) && head.allSatisfy { $0.isASCII && $0.isHexDigit }
-            return path(checkout.directory) && validIdentity(checkout.identity) && (symbolic || detached)
+            return Self.validPath(checkout.directory) && Self.validIdentity(checkout.identity) && (symbolic || detached)
         }
     }
 
@@ -111,6 +116,45 @@ struct AgentGitDraftRecovery: Codable {
         }
     }
 
+    struct WorktreeForm: Codable {
+        struct Source: Codable, Equatable {
+            var root: String
+            var scope: Scope
+            var metadata: String, metadataIdentity: String
+
+            static func current(_ root: String) throws -> Source {
+                let files = try AgentFiles(workspace: root)
+                let metadata = try AgentGit.metadata(workspace: files.root.path)
+                let scope = Scope(workspace: files.root.path, identity: try Scope.identity(of: files.root),
+                                  checkout: try Scope.currentCheckout(workspace: files.root.path))
+                guard scope.valid else { throw PetError("无法确认工作树源的原分支") }
+                return Source(root: root, scope: scope, metadata: metadata.path, metadataIdentity: try Scope.identity(of: metadata))
+            }
+
+            fileprivate var valid: Bool {
+                Scope.validPath(root) && scope.checkout != nil && scope.valid && Scope.validPath(metadata) && Scope.validIdentity(metadataIdentity)
+            }
+        }
+
+        var sourceTaskID: String, resumeTaskID: String?
+        var sources: [Source]
+        var branch: String, startPoints: [String: String], includeChanges: Bool
+        var focus: String?, branchSelection: AgentTextViewport.Selection?, scroll: Double
+
+        fileprivate func valid(for host: String) -> Bool {
+            guard UUID(uuidString: sourceTaskID) != nil, host == sourceTaskID || host == resumeTaskID,
+                  resumeTaskID.map({ UUID(uuidString: $0) != nil && $0 != sourceTaskID }) != false,
+                  (1...16).contains(sources.count), sources.allSatisfy(\.valid),
+                  branch.utf8.count <= 65_536, !branch.contains("\0"), branchSelection?.valid(in: branch.utf16.count) != false,
+                  (0...10_000).contains(scroll) else { return false }
+            let roots = Set(sources.map(\.root))
+            return roots.count == sources.count && roots == Set(startPoints.keys) && startPoints.values.allSatisfy { ref in
+                ref == "HEAD" || ((ref.hasPrefix("refs/heads/") || ref.hasPrefix("refs/remotes/")) &&
+                    ref.utf8.count < 8192 && !ref.utf8.contains { $0 <= 32 || $0 == 127 })
+            } && focus.map { $0 == "branch" || $0 == "include" || roots.contains($0) } != false
+        }
+    }
+
     var version = 1
     var scope: Scope?
     var message: String
@@ -121,27 +165,37 @@ struct AgentGitDraftRecovery: Codable {
     var paths: [String]
     var push: Push? = nil
     var remoteForm: RemoteForm? = nil
+    var worktreeForm: WorktreeForm? = nil
 
     static func decode(_ page: AgentWorkspaceRecovery.Page) throws -> Self {
         let unsupported = PetError("Git 草稿恢复格式不受支持，原记录已保留")
         guard page.version == 1, page.kind == "git-draft", page.asset == nil, UUID(uuidString: page.taskID) != nil,
               let raw = try JSONSerialization.jsonObject(with: page.state) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push", "remoteForm"]) else { throw unsupported }
+              Set(raw.keys).isSubset(of: ["version", "scope", "message", "selection", "focused", "source", "revision", "paths", "push", "remoteForm", "worktreeForm"]) else { throw unsupported }
         let push = raw["push"] as? [String: Any]
         if let push, !Set(push.keys).isSubset(of: ["scope", "branch", "upstream", "remote", "addressHash", "selection", "focused", "opened"]) { throw unsupported }
         let remoteForm = raw["remoteForm"] as? [String: Any]
         if let remoteForm, !Set(remoteForm.keys).isSubset(of: ["scope", "name", "address", "focus", "nameSelection", "addressSelection"]) { throw unsupported }
-        for object in [raw, push ?? [:], remoteForm ?? [:]] {
+        let worktreeForm = raw["worktreeForm"] as? [String: Any]
+        var objects = [raw, push ?? [:], remoteForm ?? [:]]
+        if let worktreeForm {
+            guard Set(worktreeForm.keys).isSubset(of: ["sourceTaskID", "resumeTaskID", "sources", "branch", "startPoints", "includeChanges", "focus", "branchSelection", "scroll"]),
+                  let sources = worktreeForm["sources"] as? [[String: Any]],
+                  sources.allSatisfy({ Set($0.keys).isSubset(of: ["root", "scope", "metadata", "metadataIdentity"]) }) else { throw unsupported }
+            objects.append(worktreeForm); objects.append(contentsOf: sources)
+        }
+        for object in objects {
             if let scope = object["scope"] as? [String: Any] {
                 guard Set(scope.keys).isSubset(of: ["workspace", "identity", "checkout"]) else { throw unsupported }
                 if let checkout = scope["checkout"] as? [String: Any], !Set(checkout.keys).isSubset(of: ["directory", "identity", "head"]) { throw unsupported }
             }
-            for key in ["selection", "nameSelection", "addressSelection"] {
+            for key in ["selection", "nameSelection", "addressSelection", "branchSelection"] {
                 if let selection = object[key] as? [String: Any], !Set(selection.keys).isSubset(of: ["location", "length"]) { throw unsupported }
             }
         }
         let value = try JSONDecoder().decode(Self.self, from: page.state)
-        guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil || value.remoteForm != nil), value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
+        guard value.version == 1, page.dirty == (!value.message.isEmpty || value.push != nil || value.remoteForm != nil || value.worktreeForm != nil),
+              value.worktreeForm?.valid(for: page.taskID) != false, value.message.isEmpty == (value.scope == nil), value.scope?.valid != false,
               value.selection?.valid(in: value.message.utf16.count) != false,
               value.paths.count <= 100_000, Set(value.paths).count == value.paths.count,
               value.paths.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("/") && $0.utf8.count < 8192 && !$0.contains("\0") }) else { throw unsupported }

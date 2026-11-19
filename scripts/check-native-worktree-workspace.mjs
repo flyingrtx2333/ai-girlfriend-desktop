@@ -26,11 +26,25 @@ try {
   const directory = path.join(output, 'profile/agent'), names = (await readdir(directory)).filter(name => name.endsWith('.json') && name !== 'index.json');
   const tasks = await Promise.all(names.map(name => readFile(path.join(directory, name), 'utf8').then(JSON.parse)));
   const git = (cwd, args) => { const value = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }); if (value.status !== 0) throw Error(value.stderr); return value.stdout; };
+  const externalBranch = 'refs/heads/acceptance/external';
+  const registrationID = report.missingRegistration?.windowRestoreBackupID;
+  let externalCheckoutPreserved;
+  if (registrationID) {
+    const record = JSON.parse(await readFile(path.join(directory, 'worktrees', registrationID, 'record.json'), 'utf8'));
+    const archive = path.join(fixture.workspace, '.git', 'bluefatfish-worktree-registrations', registrationID);
+    externalCheckoutPreserved = record.state === 'recycled' && record.origin.path === fixture.foreign && record.branch === externalBranch &&
+      (await readFile(path.join(archive, 'HEAD'), 'utf8')).trim() === 'ref: ' + externalBranch &&
+      hash(await readFile(path.join(archive, 'index'))) === record.indexHash &&
+      git(fixture.workspace, ['rev-parse', externalBranch]).trim() === record.head &&
+      await readFile(path.join(fixture.foreign, 'public.txt'), 'utf8') === 'base-public\n';
+  } else {
+    externalCheckoutPreserved = git(fixture.foreign, ['symbolic-ref', 'HEAD']).trim() === externalBranch;
+  }
   const independent = { sameApplication: report.appPID === child.pid && report.binaryHash === binaryHash && hash(await readFile(binary)) === binaryHash,
     noModelRequests: report.modelRequests === 0 && tasks.every(task => !task.inputTokens && !task.outputTokens && !(task.modelReceipts ?? []).length),
     sourceRawIndexPreserved: hash(await readFile(path.join(fixture.workspace, '.git/index'))) === fixture.sourceIndexSHA256,
     sourceStagingAndWorkingRemainSeparate: git(fixture.workspace, ['show', ':public.txt']) === 'staged-public\n' && await readFile(path.join(fixture.workspace, 'public.txt'), 'utf8') === 'working-public\n',
-    externalCheckoutPreserved: git(fixture.foreign, ['symbolic-ref', 'HEAD']).trim() === 'refs/heads/acceptance/external' };
+    externalCheckoutPreserved };
   if (!manual && report.createdWorkspace && report.backupID) {
     const backup = JSON.parse(await readFile(path.join(directory, 'worktrees', report.backupID, 'record.json'), 'utf8'));
     independent.actualCreatedCheckoutUsesReviewedBase = git(report.createdWorkspace, ['rev-parse', 'HEAD']).trim() === fixture.releaseHead && git(report.createdWorkspace, ['show', ':public.txt']) === 'base-public\n' && await readFile(path.join(report.createdWorkspace, 'public.txt'), 'utf8') === 'working-public\n';

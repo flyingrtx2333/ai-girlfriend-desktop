@@ -385,6 +385,7 @@ import AppKit
             if let annotation = controller as? AgentBrowserAnnotationWindow, annotation.canPreserveForQuit, editors.contains(ObjectIdentifier(annotation)) { continue }
             if let git = controller as? AgentGitWindow, git.canPreserveForQuit, editors.contains(ObjectIdentifier(git)) { continue }
             if let remote = controller as? AgentGitRemotePage, remote.canPreserveForQuit, editors.contains(ObjectIdentifier(remote)) { continue }
+            if let creation = controller as? AgentWorktreeCreationWindow, creation.canPreserveForQuit, editors.contains(ObjectIdentifier(creation)) { continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }
@@ -393,12 +394,16 @@ import AppKit
         for id in ids {
             if let tab = recoveryTabs[id]?[.review], pendingRecovery.contains(tab.id), recoveredDirty[tab.id] == true { throw PetError("请先处理待恢复的 Git 草稿") }
         }
+        if controllers.contains(where: {
+            guard let creation = $0 as? AgentWorktreeCreationWindow else { return false }
+            return creation.usesTask(ids) && creation.hasPendingChanges
+        }) { throw PetError("请先完成工作树操作或处理创建配置") }
         for id in ids { for entries in (stacks[id] ?? [:]).values { for entry in entries {
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
             if (entry.controller as? AgentKnowledgeReviewWindow)?.hasPendingOperation == true { throw PetError("请先完成知识导入或恢复操作") }
             if (entry.controller as? AgentFileConflictWindow)?.canNavigateWorkspace == false { throw PetError("请先完成文件比较中的操作") }
             if (entry.controller as? AgentGitWindow)?.hasPendingChanges == true || (entry.controller as? AgentGitPushWindow)?.hasPendingOperation == true || (entry.controller as? AgentDependencyWindow)?.hasPendingOperation == true || (entry.controller as? AgentGitRemotePage)?.hasPendingChanges == true { throw PetError("请先完成 Git 操作或处理草稿") }
-            if (entry.controller as? AgentWorktreeCreationWindow)?.hasPendingChanges == true || (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作或处理创建配置") }
+            if (entry.controller as? AgentWorktreeWindow)?.hasPendingOperation == true { throw PetError("请先完成工作树操作") }
             if (entry.controller as? AgentMCPContentWindow)?.hasPendingOperation == true { throw PetError("请先完成或取消 MCP 资料操作") }
             if entry.controller !== controller {
                 if let editor = entry.controller as? AgentEditResendWindow, editor.workspaceHasUnsavedChanges || editor.hasPendingOperation { throw PetError("请先完成编辑并重发，或关闭修改后的要求") }

@@ -15,7 +15,7 @@ import AppKit
     private var dependencyWindow: AgentDependencyWindow?
     private let dependencyButton = NSButton(title: "依赖漏洞…", target: nil, action: nil)
     private var worktreeWindow: AgentWorktreeWindow?
-    private var creationWindow: AgentWorktreeCreationWindow?
+    private(set) var recoveryWorktreeForm: AgentWorktreeCreationWindow?
     private let handoffButton = NSButton(title: "移交到本地…", target: nil, action: nil)
     private let manageWorktrees = NSButton(title: "工作树…", target: nil, action: nil)
     private let sourcePopup = NSPopUpButton(), revision = AgentDialogTextField(string: "HEAD"), statistics = NSTextField(labelWithString: "")
@@ -126,7 +126,7 @@ import AppKit
     private var selectedPaths: [String] { table.selectedRowIndexes.filter { changes.indices.contains($0) }.map { changes[$0].path } }
     private var hasPushDraft: Bool { parkedPush != nil || pushWindow?.hasDraft == true }
     var recoveryRemoteForm: AgentGitRemotePage? { pushWindow?.recoveryRemoteForm }
-    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty || hasPushDraft || pendingRemoteForm != nil || recoveryRemoteForm?.hasPendingChanges == true }
+    var workspaceHasUnsavedChanges: Bool { !draftText.isEmpty || hasPushDraft || pendingRemoteForm != nil || recoveryRemoteForm?.hasPendingChanges == true || recoveryWorktreeForm?.hasDraft == true }
     var hasPendingChanges: Bool { busy || workspaceHasUnsavedChanges }
     var canPreserveForQuit: Bool { !busy && workspaceHasUnsavedChanges && store.task(taskID).map { $0.sideTask?.retained != false } == true }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -166,13 +166,14 @@ import AppKit
     }
     func captureWorkspaceRecovery(persistClean: Bool) throws -> AgentWorkspaceRecovery.Page? {
         let text = draftText, push = pushWindow?.captureDraft() ?? parkedPush
-        let remoteForm = recoveryRemoteForm?.captureDraft() ?? pendingRemoteForm
-        let dirty = !text.isEmpty || push != nil || remoteForm != nil
+        let remoteForm = recoveryRemoteForm?.captureDraft() ?? pendingRemoteForm, worktreeForm = recoveryWorktreeForm?.captureDraft()
+        let dirty = !text.isEmpty || push != nil || remoteForm != nil || worktreeForm != nil
         guard dirty || persistClean else { return nil }
         if !restoreDraftFocus, !busy { rememberDraftSelection() }
         let selection = draftSelection.flatMap { $0.valid(in: text.utf16.count) ? $0 : nil }
         let saved = AgentGitDraftRecovery(scope: text.isEmpty ? nil : try bindDraftScope(), message: text, selection: selection, focused: draftFocused,
-                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push, remoteForm: remoteForm)
+                                          source: source, revision: revision.stringValue, paths: pendingDraftPaths ?? selectedPaths, push: push,
+                                          remoteForm: remoteForm, worktreeForm: worktreeForm)
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         let page = AgentWorkspaceRecovery.Page(taskID: taskID, kind: "git-draft", state: try encoder.encode(saved), dirty: dirty, asset: nil)
         _ = try AgentGitDraftRecovery.decode(page); return page
@@ -562,10 +563,30 @@ import AppKit
     }
     @objc private func createWorktree() {
         guard !busy, writable(), let git else { return }
-        do {
-            let controller = try AgentWorktreeCreationWindow(store: store, taskID: taskID, directory: git.directory, onCreated: onSelectTask)
-            creationWindow = controller; presentSettingsChild(controller)
-        } catch { showError(error) }
+        do { try presentWorktreeCreation(sourceTaskID: taskID, directory: git.directory) }
+        catch { showError(error) }
+    }
+    func restoreWorktreeCreation(_ saved: AgentGitDraftRecovery.WorktreeForm) throws {
+        let source = store.task(saved.sourceTaskID)
+        let scope = try AgentGitDraftRecovery.Scope.current(source)
+        guard scope == saved.sources.first?.scope else { throw PetError("请回到创建配置的原源文件夹、仓库和分支后重试，草稿已保留") }
+        try presentWorktreeCreation(sourceTaskID: saved.sourceTaskID, directory: AgentGit.metadata(workspace: source?.workspace),
+                                    resumeTaskID: saved.resumeTaskID, recovery: saved)
+    }
+    func presentWorktreeCreation(sourceTaskID: String, directory: URL, resumeTaskID: String? = nil, recovery: AgentGitDraftRecovery.WorktreeForm? = nil) throws {
+        guard recoveryWorktreeForm == nil else { return }
+        let controller = try AgentWorktreeCreationWindow(store: store, taskID: sourceTaskID, directory: directory, resumeTaskID: resumeTaskID,
+                                                         recovery: recovery, onCreated: onSelectTask)
+        presentSettingsChild(controller)
+        guard controller.settingsHostWindow != nil || controller.window?.isVisible == true else {
+            controller.endSettingsHosting(); throw PetError("工作区当前无法打开工作树创建配置")
+        }
+        recoveryWorktreeForm = controller
+        controller.onDraftChange = { [weak self] in self?.onWorkspaceChange?() }
+        controller.onLeave = { [weak self] in
+            self?.recoveryWorktreeForm = nil; self?.onWorkspaceChange?()
+        }
+        onWorkspaceChange?()
     }
     @objc private func openWorktrees() {
         do { let manager = try AgentWorktreeWindow(store: store, taskID: taskID, onSelectTask: onSelectTask); worktreeWindow = manager; presentSettingsChild(manager) }
