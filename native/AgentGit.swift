@@ -51,7 +51,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         scratch = try store.backupDirectory(taskID).deletingLastPathComponent().appendingPathComponent("git", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
-    nonisolated static func metadata(workspace: String?, creating: Bool = false) throws -> URL {
+    nonisolated static func metadata(workspace: String?, creating: Bool = false, checkout: Bool = false) throws -> URL {
         let files = try AgentFiles(workspace: workspace), entry = try files.resolve(".git")
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDirectory) else {
@@ -61,7 +61,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let data = try files.readData(entry, maximum: 8192)
         guard let line = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), line.hasPrefix("gitdir: ") else { throw PetError("Git 工作树元数据无效") }
         let raw = String(line.dropFirst(8)), url = URL(fileURLWithPath: raw, relativeTo: files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL.resolvingSymlinksInPath()
-        return url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
+        return !checkout && url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
     }
     func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
@@ -153,8 +153,9 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
             guard path.hasPrefix(files.root.path + "/") || path == directory.path || path.hasPrefix(directory.path + "/") else { throw PetError("Git Hook 位于项目外，当前隔离范围无法执行。请使用本地 Git 完成操作") }
         } else if hook.exitCode != 1 { throw PetError(hook.text) }
     }
-    func commit(paths requested: [String], message: String, reviewHash: String) async throws -> AgentGitCommit {
+    func commit(paths requested: [String], message: String, reviewHash: String, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitCommit {
         try validateWorkspace()
+        try draftScope?.requireCurrent(store.task(taskID))
         let selected = try paths(requested), message = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, message.utf8.count <= 4000, !message.contains("\0") else { throw PetError("请填写提交说明，最多 4000 字节") }
         guard let saved = store.task(taskID)?.gitReview, saved.paths == selected, saved.hash == reviewHash else { throw PetError("请先审阅这些文件的 Git 差异") }
@@ -167,11 +168,13 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let state = try await status()
         guard !state.changes.contains(where: { selected.contains($0.path) && ($0.status.contains("U") || ["AA", "DD"].contains($0.status)) }) else { throw PetError("请先处理所选文件的合并冲突") }
         let added = state.changes.filter { selected.contains($0.path) && $0.status == "??" }.map(\.path)
+        try draftScope?.requireCurrent(store.task(taskID))
         if !added.isEmpty {
             let add = try await run(["add", "--intent-to-add", "--"] + added, write: true)
             guard !add.failed else { throw PetError(add.text) }
         }
         try Task.checkCancellation()
+        try draftScope?.requireCurrent(store.task(taskID))
         let result = try await run(["commit", "--only", "-m", message, "--"] + selected, write: true)
         guard !result.failed else { throw PetError("提交未完成，请检查当前 Git 状态：\n" + result.text) }
         let after = try await status()

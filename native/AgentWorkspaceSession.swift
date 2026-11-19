@@ -300,6 +300,8 @@ private actor AgentWorkspaceJournal {
                     } else if let browser = controller as? AgentBrowserWindow {
                         let page = try await browser.captureWorkspaceRecovery()
                         if pages[tab.id] != page { try await persist(page, asset: nil, pageID: tab.id) }
+                    } else if let git = controller as? AgentGitWindow, let page = try git.captureWorkspaceRecovery(persistClean: pages[tab.id] != nil), pages[tab.id] != page {
+                        try await persist(page, asset: nil, pageID: tab.id)
                     }
                 }
                 let journal = journal
@@ -327,13 +329,14 @@ private actor AgentWorkspaceJournal {
                 savedRevision = targetRevision
                 if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
                 failure = nil
-                preservedEditors = Set(editors.compactMap { _, _, controller in
+                preservedEditors = Set(editors.compactMap { _, tab, controller in
                     if let record = controller as? AgentRecordWindow, record.canPreserveForQuit { return ObjectIdentifier(record) }
                     if let office = controller as? AgentOfficeWindow, office.canPreserveForQuit { return ObjectIdentifier(office) }
                     if let canvas = controller as? AgentCanvasWindow, canvas.canPreserveForQuit { return ObjectIdentifier(canvas) }
                     if let mcp = controller as? AgentMCPContentWindow, mcp.canPreserveForQuit { return ObjectIdentifier(mcp) }
                     if let editor = controller as? AgentEditResendWindow, editor.canPreserveForQuit { return ObjectIdentifier(editor) }
                     if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit { return ObjectIdentifier(browser) }
+                    if let git = controller as? AgentGitWindow, git.canPreserveForQuit, pages[tab.id]?.dirty == true { return ObjectIdentifier(git) }
                     return nil
                 })
                 preservedEditors.formUnion(owner.knowledgePageHost.recoveryReaders.filter(\.canPreserveForQuit).map(ObjectIdentifier.init))

@@ -166,7 +166,7 @@ import AppKit
             else if title == root.title, let resolved = onResolveEditTitle?(id, messageID) { title = resolved }
         }
         if let page, tab.map({ !recoveryRequested.contains($0.id) }) ?? true {
-            dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true
+            dirty = (page as? AgentRecordWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentOfficeWindow)?.dirty == true || (page as? AgentCanvasWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentBrowserWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentMCPContentWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentEditResendWindow)?.workspaceHasUnsavedChanges == true || (page as? AgentGitWindow)?.workspaceHasUnsavedChanges == true
         }
         return (title, dirty)
     }
@@ -199,6 +199,7 @@ import AppKit
         (controller as? AgentBrowserWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentMCPContentWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         (controller as? AgentEditResendWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
+        (controller as? AgentGitWindow)?.onWorkspaceChange = { [weak self] in self?.updateTabs(); self?.onRecoveryChange?() }
         stacks[id, default: [:]][root, default: []].append(Entry(controller: controller, content: content))
         if stacks[id]?[root]?.count == 1, let tab = recoveryTabs[id]?[root] { pendingRecovery.remove(tab.id) }
         if taskID == id, selectedRoot == root { displayCurrent() }
@@ -359,11 +360,15 @@ import AppKit
             if let editor = controller as? AgentEditResendWindow, editor.canPreserveForQuit, editors.contains(ObjectIdentifier(editor)) { continue }
             if let browser = controller as? AgentBrowserWindow, browser.canPreserveForQuit, editors.contains(ObjectIdentifier(browser)) { guard browser.prepareWorkspaceNavigation() else { return false }; continue }
             if let annotation = controller as? AgentBrowserAnnotationWindow, annotation.canPreserveForQuit, editors.contains(ObjectIdentifier(annotation)) { continue }
+            if let git = controller as? AgentGitWindow, git.canPreserveForQuit, editors.contains(ObjectIdentifier(git)) { continue }
             if !(await controller.prepareForWorkspaceClose()) { return false }
         }; return true
     }
     func requireDeletionAllowed(_ ids: Set<String>, ignoring controller: AgentSettingsPageController? = nil) throws {
         guard !closing else { throw PetError("请先完成工作区关闭操作") }
+        for id in ids {
+            if let tab = recoveryTabs[id]?[.review], pendingRecovery.contains(tab.id), recoveredDirty[tab.id] == true { throw PetError("请先处理待恢复的 Git 提交说明") }
+        }
         for id in ids { for entries in (stacks[id] ?? [:]).values { for entry in entries {
             try (entry.controller as? AgentRecordWindow)?.requireDeletionAllowed(ids)
             if (entry.controller as? AgentKnowledgeReviewWindow)?.hasPendingOperation == true { throw PetError("请先完成知识导入或恢复操作") }

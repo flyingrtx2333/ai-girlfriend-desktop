@@ -3765,8 +3765,11 @@ final class FormDocumentView: NSView {
     @objc internal func showAgentGit() {
         guard let store = companion?.agentStore, let id = agentTaskID, saveAgentDraft() else { return }
         if selectedTab != "chat" { guard canLeaveMainPage() else { return }; show(tab: "chat") }
-        taskWorkspace.show(taskID: id) { AgentGitWindow(store: store, taskID: id) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") } }
+        taskWorkspace.show(taskID: id) { preparedGitWorkspace(store: store, taskID: id) }
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
+    }
+    private func preparedGitWorkspace(store: AgentStore, taskID: String, recovery: AgentGitDraftRecovery? = nil) -> AgentGitWindow {
+        AgentGitWindow(store: store, taskID: taskID, recovery: recovery) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
     }
     internal func gitWorkspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
@@ -4088,6 +4091,13 @@ final class FormDocumentView: NSView {
                 updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
                 try editor.restoreWorkspaceRecovery(page)
             } catch { taskWorkspace.failedRecovery(taskID: id, tab: tab, controller: editor); throw error }
+            editor.window?.orderOut(nil)
+        } else if let page = loaded?.saved.value, page.kind == "git-draft" {
+            guard root == .review, page.taskID == id, task.sideTask?.retained != false else { throw PetError("恢复的 Git 草稿与原任务或标签不匹配") }
+            let recovery = try AgentGitDraftRecovery.decode(page)
+            try recovery.scope?.requireCurrent(task)
+            let editor = preparedGitWorkspace(store: store, taskID: id, recovery: recovery)
+            guard present(editor) else { editor.endSettingsHosting(); throw PetError("工作区当前无法打开 Git 草稿") }
             editor.window?.orderOut(nil)
         } else if let page = loaded?.saved.value {
             let value = try AgentRecordWindow.recoveryState(page)
