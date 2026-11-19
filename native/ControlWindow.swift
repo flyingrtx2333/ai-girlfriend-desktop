@@ -2172,7 +2172,7 @@ final class FormDocumentView: NSView {
             ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
             ("memory", "memory", "记忆与指令", "AGENTS 全局 全部项目 项目记忆 用户指令"),
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
-            ("git", "git", "Git", "分支前缀 工作树 提交说明指令 生成提交说明"),
+            ("git", "git", "分支前缀与提交说明", "工作树 提交说明指令 生成提交说明"),
             ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {
             guard settingsCategories.contains(where: { $0.0 == category }) else { continue }
