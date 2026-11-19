@@ -172,6 +172,39 @@ import AppKit
             checks["continuationReadsOwnAttachment"] = try localAttachment != sourceAttachment && Data(contentsOf: localAttachment) == Data(contentsOf: sourceAttachment)
             do { _ = try await handoff.apply(ready); checks["confirmedReviewCannotRunAgain"] = false }
             catch { checks["confirmedReviewCannotRunAgain"] = error.localizedDescription.contains("已处理") }
+            let history = try tasks.backupDirectory(fixture.taskID).appendingPathComponent("worktree-handoff")
+            let directories = try FileManager.default.contentsOfDirectory(at: history, includingPropertiesForKeys: nil)
+            guard let transaction = directories.first(where: {
+                (try? String(contentsOf: $0.appendingPathComponent("outcome"), encoding: .utf8))?.hasPrefix("completed\n" + id + "\n") == true
+            }) else { throw PetError("缺少已完成的移交记录") }
+            let outcome = transaction.appendingPathComponent("outcome")
+            try FileManager.default.moveItem(at: outcome, to: transaction.appendingPathComponent("verified-outcome"))
+            let gitDirs = fixture.sources.map { URL(fileURLWithPath: $0.origin.metadata) }
+            let owned = gitDirs[0].appendingPathComponent("bluefatfish-handoff-" + transaction.lastPathComponent + ".lock")
+            let ownedIndex = gitDirs[0].appendingPathComponent("index.lock"), foreign = gitDirs[1].appendingPathComponent("index.lock")
+            let foreignBytes = Data("Git lock owned by another operation\n".utf8)
+            try Data().write(to: owned, options: .withoutOverwriting)
+            try FileManager.default.linkItem(at: owned, to: ownedIndex)
+            try foreignBytes.write(to: foreign, options: .withoutOverwriting)
+            let localRecord = tasks.directory.appendingPathComponent(id + ".json")
+            let savedTask = try Data(contentsOf: localRecord)
+            func localHeads() async throws -> [String] {
+                var result: [String] = []
+                for item in fixture.sources { result.append(try await git(["rev-parse", "HEAD"], at: item.origin.root)) }
+                return result
+            }
+            let heads = try await localHeads()
+            let reopened = AgentWorktreeHandoff(store: tasks, taskID: fixture.taskID)
+            guard let pending = try reopened.pendingRecovery(), pending.published else { throw PetError("落盘的本地任务未被识别") }
+            do { _ = try tasks.prepareDeletion([fixture.taskID]); checks["unresolvedHandoffProtectsItsSourceTask"] = false }
+            catch { checks["unresolvedHandoffProtectsItsSourceTask"] = error.localizedDescription.contains("中断的工作树移交") }
+            let recovered = try await reopened.recover(pending)
+            let afterHeads = try await localHeads()
+            checks["publishedContinuationIsReusedWithoutChangingBranchesOrTask"] = try recovered == id
+                && heads == afterHeads && Data(contentsOf: localRecord) == savedTask && reopened.pendingRecovery() == nil
+            checks["publishedRecoveryClearsOnlyItsOwnGitLock"] = try !FileManager.default.fileExists(atPath: owned.path)
+                && !FileManager.default.fileExists(atPath: ownedIndex.path) && Data(contentsOf: foreign) == foreignBytes
+            try FileManager.default.removeItem(at: foreign)
             checks["noModelRequests"] = requests == 0
             report["localTaskID"] = id
         } catch { report["error"] = error.localizedDescription }

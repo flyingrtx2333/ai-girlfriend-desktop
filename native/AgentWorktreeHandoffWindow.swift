@@ -14,6 +14,7 @@ import AppKit
     private let confirm = AgentDialogButton(title: "确认移交", target: nil, action: nil)
     private var job: Task<Void, Never>?
     private var review: AgentWorktreeHandoffReview?
+    private var recovery: AgentWorktreeHandoff.Recovery?
     private var busy = false
 
     init(store: AgentStore, taskID: String, onCompleted: @escaping (String) -> Void) {
@@ -71,27 +72,33 @@ import AppKit
     override func settingsWillLeave() {
         job?.cancel()
         if let review { handoff.discard(review) }
-        review = nil
+        review = nil; recovery = nil
     }
 
     private func setBusy(_ value: Bool) {
         busy = value
         let ready = review != nil && !value
         sources.isEnabled = ready; changes.isEnabled = ready
-        cancel.isEnabled = !value; refresh.isEnabled = !value; confirm.isEnabled = ready
+        cancel.isEnabled = !value; refresh.isEnabled = !value
+        confirm.isEnabled = !value && (ready || recovery != nil)
         sourceFrame.refreshEnabledState()
     }
     @objc private func closeReview() { if canNavigate { close() } }
     @objc private func load() {
         guard !busy else { return }
         if let review { handoff.discard(review) }
-        review = nil; setBusy(true)
+        review = nil; recovery = nil; setBusy(true)
+        confirm.title = "确认移交"; refresh.title = "重新审阅"
         sourceFrame.isHidden = true; origin.isHidden = true; destination.isHidden = true; changes.isHidden = true
         diff.show("", oldTitle: "", newTitle: "")
         status.textColor = AgentWorkbenchTheme.secondaryText; status.stringValue = "读取待移交内容…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
+                if let pending = try handoff.pendingRecovery() {
+                    showRecovery(pending); setBusy(false)
+                    return
+                }
                 let value = try await handoff.prepare()
                 if Task.isCancelled { handoff.discard(value); return }
                 review = value
@@ -138,8 +145,29 @@ import AppKit
         status.stringValue = "移交待处理"; status.textColor = AgentDialogStyle.error
         diff.show(error.localizedDescription, oldTitle: "移交", newTitle: "错误详情")
     }
+    private func showRecovery(_ pending: AgentWorktreeHandoff.Recovery) {
+        recovery = pending
+        refresh.title = "刷新状态"
+        confirm.title = pending.published ? (pending.localTaskID == nil ? "清理移交锁" : "打开本地任务") : "恢复移交前状态"
+        status.stringValue = pending.published ? "上次移交已保存" : "上次移交已中断"
+        diff.show(pending.paths.joined(separator: "\n"), oldTitle: "移交", newTitle: "本地项目")
+    }
     @objc private func apply() {
-        guard !busy, let reviewed = review else { return }
+        guard !busy else { return }
+        if let pending = recovery {
+            setBusy(true); status.stringValue = "正在核对移交状态…"
+            job = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let id = try await handoff.recover(pending)
+                    setBusy(false)
+                    if let id { close(); onCompleted(id) }
+                    else { load() }
+                } catch { showError(error); setBusy(false) }
+            }
+            return
+        }
+        guard let reviewed = review else { return }
         setBusy(true); status.stringValue = "正在移交…"
         job = Task { [weak self] in
             guard let self else { return }
@@ -148,6 +176,7 @@ import AppKit
                 setBusy(false); close(); onCompleted(id)
             } catch {
                 handoff.discard(reviewed); review = nil
+                if let pending = try? handoff.pendingRecovery() { showRecovery(pending) }
                 showError(error); setBusy(false)
             }
         }

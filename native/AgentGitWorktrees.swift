@@ -173,6 +173,11 @@ enum AgentWorktreeSnapshot {
                 return store.task(task.id)?.events.contains { $0.kind == "git" && $0.title == "已创建工作树" && $0.detail.hasSuffix("\n" + path) } == true
             }
             let active = related.contains { [.running, .waiting].contains($0.status) || $0.pendingFileCapture != nil || $0.pendingFileRollback != nil || store.hooks.isRunning($0.id) }
+            let interruptedHandoff = related.contains { record in
+                guard !record.managedWorktreeOrigins.isEmpty else { return false }
+                do { return try AgentWorktreeHandoff(store: store, taskID: record.id).pendingRecovery() != nil }
+                catch { return true }
+            }
             if allowsExternalWorktrees, i != 0, !entries[i].bare, !active, listed == path, (try? externalWorktreeURL(path)) != nil,
                nonexistentWorktreePath(URL(fileURLWithPath: path)) { entries[i].canRelink = true }
             if path == files.root.path { entries[i].unavailable = "当前工作树" }
@@ -180,6 +185,7 @@ enum AgentWorktreeSnapshot {
             else if !entries[i].owned && !allowsExternalWorktrees { entries[i].unavailable = "外部工作树" }
             else if entries[i].locked != nil { entries[i].unavailable = "工作树已锁定" }
             else if active { entries[i].unavailable = "关联任务正在运行或等待处理" }
+            else if interruptedHandoff { entries[i].unavailable = "有中断的工作树移交" }
             else if entries[i].prunable != nil, Self.isWorktreeObject(entries[i].head ?? ""), listed == path, (try? missingWorktreePath(path)) != nil { entries[i].missingRegistration = true }
             else if entries[i].prunable != nil || entries[i].head == nil || !FileManager.default.fileExists(atPath: path) {
                 entries[i].unavailable = entries[i].canRelink == true ? "原目录缺失 · 可重新关联" : "路径不可用，请先在本地 Git 修复"

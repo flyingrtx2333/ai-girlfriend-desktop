@@ -14,19 +14,19 @@ final class AgentCommand: @unchecked Sendable {
 
     func cancel() { queue.sync { self.cancelled = true; if self.pid > 0 { kill(-self.pid, SIGKILL) } } }
     func snapshot() -> (running: Bool, output: String) { queue.sync { (self.pid > 0, String(decoding: self.output, as: UTF8.self)) } }
-    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil, inputFile: URL? = nil, readRoots: [URL] = [], writeRoots: [URL] = [], protectedWrites: [URL] = [], gitTransportAuth: Bool = false, listSnapshotParents: Bool = false, environment: [String: String] = [:], arguments: [String]? = nil, shell: String? = nil, inheritEnvironment: Bool = false, workspaceRoots: [URL] = []) async throws -> AgentToolResult {
+    func run(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool = false, gitDirectory: URL? = nil, gitWrite: Bool = false, gitConfiguration: Bool = false, maximumOutput: Int = 100_000, protectedData: URL? = nil, inputFile: URL? = nil, readRoots: [URL] = [], writeRoots: [URL] = [], protectedWrites: [URL] = [], gitTransportAuth: Bool = false, listSnapshotParents: Bool = false, environment: [String: String] = [:], arguments: [String]? = nil, shell: String? = nil, inheritEnvironment: Bool = false, workspaceRoots: [URL] = [], leaseDescriptor: Int32? = nil) async throws -> AgentToolResult {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     self.continuation = continuation
                     self.maximumOutput = min(2_000_000, max(1000, maximumOutput))
-                    do { try self.launch(command: command, workspace: workspace, scratch: scratch, network: network, timeout: timeout, readOnly: readOnly, gitDirectory: gitDirectory, gitWrite: gitWrite, gitConfiguration: gitConfiguration, protectedData: protectedData, inputFile: inputFile, readRoots: readRoots, writeRoots: writeRoots, protectedWrites: protectedWrites, gitTransportAuth: gitTransportAuth, listSnapshotParents: listSnapshotParents, extraEnvironment: environment, arguments: arguments, shell: shell, inheritEnvironment: inheritEnvironment, workspaceRoots: workspaceRoots) }
+                    do { try self.launch(command: command, workspace: workspace, scratch: scratch, network: network, timeout: timeout, readOnly: readOnly, gitDirectory: gitDirectory, gitWrite: gitWrite, gitConfiguration: gitConfiguration, protectedData: protectedData, inputFile: inputFile, readRoots: readRoots, writeRoots: writeRoots, protectedWrites: protectedWrites, gitTransportAuth: gitTransportAuth, listSnapshotParents: listSnapshotParents, extraEnvironment: environment, arguments: arguments, shell: shell, inheritEnvironment: inheritEnvironment, workspaceRoots: workspaceRoots, leaseDescriptor: leaseDescriptor) }
                     catch { self.continuation = nil; continuation.resume(throwing: error) }
                 }
             }
         }, onCancel: { self.cancel() })
     }
-    private func launch(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool, gitDirectory: URL?, gitWrite: Bool, gitConfiguration: Bool, protectedData: URL?, inputFile: URL?, readRoots: [URL], writeRoots: [URL], protectedWrites: [URL], gitTransportAuth: Bool, listSnapshotParents: Bool, extraEnvironment: [String: String], arguments: [String]?, shell: String?, inheritEnvironment: Bool, workspaceRoots: [URL]) throws {
+    private func launch(command: String, workspace: URL, scratch: URL, network: Bool, timeout: Double, readOnly: Bool, gitDirectory: URL?, gitWrite: Bool, gitConfiguration: Bool, protectedData: URL?, inputFile: URL?, readRoots: [URL], writeRoots: [URL], protectedWrites: [URL], gitTransportAuth: Bool, listSnapshotParents: Bool, extraEnvironment: [String: String], arguments: [String]?, shell: String?, inheritEnvironment: Bool, workspaceRoots: [URL], leaseDescriptor: Int32?) throws {
         if cancelled { throw CancellationError() }
         guard !command.contains("\0"), arguments?.contains(where: { $0.contains("\0") }) != true else { throw PetError("命令或参数不能包含空字符") }
         guard extraEnvironment.allSatisfy({ Self.validEnvironmentName($0.key) && !$0.value.contains("\0") && !Self.launcherEnvironment($0.key) }) else { throw PetError("环境变量名称无效或试图修改隔离启动器") }
@@ -84,6 +84,10 @@ final class AgentCommand: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, errors[1], STDERR_FILENO)
         posix_spawn_file_actions_addclose(&actions, descriptors[0]); posix_spawn_file_actions_addclose(&actions, descriptors[1])
         posix_spawn_file_actions_addclose(&actions, errors[0]); posix_spawn_file_actions_addclose(&actions, errors[1])
+        if let leaseDescriptor, posix_spawn_file_actions_adddup2(&actions, leaseDescriptor, leaseDescriptor == 9 ? 10 : 9) != 0 {
+            (descriptors + errors).forEach { close($0) }
+            throw PetError("无法为终端保留操作锁")
+        }
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)); posix_spawnattr_setpgroup(&attributes, 0)
         let invocation = arguments.map { [command] + $0 } ?? [shell ?? "/bin/sh", "-c", command]
         let launchArguments = ["/usr/bin/sandbox-exec", "-p", profile] + invocation

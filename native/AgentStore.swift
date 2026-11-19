@@ -413,6 +413,9 @@ import Foundation
             guard task.id == id else { throw PetError("任务记录编号不匹配，未删除") }
             try requireArchivable(cache[id] ?? task)
             guard !worktreeRetention.hasNativeOperation(task.workspace) else { throw PetError("此项目正在使用终端或处理文件、Git 操作，请结束后再删除任务") }
+            if !task.managedWorktreeOrigins.isEmpty, try AgentWorktreeHandoff(store: self, taskID: id).pendingRecovery() != nil {
+                throw PetError("请先处理此任务中断的工作树移交")
+            }
             let folder = try files.entryMetadata(files.literalURL(id))
             var record = AgentTaskPurge(id: id, recordSignature: entry.signature, directorySignature: folder.kind == "missing" ? nil : folder.signature, directoryIdentity: try AgentTaskDeletion.directoryIdentity(files, name: id))
             if let origin = task.importOrigin, !tasks.contains(where: { !selected.contains($0.id) && $0.importOrigin?.snapshot == origin.snapshot }) {
