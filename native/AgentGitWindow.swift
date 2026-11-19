@@ -2,9 +2,11 @@ import AppKit
 
 @MainActor final class AgentGitWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSWindowDelegate {
     private let store: AgentStore, taskID: String, onSelectTask: (String) -> Void
+    private weak var runtime: AgentRuntime?
     private let table = NSTableView(), diffView = AgentGitDiffView(), branch = NSTextField(labelWithString: "Git"), state = AgentSettingsStatusField("Git 审阅状态")
     private var text: NSTextView { diffView.text }
     private let message = AgentDialogTextField(), refreshButton = NSButton(title: "刷新", target: nil, action: nil), commitButton = AgentDialogButton(title: "提交", target: nil, action: nil)
+    private let generateButton = AgentDialogButton(title: "生成说明", target: nil, action: nil)
     private let worktreeButton = NSButton(title: "新建工作树", target: nil, action: nil), initializeButton = AgentDialogButton(title: "初始化 Git", target: nil, action: nil)
     private let pushButton = AgentDialogButton(title: "推送…", target: nil, action: nil), commitPushButton = AgentDialogButton(title: "提交并推送…", target: nil, action: nil)
     private var pushWindow: AgentGitPushWindow?
@@ -32,11 +34,12 @@ import AppKit
     private var draftScope: AgentGitDraftRecovery.Scope?, currentDraftScope: AgentGitDraftRecovery.Scope?
     private var draftSelection: AgentTextViewport.Selection?, pendingDraftPaths: [String]?
     private var draftFocused = false, restoreDraftFocus = false, applyingDraftFocus = false
+    private var generatingMessage = false
     var onWorkspaceChange: (() -> Void)?
     private let activityOwner = UUID()
     private var busy = false { didSet { if busy != oldValue { store.worktreeRetention.setNativeOperation(activityOwner, taskID: taskID, busy: busy) } } }
-    init(store: AgentStore, taskID: String, recovery: AgentGitDraftRecovery? = nil, onSelectTask: @escaping (String) -> Void) {
-        self.store = store; self.taskID = taskID; self.onSelectTask = onSelectTask
+    init(store: AgentStore, taskID: String, runtime: AgentRuntime? = nil, recovery: AgentGitDraftRecovery? = nil, onSelectTask: @escaping (String) -> Void) {
+        self.store = store; self.taskID = taskID; self.runtime = runtime; self.onSelectTask = onSelectTask
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Git · " + (store.task(taskID)?.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "项目")
         window.minSize = NSSize(width: 700, height: 470); window.isReleasedWhenClosed = false; window.center()
@@ -59,6 +62,9 @@ import AppKit
         handoffButton.target = self; handoffButton.action = #selector(openWorktreeHandoff)
         stageButton.action = #selector(stageFile); unstageButton.action = #selector(unstageFile); restoreButton.action = #selector(restoreFile); undoRestoreButton.action = #selector(undoRestore)
         pushButton.action = #selector(openPush); commitPushButton.action = #selector(commitAndPush)
+        generateButton.target = self; generateButton.action = #selector(generateMessage)
+        generateButton.setAccessibilityLabel("生成提交说明"); generateButton.toolTip = "将当前审阅的差异发送给任务模型"
+        generateButton.isHidden = runtime == nil
         securityButton.action = #selector(openSecurityOptions)
         securityButton.toolTip = "静态检查、轻量语义检查与上次报告"
         dependencyButton.target = self
@@ -83,7 +89,7 @@ import AppKit
         }
         filePicker.target = self; filePicker.action = #selector(selectFile); filePicker.setAccessibilityLabel("Git 所选文件")
         filePicker.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); filePicker.cell?.lineBreakMode = .byTruncatingMiddle
-        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, commitPushButton] { AgentDialogStyle.action(button) }
+        for button in [stageButton, unstageButton, restoreButton, undoRestoreButton, pushButton, generateButton, commitPushButton] { AgentDialogStyle.action(button) }
         AgentDialogStyle.action(commitButton, prominent: true); AgentDialogStyle.action(initializeButton, prominent: true)
         restoreButton.hasDestructiveAction = true
         let toolbar = NSStackView(views: [branch, NSView(), initializeButton, pushButton, moreButton, refreshButton]); toolbar.spacing = 8; toolbar.alignment = .centerY
@@ -91,7 +97,7 @@ import AppKit
         let files = NSStackView(views: [fileFrame, filesButton]); files.spacing = 8; files.alignment = .centerY
         fileFrame.widthAnchor.constraint(equalTo: files.widthAnchor, constant: -36).isActive = true
         let actions = NSStackView(views: [stageButton, unstageButton, restoreButton, undoRestoreButton, NSView()]); actions.spacing = 6
-        let commitActions = NSStackView(views: [statistics, NSView(), commitButton, commitPushButton]); commitActions.spacing = 8
+        let commitActions = NSStackView(views: [statistics, NSView(), generateButton, commitButton, commitPushButton]); commitActions.spacing = 8
         let composer = NSStackView(views: [message, commitActions]); composer.orientation = .vertical; composer.alignment = .leading; composer.spacing = 8
         for child in [message, commitActions] { child.widthAnchor.constraint(equalTo: composer.widthAnchor).isActive = true }
         for view in [list, viewer] { fileArea.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -161,6 +167,7 @@ import AppKit
     }
     func controlTextDidChange(_ notification: Notification) {
         if draftText.isEmpty { clearDraft(); setBusy(busy); return }
+        generateButton.isEnabled = false
         _ = try? bindDraftScope()
         restoreDraftFocus = false; rememberDraftSelection(); onWorkspaceChange?()
     }
@@ -248,6 +255,7 @@ import AppKit
         let originalScopeChanged = draftScope.map { !$0.matches(currentDraftScope) } ?? false
         commitButton.isEnabled = !value && !originalScopeChanged && writable() && [.uncommitted, .staged].contains(source) && review?.diff.isEmpty == false
         commitPushButton.isEnabled = commitButton.isEnabled
+        generateButton.isEnabled = generatingMessage || commitButton.isEnabled && draftText.isEmpty && runtime != nil
         pushButton.isEnabled = !value && initializeButton.isHidden && git != nil
         securityButton.isEnabled = !value && git != nil
         dependencyButton.isEnabled = !value && store.task(taskID)?.workspace != nil
@@ -508,6 +516,44 @@ import AppKit
     @objc private func commitAndPush() {
         performCommit(openPushAfter: true)
     }
+    @objc private func generateMessage() {
+        if generatingMessage { job?.cancel(); git?.cancel(); return }
+        guard generateButton.isEnabled, !busy, draftText.isEmpty, let runtime, let git, let review, let inspection else { return }
+        let scope: AgentGitDraftRecovery.Scope
+        do { scope = try AgentGitDraftRecovery.Scope.current(store.task(taskID)) }
+        catch { showError(error); return }
+        generatingMessage = true; generateButton.title = "停止生成"; generateButton.setAccessibilityLabel("停止生成提交说明")
+        setBusy(true); state.stringValue = "正在生成提交说明…"
+        job = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                generatingMessage = false; generateButton.title = "生成说明"; generateButton.setAccessibilityLabel("生成提交说明")
+                setBusy(false)
+            }
+            do {
+                try await validateMessageSelection(inspection, scope: scope, git: git)
+                let text = try await runtime.generateGitCommitMessage(taskID, review: review)
+                try await validateMessageSelection(inspection, scope: scope, git: git)
+                try Task.checkCancellation()
+                guard writable(), draftText.isEmpty else { throw PetError("任务或提交说明已变化，请重新审阅") }
+                draftScope = scope; message.stringValue = text
+                draftSelection = .init(location: text.utf16.count, length: 0)
+                restoreDraftFocus = isPageVisible; draftFocused = restoreDraftFocus
+                state.stringValue = "已生成提交说明"; onWorkspaceChange?()
+            } catch {
+                if Task.isCancelled { state.stringValue = "已停止生成" }
+                else { showError(error) }
+            }
+        }
+    }
+    private func validateMessageSelection(_ selected: AgentGitInspection, scope: AgentGitDraftRecovery.Scope, git: AgentGit) async throws {
+        try Task.checkCancellation()
+        try scope.requireCurrent(store.task(taskID))
+        try git.validateWorkspace()
+        let current = try await git.inspect(source: selected.source, revision: selected.revision, requested: selected.paths)
+        try scope.requireCurrent(store.task(taskID))
+        guard current.hash == selected.hash else { review = nil; throw PetError("文件、暂存区或 HEAD 已变化，请重新审阅差异") }
+    }
     private func performCommit(openPushAfter: Bool) {
         guard !busy, writable(), let git, let review else { return }
         message.validateEditing()
@@ -671,6 +717,7 @@ import AppKit
         case "stage": stageFile()
         case "unstage": unstageFile()
         case "commit": commit()
+        case "generate": generateMessage()
         case "push": openPush()
         case "dependencies": openDependencies()
         case "security": checkSecurity()

@@ -47,7 +47,7 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
-    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins"]
+    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "git"]
     struct Navigation: Codable, Equatable, Sendable {
         var version = 1
         var category: String, page: String?
@@ -90,6 +90,7 @@ enum AgentSettingsRecovery {
             case ("extensions", "plugins"): return kinds == [root] || kinds == [root, "plugin-settings"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
             case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
+            case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             default: return false
             }
         }

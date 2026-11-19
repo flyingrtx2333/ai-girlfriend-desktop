@@ -64,6 +64,7 @@ import WebKit
         if CommandLine.arguments.contains("--attention-page-check") { await runAttentionPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--automation-page-check") { await runAutomationPageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-workspace-check") { await runGitWorkspaceCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--git-preferences-check") { await runGitPreferencesCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--git-remote-page-check") { await runGitRemotePageCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--name-editor-check") { await runNameEditorCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--unsaved-changes-check") { await runUnsavedChangesCheck(output); NSApp.terminate(nil); return }

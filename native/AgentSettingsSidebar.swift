@@ -5,7 +5,7 @@ enum AgentSettingsNavigation {
         ("个人", ["general", "attention", "modes", "monitor", "shortcuts", "appearance", "model", "memory", "imports"]),
         ("陪伴", ["persona", "voice", "screen", "desktop"]),
         ("集成", ["extensions", "agents", "teams", "hooks", "computer"]),
-        ("编码", ["worktrees"]), ("其他", ["experiments", "archived", "about"])
+        ("编码", ["git", "worktrees"]), ("其他", ["experiments", "archived", "about"])
     ]
     static func group(for category: String) -> String { groups.first { $0.1.contains(category) }?.0 ?? "其他" }
     static func symbol(for category: String, fallback: String) -> String {

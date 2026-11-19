@@ -31,6 +31,8 @@ import AppKit
     private let apply = AgentDialogButton(title: "应用回收设置", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
     private let check = NSButton(title: "立即检查", target: nil, action: nil), manage = NSButton(title: "管理工作树…", target: nil, action: nil), backups = NSButton(title: "打开备份", target: nil, action: nil)
     private let state = AgentSettingsStatusField("工作树回收状态"), history = NSTextView()
+    private let emptyProjects = NSTextField(labelWithString: "暂无托管工作树"), historyScroll = NSScrollView()
+    private lazy var projectFrame = AgentSettingsPopupFrame(projects)
     private var periods: [Double] = [], roots: [AgentWorktreeRoot] = [], revision: String?, savedRevision: String?
     private var hasEdits = false
     private var historyHeight: NSLayoutConstraint?
@@ -46,17 +48,20 @@ import AppKit
         projects.target = self; projects.action = #selector(projectChanged)
         AgentSettingsStyle.primaryAction(apply); apply.keyEquivalent = "s"; apply.keyEquivalentModifierMask = .command
         let actions = NSStackView(views: [check, NSView(), reload, apply]); actions.spacing = 10
-        let project = NSStackView(views: [AgentSettingsPopupFrame(projects), NSView(), manage, backups]); project.spacing = 10
+        let project = NSStackView(views: [emptyProjects, projectFrame, NSView(), manage, backups]); project.spacing = 10
+        emptyProjects.font = .systemFont(ofSize: 13); emptyProjects.textColor = AgentWorkbenchTheme.secondaryText
         projects.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText
         history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 13); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true
-        let scroll = NSScrollView(); scroll.documentView = history; scroll.hasVerticalScroller = true; scroll.identifier = .init("form-input")
+        historyScroll.documentView = history; historyScroll.hasVerticalScroller = true; historyScroll.identifier = .init("form-input")
         let policy = AgentSettingsStyle.section("自动回收", id: "worktree-policy", rows: [AgentSettingsStyle.formRow("启用", enabled, trailing: true), AgentSettingsStyle.formRow("回收范围", scope, trailing: true), AgentSettingsStyle.formRow("保留期", period, trailing: true), AgentSettingsStyle.formRow("备份", backup, trailing: true), actions])
-        let records = AgentSettingsStyle.section("工作树与记录", id: "worktree-history", rows: [project, state, scroll])
+        let details = NSStackView(views: [project, state, historyScroll]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 10
+        for view in details.arrangedSubviews { view.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
+        let records = AgentSettingsStyle.section("工作树与记录", id: "worktree-history", rows: [details])
         let column = NSStackView(views: [policy, records]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 24
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        let historyHeight = scroll.heightAnchor.constraint(equalToConstant: 150); self.historyHeight = historyHeight
+        let historyHeight = historyScroll.heightAnchor.constraint(equalToConstant: 150); self.historyHeight = historyHeight
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), historyHeight])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         loadControls()
@@ -87,18 +92,21 @@ import AppKit
         roots = service.roots(); projects.removeAllItems()
         for root in roots { projects.addItem(withTitle: root.title); projects.lastItem?.toolTip = root.path }
         if let selection, let index = roots.firstIndex(where: { $0.id == selection }) { projects.selectItem(at: index) }
-        if roots.isEmpty { projects.addItem(withTitle: "暂无工作树") }
+        emptyProjects.isHidden = !roots.isEmpty; projectFrame.isHidden = roots.isEmpty; manage.isHidden = roots.isEmpty
         projects.isEnabled = !roots.isEmpty; manage.isEnabled = !roots.isEmpty; check.isEnabled = service.policy.enabled && !service.isChecking
         state.stringValue = (savedRevision != nil && savedRevision == service.revision ? "已保存 · " : "") + service.status + (service.nextCheck.map { "\n下次检查：" + $0.formatted(date: .numeric, time: .shortened) } ?? "")
+        state.isHidden = roots.isEmpty && state.stringValue == "自动回收未开启"
         do {
             let values = try service.receipts()
+            historyScroll.isHidden = roots.isEmpty && values.isEmpty
             historyHeight?.constant = values.isEmpty ? 56 : 150
             history.string = values.isEmpty ? "暂无自动回收记录" : values.prefix(10).map { receipt in
                 let task = store.tasks.first { $0.workspace == receipt.path }
                 return receipt.created.formatted(date: .abbreviated, time: .shortened) + " · " + (task?.title ?? URL(fileURLWithPath: receipt.root).lastPathComponent) + "\n" + (receipt.error ?? "已备份并回收")
             }.joined(separator: "\n\n")
-        } catch { historyHeight?.constant = 150; history.string = error.localizedDescription }
+        } catch { historyScroll.isHidden = false; historyHeight?.constant = 150; history.string = error.localizedDescription }
     }
+    private func showFailure(_ error: Error) { state.isHidden = false; state.showSaveFailure(error) }
     @objc private func policyEdited() { hasEdits = true; savedRevision = nil }
     @objc private func save() {
         guard periods.indices.contains(period.indexOfSelectedItem) else { return }
@@ -110,7 +118,7 @@ import AppKit
             guard alert.runModal() == .alertFirstButtonReturn else { return }; consent = true
         }
         do { try store.worktreeRetention.save(value, expectedRevision: revision, consent: consent); savedRevision = store.worktreeRetention.revision; loadControls() }
-        catch { state.stringValue = error.localizedDescription }
+        catch { showFailure(error) }
     }
     @objc private func reloadPolicy() { savedRevision = nil; store.worktreeRetention.reload(); loadControls() }
     @objc private func checkNow() { store.worktreeRetention.checkNow(); refreshState() }
@@ -120,22 +128,24 @@ import AppKit
         do {
             let controller = try AgentWorktreeWindow(store: store, taskID: roots[projects.indexOfSelectedItem].taskID, allowsArchivedSource: true, workspace: roots[projects.indexOfSelectedItem].path, onSelectTask: onOpenTask)
             onOpenManager(controller)
-        } catch { state.stringValue = error.localizedDescription }
+        } catch { showFailure(error) }
     }
     @objc private func openBackups() {
         let folder = store.directory.appendingPathComponent("worktrees")
         do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); NSWorkspace.shared.activateFileViewerSelecting([folder]) }
-        catch { state.stringValue = error.localizedDescription }
+        catch { showFailure(error) }
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls: [NSView] = [enabled, scope, period, projects, apply, reload, check, manage, backups]
+        let controls: [NSView] = [enabled, scope, period, projects, apply, reload, check, manage, backups, emptyProjects]
         let records = try? store.worktreeRetention.receipts(), historySize = history.enclosingScrollView?.bounds.size ?? .zero
         let empty = records?.isEmpty == true
-        let historyFits = empty ? abs(historySize.height - 56) < 1 && history.string == "暂无自动回收记录" : historySize.height >= 150 && !history.string.isEmpty
+        let historyFits = empty ? (roots.isEmpty ? historyScroll.isHidden : abs(historySize.height - 56) < 1 && !historyScroll.isHidden) : historySize.height >= 150 && !historyScroll.isHidden && !history.string.isEmpty
         return ["enabled": enabled.state == .on, "archivedOnly": scope.indexOfSelectedItem == 0, "idleSeconds": draftPolicy.idleSeconds, "pendingChanges": hasPendingChanges,
                 "selectedProject": roots.indices.contains(projects.indexOfSelectedItem) ? roots[projects.indexOfSelectedItem].path : "", "projects": roots.map(\.path), "manageEnabled": manage.isEnabled, "state": state.stringValue, "history": history.string, "historyCount": records?.count ?? -1, "historySize": [historySize.width, historySize.height],
-                "checks": ["policyControlsFit": controls.allSatisfy { bounds.insetBy(dx: -1, dy: -1).contains(convert($0.bounds, from: $0)) }, "policyHistoryHasUsableSpace": historyFits]]
+                "emptyProjectsVisible": !emptyProjects.isHidden, "projectPickerVisible": !projectFrame.isHidden, "historyVisible": !historyScroll.isHidden,
+                "checks": ["policyControlsFit": controls.filter { !$0.isHiddenOrHasHiddenAncestor }.allSatisfy { bounds.insetBy(dx: -1, dy: -1).contains(convert($0.bounds, from: $0)) },
+                           "policyHistoryHasUsableSpace": historyFits]]
     }
     func checkWorkspace(project: String? = nil, idleSeconds: Double? = nil, action: String = "") {
         guard AgentTaskWorkspace.readbackEnabled else { return }

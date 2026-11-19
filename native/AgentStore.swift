@@ -12,6 +12,7 @@ import Foundation
     let teams: AgentTeams
     let automations: AgentAutomations
     let models: AgentTaskModels
+    let gitPreferences: AgentGitPreferences
     let worktreeRetention: AgentWorktreeRetention
     let desktop: AgentDesktop
     let organization: AgentOrganization
@@ -67,6 +68,7 @@ import Foundation
         teams = AgentTeams(profile: directory)
         automations = AgentAutomations(profile: directory)
         models = AgentTaskModels(profile: directory)
+        gitPreferences = AgentGitPreferences(profile: directory)
         worktreeRetention = AgentWorktreeRetention(profile: directory)
         desktop = AgentDesktop(profile: directory)
         try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

@@ -107,8 +107,8 @@ final class FormDocumentView: NSView {
     private var settingsSourceFolders: [String: String] = [:]
     private var settingsSidebarWidth: NSLayoutConstraint!
     private let noSettings = NSTextField(labelWithString: "没有匹配设置"), sizeValue = NSTextField(labelWithString: "")
-    private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("worktrees", "工作树", "arrow.triangle.branch"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox"), ("about", "关于与更新", "info.circle")]
-    private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "worktrees"])
+    private let settingsCategories = [("model", "模型", "cpu"), ("general", "常规", "gearshape"), ("modes", "模式配置", "square.stack.3d.up"), ("monitor", "任务监控", "checklist"), ("appearance", "外观", "circle.lefthalf.filled"), ("shortcuts", "快捷键", "keyboard"), ("voice", "语音", "waveform"), ("screen", "屏幕陪伴", "eye"), ("desktop", "桌面宠物", "fish"), ("persona", "角色", "person.crop.circle"), ("attention", "需要我", "bell"), ("memory", "记忆与规则", "brain"), ("imports", "数据导入", "square.and.arrow.down"), ("extensions", "扩展管理", "puzzlepiece.extension"), ("agents", "智能体", "person.crop.square"), ("teams", "智能体团队", "person.3"), ("hooks", "Hooks", "link"), ("computer", "电脑操作", "computermouse"), ("git", "Git", "arrow.triangle.branch"), ("worktrees", "工作树", "square.stack.3d.up"), ("experiments", "实验", "flask"), ("archived", "归档", "archivebox"), ("about", "关于与更新", "info.circle")]
+    private let managedSettings = Set(["extensions", "agents", "teams", "hooks", "memory", "git", "worktrees"])
     private var shortcutSettings: AgentShortcutSettingsView?
     private var settingsCategory = "model", categoryButtons: [NSButton] = [], chatSidebarViews: [NSView] = []
     private var savedBasicSettings: [String] = []
@@ -526,11 +526,11 @@ final class FormDocumentView: NSView {
                     frames[key]?["scopeX"] = scopeFrame.minX; frames[key]?["scopeWidth"] = scopeFrame.width
                     frames[key]?["scopeTrailingGutter"] = column.maxX - scopeFrame.maxX; frames[key]?["scopeCenterY"] = scopeFrame.midY; frames[key]?["titleCenterY"] = titleFrame.midY
                 }
-                if ["agents", "teams", "hooks", "worktrees"].contains(category) {
+                if ["agents", "teams", "hooks", "git", "worktrees"].contains(category) {
                     checks[key + "SingleCatalogHasNoEmptyNavigationRow"] = descendants(settingsPageHost).first { $0.identifier?.rawValue == "settings-manager-navigation" }?.isHidden == true
                 }
                 let catalog = settingsPageHost.currentController?.pageContentView as? AgentSettingsCatalogPage
-                let shouldShowActions = !settingsPageHost.isHidden && catalog != nil
+                let shouldShowActions = !settingsPageHost.isHidden && (catalog != nil || category == "git")
                 let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
                 checks[key + "CatalogActionsStayInWindowHeader"] = shouldShowActions ? (!settingsWindowActions.isHidden && !settingsWindowActions.arrangedSubviews.isEmpty && abs(contentSurface.bounds.maxY - actionFrame.maxY - 6) < 0.5 && abs(contentSurface.bounds.maxX - actionFrame.maxX - 12) < 0.5 && actionFrame.minX >= 12 && actionFrame.minY > column.maxY) : settingsWindowActions.isHidden
                 if category == "appearance", let group = settingGroups.first(where: { $0.category == category })?.view {
@@ -663,7 +663,7 @@ final class FormDocumentView: NSView {
               let last = categoryButtons.last else { return ["SettingsSidebarExists": false] }
         let displayed = navigation.arrangedSubviews.compactMap { $0 as? NSButton }
         let ids = displayed.map { settingsCategories[$0.tag].0 }
-        let expected = ["general", "attention", "modes", "monitor", "shortcuts", "appearance", "model", "memory", "imports", "persona", "voice", "screen", "desktop", "extensions", "agents", "teams", "hooks", "computer", "worktrees", "experiments", "archived", "about"]
+        let expected = ["general", "attention", "modes", "monitor", "shortcuts", "appearance", "model", "memory", "imports", "persona", "voice", "screen", "desktop", "extensions", "agents", "teams", "hooks", "computer", "git", "worktrees", "experiments", "archived", "about"]
         let originalScroll = scroll.contentView.bounds.origin
         let before = settingsSearch.convert(settingsSearch.bounds, to: settingsSidebar)
         last.scrollToVisible(last.bounds); scroll.reflectScrolledClipView(scroll.contentView)
@@ -1736,6 +1736,8 @@ final class FormDocumentView: NSView {
             if let selection { manager.selectProfile(selection) }; return manager
         case "teams":
             let manager = AgentTeamWindow(store: store, workspace: workspace, workMode: mode, taskID: taskID); manager.onUse = use; return manager
+        case "git":
+            return AgentGitPreferencesPage(preferences: store.gitPreferences)
         case "worktrees":
             let manager = AgentWorktreeSettingsWindow(store: store) { [weak self] id in
                 guard let self, self.canLeaveMainPage() else { return }; self.showAgentTask(id); self.show(tab: "chat")
@@ -1902,12 +1904,13 @@ final class FormDocumentView: NSView {
         settingsPageHost.isHidden = !managed; settingsScroll.isHidden = managed
         if managed {
             generalSettingsSave?.isHidden = true
-            let id = restoredSettingsContext.map(\.taskID) ?? (agentTaskID ?? companion?.agentStore?.selectedID)
+            let globalGit = settingsCategory == "git"
+            let id = globalGit ? nil : restoredSettingsContext.map(\.taskID) ?? (agentTaskID ?? companion?.agentStore?.selectedID)
             let task = id.flatMap { companion?.agentStore?.task($0) }
-            let folders = settingsCategory == "worktrees" ? [] : restoredSettingsContext?.folders ?? task?.workspacePaths ?? []
+            let folders = globalGit || settingsCategory == "worktrees" ? [] : restoredSettingsContext?.folders ?? task?.workspacePaths ?? []
             let remembered = id.flatMap { settingsSourceFolders[$0] }
-            let workspace = restoredSettingsContext != nil ? restoredSettingsContext?.workspace : remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
-            let context = restoredSettingsContext ?? AgentSettingsRecovery.Context(task: task, workspace: workspace)
+            let workspace = globalGit ? nil : restoredSettingsContext != nil ? restoredSettingsContext?.workspace : remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
+            let context = globalGit ? AgentSettingsRecovery.Context(task: nil, workspace: nil) : restoredSettingsContext ?? AgentSettingsRecovery.Context(task: task, workspace: workspace)
             let identity = context.identity
             guard settingsPageHost.show(category: settingsCategory, identity: identity, scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", recoveryContext: context, make: { [weak self] kind in
                 self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
@@ -2169,6 +2172,7 @@ final class FormDocumentView: NSView {
             ("hooks", "hooks", "Hooks", "钩子 事件 自动执行"),
             ("memory", "memory", "记忆与指令", "AGENTS 全局 全部项目 项目记忆 用户指令"),
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
+            ("git", "git", "Git", "分支前缀 工作树 提交说明指令 生成提交说明"),
             ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
         ] {
             guard settingsCategories.contains(where: { $0.0 == category }) else { continue }
@@ -2798,7 +2802,7 @@ final class FormDocumentView: NSView {
         guard selectedTab == "settings" else { return nil }
         if let pendingSettingsNavigation { return pendingSettingsNavigation }
         let input = currentSettingsNavigationInput(), page = managedSettings.contains(settingsCategory) ? settingsPageHost.selectedPageKey : nil
-        let source = page == nil ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
+        let source = page == nil || settingsCategory == "git" ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
             contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),
@@ -3767,7 +3771,7 @@ final class FormDocumentView: NSView {
         updateWorkbenchLayout(); window?.contentView?.layoutSubtreeIfNeeded()
     }
     private func preparedGitWorkspace(store: AgentStore, taskID: String, recovery: AgentGitDraftRecovery? = nil) -> AgentGitWindow {
-        AgentGitWindow(store: store, taskID: taskID, recovery: recovery) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
+        AgentGitWindow(store: store, taskID: taskID, runtime: companion?.agentRuntime, recovery: recovery) { [weak self] next in self?.selectAgentTask(next); self?.show(tab: "chat") }
     }
     internal func gitWorkspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }

@@ -3,7 +3,7 @@ import AppKit
 @MainActor final class AgentWorktreeCreationWindow: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate {
     typealias Draft = AgentGitDraftRecovery.WorktreeForm
     private let store: AgentStore, taskID: String, git: AgentGit, onCreated: (String) -> Void
-    private let start = NSPopUpButton(), branch = AgentDialogTextField(string: "agent/" + String(UUID().uuidString.lowercased().prefix(8)))
+    private let start = NSPopUpButton(), branch = AgentDialogTextField()
     private let include = NSButton(checkboxWithTitle: "带入当前修改", target: nil, action: nil)
     private let preview = AgentDialogButton(title: "预览", target: nil, action: nil), create = AgentDialogButton(title: "创建任务", target: nil, action: nil)
     private let state = AgentSettingsStatusField("工作树创建状态"), diff = AgentGitDiffView()
@@ -37,7 +37,8 @@ import AppKit
         window.title = "新建工作树 · " + git.files.root.lastPathComponent; window.minSize = NSSize(width: 640, height: 430); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
         window.contentView = content
-        if let setup { branch.stringValue = setup.branch; include.state = setup.includeChanges ? .on : .off }
+        branch.stringValue = setup?.branch ?? store.gitPreferences.suggestedBranch()
+        if let setup { include.state = setup.includeChanges ? .on : .off }
         originalBranch = branch.stringValue; originalInclude = include.state == .on
         if let recovery {
             loadingDraft = recovery; restoredForm = true
