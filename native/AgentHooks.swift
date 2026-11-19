@@ -1,5 +1,7 @@
 import Foundation
 
+enum AgentHookStartSource: String, Codable { case startup, resume, compact, fork }
+
 enum AgentHookEvent: String, Codable, CaseIterable {
     case sessionStart = "SessionStart", sessionEnd = "SessionEnd", prompt = "UserPromptSubmit"
     case preTool = "PreToolUse", postTool = "PostToolUse", toolFailure = "PostToolUseFailure"
@@ -7,7 +9,7 @@ enum AgentHookEvent: String, Codable, CaseIterable {
     case preCompact = "PreCompact", postCompact = "PostCompact", cwd = "CwdChanged", instructions = "InstructionsLoaded"
     case file = "FileChanged", notification = "Notification", subagentStart = "SubagentStart", subagentStop = "SubagentStop"
     case worktreeCreate = "WorktreeCreate", worktreeRemove = "WorktreeRemove"
-    var controlsExecution: Bool { [.prompt, .preTool, .permission, .stop].contains(self) }
+    var controlsExecution: Bool { [.prompt, .preTool, .permission, .stop, .preCompact].contains(self) }
 }
 struct AgentHookDefinition: Codable, Identifiable {
     var id: String, name: String, event: AgentHookEvent, matcher: String, type: String, command: String

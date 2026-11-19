@@ -152,7 +152,7 @@ import Foundation
         while estimate(tail) > half { tail = String(tail.suffix(tail.count * 3 / 4)) }
         return head + marker + tail
     }
-    static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], force: Bool = false, compactEvent: ((AgentHookEvent, String) async throws -> Void)? = nil, requestCheck: (() throws -> Void)? = nil, onChange: () -> Void) async throws -> [AgentMessage] {
+    static func messages(taskID: String, store: AgentStore, preferences: PetPreferences, key: String, system: String, tools: [[String: Any]], force: Bool = false, compactEvent: ((AgentHookEvent, String, String, String?) async throws -> Void)? = nil, requestCheck: (() throws -> Void)? = nil, onChange: () -> Void) async throws -> [AgentMessage] {
         let toolJSON = String(decoding: try JSONSerialization.data(withJSONObject: tools), as: UTF8.self)
         let overhead = estimate(system) + estimate(toolJSON) + 200
         let limit = preferences.contextLimit, output = preferences.outputLimit
@@ -241,7 +241,7 @@ import Foundation
             }
             if !manualPending, end == start, used + output < limit { return current }
             guard end > start else { throw PetError("单轮内容超过上下文预算，原始记录已保留，请增大上下文后继续") }
-            let compactID = task.messages[start].id + ":" + task.messages[end - 1].id
+            let compactID = UUID().uuidString, trigger = manualPending ? "manual" : "auto"
             if manualPending {
                 var preview = task
                 preview.contextThroughID = task.messages[end - 1].id
@@ -250,7 +250,7 @@ import Foundation
                 let minimum = overhead + size(window(preview, maximumImages: maximumImages, includeDeliveredImages: includeDeliveredImages, archivedFactBudget: factBudget), vision: preferences.visionSupported == true, maximumImages: maximumImages)
                 guard minimum + 96 < used else { throw PetError("当前历史较短，压缩预计无法减少占用") }
             }
-            try await compactEvent?(.preCompact, compactID)
+            try await compactEvent?(.preCompact, compactID, trigger, nil)
             store.update(taskID) { $0.events.append(AgentEvent(kind: "context", title: "整理上下文", detail: "记录 \(start)...\(end - 1)", status: "running")) }; onChange()
             if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
             var p = preferences; p.replyTokens = summaryLimit; p.reasoningEffort = "auto"
@@ -280,9 +280,10 @@ import Foundation
                 if manualPending { record.contextManualThroughID = through }
                 if let i = record.events.lastIndex(where: { $0.kind == "context" && $0.status == "running" }) { record.events[i].status = "completed" }
             }
+            if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
             onChange()
             manualPending = false
-            try await compactEvent?(.postCompact, compactID)
+            try await compactEvent?(.postCompact, compactID, trigger, compacted.content)
         }
         throw PetError("已整理部分长记录，可点击继续接着处理")
     }

@@ -24,6 +24,7 @@ import Foundation
     @MainActor private final class Run {
         let token = UUID().uuidString
         let tools: AgentTools
+        let startSource: AgentHookStartSource?
         var task: Task<Void, Never>?
         var preferences: PetPreferences?
         var key: String?
@@ -31,7 +32,9 @@ import Foundation
         var hookWakePending = false
         var restartAfterInterruption = false
         var slotWaiter: CheckedContinuation<Void, Error>?
-        init(store: AgentStore, id: String) { tools = AgentTools(store: store, taskID: id) }
+        init(store: AgentStore, id: String, startSource: AgentHookStartSource?) {
+            tools = AgentTools(store: store, taskID: id); self.startSource = startSource
+        }
     }
     private var active: [String: Run] = [:]
     private final class Analysis {
@@ -318,7 +321,13 @@ import Foundation
             return
         }
         queued.removeAll { $0 == id }
-        let run = Run(store: store, id: id); active[id] = run
+        let startSource: AgentHookStartSource?
+        if task.hookSession == nil {
+            let existing = task.hookCwd != nil || task.importOrigin != nil || task.status != .ready
+                || task.messages.contains { $0.role == "assistant" || $0.role == "tool" }
+            startSource = task.nextHookStartSource ?? (existing ? .resume : .startup)
+        } else { startSource = nil }
+        let run = Run(store: store, id: id, startSource: startSource); active[id] = run
         run.tools.delegateTask = { [weak self] call in guard let self else { throw CancellationError() }; return try await self.delegate(call, owner: id) }
         store.update(id) { record in
             if record.mode == .goal, !continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
@@ -464,8 +473,8 @@ import Foundation
                 if recap { try await self.generateRecap(id, preferences: p, key: key) }
                 else {
                     let system = try self.systemContext(task), definitions = try self.toolDefinitions(task, preferences: p)
-                    _ = try await AgentContext.messages(taskID: id, store: self.store, preferences: p, key: key, system: system, tools: definitions, force: true, compactEvent: { [weak self] event, trigger in
-                        _ = try await self?.hook(event, id: id, trigger: trigger, value: "manual", fields: ["trigger": "manual"], secret: key)
+                    _ = try await AgentContext.messages(taskID: id, store: self.store, preferences: p, key: key, system: system, tools: definitions, force: true, compactEvent: { [weak self] event, invocation, trigger, summary in
+                        try await self?.compactionHook(event, id: id, invocation: invocation, turnID: analysis.token, trigger: trigger, summary: summary, model: p.model, secret: key)
                     }, requestCheck: self.modelRequestCheck) { [weak self] in self?.notifyChange(id) }
                     try Task.checkCancellation()
                 }
@@ -582,6 +591,20 @@ import Foundation
             store.update(id) { $0.events.append(AgentEvent(kind: "hook", title: "Hook 消息", detail: String(text.prefix(3000)), status: "completed")) }
         }
         return effect
+    }
+    private func compactionHook(_ event: AgentHookEvent, id: String, invocation: String, turnID: String, trigger: String, summary: String?, model: String, secret: String) async throws {
+        var fields = ["trigger": trigger, "model": model, "turn_id": turnID]
+        if let summary { fields["compact_summary"] = summary }
+        else { fields["custom_instructions"] = "" }
+        let effect = try await hook(event, id: id, trigger: invocation, value: trigger, fields: fields, secret: secret)
+        if let reason = effect.deny { throw AgentHookHalt(reason) }
+        if event == .postCompact, let task = store.task(id), task.agent?.ownerID == nil, task.sideTask == nil {
+            try await sessionStart(.compact, id: id, invocation: invocation, model: model, secret: secret)
+        }
+    }
+    private func sessionStart(_ source: AgentHookStartSource, id: String, invocation: String, model: String, secret: String) async throws {
+        _ = try await hook(.sessionStart, id: id, trigger: invocation, value: source.rawValue,
+                           fields: ["source": source.rawValue, "model": model], secret: secret)
     }
     @discardableResult private func flushHookContext(_ id: String) -> Bool {
         guard let task = store.task(id), task.pendingCalls.isEmpty, let pending = task.hookContexts, !pending.isEmpty else { return false }
@@ -787,12 +810,18 @@ import Foundation
                 _ = try store.agents.currentProfile(binding.profile, task: task)
             }
             run.preferences = p
-            store.update(id) { $0.model = p.model }
             let key = try delegatedModels[id]?.key ?? keychain.read("chat")
+            store.update(id) {
+                $0.model = p.model
+                if run.startSource != nil { $0.nextHookStartSource = .resume }
+            }
             run.key = key
             hookSecret = key
             let session = store.task(id)?.hookSession ?? run.token
-            _ = try await hook(.sessionStart, id: id, trigger: session, value: "startup", fields: ["source": "startup"], secret: key)
+            if let source = run.startSource {
+                if let error = store.writeError { throw PetError("任务记录未保存：" + error) }
+                try await sessionStart(source, id: id, invocation: session, model: p.model, secret: key)
+            }
             if let task = store.task(id) {
                 if let previous = task.hookCwd, previous != (task.workspace ?? "") { _ = try await hook(.cwd, id: id, trigger: session + ":" + (task.workspace ?? ""), fields: ["old_cwd": previous, "new_cwd": task.workspace ?? ""], secret: key) }
                 store.update(id) { $0.hookCwd = task.workspace ?? "" }
@@ -934,8 +963,8 @@ import Foundation
                 _ = try await hook(.instructions, id: id, trigger: AgentFiles.hash(Data(system.utf8)), fields: ["instructions": system], secret: key)
                 if flushHookContext(id) { task = store.task(id)! }
                 let definitions = try toolDefinitions(task, preferences: p)
-                let context = try await AgentContext.messages(taskID: id, store: store, preferences: p, key: key, system: system, tools: definitions, compactEvent: { [weak self] event, trigger in
-                    _ = try await self?.hook(event, id: id, trigger: trigger, value: "auto", fields: ["trigger": "auto"], secret: key)
+                let context = try await AgentContext.messages(taskID: id, store: store, preferences: p, key: key, system: system, tools: definitions, compactEvent: { [weak self] event, invocation, trigger, summary in
+                    try await self?.compactionHook(event, id: id, invocation: invocation, turnID: run.token, trigger: trigger, summary: summary, model: p.model, secret: key)
                 }, requestCheck: modelRequestCheck) { [weak self] in self?.notifyChange(id) }
                 if flushHookContext(id) { continue }
                 if CommandLine.arguments.contains("--mcp-check") {

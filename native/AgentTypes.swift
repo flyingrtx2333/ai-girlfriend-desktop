@@ -241,6 +241,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var instructionDirectories: [AgentRuleDirectory]?
     var instructionGrants: [AgentInstructionGrant]?
     var hookSession: String?, hookCwd: String?
+    var nextHookStartSource: AgentHookStartSource?
     var hookContexts: [String: String]?, hookRejectedAnswers: [AgentMessage]?
     var hookStopBlocks: Int?
     var hookRewakePromptID: String?, hookRewakeCount: Int?

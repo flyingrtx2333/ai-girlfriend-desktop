@@ -42,6 +42,7 @@ import Foundation
         next.summary = ""; next.goalAccepted = nil; next.completionEvidence = nil; next.approvals = []; next.recap = nil; next.kind = nil
         next.gitReview = nil; next.gitTurn = nil; next.gitPushReview = nil; next.gitPushReceipt = nil; next.gitRemoteSnapshot = nil
         next.hookSession = nil; next.hookContexts = nil; next.hookContextIDs = nil; next.hookRewakePromptID = nil; next.hookRewakeCount = nil
+        next.nextHookStartSource = .fork
         for i in next.events.indices where next.events[i].status == "running" && next.events[i].hook?.asynchronous == true {
             next.events[i].status = "stopped"; next.events[i].hook?.delivery = "edit-history"
         }

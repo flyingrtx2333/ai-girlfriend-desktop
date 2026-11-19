@@ -502,6 +502,7 @@ import Foundation
             original.skillEvolutionJob = nil; original.skillDraft = nil; original.skillDraftHistory = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
+            original.nextHookStartSource = .fork
             original.hookRewakePromptID = nil; original.hookRewakeCount = nil
             for i in original.events.indices where original.events[i].status == "running" && original.events[i].hook?.asynchronous == true {
                 original.events[i].status = "stopped"; original.events[i].hook?.delivery = "fork-history"
