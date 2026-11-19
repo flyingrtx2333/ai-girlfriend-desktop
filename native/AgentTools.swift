@@ -26,7 +26,11 @@ import Foundation
     private var commands: [String: AgentCommand] = [:]
     private var gitCalls: [String: AgentGit] = [:]
     init(store: AgentStore, taskID: String) { self.store = store; self.taskID = taskID }
-    func cancel() { commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }; store.browser.stop(taskID); store.canvases.stop(taskID); store.offices.stop(taskID); store.desktop.disconnect(taskID); store.mcp.disconnect(owner: taskID) }
+    func cancel(retainingMCP: Bool = false) {
+        commands.values.forEach { $0.cancel() }; gitCalls.values.forEach { $0.cancel() }
+        store.browser.stop(taskID); store.canvases.stop(taskID); store.offices.stop(taskID); store.desktop.disconnect(taskID)
+        if !retainingMCP { store.mcp.disconnect(owner: taskID) }
+    }
     func gitDirectory(for call: AgentToolCall) throws -> String? {
         if let task = store.task(taskID) { try store.agents.check(try store.mcp.routedCall(call, owner: taskID, task: task) ?? call, task: task, store: store) }
         if (["index_project", "search_project"] + AgentKnowledgeCards.tools).contains(call.name), let task = store.task(taskID) {

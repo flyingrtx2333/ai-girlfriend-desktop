@@ -666,9 +666,12 @@ final class PetWebView: WKWebView {
             return true
         } catch { control.setStatus(error.localizedDescription, error: true); return false }
     }
-    func cancelConversation(taskID: String? = nil) {
+    func cancelConversation(taskID: String? = nil, userInterrupt: Bool = false) {
         chatTask?.cancel()
-        if let id = taskID ?? agentStore?.selectedID { agentRuntime?.cancel(id) }
+        if let id = taskID ?? agentStore?.selectedID {
+            if userInterrupt && usesAgent { agentRuntime?.interrupt(id) }
+            else { agentRuntime?.cancel(id) }
+        }
         stopSpeech(); refreshVoiceBusy(); startPendingVoiceListen()
     }
     func clearConversation() {

@@ -46,6 +46,7 @@ import AppKit
             const specific = {hookEventName: args.event, additionalContext: '已核对公开资料 ' + (args.content ?? '')};
             if (args.path === 'blocked.txt') Object.assign(specific, {permissionDecision: 'deny', permissionDecisionReason: '公开样例由 Hook 拒绝'});
             result = {structuredContent: {hookSpecificOutput: specific}, content: []};
+            if (args.event === 'Interrupt') result = {structuredContent: {systemMessage: '公开连接器收到停止'}, content: []};
             if (args.path === 'error.txt') result = {isError: true, content: [{type: 'text', text: '测试错误 ' + process.env.FIXTURE_SECRET}]};
           }
           process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: request.id, result}) + '\n');
@@ -58,6 +59,7 @@ import AppKit
         {"hooks":{
           "PreToolUse":[{"matcher":"Read", "hooks":[{"name":"核对公开读取", "type":"mcp_tool", "server":"harbor-fixture", "tool":"inspect_public", "input":{"event":"${hook_event_name}","request":"${tool_input}","path":"${tool_input.file_path}","values":["起始行=${tool_input.offset}","${tool_input.offset}"]}}]}],
           "PostToolUse":[{"matcher":"Read", "hooks":[{"name":"核对公开结果", "type":"mcp_tool", "server":"harbor-fixture", "tool":"inspect_public", "input":{"event":"${hook_event_name}","content":"${tool_response}","ok":"${is_error}"}}]}],
+          "Interrupt":[{"hooks":[{"name":"公开连接器中断","type":"mcp_tool","server":"harbor-fixture","tool":"inspect_public","input":{"event":"${hook_event_name}","turn":"${turn_id}","session":"${session_id}"}}]}],
           "SessionEnd":[{"hooks":[{"type":"mcp_tool","server":"harbor-fixture","tool":"inspect_public"}]}],
           "Stop":[{"hooks":[{"name":"原有命令", "type":"command", "command":"/usr/bin/true"}]}]
         }}
@@ -108,7 +110,7 @@ import AppKit
         checks["companionKeepsExistingCommandApprovalAndScope"] = try Data(contentsOf: settings) == approved
             && initial.first(where: { $0.id == oldHook.id }).map(store.hooks.trusted) == true
             && store.hooks.catalog(workspace: other.path).allSatisfy { $0.source != imported.path }
-        checks["unconfiguredConnectorHasActionableStatus"] = initial.filter { $0.source == imported.path }.count == 2
+        checks["unconfiguredConnectorHasActionableStatus"] = initial.filter { $0.source == imported.path }.count == 3
             && initial.filter { $0.source == imported.path }.allSatisfy { !store.hooks.enabled($0) && $0.diagnostic?.contains("配置连接器") == true }
 
         var config: [String: Any] = ["name": "harbor-fixture", "type": "stdio", "command": "/opt/homebrew/bin/node",
@@ -179,13 +181,31 @@ import AppKit
             && finished.events.last(where: { $0.hook?.hookID == post.id })?.hook?.effect?.context.contains(readme) == true
         checks["normalRuntimeReachesOnlyLocalModelGate"] = modelGate == 1 && finished.modelReceipts?.isEmpty != false
 
+        guard let interrupt = ready.first(where: { $0.event == .interrupt }) else { throw PetError("缺少中断 MCP 处理器") }
+        try store.hooks.setEnabled(interrupt, true, workspace: project.path)
+        let interrupted = store.create(title: "公开实时中断", workspace: project.path, mode: .agent)
+        _ = try await store.mcp.connect(connector.id, revision: connector.revision, owner: interrupted, workspace: project.path)
+        defer { store.mcp.disconnect(owner: interrupted) }
+        _ = try await startInterruptFixture(interrupted, label: "mcp-interrupt", runtime: runtime)
+        let interruptedSession = store.task(interrupted)?.hookSession
+        runtime.interrupt(interrupted)
+        let detached = !runtime.isExecuting(interrupted) && store.task(interrupted)?.status == .stopped
+        let interruptDeadline = Date().addingTimeInterval(5)
+        while runtime.isBusy(interrupted) && Date() < interruptDeadline { await wait(0.025) }
+        let interruptCalls = try recordedCalls(), interruptArguments = interruptCalls.last?["arguments"] as? [String: Any]
+        checks["interruptUsesThenReleasesOnlyAlreadyApprovedConnection"] = detached && !runtime.isBusy(interrupted) && !store.mcp.connected(connector.id, owner: interrupted)
+            && interrupt.timeout == 1 && modelGate == 1 && interruptCalls.count == 5
+            && interruptArguments?["event"] as? String == "Interrupt" && interruptArguments?["turn"] as? String != nil
+            && interruptedSession != nil && interruptArguments?["session"] as? String == interruptedSession
+            && lastHook(interrupted)?.status == "completed" && lastHook(interrupted)?.detail.contains("公开连接器收到停止") == true
+
         config["timeoutSeconds"] = 6
         _ = try store.mcp.save(encoded(config), id: connector.id, expectedRevision: connector.revision)
         let revised = try store.hooks.catalog(workspace: project.path).first { $0.id == pre.id }
         let stale = try await store.hooks.fire(.preTool, trigger: "stale", store: store, taskID: task, value: "Read", fields: eventFields("README.md"))
         checks["changedConnectorRequiresNewReviewAndDoesNotSend"] = try revised.map(store.hooks.enabled) == true
             && revised.map(store.hooks.trusted) == false && lastHook(task)?.detail.contains("重新审核") == true
-            && stale.halt == nil && recordedCalls().count == 4
+            && stale.halt == nil && recordedCalls().count == 5
 
         await importer.detect(.codex, root: userSource, category: .configuration)
         guard let userHook = importer.preview.first(where: { $0.standaloneMCPHooks == true && $0.issue == nil }) else { throw PetError("缺少全局内联 MCP Hook") }

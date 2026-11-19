@@ -2510,7 +2510,7 @@ final class FormDocumentView: NSView {
             if companion.agentRuntime?.submit(composer.string, taskID: pair.task) == true { composer.string = ""; composer.didChangeText(); saveAgentDraft(); renderMessages() }
             return
         }
-        if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(taskID: agentTaskID); return }
+        if busy && (companion.usesAgent == false || (composer.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty)) { companion.cancelConversation(taskID: agentTaskID, userInterrupt: true); return }
         if companion.send(composer.string, attachmentIDs: files, taskID: agentTaskID) { composer.string = ""; composer.undoManager?.removeAllActions(); composer.didChangeText(); saveAgentDraft(); renderMessages() }
         else if companion.usesAgent, let error = companion.agentRuntime?.submissionError { setStatus(error, error: true) }
     }

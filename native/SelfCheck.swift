@@ -136,6 +136,7 @@ import WebKit
                     guard tasks.automations.isStarted else { throw PetError(tasks.automations.error ?? "自动化调度未启动") }
                 }
                 if CommandLine.arguments.contains("--task-window-fixtures") { try await prepareTaskWindowCheck(output) }
+                if CommandLine.arguments.contains("--interrupt-window-fixtures"), !boundedLiveUI { try await prepareInterruptWindow(output, tasks: tasks, runtime: runtime) }
                 if CommandLine.arguments.contains("--question-auto-skip-fixtures") || CommandLine.arguments.contains("--question-auto-skip-reopen") { try prepareQuestionAutoSkipUI(output, seed: CommandLine.arguments.contains("--question-auto-skip-fixtures")) }
                 if CommandLine.arguments.contains("--conversation-display-fixtures") || CommandLine.arguments.contains("--conversation-display-reopen") { try prepareConversationDisplayUI(output, seed: CommandLine.arguments.contains("--conversation-display-fixtures")) }
                 if CommandLine.arguments.contains("--thinking-status-fixtures") || CommandLine.arguments.contains("--thinking-status-reopen") { try prepareThinkingStatusUI(output, seed: CommandLine.arguments.contains("--thinking-status-fixtures")) }
@@ -392,6 +393,7 @@ import WebKit
         if CommandLine.arguments.contains("--mcp-hook-check") { await runMCPHookCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--hook-lifecycle-check") { await runHookLifecycleCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--model-request-hook-check") { await runModelRequestHookCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--interrupt-hook-check") { await runInterruptHookCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--memory-import-check") { await runMemoryImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-import-check") { await runSkillImportCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--mcp-data-import-check") { await runMCPDataImportCheck(output); NSApp.terminate(nil); return }

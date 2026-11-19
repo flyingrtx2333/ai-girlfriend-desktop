@@ -31,6 +31,7 @@ import Foundation
         var suspendedForChild = false
         var hookWakePending = false
         var restartAfterInterruption = false
+        var retainsMCPForInterrupt = false
         var slotWaiter: CheckedContinuation<Void, Error>?
         init(store: AgentStore, id: String, startSource: AgentHookStartSource?) {
             tools = AgentTools(store: store, taskID: id); self.startSource = startSource
@@ -41,19 +42,21 @@ import Foundation
         let token = UUID().uuidString
         let title: String
         var task: Task<Void, Never>?
+        var model: String?, key: String?
         init(_ title: String) { self.title = title }
     }
     private var analyses: [String: Analysis] = [:]
+    private var interrupts: [String: Task<Void, Never>] = [:]
     private(set) var analysisErrors: [String: String] = [:]
     private var analysisErrorModes: [String: Bool] = [:]
     private var queued: [String] = []
     private struct ModelSnapshot { var preferences: PetPreferences; var key: String }
     private var delegatedModels: [String: ModelSnapshot] = [:]
     private var childWaiters: [String: [UUID: CheckedContinuation<AgentTaskRecord, Error>]] = [:]
-    var isWorking: Bool { !active.isEmpty || !queued.isEmpty || !analyses.isEmpty || store.hooks.isWorking }
+    var isWorking: Bool { !active.isEmpty || !queued.isEmpty || !analyses.isEmpty || !interrupts.isEmpty || store.hooks.isWorking }
     func isExecuting(_ id: String) -> Bool { active[id] != nil || queued.contains(id) }
     func isRunning(_ id: String) -> Bool { isExecuting(id) || store.hooks.isRunning(id) }
-    func isBusy(_ id: String) -> Bool { isRunning(id) || analyses[id] != nil }
+    func isBusy(_ id: String) -> Bool { isRunning(id) || analyses[id] != nil || interrupts[id] != nil }
     func analysisTitle(_ id: String) -> String? { analyses[id]?.title }
     func analysisError(_ id: String, recap: Bool) -> String? { analysisErrorModes[id] == recap ? analysisErrors[id] : nil }
 
@@ -139,6 +142,7 @@ import Foundation
         }
     }
     private func hasSlot(_ task: AgentTaskRecord) -> Bool {
+        guard interrupts[task.id] == nil else { return false }
         let child = task.agent?.ownerID != nil
         return active.keys.filter { (store.task($0)?.agent?.ownerID != nil) == child && (!child || active[$0]?.suspendedForChild != true) }.count < 2
     }
@@ -247,11 +251,11 @@ import Foundation
         if task.skillDraft?.savedAt != nil { var preview = task; do { try AgentSkillDrafts.prepareNewRound(&preview,message:message) } catch { submissionError = error.localizedDescription; return false } }
         var accepted = false
         defer { if accepted { store.slashMenu.recordAccepted(message) } }
+        if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || analyses[id] != nil || task.status == .waiting {
+            interrupt(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); accepted = true; return true
+        }
         cancelAnalysis(id)
         promptSuggestions.cancel(id); skillEvolution.cancel(id)
-        if ["停止", "停止任务", "取消任务"].contains(text), isRunning(id) || task.status == .waiting {
-            cancel(id); store.update(id) { $0.messages.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) } }; notifyChange(id); accepted = true; return true
-        }
         if let reason = store.offices.unsavedReason(task:task) { submissionError = reason; return false }
         if isExecuting(id) {
             store.update(id) { if $0.queuedMessages == nil { $0.queuedMessages = [] }; $0.queuedMessages?.append(message); $0.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; $0.goalAccepted = nil; $0.completionEvidence = nil; if $0.mode == .goal { $0.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) } }
@@ -339,8 +343,34 @@ import Foundation
         }; notifyChange(id)
         run.task = Task { [weak self] in await self?.execute(id, run: run) }
     }
-    func cancel(_ id: String) { store.projectKnowledge.cancelPreparation(taskID: id); cancel(id, visited: []) }
-    private func cancel(_ id: String, visited: Set<String>, restarting: Bool = false) {
+    func interrupt(_ id: String) {
+        if interrupts[id] != nil {
+            if queued.contains(id) { cancel(id) }
+            return
+        }
+        let run = active[id], analysis = analyses[id]
+        guard let turn = run?.token ?? analysis?.token, let origin = store.task(id), !origin.archived,
+              origin.agent?.ownerID == nil, origin.sideTask == nil, !["wiki", "hook"].contains(origin.kind ?? ""),
+              store.hooks.hasEnabled(.interrupt) else { cancel(id); return }
+        let model = run?.preferences?.model ?? analysis?.model ?? (try? taskPreferences(id).model) ?? preferences().model
+        let fields = ["session_id": origin.hookSession ?? origin.id, "turn_id": turn, "model": model]
+        let secret = run?.key ?? analysis?.key ?? ""
+        let retainsMCP = run != nil && store.hooks.hasEnabled(.interrupt, type: AgentMCPHook.type)
+        interrupts[id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if retainsMCP { self.store.mcp.disconnect(owner: id) }
+                self.interrupts[id] = nil
+                self.drainQueue(); self.notifyChange(id)
+            }
+            guard !Task.isCancelled else { return }
+            await self.store.hooks.recordDiagnostic(.interrupt, invocation: turn, origin: origin, store: self.store, fields: fields, secret: secret)
+        }
+        store.projectKnowledge.cancelPreparation(taskID: id)
+        cancel(id, visited: [], retainingMCP: retainsMCP)
+    }
+    func cancel(_ id: String) { interrupts[id]?.cancel(); store.projectKnowledge.cancelPreparation(taskID: id); cancel(id, visited: []) }
+    private func cancel(_ id: String, visited: Set<String>, restarting: Bool = false, retainingMCP: Bool = false) {
         guard !visited.contains(id) else { return }
         var next = visited; next.insert(id)
         cancelAnalysis(id)
@@ -353,10 +383,11 @@ import Foundation
         queued.removeAll { $0 == id }
         let run = restarting ? active[id] : active.removeValue(forKey: id)
         run?.restartAfterInterruption = restarting
+        run?.retainsMCPForInterrupt = retainingMCP
         run?.slotWaiter?.resume(throwing: CancellationError()); run?.slotWaiter = nil
-        run?.task?.cancel(); run?.tools.cancel()
+        run?.task?.cancel(); run?.tools.cancel(retainingMCP: retainingMCP)
         store.browser.stop(id)
-        store.mcp.disconnect(owner: id)
+        if !retainingMCP { store.mcp.disconnect(owner: id) }
         store.hooks.cancel(id)
         store.update(id) { record in
             record.hookSession = nil
@@ -369,7 +400,7 @@ import Foundation
         notifyChange(id)
         if run == nil { drainQueue() }
     }
-    func stopAll() { promptSuggestions.cancelAll(); skillEvolution.cancelAll(); store.projectKnowledge.cancelPreparations(); for id in Array(active.keys) + queued + Array(analyses.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
+    func stopAll() { promptSuggestions.cancelAll(); skillEvolution.cancelAll(); store.projectKnowledge.cancelPreparations(); for id in Array(active.keys) + queued + Array(analyses.keys) + Array(interrupts.keys) { cancel(id) }; store.desktop.disconnectAll(); store.mcp.disconnect(); store.hooks.cancelAll() }
     func refreshSkillEvolutionPreference() { if !taskSettings().skillEvolutionSuggestions { skillEvolution.cancelAll() } }
     func retrySkillEvolution(_ id:String) {
         guard !isBusy(id), taskSettings().skillEvolutionSuggestions else { return }
@@ -470,6 +501,7 @@ import Foundation
                 try self.store.teams.check(task, store: self.store)
                 if let role = task.agent?.profile { _ = try self.store.agents.currentProfile(role, task: task) }
                 let p = try self.analysisPreferences(id, model: recap ? model : nil), key = try self.keychain.read("chat")
+                analysis.model = p.model; analysis.key = key
                 let requestHooks = AgentModelRequestHooks(store: self.store, taskID: id, turnID: analysis.token)
                 if recap { try await self.generateRecap(id, preferences: p, key: key, requestHooks: requestHooks) }
                 else {
@@ -505,7 +537,7 @@ import Foundation
         }
         append("原始要求：\n" + (task.messages.first(where: \.isHumanInput)?.content ?? ""), maximum: budget / 5)
         append("最新要求：\n" + (task.messages.last(where: \.isHumanInput)?.content ?? ""), maximum: budget / 5)
-        let failures = task.events.filter { $0.status == "failed" && $0.hook?.event.observesModelRequest != true && AgentHookEvent(rawValue: $0.title)?.observesModelRequest != true }
+        let failures = task.events.filter { $0.status == "failed" && $0.hook?.event.diagnosticOnly != true && AgentHookEvent(rawValue: $0.title)?.diagnosticOnly != true }
         append("失败事件节选：\n" + failures.suffix(4).map { $0.title + "：" + $0.detail }.joined(separator: "\n"), maximum: budget / 8)
         append("计划：\n" + task.plan.map { "[\($0.status)] \($0.title)" }.joined(separator: "\n") + "\n产物：\n" + task.artifacts.joined(separator: "\n") + "\n来源：\n" + task.sources.joined(separator: "\n"), maximum: budget / 5)
         append("历史工作摘要（模型生成，须以原始结果核对）：\n" + (task.contextSummary ?? "无"), maximum: budget / 6)
@@ -792,7 +824,7 @@ import Foundation
         defer {
             let ownsResources = active[id] == nil || active[id]?.token == run.token
             let restart = active[id]?.token == run.token && run.restartAfterInterruption && store.task(id)?.status == .ready
-            if ownsResources, store.task(id)?.status != .waiting { store.mcp.disconnect(owner: id) }
+            if ownsResources, !run.retainsMCPForInterrupt, store.task(id)?.status != .waiting { store.mcp.disconnect(owner: id) }
             if active[id]?.token == run.token { active[id] = nil; notifyChange(id) }
             if ownsResources, !restart, store.task(id)?.status != .waiting { delegatedModels[id] = nil }
             if restart { start(id, continuingGoal: true) }

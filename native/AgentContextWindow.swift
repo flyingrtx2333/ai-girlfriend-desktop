@@ -43,7 +43,7 @@ private final class AgentContextDocument: NSView { override var isFlipped: Bool 
         return ["taskID": taskID, "section": tabs.selectedSegment, "source": source.indexOfSelectedItem, "text": body.arrangedSubviews.compactMap { ($0 as? NSTextField)?.stringValue }.joined(separator: "\n"), "actionEnabled": action.isEnabled, "action": action.title, "state": state.stringValue, "mainWindow": pageContentView?.window === presentingWindow && settingsHostWindow != nil]
     }
     @objc private func performAction() { _ = runtime.analyze(taskID, recap: tabs.selectedSegment == 1, model: recapModel?()); refresh() }
-    @objc private func cancelAction() { runtime.cancel(taskID); refresh() }
+    @objc private func cancelAction() { runtime.interrupt(taskID); refresh() }
     private func label(_ value: String, size: CGFloat = 13, bold: Bool = false, secondary: Bool = false) {
         let label = NSTextField(wrappingLabelWithString: value); label.font = .systemFont(ofSize: size, weight: bold ? .semibold : .regular); label.textColor = secondary ? AgentWorkbenchTheme.secondaryText : .labelColor; label.isSelectable = true
         body.addArrangedSubview(label); label.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -8).isActive = true

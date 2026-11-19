@@ -109,7 +109,7 @@ struct AgentStandaloneHookPackage {
         if mcpOnly { handlerFields = ["name", "type", "server", "tool", "input", "timeout", "statusMessage", "async"] }
         for (key, value) in events.sorted(by: { $0.key < $1.key }) {
             if mcpOnly, !handlerTypes([key: value]).mcp { continue }
-            guard AgentHookEvent(rawValue: key) != nil else { skipped.append(key); continue }
+            guard let event = AgentHookEvent(rawValue: key) else { skipped.append(key); continue }
             guard let groups = value as? [[String: Any]], groups.count <= 64 else { throw PetError("Hooks 的事件分组无效：" + key) }
             for group in groups {
                 guard Set(group.keys).isSubset(of: ["matcher", "hooks", "timeout", "async"]),
@@ -130,7 +130,7 @@ struct AgentStandaloneHookPackage {
                         if type == AgentMCPHook.type { continue }
                         guard type == "command" else { skipped.append(key + " · " + type); continue }
                         handler.removeValue(forKey: "commandWindows"); handler.removeValue(forKey: "command_windows")
-                        if handler["timeout"] == nil && group["timeout"] == nil { handler["timeout"] = key == "SessionEnd" ? 1 : 600 }
+                        if event != .interrupt, handler["timeout"] == nil && group["timeout"] == nil { handler["timeout"] = event == .sessionEnd ? 1 : 600 }
                     }
                     guard Set(handler.keys).isSubset(of: handlerFields), handler["once"] as? Bool != true,
                           mcpOnly || ["command", "http", "prompt", "agent"].contains(type) else { skipped.append(key + " · 处理器格式"); continue }

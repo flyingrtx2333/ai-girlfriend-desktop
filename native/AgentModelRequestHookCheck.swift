@@ -83,7 +83,9 @@ import AppKit
         timeout = 4
         """#
         try Data(toml.utf8).write(to: codex.appendingPathComponent("config.toml"))
-        let hooks = try JSONSerialization.data(withJSONObject: ["hooks": ["PostModelRequest": [["hooks": [
+        let hooks = try JSONSerialization.data(withJSONObject: ["hooks": ["Interrupt": [["hooks": [
+            ["name": "公开请求取消提示", "type": "command", "command": "/usr/bin/true"]
+        ]]], "PostModelRequest": [["hooks": [
             ["name": "公开请求后诊断", "type": "command", "command": "/bin/sh \"$QODER_HOOK_ROOT/observer.sh\" after PostModelRequest", "timeout": 4],
             ["name": "公开后台诊断", "type": "command", "command": "/bin/sh \"$QODER_HOOK_ROOT/observer.sh\" background PostModelRequest", "timeout": 4, "async": true]
         ]]]]], options: [.sortedKeys])
@@ -99,8 +101,8 @@ import AppKit
             && imports.contains { $0.preview.contains("PreModelRequest") } && imports.contains { $0.preview.contains("PostModelRequest") }
         for item in imports { try await AgentStandaloneDataImport.install(item, root: source, store: store) }
         let definitions = try store.hooks.catalog(workspace: workspace.path)
-        checks["observerDefinitionsAreDisabledAndIgnoreMatcher"] = definitions.count == 3
-            && definitions.allSatisfy { $0.event.observesModelRequest && $0.matcher.isEmpty && !store.hooks.enabled($0) }
+        checks["observerDefinitionsAreDisabledAndIgnoreMatcher"] = definitions.count == 4 && definitions.filter { $0.event.observesModelRequest }.count == 3
+            && definitions.allSatisfy { $0.event.diagnosticOnly && $0.matcher.isEmpty && !store.hooks.enabled($0) }
         for definition in definitions { try store.hooks.setEnabled(definition, true, workspace: workspace.path) }
         let invalid = try JSONSerialization.data(withJSONObject: ["hooks": ["PreModelRequest": [["hooks": [
             ["type": "prompt", "prompt": "公开样例"], ["type": "command", "command": "/usr/bin/true", "asyncRewake": true]
@@ -163,7 +165,7 @@ import AppKit
         let started = Date().addingTimeInterval(8)
         while try !rows().dropFirst(beforeCancel).contains(where: { $0.1["kind"] as? String == "cancel" }), Date() < started { await wait(0.025) }
         guard Date() < started else { throw PetError("取消前未收到真实本机请求") }
-        runtime.cancel(cancelling)
+        runtime.interrupt(cancelling)
         let cancelled = Date().addingTimeInterval(8)
         while try !rows().dropFirst(beforeCancel).contains(where: { $0.0 == "after" }), Date() < cancelled { await wait(0.025) }
         _ = try await settled(cancelling)
@@ -171,6 +173,7 @@ import AppKit
         checks["actualCancelledTransportRetainsPairedDiagnostic"] = cancellation.map(\.0) == ["before", "wire", "after"] && fieldsMatch(cancellation)
             && store.task(cancelling)?.status == .stopped && cancellation.last?.1["status"] as? String == "cancelled"
             && cancellation.last?.1["error"] is NSNull && cancellation.last?.1["token_usage"] is NSNull
+            && store.task(cancelling)?.events.filter { $0.hook?.event == .interrupt && $0.status == "completed" }.count == 1
 
         let compact = store.create(title: "公开请求重试", workspace: workspace.path), beforeCompact = try rows().count
         let original = [AgentMessage(role: "user", content: "PUBLIC_ORIGINAL"), AgentMessage(role: "assistant", content: String(repeating: "Public research history with retained evidence. ", count: 100)), AgentMessage(role: "user", content: "PUBLIC_CURRENT")]

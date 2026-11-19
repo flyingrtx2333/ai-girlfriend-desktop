@@ -14,7 +14,7 @@ import Foundation
             fields["agent_id"] = origin.id
             fields["agent_type"] = agent.profile.name
         }
-        await store.hooks.observeModelRequest(event, attempt: attempt, origin: origin, store: store, fields: fields, secret: key)
+        await store.hooks.recordDiagnostic(event, invocation: attempt, origin: origin, store: store, fields: fields, secret: key)
     }
 }
 

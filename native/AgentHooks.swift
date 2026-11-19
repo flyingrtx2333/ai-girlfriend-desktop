@@ -6,12 +6,14 @@ enum AgentHookEvent: String, Codable, CaseIterable {
     case sessionStart = "SessionStart", sessionEnd = "SessionEnd", prompt = "UserPromptSubmit"
     case preTool = "PreToolUse", postTool = "PostToolUse", toolFailure = "PostToolUseFailure"
     case permission = "PermissionRequest", denied = "PermissionDenied", stop = "Stop", stopFailure = "StopFailure"
+    case interrupt = "Interrupt"
     case preModelRequest = "PreModelRequest", postModelRequest = "PostModelRequest"
     case preCompact = "PreCompact", postCompact = "PostCompact", cwd = "CwdChanged", instructions = "InstructionsLoaded"
     case file = "FileChanged", notification = "Notification", subagentStart = "SubagentStart", subagentStop = "SubagentStop"
     case worktreeCreate = "WorktreeCreate", worktreeRemove = "WorktreeRemove"
     var controlsExecution: Bool { [.prompt, .preTool, .permission, .stop, .preCompact].contains(self) }
     var observesModelRequest: Bool { self == .preModelRequest || self == .postModelRequest }
+    var diagnosticOnly: Bool { observesModelRequest || self == .interrupt }
 }
 struct AgentHookDefinition: Codable, Identifiable {
     var id: String, name: String, event: AgentHookEvent, matcher: String, type: String, command: String
@@ -89,6 +91,9 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
         }
     }
     var isWorking: Bool { !jobs.values.allSatisfy(\.isEmpty) }
+    func hasEnabled(_ event: AgentHookEvent, type: String? = nil) -> Bool {
+        settings.values.contains { $0.enabled && $0.definition.event == event && (type == nil || $0.definition.type == type) }
+    }
     func isRunning(_ id: String) -> Bool { jobs[id]?.isEmpty == false || jobs.values.contains { $0.values.contains { $0.childID == id } } }
     func backgroundTitle(_ id: String) -> String? {
         let titles = (jobs[id] ?? [:]).values.filter(\.background).map(\.title).sorted()
@@ -155,10 +160,11 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             guard let event = AgentHookEvent(rawValue: eventName), let groups = events[eventName] as? [[String: Any]], groups.count <= 64 else { throw PetError("未知 Hook 事件或配置错误：" + eventName) }
             for (groupIndex, group) in groups.enumerated() {
                 guard let handlers = group["hooks"] as? [[String: Any]], handlers.count <= 32 else { throw PetError("Hook matcher 需要 hooks 数组") }
-                let matcher = event.observesModelRequest ? "" : (group["matcher"] as? String ?? "")
+                let matcher = event.diagnosticOnly ? "" : (group["matcher"] as? String ?? "")
                 for (index, handler) in handlers.enumerated() {
                     let type = handler["type"] as? String ?? "command", command = handler["command"] as? String ?? ""
-                    let timeout = handler["timeout"] as? Double ?? group["timeout"] as? Double ?? (type == "prompt" ? 30 : type == AgentMCPHook.type ? 600 : 60)
+                    let configuredTimeout = handler["timeout"] as? Double ?? group["timeout"] as? Double ?? (event == .interrupt ? 1 : type == "prompt" ? 30 : type == AgentMCPHook.type ? 600 : 60)
+                    let timeout = event == .interrupt && configuredTimeout.isFinite && configuredTimeout >= 0 ? min(3, max(1, configuredTimeout)) : configuredTimeout
                     let name = handler["name"] as? String ?? eventName + " · " + String((type == "command" ? command : type).prefix(45))
                     let id = AgentHookHTTP.id(file, eventName, groupIndex, index)
                     var item = AgentHookDefinition(id: id, name: name, event: event, matcher: matcher, type: type, command: command, timeout: timeout, network: handler["network"] as? Bool ?? false, source: file.path, root: resource.path, scope: scope, workspace: workspace)
@@ -167,13 +173,14 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     item.asyncRewake = handler["asyncRewake"] as? Bool ?? false
                     item.rewakeMessage = handler["rewakeMessage"] as? String; item.rewakeSummary = handler["rewakeSummary"] as? String
                     item.statusMessage = handler["statusMessage"] as? String
-                    item.shell = handler["shell"] as? String; item.arguments = handler["args"] as? [String]; item.condition = event.observesModelRequest ? nil : handler["if"] as? String
+                    item.shell = handler["shell"] as? String; item.arguments = handler["args"] as? [String]; item.condition = event.diagnosticOnly ? nil : handler["if"] as? String
                     item.once = handler["once"] as? Bool
                     item.environmentNames = (handler["env"] as? [String: String])?.keys.sorted()
                     item.url = handler["url"] as? String; item.prompt = handler["prompt"] as? String; item.model = handler["model"] as? String
                     item.tools = handler["tools"] as? [String] ?? (type == "agent" ? ["Read", "Glob", "Grep", "Bash"] : nil); item.maxTurns = handler["maxTurns"] as? Int ?? 50
                     item.headerNames = (handler["headers"] as? [String: String])?.keys.sorted()
                     if !["command", "http", "prompt", "agent", AgentMCPHook.type].contains(type) { item.diagnostic = "未知处理器：\(type)" }
+                    else if event == .interrupt, !["command", AgentMCPHook.type].contains(type) { item.diagnostic = "Interrupt 支持命令和 MCP 工具处理器" }
                     else if type == "command" && (command.isEmpty || command.utf8.count > 16_000 || command.contains("\0")) { item.diagnostic = "命令为空或超过 16KB" }
                     else if type == AgentMCPHook.type {
                         do {
@@ -213,6 +220,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     else if matcher.count > 300 || (!matcher.isEmpty && matcher != "*" && (try? NSRegularExpression(pattern: matcher)) == nil) { item.diagnostic = "matcher 不是有效正则表达式" }
                     else if [handler["async"], group["async"], handler["asyncRewake"]].contains(where: { $0 != nil && !($0 is Bool) }) { item.diagnostic = "async 和 asyncRewake 需要布尔值" }
                     else if event.observesModelRequest, item.asyncRewake == true { item.diagnostic = "模型请求诊断不支持唤醒任务" }
+                    else if event == .interrupt, item.asyncRewake == true { item.diagnostic = "Interrupt 不支持唤醒任务" }
                     else if item.asyncRewake == true && type != "command" { item.diagnostic = "asyncRewake 仅适用于 command 处理器" }
                     else if ["statusMessage", "rewakeMessage", "rewakeSummary"].contains(where: { handler[$0] != nil && !(handler[$0] is String) }) { item.diagnostic = "状态与唤醒消息需要字符串" }
                     else if (item.statusMessage?.count ?? 0) > 120 || item.statusMessage?.contains("\n") == true { item.diagnostic = "statusMessage 不超过 120 字且不能换行" }
@@ -331,12 +339,12 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     func fire(_ event: AgentHookEvent, trigger: String, store: AgentStore, taskID: String, value: String = "", fields: [String: Any] = [:], secret: String = "", preferences: PetPreferences? = nil, onChange: @escaping () -> Void = {}) async throws -> AgentHookEffect {
         guard let task = store.task(taskID), !["wiki", "hook"].contains(task.kind ?? "") else { return AgentHookEffect() }
         if let loadError { throw AgentHookHalt(loadError) }
-        guard settings.values.contains(where: { $0.enabled && (!event.observesModelRequest || $0.definition.event == event) }) else { return AgentHookEffect() }
+        guard event.diagnosticOnly ? hasEnabled(event) : settings.values.contains(where: \.enabled) else { return AgentHookEffect() }
         let hooks = try catalog(workspace: task.workspace).filter { $0.event == event && enabled($0) }
         var combined = AgentHookEffect()
         for hook in hooks {
             try Task.checkCancellation()
-            if hook.type != AgentMCPHook.type, !event.observesModelRequest, !trusted(hook) {
+            if hook.type != AgentMCPHook.type, !event.diagnosticOnly, !trusted(hook) {
                 throw AgentHookHalt("Hook 需要重新审核：" + hook.name + "。" + (hook.diagnostic ?? "配置或 hooks 目录已变化，请在管理界面重新启用"))
             }
             guard try matches(hook.matcher, value, name: hook.name) else { continue }
@@ -357,7 +365,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             if let prior = store.task(taskID)?.events.last(where: { $0.hook?.key == key }) {
                 // Background work is scheduled once, including interrupted or
                 // still-running work. Its result is delivered separately.
-                if prior.hook?.asynchronous == true { continue }
+                if prior.hook?.asynchronous == true || event == .interrupt { continue }
                 guard let effect = prior.hook?.effect else {
                     if hook.type == AgentMCPHook.type { continue }
                     throw AgentHookHalt("上次 Hook 结果未确认，请先核对实际状态后重新发起操作：" + hook.name)
@@ -381,7 +389,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                 let effect = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
                 combined.merge(effect)
             } catch {
-                if !event.observesModelRequest || Task.isCancelled { throw error }
+                if !event.diagnosticOnly || Task.isCancelled { throw error }
             }
             if combined.halt != nil || (combined.deny != nil && event.controlsExecution) { break }
         }; return combined
@@ -389,10 +397,10 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     private func sameScope(_ current: AgentTaskRecord, _ origin: AgentTaskRecord) -> Bool {
         !current.archived && current.workspace == origin.workspace && current.mode == origin.mode && current.permission == origin.permission && current.agent?.profile.id == origin.agent?.profile.id && current.agent?.ownerID == origin.agent?.ownerID && current.team?.team.id == origin.team?.team.id
     }
-    func observeModelRequest(_ event: AgentHookEvent, attempt: String, origin: AgentTaskRecord, store: AgentStore, fields: [String: Any], secret: String) async {
+    func recordDiagnostic(_ event: AgentHookEvent, invocation: String, origin: AgentTaskRecord, store: AgentStore, fields: [String: Any], secret: String) async {
         guard let current = store.task(origin.id), sameScope(current, origin), current.workspaceScope == origin.workspaceScope,
               current.automation?.runID == origin.automation?.runID else { return }
-        do { _ = try await fire(event, trigger: attempt, store: store, taskID: origin.id, fields: fields, secret: secret) { store.onChange?() } }
+        do { _ = try await fire(event, trigger: invocation, store: store, taskID: origin.id, fields: fields, secret: secret) { store.onChange?() } }
         catch where !Task.isCancelled {
             let message = secret.isEmpty ? error.localizedDescription : error.localizedDescription.replacingOccurrences(of: secret, with: "[凭据已隐藏]")
             store.update(origin.id) { $0.events.append(AgentEvent(kind: "hook", title: event.rawValue, detail: message, status: "failed")) }
@@ -518,7 +526,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             var effect: AgentHookEffect
             do {
                 if event.observesModelRequest { effect = AgentHookEffect() }
-                else if hook.runsInBackground { effect = try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") }
+                else if hook.runsInBackground, event != .interrupt { effect = try backgroundEffect(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") }
                 else { effect = try interpret(hook, result: result, stdout: result.stdout ?? "", stderr: result.stderr ?? "") }
                 if let input = effect.updatedInput, redact(input) != input {
                     throw AgentHookHalt(hook.type == AgentMCPHook.type ? "MCP Hook 的参数改写含受保护的值，未采用" : "Hook 参数包含受保护的凭据或环境值，未继续执行")
@@ -531,17 +539,18 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
             effect.context = redact(effect.context); effect.systemMessage = effect.systemMessage.map(redact)
             effect.deny = effect.deny.map(redact); effect.halt = effect.halt.map(redact); effect.sessionTitle = effect.sessionTitle.map(redact)
             let stdout = redact(result.stdout ?? ""), stderr = redact(result.stderr ?? "")
+            let recorded = event == .interrupt ? (effect.systemMessage ?? stdout) : stdout
             if !hook.runsInBackground, result.truncated == true && event.controlsExecution { effect.halt = "Hook 输出超过 64KB，未继续执行" }
             store.update(taskID) { record in
                 if let i = record.events.firstIndex(where: { $0.id == eventID }) {
                     record.events[i].status = effect.deny != nil || effect.halt != nil ? "blocked" : result.failed ? "failed" : "completed"
-                    record.events[i].duration = Date().timeIntervalSince(started); record.events[i].detail += "\n[exit=\(result.exitCode ?? -1)]\n" + (effect.suppressOutput ? "[输出已隐藏]" : String((stdout + "\n" + stderr).prefix(12_000)))
+                    record.events[i].duration = Date().timeIntervalSince(started); record.events[i].detail += "\n[exit=\(result.exitCode ?? -1)]\n" + (effect.suppressOutput ? "[输出已隐藏]" : String((recorded + "\n" + stderr).prefix(12_000)))
                     record.events[i].hook?.effect = effect; record.events[i].hook?.exitCode = result.exitCode
-                    if event.observesModelRequest, hook.runsInBackground { record.events[i].hook?.delivery = "recorded" }
+                    if event.diagnosticOnly, hook.runsInBackground { record.events[i].hook?.delivery = "recorded" }
                     if let childID = job.childID, let child = store.task(childID) { record.events[i].hook?.model = child.model; record.events[i].hook?.inputTokens = child.inputTokens; record.events[i].hook?.outputTokens = child.outputTokens }
                 }
             }; onChange()
-            if hook.runsInBackground, !event.observesModelRequest {
+            if hook.runsInBackground, !event.diagnosticOnly {
                 let contextKey = "async:" + eventID
                 let size = (store.task(taskID)?.hookContexts?.values.reduce(0) { $0 + $1.count } ?? 0) + effect.context.count
                 guard size <= 16_000 else { throw AgentHookHalt("后台 Hook 输出未加入上下文：补充资料已超过 16000 字") }
@@ -599,6 +608,17 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
     private func interpret(_ hook: AgentHookDefinition, result: AgentToolResult, stdout: String, stderr: String) throws -> AgentHookEffect {
         let event = hook.event
         var effect = AgentHookEffect()
+        if event == .interrupt {
+            if result.timedOut { throw AgentHookHalt("Interrupt 处理器执行超时") }
+            guard !result.failed, !stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return effect }
+            guard result.truncated != true, let object = try? AgentConfigurationJSON.object(Data(stdout.utf8)),
+                  Set(object.keys).isSubset(of: ["systemMessage"]),
+                  object["systemMessage"] == nil || object["systemMessage"] is NSNull || object["systemMessage"] is String else {
+                throw AgentHookHalt("Interrupt 处理器可返回空输出或包含 systemMessage 的 JSON")
+            }
+            effect.systemMessage = (object["systemMessage"] as? String).map { String($0.prefix(3000)) }
+            return effect
+        }
         if result.exitCode == 2 && event.controlsExecution { effect.deny = String((stderr.isEmpty ? "Hook 阻止了此操作" : stderr).prefix(2000)); return effect }
         if result.failed {
             if event.controlsExecution && (result.exitCode == nil || (result.text.contains("timeout"))) { effect.halt = "Hook 未完成，未继续执行：" + String(stderr.prefix(1000)) }

@@ -158,13 +158,14 @@ import AppKit
             let codexHooks = try json(["hooks": [
                 "PreToolUse": [["matcher": "^apply_patch$", "hooks": [["type": "command", "command": "/usr/bin/true"]]]],
                 "PreModelRequest": [["hooks": [["type": "command", "command": "/usr/bin/true"]]]],
-                "Interrupt": [["hooks": [["type": "command", "command": "/usr/bin/true"]]]]
+                "Interrupt": [["hooks": [["type": "command", "command": "/usr/bin/true"]]]],
+                "FutureObserver": [["hooks": [["type": "command", "command": "/usr/bin/true"]]]]
             ]])
             try write(codexHooks, codex, "hooks.json")
             await resumed.detect(.codex, root: codex, category: .configuration)
             checks["codexPreviewConvertsTOMLRoleAndExplainsUnsupportedHooks"] = resumed.preview.count == 2
                 && resumed.preview.contains { $0.title == "codex-archivist" && $0.preview.contains("只读项目") && !$0.preview.contains("run_command") }
-                && resumed.preview.contains { $0.preview.contains("Write|Edit") && $0.preview.contains("PreModelRequest") && $0.warnings.joined().contains("Interrupt") }
+                && resumed.preview.contains { $0.preview.contains("Write|Edit") && $0.preview.contains("PreModelRequest") && $0.preview.contains("Interrupt") && $0.warnings.joined().contains("FutureObserver") }
             try resumed.begin(.codex, root: codex, ids: Set(resumed.preview.filter { $0.issue == nil }.map(\.id)), category: .configuration)
             try await idle(resumed)
             checks["codexRoleAndHookLoadInUserScopeWithNativeRestrictions"] = try reopened.agents.list().contains { $0.name == "codex-archivist" && !$0.enabled && $0.readOnly
