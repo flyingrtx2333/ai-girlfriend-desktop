@@ -458,11 +458,24 @@ import UniformTypeIdentifiers
     }
     func setEntries(_ entries: [AgentSlashEntry], service: AgentSlashMenu, presentation: AgentSlashPresentation, query: String, reset: Bool, connectorIssue:String? = nil) {
         loadViewIfNeeded()
-        if reset || self.presentation != presentation || self.query != query { category = .recent; plugin = nil }
+        if reset || self.service == nil || self.presentation != presentation || self.query != query { category = .recent; plugin = nil }
         self.allEntries = entries; self.service = service; self.presentation = presentation; self.query = query
         self.connectorIssue = connectorIssue
+        table.setAccessibilityLabel("指令与扩展能力建议"); footer.setAccessibilityLabel("命令菜单状态")
         if let plugin, !entries.contains(where: { $0.pluginKey == plugin }) { self.plugin = nil }
         service.reload(); refresh()
+    }
+    func setBrowserTabs(_ pages: [AgentBrowserTabReference], query: String) {
+        loadViewIfNeeded()
+        let previous = selectedID
+        service = nil; plugin = nil; self.query = query; category = .recent
+        allEntries = pages.map(AgentSlashEntry.browserTab)
+        entries = query.isEmpty ? allEntries : allEntries.filter { $0.matches(query) }
+        categories.isHidden = true; back.isHidden = true; header.isHidden = true
+        empty.stringValue = "未找到匹配的网页标签"
+        table.setAccessibilityLabel("当前任务网页标签"); footer.setAccessibilityLabel("网页引用菜单状态")
+        footer.stringValue = "↑↓ 选择   Enter / Tab 添加   Esc 关闭"; footer.toolTip = nil
+        reloadRows(previous: previous)
     }
     private func refresh() {
         guard let service else { return }
@@ -475,11 +488,15 @@ import UniformTypeIdentifiers
             if value == .connectors { categories.setToolTip("在 Agent 或目标任务中选择已配置连接器",forSegment:index) }
         }
         if let plugin { back.title = allEntries.first(where: { $0.pluginKey == plugin })?.title ?? "返回" }
-        scroll.isHidden = entries.isEmpty; empty.isHidden = !entries.isEmpty; empty.stringValue = !query.isEmpty ? "未找到匹配项" : category == .recent && plugin == nil && presentation == .recent ? "暂无最近使用" : "暂无可用能力"
-        listHeight.constant = CGFloat(max(1, min(8, entries.count))) * 30
+        empty.stringValue = !query.isEmpty ? "未找到匹配项" : category == .recent && plugin == nil && presentation == .recent ? "暂无最近使用" : "暂无可用能力"
         let hints = !categories.isHidden ? "↑↓ 选择   ←→ 类别   Enter / Tab 添加   Esc 关闭" : plugin != nil ? "↑↓ 选择   ← 返回   Enter / Tab 添加   Esc 关闭" : "↑↓ 选择   Enter / Tab 添加   Esc 关闭"
         let issue = category == .connectors ? connectorIssue.map { "连接器未载入：" + $0 } ?? service.issue : service.issue
         footer.stringValue = issue ?? hints; footer.toolTip = issue
+        reloadRows(previous: previous)
+    }
+    private func reloadRows(previous: String?) {
+        scroll.isHidden = entries.isEmpty; empty.isHidden = !entries.isEmpty
+        listHeight.constant = CGFloat(max(1, min(8, entries.count))) * 30
         table.reloadData()
         if !entries.isEmpty { table.selectRowIndexes(IndexSet(integer: entries.firstIndex(where: { $0.id == previous }) ?? 0), byExtendingSelection: false); table.scrollRowToVisible(table.selectedRow) }
         else { table.deselectAll(nil) }

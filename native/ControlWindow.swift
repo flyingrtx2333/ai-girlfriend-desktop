@@ -229,6 +229,7 @@ final class FormDocumentView: NSView {
     private var displayedSidebarLayout: AgentSidebarLayout.Settings?
     private let extensionPanel = AgentExtensionPanel(), extensionPicker = AgentExtensionPicker()
     private var extensionPickerTask: String?
+    private var extensionBrowserMention: AgentBrowserMention?
     private let attachmentButton = NSButton(), draftAttachments = AgentAttachmentStrip()
     private var attachmentWindow: AgentAttachmentWindow?, attachmentImport: Task<Void, Never>?, importTaskID: String?
     private let workbenchBadge = AgentStatusBadge(), workbenchInspector = AgentTaskInspector()
@@ -4797,7 +4798,7 @@ final class FormDocumentView: NSView {
         manager.sourceTaskID = agentTaskID; manager.refresh(); sidebarRequested = true
         show(tab: "automation"); refreshAutomationBadge()
     }
-    private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
+    private func dismissExtensionCandidates() { extensionPickerTask = nil; extensionBrowserMention = nil; extensionPanel.parent?.removeChildWindow(extensionPanel); extensionPanel.orderOut(nil) }
     func windowDidResignKey(_ notification: Notification) { dismissExtensionCandidates(); homeGamesView?.pause() }
     internal func homeGamesReadback() -> [String:Any] {
         var value = homeGamesView?.readback() ?? [:]
@@ -4877,7 +4878,38 @@ final class FormDocumentView: NSView {
         case .connector(let server):
             let current = try AgentMCPSelection.current(AgentMCPSelection.reference(server),task:task,store:store)
             try insertSlashInvocation(AgentMCPSelection.invocation(current),taskID:taskID)
+        case .browserTab(let reference):
+            try addBrowserTabReference(reference, task: task, store: store)
         }
+    }
+    private func addBrowserTabReference(_ reference: AgentBrowserTabReference, task: AgentTaskRecord, store: AgentStore) throws {
+        guard attachmentImport == nil else { throw PetError("请先等待当前附件添加完成") }
+        guard (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
+        let before = composer.string, taskID = task.id
+        guard let mention = AgentBrowserMention(in: before, selection: composer.selectedRange()), mention == extensionBrowserMention else { throw PetError("输入位置已变化，请重新选择网页") }
+        guard saveAgentDraft(), companion?.persistTaskDrafts(taskID) != false else { throw PetError("原任务草稿未保存，请重试") }
+        let browser = try store.browser.session(taskID)
+        let after = (before as NSString).replacingCharacters(in: mention.range, with: "")
+        dismissExtensionCandidates(); importTaskID = taskID
+        attachmentImport = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var failure: String?
+            do {
+                let snapshot = try await browser.draftSnapshot(for: reference)
+                _ = try await snapshot.attach(store: store, taskID: taskID) {
+                    guard self.companion?.persistTaskDrafts(taskID) == true else { throw PetError("原任务草稿未保存，请重试") }
+                    guard browser.tabReferences.contains(where: reference.identifies) else { throw PetError("网页标签已变化，请重新选择") }
+                    return (before, after)
+                }
+                if displayedTask == taskID, let updated = store.task(taskID), composer.string == before || composer.string == after {
+                    bindAgentDraft(updated)
+                    composer.setSelectedRange(NSRange(location: mention.range.location, length: 0))
+                }
+            } catch { failure = Task.isCancelled ? "已取消添加网页" : error.localizedDescription }
+            attachmentImport = nil; importTaskID = nil; renderMessages()
+            if let failure, displayedTask == taskID { setStatus(failure, error: true) }
+        }
+        renderMessages()
     }
     private func insertRule(_ item: AgentPluginRuleItem, taskID: String) throws {
         guard let store = companion?.agentStore, let task = store.task(taskID), !task.archived, !task.isProjectDocumentation, task.kind != "hook" else { throw PetError("请在原普通任务中选择规则") }
@@ -4907,17 +4939,25 @@ final class FormDocumentView: NSView {
     }
     private func updateExtensionCandidates() {
         guard selectedTab == "chat", let store = companion?.agentStore, let task = currentAgentTask, task.id == displayedTask, !task.archived, !task.isProjectDocumentation, task.kind != "hook",
-              composer.string.hasPrefix("/"), !composer.string.contains(where: { $0.isWhitespace }), !composer.hasMarkedText(), window?.isVisible == true else { dismissExtensionCandidates(); return }
+              !composer.hasMarkedText(), window?.isVisible == true else { dismissExtensionCandidates(); return }
+        let draft = composer.string, mention = AgentBrowserMention(in: draft, selection: composer.selectedRange())
+        guard mention != nil || draft.hasPrefix("/") && !draft.contains(where: \.isWhitespace) else { dismissExtensionCandidates(); return }
         do {
-            let query = String(composer.string.dropFirst())
-            guard !query.contains("/") else { dismissExtensionCandidates(); return }
-            let items = try store.extensions.catalog(task: task, includeDisabled: false)
-            let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled, connectors:AgentMCPSelection.candidates(task:task,store:store))
-            guard !entries.isEmpty else { dismissExtensionCandidates(); return }
             let opening = extensionPickerTask != task.id || !extensionPanel.isVisible
             extensionPickerTask = task.id
+            extensionBrowserMention = mention
             extensionPicker.onLayoutChanged = { [weak self] in self?.positionExtensionCandidates() }
-            extensionPicker.setEntries(entries, service: store.slashMenu, presentation: companion?.generalSettings.settings.slashMenuPresentation ?? .recent, query: query, reset: opening, connectorIssue:store.mcp.loadError)
+            if let mention {
+                guard attachmentImport == nil, let pages = store.browser.sessions[task.id]?.tabReferences, !pages.isEmpty else { dismissExtensionCandidates(); return }
+                extensionPicker.setBrowserTabs(pages, query: mention.query)
+            } else {
+                let query = String(draft.dropFirst())
+                guard !query.contains("/") else { dismissExtensionCandidates(); return }
+                let items = try store.extensions.catalog(task: task, includeDisabled: false)
+                let entries = store.slashMenu.entries(items, task: task, idle: companion?.agentRuntime?.isBusy(task.id) == false, canChangeMode: modePopup.isEnabled, connectors: AgentMCPSelection.candidates(task: task, store: store))
+                guard !entries.isEmpty else { dismissExtensionCandidates(); return }
+                extensionPicker.setEntries(entries, service: store.slashMenu, presentation: companion?.generalSettings.settings.slashMenuPresentation ?? .recent, query: query, reset: opening, connectorIssue: store.mcp.loadError)
+            }
             extensionPicker.onPick = { [weak self] entry in
                 guard let self, let id = extensionPickerTask, id == displayedTask else { return }
                 do { try selectSlashEntry(entry, taskID: id) } catch { dismissExtensionCandidates(); setStatus(error.localizedDescription, error: true) }
@@ -5194,6 +5234,46 @@ extension ControlWindow {
         return ["captureReturnsToOwningTask": agentTaskID == taskID && displayedTask == taskID,
                 "capturePreservesBothComposerDrafts": tasks.task(taskID)?.draft == "保留的原有草稿\n" + note && tasks.task(other)?.draft == "独立草稿",
                 "captureAppearsInComposerBeforeSending": tasks.task(taskID)?.draftAttachmentIDs?.count == 1 && !draftAttachments.isHidden && !composer.string.isEmpty && tasks.task(taskID)?.messages.isEmpty == true]
+    }
+    func checkBrowserReferencePicker(taskID: String, otherID: String, page: AgentBrowserTabReference, browser: AgentBrowserWindow) async throws -> [String: Bool] {
+        guard let app = companion, app.checkDirectory != nil, let store = app.agentStore, let window else { throw PetError("缺少网页引用验收窗口") }
+        func type(_ text: String, before tail: String = "") {
+            composer.string = text + tail; composer.setSelectedRange(NSRange(location: (text as NSString).length, length: 0)); composer.didChangeText()
+        }
+        let original = store.task(taskID)?.draft ?? "", otherDraft = store.task(otherID)?.draft ?? "", originalIDs = store.task(taskID)?.draftAttachmentIDs ?? []
+        let fragment = " @" + page.title, tail = "\n继续保留原草稿。"
+        selectAgentTask(otherID); show(tab: "chat"); type("@")
+        let otherPages = store.browser.sessions[otherID]?.tabReferences ?? []
+        var checks = ["webPickerOnlyOffersTabsFromCurrentTask": !otherPages.isEmpty && extensionPanel.isVisible && extensionPicker.entries.map(\.id) == otherPages.map { "browser." + $0.id } && !extensionPicker.entries.contains { $0.id == "browser." + page.id }]
+        type(otherDraft); _ = saveAgentDraft()
+        selectAgentTask(taskID); show(tab: "chat"); window.makeKeyAndOrderFront(nil); window.makeFirstResponder(composer)
+        type("mail@example.org"); checks["emailDoesNotOpenWebPicker"] = !extensionPanel.isVisible
+        type("@rule:公开规则"); checks["ruleInvocationDoesNotOpenWebPicker"] = !extensionPanel.isVisible
+        type(original + fragment, before: tail)
+        checks["webPickerFiltersByTitleKeepsFocusAndFits"] = extensionPanel.isVisible && extensionPicker.entries.map(\.id) == ["browser." + page.id] && window.firstResponder === composer && !extensionPanel.isKeyWindow && slashMenuReadback()["overlapsComposer"] as? Bool == false
+        _ = composer.onExtensionKey?(53)
+        checks["escapePreservesOriginalMention"] = !extensionPanel.isVisible && composer.string == original + fragment + tail
+        type("@另一个\n" + original + fragment, before: tail)
+        composer.setSelectedRange(NSRange(location: ("@另一个" as NSString).length, length: 0))
+        _ = composer.onExtensionKey?(48); await attachmentImport?.value
+        checks["movingCaretCannotConsumeAnUnselectedMention"] = composer.string == "@另一个\n" + original + fragment + tail && (store.task(taskID)?.draftAttachmentIDs ?? []) == originalIDs
+        type(original + fragment, before: tail)
+        _ = composer.onExtensionKey?(48)
+        let expected = original + " " + tail
+        await attachmentImport?.value
+        let stored = store.task(taskID)
+        checks["keyboardAddsOneUnsentReferenceAndRetainsBothDrafts"] = !extensionPanel.isVisible && !draftAttachments.isHidden && composer.string == expected && composer.selectedRange().location == ((original + " ") as NSString).length && stored?.draft == expected && stored?.draftAttachmentIDs?.count == originalIDs.count + 1 && stored?.draftAttachmentIDs?.starts(with: originalIDs) == true && stored?.messages.isEmpty == true && store.task(otherID)?.draft == otherDraft
+        let acceptedIDs = stored?.draftAttachmentIDs
+        type(expected + fragment); _ = composer.onExtensionKey?(48)
+        type(expected + " 并发输入保持。")
+        await attachmentImport?.value
+        checks["editingDuringImportKeepsNewDraftWithoutAddingReference"] = store.task(taskID)?.draft == expected + " 并发输入保持。" && store.task(taskID)?.draftAttachmentIDs == acceptedIDs
+        type(expected + fragment)
+        _ = try browser.manageTabs(["action": "close", "tab_id": page.id])
+        _ = composer.onExtensionKey?(48); await attachmentImport?.value
+        checks["closingCandidateKeepsDraftWithoutAddingReference"] = composer.string == expected + fragment && store.task(taskID)?.draftAttachmentIDs == acceptedIDs
+        dismissExtensionCandidates(); type(expected); _ = saveAgentDraft()
+        return checks
     }
     func checkAgentBrowserEntry(_ output: URL, taskID: String) async -> [String: Bool] {
         selectAgentTask(taskID); showWindow(nil)

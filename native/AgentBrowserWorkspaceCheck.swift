@@ -134,6 +134,28 @@ import AppKit
             let fresh = try tasks.browser.show(taskID: f.taskID, title: "浏览器工作区")
             checks["reopenCreatesFreshWebsiteDataAndController"] = fresh !== browser && fresh.web.configuration.websiteDataStore !== originalWeb.configuration.websiteDataStore && host.currentController === fresh
             do { _ = try await tools.execute(staleAction); checks["closedSessionReferencesStayInvalid"] = false } catch { checks["closedSessionReferencesStayInvalid"] = true }
+            let referenceURL = URL(string: f.url.absoluteString + "?reference=source")!
+            _ = try await fresh.open(referenceURL); try await waitForBrowserProjectPreview(fresh)
+            _ = try await fresh.web.evaluateJavaScript("""
+                document.title = '公开网页引用样例';
+                const show = document.createElement('p'); show.textContent = 'PUBLIC_BROWSER_REFERENCE ' + 'x'.repeat(24500) + 'AFTER_REFERENCE_LIMIT';
+                const hide = document.createElement('p'); hide.textContent = 'HIDDEN_BROWSER_REFERENCE'; hide.style.display = 'none';
+                document.body.prepend(show, hide);
+                """)
+            guard await eventually({ fresh.tabReferences.first?.title == "公开网页引用样例" }), let target = fresh.tabReferences.first else { throw PetError("未找到已加载的公开网页标签") }
+            _ = try await fresh.open(URL(string: f.url.absoluteString + "?reference=current")!, newTab: true); try await waitForBrowserProjectPreview(fresh)
+            let currentWeb = fresh.web, currentAction = try toggle(object(await tools.execute(call("browser_read", ["query": "棋盘背景"]))))
+            _ = try await fresh.draftSnapshot(for: target)
+            checks["snapshotKeepsActiveToolReferenceValid"] = (try? tools.approvalReason(for: currentAction)) != nil
+            checks.merge(try await control.checkBrowserReferencePicker(taskID: f.taskID, otherID: f.otherID, page: target, browser: fresh), uniquingKeysWith: { _, new in new })
+            checks["referenceKeepsActiveWebView"] = fresh.web === currentWeb
+            guard let reference = tasks.task(f.taskID)?.attachments?.last, let page = reference.browserPage else { throw PetError("网页引用未写入原任务附件") }
+            let referenceSource = try AgentAttachments.source(store: tasks, taskID: f.taskID, id: reference.id)
+            let referenceBytes = try Data(contentsOf: referenceSource), referenceText = String(decoding: referenceBytes, as: UTF8.self)
+            checks["referenceIncludesActualVisibleTextAndExactURLExcludesHiddenAndOverflow"] = referenceText.hasPrefix(target.title + "\n" + referenceURL.absoluteString + "\n\n") && referenceText.contains("PUBLIC_BROWSER_REFERENCE") && !referenceText.contains("HIDDEN_BROWSER_REFERENCE") && !referenceText.contains("AFTER_REFERENCE_LIMIT") && page.partial && reference.partial && AgentFiles.hash(referenceBytes) == reference.sha256
+            let outsideDraft = try object(await tools.execute(call("list_attachments")))
+            checks["unsentReferenceStaysOutsideModelAttachmentList"] = (outsideDraft["attachments"] as? [[String: Any]])?.contains { $0["id"] as? String == reference.id } != true
+            report["browserReference"] = ["path": referenceSource.path, "sha256": reference.sha256, "id": reference.id]
             checks["noModelRequestsOrFabricatedMessages"] = requests == 0 && tasks.tasks.compactMap { tasks.task($0.id) }.allSatisfy { $0.messages.isEmpty && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["attachment"] = ["path": source.path, "sha256": attached.sha256, "id": attached.id]; report["fixture"] = ["taskID": f.taskID, "otherID": f.otherID, "url": f.url.absoluteString]
             host.finish(); tasks.browser.closeAll()

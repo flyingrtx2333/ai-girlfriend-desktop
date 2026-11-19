@@ -108,6 +108,10 @@ import WebKit
     var onWorkspaceChange: (() -> Void)?
     var onMonitorChange: (() -> Void)?
     var workspaceIsClosed: Bool { closed }
+    var tabReferences: [AgentBrowserTabReference] { pages.compactMap(\.tabReference) }
+    func draftSnapshot(for reference: AgentBrowserTabReference) async throws -> AgentBrowserPageSnapshot {
+        try await page(reference.id).draftSnapshot(for: reference)
+    }
     var workspaceHasUnsavedChanges: Bool { annotationWindow?.hasPendingChanges == true }
     var recoveryAnnotation: AgentBrowserAnnotationWindow? { annotationWindow.flatMap { $0.workspaceIsClosed ? nil : $0 } }
     var hasIndependentAnnotation: Bool { recoveryAnnotation?.hasIndependentWindow == true }

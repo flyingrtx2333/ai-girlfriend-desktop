@@ -42,22 +42,23 @@ enum AgentSlashEntry {
     case item(AgentExtensionItem), builtin(AgentSlashBuiltin), mode(AgentMode)
     case plugin(String, String, [AgentExtensionItem])
     case connector(AgentMCPServer)
+    case browserTab(AgentBrowserTabReference)
     var id: String {
-        switch self { case .item(let item): return "item." + item.id; case .builtin(let value): return "builtin." + value.rawValue; case .mode(let value): return "mode." + value.rawValue; case .plugin(let key, _, _): return "plugin." + String(AgentFiles.hash(Data(key.utf8)).prefix(24)); case .connector(let server): return "connector." + server.id }
+        switch self { case .item(let item): return "item." + item.id; case .builtin(let value): return "builtin." + value.rawValue; case .mode(let value): return "mode." + value.rawValue; case .plugin(let key, _, _): return "plugin." + String(AgentFiles.hash(Data(key.utf8)).prefix(24)); case .connector(let server): return "connector." + server.id; case .browserTab(let page): return "browser." + page.id }
     }
-    var title: String { switch self { case .item(let item): return item.name; case .builtin(let value): return value.title; case .mode(let value): return value.title; case .plugin(_, let title, _): return title; case .connector(let server): return server.name } }
+    var title: String { switch self { case .item(let item): return item.name; case .builtin(let value): return value.title; case .mode(let value): return value.title; case .plugin(_, let title, _): return title; case .connector(let server): return server.name; case .browserTab(let page): return page.title } }
     var detail: String {
-        switch self { case .item(let item): return [item.argumentHint, item.description].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "); case .builtin(let value): return value.detail; case .mode(let value): return value == .goal ? "持续推进目标，依据实际结果核对完成" : "先制定计划，再决定如何执行"; case .plugin(_, _, let items): return "\(items.count) 项能力"; case .connector(let server): return server.type == "stdio" ? "本机连接器" : "远程连接器" }
+        switch self { case .item(let item): return [item.argumentHint, item.description].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "); case .builtin(let value): return value.detail; case .mode(let value): return value == .goal ? "持续推进目标，依据实际结果核对完成" : "先制定计划，再决定如何执行"; case .plugin(_, _, let items): return "\(items.count) 项能力"; case .connector(let server): return server.type == "stdio" ? "本机连接器" : "远程连接器"; case .browserTab(let page): return page.url }
     }
-    var scope: String { switch self { case .item(let item): return item.scope; case .builtin: return "内置命令"; case .mode: return "任务模式"; case .plugin(_, _, let items): return items.first?.scope ?? "插件"; case .connector(let server): return AgentMCPSelection.scope(server) } }
-    var kindTitle: String { switch self { case .item(let item): return item.kind == .skill ? "技能" : "命令"; case .builtin: return "命令"; case .mode: return "模式"; case .plugin: return "插件"; case .connector: return "连接器" } }
-    var symbol: String { switch self { case .item(let item): return item.kind == .skill ? "hammer" : "terminal"; case .builtin: return "command"; case .mode: return "list.bullet.clipboard"; case .plugin: return "puzzlepiece.extension"; case .connector: return "network" } }
+    var scope: String { switch self { case .item(let item): return item.scope; case .builtin: return "内置命令"; case .mode: return "任务模式"; case .plugin(_, _, let items): return items.first?.scope ?? "插件"; case .connector(let server): return AgentMCPSelection.scope(server); case .browserTab: return "浏览器" } }
+    var kindTitle: String { switch self { case .item(let item): return item.kind == .skill ? "技能" : "命令"; case .builtin: return "命令"; case .mode: return "模式"; case .plugin: return "插件"; case .connector: return "连接器"; case .browserTab: return "网页标签" } }
+    var symbol: String { switch self { case .item(let item): return item.kind == .skill ? "hammer" : "terminal"; case .builtin: return "command"; case .mode: return "list.bullet.clipboard"; case .plugin: return "puzzlepiece.extension"; case .connector: return "network"; case .browserTab: return "globe" } }
     var pluginKey: String? { if case .plugin(let key, _, _) = self { return key }; return nil }
     var pluginChildren: [AgentExtensionItem]? { if case .plugin(_, _, let items) = self { return items }; return nil }
     var extensionItem: AgentExtensionItem? { if case .item(let item) = self { return item }; return nil }
     func matches(_ query: String) -> Bool {
         let invocation: String
-        switch self { case .item(let item): invocation = item.invocation; case .builtin(let value): invocation = value.rawValue; case .mode(let mode): invocation = mode.rawValue; case .plugin: invocation = ""; case .connector(let server): invocation = "mcp " + AgentMCPSelection.title(server) }
+        switch self { case .item(let item): invocation = item.invocation; case .builtin(let value): invocation = value.rawValue; case .mode(let mode): invocation = mode.rawValue; case .plugin, .browserTab: invocation = ""; case .connector(let server): invocation = "mcp " + AgentMCPSelection.title(server) }
         return [title, detail, scope, invocation].contains { $0.localizedCaseInsensitiveContains(query) }
     }
 }

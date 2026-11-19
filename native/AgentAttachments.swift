@@ -8,6 +8,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
     var partTitles: [String]?
     var notes: [String]?
     var browserCapture: AgentBrowserCapture?
+    var browserPage: AgentBrowserPageSource?
     var mcpSource: AgentMCPAttachmentSource?
     var desktopCapture: AgentDesktopCapture?
     var canvasCapture: AgentCanvasCapture?
@@ -55,7 +56,7 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         let root = try directory(store: store, taskID: taskID, id: id), files = try AgentFiles(workspace: root.path)
         return try JSONDecoder().decode(AgentDocumentContent.self, from: files.readData(root.appendingPathComponent("content.json"), maximum: 2_000_000))
     }
-    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil, appShotText: String? = nil) async throws -> AgentAttachment {
+    static func importFile(_ original: URL, store: AgentStore, taskID: String, draft: Bool = true, capture: AgentBrowserCapture? = nil, mcpSource: AgentMCPAttachmentSource? = nil, desktopCapture: AgentDesktopCapture? = nil, canvasCapture: AgentCanvasCapture? = nil, appShotText: String? = nil, browserPage: AgentBrowserPageSource? = nil, replacingDraft: (() throws -> (before: String, after: String))? = nil) async throws -> AgentAttachment {
         guard let task = store.task(taskID), task.kind != "wiki", !task.archived else { throw PetError("当前任务不能添加附件") }
         try store.sideTasks.requireOpen(task)
         guard !draft || (task.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
@@ -66,6 +67,10 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
         } else if desktopCapture?.appShot == true { throw PetError("窗口快照缺少可访问文字记录") }
         let selected = try validatedSource(original, allowOpaque: mcpSource != nil), type = selected.pathExtension.lowercased()
         if appShotText != nil { guard type == "png", capture == nil, mcpSource == nil, canvasCapture == nil else { throw PetError("窗口快照必须是独立 PNG 附件") } }
+        if browserPage != nil || replacingDraft != nil {
+            guard draft, type == "txt", browserPage != nil, replacingDraft != nil,
+                  capture == nil, mcpSource == nil, desktopCapture == nil, canvasCapture == nil else { throw PetError("网页引用需要独立的任务草稿") }
+        }
         let id = UUID().uuidString, destination = try directory(store: store, taskID: taskID, id: id)
         let stage = destination.deletingLastPathComponent().appendingPathComponent(".import-" + id, isDirectory: true)
         let job = Task.detached(priority: .utility) { () async throws -> AgentAttachment in
@@ -99,15 +104,20 @@ struct AgentAttachment: Codable, Identifiable, Sendable {
             }
             let modified = try local.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
             try fm.moveItem(at: stage, to: destination); moved = true
-            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, mcpSource: mcpSource, desktopCapture: desktopCapture, canvasCapture: canvasCapture)
+            return AgentAttachment(id: id, name: original.lastPathComponent, fileExtension: type, bytes: copied.0, sha256: copied.1, modified: modified, totalParts: document.totalParts, partial: document.partial || browserPage?.partial == true, width: width, height: height, partTitles: document.parts.map(\.title), notes: document.notes, browserCapture: capture, browserPage: browserPage, mcpSource: mcpSource, desktopCapture: desktopCapture, canvasCapture: canvasCapture)
         }
         let file = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
         do {
             try Task.checkCancellation()
+            let edit = try replacingDraft?()
             guard let previous = store.task(taskID), previous.kind != "wiki", !previous.archived else { throw PetError("任务状态已变化，附件未添加") }
             try store.sideTasks.requireOpen(previous)
             guard !draft || (previous.draftAttachmentIDs?.count ?? 0) < 6 else { throw PetError("每条消息最多 6 个附件") }
             let version = try store.recordVersion(taskID); var record = previous
+            if let edit {
+                guard (previous.draft ?? "") == edit.before else { throw PetError("任务输入已变化，请重新选择网页") }
+                record.draft = edit.after
+            }
             if record.attachments == nil { record.attachments = [] }; record.attachments?.append(file)
             if draft { if record.draftAttachmentIDs == nil { record.draftAttachmentIDs = [] }; record.draftAttachmentIDs?.append(file.id) }
             record.updated = Date()

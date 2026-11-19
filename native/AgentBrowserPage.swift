@@ -16,6 +16,28 @@ import WebKit
     private var restoringView: Task<Void, Never>?
     var recoveryURL: String? { web.url?.absoluteString ?? pendingRecovery?.url }
     var recoveryTitle: String { web.title.flatMap { $0.isEmpty ? nil : $0 } ?? pendingRecovery?.title ?? "" }
+    var tabReference: AgentBrowserTabReference? {
+        guard !closed, !busy, !web.isLoading, pageError == nil, pendingRecovery == nil,
+              let url = web.url, (try? AgentBrowser.url(url.absoluteString)) != nil else { return nil }
+        let title = String((web.title ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(160))
+        return AgentBrowserTabReference(id: id, documentID: documentID, url: url.absoluteString, title: title.isEmpty ? (url.host ?? url.absoluteString) : title)
+    }
+
+    func draftSnapshot(for reference: AgentBrowserTabReference) async throws -> AgentBrowserPageSnapshot {
+        guard let current = tabReference, reference.identifies(current) else { throw PetError("网页标签已变化，请重新选择") }
+        let token = navigation
+        let script = #"""
+        const body = document.body;
+        const text = body?.getClientRects().length ? body.innerText.trim() : "";
+        return {href: location.href, text: text.slice(0, 24000).replace(/[\uD800-\uDBFF]$/, ""), partial: text.length > 24000};
+        """#
+        let value = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: world)
+        try Task.checkCancellation()
+        guard let current = tabReference, reference.identifies(current), token == navigation,
+              let result = value as? [String: Any], result["href"] as? String == reference.url,
+              let text = result["text"] as? String, let partial = result["partial"] as? Bool else { throw PetError("读取期间网页已变化，请重新选择") }
+        return AgentBrowserPageSnapshot(source: .init(tab: current, capturedAt: Date(), partial: partial), text: text.replacingOccurrences(of: "\0", with: ""))
+    }
 
     init(dataStore: WKWebsiteDataStore, configuration: WKWebViewConfiguration? = nil, origins: Set<String> = []) {
         let config = configuration ?? WKWebViewConfiguration(); config.websiteDataStore = dataStore
