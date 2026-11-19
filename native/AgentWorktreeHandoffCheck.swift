@@ -194,10 +194,15 @@ import AppKit
                 return result
             }
             let heads = try await localHeads()
-            let reopened = AgentWorktreeHandoff(store: tasks, taskID: fixture.taskID)
+            let reloadedTasks = AgentStore(directory: tasks.directory.deletingLastPathComponent(), legacy: [],
+                                            extensionHome: output.appendingPathComponent("shared-home", isDirectory: true))
+            let reopened = AgentWorktreeHandoff(store: reloadedTasks, taskID: fixture.taskID)
             guard let pending = try reopened.pendingRecovery(), pending.published else { throw PetError("落盘的本地任务未被识别") }
-            do { _ = try tasks.prepareDeletion([fixture.taskID]); checks["unresolvedHandoffProtectsItsSourceTask"] = false }
-            catch { checks["unresolvedHandoffProtectsItsSourceTask"] = error.localizedDescription.contains("中断的工作树移交") }
+            do { _ = try reloadedTasks.prepareDeletion([fixture.taskID]); checks["unresolvedHandoffProtectsItsSourceTask"] = false }
+            catch {
+                report["sourceDeletionGuard"] = error.localizedDescription
+                checks["unresolvedHandoffProtectsItsSourceTask"] = error.localizedDescription.contains("中断的工作树移交")
+            }
             let recovered = try await reopened.recover(pending)
             let afterHeads = try await localHeads()
             checks["publishedContinuationIsReusedWithoutChangingBranchesOrTask"] = try recovered == id
