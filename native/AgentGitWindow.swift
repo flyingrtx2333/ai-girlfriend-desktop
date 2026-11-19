@@ -199,6 +199,7 @@ import AppKit
         filePicker.removeAllItems()
         let selected = table.selectedRowIndexes.filter { changes.indices.contains($0) }
         if selected.count > 1 { filePicker.addItem(withTitle: "已选 \(selected.count) 个文件") }
+        else if selected.isEmpty, !changes.isEmpty { filePicker.addItem(withTitle: "选择文件"); filePicker.lastItem?.isEnabled = false }
         for change in changes {
             filePicker.addItem(withTitle: change.status + "  " + change.path.replacingOccurrences(of: "\n", with: "↵")); filePicker.lastItem?.representedObject = change.path; filePicker.lastItem?.toolTip = change.path
         }
@@ -252,7 +253,7 @@ import AppKit
         }
         if busyChanged, workspaceHasUnsavedChanges { onWorkspaceChange?() }
     }
-    private func showError(_ error: Error) { state.textColor = AgentDialogStyle.error; state.stringValue = error.localizedDescription }
+    private func showError(_ error: Error) { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error }
     @objc private func openDependencies() {
         guard !busy else { return }
         do {
@@ -499,7 +500,7 @@ import AppKit
         guard !busy, writable(), let git, let review else { return }
         message.validateEditing()
         let value = message.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { state.textColor = AgentDialogStyle.error; state.stringValue = "请填写提交说明"; presentingWindow?.makeFirstResponder(message); return }
+        guard !value.isEmpty else { showError(PetError("请填写提交说明")); presentingWindow?.makeFirstResponder(message); return }
         let scope: AgentGitDraftRecovery.Scope
         do { scope = try bindDraftScope(); try scope.requireCurrent(store.task(taskID)) }
         catch { currentDraftScope = nil; setBusy(false); showError(error); return }
