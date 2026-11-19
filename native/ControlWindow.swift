@@ -2518,7 +2518,10 @@ final class FormDocumentView: NSView {
             let input = composer.string
             let accepted = runtime.submit(input, taskID: id, attachmentIDs: files) { [self] target in
                 let draft = runtime.store.task(id)?.draft ?? ""
-                composer.string = draft == input ? "" : draft
+                let savedText = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                let submittedText = input.trimmingCharacters(in: .whitespacesAndNewlines)
+                let commandDraft = savedText.hasPrefix("/") && submittedText.hasPrefix(savedText)
+                composer.string = commandDraft ? "" : draft
                 composer.undoManager?.removeAllActions(); composer.didChangeText()
                 selectAgentTask(target)
             }
@@ -3224,7 +3227,7 @@ final class FormDocumentView: NSView {
     }
     func composerChanged() {
         updateSendButton(); draftSave?.cancel(); updateExtensionCandidates()
-        guard companion?.agentStore != nil else { return }
+        guard companion?.agentStore != nil, AgentSlashBuiltin.sessionCommand(composer.string) == nil else { return }
         let work = DispatchWorkItem { [weak self] in self?.saveAgentDraft() }
         draftSave = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
