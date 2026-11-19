@@ -53,22 +53,69 @@ private struct AgentHookEditTarget: Codable, Equatable {
     }
 }
 
+@MainActor private final class AgentHookPreview: NSScrollView {
+    let text = NSTextView()
+    private var measuredWidth: CGFloat = 0
+    private var preferredHeight: CGFloat = 62
+
+    init() {
+        super.init(frame: .zero)
+        identifier = .init("form-input")
+        documentView = text
+        hasVerticalScroller = true; scrollerStyle = .overlay; drawsBackground = false; borderType = .noBorder
+        text.isEditable = false; text.isSelectable = true; text.isRichText = false; text.drawsBackground = false
+        text.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        text.textContainerInset = NSSize(width: 0, height: 4)
+        text.isVerticallyResizable = true; text.autoresizingMask = [.width]
+        text.textContainer?.widthTracksTextView = true; text.textContainer?.lineFragmentPadding = 0
+        text.setAccessibilityLabel("Hook 处理器")
+        setContentHuggingPriority(.required, for: .vertical)
+        setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    var string: String {
+        get { text.string }
+        set {
+            guard text.string != newValue else { return }
+            text.string = newValue
+            text.setSelectedRange(NSRange(location: 0, length: 0))
+            contentView.scroll(to: .zero); reflectScrolledClipView(contentView)
+            measuredWidth = 0; needsLayout = true
+        }
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: preferredHeight) }
+    override func layout() {
+        super.layout()
+        let width = contentSize.width
+        guard width > 1, abs(measuredWidth - width) > 0.5,
+              let container = text.textContainer, let layout = text.layoutManager else { return }
+        measuredWidth = width
+        layout.ensureLayout(for: container)
+        let height = min(144, max(32, ceil(layout.usedRect(for: container).maxY) + 8))
+        if preferredHeight != height { preferredHeight = height; invalidateIntrinsicContentSize() }
+    }
+}
+
 @MainActor final class AgentHookWindow: AgentSettingsPageController {
     private let service: AgentHooks
     private let workspace: String?
-    private let command = NSTextView(), groups = NSStackView(), detail = NSStackView()
+    private let command = AgentHookPreview(), groups = NSStackView()
+    private let detail = AgentThemeView(fill: AgentWorkbenchTheme.settings, stroke: AgentWorkbenchTheme.line)
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
-    private let state = NSTextField(labelWithString: ""), location = NSTextField(labelWithString: ""), selectionState = NSTextField(wrappingLabelWithString: "")
-    private let count = NSTextField(labelWithString: ""), empty = NSTextField(labelWithString: "暂无 Hooks")
-    private let scope = NSPopUpButton(), reveal = NSButton(title: "打开来源", target: nil, action: nil)
-    private let clear = NSButton(title: "清除凭据", target: nil, action: nil)
-    private let editSelected = NSButton(title: "编辑配置", target: nil, action: nil)
+    private let state = NSTextField(labelWithString: ""), location = AgentSettingsStatusField("匹配规则与运行方式")
+    private let selectionState = AgentSettingsStatusField("处理器状态")
+    private let count = NSTextField(labelWithString: ""), empty = AgentSettingsCatalogEmptyView(symbol: "link", text: "暂无 Hooks")
+    private let scope = NSPopUpButton(), reveal = AgentDialogButton(title: "打开来源", target: nil, action: nil)
+    private let clear = AgentDialogButton(title: "清除凭据", target: nil, action: nil)
+    private let editSelected = AgentDialogButton(title: "编辑配置", target: nil, action: nil)
     private let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private var items: [AgentHookDefinition] = [], selected: AgentHookDefinition?
     private var expanded: Set<AgentHookEvent> = []
     private var configWindow: AgentHookConfigWindow?
     private var reviewPage: AgentSettingsReviewPage?
     private weak var eventScroll: NSScrollView?
+    private var minimumDocumentHeight: NSLayoutConstraint!
     private var pendingScroll: Double?
     init(service: AgentHooks, workspace: String?) {
         self.service = service; self.workspace = workspace
@@ -77,12 +124,14 @@ private struct AgentHookEditTarget: Codable, Equatable {
         super.init(window: window)
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("Hooks 配置范围")
+        scope.autoenablesItems = false; scope.toolTip = "选择编辑或导入配置的范围"
         scope.target = self; scope.action = #selector(recoveryChanged(_:))
-        let edit = AgentDialogButton(title: "编辑配置", target: self, action: #selector(editConfig)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importConfig)), refresh = AgentDialogButton(title: "刷新", target: self, action: #selector(refreshList))
-        for button in [edit, importButton, refresh] { AgentDialogStyle.action(button) }
+        let edit = AgentDialogButton(title: "编辑配置", target: self, action: #selector(editConfig)), importButton = AgentDialogButton(title: "导入", target: self, action: #selector(importConfig)), refresh = AgentWorkbenchButton(title: "", target: self, action: #selector(refreshList))
+        AgentDialogStyle.action(edit, prominent: true); AgentDialogStyle.action(importButton)
+        AgentWorkbenchTheme.toolbar(refresh, title: "刷新", symbol: "arrow.clockwise")
         edit.setAccessibilityLabel("编辑当前范围的 Hooks 配置")
         let scopeControl = AgentSettingsPopupFrame(scope); scopeControl.widthAnchor.constraint(equalToConstant: 100).isActive = true
-        let header = NSStackView(views: [count, NSView(), scopeControl, edit, importButton, refresh]); header.spacing = 8
+        let header = NSStackView(views: [count, NSView(), scopeControl, refresh, importButton, edit]); header.spacing = 8; header.alignment = .centerY
         count.font = .systemFont(ofSize: 12); count.textColor = AgentWorkbenchTheme.secondaryText; count.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let scroll = NSScrollView(), document = FormDocumentView(); scroll.documentView = document; scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.scrollerStyle = .overlay
         scroll.identifier = NSUserInterfaceItemIdentifier("hook-event-groups"); scroll.setAccessibilityLabel("Hooks 事件分组")
@@ -93,26 +142,30 @@ private struct AgentHookEditTarget: Codable, Equatable {
         groups.orientation = .vertical; groups.alignment = .leading; groups.spacing = 0
         card.addSubview(groups); document.addSubview(card); document.addSubview(empty)
         for view in [groups, card, empty] { view.translatesAutoresizingMaskIntoConstraints = false }
+        minimumDocumentHeight = document.heightAnchor.constraint(greaterThanOrEqualToConstant: 154)
         NSLayoutConstraint.activate([
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), minimumDocumentHeight,
             card.leadingAnchor.constraint(equalTo: document.leadingAnchor), card.trailingAnchor.constraint(equalTo: document.trailingAnchor), card.topAnchor.constraint(equalTo: document.topAnchor), card.bottomAnchor.constraint(equalTo: document.bottomAnchor),
             groups.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), groups.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), groups.topAnchor.constraint(equalTo: card.topAnchor), groups.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            empty.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), empty.topAnchor.constraint(equalTo: document.topAnchor, constant: 20)
+            empty.leadingAnchor.constraint(equalTo: document.leadingAnchor), empty.trailingAnchor.constraint(equalTo: document.trailingAnchor), empty.topAnchor.constraint(equalTo: document.topAnchor)
         ])
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         reveal.target = self; reveal.action = #selector(revealSource)
         clear.target = self; clear.action = #selector(clearCredentials)
-        command.isEditable = false; command.isRichText = false; command.font = .monospacedSystemFont(ofSize: 12, weight: .regular); command.textColor = .labelColor; command.textContainerInset = NSSize(width: 12, height: 12)
-        command.isVerticallyResizable = true; command.autoresizingMask = [.width]; command.textContainer?.widthTracksTextView = true; command.setAccessibilityLabel("Hook 处理器")
-        let viewer = NSScrollView(); viewer.documentView = command; viewer.hasVerticalScroller = true; viewer.borderType = .noBorder
-        for label in [location, state, empty, selectionState] { label.font = .systemFont(ofSize: 12); label.textColor = AgentWorkbenchTheme.secondaryText; label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
-        location.lineBreakMode = .byTruncatingMiddle; state.lineBreakMode = .byTruncatingTail
+        state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
+        state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         editSelected.target = self; editSelected.action = #selector(editSelectedConfig); editSelected.setAccessibilityLabel("编辑所选 Hook 配置")
-        let actions = NSStackView(views: [enabled, NSView(), clear, reveal, editSelected]); actions.spacing = 8
-        detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 10
-        for view in [actions, location, viewer, selectionState] { detail.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
-        viewer.heightAnchor.constraint(equalToConstant: 160).isActive = true
-        detail.edgeInsets = NSEdgeInsets(top: 4, left: 0, bottom: 18, right: 0)
+        for button in [clear, reveal, editSelected] { AgentDialogStyle.action(button) }
+        clear.hasDestructiveAction = true
+        let actions = NSStackView(views: [enabled, NSView(), clear, reveal, editSelected]); actions.spacing = 8; actions.alignment = .centerY
+        let body = NSStackView(views: [actions, selectionState, location, command]); body.orientation = .vertical; body.alignment = .leading; body.spacing = 8
+        detail.identifier = .init("hook-handler-detail"); detail.layer?.cornerRadius = 8; detail.layer?.borderWidth = 1
+        detail.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
+        for view in body.arrangedSubviews { view.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+        NSLayoutConstraint.activate([
+            body.leadingAnchor.constraint(equalTo: detail.leadingAnchor, constant: 12), body.trailingAnchor.constraint(equalTo: detail.trailingAnchor, constant: -12),
+            body.topAnchor.constraint(equalTo: detail.topAnchor, constant: 10), body.bottomAnchor.constraint(equalTo: detail.bottomAnchor, constant: -10)
+        ])
         for view in [header, scroll, state] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), header.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), header.topAnchor.constraint(equalTo: content.topAnchor, constant: 4), header.heightAnchor.constraint(equalToConstant: 30),
@@ -125,24 +178,30 @@ private struct AgentHookEditTarget: Codable, Equatable {
     deinit { NotificationCenter.default.removeObserver(self) }
     @objc private func recoveryChanged(_ sender: Any?) { onSettingsRecoveryChange?() }
     private func disclosure(title: String, subtitle: String, symbol: String, badge: String = "", open: Bool, action: Selector, tag: Int) -> NSButton {
+        let eventRow = !badge.isEmpty
         let button = AgentWorkbenchButton(title: "", target: self, action: action); button.tag = tag; button.isBordered = false
+        if !eventRow && open {
+            button.state = .on; button.wantsLayer = true; button.layer?.cornerRadius = 6
+            AgentWorkbenchTheme.color(button.layer, AgentWorkbenchTheme.selection, animated: false)
+        }
         button.setAccessibilityLabel(title + (badge.isEmpty ? "" : "，\(badge) 个处理器") + "，" + subtitle); button.setAccessibilityValue(open ? "已展开" : "已收起")
-        let emblem = AgentThemeView(fill: AgentWorkbenchTheme.accent.withAlphaComponent(0.08), stroke: AgentWorkbenchTheme.line); emblem.layer?.cornerRadius = 8; emblem.layer?.borderWidth = 1
+        let emblem = AgentThemeView(fill: eventRow ? AgentWorkbenchTheme.accent.withAlphaComponent(0.08) : .clear, stroke: AgentWorkbenchTheme.line)
+        emblem.layer?.cornerRadius = 8; emblem.layer?.borderWidth = eventRow ? 1 : 0
         let icon = NSImageView(); icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage(systemSymbolName: "link", accessibilityDescription: nil); icon.contentTintColor = AgentWorkbenchTheme.secondaryText
-        let name = NSTextField(labelWithString: title); name.font = .systemFont(ofSize: 13); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let name = NSTextField(labelWithString: title); name.font = .systemFont(ofSize: 13, weight: .medium); name.lineBreakMode = .byTruncatingTail; name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let number = NSTextField(labelWithString: badge); number.font = .systemFont(ofSize: 11); number.textColor = AgentWorkbenchTheme.secondaryText; number.isHidden = badge.isEmpty
         let top = NSStackView(views: [name, number, NSView()]); top.spacing = 8
         let note = NSTextField(labelWithString: subtitle); note.font = .systemFont(ofSize: 12); note.textColor = AgentWorkbenchTheme.secondaryText; note.lineBreakMode = .byTruncatingTail
-        let text = NSStackView(views: [top, note]); text.orientation = .vertical; text.alignment = .leading; text.spacing = 4
+        let text = NSStackView(views: [top, note]); text.orientation = .vertical; text.alignment = .leading; text.spacing = eventRow ? 4 : 2
         let arrow = NSImageView(); arrow.image = NSImage(systemSymbolName: open ? "chevron.down" : "chevron.right", accessibilityDescription: nil); arrow.contentTintColor = AgentWorkbenchTheme.secondaryText
         for view in [emblem, text, arrow] { button.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false; view.setAccessibilityElement(false) }
         emblem.addSubview(icon); icon.translatesAutoresizingMaskIntoConstraints = false
         for label in [name, number, note] { label.setAccessibilityElement(false) }
         NSLayoutConstraint.activate([
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 70), emblem.leadingAnchor.constraint(equalTo: button.leadingAnchor), emblem.centerYAnchor.constraint(equalTo: button.centerYAnchor), emblem.widthAnchor.constraint(equalToConstant: 28), emblem.heightAnchor.constraint(equalToConstant: 28),
+            button.heightAnchor.constraint(equalToConstant: eventRow ? 64 : 48), emblem.leadingAnchor.constraint(equalTo: button.leadingAnchor), emblem.centerYAnchor.constraint(equalTo: button.centerYAnchor), emblem.widthAnchor.constraint(equalToConstant: 28), emblem.heightAnchor.constraint(equalToConstant: 28),
             icon.centerXAnchor.constraint(equalTo: emblem.centerXAnchor), icon.centerYAnchor.constraint(equalTo: emblem.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 14), icon.heightAnchor.constraint(equalToConstant: 14),
             text.leadingAnchor.constraint(equalTo: emblem.trailingAnchor, constant: 12), text.trailingAnchor.constraint(equalTo: arrow.leadingAnchor, constant: -12), text.centerYAnchor.constraint(equalTo: button.centerYAnchor), top.widthAnchor.constraint(equalTo: text.widthAnchor), note.widthAnchor.constraint(equalTo: text.widthAnchor),
-            arrow.trailingAnchor.constraint(equalTo: button.trailingAnchor), arrow.centerYAnchor.constraint(equalTo: button.centerYAnchor), arrow.widthAnchor.constraint(equalToConstant: 12), arrow.heightAnchor.constraint(equalToConstant: 12)
+            arrow.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -6), arrow.centerYAnchor.constraint(equalTo: button.centerYAnchor), arrow.widthAnchor.constraint(equalToConstant: 12), arrow.heightAnchor.constraint(equalToConstant: 12)
         ]); return button
     }
     private func renderGroups() {
@@ -157,7 +216,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
             header.setAccessibilityIdentifier("hook-event-" + event.rawValue)
             groups.addArrangedSubview(header); header.widthAnchor.constraint(equalTo: groups.widthAnchor).isActive = true
             guard expanded.contains(event) else { continue }
-            let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 0; body.edgeInsets = NSEdgeInsets(top: 0, left: 40, bottom: 0, right: 0)
+            let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 4; body.edgeInsets = NSEdgeInsets(top: 0, left: 40, bottom: 8, right: 0)
             groups.addArrangedSubview(body); body.widthAnchor.constraint(equalTo: groups.widthAnchor).isActive = true
             for (row, item) in handlers {
                 let label = !service.enabled(item) ? "已停用" : service.trusted(item) ? "已启用" : "待审核"
@@ -169,6 +228,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
             }
         }
         card.isHidden = events.isEmpty; empty.isHidden = !events.isEmpty
+        minimumDocumentHeight.constant = events.isEmpty ? 154 : 0
         if let content = pageContentView, settingsHostWindow != nil { content.effectiveAppearance.performAsCurrentDrawingAppearance { AgentSettingsStyle.prepare(content) } }
     }
     @objc private func toggleEvent(_ sender: NSButton) {
@@ -179,7 +239,7 @@ private struct AgentHookEditTarget: Codable, Equatable {
     @objc private func selectHandler(_ sender: NSButton) {
         guard items.indices.contains(sender.tag) else { return }
         selected = selected?.id == items[sender.tag].id ? nil : items[sender.tag]
-        showSelection(); renderGroups(); presentingWindow?.makeFirstResponder(disclosureButton("hook-handler-" + items[sender.tag].id)); recoveryChanged(nil)
+        showSelection(); renderGroups(); revealHandler(items[sender.tag].id); recoveryChanged(nil)
     }
     private func disclosureButton(_ identifier: String) -> NSButton? {
         func find(_ view: NSView) -> NSButton? {
@@ -189,18 +249,20 @@ private struct AgentHookEditTarget: Codable, Equatable {
         return find(groups)
     }
     private func showSelection() {
-        enabled.isEnabled = selected != nil && selected?.pluginEnabled != false; reveal.isEnabled = selected != nil
         editSelected.isEnabled = canEditSelected
         editSelected.toolTip = canEditSelected ? nil : "共享配置请通过“打开来源”编辑。"
-        clear.isHidden = !["http", "command"].contains(selected?.type ?? ""); clear.isEnabled = selected?.headerNames?.isEmpty == false || selected?.environmentNames?.isEmpty == false
         selectionState.stringValue = ""
         guard let item = selected else { command.string = ""; location.stringValue = ""; enabled.state = .off; return }
-        enabled.state = service.enabled(item) ? .on : .off; command.string = item.display
-        let timeout = item.timeout.isFinite && (1...600).contains(item.timeout) ? " · \(Int(item.timeout))s" : ""
-        location.stringValue = item.type + " · " + item.event.rawValue + (item.matcher.isEmpty ? "" : " · " + item.matcher) + timeout + (item.runsInBackground ? item.asyncRewake == true ? " · 后台唤醒" : " · 后台" : "") + (item.network ? " · 联网" : ""); location.toolTip = item.source
+        clear.isHidden = !["http", "command"].contains(item.type) || (item.headerNames?.isEmpty != false && item.environmentNames?.isEmpty != false)
+        let active = service.enabled(item)
+        enabled.isEnabled = item.pluginEnabled != false && (item.diagnostic == nil || active)
+        enabled.state = active ? .on : .off; command.string = item.display
+        let timeout = item.timeout.isFinite && (1...600).contains(item.timeout) ? " · \(Int(item.timeout)) 秒" : ""
+        location.stringValue = "匹配 " + (item.matcher.isEmpty ? "全部" : item.matcher) + timeout + (item.runsInBackground ? item.asyncRewake == true ? " · 后台唤醒" : " · 后台" : "") + (item.network ? " · 联网" : "")
+        reveal.toolTip = item.source
         if item.pluginEnabled == false { selectionState.stringValue = "所属插件已停用，请先在插件管理中启用" }
-        else if let diagnostic = item.diagnostic { selectionState.stringValue = diagnostic }
-        else if service.enabled(item) && !service.trusted(item) { selectionState.stringValue = item.type == AgentMCPHook.type ? "Hook 或连接器已变化，重新启用前需审核" : "配置或脚本已变化，重新启用前需审核" }
+        else if let diagnostic = item.diagnostic { selectionState.stringValue = diagnostic; selectionState.textColor = AgentDialogStyle.error }
+        else if active && !service.trusted(item) { selectionState.stringValue = item.type == AgentMCPHook.type ? "Hook 或连接器已变化，重新启用前需审核" : "配置或脚本已变化，重新启用前需审核" }
         selectionState.isHidden = selectionState.stringValue.isEmpty
     }
     private func reload(select id: String? = nil) {
@@ -217,8 +279,19 @@ private struct AgentHookEditTarget: Codable, Equatable {
     func selectHook(_ id: String) {
         reload(select: id)
         if let selected, selected.id == id { scope.selectItem(at: selected.workspace == nil ? 0 : 1) }
+        revealHandler(id)
+    }
+    private func revealHandler(_ id: String) {
         pageContentView?.layoutSubtreeIfNeeded()
-        if let button = disclosureButton("hook-handler-" + id) { button.scrollToVisible(button.bounds) }
+        guard let button = disclosureButton("hook-handler-" + id),
+              let scroll = eventScroll, let document = scroll.documentView else { return }
+        presentingWindow?.makeFirstResponder(button)
+        var visible = document.convert(button.bounds, from: button)
+        if selected?.id == id, detail.superview != nil {
+            let panel = document.convert(detail.bounds, from: detail)
+            visible.size.height = min(scroll.contentSize.height, max(visible.height, min(panel.maxY, panel.minY + 96) - visible.minY))
+        }
+        document.scrollToVisible(visible)
     }
     func checkGroupedPresentation() throws -> [String: Bool] {
         guard CommandLine.arguments.contains("--settings-layout-check") else { return [:] }
@@ -238,6 +311,15 @@ private struct AgentHookEditTarget: Codable, Equatable {
         guard let handler = handlers().first else { throw PetError("分组没有显示处理器") }
         handler.performClick(nil); pageContentView?.layoutSubtreeIfNeeded()
         checks["handlerSelectionShowsActualCommandAndState"] = selected?.id == first.id && command.string == first.display && enabled.state == .off && detail.superview != nil
+        checks["expandedHandlerIsCompactAndSelected"] = handlers().first?.bounds.height == 48 && handlers().first?.state == .on && eventButton(.stop)?.bounds.height == 64
+        checks["handlerActionsUseSharedSizeAndHideUnusedCredentialsAction"] = clear.isHidden && reveal.bounds.height == 28 && editSelected.bounds.height == 28
+        checks["shortHandlerPreviewFitsItsContentAndCanBeCopied"] = (32...80).contains(command.bounds.height) && command.text.isSelectable && !command.text.isEditable
+            && location.isSelectable && location.maximumNumberOfLines == 0 && location.stringValue.contains("匹配")
+        let lastLine = "公开参数完整末行"
+        command.string = String(repeating: "公开参数行\n", count: 40) + lastLine
+        pageContentView?.layoutSubtreeIfNeeded(); pageContentView?.layoutSubtreeIfNeeded()
+        checks["longHandlerPreviewScrollsWithoutTruncating"] = command.bounds.height == 144 && command.text.frame.height > command.contentSize.height && command.string.hasSuffix(lastLine)
+        command.string = first.display
         eventButton(.stop)?.performClick(nil)
         checks["collapseHidesHandlerDetailsWithoutLosingSelection"] = handlers().isEmpty && detail.superview == nil && selected?.id == first.id
         eventButton(.stop)?.performClick(nil)
