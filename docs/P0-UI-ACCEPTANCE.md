@@ -1,5 +1,14 @@
 # P0 逐页界面验收台账
 
+## 2026-11-19 清空与新建会话
+
+空闲任务可以从输入栏或斜杠菜单执行 `/clear` 和 `/new`，命令后可填写名称。空白会话沿用工作区、模式、审批方式和显式模型选择。原任务可从侧栏打开，原消息、草稿和附件留在那里。首次发送分别通过 `SessionStart` 的 `clear` 或 `new` 匹配处理器，后续继续使用 `resume`。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#sessionstart) [Qoder Hooks](https://docs.qoder.com/cli/hooks) [Qoder 会话命令](https://docs.qoder.com/cli/slash-reference)
+
+- 最终源码 `3654989` 的同一优化包通过 **45 项**原生检查，其中会话专项 24 项。该专项发送 **14 次本机协议请求**，核对 Codex `clear`、Qoder `new`、首次发送的空白上下文、后续 `resume`、待审批拦截、原文件字节和附件、无工作区新建及名称校验。真实模型请求 **0 次**。
+- **1320×800 深色**窗口检查斜杠候选，以回车执行 `/clear`，以发送按钮执行 `/new`。首轮 `9e734a3` 发现原任务输入框留下半截 `/cle`。最终包复验了已提交命令片段的清理，也从原任务读回普通草稿与两条历史消息。首轮记录在 `evidence/agent/fresh-session-hooks-k8m2v6q4/first-window-finding.json`。
+- **780×540 浅色**重开后，两条空白会话分别触发样例处理器，原任务的草稿与消息仍可读取。上一版用独立资料副本打开原任务与两条新增会话。三个窗口进程正常退出，最终保留 **9 张**原图。索引见 `evidence/agent/fresh-session-hooks-m6t4q8p2/accepted.json`。
+- Mac mini 日用已安装并重开 **0.9.4 `3654989`**，构建于 **2026-11-19 11:31（北京时间）**，进程 **55572**。实际读回关于页和 Codex 扩展配置入口，并回到原任务的 deepseek-flash 8192／512 模型设置。日用程序与验收包一致，新旧应用各 **228 份**文件已核对。上一版 `e6d5c58` 已备份，正式 **14 份**资料的内容和权限一致。安装记录见 `evidence/agent/fresh-session-hooks-m6t4q8p2/daily-01/delivery-proof.json`。
+
 ## 2026-11-19 主任务中断 Hooks
 
 用户主动停止运行中的主任务时，`Interrupt` 使用停止前的会话、轮次、模型及审批方式。支持从 Codex `config.toml` 和 `hooks.json` 迁移命令及 MCP 工具处理器，导入后停用。处理器忽略匹配条件，默认 1 秒，配置超时限制为 1 至 3 秒。空输出有效，`systemMessage` 在原任务的「记录 → 日志」显示。MCP 处理器沿用原任务已经批准且仍有效的连接，处理完成后释放该次运行的连接。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#interrupt)

@@ -254,6 +254,8 @@ Agent 通过 `mcp` 工具组先读取简短目录，再按名称把工具原始�
 
 `SessionStart` 的 `source` 区分首次执行 `startup`、继续已有任务 `resume`、任务分支首次执行 `fork` 和压缩完成 `compact`，同时提供实际使用的模型。逐次确认后沿用原会话。`PreCompact` 和 `PostCompact` 用 `trigger` 区分手动 `manual` 和自动 `auto`，并提供本轮 `turn_id`。前置命令可用退出码 2 阻止压缩，后置处理器在摘要保存后收到 `compact_summary`。主任务随后执行 `SessionStart` 的 `compact` 处理器，补充资料可进入下一次对话请求。处理器要求停止时，系统结束本次继续执行并保留已保存的记录。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#sessionstart) [Qoder Hooks](https://docs.qoder.com/cli/hooks)
 
+在空闲任务的输入栏运行 `/clear` 或 `/new` 可开启空白会话，命令后可填写新名称。新会话沿用原任务的工作区、模式、审批方式及显式模型选择。从侧栏返回原任务可查看原消息、草稿和附件。首次发送时 `SessionStart` 分别使用 `clear` 或 `new`，正常重开也会保留待触发来源。[Codex 会话命令](https://learn.chatgpt.com/docs/developer-commands?surface=cli#clear-the-terminal-and-start-a-new-chat-with-clear) [Qoder 会话命令](https://docs.qoder.com/cli/slash-reference)
+
 `PreModelRequest` 和 `PostModelRequest` 记录任务对话、上下文压缩与手动任务回顾的请求前后状态。同一轮压缩重试沿用 `turn_id`，每次请求各自触发一对事件。输入包含模型、会话和轮次标识，处理器收到的 `transcript_path` 为 `null`。后置事件记录完成、失败或取消，附上脱敏错误和服务实际返回的用量字段。两个事件对所有对应请求生效，处理器输出保存在任务记录中。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#premodelrequest-and-postmodelrequest)
 
 主动停止运行中的主任务会触发 `Interrupt`，保留中断前的会话、轮次、模型和审批方式。可从 Codex `config.toml` 或 `hooks.json` 迁移已兼容的配置，导入后在 Hooks 页审核启用。事件忽略 `matcher`，处理器默认 1 秒，超时取 1 至 3 秒。命令或原任务已有的 MCP 连接可返回 `systemMessage`，提示显示在任务记录中。空输出也有效。任务的停止状态由主动停止操作决定。[Codex Hooks](https://learn.chatgpt.com/docs/hooks#interrupt)
