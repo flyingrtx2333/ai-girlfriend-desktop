@@ -67,7 +67,10 @@ import AppKit
         NotificationCenter.default.addObserver(self, selector: #selector(branchSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         document.addSubview(sourceOptions); sourceOptions.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: optionsScroll.contentView.widthAnchor), sourceOptions.leadingAnchor.constraint(equalTo: document.leadingAnchor), sourceOptions.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -12), sourceOptions.topAnchor.constraint(equalTo: document.topAnchor, constant: 2), sourceOptions.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -2), optionsScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 52), optionsScroll.heightAnchor.constraint(lessThanOrEqualToConstant: 150)])
-        let preferred = optionsScroll.heightAnchor.constraint(equalToConstant: CGFloat(min(148, 84 + 40 * max(0, (store.task(taskID)?.workspacePaths.count ?? 1) - 1)))); preferred.priority = .defaultHigh; preferred.isActive = true
+        let preferred = optionsScroll.heightAnchor.constraint(equalToConstant: CGFloat(min(148, 84 + 40 * max(0, (store.task(taskID)?.workspacePaths.count ?? 1) - 1))))
+        // Let the source list scroll before the form grows the workbench window.
+        preferred.priority = .init(NSLayoutConstraint.Priority.windowSizeStayPut.rawValue - 1)
+        preferred.isActive = true
         AgentDialogStyle.action(preview); AgentDialogStyle.action(create, prominent: true)
         let actions = NSStackView(views: [NSView(), preview, create]); actions.spacing = 10
         for view in [root, optionsScroll, include, state, diff, actions] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -292,6 +295,7 @@ import AppKit
         let frames = [start, branch, include, preview, create].map { content.convert($0.bounds, from: $0) }
         func frame(_ view: NSView) -> [CGFloat] { let r = content.convert(view.bounds, from: view); return [r.minX, r.minY, r.width, r.height] }
         return ["taskID": taskID, "resumeTaskID": resumeTaskID ?? "", "sources": sourceRoots, "sourceStartPoints": selectedStarts, "retainedRoots": retainedRoots.sorted(), "branch": branch.stringValue, "startPoint": selectedStart ?? "", "includeChanges": include.state == .on, "reviewHash": review?.hash ?? "", "patch": diff.patch, "state": state.stringValue, "stateIsError": state.textColor == AgentDialogStyle.error, "busy": busy, "hasPendingChanges": hasPendingChanges, "createEnabled": create.isEnabled, "inputFrames": [frame(startFrame), frame(branch)], "actionFrames": [frame(preview), frame(create)], "diffFrame": frame(diff),
+                "sourceViewport": [optionsScroll.contentView.bounds.height, optionsScroll.documentView?.bounds.height ?? 0],
                 "checks": ["creationUsesTaskWindow": settingsHostWindow != nil && pageContentView?.window === settingsHostWindow, "creationHasNoFloatingWindow": window?.isVisible != true, "creationControlsFit": frames.allSatisfy { content.bounds.insetBy(dx: -1, dy: -1).contains($0) }, "creationPreviewHasUsableHeight": diff.bounds.height >= 120]]
     }
     func checkWorkspace(branch name: String? = nil, startPoint: String? = nil, includeChanges: Bool? = nil, action: String = "") async {

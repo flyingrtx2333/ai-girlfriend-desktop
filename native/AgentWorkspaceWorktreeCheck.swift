@@ -207,6 +207,26 @@ import AppKit
             for field in ["worktreeOrigins", "worktreeSetup", "worktreeRecycleArchived"] { legacy.removeValue(forKey: field) }
             let old = try JSONDecoder().decode(AgentTaskRecord.self, from: JSONSerialization.data(withJSONObject: legacy))
             checks["legacySingleOriginStillDecodesAndRemainsManaged"] = old.worktreeOrigins == nil && old.managedWorktreeOrigins.count == 1 && old.managedWorktreeOrigins.first == old.worktreeOrigin
+            let extras = try ["Gamma 公开项目", "Delta 公开项目"].map { try AgentFiles(workspace: output.path).literalURL($0) }
+            for root in extras { _ = try await workspaceWorktreeGit(["clone", "--no-hardlinks", alpha.path, root.path], root: alpha, output: output) }
+            let layoutTask = tasks.create(title: "四来源布局验收", workspaceScope: AgentWorkspaceScope(group: beta.path, folders: (roots + extras).map(\.path), primary: beta.path))
+            guard let window = control.window else { throw PetError("任务窗口不可用") }
+            control.showAgentTask(layoutTask); control.show(tab: "chat")
+            let compactSize = NSSize(width: 780, height: 540)
+            window.setFrame(NSRect(origin: window.frame.origin, size: compactSize), display: true)
+            control.createTaskWorktree()
+            guard let form = control.taskWorkspace.currentController as? AgentWorktreeCreationWindow else { throw PetError("未打开多源创建表单") }
+            await form.checkWorkspace()
+            window.contentView?.layoutSubtreeIfNeeded()
+            let openedSize = window.frame.size
+            await form.checkWorkspace(includeChanges: true, action: "preview")
+            window.contentView?.layoutSubtreeIfNeeded()
+            let formState = form.workspaceReadback(), viewport = formState["sourceViewport"] as? [CGFloat] ?? []
+            checks["fourSourceCreationKeepsMinimumWindowBeforeAndAfterPreview"] = openedSize == compactSize && window.frame.size == compactSize
+            checks["fourSourceCreationKeepsScrollingAndUsablePreview"] = viewport.count == 2 && viewport[0] >= 52 && viewport[1] > viewport[0] &&
+                (formState["checks"] as? [String: Bool])?["creationPreviewHasUsableHeight"] == true &&
+                formState["createEnabled"] as? Bool == true
+            control.taskWorkspace.finish()
             report["taskID"] = id; report["createdTaskID"] = created.taskID; report["resumedTaskID"] = resumed.taskID; report["origins"] = try JSONSerialization.jsonObject(with: encoder.encode(origins))
             report["success"] = checks.values.allSatisfy { $0 }
         } catch { report["success"] = false; report["error"] = error.localizedDescription }
