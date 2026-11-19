@@ -135,7 +135,9 @@ import AppKit
         checks["perCallApprovalIsNotBypassed"] = try recordedCalls().isEmpty && lastHook(task)?.detail.contains("逐次确认") == true
         store.update(task) { $0.permission = .workspace; $0.inheritedLimits = .init(readOnly: false, network: false, permission: .workspace) }
         _ = try await store.hooks.fire(.preTool, trigger: "network-policy", store: store, taskID: task, value: "Read", fields: eventFields("README.md"))
-        checks["networkDisabledTaskCannotSendArguments"] = try recordedCalls().isEmpty && lastHook(task)?.detail.contains("限制了外部工具") == true
+        let networkBlocked = lastHook(task)
+        checks["networkDisabledTaskCannotSendArguments"] = try recordedCalls().isEmpty && networkBlocked?.status == "failed"
+            && networkBlocked?.detail.contains("禁止外部连接") == true
         store.update(task) { $0.inheritedLimits = nil }
         let incomplete = try await store.hooks.fire(.preTool, trigger: "missing-field", store: store, taskID: task, value: "Read", fields: eventFields("README.md", includeLine: false))
         checks["missingTemplateFieldFailsOpenWithoutSend"] = try incomplete.halt == nil && incomplete.deny == nil

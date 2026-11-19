@@ -255,7 +255,8 @@ import UniformTypeIdentifiers
         let target = value.category.globalTarget.map { title in
             (value.automation?.workspace ?? value.targetWorkspace).map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? title
         }
-        let subtitle = value.issue ?? states[value.id] ?? value.configuration?.kind.title ?? target
+        let kind = value.standaloneMCPHooks == true ? nil : value.configuration?.kind.title
+        let subtitle = value.issue ?? states[value.id] ?? kind ?? target
             ?? (value.archived ? "已归档" : value.workspace.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "无工作目录")
         let title = NSTextField(labelWithString: value.title), status = NSTextField(labelWithString: subtitle)
         title.font = .systemFont(ofSize: 13); title.lineBreakMode = .byTruncatingTail; status.font = .systemFont(ofSize: 11); status.textColor = AgentWorkbenchTheme.secondaryText; status.lineBreakMode = .byTruncatingTail
@@ -332,7 +333,8 @@ import UniformTypeIdentifiers
         }
         if let plan = record.configuration {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局扩展配置"
-            var lines = [plan.kind.title + " · " + record.title, "来源 · " + record.file, destination]
+            let title = record.standaloneMCPHooks == true ? record.title : plan.kind.title + " · " + record.title
+            var lines = [title, "来源 · " + record.file, destination]
             if !plan.destination.isEmpty { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             lines.append(contentsOf: record.warnings)

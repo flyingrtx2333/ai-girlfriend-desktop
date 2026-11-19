@@ -173,7 +173,7 @@ struct AgentHookHalt: LocalizedError { let errorDescription: String?; init(_ tex
                     else if type == "command" && (command.isEmpty || command.utf8.count > 16_000 || command.contains("\0")) { item.diagnostic = "命令为空或超过 16KB" }
                     else if type == AgentMCPHook.type {
                         do {
-                            guard event != .sessionEnd else { throw PetError("SessionEnd 不支持 MCP 工具处理器") }
+                            guard event != .sessionEnd else { throw PetError("此事件不支持 MCP 工具处理器") }
                             guard !item.runsInBackground, item.once != true else { throw PetError("MCP 工具处理器需要同步运行") }
                             item.mcpHook = try AgentMCPHook(handler)
                         } catch { item.diagnostic = error.localizedDescription }

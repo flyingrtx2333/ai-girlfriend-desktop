@@ -42,7 +42,10 @@ struct AgentMCPHook: Codable {
 
     var display: String {
         let path = target.map { "\n" + $0.destination } ?? ""
-        return server + " / " + tool + path + "\n\n" + String(decoding: template, as: UTF8.self)
+        let formatted = (try? JSONSerialization.jsonObject(with: template)).flatMap {
+            try? JSONSerialization.data(withJSONObject: $0, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        } ?? template
+        return server + " / " + tool + path + "\n\n" + String(decoding: formatted, as: UTF8.self)
     }
 
     private static func encode(_ value: Any) throws -> Data {
