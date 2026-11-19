@@ -131,9 +131,10 @@ import AppKit
         guard workspaceHasUnsavedChanges else { return true }
         let title = hasPushDraft ? (draftText.isEmpty ? "放弃推送草稿？" : "放弃提交说明和推送草稿？") : "放弃提交说明？"
         guard AgentUnsavedChanges.discard(title, discardTitle: hasPushDraft ? "放弃草稿" : "放弃说明", owner: presentingWindow) else { return false }
-        parkedPush = nil; pushWindow?.discardDraft()
+        discardPushDraft()
         message.abortEditing(); clearDraft(); return true
     }
+    func discardPushDraft() { parkedPush = nil; pushWindow?.discardDraft() }
     private func clearDraft() {
         message.stringValue = ""; draftScope = nil; draftSelection = nil; draftFocused = false; restoreDraftFocus = false
         onWorkspaceChange?()

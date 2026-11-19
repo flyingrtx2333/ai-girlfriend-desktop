@@ -120,6 +120,7 @@ import AppKit
             control.showAgentTask(fixture.taskID); control.show(tab: "chat"); control.showAgentGit()
             guard let review = control.taskWorkspace.currentController as? AgentGitWindow else { throw PetError("任务 Git 页面未载入") }; await review.checkWorkspace(action: "push")
             guard let embedded = control.taskWorkspace.currentController as? AgentGitPushWindow, let host = control.window else { throw PetError("任务推送页面未载入") }
+            defer { embedded.discardDraft() }
             try await until { embedded.workspaceReadback()["busy"] as? Bool == false }
             checks["taskRemoteUsesAnActuallyVisibleWindow"] = host.isVisible && embedded.isPageVisible
             for (appearance, theme) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {

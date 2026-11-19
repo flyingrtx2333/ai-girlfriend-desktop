@@ -45,6 +45,7 @@ import AppKit
             runtime.modelRequestCheck = { requests += 1; throw PetError("Git 工作区验收禁止模型请求") }
             let fixture = try await prepareGitWorkspaceUI(output), host = control.taskWorkspace
             guard let git = host.currentController as? AgentGitWindow else { throw PetError("Git 未进入任务工作区") }
+            defer { git.discardPushDraft() }
             await git.checkWorkspace(path: "review.txt")
             checks.merge(try await checkGitReviewVisuals(git, workspace: fixture.workspace, output: output)) { _, value in value }
             func rawGit(_ args: [String]) async throws -> String {
