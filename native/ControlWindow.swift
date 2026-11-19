@@ -1371,6 +1371,11 @@ final class FormDocumentView: NSView {
             checks["PreviewSwitchingKeepsApprovalUndecidedAndDraftIntact"] = tasks.task(long)?.pendingCalls.count == 1
                 && tasks.task(long)?.approvals.last?.decision == nil && tasks.task(long)?.draft == "这段补充还未发送。"
         }
+        if let browser = ids["browserApproval"], let reason = tasks.task(browser)?.approvals.first?.reason {
+            showAgentTask(browser); root.layoutSubtreeIfNeeded()
+            checks["BrowserApprovalShowsFullReasonAndArgumentsTogether"] = approvalTitle.stringValue == "浏览器审批" && visible(approvalScroll)
+                && approvalText.string.hasPrefix(reason + "\n") && approvalText.string.contains("https://example.test/notes") && approvalOptions.isHidden
+        }
         showAgentTask(primary)
         if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
         let draft = composer.string, caret = NSRange(location: 3, length: 0)
@@ -4604,7 +4609,14 @@ final class FormDocumentView: NSView {
                 visibleApproval = (review.id, call.id)
                 let reason = approval.reason.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
                 let owner = review.id != task.id ? (review.agent?.profile.name ?? "子任务") + " · " : ""
-                approvalTitle.stringValue = owner + (asking ? "需要补充信息" : reason.first.map(String.init) ?? approval.reason)
+                let connector = AgentMCP.tools.contains(call.name) || AgentMCP.isModelToolName(call.name)
+                let browser = AgentBrowser.tools.contains(call.name)
+                let heading: String
+                if asking { heading = "需要补充信息" }
+                else if connector { heading = "连接器审批" }
+                else if browser { heading = "浏览器审批" }
+                else { heading = reason.first.map(String.init) ?? approval.reason }
+                approvalTitle.stringValue = owner + heading
                 approvalTitle.toolTip = approval.reason
                 approvalText.font = asking ? .systemFont(ofSize: 13) : .monospacedSystemFont(ofSize: 12, weight: .regular)
                 var options: [String] = []
@@ -4612,7 +4624,8 @@ final class FormDocumentView: NSView {
                 if !asking {
                     var arguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
                     var details: [String] = []
-                    if reason.count > 1, !reason[1].isEmpty { details.append(String(reason[1])) }
+                    if connector || browser { details.append(approval.reason) }
+                    else if reason.count > 1, !reason[1].isEmpty { details.append(String(reason[1])) }
                     if call.name == "run_command", let command = arguments["command"] as? String {
                         arguments.removeValue(forKey: "command")
                         details.append(terminalApprovalPreview(command))

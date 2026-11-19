@@ -41,6 +41,7 @@ import AppKit
         let waiting = tasks.create(title: "确认公开说明核对命令", workspace: workspace)
         let longApproval = tasks.create(title: "审阅长命令和完整参数", workspace: workspace)
         let question = tasks.create(title: "选择要核对的说明章节", workspace: workspace)
+        let browserApproval = tasks.create(title: "核对待审批的网页链接", workspace: workspace)
         let failed = tasks.create(title: "逐项核对公开说明的安装章节、依赖版本和示例命令是否齐全", workspace: workspace)
         let completed = tasks.create(title: "已读取公开项目说明", workspace: workspace)
         let read = AgentToolCall(id: UUID().uuidString, name: "read_file", arguments: "{\"path\":\"README.md\",\"limit\":2}")
@@ -59,6 +60,7 @@ import AppKit
                                                                        "timeout_seconds": 17], options: [.sortedKeys])
         let longCall = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: String(decoding: longArguments, as: UTF8.self))
         let questionCall = AgentToolCall(id: UUID().uuidString, name: "ask_user", arguments: "{\"question\":\"请确认要核对 README 的安装、运行还是许可章节。\"}")
+        let browserCall = AgentToolCall(id: UUID().uuidString, name: "browser_open", arguments: "{\"url\":\"https://example.test/notes\"}")
         tasks.update(running) { task in
             task.status = .running; task.draft = ""
             task.messages = [AgentMessage(role: "user", content: "继续核对公开 README 的后台记录。")]
@@ -79,6 +81,11 @@ import AppKit
             task.approvals = [AgentApproval(call: questionCall, reason: "选择章节", workspace: workspace)]
             task.messages = [AgentMessage(role: "user", content: "先问我需要核对哪个章节。")]
         }
+        tasks.update(browserApproval) { task in
+            task.status = .waiting; task.pendingCalls = [browserCall]
+            task.approvals = [AgentApproval(call: browserCall, reason: "仅在确认后打开 " + String(repeating: "公开路径/", count: 40) + "最终页面", workspace: workspace)]
+            task.messages = [AgentMessage(role: "user", content: "先审阅完整的访问地址。")]
+        }
         tasks.update(failed) { task in
             task.status = .failed; task.events = [AgentEvent(kind: "tool", title: "read_file", detail: failure, status: "failed", toolCallID: missing.id)]
             task.messages = [AgentMessage(role: "user", content: "读取项目补充说明 missing-readme.md。"), AgentMessage(role: "assistant", content: "", toolCalls: [missing])]
@@ -89,7 +96,7 @@ import AppKit
         }
         if let issue = tasks.writeError { throw PetError(issue) }
         let states = ["primary": primary, "empty": empty, "running": running, "waiting": waiting, "failed": failed,
-                      "completed": completed, "longApproval": longApproval, "question": question]
+                      "completed": completed, "longApproval": longApproval, "question": question, "browserApproval": browserApproval]
         let report: [String: Any] = ["tasks": states, "appPID": getpid(), "branch": branch, "sourceHash": fixture?["sourceHash"] as? String ?? "", "modelRequests": 0]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("workbench-state-fixtures.json"), options: .atomic)
         control.showAgentTask(primary)
