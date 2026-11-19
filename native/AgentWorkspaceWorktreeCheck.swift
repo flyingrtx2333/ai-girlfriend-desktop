@@ -96,15 +96,15 @@ import AppKit
             await inputController.checkWorkspace(branch: "late-control-input", action: "preview")
             guard let content = inputController.window?.contentView,
                   let primaryPopup = popup(content, label: "起点分支"), let secondaryPopup = popup(content, label: "起点分支 · " + alpha.path),
-                  let primaryRelease = primaryPopup.itemTitles.firstIndex(where: { $0.hasPrefix("release · ") }),
-                  let secondaryRelease = secondaryPopup.itemTitles.firstIndex(where: { $0.hasPrefix("release · ") }) else { throw PetError("未找到实际起点控件") }
+                  let primaryRelease = primaryPopup.itemArray.first(where: { $0.representedObject as? String == "refs/heads/release" }),
+                  let secondaryRelease = secondaryPopup.itemArray.first(where: { $0.representedObject as? String == "refs/heads/release" }) else { throw PetError("未找到实际起点控件") }
             let beforeLatePrimary = try await helper.worktrees().count, beforeLateSecondary = try await secondary.worktrees().count
-            secondaryPopup.selectItem(at: secondaryRelease)
+            secondaryPopup.select(secondaryRelease)
             await inputController.checkWorkspace(action: "create")
             let afterLatePrimary = try await helper.worktrees().count, afterLateSecondary = try await secondary.worktrees().count
             checks["lateSecondarySelectionRejectsStalePreviewBeforeAnyCheckout"] = inputTaskID == nil && beforeLatePrimary == afterLatePrimary && beforeLateSecondary == afterLateSecondary && inputController.workspaceReadback()["createEnabled"] as? Bool == false
             await inputController.checkWorkspace(action: "preview")
-            primaryPopup.selectItem(at: primaryRelease)
+            primaryPopup.select(primaryRelease)
             await inputController.checkWorkspace(action: "create")
             checks["latePrimarySelectionRejectsStalePreviewBeforeAnyTask"] = inputTaskID == nil && inputController.workspaceReadback()["createEnabled"] as? Bool == false
             await inputController.checkWorkspace(action: "preview"); await inputController.checkWorkspace(action: "create")

@@ -35,6 +35,7 @@ import AppKit
         include.toolTip = "忽略文件不带入"
         preview.target = self; preview.action = #selector(previewCreation); create.target = self; create.action = #selector(confirm)
         state.font = .systemFont(ofSize: 12); state.textColor = AgentWorkbenchTheme.secondaryText; state.isSelectable = true; state.maximumNumberOfLines = 0; diff.text.setAccessibilityLabel("待带入修改")
+        diff.isHidden = true
         include.font = .systemFont(ofSize: 13); include.heightAnchor.constraint(equalToConstant: 28).isActive = true
         let labels = [NSTextField(labelWithString: "起点分支"), NSTextField(labelWithString: "新分支")]; for label in labels { label.font = .systemFont(ofSize: 13) }
         let options = NSGridView(views: [[labels[0], startFrame], [labels[1], branch]])
@@ -104,18 +105,21 @@ import AppKit
         return AgentUnsavedChanges.discard("放弃工作树创建配置？", detail: branch.stringValue, discardTitle: "放弃配置")
     }
     func controlTextDidChange(_ obj: Notification) { changed() }
-    @objc private func changed() { review = nil; create.isEnabled = false; state.stringValue = ""; diff.show("", oldTitle: "起点", newTitle: "当前修改") }
+    @objc private func changed() {
+        review = nil; create.isEnabled = false; state.stringValue = ""; state.toolTip = nil
+        diff.show("", oldTitle: "起点", newTitle: "当前修改"); diff.isHidden = true
+    }
     private func setBusy(_ value: Bool) {
         let hasStart = selectedStart != nil
         busy = value; start.isEnabled = !value && hasStart; branch.isEnabled = !value && hasStart && resumeTaskID == nil; include.isEnabled = !value && hasStart
-        if value { state.textColor = AgentWorkbenchTheme.secondaryText }
+        if value { state.textColor = AgentWorkbenchTheme.secondaryText; state.toolTip = nil }
         for (root, popup) in sourceStarts { popup.isEnabled = !value && !retainedRoots.contains(root) }
         preview.isEnabled = !value && hasStart; create.isEnabled = !value && review != nil
         for frame in [startFrame] + sourceFrames { frame.refreshEnabledState() }
     }
     private func showFailure(_ message: String, title: String) {
         state.textColor = AgentDialogStyle.error; state.stringValue = title; state.toolTip = message
-        diff.show(message, oldTitle: "工作树", newTitle: "错误详情")
+        diff.show(message, oldTitle: "工作树", newTitle: "错误详情"); diff.isHidden = false
     }
     private func checkTask() throws {
         guard let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("来源任务正在执行或已归档，请稍后重试") }
@@ -142,7 +146,7 @@ import AppKit
                     let commit = "起点 " + String(value.baseCommit.prefix(12))
                     state.stringValue = value.includeChanges ? "\(commit) · 将带入 \(value.paths.count) 个文件 · 保持未暂存" : commit
                 }
-                diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树")
+                diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树"); diff.isHidden = value.patch.isEmpty
             } catch { showFailure(error.localizedDescription, title: "预览失败"); review = nil }
             setBusy(false)
         }
