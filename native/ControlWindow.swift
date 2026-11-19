@@ -183,6 +183,7 @@ final class FormDocumentView: NSView {
     private var desktopSettings: AgentDesktopSettingsView?
     private let approvalPanel = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private let approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView(), approvalScroll = NSScrollView()
+    private let approvalOptions = NSTextField(labelWithString: "")
     private var approvalHeight: NSLayoutConstraint!
     private let approveButton = AgentDialogButton(title: "允许一次", target: nil, action: nil), denyButton = AgentDialogButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
@@ -1338,8 +1339,9 @@ final class FormDocumentView: NSView {
             case "running": checks["RunningWorkbenchShowsStopForLiveProcess"] = busy && sendButton.accessibilityLabel() == "停止任务" && !taskModel.isEnabled
             case "waiting":
                 checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
-                checks["ApprovalShortPreviewFitsItsActualCommandAndNetworkState"] = approvalText.string == "/usr/bin/wc -c README.md\n网络 关闭"
-                    && rect(approvalScroll).height < 55 && approveButton.prominent && !denyButton.prominent
+                checks["ApprovalShortPreviewFitsItsActualCommandAndNetworkState"] = approvalText.string == "/usr/bin/wc -c README.md"
+                    && approvalOptions.stringValue == "网络 关闭" && visible(approvalOptions)
+                    && rect(approvalScroll).height < 42 && approveButton.prominent && !denyButton.prominent
                     && !rect(approveButton).intersects(rect(denyButton)) && rect(approvalPanel).contains(rect(approveButton))
             case "failed":
                 checks["FailedWorkbenchShowsActualErrorAndFullTitleOnHover"] = visible(status) && !status.stringValue.isEmpty && pageTitle.intrinsicContentSize.width > rect(pageTitle).width
@@ -1356,7 +1358,7 @@ final class FormDocumentView: NSView {
             checks["LongApprovalScrollsInsideNarrowCardWithFixedActions"] = visible(approvalScroll) && documentHeight > viewport.height + 40
                 && viewport.height <= 72 && !approvalScroll.hasHorizontalScroller && visible(approveButton) && visible(denyButton)
                 && approvalText.string.contains("所有命令只读取公开 README。") && approvalText.string.contains("第 14 行")
-                && approvalText.string.contains("超时 17 秒") && approvalText.string.contains("\\u{202E}")
+                && approvalOptions.stringValue == "网络 开启 · 超时 17 秒" && visible(approvalOptions) && approvalText.string.contains("\\u{202E}")
                 && !approvalText.string.contains("\u{202E}") && composer.string == "这段补充还未发送。"
             approvalText.scrollRangeToVisible(NSRange(location: (approvalText.string as NSString).length, length: 0))
             checks["ApprovalEndCanBeReachedWhileActionsStayPut"] = approvalScroll.contentView.bounds.minY > 0
@@ -1365,7 +1367,7 @@ final class FormDocumentView: NSView {
             capture("question")
             checks["QuestionShowsReadableTextAndNoPermitAction"] = visible(approvalScroll) && approveButton.isHidden && visible(denyButton) && denyButton.title == "不回答"
                 && composer.isEditable && approvalText.string == "请确认要核对 README 的安装、运行还是许可章节。"
-                && approvalText.font?.fontName == NSFont.systemFont(ofSize: 13).fontName && approvalScroll.contentView.bounds.minY == 0
+                && approvalText.font?.fontName == NSFont.systemFont(ofSize: 13).fontName && approvalScroll.contentView.bounds.minY == 0 && approvalOptions.isHidden
             checks["PreviewSwitchingKeepsApprovalUndecidedAndDraftIntact"] = tasks.task(long)?.pendingCalls.count == 1
                 && tasks.task(long)?.approvals.last?.decision == nil && tasks.task(long)?.draft == "这段补充还未发送。"
         }
@@ -4250,7 +4252,9 @@ final class FormDocumentView: NSView {
         approveButton.target = self; approveButton.action = #selector(allowAgentAction)
         denyButton.target = self; denyButton.action = #selector(denyAgentAction)
         AgentDialogStyle.action(denyButton); AgentDialogStyle.action(approveButton, prominent: true)
-        let actions = stack([NSView(), denyButton, approveButton], spacing: 8)
+        approvalOptions.font = .systemFont(ofSize: 12); approvalOptions.lineBreakMode = .byTruncatingTail; approvalOptions.isHidden = true
+        approvalOptions.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actions = stack([approvalOptions, NSView(), denyButton, approveButton], spacing: 8); actions.alignment = .centerY
         let content = stack([approvalTitle, approvalScroll, actions], vertical: true, spacing: 7)
         approvalPanel.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -4603,6 +4607,8 @@ final class FormDocumentView: NSView {
                 approvalTitle.stringValue = owner + (asking ? "需要补充信息" : reason.first.map(String.init) ?? approval.reason)
                 approvalTitle.toolTip = approval.reason
                 approvalText.font = asking ? .systemFont(ofSize: 13) : .monospacedSystemFont(ofSize: 12, weight: .regular)
+                var options: [String] = []
+                var networkEnabled = false
                 if !asking {
                     var arguments = AgentMCP.tools.contains(call.name) ? call.object["arguments"] as? [String: Any] ?? [:] : call.object
                     var details: [String] = []
@@ -4612,11 +4618,12 @@ final class FormDocumentView: NSView {
                         details.append(terminalApprovalPreview(command))
                         if let network = arguments["network"] as? Bool {
                             arguments.removeValue(forKey: "network")
-                            details.append(network ? "网络 开启" : "网络 关闭")
+                            networkEnabled = network
+                            options.append(network ? "网络 开启" : "网络 关闭")
                         }
                         if let seconds = arguments["timeout_seconds"] as? Int, (1...1800).contains(seconds) {
                             arguments.removeValue(forKey: "timeout_seconds")
-                            details.append("超时 \(seconds) 秒")
+                            options.append("超时 \(seconds) 秒")
                         }
                     }
                     if !arguments.isEmpty {
@@ -4626,6 +4633,10 @@ final class FormDocumentView: NSView {
                     if call.name == "git_commit", let diff = review.gitReview, diff.hash == call.object["review_hash"] as? String { details.append(diff.diff) }
                     approvalText.string = details.joined(separator: "\n")
                 }
+                approvalOptions.stringValue = options.joined(separator: " · ")
+                approvalOptions.toolTip = approvalOptions.stringValue
+                approvalOptions.textColor = networkEnabled ? AgentDialogStyle.warning : AgentWorkbenchTheme.secondaryText
+                approvalOptions.isHidden = options.isEmpty
                 approvalText.setSelectedRange(NSRange(location: 0, length: 0))
                 approvalScroll.contentView.scroll(to: .zero)
                 approvalScroll.reflectScrolledClipView(approvalScroll.contentView)

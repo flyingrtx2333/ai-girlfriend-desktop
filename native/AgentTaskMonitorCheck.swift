@@ -55,7 +55,7 @@ import AppKit
         guard !failure.isEmpty else { throw PetError("缺失文件样例未返回错误") }
         let approval = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: "{\"command\":\"/usr/bin/wc -c README.md\",\"network\":false}")
         let longCommand = (1...14).map { "/usr/bin/wc -c README.md # 核对公开样例的第 \($0) 行" }.joined(separator: "\n")
-        let longArguments = try JSONSerialization.data(withJSONObject: ["command": longCommand + "\n# 格式字符\u{202E}", "network": false,
+        let longArguments = try JSONSerialization.data(withJSONObject: ["command": longCommand + "\n# 格式字符\u{202E}", "network": true,
                                                                        "timeout_seconds": 17], options: [.sortedKeys])
         let longCall = AgentToolCall(id: UUID().uuidString, name: "run_command", arguments: String(decoding: longArguments, as: UTF8.self))
         let questionCall = AgentToolCall(id: UUID().uuidString, name: "ask_user", arguments: "{\"question\":\"请确认要核对 README 的安装、运行还是许可章节。\"}")
