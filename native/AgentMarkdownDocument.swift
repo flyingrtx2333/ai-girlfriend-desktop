@@ -56,8 +56,9 @@ import ImageIO
         var diagrams: [Diagram] = []
         var regions: [AgentMarkdownEditing.Region] = []
         var images: [String: NSImage] = [:], imageAttempts = 0, decodedPixels = 0
+        func resolveLink(_ link: URL) -> URL? { try? target(link, document: document, files: files) }
         func inline(_ text: String, font: NSFont = font, style: NSParagraphStyle = paragraph) -> NSAttributedString {
-            NativeMarkdown.inline(text, font: font, color: .labelColor, paragraph: style, resolveLink: { try? target($0, document: document, files: files) })
+            NativeMarkdown.inline(text, font: font, color: .labelColor, paragraph: style, resolveLink: resolveLink)
         }
         func append(_ value: NSAttributedString) {
             output.append(value)
@@ -75,55 +76,37 @@ import ImageIO
             let firstLine = index, displayStart = output.length
             var tableRegion = false
             let original = lines[index], trimmed = original.trimmingCharacters(in: .whitespaces)
-            if let fence = fence(trimmed) {
-                var content: [String] = []; index += 1
-                while index < lines.count {
-                    let line = lines[index].trimmingCharacters(in: .whitespaces)
-                    if let closing = Self.fence(line), closing.marker == fence.marker, closing.count >= fence.count, closing.info.isEmpty { break }
-                    content.append(lines[index]); index += 1
-                }
+            if let fenced = AgentMarkdownEditing.fencedCode(in: sourceLines, at: index) {
+                index = fenced.lastLine
                 let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-                style.headIndent = 10; style.firstLineHeadIndent = 10; style.lineSpacing = 2
-                let code = content.joined(separator: "\n")
-                if fence.info.lowercased() == "mermaid", diagrams.count < 16, code.utf8.count <= 32_768 {
+                style.headIndent = 10; style.firstLineHeadIndent = 10; style.lineSpacing = 2; style.lineBreakMode = .byCharWrapping
+                let code = fenced.text, mermaid = fenced.info.lowercased() == "mermaid"
+                if mermaid, diagrams.count < 16, code.utf8.count <= 32_768 {
                     let attachment = NSTextAttachment(); attachment.image = AgentMarkdownDiagrams.statusImage("正在绘制 Mermaid 图表…"); attachment.bounds = NSRect(x: 0, y: 0, width: min(340, max(160, width - 36)), height: 44)
                     let range = NSRange(location: output.length, length: 1)
                     let value = NSMutableAttributedString(attachment: attachment)
                     value.addAttributes([Self.selectedSource: "```mermaid\n" + code + "\n```", .toolTip: "Mermaid 图表 · 双击放大"], range: NSRange(location: 0, length: 1))
                     diagrams.append(Diagram(source: code, range: range, attachment: attachment)); append(value)
                 } else {
-                    if fence.info.lowercased() == "mermaid" { append(inline("图表超过本页 16 张或单张 32KB 的预览上限")) }
+                    if mermaid { append(inline("图表超过本页 16 张或单张 32KB 的预览上限")) }
                     append(NSAttributedString(string: code, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor, .backgroundColor: AgentWorkbenchTheme.subtle, .paragraphStyle: style]))
                 }
             } else if let match = trimmed.range(of: "^#{1,6}\\s+", options: .regularExpression) {
                 heading(String(trimmed[match.upperBound...]).replacingOccurrences(of: "\\s+#+\\s*$", with: "", options: .regularExpression), level: trimmed.prefix(while: { $0 == "#" }).count)
             } else if index + 1 < lines.count, !trimmed.isEmpty, lines[index + 1].trimmingCharacters(in: .whitespaces).range(of: "^(={3,}|-{3,})$", options: .regularExpression) != nil {
                 heading(trimmed, level: lines[index + 1].contains("=") ? 1 : 2); index += 1
-            } else if index + 1 < lines.count, let alignment = AgentMarkdownEditing.tableAlignment(lines[index + 1]), cells(original).count == alignment.count {
+            } else if let table = AgentMarkdownEditing.table(in: sourceLines, at: index) {
                 let tableStart = sourceLines[index].range.location
-                var rows = [(line: index, cells: AgentMarkdownEditing.cells(original))]; index += 2
-                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).isEmpty, lines[index].contains("|") { rows.append((line: index, cells: AgentMarkdownEditing.cells(lines[index]))); index += 1 }
-                let table = NSTextTable(); table.numberOfColumns = alignment.count; table.collapsesBorders = true; table.layoutAlgorithm = .automaticLayoutAlgorithm
-                for (row, entry) in rows.enumerated() {
-                    for column in alignment.indices {
-                        let cellStart = output.length, values = entry.cells
-                        let block = NSTextTableBlock(table: table, startingRow: row, rowSpan: 1, startingColumn: column, columnSpan: 1)
-                        block.setValue(100 / CGFloat(alignment.count), type: .percentageValueType, for: .width)
-                        block.setWidth(7, type: .absoluteValueType, for: .padding)
-                        block.setWidth(0.5, type: .absoluteValueType, for: .border); block.setBorderColor(.separatorColor)
-                        block.backgroundColor = row == 0 ? AgentWorkbenchTheme.subtle : .textBackgroundColor
-                        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle; style.textBlocks = [block]; style.alignment = alignment[column]; style.paragraphSpacing = 3
-                        let value = (column < values.count ? values[column].text : "").replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: [.regularExpression, .caseInsensitive])
-                        output.append(inline(value, font: row == 0 ? .systemFont(ofSize: 13, weight: .semibold) : .systemFont(ofSize: 13), style: style))
-                        output.append(NSAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: style]))
-                        let display = NSRange(location: cellStart, length: output.length - cellStart), line = sourceLines[entry.line]
-                        if column < values.count {
-                            let raw = values[column].range
-                            regions.append(AgentMarkdownEditing.Region(source: NSRange(location: line.range.location + raw.location, length: raw.length), display: display, kind: .cell(table: tableStart, row: row, column: column)))
-                        } else { regions.append(AgentMarkdownEditing.missingCell(line, column: column, existing: values.count, display: display, table: tableStart, row: row)) }
+                NativeMarkdown.appendTable(table, to: output, font: .systemFont(ofSize: 13), color: .labelColor, paragraph: paragraph, resolveLink: resolveLink) { row, column, values, display in
+                    let line = table.rows[row]
+                    if values.indices.contains(column) {
+                        let raw = values[column].range
+                        regions.append(AgentMarkdownEditing.Region(source: NSRange(location: line.range.location + raw.location, length: raw.length), display: display, kind: .cell(table: tableStart, row: row, column: column)))
+                    } else {
+                        regions.append(AgentMarkdownEditing.missingCell(line, column: column, existing: values.count, display: display, table: tableStart, row: row))
                     }
                 }
-                index -= 1; tableRegion = true
+                index += table.rows.count; tableRegion = true
             } else if let image = imageLink(trimmed) {
                 do {
                     let url = try target(image.url, document: document, files: files)
@@ -177,14 +160,6 @@ import ImageIO
     }
     static func anchor(_ title: String) -> String {
         title.lowercased().filter { $0.isLetter || $0.isNumber || $0.isWhitespace || $0 == "-" || $0 == "_" }.replacingOccurrences(of: "\\s", with: "-", options: .regularExpression)
-    }
-    private static func fence(_ line: String) -> (marker: Character, count: Int, info: String)? {
-        guard let marker = line.first, marker == "`" || marker == "~" else { return nil }
-        let count = line.prefix(while: { $0 == marker }).count
-        return count >= 3 ? (marker, count, String(line.dropFirst(count)).trimmingCharacters(in: .whitespaces)) : nil
-    }
-    static func cells(_ line: String) -> [String] {
-        AgentMarkdownEditing.cells(line).map(\.text)
     }
     private static func imageLink(_ text: String) -> (alt: String, url: URL)? {
         if text.range(of: "^<img\\s+[^>]+/?>$", options: [.regularExpression, .caseInsensitive]) != nil,

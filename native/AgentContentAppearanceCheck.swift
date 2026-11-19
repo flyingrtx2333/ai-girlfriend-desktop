@@ -13,10 +13,75 @@ import CoreText
         let result = "中文与 English"
         ```
 
-        | 页面 | 状态 |
-        | --- | --- |
-        | 设置 | 已保留 |
-        """
+        """ + "\n\n" + Self.markdownBlockSample
+    }
+    private static var markdownBlockSample: String {
+        #"""
+        | 页面 | 说明 | 耗时 | 状态 |
+        | :--- | :--- | ---: | :---: |
+        | 数据导出 A\|B | src/reports/monthly_release_validation/very_long_export_release_identifier_without_spaces | 1,480 ms | 通过 |
+        | 内容边界 | `render(a|b)`<br>第二行保持在同一格 | 7 ms | 待审阅 |
+        | 设置 | `<br>` | 已保留 |
+        ## 排版 | 代码检查
+        ````swift
+        let marker = "a|b"
+        ~~~
+        ```
+        # 保留代码原文
+        let exportPath = "/very/long/path/without/a/spacer/monthly_release_validation_identifier_without_spaces"
+        ````
+        ## 核对完成
+        """#
+    }
+    private func checkMarkdownBlockLayout(_ output: URL) throws -> [String: Bool] {
+        let sample = Self.markdownBlockSample, font = NSFont.systemFont(ofSize: 13), paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 5
+        let preview = NativeMarkdown.render(sample, font: font, color: .labelColor, paragraph: paragraph)
+        let file = output.appendingPathComponent("table-sample.md"), files = try AgentFiles(workspace: output.path)
+        let document = AgentMarkdownDocument.render(sample, document: file, files: files, width: 460)
+        let rendered = preview.string as NSString
+        func style(_ token: String) -> NSParagraphStyle? {
+            let range = rendered.range(of: token)
+            guard range.location != NSNotFound else { return nil }
+            return preview.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+        }
+        let multi = "render(a|b)\u{2028}第二行保持在同一格"
+        let multiRange = rendered.range(of: multi)
+        let cellRegions = document.regions.filter(\.isCell)
+        let path = "src/reports/monthly_release_validation/very_long_export_release_identifier_without_spaces"
+        let checkedTokens = ["数据导出 A|B", path, "1,480 ms", "通过"]
+        let layoutFits = [320.0, 460.0, 750.0].allSatisfy { width in
+            let storage = NSTextStorage(attributedString: preview), layout = NSLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: width, height: 100_000))
+            storage.addLayoutManager(layout); layout.addTextContainer(container); layout.ensureLayout(for: container)
+            let cells = checkedTokens.compactMap { token -> (NSRect, NSRect)? in
+                guard let block = style(token)?.textBlocks.first as? NSTextTableBlock else { return nil }
+                let characters = rendered.range(of: token)
+                let cellGlyphs = layout.glyphRange(forCharacterRange: rendered.paragraphRange(for: characters), actualCharacterRange: nil)
+                let textGlyphs = layout.glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+                return (layout.boundsRect(for: block, glyphRange: cellGlyphs), layout.boundingRect(forGlyphRange: textGlyphs, in: container))
+            }
+            guard cells.count == 4 else { return false }
+            let label = NSTextField(wrappingLabelWithString: "")
+            label.attributedStringValue = preview; label.preferredMaxLayoutWidth = width
+            let labelBounds = NSRect(x: 0, y: 0, width: width, height: 100_000)
+            return cells.allSatisfy { bounds, text in
+                abs(bounds.minY - cells[0].0.minY) < 1 && bounds.width > 0 && bounds.maxX <= width && bounds.contains(text)
+            } && zip(cells, cells.dropFirst()).allSatisfy { $0.0.maxX <= $1.0.minX + 1 }
+                && cells[1].1.height > cells[2].1.height && layout.usedRect(for: container).maxX <= width
+                && (label.cell?.cellSize(forBounds: labelBounds).height ?? 0) + 1 >= layout.usedRect(for: container).height
+        }
+        let escapedCell = cellRegions.first { (try? AgentMarkdownEditing.value($0, in: sample)) == #"数据导出 A\|B"# }
+        let multiCell = cellRegions.first { (try? AgentMarkdownEditing.value($0, in: sample)) == "`render(a|b)`\n第二行保持在同一格" }
+        let selected = multiCell.map { (document.body.string as NSString).substring(with: $0.display) }
+        let code = "let marker = \"a|b\"\n~~~\n```\n# 保留代码原文\nlet exportPath"
+        return [
+            "ComplexMarkdownTableCellsFitAndWrapAtThreeWidths": layoutFits,
+            "ComplexMarkdownAlignmentAndFollowingHeadingRemainIndependent": style("1,480 ms")?.alignment == .right && style("待审阅")?.alignment == .center && style("数据导出 A|B")?.alignment == .left && style("排版 | 代码检查")?.textBlocks.isEmpty == true && document.headings.contains { $0.title == "排版 | 代码检查" },
+            "ComplexMarkdownTableBreaksStayInOneCellAndInlineCodeRemainsLiteral": multiRange.location != NSNotFound && style(multi)?.textBlocks.count == 1 && style("<br>")?.textBlocks.count == 1 && selected == multi + "\n",
+            "ComplexMarkdownReaderKeepsEditableSourceRangesAndMissingCells": cellRegions.count == 16 && escapedCell != nil && multiCell != nil && cellRegions.last?.source.length == 0,
+            "ComplexMarkdownFencesPreserveShorterAndOtherMarkersAndWrapLongCode": preview.string.contains(code) && document.body.string.contains(code) && style("let exportPath")?.lineBreakMode == .byCharWrapping && style("核对完成")?.textBlocks.isEmpty == true,
+        ]
     }
     func prepareContentAppearanceUI(_ output: URL) throws {
         guard let tasks = agentStore, let id = tasks.selectedID else { throw PetError("缺少内容外观验收任务") }
@@ -28,6 +93,7 @@ import CoreText
         do {
             ensureAgent(); guard usesAgent, let tasks = agentStore, let runtime = agentRuntime else { throw PetError("内容外观验收未进入独立工作台") }
             runtime.modelRequestCheck = { requests += 1; throw PetError("内容外观验收禁止模型请求") }
+            checks.merge(try checkMarkdownBlockLayout(output)) { _, latest in latest }
             // Width limits are tested with the optional monitor hidden; monitor layout has its own acceptance gate.
             var monitor = taskMonitor.settings; monitor.dockedDefaultVisible = false; try taskMonitor.save(monitor)
             let coding = tasks.create(title: "编程阅读排版", workMode: .coding), general = tasks.create(title: "通用阅读排版", workMode: .general)

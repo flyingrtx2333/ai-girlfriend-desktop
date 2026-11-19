@@ -75,7 +75,7 @@ import AppKit
             checks["symlinkEscapeIsRejected"] = (try? AgentMarkdownDocument.target(URL(string: "../../escape/outside.txt")!, document: wiki, files: files)) == nil
             let code = AgentMarkdownDocument.render("````text\n# literal\n```\nkept\n````\n# 标题\n# 标题", document: wiki, files: files, width: 400)
             checks["fencesAndDuplicateAnchorsPreserveContent"] = code.body.string.contains("# literal\n```\nkept") && code.headings.map(\.anchor) == ["标题", "标题-1"]
-            checks["escapedAndCodePipesStayInCells"] = AgentMarkdownDocument.cells("| A\\|B | `C|D` |") == ["A|B", "`C|D`"]
+            checks["escapedAndCodePipesStayInCells"] = AgentMarkdownEditing.cells("| A\\|B | `C|D` |").map(\.text) == ["A|B", "`C|D`"]
             let reader = AgentMarkdownReader(frame: NSRect(x: 0, y: 0, width: 600, height: 400)); reader.show(readme, file: workspace.appendingPathComponent("README.md"), workspace: workspace.path)
             checks["readerNavigatesRealHeading"] = reader.navigate("原生任务工作台") && !reader.navigate("missing-heading")
             let encodedLink = try AgentMarkdownDocument.target(URL(string: "../../README.md#%E5%8E%9F%E7%94%9F%E4%BB%BB%E5%8A%A1%E5%B7%A5%E4%BD%9C%E5%8F%B0")!, document: wiki, files: files)

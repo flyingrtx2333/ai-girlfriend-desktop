@@ -25,6 +25,28 @@ enum AgentMarkdownEditing {
         if result.isEmpty || trailing { result.append(Line(text: "", range: NSRange(location: text.length, length: 0), fullRange: NSRange(location: text.length, length: 0))) }
         return result
     }
+    struct FencedCode {
+        let info: String, lines: ArraySlice<Line>, lastLine: Int
+        var text: String { lines.map(\.text).joined(separator: "\n") }
+    }
+    private static func fence(_ line: String) -> (marker: Character, count: Int, info: String)? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let marker = trimmed.first, marker == "`" || marker == "~" else { return nil }
+        let count = trimmed.prefix(while: { $0 == marker }).count
+        guard count >= 3 else { return nil }
+        let info = trimmed.dropFirst(count).trimmingCharacters(in: .whitespaces)
+        guard marker != "`" || !info.contains("`") else { return nil }
+        return (marker, count, info)
+    }
+    static func fencedCode(in lines: [Line], at index: Int) -> FencedCode? {
+        guard let opening = fence(lines[index].text) else { return nil }
+        let start = index + 1
+        let end = lines[start...].firstIndex { line in
+            guard let closing = fence(line.text) else { return false }
+            return closing.marker == opening.marker && closing.count >= opening.count && closing.info.isEmpty
+        } ?? lines.endIndex
+        return FencedCode(info: opening.info, lines: lines[start..<end], lastLine: min(end, lines.count - 1))
+    }
     private static func cellRanges(_ line: String) -> [NSRange] {
         var ranges: [NSRange] = [], start = line.startIndex, cursor = start, code = 0
         while cursor < line.endIndex {
@@ -54,8 +76,9 @@ enum AgentMarkdownEditing {
         }
     }
     static func tableAlignment(_ line: String) -> [NSTextAlignment]? {
+        guard line.contains("|") else { return nil }
         let parts = cells(line)
-        guard line.contains("|"), !parts.isEmpty, parts.allSatisfy({ $0.text.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
+        guard !parts.isEmpty, parts.allSatisfy({ $0.text.range(of: "^:?-{3,}:?$", options: .regularExpression) != nil }) else { return nil }
         return parts.map { $0.text.hasSuffix(":") ? ($0.text.hasPrefix(":") ? .center : .right) : .left }
     }
     enum TableAction: Int, CaseIterable {
@@ -81,11 +104,17 @@ enum AgentMarkdownEditing {
     struct TableChange { let source: String, row: Int, column: Int }
     static func table(in source: String, at start: Int) throws -> Table {
         let all = lines(source)
-        guard let index = all.firstIndex(where: { $0.range.location == start }), index + 1 < all.count,
-              let alignment = tableAlignment(all[index + 1].text), cells(all[index].text).count == alignment.count else { throw PetError("表格位置已变化，请重新选择单元格") }
-        var rows = [all[index]], end = index + 2
-        while end < all.count, !all[end].text.trimmingCharacters(in: .whitespaces).isEmpty, all[end].text.contains("|") { rows.append(all[end]); end += 1 }
-        return Table(rows: rows, separator: all[index + 1], alignment: alignment)
+        guard let index = all.firstIndex(where: { $0.range.location == start }), let table = table(in: all, at: index) else { throw PetError("表格位置已变化，请重新选择单元格") }
+        return table
+    }
+    static func table(in lines: [Line], at index: Int) -> Table? {
+        guard index + 1 < lines.count, !lines[index].text.trimmingCharacters(in: .whitespaces).isEmpty,
+              let alignment = tableAlignment(lines[index + 1].text), cells(lines[index].text).count == alignment.count else { return nil }
+        let rows = lines[(index + 2)...].prefix { line in
+            line.text.contains("|") && fence(line.text) == nil &&
+                line.text.range(of: "^[\\t ]*(?:#{1,6}\\s|>|[-*+]\\s|[0-9]+[.)]\\s)", options: .regularExpression) == nil
+        }
+        return Table(rows: [lines[index]] + rows, separator: lines[index + 1], alignment: alignment)
     }
     static func changingTable(in source: String, at start: Int, row: Int, column: Int, action: TableAction) throws -> TableChange {
         let table = try table(in: source, at: start), raw = source as NSString
