@@ -34,11 +34,21 @@ struct AgentWorkspaceRecovery: Sendable {
         var readers: [Page]
         var library: KnowledgeLibrary? = nil
         var wikiCatalog: WikiCatalog? = nil
-        var hasContent: Bool { !readers.isEmpty || library != nil || wikiCatalog != nil }
+        var libraryVideo: KnowledgeLibraryVideo? = nil
+        var hasContent: Bool { !readers.isEmpty || library != nil || wikiCatalog != nil || libraryVideo != nil }
     }
     struct KnowledgeLibrary: Codable, Equatable, Sendable {
         var state: Data
         var dirty: Bool
+    }
+    struct KnowledgeLibraryVideo: Codable, Equatable, Sendable {
+        var video: AgentVideoWindow.RecoveryState
+        var query: String, scope: Int, showRemoved: Bool, scrollY: Double
+        var valid: Bool {
+            video.valid && video.frame == nil && !AgentFiles.sensitive(video.file) &&
+            URL(fileURLWithPath: video.file).deletingLastPathComponent().path == video.sourceRoot &&
+            query.utf8.count <= 100_000 && (0...2).contains(scope) && scrollY.isFinite && (0...1_000_000_000).contains(scrollY)
+        }
     }
     struct WikiCatalog: Codable, Equatable, Sendable {
         struct Position: Codable, Equatable, Sendable {
@@ -158,7 +168,8 @@ struct AgentWorkspaceRecovery: Sendable {
         if let knowledge = value.knowledge {
             guard knowledge.version == 1, knowledge.identity == "standalone" || UUID(uuidString: knowledge.identity) != nil,
                   ["library", "wiki"].contains(knowledge.root), knowledge.hasContent, knowledge.readers.count <= 32,
-                  knowledge.library.map({ $0.state.count <= Self.maximumState }) ?? true, knowledge.wikiCatalog?.valid != false else { throw PetError("知识中心恢复格式无效或版本不受支持") }
+                  knowledge.library.map({ $0.state.count <= Self.maximumState }) ?? true, knowledge.wikiCatalog?.valid != false,
+                  knowledge.libraryVideo.map({ $0.valid && knowledge.library == nil }) ?? true else { throw PetError("知识中心恢复格式无效或版本不受支持") }
             for page in knowledge.readers {
                 try validate(page)
                 guard ["record", "knowledge-cards", "knowledge-index"].contains(page.kind), page.asset == nil else { throw PetError("知识中心阅读器恢复格式不受支持") }
@@ -193,8 +204,12 @@ struct AgentWorkspaceRecovery: Sendable {
             if let value = page["tab"] { try tab(value) }; try frame(page["frame"])
         }
         if let raw = object["knowledge"], !(raw is NSNull) {
-            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers", "library", "wikiCatalog"])
+            let knowledge = try keys(raw, ["version", "identity", "root", "active", "readers", "library", "wikiCatalog", "libraryVideo"])
             if let library = knowledge["library"], !(library is NSNull) { _ = try keys(library, ["state", "dirty"]) }
+            if let rawVideo = knowledge["libraryVideo"], !(rawVideo is NSNull) {
+                let local = try keys(rawVideo, ["video", "query", "scope", "showRemoved", "scrollY"])
+                try AgentVideoWindow.validateRecoveryObject(local["video"] ?? NSNull())
+            }
             if let rawCatalog = knowledge["wikiCatalog"], !(rawCatalog is NSNull) {
                 let catalog = try keys(rawCatalog, ["version", "query", "filter", "language", "list", "position", "querySelection"])
                 if let position = catalog["position"], !(position is NSNull) { _ = try keys(position, ["workspace", "y", "offset"]) }

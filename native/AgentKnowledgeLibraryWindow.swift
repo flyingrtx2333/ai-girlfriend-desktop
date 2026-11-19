@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
     private let heading = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: ""), provenance = NSTextField(labelWithString: "")
     private let preview = NSTextView(), part = NSTextField(string: "1"), total = NSTextField(labelWithString: "")
     private let format = NSSegmentedControl(labels: ["预览", "原文"], trackingMode: .selectOne, target: nil, action: nil)
-    private let create = NSButton(title: "新建知识库", target: nil, action: nil), rename = NSButton(title: "重命名", target: nil, action: nil), removeBase = NSButton(title: "移除", target: nil, action: nil)
+    private let create = AgentDialogButton(title: "新建知识库", target: nil, action: nil), localVideo = AgentDialogButton(title: "打开视频", target: nil, action: nil)
+    private let rename = NSButton(title: "重命名", target: nil, action: nil), removeBase = NSButton(title: "移除", target: nil, action: nil)
     private let add = NSButton(title: "添加文件", target: nil, action: nil), replace = NSButton(title: "替换", target: nil, action: nil), removeFile = NSButton(title: "移除文件", target: nil, action: nil)
     private let download = NSButton(title: "下载文件", target: nil, action: nil), open = NSButton(title: "打开原文件", target: nil, action: nil), copy = NSButton(title: "复制文字", target: nil, action: nil)
     private var catalog = AgentKnowledgeCatalog(), revision = "", baseRows: [AgentKnowledgeBase] = [], fileRows: [AgentKnowledgeSource] = []
@@ -16,6 +17,7 @@ import UniformTypeIdentifiers
     private enum Page { case bases, files, document, name }
     private var page = Page.bases, editingBaseID: String?, editingWorkspace: String?, editingBaseWorkspace: String?, editingRevision: String?, nameChanged = false
     private var nameSelection: AgentTextViewport.Selection?, nameFocus = "", pendingRecovery: RecoveryState?, applyingRecovery = false, recoveryScheduled = false
+    private var restoredVideoCatalogScroll: Double?
     var onWorkspaceChange: (() -> Void)?
     var boundTaskID: String? { taskID }
     var hasPendingChanges: Bool { nameChanged || busy }
@@ -52,7 +54,10 @@ import UniformTypeIdentifiers
         part.setAccessibilityLabel("知识文件部分"); part.alignment = .right; part.target = self; part.action = #selector(loadPreview); part.widthAnchor.constraint(equalToConstant: 46).isActive = true
         format.selectedSegment = 0; format.target = self; format.action = #selector(renderPreview)
         for (button, action) in [(create, #selector(newBase)), (rename, #selector(renameBase)), (removeBase, #selector(archiveBase)), (add, #selector(addFiles)), (replace, #selector(replaceFile)), (removeFile, #selector(archiveFile)), (download, #selector(downloadFile)), (open, #selector(openFile)), (copy, #selector(copyText))] { button.target = self; button.action = action }
-        header = row([baseSearch, scope, archived, create]); baseFooter = row([NSView(), rename, removeBase])
+        localVideo.target = self; localVideo.action = #selector(chooseLocalVideo)
+        localVideo.identifier = .init("knowledge-open-local-video")
+        AgentDialogStyle.action(localVideo); AgentDialogStyle.action(create, prominent: true)
+        header = row([baseSearch, scope, archived, localVideo, create]); baseFooter = row([NSView(), rename, removeBase])
         fileHeader = row([fileSearch, add, replace, removeFile]); previewHeader = row([format, NSView(), NSTextField(labelWithString: "部分"), part, total, copy])
         previewFooter = row([NSView(), open, download])
         baseName.placeholderString = "知识库名称"; baseName.setAccessibilityLabel("知识库名称"); baseName.delegate = self
@@ -193,7 +198,7 @@ import UniformTypeIdentifiers
     }
     private func setBusy(_ value: Bool) {
         busy = value
-        for control in [create, rename, removeBase, add, replace, removeFile, download, open, copy] { control.isEnabled = !value }
+        for control in [create, localVideo, rename, removeBase, add, replace, removeFile, download, open, copy] { control.isEnabled = !value }
         bases.isEnabled = !value; files.isEnabled = !value
         rename.isEnabled = !value && selectedBase != nil; removeBase.isEnabled = rename.isEnabled
         removeBase.title = selectedBase?.archived == true ? "恢复" : "移除"
@@ -269,7 +274,8 @@ import UniformTypeIdentifiers
         let destination = baseScope.indexOfSelectedItem == 1 ? (editingBaseID == nil ? editingWorkspace : editingBaseWorkspace) : nil
         let value = pendingRecovery ?? RecoveryState(taskID: taskID, openedWorkspace: editingWorkspace, destinationWorkspace: destination, editingBaseID: editingBaseID, editingRevision: editingRevision ?? revision, baseID: baseID, sourceID: sourceID, name: baseName.stringValue, project: baseScope.indexOfSelectedItem == 1, baseQuery: baseSearch.stringValue, fileQuery: fileSearch.stringValue, filter: scope.indexOfSelectedItem, archived: archived.state == .on, selection: nameSelection, focus: nameFocus, status: state.stringValue, baseY: max(0, baseList.contentView.bounds.minY), fileY: max(0, fileList.contentView.bounds.minY))
         guard value.valid else { throw PetError("知识库命名草稿或范围无效，原记录已保留") }
-        let data = try JSONEncoder().encode(value); guard data.count <= 20_000_000 else { throw PetError("知识库命名草稿过大，原记录已保留") }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(value); guard data.count <= 20_000_000 else { throw PetError("知识库命名草稿过大，原记录已保留") }
         return .init(state: data, dirty: nameChanged)
     }
     func restoreWorkspaceRecovery(_ envelope: AgentWorkspaceRecovery.KnowledgeLibrary) throws {
@@ -292,8 +298,8 @@ import UniformTypeIdentifiers
             pendingRecovery = nil; applyingRecovery = false
         }
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); scheduleRecovery() }
-    override func pageDidLayout() { scheduleRecovery() }
+    override func settingsDidAppear() { super.settingsDidAppear(); scheduleRecovery(); restoreVideoCatalogScroll() }
+    override func pageDidLayout() { scheduleRecovery(); restoreVideoCatalogScroll() }
     func windowDidBecomeKey(_ notification: Notification) { scheduleRecovery() }
     func checkRecovery(action: String, name: String? = nil, project: Bool? = nil, baseID: String? = nil, selection: NSRange? = nil) throws {
         guard ["--knowledge-editor-recovery-check", "--knowledge-editor-recovery-ui"].contains(where: CommandLine.arguments.contains) else { throw PetError("仅用于知识库命名恢复验收") }
@@ -312,6 +318,59 @@ import UniformTypeIdentifiers
     @objc private func archiveFile() {
         guard let source = selectedSource else { return }
         do { try store.knowledge.archive(source: source.id, archived: !source.archived, expected: revision); page = .files; reload() } catch { state.stringValue = error.localizedDescription }
+    }
+    @objc private func chooseLocalVideo() {
+        guard page == .bases, !busy, isPageVisible, let window = presentingWindow, !window.hasBlockingDialog else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false; panel.allowsMultipleSelection = false; panel.prompt = "打开"
+        panel.allowedContentTypes = AgentVideoSnapshot.fileExtensions.compactMap { UTType(filenameExtension: $0) }
+        if let workspace { panel.directoryURL = URL(fileURLWithPath: workspace, isDirectory: true) }
+        panel.beginSheetModal(for: window) { [weak self] choice in
+            guard choice == .OK, let file = panel.url else { return }
+            // Open the page after AppKit has detached the file picker.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, window === presentingWindow, isPageVisible else { return }
+                do { try openLocalVideo(file) }
+                catch { state.stringValue = error.localizedDescription; state.toolTip = state.stringValue }
+            }
+        }
+    }
+    private static func localVideoLocation(_ file: URL) throws -> (AgentFiles, URL) {
+        guard file.isFileURL, AgentVideoSnapshot.supports(file), !AgentFiles.sensitive(file.path) else { throw PetError("请选择普通的 MP4 或 WebM 文件") }
+        let parent = file.deletingLastPathComponent()
+        guard let files = try? AgentFiles(workspace: parent.path) else { throw PetError("视频所在目录暂不可用") }
+        guard files.root.path == parent.path, try files.resolve(file.path) == file,
+              try files.entryMetadata(file).kind == "file" else { throw PetError("视频文件已移动或路径已变化") }
+        return (files, file)
+    }
+    private func openLocalVideo(_ selection: URL) throws {
+        guard page == .bases, !busy, isPageVisible, presentingWindow?.hasBlockingDialog == false else { throw PetError("请在知识库列表打开视频") }
+        guard selection.isFileURL, !AgentFiles.sensitive(selection.path) else { throw PetError("请选择普通的 MP4 或 WebM 文件") }
+        let chosen = selection.standardizedFileURL
+        let file = chosen.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(chosen.lastPathComponent)
+        let (files, _) = try Self.localVideoLocation(file)
+        presentSettingsChild(AgentVideoWindow(file: file, files: files) { _ = try Self.localVideoLocation(file) })
+    }
+    func captureLocalVideo(_ video: AgentVideoWindow.RecoveryState) -> AgentWorkspaceRecovery.KnowledgeLibraryVideo {
+        .init(video: video, query: baseSearch.stringValue, scope: scope.indexOfSelectedItem,
+              showRemoved: archived.state == .on, scrollY: restoredVideoCatalogScroll ?? max(0, baseList.contentView.bounds.minY))
+    }
+    func restoreLocalVideo(_ value: AgentWorkspaceRecovery.KnowledgeLibraryVideo) throws -> AgentVideoWindow {
+        guard page == .bases, value.valid else { throw PetError("知识库视频恢复范围无效") }
+        baseSearch.stringValue = value.query; scope.selectItem(at: value.scope); archived.state = value.showRemoved ? .on : .off
+        reload(); restoredVideoCatalogScroll = value.scrollY
+        let file = URL(fileURLWithPath: value.video.file)
+        return AgentVideoWindow(restoring: value.video) { try Self.localVideoLocation(file) }
+    }
+    private func restoreVideoCatalogScroll() {
+        guard page == .bases, isPageVisible, baseList.bounds.height > 0, let y = restoredVideoCatalogScroll else { return }
+        let clip = baseList.contentView, bounds = NSRect(origin: NSPoint(x: 0, y: y), size: clip.bounds.size)
+        clip.scroll(to: clip.constrainBoundsRect(bounds).origin); baseList.reflectScrolledClipView(clip); restoredVideoCatalogScroll = nil
+    }
+    func focusLocalVideoPicker() { if page == .bases, isPageVisible { presentingWindow?.makeFirstResponder(localVideo) } }
+    func checkOpenLocalVideo(_ file: URL) throws {
+        guard CommandLine.arguments.contains("--knowledge-video-check") else { return }
+        try openLocalVideo(file)
     }
     @objc private func addFiles() { importFiles(replacing: nil) }
     @objc private func replaceFile() { importFiles(replacing: sourceID) }

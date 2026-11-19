@@ -19,7 +19,8 @@ struct AgentVideoPlayback: Codable, Equatable, Sendable {
 struct AgentVideoSnapshot: Sendable {
     let folder: URL, document: URL, media: URL, hash: String
     static let maximum = 500 * 1024 * 1024
-    static func supports(_ file: URL) -> Bool { ["mp4", "webm"].contains(file.pathExtension.lowercased()) }
+    static let fileExtensions = ["mp4", "webm"]
+    static func supports(_ file: URL) -> Bool { fileExtensions.contains(file.pathExtension.lowercased()) }
     static func create(files: AgentFiles, file: URL, playback: AgentVideoPlayback? = nil) throws -> Self {
         guard playback?.isValid != false else { throw PetError("视频播放记录无效，原记录已保留") }
         guard supports(file), try files.resolve(file.path) == file, !AgentFiles.sensitive(files.relative(file)) else { throw PetError("不能预览此视频路径") }

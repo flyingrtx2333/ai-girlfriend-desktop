@@ -129,8 +129,107 @@ import AppKit
         checks["videoRoundTripKeepsUnsavedWikiAndOriginalDiskBytes"] = try retained["dirty"] as? Bool == true && retained["draft"] as? String == draft && files.readData(files.resolve(k.page)) == original
         await editableReader.checkTaskDocument(text: originalText, action: "save")
         checks["originalWikiAndTaskDraftsRemain"] = try files.readData(files.resolve(k.page)) == original && tasks.task(f.taskID)?.draft == "保留视频任务输入。" && tasks.task(f.otherID)?.draft == "保留另一视频任务输入。"
+        checks.merge(try await checkLocalLibraryVideo(output, fixture: f, ready: ready)) { _, value in value }
         report["checks"] = checks; report["success"] = checks.values.allSatisfy { $0 }; report["workspace"] = f.workspace.path
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("knowledge-video-report.json"))
+        return checks
+    }
+
+    private func checkLocalLibraryVideo(_ output: URL, fixture: VideoWorkspaceFixture,
+                                       ready: (AgentVideoWindow) async -> [String: Any]) async throws -> [String: Bool] {
+        guard let tasks = agentStore, let window = control.window else { throw PetError("知识库视频验收窗口不可用") }
+        let manager = FileManager.default, directory = output.appendingPathComponent("知识库所选视频", isDirectory: true)
+        try manager.createDirectory(at: directory, withIntermediateDirectories: false)
+        let file = directory.appendingPathComponent("公开样例 🎞.mp4"), link = directory.appendingPathComponent("链接.mp4")
+        try manager.copyItem(at: fixture.mp4, to: file); try manager.createSymbolicLink(at: link, withDestinationURL: file)
+        let original = try Data(contentsOf: file), mode = try manager.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        let id = tasks.create(title: "无工作区视频验收", mode: .ask, workMode: .general), draft = "保留知识库视频任务输入。"
+        tasks.update(id) { $0.draft = draft }
+        control.showAgentTask(id); control.showKnowledgeLibrary()
+        let host = control.knowledgePageHost
+        guard let library = host.currentController as? AgentKnowledgeLibraryWindow, let content = library.pageContentView else {
+            throw PetError("知识库视频入口未打开")
+        }
+        func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+        let children = views(content)
+        guard let action = children.compactMap({ $0 as? NSButton }).first(where: { $0.identifier?.rawValue == "knowledge-open-local-video" }),
+              let search = children.compactMap({ $0 as? NSSearchField }).first(where: { $0.placeholderString == "搜索知识库" }) else {
+            throw PetError("知识库视频入口或筛选控件缺失")
+        }
+        let frame = window.frame
+        window.setFrame(NSRect(origin: frame.origin, size: NSSize(width: 780, height: 540)), display: true)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let buttons = content.convert(action.bounds, from: action)
+        var checks = ["localVideoPickerFitsInMinimumWindow": window.frame.size == NSSize(width: 780, height: 540)
+            && action.isEnabled && action.bounds.height == 28 && content.bounds.insetBy(dx: -1, dy: -1).contains(buttons)]
+        let query = "公开录像"
+        search.stringValue = query; search.sendAction(search.action, to: search.target)
+        for (name, invalid) in [("nonVideo", fixture.guide), ("symbolicLink", link)] {
+            do { try library.checkOpenLocalVideo(invalid); checks[name + "IsRejected"] = false }
+            catch { checks[name + "IsRejected"] = host.currentController === library }
+        }
+        try library.checkOpenLocalVideo(file)
+        guard let opened = host.currentController as? AgentVideoWindow else { throw PetError("本地视频未进入原知识库窗口") }
+        let initial = await ready(opened), player = initial["player"] as? [String: Any] ?? [:]
+        checks["outsideProjectVideoUsesReadOnlyChild"] = opened.presentingWindow === window && opened.window?.isVisible == false
+            && host.checkState()["depth"] as? Int == 2 && tasks.task(id)?.workspace == nil && initial["file"] as? String == file.path
+        checks["selectedMP4DecodesExactFileAndStartsPaused"] = initial["sourceHash"] as? String == AgentFiles.hash(original)
+            && player["width"] as? Int == 960 && player["height"] as? Int == 540 && player["paused"] as? Bool == true
+        await opened.preview.checkWorkspace(time: 1.25, rate: 1.5, volume: 0.35, muted: true)
+        for _ in 0..<40 {
+            if let value = await opened.preview.capturePlayback(), abs(value.time - 1.25) < 0.15 { break }
+            await wait(0.05)
+        }
+        guard let saved = try await host.captureWorkspaceRecovery(active: true),
+              let position = saved.libraryVideo?.video.playback else { throw PetError("未保存知识库视频播放位置") }
+        checks["videoRecoveryStoresOriginalPathAndLibraryFilter"] = saved.active && saved.root == "library" && saved.readers.isEmpty
+            && saved.libraryVideo?.video.file == file.path && saved.libraryVideo?.video.sourceRoot == directory.path
+            && saved.libraryVideo?.query == query && abs(position.time - 1.25) < 0.15 && position.rate == 1.5 && position.muted
+        let journal = AgentWorkspaceRecovery(profile: output), windowID = UUID().uuidString
+        try journal.saveWindow(.init(id: windowID, number: 1, taskID: id, tasks: [], knowledge: saved), expected: nil)
+        guard let savedOnDisk = try journal.loadWindow(windowID)?.value.knowledge else { throw PetError("知识库视频恢复记录读取失败") }
+        checks["libraryVideoRoundTripsThroughStrictRecoveryStorage"] = savedOnDisk == saved
+        let firstSnapshot = initial["snapshotFolder"] as? String ?? ""
+        host.finish()
+        checks["finishingOldWindowReleasesVideoSnapshot"] = !firstSnapshot.isEmpty && !manager.fileExists(atPath: firstSnapshot)
+        let parked = directory.appendingPathComponent("暂时移出.mp4")
+        try manager.moveItem(at: file, to: parked)
+        defer { if !manager.fileExists(atPath: file.path) { try? manager.moveItem(at: parked, to: file) } }
+        try control.materializeKnowledgeRecovery(savedOnDisk)
+        guard let restored = host.currentController as? AgentVideoWindow else { throw PetError("缺少原知识库视频的恢复页面") }
+        let unavailable = await ready(restored)
+        checks["missingVideoKeepsRetryPageAndPosition"] = unavailable["webPresent"] as? Bool == false
+            && unavailable["reloadEnabled"] as? Bool == true && unavailable["status"] as? String == "视频文件已移动或路径已变化"
+        try manager.moveItem(at: parked, to: file)
+        await restored.preview.checkWorkspace(action: "refresh")
+        var resumed = await ready(restored)
+        for _ in 0..<40 {
+            if let player = resumed["player"] as? [String: Any], player["restoreReady"] as? Bool == true,
+               abs((player["time"] as? Double ?? 0) - 1.25) < 0.15 { break }
+            await wait(0.05); resumed = await ready(restored)
+        }
+        let resumedPlayer = resumed["player"] as? [String: Any] ?? [:]
+        checks["retryResumesOriginalPositionWhilePaused"] = resumed["sourceHash"] as? String == AgentFiles.hash(original)
+            && abs((resumedPlayer["time"] as? Double ?? 0) - 1.25) < 0.15 && resumedPlayer["paused"] as? Bool == true
+            && resumedPlayer["rate"] as? Double == 1.5 && resumedPlayer["muted"] as? Bool == true
+        host.checkBack()
+        guard let parent = host.currentController as? AgentKnowledgeLibraryWindow, let parentContent = parent.pageContentView else {
+            throw PetError("视频返回后未显示原知识库")
+        }
+        let searchAfter = views(parentContent).compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "搜索知识库" }
+        checks["backRestoresFilterAndVideoPickerFocus"] = searchAfter?.stringValue == query
+            && (window.firstResponder as? NSView)?.identifier?.rawValue == "knowledge-open-local-video"
+        checks["explicitBackClearsVideoRecovery"] = try await host.captureWorkspaceRecovery(active: true) == nil
+        try parent.checkOpenLocalVideo(fixture.webm)
+        guard let webm = host.currentController as? AgentVideoWindow else { throw PetError("所选 WebM 未进入知识库播放器") }
+        let webmState = await ready(webm), webmPlayer = webmState["player"] as? [String: Any] ?? [:]
+        checks["localPickerEntryAlsoPlaysWebM"] = try webmState["sourceHash"] as? String == AgentFiles.hash(Data(contentsOf: fixture.webm))
+            && webmPlayer["width"] as? Int == 960 && webmPlayer["paused"] as? Bool == true
+        host.checkBack()
+        checks["originalReadOnlyVideoAndTaskDataRemain"] = try Data(contentsOf: file) == original
+            && manager.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int == mode
+            && tasks.task(id)?.draft == draft && tasks.task(id)?.messages.isEmpty == true && tasks.task(id)?.artifacts.isEmpty == true
+        window.setFrame(frame, display: true)
         return checks
     }
 }

@@ -66,6 +66,7 @@ import AppKit
         (controller as? AgentKnowledgeWindow)?.onWorkspaceChange = changed
         (controller as? AgentKnowledgeLibraryWindow)?.onWorkspaceChange = changed
         (controller as? AgentRepoWikiWindow)?.onWorkspaceChange = { [weak self] in self?.recoveryChanged() }
+        if ownerRoot == "library", let video = controller as? AgentVideoWindow { video.onWorkspaceChange = changed }
         stacks[ownerRoot, default: []].append(Entry(controller: controller, content: content))
         if ownerRoot == root { displayCurrent() }; recoveryChanged(); return true
     }
@@ -107,6 +108,7 @@ import AppKit
     @objc private func goBack() {
         guard let entries = stacks[root], entries.count > 1, entries.last?.controller.canLeaveSettings() == true else { return }
         let entry = stacks[root]!.removeLast(); entry.controller.endSettingsHosting(); displayCurrent(); recoveryChanged()
+        if root == "library", entry.controller is AgentVideoWindow { (currentController as? AgentKnowledgeLibraryWindow)?.focusLocalVideoPicker() }
     }
     @objc private func changeRoot() {
         let next = tabs.selectedSegment == 0 ? "library" : "wiki"
@@ -140,11 +142,17 @@ import AppKit
                 else if let reader = reader as? AgentKnowledgeWindow, let page = try reader.captureWorkspaceRecovery() { pages.append(page) }
                 else if let reader = reader as? AgentKnowledgeLibraryWindow { library = try reader.captureWorkspaceRecovery() }
             }
+            var libraryVideo: AgentWorkspaceRecovery.KnowledgeLibraryVideo?
+            if let catalog = stacks["library"]?.first?.controller as? AgentKnowledgeLibraryWindow,
+               let video = stacks["library"]?.last?.controller as? AgentVideoWindow,
+               let position = try await video.captureWorkspaceRecovery(includingHosted: true) {
+                libraryVideo = catalog.captureLocalVideo(position)
+            }
             guard revision == recoveryRevision else { continue }
             let visibleReader = currentController is AgentRecordWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow ||
                 (currentController as? AgentKnowledgeReviewWindow)?.isRecoverableVersionReview == true
             let visibleCatalog = currentController is AgentRepoWikiWindow && catalog != nil || currentController is AgentKnowledgeLibraryWindow && library != nil
-            let value = AgentWorkspaceRecovery.Knowledge(identity: identity, root: root, active: active && (visibleReader || visibleCatalog), readers: pages, library: library, wikiCatalog: catalog)
+            let value = AgentWorkspaceRecovery.Knowledge(identity: identity, root: root, active: active && (visibleReader || visibleCatalog), readers: pages, library: library, wikiCatalog: catalog, libraryVideo: libraryVideo)
             return value.hasContent ? value : nil
         }
     }
@@ -163,11 +171,15 @@ import AppKit
                 guard push(catalog) else { throw PetError("知识目录暂不能显示") }
                 for controller in restored { guard push(controller) else { throw PetError("知识阅读器暂不能显示") } }
             }
-            if value.library != nil || value.root == "library" {
+            if value.library != nil || value.libraryVideo != nil || value.root == "library" {
                 root = "library"
                 guard let catalog = make("library") as? AgentKnowledgeLibraryWindow else { throw PetError("知识库暂不能显示") }
                 if let library = value.library { try catalog.restoreWorkspaceRecovery(library) }
                 guard push(catalog) else { throw PetError("知识库暂不能显示") }
+                if let libraryVideo = value.libraryVideo {
+                    let video = try catalog.restoreLocalVideo(libraryVideo)
+                    guard push(video) else { video.endSettingsHosting(); throw PetError("知识库视频暂不能显示") }
+                }
             }
             root = value.root
             displayCurrent(); recoveryChanged()

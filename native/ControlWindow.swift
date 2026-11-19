@@ -3884,7 +3884,7 @@ final class FormDocumentView: NSView {
                 return reader
             } catch { reader.endSettingsHosting(); throw error }
         })
-        let standaloneLibrary = value.identity == "standalone" && value.root == "library" && value.library != nil
+        let standaloneLibrary = value.identity == "standalone" && value.root == "library" && (value.library != nil || value.libraryVideo != nil)
         if value.active, value.identity == (agentTaskID ?? "standalone") || standaloneLibrary { sidebarRequested = true; show(tab: "knowledge") }
     }
     @objc internal func showAgentKnowledge() { _ = showKnowledgeCenter(root: "wiki") }
