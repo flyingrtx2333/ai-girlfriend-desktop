@@ -637,11 +637,14 @@ final class FormDocumentView: NSView {
             guard let detail = settingsPageHost.currentController, detail !== root, let content = detail.pageContentView else {
                 checks[kind + "CompactDetailOpens"] = false; continue
             }
-            let titleFrame = settingsHeading.convert(settingsHeading.bounds, to: contentSurface)
-            let scopeLabel = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }
+            let titleStack = settingsHeading.superview as? NSStackView
+            let titleAlignment = settingsHeading.alignmentRect(forFrame: settingsHeading.frame)
+            let titleFrame = titleStack?.convert(titleAlignment, to: contentSurface) ?? .zero
+            let scopeLabel = titleStack?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }
             let scope = scopeLabel?.convert(scopeLabel?.bounds ?? .zero, to: contentSurface) ?? .zero
-            let back = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "settings-detail-back" }
-            let backFrame = back?.convert(back?.bounds ?? .zero, to: contentSurface) ?? .zero
+            let back = titleStack?.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "settings-detail-back" }
+            let backAlignment = back.map { $0.alignmentRect(forFrame: $0.frame) } ?? .zero
+            let backFrame = titleStack?.convert(backAlignment, to: contentSurface) ?? .zero
             let navigation = descendants(settingsPageHost).first { $0.identifier?.rawValue == "settings-manager-navigation" }
             checks[kind + "CompactDetailUsesActualHeadingScopeAndBack"] = settingsHeading.stringValue == title &&
                 scopeLabel?.isHiddenOrHasHiddenAncestor == false && !scope.isEmpty && scope.minX >= titleFrame.maxX - 1 &&
