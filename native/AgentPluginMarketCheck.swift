@@ -53,15 +53,15 @@ import AppKit
                 guard let directory = try await market.refresh(address.absoluteString).selected else { throw PetError("没有载入 SSH 市场") }
                 return directory
             }
-            func prepare(_ directory: AgentPluginMarket.Directory) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
+            func prepare(_ directory: AgentPluginMarket.Directory, scope: String? = nil) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
                 guard let entry = directory.entries.first(where: { $0.name == "ssh-inventory" }) else { throw PetError("缺少 SSH 插件条目") }
-                return try await market.prepare(entry, in: directory, scope: nil, plugins: plugins)
+                return try await market.prepare(entry, in: directory, scope: scope, plugins: plugins)
             }
             checks["sshURIAndScpPathsPreserveRepositoryLocation"] =
                 AgentPluginMarketGit.address("ssh://git@Example.test:22/srv/plugins/")?.absoluteString == "ssh://git@example.test/srv/plugins" &&
                 AgentPluginMarketGit.address("git@example.test:team/plugins.git")?.absoluteString == "ssh://git@example.test/~/team/plugins.git" &&
                 AgentPluginMarketGit.address("git@example.test:/srv/plugins.git")?.absoluteString == "ssh://git@example.test/srv/plugins.git"
-            checks["sshAddressesRequireARepositoryAndRejectCredentialsInURL"] = ["ssh://git@example.test/", "ssh://git:secret@example.test/repo", "ssh://git@example.test/repo?x=1", "ssh://git@example.test/a/%2e%2e/b"].allSatisfy { AgentPluginMarketGit.address($0) == nil }
+            checks["sshAddressesRequireARepositoryAndRejectCredentialsInURL"] = ["ssh://git@example.test/", "ssh://git:secret@example.test/repo", "ssh://git@example.test/repo?x=1", "ssh://git@example.test/a/%2e%2e/b", "other::repository"].allSatisfy { AgentPluginMarketGit.address($0) == nil }
 
             try Data().write(to: trust)
             checks["untrustedSSHKeyRejectsFirstConnection"] = await reject("SSH 主机身份未受信任")
@@ -89,7 +89,9 @@ import AppKit
             advance.environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
             try advance.run(); advance.waitUntilExit()
             guard advance.terminationStatus == 0 else { throw PetError("无法推进独立 SSH 样例仓库") }
-            let (pinned, _) = try await prepare(initial)
+            let previewProject = output.appendingPathComponent("ssh-preview-project", isDirectory: true)
+            try FileManager.default.createDirectory(at: previewProject, withIntermediateDirectories: false)
+            let (pinned, _) = try await prepare(initial, scope: previewProject.path)
             checks["sshCachedDirectoryStillFetchesTheReviewCommit"] = pinned.receipt.marketOrigin?.gitCommit == oldCommit && pinned.files == package.files
             let latest = try await open(), (updated, from) = try await prepare(latest)
             guard let from else { throw PetError("SSH 插件的已安装版本不存在") }

@@ -29,7 +29,7 @@ struct AgentPluginMarketGit {
               var parts = URLComponents(string: "ssh://" + input[..<colon]),
               parts.path.isEmpty else { return nil }
         let path = String(input[input.index(after: colon)...])
-        guard !path.isEmpty else { return nil }
+        guard !path.isEmpty, !path.hasPrefix(":") else { return nil }
         parts.path = path.hasPrefix("/") ? path : (path.hasPrefix("~") ? "/" : "/~/") + path
         return parts.url.flatMap(address)
     }
