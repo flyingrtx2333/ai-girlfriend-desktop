@@ -540,7 +540,13 @@ import UniformTypeIdentifiers
             applyingTextViewport = true
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if focus { viewport.focused = true }
-            if viewport.apply(to: text) { pendingTextViewport = nil; rememberedTextFocus = viewport.focused }
+            if viewport.apply(to: text) {
+                if memorySettingsTarget != nil, viewport.focused, !viewport.focusedSelectionIsVisible(in: text),
+                   let selection = viewport.selections.first {
+                    text.scrollRangeToVisible(selection.range)
+                }
+                pendingTextViewport = nil; rememberedTextFocus = viewport.focused
+            }
             applyingTextViewport = false; onWorkspaceChange?()
         }
     }

@@ -224,7 +224,8 @@ struct AgentMemoryEditorSource: Codable, Equatable {
     private static func editorSource(_ files: AgentFiles, _ url: URL) throws -> AgentMemoryEditorSource {
         var info = stat()
         guard lstat(files.root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw PetError("原记忆目录暂不可用") }
-        let identity = "\(files.root.path):\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        let volume = (try? files.root.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? String(info.st_dev)
+        let identity = "\(files.root.path):\(volume):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
         return .init(path: url.path, directoryIdentity: AgentFiles.hash(Data(identity.utf8)))
     }
     static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil, expectedExists: Bool? = nil, expectedSource: AgentMemoryEditorSource? = nil) throws -> AgentMemorySnapshot {

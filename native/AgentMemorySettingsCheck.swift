@@ -78,6 +78,9 @@ import AppKit
                         guard let opened = additionalTaskWindows.last else { throw PetError("缺少独立任务窗口") }; owner = opened
                     }
                     guard owner.showSettingsCategory("memory") else { throw PetError("无法打开记忆设置") }
+                    if let window = owner.window {
+                        window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 1200, height: 774)), display: true)
+                    }
                     owners[name] = owner
                     switch name {
                     case "global":
@@ -124,12 +127,14 @@ import AppKit
                         checks[name + "OriginalFileRetainsExplicitSave"] = try Data(contentsOf: file) == Data(draft(name).utf8)
                         continue
                     }
-                    owner.window?.setContentSize(NSSize(width: 780, height: 540)); owner.window?.makeKeyAndOrderFront(nil); await wait(0.12)
+                    owner.window?.makeKeyAndOrderFront(nil); await wait(0.12)
                     let (record, text) = try editor(owner)
                     let expected = (draft(name) as NSString).range(of: marker)
                     let viewport = try AgentTextViewport(text)
-                    checks[name + "ReopensDraftInOriginalEditor"] = text.string == draft(name) && record.workspaceHasUnsavedChanges && viewport.selections.first?.range == expected &&
-                        viewport.focused && viewport.y > 0 && viewport.focusedSelectionIsVisible(in: text)
+                    checks[name + "ReopensDraftInOriginalEditor"] = text.string == draft(name) && record.workspaceHasUnsavedChanges
+                    checks[name + "RestoresSelectionAndKeyboardFocus"] = viewport.selections.first?.range == expected && viewport.focused
+                    checks[name + "RestoredSelectionIsVisibleInCompactWindow"] = owner.window?.frame.size == NSSize(width: 780, height: 540) &&
+                        viewport.y > 0 && viewport.focusedSelectionIsVisible(in: text)
                     checks[name + "ComposerAndSourceUnchangedBeforeSave"] = try tasks.task(fixture.tasks[name]!)?.draft == "PUBLIC_MEMORY_COMPOSER_" + name &&
                         Data(contentsOf: file) == original(name)
                     guard let save = find(NSButton.self, in: record.pageContentView, matching: { $0.title == "保存" && $0.isEnabled }) else { throw PetError("未恢复保存入口") }
