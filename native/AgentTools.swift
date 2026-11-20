@@ -226,6 +226,7 @@ import Foundation
             guard ![.ask, .plan].contains(task.mode), let directory = gitDirectory else { throw PetError("请切换到 Agent 模式后推送") }
             let git = try AgentGit(store: store, taskID: taskID, directory: URL(fileURLWithPath: directory))
             let review = try git.storedPushReview(hash: call.object["review_hash"] as? String ?? "")
+            guard review.rewrite == nil else { throw PetError("请在推送页确认强制推送") }
             return "推送已审阅提交：\n" + review.summary + "\n" + (review.setUpstream ? "设置为上游\n" : "") + review.commits.split(separator: "\n").prefix(8).joined(separator: "\n")
         }
         if call.name == "git_push_status" {

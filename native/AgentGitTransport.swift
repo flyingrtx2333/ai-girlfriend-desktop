@@ -31,16 +31,21 @@ struct AgentGitEndpoint: Codable, Equatable {
 struct AgentGitRemote: Codable { var name: String; var urls: [String] }
 struct AgentGitRemoteSnapshot: Codable { var remotes: [AgentGitRemote]; var configHash: String; var processID: String; var hash: String }
 struct AgentGitPushReview: Codable {
+    struct Rewrite: Codable { var commitCount: Int; var commits: String }
     var sessionID: String; var processID: String; var taskID: String; var promptID: String; var workspace: String; var gitDirectory: String
     var remote: String; var urlIndex: Int; var configuredURL: String; var endpoint: AgentGitEndpoint
     var sourceBranch: String; var sourceRef: String; var sourceHead: String; var targetBranch: String; var remoteHead: String?
     var configHash: String; var transportConfigHash: String; var scopeHash: String; var hookPath: String?; var hookHash: String
     var trackingRef: String?; var trackingHead: String?; var setUpstream: Bool
     var commitCount: Int; var commits: String; var diff: String; var diffTruncated: Bool; var uncommittedFiles: Int
+    var rewrite: Rewrite?
     var hash: String; var created = Date()
     var destinationRef: String { "refs/heads/" + targetBranch }
+    var requiresUpdate: Bool { commitCount > 0 || rewrite != nil }
     var summary: String {
-        "\(remote) · \(endpoint.location)\n\(sourceBranch) → \(targetBranch)\n提交 \(sourceHead.prefix(12)) · \(commitCount) 项\n远端 " + (remoteHead.map { String($0.prefix(12)) } ?? "新分支")
+        let target = remoteHead.map { String($0.prefix(12)) } ?? "新分支"
+        let detail = "\(remote) · \(endpoint.location)\n\(sourceBranch) → \(targetBranch)\n提交 \(sourceHead.prefix(12)) · \(commitCount) 项\n远端 \(target)"
+        return rewrite.map { detail + "\n将从该远端分支移除 \($0.commitCount) 项提交。" } ?? detail
     }
 }
 struct AgentGitPushReceipt: Codable {

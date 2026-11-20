@@ -117,12 +117,25 @@ import Foundation
         guard bundleHead == [head, "HEAD"] else { throw PetError("本地提交已变化，请重新检查远端") }
         let copied = transport.root.appendingPathComponent("source.bundle"); try FileManager.default.copyItem(at: bundle, to: copied)
         _ = try await transport.output(["-C", transport.repository.path, "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", copied.path, "HEAD:refs/heads/source"])
+        var rewrite: AgentGitPushReview.Rewrite?
         if let before {
             _ = try await transport.output(["-C", transport.repository.path, "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--", input.endpoint.input, "refs/heads/" + target + ":refs/heads/review-remote"], endpoint: endpoint)
             let fetched = try await transport.output(["-C", transport.repository.path, "rev-parse", "refs/heads/review-remote"]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard fetched == before else { throw PetError("远端分支已变化，请重新检查") }
             let ancestry = try await transport.run(["-C", transport.repository.path, "merge-base", "--is-ancestor", before, head])
-            guard ancestry.exitCode == 0 else { throw PetError("远端分支包含本地没有的提交，请先获取并合并后再推送") }
+            if ancestry.exitCode == 1 {
+                guard draftScope != nil else { throw PetError("远端分支包含本地没有的提交，请先获取并合并后再推送") }
+                guard try store.gitPreferences.forcePushPreference().enabled else {
+                    throw PetError("远端分支包含本地没有的提交。请先获取并合并，或在 Git 设置中允许强制推送后重新审阅。")
+                }
+                let displaced = head + ".." + before
+                let count = try await transport.output(["-C", transport.repository.path, "rev-list", "--count", displaced]).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let total = Int(count), total > 0 else { throw PetError("无法核对将离开远端分支的提交数") }
+                let commits = try await transport.output(["-C", transport.repository.path, "log", "--max-count=100", "--format=%H%x09%s", displaced])
+                rewrite = .init(commitCount: total, commits: commits)
+            } else if ancestry.exitCode != 0 {
+                throw PetError("无法核对本地与远端提交的关系")
+            }
         }
         let range = before.map { $0 + ".." + head } ?? head
         let count = try await transport.output(["-C", transport.repository.path, "rev-list", "--count", range]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -134,7 +147,7 @@ import Foundation
         let diff = try await transport.run(["-C", transport.repository.path, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--stat", "-p", base, head, "--"], maximumOutput: 200_000)
         guard !diff.failed else { throw PetError("无法读取待推送提交的差异") }
         let tracking = try await trackingReference(remote: remote, branch: target)
-        var review = AgentGitPushReview(sessionID: sessionID, processID: AgentGitTransport.processID, taskID: taskID, promptID: task.messages.last(where: \.isHumanInput)?.id ?? task.id, workspace: files.root.path, gitDirectory: directory.path, remote: remote, urlIndex: urlIndex, configuredURL: input.raw, endpoint: endpoint, sourceBranch: symbolic.failed ? "HEAD（分离状态）" : state.branch, sourceRef: sourceRef, sourceHead: head, targetBranch: target, remoteHead: before, configHash: configuration, transportConfigHash: try await transport.configurationHash(), scopeHash: scope, hookPath: hook.path, hookHash: hook.hash, trackingRef: tracking.0, trackingHead: tracking.1, setUpstream: setUpstream, commitCount: total, commits: commits, diff: diff.stdout ?? "", diffTruncated: diff.truncated == true, uncommittedFiles: state.changes.count, hash: "")
+        var review = AgentGitPushReview(sessionID: sessionID, processID: AgentGitTransport.processID, taskID: taskID, promptID: task.messages.last(where: \.isHumanInput)?.id ?? task.id, workspace: files.root.path, gitDirectory: directory.path, remote: remote, urlIndex: urlIndex, configuredURL: input.raw, endpoint: endpoint, sourceBranch: symbolic.failed ? "HEAD（分离状态）" : state.branch, sourceRef: sourceRef, sourceHead: head, targetBranch: target, remoteHead: before, configHash: configuration, transportConfigHash: try await transport.configurationHash(), scopeHash: scope, hookPath: hook.path, hookHash: hook.hash, trackingRef: tracking.0, trackingHead: tracking.1, setUpstream: setUpstream, commitCount: total, commits: commits, diff: diff.stdout ?? "", diffTruncated: diff.truncated == true, uncommittedFiles: state.changes.count, rewrite: rewrite, hash: "")
         review.hash = try reviewHash(review)
         guard try await gitConfigurationHash() == configuration, try await status().head == head else { throw PetError("本地提交或配置已变化，请重新准备推送") }
         try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
@@ -165,10 +178,15 @@ import Foundation
         guard ref == review.sourceRef else { throw PetError("当前分支已变化，请重新准备推送") }
         guard try await transport.output(["-C", transport.repository.path, "rev-parse", "refs/heads/source"]).trimmingCharacters(in: .whitespacesAndNewlines) == review.sourceHead else { throw PetError("推送快照校验失败") }
         guard try await transport.remoteHead(input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch) == review.remoteHead else { throw PetError("远端分支已变化，请重新检查后推送") }
+        if review.rewrite != nil, try !store.gitPreferences.forcePushPreference().enabled {
+            throw PetError("强制推送设置已关闭，请重新审阅")
+        }
     }
-    func push(reviewHash: String, timeout: Double = 180, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitPushReceipt {
+    func push(reviewHash: String, timeout: Double = 180, draftScope: AgentGitDraftRecovery.Scope? = nil, confirmRewrite: Bool = false) async throws -> AgentGitPushReceipt {
         try draftScope?.requireCurrent(store.task(taskID), preserving: "请回到原分支重新检查远端")
-        let review = try storedPushReview(hash: reviewHash), transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: review.sessionID)
+        let review = try storedPushReview(hash: reviewHash)
+        guard review.rewrite == nil || (draftScope != nil && confirmRewrite) else { throw PetError("请在推送页确认强制推送") }
+        let transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: review.sessionID)
         remoteTransport = transport
         defer {
             remoteTransport = nil; transport.cleanup()
@@ -177,7 +195,7 @@ import Foundation
         try await validatePush(review, transport: transport)
         try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         let input = try await pushInput(remote: review.remote, urlIndex: review.urlIndex)
-        if review.commitCount == 0 {
+        if !review.requiresUpdate {
             let receipt = AgentGitPushReceipt(taskID: taskID, remote: review.remote, input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch, sourceHead: review.sourceHead, beforeHead: review.remoteHead, afterHead: review.remoteHead, verified: true, output: "远端已包含此提交", exitCode: 0)
             store.update(taskID) { $0.gitPushReceipt = receipt }; return receipt
         }
@@ -196,8 +214,7 @@ import Foundation
         store.update(taskID) { $0.gitPushReview = nil; $0.gitPushReceipt = receipt }
         guard store.writeError == nil else { throw PetError("无法保存推送状态，未发送提交") }
         do {
-            // The exact lease is a compare-and-swap for the reviewed remote ref.
-            // Ancestry was independently checked; history rewrites are forbidden.
+            // Keep the exact lease for every push so only the reviewed remote ref can change.
             let result = try await transport.run(["-C", transport.repository.path, "push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "--force-with-lease=" + review.destinationRef + ":" + (review.remoteHead ?? ""), "--", input.endpoint.input, review.sourceHead + ":" + review.destinationRef], endpoint: review.endpoint, writingRemote: true, timeout: timeout)
             receipt.output = String(result.text.prefix(6000)); receipt.exitCode = result.exitCode
             receipt.afterHead = try await transport.remoteHead(input: input.endpoint, endpoint: review.endpoint, branch: review.targetBranch)

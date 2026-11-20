@@ -89,7 +89,9 @@ import AppKit
         displayMode.isHidden = review == nil; displayMode.isEnabled = !busy
         wrap.isHidden = diffView.patch.isEmpty; wrap.isEnabled = !busy
         changeDisplay()
-        push.isEnabled = !busy && writable && (review?.commitCount ?? 0) > 0
+        push.title = review?.rewrite == nil ? "推送" : "强制推送…"
+        push.hasDestructiveAction = review?.rewrite != nil
+        push.isEnabled = !busy && writable && review?.requiresUpdate == true
         verify.isHidden = store.task(taskID)?.gitPushReceipt == nil; verify.isEnabled = !busy
         stop.isHidden = !busy
         for frame in [remoteFrame, addressFrame, commitFrame] { frame.refreshEnabledState() }
@@ -204,16 +206,30 @@ import AppKit
     private func renderReview(_ value: AgentGitPushReview) {
         render(value.diff + (value.diffTruncated ? "\n[差异已截取；可选择具体提交查看]" : ""), oldTitle: value.remoteHead == nil ? "空版本" : "远端")
     }
-    private func show(_ value: AgentGitPushReview) {
-        review = value; branch.stringValue = value.targetBranch; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更")
-        for line in value.commits.split(separator: "\n") {
+    private func addCommits(_ commits: String, prefix: String = "") {
+        for line in commits.split(separator: "\n") {
             let pair = line.split(separator: "\t", maxSplits: 1).map(String.init)
             guard pair.count == 2 else { continue }
-            let item = NSMenuItem(title: String(pair[0].prefix(12)) + " " + pair[1], action: nil, keyEquivalent: ""); item.representedObject = pair[0]; inspectCommit.menu?.addItem(item)
+            let item = NSMenuItem(title: prefix + String(pair[0].prefix(12)) + " " + pair[1], action: nil, keyEquivalent: "")
+            item.representedObject = pair[0]; inspectCommit.menu?.addItem(item)
         }
-        count.stringValue = "待推送 \(value.commitCount) 项" + (value.commitCount > 100 ? " · 列表显示前100项" : "") + (value.uncommittedFiles > 0 ? " · \(value.uncommittedFiles) 个未提交文件留在本地" : "")
+    }
+    private func show(_ value: AgentGitPushReview) {
+        review = value; branch.stringValue = value.targetBranch; inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "待推送整体变更")
+        let outgoing = "待推送 \(value.commitCount) 项" + (value.commitCount > 100 ? "（前 100 项）" : "")
+        if let rewrite = value.rewrite {
+            addCommits(rewrite.commits, prefix: "将移出远端 · ")
+            addCommits(value.commits, prefix: "待推送 · ")
+            count.stringValue = "将移出远端 \(rewrite.commitCount) 项" + (rewrite.commitCount > 100 ? "（前 100 项）" : "") + " · " + outgoing
+            state.stringValue = "强制推送将改写远端分支历史"
+            state.textColor = AgentDialogStyle.error
+        } else {
+            addCommits(value.commits)
+            count.stringValue = "待推送 \(value.commitCount) 项" + (value.commitCount > 100 ? " · 列表显示前100项" : "")
+            state.stringValue = !value.requiresUpdate ? "远端已包含目标提交" : value.remoteHead == nil ? "将在远端创建分支" : "已核对远端分支"
+        }
+        if value.uncommittedFiles > 0 { count.stringValue += " · \(value.uncommittedFiles) 个未提交文件留在本地" }
         renderReview(value)
-        state.stringValue = value.commitCount == 0 ? "远端已包含目标提交" : value.remoteHead == nil ? "将在远端创建分支" : "已核对远端分支"
         controls()
     }
     @objc private func preparePush() {
@@ -230,19 +246,24 @@ import AppKit
         }
     }
     @objc private func sendPush() {
-        guard !busy, writable, let scope, let value = review, value.commitCount > 0 else { return }
+        guard !busy, writable, let scope, let value = review, value.requiresUpdate else { return }
         do { try scope.requireCurrent(store.task(taskID), preserving: "请重新检查远端") }
         catch { invalidate(); showError(error); return }
-        let alert = AgentConfirmation(); alert.messageText = "推送 \(value.commitCount) 项提交？"; alert.informativeText = value.summary; alert.addButton(withTitle: "推送"); alert.addButton(withTitle: "取消")
+        let rewriting = value.rewrite != nil
+        let alert = AgentConfirmation()
+        alert.messageText = rewriting ? "强制推送到 \(value.targetBranch)？" : "推送 \(value.commitCount) 项提交？"
+        alert.informativeText = value.summary
+        alert.addButton(withTitle: rewriting ? "强制推送" : "推送").hasDestructiveAction = rewriting
+        alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         busy = true; sending = true; controls(); state.textColor = AgentWorkbenchTheme.secondaryText; state.stringValue = "推送中…"
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                let receipt = try await git.push(reviewHash: value.hash, draftScope: scope)
+                let receipt = try await git.push(reviewHash: value.hash, draftScope: scope, confirmRewrite: rewriting)
                 if receipt.verified { discardDraft(); onDraftChange?() }
                 state.stringValue = receipt.verified ? "远端已核对 · " + String(receipt.sourceHead.prefix(12)) + (receipt.localUpdate.isEmpty ? "" : " · " + receipt.localUpdate) : "结果待核对，请核对上次结果"
-                count.stringValue = receipt.verified ? "已推送 \(value.commitCount) 项" : ""
+                count.stringValue = receipt.verified ? (value.rewrite.map { "已从远端分支移除 \($0.commitCount) 项 · 已推送 \(value.commitCount) 项" } ?? "已推送 \(value.commitCount) 项") : ""
                 inspectCommit.removeAllItems(); inspectCommit.addItem(withTitle: "推送结果")
                 review = nil; render(receipt.output); onReceipt?(receipt)
             } catch { showError(error); review = nil }

@@ -14,6 +14,7 @@ struct AgentGitPreferences {
     let profile: URL
     private let filename = "git-preferences.json"
     private let worktreeFetchFilename = "worktree-fetch-upstream.json"
+    private let forcePushFilename = "git-allow-force-push.json"
 
     private func readData(_ name: String, maximum: Int) throws -> Data? {
         let files = try AgentFiles(workspace: profile.path)
@@ -41,13 +42,26 @@ struct AgentGitPreferences {
     }
 
     func worktreeFetchPreference() throws -> (enabled: Bool, revision: String?) {
-        guard let data = try readData(worktreeFetchFilename, maximum: 32) else { return (false, nil) }
-        return (try JSONDecoder().decode(Bool.self, from: data), AgentFiles.hash(data))
+        try readToggle(worktreeFetchFilename)
     }
 
     func saveWorktreeFetchPreference(_ enabled: Bool, replacing revision: String?) throws {
         let data = try JSONEncoder().encode(enabled)
         try writeData(data, to: worktreeFetchFilename, replacing: revision, label: "工作树上游设置")
+    }
+
+    func forcePushPreference() throws -> (enabled: Bool, revision: String?) {
+        try readToggle(forcePushFilename)
+    }
+
+    func saveForcePushPreference(_ enabled: Bool, replacing revision: String?) throws {
+        let data = try JSONEncoder().encode(enabled)
+        try writeData(data, to: forcePushFilename, replacing: revision, label: "强制推送设置")
+    }
+
+    private func readToggle(_ name: String) throws -> (enabled: Bool, revision: String?) {
+        guard let data = try readData(name, maximum: 32) else { return (false, nil) }
+        return (try JSONDecoder().decode(Bool.self, from: data), AgentFiles.hash(data))
     }
 
     private func writeData(_ data: Data, to name: String, replacing revision: String?, label: String) throws {
@@ -84,9 +98,12 @@ struct AgentGitPreferences {
 @MainActor final class AgentGitPreferencesPage: AgentSettingsPageController, NSWindowDelegate, NSTextFieldDelegate, NSTextViewDelegate {
     private let preferences: AgentGitPreferences
     private let prefix = AgentDialogTextField(), instructions = NSTextView()
+    private let forcePush = NSSwitch()
+    private let forcePushStatus = AgentSettingsStatusField("强制推送设置保存状态")
     private let status = AgentSettingsStatusField("Git 设置保存状态")
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil)
     private var saved: AgentGitPreferences.Snapshot?
+    private var forcePushRevision: String?
     private lazy var viewport: AgentSettingsDraftViewport = {
         let value = AgentSettingsDraftViewport(text: instructions, fields: ["prefix": prefix], catalog: instructions, host: { [weak self] in self?.presentingWindow })
         value.onChange = { [weak self] in self?.onSettingsRecoveryChange?() }
@@ -104,6 +121,12 @@ struct AgentGitPreferences {
         let field = AgentSettingsStyle.labeledField("分支前缀", prefix)
         let branches = AgentSettingsStyle.section("工作树", id: "git-branches", rows: [field])
 
+        forcePush.setAccessibilityLabel("允许强制推送")
+        forcePush.target = self; forcePush.action = #selector(saveForcePush)
+        forcePush.toolTip = "从推送页逐次审阅并确认将被替换的远端提交"
+        let pushRow = AgentSettingsStyle.formRow("允许强制推送", forcePush, trailing: true)
+        let pushSettings = AgentSettingsStyle.section("推送", id: "git-push-preferences", rows: [pushRow, forcePushStatus], separatesRows: false)
+
         instructions.setAccessibilityLabel("提交说明指令"); instructions.delegate = self
         instructions.isRichText = false; instructions.allowsUndo = true; instructions.isVerticallyResizable = true
         instructions.autoresizingMask = [.width]; instructions.textContainer?.widthTracksTextView = true
@@ -117,7 +140,7 @@ struct AgentGitPreferences {
         save.target = self; save.action = #selector(saveValues)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; AgentSettingsStyle.primaryAction(save)
         let actions = AgentSettingsDetailActions([save]); detailActionRow = actions
-        let content = AgentThemeView(), column = NSStackView(views: [branches, message, status, actions])
+        let content = AgentThemeView(), column = NSStackView(views: [branches, pushSettings, message, status, actions])
         column.orientation = .vertical; column.alignment = .leading; column.spacing = 14
         window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -127,6 +150,7 @@ struct AgentGitPreferences {
         ])
         do { load(try preferences.read()); status.stringValue = "" }
         catch { showFailure(error); prefix.isEnabled = false; instructions.isEditable = false; save.isEnabled = false }
+        loadForcePush()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
@@ -144,8 +168,30 @@ struct AgentGitPreferences {
     private func changed() { save.isEnabled = dirty; status.stringValue = dirty ? "未保存" : ""; viewport.changed() }
     func controlTextDidChange(_ notification: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
-    override func settingsDidAppear() { super.settingsDidAppear(); viewport.appear(default: prefix) }
+    override func settingsDidAppear() { super.settingsDidAppear(); loadForcePush(); viewport.appear(default: prefix) }
     override func pageDidLayout() { viewport.schedule() }
+
+    private func loadForcePush() {
+        do {
+            let value = try preferences.forcePushPreference()
+            forcePushRevision = value.revision
+            forcePush.state = value.enabled ? .on : .off
+            forcePush.isEnabled = true; forcePushStatus.stringValue = ""
+        } catch {
+            forcePush.state = .off; forcePush.isEnabled = false
+            forcePushStatus.showSaveFailure(error)
+        }
+    }
+
+    @objc private func saveForcePush() {
+        do {
+            try preferences.saveForcePushPreference(forcePush.state == .on, replacing: forcePushRevision)
+            loadForcePush()
+        } catch {
+            loadForcePush()
+            forcePushStatus.showSaveFailure(error)
+        }
+    }
 
     @objc private func saveValues() {
         guard let saved, dirty else { return }

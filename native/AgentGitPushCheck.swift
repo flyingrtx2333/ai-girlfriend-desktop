@@ -29,9 +29,9 @@ import Darwin
             ensureAgent(); guard let tasks = agentStore else { throw PetError("任务存储不可用") }
             var preferences = store.preferences; preferences.voiceEnabled = false; preferences.wakeEnabled = false; preferences.screenObservationEnabled = false; store.preferences = preferences
             let id = tasks.create(title: "原生 Git 推送验收", workspace: repo.path), git = try AgentGit(store: tasks, taskID: id, directory: repo.appendingPathComponent(".git"))
-            func prepare(_ branch: String, upstream: Bool = false) async throws -> AgentGitPushReview {
+            func prepare(_ branch: String, upstream: Bool = false, scope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitPushReview {
                 _ = try await git.remotes()
-                return try await git.preparePush(remote: "origin", urlIndex: 0, branch: branch, setUpstream: upstream, remoteHash: tasks.task(id)?.gitRemoteSnapshot?.hash)
+                return try await git.preparePush(remote: "origin", urlIndex: 0, branch: branch, setUpstream: upstream, remoteHash: tasks.task(id)?.gitRemoteSnapshot?.hash, draftScope: scope)
             }
             let first = try await prepare("main", upstream: true)
             let beforeRemoteHead = try await setup(["rev-parse", "refs/heads/main"], at: server).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -138,6 +138,61 @@ import Darwin
             let timeoutAttempts = try String(contentsOf: server.appendingPathComponent("timeout-attempts"), encoding: .utf8)
             checks["timedOutTransferCanBeVerifiedWithoutBlindRetry"] = timedReceipt.exitCode != 0 && timeoutTerminal && timeoutVerified.afterHead == (timeoutHead.isEmpty ? nil : timeoutHead) && timeoutVerified.verified == (timeoutHead == head) && timeoutAttempts == "attempt\n"
             try fm.removeItem(at: serverHook)
+
+            func remoteRef(_ branch: String) async throws -> String {
+                try await setup(["rev-parse", "refs/heads/" + branch], at: server).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let gitPreferences = tasks.gitPreferences, previousPreferences = try gitPreferences.read()
+            let forceDefault = try gitPreferences.forcePushPreference(), scope = try AgentGitDraftRecovery.Scope.current(tasks.task(id))
+            checks["forcePushDefaultsOff"] = !forceDefault.enabled && forceDefault.revision == nil
+            do { _ = try await prepare("divergent", scope: scope); checks["manualRewriteNeedsOptIn"] = false }
+            catch { checks["manualRewriteNeedsOptIn"] = try await remoteRef("divergent") == divergent }
+            try gitPreferences.saveForcePushPreference(true, replacing: forceDefault.revision)
+            let enabled = try gitPreferences.forcePushPreference(), otherPreferences = try gitPreferences.read()
+            checks["forcePreferencePreservesExistingGitSettings"] = enabled.enabled && enabled.revision != nil && otherPreferences.values == previousPreferences.values && otherPreferences.revision == previousPreferences.revision
+            do { try gitPreferences.saveForcePushPreference(false, replacing: forceDefault.revision); checks["staleForcePreferenceCannotOverwriteSavedChoice"] = false }
+            catch { checks["staleForcePreferenceCannotOverwriteSavedChoice"] = try gitPreferences.forcePushPreference().enabled }
+            do { _ = try await prepare("divergent"); checks["agentPathCannotPrepareRewriteEvenWhenEnabled"] = false }
+            catch { checks["agentPathCannotPrepareRewriteEvenWhenEnabled"] = true }
+            let displaced = try await prepare("divergent", scope: scope)
+            let stillDivergent = try await remoteRef("divergent")
+            checks["rewritePreviewReviewsBothCommitSetsWithoutSending"] = displaced.commitCount == 1 && displaced.commits.contains(head) && displaced.diff.contains("+committed-push-content") && displaced.rewrite?.commitCount == 1 && displaced.rewrite?.commits.contains(divergent) == true && stillDivergent == divergent
+            let arguments = String(decoding: try JSONSerialization.data(withJSONObject: ["review_hash": displaced.hash]), as: UTF8.self)
+            do {
+                _ = try AgentTools(store: tasks, taskID: id).approvalReason(for: AgentToolCall(id: "rewrite-approval-probe", name: "git_push", arguments: arguments), gitDirectory: git.directory.path)
+                checks["agentApprovalCannotUseManualRewriteReview"] = false
+            } catch { checks["agentApprovalCannotUseManualRewriteReview"] = error.localizedDescription.contains("请在推送页确认强制推送") }
+            do { _ = try await git.push(reviewHash: displaced.hash, draftScope: scope); checks["rewriteRequiresExplicitConfirmation"] = false }
+            catch { checks["rewriteRequiresExplicitConfirmation"] = error.localizedDescription.contains("请在推送页确认强制推送") }
+            try gitPreferences.saveForcePushPreference(false, replacing: enabled.revision)
+            do { _ = try await git.push(reviewHash: displaced.hash, draftScope: scope, confirmRewrite: true); checks["disablingForcePushInvalidatesExistingReview"] = false }
+            catch { checks["disablingForcePushInvalidatesExistingReview"] = try await remoteRef("divergent") == divergent && error.localizedDescription.contains("设置已关闭") }
+
+            try gitPreferences.saveForcePushPreference(true, replacing: gitPreferences.forcePushPreference().revision)
+            _ = try await setup(["config", "receive.denyNonFastForwards", "true"], at: server)
+            let protected = try await prepare("divergent", scope: scope)
+            let rejectedRewrite = try await git.push(reviewHash: protected.hash, draftScope: scope, confirmRewrite: true)
+            checks["receiverCanRejectExplicitRewrite"] = try await remoteRef("divergent") == divergent && !rejectedRewrite.verified && rejectedRewrite.exitCode != 0
+            _ = try await setup(["config", "receive.denyNonFastForwards", "false"], at: server)
+            let confirmed = try await prepare("divergent", scope: scope)
+            let rewritten = try await git.push(reviewHash: confirmed.hash, draftScope: scope, confirmRewrite: true)
+            let updatedTip = try await remoteRef("divergent")
+            checks["explicitRewriteUpdatesOnlyReviewedRemoteBranch"] = try await remoteRef("main") == head && rewritten.verified && rewritten.beforeHead == divergent && updatedTip == head
+            let newer = try await setup(["commit-tree", remoteTree, "-p", divergent, "-m", "new remote commit after review"], at: server).trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try await setup(["update-ref", "refs/heads/force-lease-race", divergent], at: server)
+            try hook(serverHook, "while read old new ref; do\n if [ \"$ref\" = refs/heads/force-lease-race ]; then\n  unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH\n  " + AgentGit.quote(gitPath) + " update-ref \"$ref\" " + newer + " \"$old\" || exit 7\n fi\ndone")
+            let forcedRace = try await prepare("force-lease-race", scope: scope)
+            let leaseReceipt = try await git.push(reviewHash: forcedRace.hash, draftScope: scope, confirmRewrite: true)
+            checks["forceLeasePreservesConcurrentRemoteCommit"] = try await remoteRef("force-lease-race") == newer && !leaseReceipt.verified && leaseReceipt.exitCode != 0
+            try fm.removeItem(at: serverHook)
+            let descendant = try await setup(["commit-tree", "HEAD^{tree}", "-p", head, "-m", "remote-only descendant"]).trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try await setup(["push", "--", server.path, descendant + ":refs/heads/rewind"])
+            let rewind = try await prepare("rewind", scope: scope)
+            let rewindReceipt = try await git.push(reviewHash: rewind.hash, draftScope: scope, confirmRewrite: true)
+            checks["reviewedRewindWorksWithNoOutgoingCommit"] = try await remoteRef("rewind") == head && rewind.commitCount == 0 && rewind.requiresUpdate && rewind.rewrite?.commitCount == 1 && rewindReceipt.verified
+            _ = try await setup(["config", "receive.denyNonFastForwards", "true"], at: server)
+            try gitPreferences.saveForcePushPreference(false, replacing: gitPreferences.forcePushPreference().revision)
+
             let second = output.appendingPathComponent("remotes/other.git")
             _ = try await setup(["init", "--bare", "--initial-branch=main", second.path])
             _ = try await setup(["config", "--add", "remote.origin.pushurl", remoteURL]); _ = try await setup(["config", "--add", "remote.origin.pushurl", second.path])
