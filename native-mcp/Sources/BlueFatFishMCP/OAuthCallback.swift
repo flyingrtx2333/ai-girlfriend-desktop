@@ -4,6 +4,7 @@ import MCP
 
 // The browser returns to an ephemeral listener bound to the IPv4 loopback.
 final class OAuthCallback: OAuthAuthorizationDelegate, @unchecked Sendable {
+    static let redirectBase = URL(string: "http://127.0.0.1/oauth/callback")!
     private let listener: NWListener
     private let queue = DispatchQueue(label: "com.xjs.bluefatfish.mcp-oauth-callback")
     private let open: @Sendable (URL) async throws -> Void
@@ -28,8 +29,10 @@ final class OAuthCallback: OAuthAuthorizationDelegate, @unchecked Sendable {
                     ready = continuation
                     listener.stateUpdateHandler = { [weak self] state in
                         guard let self, !stopped else { return }
-                        if case .ready = state, let port = listener.port, let address = URL(string: "http://127.0.0.1:\(port.rawValue)/oauth/callback") {
-                            redirectURI = address; ready?.resume(returning: address); ready = nil
+                        if case .ready = state, let port = listener.port {
+                            var parts = URLComponents(url: Self.redirectBase, resolvingAgainstBaseURL: false)!
+                            parts.port = Int(port.rawValue)
+                            redirectURI = parts.url; ready?.resume(returning: parts.url!); ready = nil
                         } else if case .failed = state { finish(MCPConnectionError("无法接收浏览器授权，请重试")) }
                     }
                     listener.newConnectionHandler = { [weak self] connection in
@@ -103,7 +106,7 @@ final class OAuthCallback: OAuthAuthorizationDelegate, @unchecked Sendable {
         let host = "127.0.0.1:\(port)"
         guard request.count == 3, request[0] == "GET", request[2] == "HTTP/1.1" || request[2] == "HTTP/1.0",
               hosts.count == 1, hosts[0].dropFirst(5).trimmingCharacters(in: .whitespaces) == host,
-              request[1].hasPrefix("/oauth/callback?"),
+              request[1].hasPrefix(Self.redirectBase.path + "?"),
               let url = URLComponents(string: "http://" + host + String(request[1])), url.fragment == nil,
               let fields = url.queryItems, fields.filter({ $0.name == "state" }).map(\.value) == [nonce] else { return nil }
         let codes = fields.filter { $0.name == "code" || $0.name == "error" }

@@ -1,10 +1,11 @@
 import AppKit
+import BlueFatFishMCP
 
 @MainActor final class AgentMCPConfigForm: NSObject, NSTextFieldDelegate {
     private(set) var view = NSScrollView()
     private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = AgentSecureTextField(), timeout = AgentDialogTextField()
     private let authentication = NSPopUpButton(), clientID = AgentDialogTextField()
-    private var authenticationRow = NSView(), clientRow = NSView(), bearerRow = NSView()
+    private var authenticationRow = NSView(), clientRow = NSView(), redirectRow = NSView(), bearerRow = NSView()
     private let arguments = AgentMCPConfigRows(title: "参数", paired: false, secure: false, limit: 100)
     private let environment = AgentMCPConfigRows(title: "环境变量", paired: true, secure: true, limit: 64)
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
@@ -33,7 +34,9 @@ import AppKit
         transport.addItems(withTitles: ["STDIO", "HTTP", "SSE"]); transport.selectItem(at: ["stdio", "http", "sse"].firstIndex(of: type)!); transport.isEnabled = !pluginLocked
         authentication.addItems(withTitles: ["手动凭据", "浏览器授权（OAuth）"])
         authentication.selectItem(at: value["oauthClientID"] == nil ? 0 : 1)
-        clientID.stringValue = value["oauthClientID"] as? String ?? ""; clientID.placeholderString = "自动注册"
+        clientID.stringValue = value["oauthClientID"] as? String ?? ""
+        clientID.placeholderString = "留空自动注册"
+        clientID.toolTip = "填写预注册的客户端 ID 或 HTTPS 客户端元数据地址。"
         command.stringValue = value["command"] as? String ?? ""; directory.stringValue = value["cwd"] as? String ?? ""
         address.stringValue = value["url"] as? String ?? ""
         let bearerValue = value["bearerToken"] as? String ?? ""
@@ -47,8 +50,13 @@ import AppKit
         local = AgentSettingsStyle.section("本机程序", id: "mcp-stdio", rows: [AgentSettingsStyle.labeledField("命令", command), arguments.view, environment.view, AgentSettingsStyle.labeledField("工作目录", directory)])
         authenticationRow = AgentSettingsStyle.formRow("认证", authentication, trailing: true)
         clientRow = AgentSettingsStyle.labeledField("客户端 ID", clientID)
+        let redirect = NSTextField(labelWithString: MCPConnection.oauthLoopbackRedirectURI)
+        redirect.font = .monospacedSystemFont(ofSize: 12, weight: .regular); redirect.isSelectable = true
+        redirect.lineBreakMode = .byTruncatingMiddle; redirect.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        redirect.setAccessibilityLabel("MCP 回调地址"); redirect.toolTip = "实际授权会使用可用的本机端口。"
+        redirectRow = AgentSettingsStyle.formRow("回调地址", redirect, trailing: true)
         bearerRow = AgentSettingsStyle.labeledField("Bearer Token", bearer)
-        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, bearerRow, headers.view])
+        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, redirectRow, bearerRow, headers.view])
         view = AgentSettingsStyle.form([
             AgentSettingsStyle.section("基本信息", id: "mcp-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.formRow("传输方式", transport, trailing: true)]),
             local, remote, AgentSettingsStyle.section("连接选项", id: "mcp-timeout", rows: [AgentSettingsStyle.labeledField("超时（毫秒）", timeout)])
@@ -62,9 +70,13 @@ import AppKit
     private func updateTransport() {
         local.isHidden = type != "stdio"; remote.isHidden = type == "stdio"
         authenticationRow.isHidden = type != "http"; clientRow.isHidden = !usesOAuth
+        redirectRow.isHidden = !usesOAuth || clientID.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         bearerRow.isHidden = usesOAuth; headers.view.isHidden = usesOAuth
     }
-    func controlTextDidChange(_ notification: Notification) { onChange?() }
+    func controlTextDidChange(_ notification: Notification) {
+        if notification.object as? NSTextField === clientID { updateTransport() }
+        onChange?()
+    }
     @objc private func changed() { updateTransport(); onChange?() }
     func setEnabled(_ enabled: Bool, pluginLocked: Bool) {
         for field in [name, command, directory, address, bearer, clientID, timeout] { field.isEnabled = enabled }

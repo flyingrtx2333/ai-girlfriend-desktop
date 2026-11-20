@@ -7,7 +7,7 @@ struct AgentMCPServer: Codable, Identifiable {
     var enabled = true, timeoutSeconds: Double = 60
     var environmentKeys: [String] = [], hasBearerToken = false
     var headerKeys: [String]? = nil, workingDirectory: String? = nil
-    // An empty client ID asks the authorization server to register this app.
+    // An empty ID requests dynamic registration. A URL identifies a client metadata document.
     var oauthClientID: String? = nil
     var plugin: AgentPluginMCPReference? = nil
     var credentialRevision: String? = nil, configured: Bool? = nil, pluginEnabled: Bool? = nil
@@ -156,8 +156,7 @@ struct AgentMCPServer: Codable, Identifiable {
     private static func validateOAuth(type: String, clientID: String, bearer: Bool, headers: [String]) throws {
         guard type == "http" else { throw PetError("OAuth 认证需要 HTTP 传输") }
         guard !bearer, headers.isEmpty else { throw PetError("OAuth 认证需清除手动 Token 和请求头") }
-        guard clientID.utf8.count <= 2048,
-              !clientID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw PetError("OAuth 客户端 ID 无效") }
+        try MCPConnection.validateOAuthClientID(clientID)
     }
     func document(_ server: AgentMCPServer?) throws -> String {
         if let server, let reference = server.plugin, server.configured == false, let plugins {

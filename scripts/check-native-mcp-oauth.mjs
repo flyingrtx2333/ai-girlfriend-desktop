@@ -35,7 +35,8 @@ try {
   }
   if (ready?.pid !== fixture.pid) throw Error('本机 OAuth 服务未就绪。');
   if (manual) {
-    console.log(JSON.stringify({ output, resource: ready.resource, browser: ready.browser, fixturePID: fixture.pid }));
+    console.log(JSON.stringify({ output, resource: ready.resource, browser: ready.browser, registeredClientID: ready.registeredClientID,
+      metadataClientID: ready.metadataClientID, fixturePID: fixture.pid }));
     process.exitCode = await fixtureExit;
   } else {
     const executable = path.resolve(app, 'Contents/MacOS/BlueFatFish');
@@ -56,12 +57,21 @@ try {
     const matching = text => text.split('\n').some(line => {
       try { const value = JSON.parse(line); return value.sku === stock.sku && value.name === stock.name && value.available === stock.available; } catch { return false; }
     });
+    const count = (event, mode) => events.filter(e => e.event === event && e.mode === mode && e.resourceBound && (event !== 'approved' || e.pkce)).length;
+    const metadataDisabled = events.findIndex(e => e.event === 'fixture-client-metadata-disabled');
+    const afterMetadataDisabled = events.slice(metadataDisabled + 1);
     const independent = {
       sameCandidate: report.appPID === child.pid && await digest() === binaryHash,
       actualProtectedResourceAndIssuerDiscovery: events.some(e => e.event === 'resource-metadata') && events.some(e => e.event === 'issuer-metadata' && e.tls),
-      actualDynamicRegistrationAndPKCE: events.filter(e => e.event === 'registered' && e.loopback).length === 2 && events.filter(e => e.event === 'approved' && e.pkce && e.resourceBound).length === 2,
-      oneRefreshAndTwoExplicitGrants: events.filter(e => e.event === 'refreshed' && e.resourceBound).length === 1 && events.filter(e => e.event === 'exchanged' && e.resourceBound).length === 2,
-      inventoryMatchesIndependentSource: Object.keys(report.inventory).length === 4 && Object.values(report.inventory).every(matching) && events.filter(e => e.event === 'rpc' && e.method === 'tools/call' && e.authorized && e.sku === stock.sku).length === 4,
+      actualDynamicRegistrationAndPKCE: events.filter(e => e.event === 'registered' && e.loopback).length === 2 && count('approved', 'dynamic') === 2,
+      configuredIdentityTakesPrecedence: count('approved', 'pre-registered') === 1 && count('exchanged', 'pre-registered') === 1 && count('refreshed', 'pre-registered') === 1,
+      metadataDocumentFetchedAndUsed: events.some(e => e.event === 'client-metadata-fetched' && e.tls)
+        && events.some(e => e.event === 'client-metadata-validated' && e.exactClientID && e.loopback)
+        && count('approved', 'metadata') === 1 && count('exchanged', 'metadata') === 1 && count('refreshed', 'metadata') === 1,
+      oneDynamicRefreshAndTwoGrants: count('refreshed', 'dynamic') === 1 && count('exchanged', 'dynamic') === 2,
+      noFallbackWithoutMetadataSupport: metadataDisabled >= 0 && afterMetadataDisabled.some(e => e.event === 'issuer-metadata' && !e.clientMetadataSupported)
+        && !afterMetadataDisabled.some(e => ['registered', 'approved', 'consent-page', 'client-metadata-fetched'].includes(e.event)),
+      inventoryMatchesIndependentSource: Object.keys(report.inventory).length === 8 && Object.values(report.inventory).every(matching) && events.filter(e => e.event === 'rpc' && e.method === 'tools/call' && e.authorized && e.sku === stock.sku).length === 8,
       onlyRequestedResourceReceivesGrant: !events.some(e => e.event === 'other-resource' || e.event === 'fixture-error'),
       credentialsOmittedFromLogs: !protocol.includes('public-fixture-') && !protocol.includes('local-client-'),
       failedHandshakeActuallyReturned: events.some(e => e.event === 'public-credential-in-error'),

@@ -22,6 +22,7 @@ final class AgentCheckLocalTLS: NSObject, URLSessionDelegate, URLSessionTaskDele
 
 private struct MCPOAuthFixture: Decodable, Sendable {
     let browser: URL, issuer: URL, resource: URL
+    let registeredClientID: String, metadataClientID: String
 
     func localBrowserURL(_ authorization: URL) throws -> URL {
         guard authorization.scheme == "https", authorization.host == issuer.host, authorization.port == issuer.port,
@@ -78,6 +79,11 @@ private struct MCPOAuthFixture: Decodable, Sendable {
             let owner = tasks.create(title: "MCP 公开授权检验", workMode: .general)
             let original: [String: Any] = ["name": "公开库存 OAuth", "type": "http", "url": fixture.resource.absoluteString, "oauthClientID": "", "timeoutSeconds": 7]
             func encoded(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), as: UTF8.self) }
+            func fixtureAction(_ action: String) async throws {
+                var request = URLRequest(url: fixture.browser.appendingPathComponent("fixture/" + action)); request.httpMethod = "POST"
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw PetError("本机 OAuth 验收样例未就绪") }
+            }
             func lookup(_ server: AgentMCPServer, on library: AgentMCP, phase: String, opensBrowser: Bool = false) async throws {
                 _ = try await library.connect(server.id, revision: server.revision, owner: owner, workspace: nil, browserAuthorization: opensBrowser)
                 defer { library.disconnect(owner: owner, serverID: server.id) }
@@ -103,15 +109,21 @@ private struct MCPOAuthFixture: Decodable, Sendable {
             changed = original; changed["name"] = "重命名后的公开库存 OAuth"
             server = try service.save(encoded(changed), id: server.id, expectedRevision: server.revision)
             checks["authorizationReferencedAcrossMetadataEdits"] = try Data(contentsOf: vault) == signedIn && server.credentialRevision == firstRevision
-            let reopened = AgentMCP(profile: service.profile, keychain: PetKeychain(service: "com.xjs.bluefatfish.oauth-check", configurationFile: vault, migrateLegacy: false))
+            let permissions = PetKeychain(service: "com.xjs.bluefatfish.oauth-check", configurationFile: vault, migrateLegacy: false)
+            let originalAccount = "mcp-\(server.id)-\(firstRevision)"
+            guard let grantData = Data(base64Encoded: try permissions.read(originalAccount)),
+                  var oldGrant = try JSONSerialization.jsonObject(with: grantData) as? [String: Any],
+                  oldGrant.removeValue(forKey: "resource") != nil else { throw PetError("无法构造旧版 OAuth 授权记录") }
+            let legacyGrant = try JSONSerialization.data(withJSONObject: oldGrant).base64EncodedString()
+            try permissions.write(legacyGrant, account: originalAccount)
+            let reopened = AgentMCP(profile: service.profile, keychain: permissions)
             reopened.oauthFixture = service.oauthFixture
             try await lookup(try reopened.server(server.id), on: reopened, phase: "reopen")
-            var expire = URLRequest(url: fixture.browser.appendingPathComponent("fixture/expire")); expire.httpMethod = "POST"
-            _ = try await URLSession.shared.data(for: expire)
+            checks["oldGrantWithoutResourceReopens"] = inventory["reopen"] != nil
+            try await fixtureAction("expire")
             try await lookup(try reopened.server(server.id), on: reopened, phase: "refresh")
-            checks["refreshRotationUpdatedStoredGrant"] = try Data(contentsOf: vault) != signedIn
-            var fail = URLRequest(url: fixture.browser.appendingPathComponent("fixture/fail-initialize")); fail.httpMethod = "POST"
-            _ = try await URLSession.shared.data(for: fail)
+            checks["refreshRotationUpdatedStoredGrant"] = try permissions.read(originalAccount) != legacyGrant
+            try await fixtureAction("fail-initialize")
             do { _ = try await reopened.connect(server.id, revision: server.revision, owner: owner, workspace: nil); checks["credentialsRedactedFromConnectionFailure"] = false }
             catch {
                 let status = reopened.status(server.id, owner: owner)
@@ -126,14 +138,52 @@ private struct MCPOAuthFixture: Decodable, Sendable {
             do { _ = try await reopened.connect(server.id, revision: signedOut.revision, owner: owner, workspace: nil); checks["clearedConnectorRequiresNewConsent"] = false }
             catch { checks["clearedConnectorRequiresNewConsent"] = error.localizedDescription.contains("设置") }
             try await lookup(signedOut, on: reopened, phase: "reauthorize", opensBrowser: true)
+            let oldDynamicGrant = try permissions.read("mcp-\(signedOut.id)-\(signedOut.revision)")
             changed["url"] = fixture.resource.absoluteString + "-next"
             let retargeted = try reopened.save(encoded(changed), id: signedOut.id, expectedRevision: signedOut.revision)
             do { _ = try await reopened.connect(retargeted.id, revision: retargeted.revision, owner: owner, workspace: nil); checks["changedEndpointCannotReuseOAuthGrant"] = false }
             catch { checks["changedEndpointCannotReuseOAuthGrant"] = error.localizedDescription.contains("设置") }
             checks["actualInventoryAtLoginReopenRefreshAndReauthorization"] = inventory.count == 4 && inventory.values.allSatisfy { $0.contains("公开读盘样例") }
+
+            var configured = original; configured["name"] = "预注册库存连接器"; configured["oauthClientID"] = fixture.registeredClientID
+            let registered = try reopened.save(encoded(configured))
+            let registeredAccount = "mcp-\(registered.id)-\(registered.revision)"
+            try permissions.write(oldDynamicGrant, account: registeredAccount)
+            do { _ = try await reopened.connect(registered.id, revision: registered.revision, owner: owner, workspace: nil); checks["configuredClientDiscardsLegacyDynamicGrant"] = false }
+            catch { checks["configuredClientDiscardsLegacyDynamicGrant"] = !oldDynamicGrant.isEmpty && error.localizedDescription.contains("设置") }
+            try await lookup(registered, on: reopened, phase: "pre-registered", opensBrowser: true)
+            let registeredGrant = try permissions.read(registeredAccount)
+            try await fixtureAction("expire")
+            try await lookup(registered, on: reopened, phase: "pre-registered-refresh")
+            checks["configuredClientRefreshedWithoutNewConsent"] = try permissions.read(registeredAccount) != registeredGrant
+
+            configured["oauthClientID"] = fixture.metadataClientID
+            let metadata = try reopened.save(encoded(configured), id: registered.id, expectedRevision: registered.revision)
+            do { _ = try await reopened.connect(metadata.id, revision: metadata.revision, owner: owner, workspace: nil); checks["changedClientCannotReuseOAuthGrant"] = false }
+            catch { checks["changedClientCannotReuseOAuthGrant"] = metadata.credentialRevision == nil && error.localizedDescription.contains("设置") }
+            let metadataForm = try AgentMCPConfigForm(document: reopened.document(metadata), pluginLocked: false)
+            checks["formRoundTripsMetadataAddress"] = try AgentConfigurationJSON.object(Data(metadataForm.document().utf8))["oauthClientID"] as? String == fixture.metadataClientID
+            try await lookup(metadata, on: reopened, phase: "metadata", opensBrowser: true)
+            let reloaded = AgentMCP(profile: service.profile, keychain: permissions)
+            reloaded.oauthFixture = service.oauthFixture
+            try await fixtureAction("expire")
+            try await lookup(try reloaded.server(metadata.id), on: reloaded, phase: "metadata-refresh")
+            checks["metadataClientReopensAndRefreshes"] = inventory["metadata-refresh"] != nil
+
+            checks["invalidClientMetadataAddressesRejected"] = ["http://example.com/client.json", "https://example.com/", "https://example.com/client.json#anchor"].allSatisfy { address in
+                var invalid = configured; invalid["oauthClientID"] = address
+                do { _ = try reloaded.save(encoded(invalid), id: metadata.id, expectedRevision: metadata.revision); return false }
+                catch { return error.localizedDescription.contains("带路径的 HTTPS 地址") }
+            }
+            try reloaded.clearOAuth(metadata.id, revision: metadata.revision, workspace: nil)
+            try await fixtureAction("disable-client-metadata")
+            let unsupported = try reloaded.server(metadata.id)
+            do { _ = try await reloaded.connect(unsupported.id, revision: unsupported.revision, owner: owner, workspace: nil, browserAuthorization: true); checks["unsupportedMetadataDoesNotRequestBrowser"] = false }
+            catch { checks["unsupportedMetadataDoesNotRequestBrowser"] = error.localizedDescription.contains("授权服务不支持客户端元数据地址") }
+            reloaded.disconnect()
             reopened.disconnect()
         } catch { issue = error.localizedDescription }
-        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 12 && checks.values.allSatisfy { $0 },
+        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 20 && checks.values.allSatisfy { $0 },
             "modelRequests": requests, "inventory": inventory, "error": issue ?? "", "appPID": getpid()]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-oauth-report.json"))
     }
