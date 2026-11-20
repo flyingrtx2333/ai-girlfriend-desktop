@@ -640,9 +640,14 @@ final class FormDocumentView: NSView {
             let titleFrame = settingsHeading.convert(settingsHeading.bounds, to: contentSurface)
             let scopeLabel = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.first { $0.identifier?.rawValue == "settings-editing-context" }
             let scope = scopeLabel?.convert(scopeLabel?.bounds ?? .zero, to: contentSurface) ?? .zero
-            let back = descendants(settingsPageHost).compactMap { $0 as? NSButton }.first { $0.title.hasPrefix("返回 ") && !$0.isHiddenOrHasHiddenAncestor }
+            let back = (settingsHeading.superview as? NSStackView)?.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "settings-detail-back" }
+            let backFrame = back?.convert(back?.bounds ?? .zero, to: contentSurface) ?? .zero
+            let navigation = descendants(settingsPageHost).first { $0.identifier?.rawValue == "settings-manager-navigation" }
             checks[kind + "CompactDetailUsesActualHeadingScopeAndBack"] = settingsHeading.stringValue == title &&
-                scopeLabel?.isHiddenOrHasHiddenAncestor == false && !scope.isEmpty && scope.minX >= titleFrame.maxX - 1 && back != nil
+                scopeLabel?.isHiddenOrHasHiddenAncestor == false && !scope.isEmpty && scope.minX >= titleFrame.maxX - 1 &&
+                back?.isHiddenOrHasHiddenAncestor == false && back?.accessibilityLabel()?.hasPrefix("返回 ") == true &&
+                backFrame.size == NSSize(width: 28, height: 28) && abs(backFrame.midY - titleFrame.midY) < 1 &&
+                backFrame.maxX <= titleFrame.minX && navigation?.isHidden == true
             let buttons = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
             let more = descendants(settingsWindowActions).compactMap { $0 as? NSPopUpButton }.first
             let actionFrame = settingsWindowActions.convert(settingsWindowActions.bounds, to: contentSurface)
@@ -652,9 +657,15 @@ final class FormDocumentView: NSView {
             let firstContent = descendants(content).first { $0.identifier?.rawValue == contentID || $0.accessibilityLabel() == contentID }
             let visibleContent = ((firstContent as? NSTextView)?.enclosingScrollView ?? firstContent)?.visibleRect.height ?? 0
             checks[kind + "CompactDetailShowsFirstContent"] = visibleContent >= 60 && firstContent?.isHiddenOrHasHiddenAncestor == false
-            detail.close(); window.contentView?.layoutSubtreeIfNeeded()
+            if kind == "mcp" {
+                settingsSearch.stringValue = "连接器"; updateSettingsSections()
+                let hiddenForSearch = back?.isHidden == true && settingsHeading.stringValue == "搜索结果"
+                settingsSearch.stringValue = ""; updateSettingsSections()
+                checks["SettingsSearchHidesAndRestoresDetailBack"] = hiddenForSearch && back?.isHidden == false && settingsPageHost.currentController === detail
+            }
+            back?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
             checks[kind + "CompactDetailRestoresCatalogHeadingAndActions"] = settingsPageHost.currentController === root &&
-                settingsHeading.stringValue == catalogHeading && buttons.allSatisfy { $0.superview !== settingsWindowActions }
+                settingsHeading.stringValue == catalogHeading && back?.isHidden == true && buttons.allSatisfy { $0.superview !== settingsWindowActions }
         }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
@@ -2237,7 +2248,7 @@ final class FormDocumentView: NSView {
         settingsPageHost.isHidden = true
         let title = NSStackView(views: [settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
         title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
-        settingsPageHost.scopeHost = title
+        settingsPageHost.titleHost = title
         settingsPageHost.onDetailHeading = { [weak self] detail in
             guard let self, let category = settingsCategories.first(where: { $0.0 == self.settingsCategory }) else { return }
             settingsHeading.stringValue = detail ?? category.1; settingsHeading.toolTip = detail

@@ -83,6 +83,28 @@ import AppKit
     return checks
 }
 
+@MainActor private func checkSettingsBackScroll() -> [String: Bool] {
+    let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 410), styleMask: [.titled], backing: .buffered, defer: false)
+    host.isReleasedWhenClosed = false
+    let pane = AgentSettingsPageHost(); host.contentView = pane
+    defer { pane.finish(); host.close() }
+    func tallPage(_ name: String) -> AgentSettingsPageController {
+        let body = NSView(); body.heightAnchor.constraint(equalToConstant: 720).isActive = true
+        return AgentSettingsDetailPage(title: name, content: body, scrollsInternally: false)
+    }
+    let parent = tallPage("父页"), child = tallPage("子页")
+    guard pane.show(category: "extensions", identity: "settings-back-scroll", scope: "用户设置", make: { _ in parent }),
+          let scroll = pane.subviews.compactMap({ $0 as? NSStackView }).first?.arrangedSubviews.compactMap({ $0 as? NSScrollView }).first else { return [:] }
+    pane.layoutSubtreeIfNeeded()
+    AgentSettingsRecovery.restoreScroll(200, to: scroll)
+    let oldY = scroll.contentView.bounds.minY
+    parent.presentSettingsChild(child)
+    let childStartsAtTop = pane.currentController === child && abs(scroll.contentView.bounds.minY) < 1
+    child.close()
+    return ["NewSettingsDetailStartsAtTop": childStartsAtTop,
+            "ReturningToSettingsParentRestoresOuterScroll": pane.currentController === parent && oldY > 150 && abs(scroll.contentView.bounds.minY - oldY) < 1]
+}
+
 @MainActor extension AppDelegate {
     func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) async throws {
         guard let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置布局验收项目") }
@@ -149,6 +171,7 @@ import AppKit
             checks.merge(layout["checks"] as? [String: Bool] ?? [:]) { _, next in next }; report["frames"] = layout["frames"]
             checks.merge(checkSettingsScrollChaining()) { _, next in next }
             checks.merge(checkSettingsFormSizing()) { _, next in next }
+            checks.merge(checkSettingsBackScroll()) { _, next in next }
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 764, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
             let page = AgentSettingsPageHost(); host.contentView = page
@@ -160,7 +183,7 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            report["success"] = checks.count == 327 && checks.values.allSatisfy { $0 }
+            report["success"] = checks.count == 330 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))

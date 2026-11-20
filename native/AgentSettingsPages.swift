@@ -549,8 +549,11 @@ struct AgentSettingsCatalogGroup {
 }
 
 @MainActor final class AgentSettingsPageHost: NSView {
-    private struct Entry { let controller: AgentSettingsPageController; let view: NSView; let title: String }
-    private let back = NSButton(title: "返回", target: nil, action: nil), header = NSStackView()
+    private struct Entry {
+        let controller: AgentSettingsPageController, view: NSView, title: String
+        var scrollY: Double = 0
+    }
+    private let back = AgentWorkbenchButton(title: "返回", target: nil, action: nil), header = NSStackView()
     private let tabs = NSSegmentedControl(), context = NSTextField(labelWithString: "")
     private let sourceFolder = NSPopUpButton(), sourceRow = NSStackView()
     private var selectedSource:String?, onSelectSource:((String)->Bool)?
@@ -566,13 +569,20 @@ struct AgentSettingsCatalogGroup {
     private let forwardedScrolls = NSHashTable<NSScrollView>.weakObjects()
     weak var actionsHost: NSStackView? { didSet { updateActions() } }
     private var scopeWidth: NSLayoutConstraint?
-    weak var scopeHost: NSStackView? {
+    private lazy var compactBackSize = [back.widthAnchor.constraint(equalToConstant: 28), back.heightAnchor.constraint(equalToConstant: 28)]
+    weak var titleHost: NSStackView? {
         didSet {
-            guard oldValue !== scopeHost else { return }
+            guard oldValue !== titleHost else { return }
             scopeWidth?.isActive = false
-            (oldValue ?? header).removeArrangedSubview(context); context.removeFromSuperview()
-            (scopeHost ?? header).addArrangedSubview(context)
-            scopeWidth = scopeHost.map { context.widthAnchor.constraint(lessThanOrEqualTo: $0.widthAnchor, multiplier: 0.42) }
+            for view in [back, context] {
+                (oldValue ?? header).removeArrangedSubview(view); view.removeFromSuperview()
+            }
+            let host = titleHost ?? header
+            host.insertArrangedSubview(back, at: 0); host.addArrangedSubview(context)
+            if titleHost != nil { NSLayoutConstraint.activate(compactBackSize) }
+            else { NSLayoutConstraint.deactivate(compactBackSize) }
+            back.imagePosition = titleHost == nil ? .imageLeading : .imageOnly
+            scopeWidth = titleHost.map { context.widthAnchor.constraint(lessThanOrEqualTo: $0.widthAnchor, multiplier: 0.42) }
             scopeWidth?.isActive = true
             updateHeader()
         }
@@ -585,6 +595,8 @@ struct AgentSettingsCatalogGroup {
     override init(frame: NSRect) {
         super.init(frame: frame)
         back.isBordered = false; back.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
+        back.image?.size = NSSize(width: 16, height: 16); back.contentTintColor = .labelColor
+        back.identifier = .init("settings-detail-back")
         back.cell?.lineBreakMode = .byTruncatingTail
         back.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         back.target = self; back.action = #selector(goBack)
@@ -690,7 +702,10 @@ struct AgentSettingsCatalogGroup {
     }
     private func push(_ controller: AgentSettingsPageController) {
         guard let host = window, let content = controller.settingsContent(in: host) else { return }
-        entries.last?.view.removeFromSuperview()
+        if let index = entries.indices.last {
+            entries[index].scrollY = pendingRecoveryY ?? max(0, viewport.contentView.bounds.minY)
+            entries[index].view.removeFromSuperview()
+        }
         controller.onSettingsPush = { [weak self] child in self?.push(child) }
         controller.onSettingsClose = { [weak self] in self?.goBack() }
         controller.onSettingsRecoveryChange = { [weak self] in self?.onRecoveryChange?() }
@@ -703,6 +718,7 @@ struct AgentSettingsCatalogGroup {
     }
     private func displayCurrent() {
         guard let entry = entries.last else { updateHeader(); return }
+        pendingRecoveryY = nil
         pageHeight?.isActive = false; pageHeight = nil
         forwardedScrolls.removeAllObjects()
         let content = entry.view; document.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
@@ -712,10 +728,10 @@ struct AgentSettingsCatalogGroup {
             pageHeight = content.heightAnchor.constraint(equalTo: viewport.contentView.heightAnchor)
             pageHeight?.isActive = true
         }
-        layoutSubtreeIfNeeded()
-        viewport.contentView.scroll(to: .zero); viewport.reflectScrolledClipView(viewport.contentView)
+        updateHeader(); layoutSubtreeIfNeeded()
+        AgentSettingsRecovery.restoreScroll(entry.scrollY, to: viewport)
         startScrollMonitor()
-        entry.controller.settingsDidAppear(); updateHeader()
+        entry.controller.settingsDidAppear()
         window?.recalculateKeyViewLoop()
         onRecoveryChange?()
     }
@@ -725,11 +741,14 @@ struct AgentSettingsCatalogGroup {
         context.stringValue = detail?.scope ?? editing?.title ?? contextTitle
         context.toolTip = detail?.location ?? editing?.location
         sourceRow.isHidden = editing != nil || sourceFolder.numberOfItems < 2
-        context.isHidden = entries.isEmpty || (detail == nil && !sourceRow.isHidden) || (scopeHost != nil && !actionsEnabled)
-        back.isHidden = entries.count < 2; back.title = entries.count > 1 ? "返回 " + entries[entries.count - 2].title : "返回"
+        context.isHidden = entries.isEmpty || (detail == nil && !sourceRow.isHidden) || (titleHost != nil && !actionsEnabled)
+        let hasParent = entries.count > 1
+        back.isHidden = !hasParent || (titleHost != nil && !actionsEnabled)
+        back.title = hasParent ? "返回 " + entries[entries.count - 2].title : "返回"
+        back.toolTip = back.title; back.setAccessibilityLabel(back.title)
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
-        header.isHidden = scopeHost != nil ? back.isHidden && tabs.isHidden : ["hooks", "worktrees"].contains(category) && entries.count == 1
+        header.isHidden = titleHost != nil ? tabs.isHidden : ["hooks", "worktrees"].contains(category) && entries.count == 1
         if actionsEnabled { onDetailHeading?(detail?.title) }
         updateActions()
     }
