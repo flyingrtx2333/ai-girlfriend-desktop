@@ -155,7 +155,9 @@ final class FormDocumentView: NSView {
     private let apiPreview = NSButton(), voicePreview = NSButton(), apiReplace = NSButton(), voiceReplace = NSButton()
     private let checkModelButton = AgentDialogButton(title: "检测", target: nil, action: nil)
     private let modelDirectoryButton = AgentDialogButton(title: "模型列表", target: nil, action: nil)
+    private let modelDirectoryBack = AgentWorkbenchButton()
     private let modelDirectory = AgentModelDirectoryView()
+    private var modelDirectoryReturnY: CGFloat?
     private let modelStatus = AgentSettingsStatusField("检测状态")
     private let vision = NSPopUpButton(), reasoning = NSPopUpButton()
     private let contextTokens = AgentComboBox(), replyTokens = AgentComboBox()
@@ -681,6 +683,41 @@ final class FormDocumentView: NSView {
             back?.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
             checks[kind + "CompactDetailRestoresCatalogHeadingAndActions"] = settingsPageHost.currentController === root &&
                 settingsHeading.stringValue == catalogHeading && back?.isHidden == true && buttons.allSatisfy { $0.superview !== settingsWindowActions }
+        }
+        if showSettingsCategory("model") {
+            let narrow = NSSize(width: 780, height: 540), savedModel = model.stringValue
+            window.setContentSize(narrow); window.contentView?.layoutSubtreeIfNeeded()
+            model.stringValue = "public/draft-model"
+            let draft = basicSettingsValues()
+            restoreSettingsScroll(36, to: settingsScroll)
+            let y = settingsScroll.contentView.bounds.minY
+            let models = (1...16).compactMap { ModelInfo(endpoint: "http://127.0.0.1", object: ["id": "public/model-\($0)"]) }
+            modelDirectory.setModels(models); modelDirectoryButton.performClick(nil)
+            checks["modelDirectoryOpensInSettingsContent"] = settingsHeading.stringValue == "模型列表" && modelDirectory.window === window &&
+                !modelDirectory.isHiddenOrHasHiddenAncestor && !modelDirectoryBack.isHidden && settingsScroll.isHidden &&
+                settingsPageHost.isHidden && settingsFooter?.isHidden == true && !settingsSidebar.isHidden &&
+                categoryButtons.first { $0.identifier?.rawValue == "settings-category-model" }?.state == .on
+            checks["modelDirectoryKeepsUnsavedSettingsAndReturnPosition"] = basicSettingsValues() == draft && captureSettingsNavigation()?.contentY == y
+            let table = descendants(modelDirectory).compactMap { $0 as? NSTableView }.first
+            for (label, size, minimum) in [("Minimum", narrow, CGFloat(320)), ("Wide", NSSize(width: 1320, height: 800), CGFloat(550))] {
+                window.setContentSize(size); window.contentView?.layoutSubtreeIfNeeded()
+                checks["modelDirectoryUses\(label)WindowHeight"] = window.frame.size == size && table?.numberOfRows == 16 &&
+                    (table?.enclosingScrollView?.contentSize.height ?? 0) >= minimum
+            }
+            window.setContentSize(narrow)
+            settingsSearch.stringValue = "模型"; updateSettingsSections()
+            let hiddenForSearch = modelDirectory.isHidden && modelDirectoryBack.isHidden && settingsHeading.stringValue == "搜索结果"
+            settingsSearch.stringValue = ""; updateSettingsSections()
+            checks["modelDirectoryReturnsAfterClearingSettingsSearch"] = hiddenForSearch && !modelDirectory.isHidden && table?.numberOfRows == 16
+            modelDirectoryBack.performClick(nil)
+            checks["modelDirectoryBackRestoresFormAndScroll"] = settingsHeading.stringValue == "模型" && modelDirectory.isHidden &&
+                generalSettingsSave?.isHidden == false && basicSettingsValues() == draft && abs(settingsScroll.contentView.bounds.minY - y) < 1
+            modelDirectoryButton.performClick(nil)
+            table?.selectRowIndexes(IndexSet(integer: 15), byExtendingSelection: false)
+            descendants(modelDirectory).compactMap { $0 as? NSButton }.first { $0.title == "使用模型" }?.performClick(nil)
+            checks["modelDirectoryChoiceOnlyChangesModelDraft"] = modelDirectory.isHidden && model.stringValue == "public/model-16" &&
+                companion?.store.preferences.model == savedModel && basicSettingsValues().enumerated().allSatisfy { $0.offset == 1 || $0.element == draft[$0.offset] }
+            modelDirectory.clear(); refreshPreferences()
         }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
@@ -1753,7 +1790,9 @@ final class FormDocumentView: NSView {
         return leaveSettingsPage()
     }
     private func leaveSettingsPage() -> Bool {
-        if canLeaveBasicSettings(), settingsPageHost.leave() { restoredSettingsContext = nil; return true }
+        if canLeaveBasicSettings(), settingsPageHost.leave() {
+            endModelDirectory(); restoredSettingsContext = nil; return true
+        }
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
             let input = settingsEditingInput, selection = settingsEditingSelection
             settingsSearch.stringValue = ""; updateSettingsSections()
@@ -2063,9 +2102,15 @@ final class FormDocumentView: NSView {
         defer { updateSettingsActions() }
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let title = settingsHeading.superview { settingsColumn?.setCustomSpacing(query.isEmpty && managedSettings.contains(settingsCategory) ? 16 : 30, after: title) }
+        if settingsCategory != "model" { endModelDirectory() }
+        let showingModelDirectory = query.isEmpty && modelDirectoryReturnY != nil
+        modelDirectory.isHidden = !showingModelDirectory; modelDirectoryBack.isHidden = !showingModelDirectory
+        if let title = settingsHeading.superview {
+            let compactHeader = showingModelDirectory || query.isEmpty && managedSettings.contains(settingsCategory)
+            settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: title)
+        }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
-        settingsHeading.stringValue = query.isEmpty ? selected.1 : "搜索结果"
+        settingsHeading.stringValue = showingModelDirectory ? "模型列表" : query.isEmpty ? selected.1 : "搜索结果"
         settingsHeading.toolTip = nil
         pageTitle.stringValue = settingsHeading.stringValue
         settingsResults = query.isEmpty ? [] : settingsSearchMatches(query)
@@ -2077,6 +2122,11 @@ final class FormDocumentView: NSView {
             button.state = active ? .on : .off; button.needsDisplay = true
         }
         for (group, label) in settingsGroupLabels { label.isHidden = !query.isEmpty && !groups.contains(group) }
+        if showingModelDirectory {
+            settingsPageHost.isHidden = true; settingsScroll.isHidden = true
+            generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
+            return
+        }
         if !query.isEmpty {
             settingsPageHost.isHidden = true; settingsScroll.isHidden = false
             generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
@@ -2258,19 +2308,18 @@ final class FormDocumentView: NSView {
         model.setAccessibilityLabel("模型 ID")
         model.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         AgentDialogStyle.action(checkModelButton); checkModelButton.target = self; checkModelButton.action = #selector(checkModel)
-        AgentDialogStyle.action(modelDirectoryButton); modelDirectoryButton.target = self; modelDirectoryButton.action = #selector(toggleModelDirectory)
+        AgentDialogStyle.action(modelDirectoryButton); modelDirectoryButton.target = self; modelDirectoryButton.action = #selector(openModelDirectory)
+        AgentWorkbenchTheme.toolbar(modelDirectoryBack, title: "返回模型", symbol: "chevron.left")
+        modelDirectoryBack.target = self; modelDirectoryBack.action = #selector(closeModelDirectory); modelDirectoryBack.isHidden = true
         modelDirectory.onRead = { [weak self] in self?.requestModel(.catalog) }
         modelDirectory.onChoose = { [weak self] id in
-            guard let self else { return }
-            model.stringValue = id; invalidateModelCheck(); toggleModelDirectory()
+            guard let self, modelDirectoryReturnY != nil else { return }
+            model.stringValue = id; invalidateModelCheck(); closeModelDirectory()
         }
         modelStatus.stringValue = "未检测"
         row("接口", endpoint)
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
         row("模型", stack([model, modelDirectoryButton, checkModelButton], spacing: 8))
-        modelDirectory.translatesAutoresizingMaskIntoConstraints = false
-        body.addArrangedSubview(modelDirectory); modelDirectory.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
-        modelDirectory.isHidden = true
         row("状态", modelStatus)
         group("model", "能力与预算", "模型 视觉 图片 理解 思考 上下文 tokens 回复 上限 预算")
         vision.addItems(withTitles: ["自动（未知）", "支持", "不支持"])
@@ -2412,8 +2461,10 @@ final class FormDocumentView: NSView {
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
+        settingsBody.addSubview(modelDirectory); pin(modelDirectory, to: settingsBody, inset: 16)
+        modelDirectory.isHidden = true
         settingsPageHost.isHidden = true
-        let title = NSStackView(views: [settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
+        let title = NSStackView(views: [modelDirectoryBack, settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
         title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
         settingsPageHost.titleHost = title
         settingsPageHost.onDetailHeading = { [weak self] detail in
@@ -2633,15 +2684,23 @@ final class FormDocumentView: NSView {
         p.contextTokens = window; p.replyTokens = output; p.modelInfo = selectedModelInfo
         try p.validateModel(); return p
     }
-    @objc private func toggleModelDirectory() {
-        modelDirectory.isHidden.toggle()
-        modelDirectoryButton.title = modelDirectory.isHidden ? "模型列表" : "收起列表"
-        if modelDirectory.isHidden {
-            if modelRequestKind == .catalog { requestModel(.catalog) }
-            window?.makeFirstResponder(model)
-        } else {
-            window?.contentView?.layoutSubtreeIfNeeded(); modelDirectory.focus(model: model.stringValue)
-        }
+    @objc private func openModelDirectory() {
+        guard selectedTab == "settings", settingsCategory == "model", !settingsScroll.isHidden,
+              settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        modelDirectoryReturnY = max(0, settingsScroll.contentView.bounds.minY)
+        updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
+        modelDirectory.focus(model: model.stringValue)
+    }
+    @objc private func closeModelDirectory() {
+        guard let y = modelDirectoryReturnY else { return }
+        endModelDirectory(); updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
+        restoreSettingsScroll(y, to: settingsScroll)
+        window?.makeFirstResponder(model)
+    }
+    private func endModelDirectory() {
+        guard modelDirectoryReturnY != nil else { return }
+        modelDirectoryReturnY = nil
+        if modelRequestKind == .catalog { requestModel(.catalog) }
     }
 
     private func modelRequestKey(for url: URL) throws -> String {
@@ -2995,7 +3054,7 @@ final class FormDocumentView: NSView {
         let source = page == nil || ["git", "worktrees"].contains(settingsCategory) ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
-            contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),
+            contentY: settingsScroll.isHidden ? (modelDirectoryReturnY ?? 0) : max(0, settingsScroll.contentView.bounds.minY),
             sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot)
         return value.valid ? value : nil
     }

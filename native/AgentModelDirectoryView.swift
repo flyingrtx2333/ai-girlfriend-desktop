@@ -9,6 +9,7 @@ import AppKit
     private let read = AgentDialogButton(title: "读取列表", target: nil, action: nil)
     private let choose = AgentDialogButton(title: "使用模型", target: nil, action: nil)
     private let status = AgentSettingsStatusField("模型列表状态")
+    private let results = AgentThemeView(fill: .clear, stroke: AgentWorkbenchTheme.line)
     private var rows: [ModelInfo] = []
     private var currentID = "", message = "未读取模型列表"
     private var reading = false, failed = false
@@ -19,7 +20,7 @@ import AppKit
         search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         search.heightAnchor.constraint(equalToConstant: 28).isActive = true
         AgentDialogStyle.action(read); read.target = self; read.action = #selector(readList)
-        AgentDialogStyle.action(choose); choose.target = self; choose.action = #selector(useSelection)
+        AgentDialogStyle.action(choose, prominent: true); choose.target = self; choose.action = #selector(useSelection)
         table.addTableColumn(NSTableColumn(identifier: .init("model"))); table.headerView = nil
         table.style = .fullWidth; table.rowHeight = 40; table.intercellSpacing = .zero; table.backgroundColor = .clear
         table.setAccessibilityLabel("服务模型列表"); table.delegate = self; table.dataSource = self
@@ -27,16 +28,19 @@ import AppKit
         table.onOpen = { [weak self] in self?.useSelection() }
         scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay
         scroll.drawsBackground = false; scroll.borderType = .noBorder
-        scroll.heightAnchor.constraint(equalToConstant: 154).isActive = true
+        results.layer?.cornerRadius = 8; results.layer?.masksToBounds = true
+        results.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false
         status.stringValue = message
         let toolbar = NSStackView(views: [search, read, choose]); toolbar.alignment = .centerY; toolbar.spacing = 8
-        let column = NSStackView(views: [toolbar, scroll, status]); column.orientation = .vertical
-        column.alignment = .leading; column.spacing = 6
+        let column = NSStackView(views: [toolbar, status, results]); column.orientation = .vertical
+        column.alignment = .leading; column.spacing = 10
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
             column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor),
-            toolbar.widthAnchor.constraint(equalTo: column.widthAnchor), scroll.widthAnchor.constraint(equalTo: column.widthAnchor),
+            toolbar.widthAnchor.constraint(equalTo: column.widthAnchor), results.widthAnchor.constraint(equalTo: column.widthAnchor),
+            scroll.leadingAnchor.constraint(equalTo: results.leadingAnchor, constant: 1), scroll.trailingAnchor.constraint(equalTo: results.trailingAnchor, constant: -1),
+            scroll.topAnchor.constraint(equalTo: results.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: results.bottomAnchor, constant: -1),
             status.widthAnchor.constraint(equalTo: column.widthAnchor)
         ])
         updateRows()
@@ -85,6 +89,7 @@ import AppKit
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         rows = models.filter { query.isEmpty || $0.id.localizedCaseInsensitiveContains(query) || $0.name?.localizedCaseInsensitiveContains(query) == true }
         table.reloadData(); scroll.isHidden = rows.isEmpty
+        results.layer?.borderWidth = rows.isEmpty ? 0 : 1
         select(rows.firstIndex { $0.id == selected })
     }
 
