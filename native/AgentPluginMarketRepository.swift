@@ -57,11 +57,13 @@ extension AgentPluginMarket {
     enum Source {
         case archive(URL, digest: String?)
         case repository(AgentPluginMarketRepository, ref: String?, sha: String?, path: String)
+        case git(URL, ref: String?, sha: String?, path: String)
 
         var label: String {
             switch self {
             case let .archive(url, _): return url.host ?? ""
             case let .repository(repository, _, _, _): return repository.slug
+            case let .git(url, _, _, _): return AgentPluginMarketGit.label(url)
             }
         }
 
@@ -73,22 +75,28 @@ extension AgentPluginMarket {
                 guard let sha else { return false }
                 return receipt.marketOrigin?.commit == AgentPluginMarketCommit(repository: repository, sha: sha)
                     && receipt.marketOrigin?.repositoryPath == path
+            case let .git(url, _, sha, path):
+                guard let sha else { return false }
+                return receipt.marketOrigin?.gitCommit == AgentPluginMarketGit.Commit(repository: url, sha: sha)
+                    && receipt.marketOrigin?.repositoryPath == path
             }
         }
 
-        static func parse(_ value: Any?, directory: AgentPluginMarketCommit?, pluginRoot: Any?) throws -> Self {
+        static func parse(_ value: Any?, directory: AgentPluginMarketCommit?, gitDirectory: AgentPluginMarketGit.Commit?, pluginRoot: Any?) throws -> Self {
             if let relative = value as? String {
-                guard let directory else { throw PetError("相对路径需要 GitHub 仓库目录") }
+                guard directory != nil || gitDirectory != nil else { throw PetError("相对路径需要 Git 仓库目录") }
                 var path = try AgentPluginMarketRepository.folder(relative)
                 if relative != ".", !relative.hasPrefix("./") {
                     guard let parent = pluginRoot as? String, !path.contains("/") else { throw PetError("相对插件路径须以 ./ 开头") }
                     let root = try AgentPluginMarketRepository.folder(parent)
                     if !root.isEmpty { path = root + "/" + path }
                 }
-                return .repository(directory.repository, ref: nil, sha: directory.sha, path: path)
+                if let directory { return .repository(directory.repository, ref: nil, sha: directory.sha, path: path) }
+                guard let gitDirectory else { throw PetError("相对路径需要 Git 仓库目录") }
+                return .git(gitDirectory.repository, ref: nil, sha: gitDirectory.sha, path: path)
             }
             guard let object = value as? [String: Any], let type = object["source"] as? String else {
-                throw PetError("需要 HTTPS ZIP 或 GitHub 仓库")
+                throw PetError("需要 HTTPS ZIP 或 Git 仓库")
             }
             if type == "archive" {
                 let url = try AgentPluginMarket.address((object["url"] as? String).flatMap(URL.init(string:)))
@@ -99,29 +107,36 @@ extension AgentPluginMarket {
                 return .archive(url, digest: digest?.lowercased())
             }
             var repository: AgentPluginMarketRepository?
+            var gitURL: URL?
             var path = ""
             switch type {
             case "github":
                 repository = (object["repo"] as? String).flatMap(AgentPluginMarketRepository.init)
             case "url", "git", "git-subdir":
                 if let value = object["url"] as? String {
-                    repository = URL(string: value).flatMap(AgentPluginMarketRepository.init(address:))
+                    let url = URL(string: value)
+                    repository = url.flatMap(AgentPluginMarketRepository.init(address:))
                     if type == "git-subdir", repository == nil { repository = AgentPluginMarketRepository(value) }
+                    if repository == nil { gitURL = url.flatMap(AgentPluginMarketGit.address) }
                 }
                 if type == "git-subdir" {
                     guard let folder = object["path"] as? String else { throw PetError("仓库来源需要插件目录路径") }
                     path = try AgentPluginMarketRepository.folder(folder)
                 }
             default:
-                throw PetError("需要 HTTPS ZIP 或 GitHub 仓库")
+                throw PetError("需要 HTTPS ZIP 或 Git 仓库")
             }
-            guard let repository else { throw PetError("需要公开 GitHub 仓库") }
+            guard repository != nil || gitURL != nil else { throw PetError("需要公开 HTTPS Git 仓库") }
             let ref = (object["ref"] as? String).flatMap(AgentPluginMarketRepository.ref)
-            let sha = (object["sha"] as? String).flatMap(AgentPluginMarketRepository.commit)
+            let sha = (object["sha"] as? String).flatMap { value in
+                repository != nil ? AgentPluginMarketRepository.commit(value) : AgentPluginMarketGit.sha(value)
+            }
             guard (object["ref"] == nil || ref != nil), (object["sha"] == nil || sha != nil) else {
                 throw PetError("仓库分支、标签或提交编号无效")
             }
-            return .repository(repository, ref: ref, sha: sha, path: path)
+            if let repository { return .repository(repository, ref: ref, sha: sha, path: path) }
+            guard let gitURL else { throw PetError("需要公开 HTTPS Git 仓库") }
+            return .git(gitURL, ref: ref, sha: sha, path: path)
         }
     }
 }

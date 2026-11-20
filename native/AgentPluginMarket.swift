@@ -4,6 +4,7 @@ struct AgentPluginMarketOrigin: Codable, Equatable {
     let catalog: URL, archive: URL
     let marketplace: String, publisher: String, entry: String
     let commit: AgentPluginMarketCommit?, repositoryPath: String?
+    var gitCommit: AgentPluginMarketGit.Commit? = nil
 
     func matches(_ directory: AgentPluginMarket.Directory, entry: String) -> Bool {
         catalog == directory.address && marketplace == directory.name && self.entry == entry
@@ -33,6 +34,7 @@ struct AgentPluginMarket {
     private struct Cache: Codable, Equatable {
         let address: URL, catalog: Data
         let commit: AgentPluginMarketCommit?
+        var gitCommit: AgentPluginMarketGit.Commit? = nil
 
         func directory() throws -> Directory {
             if let commit {
@@ -41,7 +43,13 @@ struct AgentPluginMarket {
                     throw PetError("已保存的市场仓库来源无效")
                 }
             }
-            return try AgentPluginMarket.directory(catalog, address: AgentPluginMarket.address(address), commit: commit)
+            if let gitCommit {
+                guard commit == nil, AgentPluginMarketGit.address(address) == gitCommit.repository,
+                      AgentPluginMarketGit.sha(gitCommit.sha) == gitCommit.sha else {
+                    throw PetError("已保存的 Git 市场来源无效")
+                }
+            }
+            return try AgentPluginMarket.directory(catalog, address: AgentPluginMarket.address(address), commit: commit, gitCommit: gitCommit)
         }
     }
 
@@ -61,14 +69,16 @@ struct AgentPluginMarket {
 
     private let profile: URL, network: URLSession
     private let fixtureOrigin: URL?
+    private let git: AgentPluginMarketGit
     private static let listingLimit = 1_000_000, archiveLimit = 20_000_000
     private static let catalogLimit = 12
     private static let cachePath = "extensions/plugin-markets.json"
     private static let legacyCachePath = "extensions/plugin-market.json"
 
-    init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil) {
+    init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil, gitFixture: AgentPluginMarketGit.Fixture? = nil) {
         self.profile = profile; self.fixtureOrigin = fixtureOrigin
         self.network = network ?? Self.publicSession
+        self.git = AgentPluginMarketGit(profile: profile, fixture: gitFixture)
     }
 
     private final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
@@ -150,7 +160,12 @@ struct AgentPluginMarket {
     func refresh(_ address: String) async throws -> Catalogs {
         let url = try Self.address(URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)))
         let repository = AgentPluginMarketRepository(address: url)
-        let key = repository?.address ?? url
+        let gitAddress: URL?
+        if repository == nil, url.path.lowercased().hasSuffix(".git") {
+            guard let candidate = AgentPluginMarketGit.address(url) else { throw PetError("请使用不含登录参数的公开 HTTPS Git 地址") }
+            gitAddress = candidate
+        } else { gitAddress = nil }
+        let key = repository?.address ?? gitAddress ?? url
         let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
         let original = try readIndex(files).index.items.first { $0.address == key }
         let fetched: Cache
@@ -158,6 +173,9 @@ struct AgentPluginMarket {
             let commit = try await resolve(repository, ref: nil)
             let manifest = try await repositoryDirectory(commit)
             fetched = Cache(address: key, catalog: manifest, commit: commit)
+        } else if let gitAddress {
+            let (manifest, commit) = try await git.directory(gitAddress, maximum: Self.listingLimit)
+            fetched = Cache(address: key, catalog: manifest, commit: nil, gitCommit: commit)
         } else {
             let (bytes, _) = try await download(url, maximum: Self.listingLimit, accept: "application/json")
             fetched = Cache(address: key, catalog: bytes, commit: nil)
@@ -267,29 +285,34 @@ struct AgentPluginMarket {
 
     @MainActor func prepare(_ entry: Entry, in directory: Directory, scope: String?, plugins: AgentPlugins) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
         guard let source = entry.source, entry.unavailable == nil else { throw PetError(entry.unavailable ?? "此插件没有可用来源") }
-        let archive: URL, commit: AgentPluginMarketCommit?, path: String?
+        let bytes: Data, final: URL
+        var commit: AgentPluginMarketCommit?, gitCommit: AgentPluginMarketGit.Commit?, path: String?
+        let acceptedTypes = "application/zip, application/octet-stream"
         switch source {
-        case let .archive(url, _):
-            archive = url
-            commit = nil
-            path = nil
+        case let .archive(url, digest):
+            (bytes, final) = try await download(url, maximum: Self.archiveLimit, accept: acceptedTypes)
+            if let digest, digest != AgentFiles.hash(bytes) { throw PetError("插件包的 SHA-256 与目录不一致，未安装") }
         case let .repository(repository, ref, sha, location):
             let verified: AgentPluginMarketCommit
             if let sha { verified = AgentPluginMarketCommit(repository: repository, sha: sha) }
             else { verified = try await resolve(repository, ref: ref) }
-            archive = api(repository, path: ["zipball", verified.sha])
+            let archive = api(repository, path: ["zipball", verified.sha])
+            (bytes, final) = try await download(archive, maximum: Self.archiveLimit, accept: acceptedTypes)
             commit = verified
             path = location
-        }
-        let (bytes, final) = try await download(archive, maximum: Self.archiveLimit, accept: "application/zip, application/octet-stream")
-        if case let .archive(_, digest?) = source, digest != AgentFiles.hash(bytes) {
-            throw PetError("插件包的 SHA-256 与目录不一致，未安装")
+        case let .git(url, ref, sha, location):
+            let (archive, verified) = try await git.archive(url, ref: ref, pinned: sha, folder: location, maximum: Self.archiveLimit)
+            bytes = archive
+            final = verified.repository
+            gitCommit = verified
+            path = location
         }
         let origin = AgentPluginMarketOrigin(catalog: directory.address, archive: final, marketplace: directory.name,
-            publisher: directory.publisher, entry: entry.name, commit: commit, repositoryPath: path)
-        let label = commit.map { [$0.label, path ?? ""].filter { !$0.isEmpty }.joined(separator: " · ") } ?? (final.host ?? "")
-        var package = try await plugins.inspectArchive(bytes, sourceName: directory.name + " · " + label, importing: true, repositoryPath: path)
-        guard commit == nil || package.metadata.name == entry.name else { throw PetError("仓库插件名称与市场目录不一致") }
+            publisher: directory.publisher, entry: entry.name, commit: commit, repositoryPath: path, gitCommit: gitCommit)
+        let label = [commit?.label ?? gitCommit?.label ?? final.host ?? "", path ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        var package = try await plugins.inspectArchive(bytes, sourceName: directory.name + " · " + label, importing: true,
+            repositoryPath: gitCommit == nil ? path : "")
+        guard (commit == nil && gitCommit == nil) || package.metadata.name == entry.name else { throw PetError("仓库插件名称与市场目录不一致") }
         package.receipt.marketOrigin = origin
         let installations = try plugins.catalog(workspace: scope, onlyScope: true)
         if let prior = installations.first(where: { $0.receipt.marketOrigin?.matches(directory, entry: entry.name) == true }) {
@@ -301,7 +324,7 @@ struct AgentPluginMarket {
         return (package, nil)
     }
 
-    private static func directory(_ bytes: Data, address: URL, commit: AgentPluginMarketCommit?) throws -> Directory {
+    private static func directory(_ bytes: Data, address: URL, commit: AgentPluginMarketCommit?, gitCommit: AgentPluginMarketGit.Commit?) throws -> Directory {
         let object = try AgentConfigurationJSON.object(bytes)
         guard let name = object["name"] as? String, !name.isEmpty, name.utf8.count <= 128,
               let owner = object["owner"] as? [String: Any], let publisher = owner["name"] as? String,
@@ -320,7 +343,7 @@ struct AgentPluginMarket {
                 if (value["dependencies"] as? [Any])?.isEmpty == false || (value["headers"] as? [String: Any])?.isEmpty == false || value["strict"] as? Bool == false {
                     throw PetError("此条目需要额外的依赖或来源配置")
                 }
-                source = try Source.parse(value["source"], directory: commit, pluginRoot: pluginRoot)
+                source = try Source.parse(value["source"], directory: commit, gitDirectory: gitCommit, pluginRoot: pluginRoot)
                 issue = nil
             } catch {
                 source = nil

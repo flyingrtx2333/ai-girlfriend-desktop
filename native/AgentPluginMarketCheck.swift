@@ -10,10 +10,12 @@ import AppKit
             throw PetError("插件市场样例必须使用本机 HTTPS 服务")
         }
         let certificate = try Data(contentsOf: output.appendingPathComponent("server/test-cert.der"))
+        let gitCertificate = try Data(contentsOf: output.appendingPathComponent("server/test-cert.pem"))
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 5; config.timeoutIntervalForResource = 12
         let network = URLSession(configuration: config, delegate: AgentCheckLocalTLS(certificate: certificate, port: port), delegateQueue: nil)
-        plugins.market = AgentPluginMarket(profile: plugins.profile, network: network, fixtureOrigin: origin)
+        plugins.market = AgentPluginMarket(profile: plugins.profile, network: network, fixtureOrigin: origin,
+            gitFixture: .init(origin: origin, certificate: gitCertificate))
         return (origin, network)
     }
 
@@ -181,9 +183,108 @@ import AppKit
             checks["restorePreservesMarketplaceReceiptAndStockBytes"] = restored.receipt.marketOrigin == original.receipt.marketOrigin
                 && restored.receipt.hashes == original.receipt.hashes && restored.metadata.version == "1.0.0" && !restored.enabled
             checks["resourceReadsMatchBothInstalledVersions"] = results["install"]?.contains("42") == true && results["update"]?.contains("88") == true
+            let git = try await checkHTTPSGitMarket(output, origin: origin, network: network, firstSHA: sha1, secondSHA: sha2)
+            checks.merge(git.checks) { _, new in new }
+            results.merge(git.results) { _, new in new }
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 26 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 39 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
+    }
+
+    private func checkHTTPSGitMarket(_ output: URL, origin: URL, network: URLSession, firstSHA: String, secondSHA: String) async throws
+        -> (checks: [String: Bool], results: [String: String]) {
+        let profile = output.appendingPathComponent("https-git-profile")
+        let project = output.appendingPathComponent("https-git-preview-project")
+        for directory in [profile, project] { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let plugins = AgentPlugins(profile: profile)
+        let certificate = try Data(contentsOf: output.appendingPathComponent("server/test-cert.pem"))
+        let market = AgentPluginMarket(profile: profile, network: network, fixtureOrigin: origin,
+            gitFixture: .init(origin: origin, certificate: certificate))
+        let address = origin.appendingPathComponent("git/catalog.git")
+        let asset = "skills/inventory/resources/count.json"
+        var checks: [String: Bool] = [:], results: [String: String] = [:]
+
+        func setVersion(_ version: String) async throws {
+            var request = URLRequest(url: URL(string: origin.absoluteString + "/fixture?version=" + version)!)
+            request.httpMethod = "POST"
+            let (_, response) = try await network.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw PetError("无法切换真实 Git 样例分支") }
+        }
+        func openDirectory(_ address: URL) async throws -> AgentPluginMarket.Directory {
+            guard let directory = try await market.refresh(address.absoluteString).selected else { throw PetError("Git 目录未选中") }
+            return directory
+        }
+        func prepare(_ name: String, in directory: AgentPluginMarket.Directory, scope: String? = nil) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
+            guard let entry = directory.entries.first(where: { $0.name == name }) else { throw PetError("Git 样例缺少条目 " + name) }
+            return try await market.prepare(entry, in: directory, scope: scope, plugins: plugins)
+        }
+        func stock(_ item: AgentPluginInstallation) throws -> String {
+            let package = try plugins.reviewPackage(item)
+            guard let data = package.files[asset] else { throw PetError("安装包缺少原库存文件") }
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        try await setVersion("1.0.0")
+        let initial = try await openDirectory(address)
+        let (reviewed, absent) = try await prepare("repo-stock", in: initial)
+        let pinned = AgentPluginMarketGit.Commit(repository: address, sha: firstSHA)
+        checks["httpsGitCatalogReadsItsActualHEAD"] = initial.address == address && initial.publisher == "公开仓库目录" && initial.entries.count == 3
+        checks["gitRelativePathUsesCatalogCommit"] = reviewed.receipt.marketOrigin?.gitCommit == pinned
+            && reviewed.receipt.marketOrigin?.repositoryPath == "plugins/repo-stock"
+        checks["gitArchivesOnlyTheSelectedDirectory"] = reviewed.files.keys.allSatisfy { !$0.hasPrefix("plugins/") } && reviewed.files[asset] != nil
+        checks["gitPreviewRequiresExplicitInstallation"] = try absent == nil && plugins.catalog().isEmpty
+        let first = try plugins.install(reviewed)
+        results["httpsGitInstall"] = try stock(first)
+        checks["gitInstallationStoresCommitAndStartsDisabled"] = !first.enabled && first.receipt.marketOrigin?.gitCommit == pinned
+            && initial.entries.first(where: { $0.name == "repo-stock" })?.source?.matches(first.receipt) == true
+
+        try await setVersion("2.0.0")
+        let (offlineSnapshot, _) = try await prepare("other", in: initial)
+        checks["cachedGitCatalogStillFetchesItsFixedCommit"] = offlineSnapshot.receipt.marketOrigin?.gitCommit == pinned
+            && offlineSnapshot.metadata.version == "1.0.0"
+        let explicit = try await openDirectory(origin.appendingPathComponent("other-marketplace.json"))
+        let (floating, _) = try await prepare("repo-workflow", in: explicit)
+        let branchInstall = try plugins.install(floating)
+        results["httpsGitBranch"] = try stock(branchInstall)
+        checks["explicitGitBranchResolvesLatestCommit"] = branchInstall.receipt.marketOrigin?.gitCommit?.sha == secondSHA
+            && branchInstall.metadata.version == "2.0.0" && !branchInstall.enabled
+        let (tag, _) = try await prepare("repo-stock", in: explicit, scope: project.path)
+        checks["explicitGitTagFetchesItsOwnCommit"] = tag.receipt.marketOrigin?.gitCommit == pinned && tag.metadata.version == "1.0.0"
+        let (fixed, _) = try await prepare("other", in: explicit, scope: project.path)
+        checks["explicitGitSHAStillWorksAfterRefIsGone"] = fixed.receipt.marketOrigin?.gitCommit == pinned && fixed.metadata.version == "1.0.0"
+
+        let latest = try await openDirectory(address)
+        let (updated, previous) = try await prepare("repo-stock", in: latest)
+        guard let previous else { throw PetError("Git 插件没有找到同目录的旧版") }
+        let second = try plugins.update(updated, replacing: previous)
+        guard let history = second.receipt.revisions?.first else { throw PetError("Git 更新缺少旧版记录") }
+        let original = try plugins.revision(history, of: second)
+        results["httpsGitUpdate"] = try stock(second)
+        checks["gitUpdateSwapsToPinnedCommitAndKeepsOriginal"] = second.receipt.marketOrigin?.gitCommit?.sha == secondSHA
+            && !second.enabled && original.receipt.marketOrigin?.gitCommit == pinned && original.receiptHash == first.receiptHash
+        let restored = try plugins.update(plugins.package(history, of: second), replacing: second)
+        results["httpsGitRestore"] = try stock(restored)
+        checks["gitHistoryRestoresExactSourceAndFiles"] = restored.receipt.marketOrigin?.gitCommit == pinned
+            && restored.receipt.hashes == first.receipt.hashes && !restored.enabled
+
+        do {
+            _ = try await market.refresh(origin.appendingPathComponent("git/redirect.git").absoluteString)
+            checks["gitRejectsRedirectsAndRetainsCatalogs"] = false
+        } catch {
+            let cache = try market.cachedCatalogs()
+            checks["gitRejectsRedirectsAndRetainsCatalogs"] = cache.selection == address && cache.directories.count == 2
+        }
+        var privateAddress = URLComponents(url: address, resolvingAgainstBaseURL: false)!
+        privateAddress.host = "127.0.0.1"
+        do {
+            _ = try await market.refresh(privateAddress.url!.absoluteString)
+            checks["gitRejectsPrivateAddressAndCleansScratch"] = false
+        } catch {
+            let children = try FileManager.default.contentsOfDirectory(atPath: profile.path)
+            checks["gitRejectsPrivateAddressAndCleansScratch"] = error.localizedDescription.contains("公开 HTTPS")
+                && children.allSatisfy { !$0.hasPrefix(".plugin-git-") }
+        }
+        return (checks, results)
     }
 }

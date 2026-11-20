@@ -83,6 +83,17 @@ try {
       afterBranchMoveStillLoadsPinnedOldCommit: newVersion >= 0 && requests.slice(newVersion).some(row => row.event === 'git-archive' && row.commit === commits[0].commit)
         && !requests.some(row => row.event === 'git-ref' && row.ref === 'removed-branch'),
       installedRepositorySkillsReadIndependentlyVerifiedGitFiles: gitFacts,
+      realGenericGitPackReadsBothCommits: commits.every(({ commit }) =>
+        requests.some(row => row.event === 'git-http' && row.tls && row.uploadPack && row.requested === commit && row.hasFetch)),
+      nativeHTTPSGitReadsExactInitialUpdatedAndRestoredPayloads:
+        expected('httpsGitInstall', trackedFile(commits[0].commit, 'plugins/repo-stock/' + stock))
+        && expected('httpsGitUpdate', trackedFile(commits[1].commit, 'plugins/repo-stock/' + stock))
+        && expected('httpsGitRestore', trackedFile(commits[0].commit, 'plugins/repo-stock/' + stock))
+        && expected('httpsGitBranch', trackedFile(commits[1].commit, stock)),
+      oldCommitWasFetchedAfterLiveBranchAdvanced: requests.some(row => row.event === 'git-http' && row.version === '2.0.0'
+        && row.requested === commits[0].commit && row.hasFetch),
+      protectedGitRedirectDidNotMakeSecondRequest: requests.some(row => row.event === 'git-redirect')
+        && !requests.some(row => row.event === 'git-followed-redirect'),
       credentialFreeArchiveRequests: !requests.some(row => row.credentialHeader || row.event === 'unknown-path'),
       noModels: report.modelRequests === 0
     };

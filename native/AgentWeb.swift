@@ -17,13 +17,17 @@ enum AgentWeb {
         guard let url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
               ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), let host = parts.host,
               parts.user == nil, parts.password == nil, url.absoluteString.utf8.count < 8192 else { throw PetError("请提供有效的 HTTP/HTTPS 网址") }
+        _ = try publicAddresses(host)
+        return url
+    }
+    static func publicAddresses(_ host: String) throws -> [String] {
         var hints = addrinfo(); hints.ai_socktype = SOCK_STREAM
         var addresses: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(host, nil, &hints, &addresses) == 0, let first = addresses else { throw PetError("网址域名无法解析") }
         defer { freeaddrinfo(first) }
-        var node: UnsafeMutablePointer<addrinfo>? = first, count = 0
+        var node: UnsafeMutablePointer<addrinfo>? = first, resolved: [String] = []
         while let current = node {
-            count += 1; let info = current.pointee
+            let info = current.pointee
             if info.ai_family == AF_INET, let address = info.ai_addr {
                 let ip = address.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt32(bigEndian: $0.pointee.sin_addr.s_addr) }
                 let a = ip >> 24, b = (ip >> 16) & 255
@@ -33,9 +37,16 @@ enum AgentWeb {
                 let bytes = address.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { withUnsafeBytes(of: $0.pointee.sin6_addr) { Array($0) } }
                 guard bytes.first.map({ $0 & 0xe0 == 0x20 }) == true else { throw PetError("网页工具不访问本机或私有网络地址") }
             } else { throw PetError("网络地址类型不支持") }
+            var numeric = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(info.ai_addr, info.ai_addrlen, &numeric, socklen_t(numeric.count), nil, 0, NI_NUMERICHOST) == 0 else {
+                throw PetError("无法读取网址的网络地址")
+            }
+            let value = String(cString: numeric)
+            if !resolved.contains(value) { resolved.append(value) }
             node = info.ai_next
         }
-        guard count > 0 else { throw PetError("网址没有可用地址") }; return url
+        guard !resolved.isEmpty else { throw PetError("网址没有可用地址") }
+        return resolved
     }
     private static func data(_ url: URL) async throws -> (Data, URL) {
         let safe = try validate(url)
