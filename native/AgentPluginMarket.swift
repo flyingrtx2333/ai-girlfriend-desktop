@@ -74,7 +74,8 @@ struct AgentPluginMarket {
         let initial = try networkAddress(url)
         var request = URLRequest(url: initial, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue(accept, forHTTPHeaderField: "Accept")
-        let (stream, response) = try await network.bytes(for: request)
+        let delegate = network.delegate as? URLSessionTaskDelegate
+        let (stream, response) = try await network.bytes(for: request, delegate: delegate)
         defer { stream.task.cancel() }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PetError("市场下载失败（HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)）")
