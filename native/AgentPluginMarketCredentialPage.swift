@@ -26,17 +26,21 @@ import AppKit
         token.setAccessibilityLabel("访问令牌")
         token.placeholderString = stored == nil ? nil : "已保存 · 输入新令牌替换"
         token.target = self; token.action = #selector(save)
+        let secret = AgentSettingsStyle.formRow("访问令牌", token, trailing: false)
+        let entry = NSStackView(views: [secret, status]); entry.orientation = .vertical; entry.alignment = .leading; entry.spacing = 8
+        secret.widthAnchor.constraint(equalTo: entry.widthAnchor).isActive = true
+        status.widthAnchor.constraint(equalTo: entry.widthAnchor).isActive = true
         let fields = AgentSettingsStyle.section("连接", id: "market-credential", rows: [
             AgentSettingsStyle.formRow("地址", target, trailing: false),
             AgentSettingsStyle.formRow("用户名", username, trailing: false),
-            AgentSettingsStyle.formRow("访问令牌", token, trailing: false),
-            status
+            entry
         ])
         for input in [username, token] { AgentSettingsStyle.field(input) }
         let form = AgentSettingsStyle.form([fields], label: "市场访问凭据")
         let clear = AgentDialogButton(title: "清除凭据", target: self, action: #selector(clear))
         clear.isEnabled = stored != nil; AgentDialogStyle.action(clear)
         let save = AgentDialogButton(title: "保存凭据", target: self, action: #selector(save))
+        save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         AgentSettingsStyle.primaryAction(save)
         let actions = AgentSettingsDetailActions([clear, save]); detailActionRow = actions
         let content = NSStackView(views: [form, actions]); content.orientation = .vertical; content.alignment = .leading; content.spacing = 12
@@ -57,7 +61,7 @@ import AppKit
     @objc private func save() {
         _ = presentingWindow?.makeFirstResponder(nil)
         do { try apply(AgentPluginMarketCredential(username: username.stringValue, token: token.stringValue, requiresUsername: requiresUsername)) }
-        catch { status.showSaveFailure(error) }
+        catch { status.showSaveFailure(error); settingsDidAppear() }
     }
 
     @objc private func clear() {

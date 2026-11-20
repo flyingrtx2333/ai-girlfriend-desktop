@@ -71,6 +71,7 @@ import AppKit
             let first = try await load(listing)
             checks["readsRealDirectoryAndCategories"] = first.publisher == "公开样例目录" && first.entries.count == 6
                 && Set(first.entries.map(\.category)) == ["工作流", "开发", "检查"]
+            checks.merge(checkMarketPageLayout(plugins)) { _, new in new }
             let plain = try entry("review-notes", first)
             if case .archive(_, nil)? = plain.source {
                 checks["separatesUnsupportedSourceAndOptionalDigest"] = try entry("source-not-supported", first).unavailable != nil
@@ -192,8 +193,46 @@ import AppKit
             results.merge(privateMarket.results) { _, new in new }
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 62 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 68 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
+    }
+
+    private func checkMarketPageLayout(_ plugins: AgentPlugins) -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let layouts: [(CGFloat, CGFloat, NSAppearance.Name, String)] = [(540, 374, .darkAqua, "NarrowDark"), (760, 602, .aqua, "WideLight")]
+        for (width, height, appearance, label) in layouts {
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false; host.appearance = NSAppearance(named: appearance)
+            let page = AgentPluginMarketPage(plugins: plugins, workspace: nil), header = NSStackView()
+            defer { page.setSettingsActionsHost(nil); page.endSettingsHosting(); host.close() }
+            guard let body = page.settingsContent(in: host) else { continue }
+            let root = NSView(), column = NSStackView(views: [header, body]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 12
+            host.contentView = root; root.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                column.topAnchor.constraint(equalTo: root.topAnchor), column.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+                column.leadingAnchor.constraint(equalTo: root.leadingAnchor), column.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+                header.widthAnchor.constraint(equalTo: column.widthAnchor), header.heightAnchor.constraint(equalToConstant: 28),
+                body.widthAnchor.constraint(equalTo: column.widthAnchor)
+            ])
+            page.setSettingsActionsHost(header)
+            root.layoutSubtreeIfNeeded()
+            func controls(_ view: NSView) -> [NSControl] { (view as? NSControl).map { [$0] } ?? view.subviews.flatMap(controls) }
+            let all = controls(root)
+            let address = all.first { $0.accessibilityLabel() == "插件市场目录地址" }
+            let filter = all.first { $0.accessibilityLabel() == "搜索市场插件" }
+            let category = all.first { $0.accessibilityLabel() == "市场插件分类" }
+            let load = all.compactMap { $0 as? NSButton }.first { $0.title == "加载目录" }
+            let review = header.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.title == "审阅安装" }
+            func separated(_ left: NSView?, _ right: NSView?, minimum: CGFloat) -> Bool {
+                guard let left, let right else { return false }
+                let a = root.convert(left.bounds, from: left), b = root.convert(right.bounds, from: right)
+                return a.width >= minimum && a.height >= 22 && a.maxX < b.minX && root.bounds.insetBy(dx: -1, dy: -1).contains(a.union(b))
+            }
+            checks["marketReviewInFixedHeader" + label] = review?.isEnabled == true && review?.isHiddenOrHasHiddenAncestor == false
+            checks["marketAddressAndLoadFit" + label] = separated(address, load, minimum: 148)
+            checks["marketSearchAndCategoryFit" + label] = separated(filter, category, minimum: 140)
+        }
+        return checks
     }
 
     private func checkMarketReviewCopies(_ plugins: AgentPlugins, before: AgentPluginPackage, after: AgentPluginPackage) throws -> [String: Bool] {

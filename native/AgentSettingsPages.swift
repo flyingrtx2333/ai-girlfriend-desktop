@@ -227,7 +227,7 @@ struct AgentSettingsCatalogGroup {
 @MainActor final class AgentSettingsCatalogCell: NSTableCellView {
     private let open = NSButton()
     var onOpen: (() -> Void)?
-    init(title: String, summary: String, symbol: String, status: String, group: AgentSettingsCatalogGroup = .init(), actionLabel: String? = nil, onOpen: @escaping () -> Void) {
+    init(title: String, summary: String, symbol: String, status: String, group: AgentSettingsCatalogGroup = .init(), actionLabel: String? = nil, onOpen: (() -> Void)? = nil) {
         super.init(frame: .zero); self.onOpen = onOpen
         let body = NSView(); addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: leadingAnchor), body.trailingAnchor.constraint(equalTo: trailingAnchor), body.topAnchor.constraint(equalTo: topAnchor, constant: group.headerHeight), body.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -group.footerHeight)])
@@ -244,6 +244,7 @@ struct AgentSettingsCatalogGroup {
         let state = NSTextField(labelWithString: status); state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.isHidden = status.isEmpty
         let actionLabel = actionLabel ?? "配置 " + title
         open.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil); open.symbolConfiguration = .init(pointSize: 11, weight: .medium); open.contentTintColor = AgentWorkbenchTheme.secondaryText; open.isBordered = false; open.target = self; open.action = #selector(showDetails); open.setAccessibilityLabel(actionLabel); open.toolTip = actionLabel
+        open.isHidden = onOpen == nil
         imageView = icon; textField = name; toolTip = summary
         for view in [icon, labels, state, open] { body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); description.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -253,8 +254,8 @@ struct AgentSettingsCatalogGroup {
             icon.leadingAnchor.constraint(equalTo: body.leadingAnchor, constant: 18), icon.centerYAnchor.constraint(equalTo: body.centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 18), icon.heightAnchor.constraint(equalToConstant: 18),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 14), labels.centerYAnchor.constraint(equalTo: body.centerYAnchor), labels.trailingAnchor.constraint(equalTo: state.leadingAnchor, constant: -12),
             name.widthAnchor.constraint(equalTo: labels.widthAnchor), description.widthAnchor.constraint(equalTo: labels.widthAnchor),
-            state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: -10), state.centerYAnchor.constraint(equalTo: body.centerYAnchor),
-            open.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: body.centerYAnchor), open.widthAnchor.constraint(equalToConstant: 24), open.heightAnchor.constraint(equalToConstant: 28)
+            state.trailingAnchor.constraint(equalTo: open.leadingAnchor, constant: onOpen == nil ? 0 : -10), state.centerYAnchor.constraint(equalTo: body.centerYAnchor),
+            open.trailingAnchor.constraint(equalTo: body.trailingAnchor, constant: -14), open.centerYAnchor.constraint(equalTo: body.centerYAnchor), open.widthAnchor.constraint(equalToConstant: onOpen == nil ? 0 : 24), open.heightAnchor.constraint(equalToConstant: 28)
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
