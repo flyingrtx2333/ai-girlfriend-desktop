@@ -46,6 +46,43 @@ import AppKit
     return checks
 }
 
+@MainActor private func checkSettingsFormSizing() -> [String: Bool] {
+    let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 374), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    host.isReleasedWhenClosed = false
+    defer { host.close() }
+    let status = AgentSettingsStatusField("表单校验结果")
+    let fields = (0..<18).map { NSTextField(string: "公开样例 \($0)") }
+    func rows(_ fields: ArraySlice<NSTextField>) -> [NSView] {
+        fields.map { AgentSettingsStyle.formRow("字段", $0, trailing: false) }
+    }
+    let first = AgentSettingsStyle.section("连接", id: "height-first", rows: rows(fields[0..<3]) + [status], separatesRows: false)
+    let extra = AgentSettingsStyle.section("连接选项", id: "height-extra", rows: rows(fields[3...]))
+    extra.isHidden = true
+    let form = AgentSettingsStyle.form([first, extra], label: "设置表单高度样例")
+    host.contentView = form
+    guard let document = form.documentView else { return [:] }
+    func includes(_ view: NSView) -> Bool {
+        form.documentVisibleRect.insetBy(dx: -1, dy: -1).contains(document.convert(view.bounds, from: view))
+    }
+    var checks: [String: Bool] = [:]
+    form.layoutSubtreeIfNeeded()
+    let shortHeight = first.frame.height
+    checks["shortSettingsFormFitsContent"] = shortHeight > 100 && document.bounds.height + 100 < form.contentView.bounds.height && fields.prefix(3).allSatisfy(includes)
+    host.setContentSize(NSSize(width: 760, height: 602)); form.layoutSubtreeIfNeeded()
+    checks["shortSettingsFormKeepsHeightWhenWindowGrows"] = abs(first.frame.height - shortHeight) < 1 && abs(form.documentVisibleRect.minY) < 1
+    host.setContentSize(NSSize(width: 540, height: 374))
+    status.showSaveFailure(PetError("请输入有效的访问令牌。"))
+    form.layoutSubtreeIfNeeded()
+    checks["validationExpandsOnlyContainingSection"] = !status.isHidden && includes(status) && first.frame.height > shortHeight && document.bounds.height < form.contentView.bounds.height
+    status.stringValue = ""; extra.isHidden = false; form.layoutSubtreeIfNeeded()
+    checks["longSettingsFormExtendsPastViewport"] = document.bounds.height > form.contentView.bounds.height && includes(fields[0]) && !includes(fields[17])
+    AgentSettingsRecovery.restoreScroll(Double(document.bounds.maxY), to: form)
+    checks["longSettingsFormCanReachLastField"] = form.documentVisibleRect.minY > 0 && includes(fields[17])
+    extra.isHidden = true; form.layoutSubtreeIfNeeded()
+    checks["shortenedSettingsFormReturnsToTop"] = abs(form.documentVisibleRect.minY) < 1 && abs(first.frame.height - shortHeight) < 1 && fields.prefix(3).allSatisfy(includes)
+    return checks
+}
+
 @MainActor extension AppDelegate {
     func prepareSettingsLayoutUI(_ output: URL, tasks: AgentStore, runtime: AgentRuntime, taskID: String) async throws {
         guard let workspace = tasks.task(taskID)?.workspace else { throw PetError("缺少设置布局验收项目") }
@@ -111,6 +148,7 @@ import AppKit
             let before = try fingerprints(), layout = await control.checkSettingsPageLayout()
             checks.merge(layout["checks"] as? [String: Bool] ?? [:]) { _, next in next }; report["frames"] = layout["frames"]
             checks.merge(checkSettingsScrollChaining()) { _, next in next }
+            checks.merge(checkSettingsFormSizing()) { _, next in next }
             let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 764, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
             host.isReleasedWhenClosed = false
             let page = AgentSettingsPageHost(); host.contentView = page
@@ -122,7 +160,7 @@ import AppKit
             checks["groupedPageCanLeaveNormally"] = page.leave()
             checks["browsingPagesPreservesAllStoredFiles"] = try fingerprints() == before
             checks["publicUserMessageHasNoAssistantOrUsage"] = tasks.task(id)?.messages.count == 1 && tasks.task(id)?.messages.first?.role == "user" && tasks.task(id)?.inputTokens == 0 && tasks.task(id)?.outputTokens == 0
-            report["success"] = checks.count == 321 && checks.values.allSatisfy { $0 }
+            report["success"] = checks.count == 327 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("settings-layout-report.json"))

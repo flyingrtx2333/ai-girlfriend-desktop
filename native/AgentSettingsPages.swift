@@ -479,8 +479,12 @@ struct AgentSettingsCatalogGroup {
         let body = NSStackView(views: sections); body.orientation = .vertical; body.alignment = .leading; body.spacing = 24
         document.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         for section in sections { section.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
-        let preferred = document.heightAnchor.constraint(equalTo: scroll.contentView.heightAnchor); preferred.priority = .defaultLow
-        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor), document.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor), preferred, body.topAnchor.constraint(equalTo: document.topAnchor, constant: 4), body.leadingAnchor.constraint(equalTo: document.leadingAnchor), body.trailingAnchor.constraint(equalTo: document.trailingAnchor), body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)])
+        NSLayoutConstraint.activate([
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            body.topAnchor.constraint(equalTo: document.topAnchor, constant: 4),
+            body.leadingAnchor.constraint(equalTo: document.leadingAnchor), body.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            body.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -12)
+        ])
         return scroll
     }
     static func primaryAction(_ button: AgentDialogButton) { AgentDialogStyle.action(button, prominent: true) }
