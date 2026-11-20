@@ -63,12 +63,20 @@ import Darwin
         checks["mcpFormUsesTheSameBareCommandResolutionAsImportAndPlugins"] = configured["command"] as? String == "/usr/bin/true" && AgentMCP.configurationCommand("node") == "/opt/homebrew/bin/node" && AgentMCP.configurationCommand("") == "" && AgentMCP.configurationCommand("relative/program") == "relative/program"
         let locked = try AgentMCPConfigForm(document: service.document(nil), pluginLocked: true)
         checks["mcpPluginFormKeepsNameAndTransportFixed"] = find(NSTextField.self, in: locked.view, matching: { $0.accessibilityLabel() == "MCP 名称" && !$0.isEnabled }) != nil && find(NSPopUpButton.self, in: locked.view, matching: { $0.accessibilityLabel() == "MCP 传输方式" && !$0.isEnabled }) != nil
-        editor.string = "{ invalid JSON"; manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try mode(1, page: detail)
-        checks["mcpRepeatedJSONSelectionDoesNotReplaceTheDraft"] = editor.string == "{ invalid JSON"
+        let errorLine = #"  "name": "公开🐳", "timeoutSeconds": @10"#
+        let invalid = "{\r\n" + String(repeating: "\r\n", count: 65) + errorLine + "\r\n}"
+        let errorColumn = errorLine.prefix { $0 != "@" }.count + 1
+        editor.string = invalid; editor.setSelectedRange(NSRange(location: 0, length: 0))
+        manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try mode(1, page: detail)
+        checks["mcpRepeatedJSONSelectionDoesNotReplaceTheDraft"] = editor.string == invalid
         try mode(0, page: detail)
-        checks["mcpInvalidJSONCannotLoseDraftBySwitchingToForm"] = try kinds.selectedSegment == 1 && editor.string == "{ invalid JSON" && !editor.isHiddenOrHasHiddenAncestor && control(AgentSettingsStatusField.self, "MCP 保存与连接状态", page: detail).stringValue.contains("请检查括号")
+        checks["mcpInvalidJSONCannotLoseDraftBySwitchingToForm"] = try kinds.selectedSegment == 1 && editor.string == invalid && !editor.isHiddenOrHasHiddenAncestor && control(AgentSettingsStatusField.self, "MCP 保存与连接状态", page: detail).stringValue.contains("第 67 行，第 \(errorColumn) 列")
+        checks["mcpSyntaxFailureLeavesTheCaretAndStoredBytesAlone"] = try editor.selectedRange() == NSRange(location: 0, length: 0) && Data(contentsOf: file) == initial
+        try press("定位错误", page: detail)
+        checks["mcpJumpUsesTheActualUTF16CaretAfterChineseAndEmoji"] = host.firstResponder === editor && editor.selectedRange() == NSRange(location: (invalid as NSString).range(of: "@").location, length: 0) && editor.string == invalid
         var fixed = configured; fixed["env"] = [String: String](); editor.string = try encode(fixed); manager.textDidChange(Notification(name: NSText.didChangeNotification, object: editor)); try mode(0, page: detail)
         checks["mcpCorrectedJSONReturnsToTheActualForm"] = try kinds.selectedSegment == 0 && control(NSTextField.self, "MCP 名称", page: detail).stringValue == "表单公开连接器"
+        checks["mcpEditingClearsTheOldLocation"] = find(NSButton.self, in: detail.pageContentView, matching: { $0.title == "定位错误" && !$0.isHiddenOrHasHiddenAncestor }) == nil
         for index in 1...2 { try press("添加 MCP 环境变量", page: detail); try edit("MCP 环境变量 \(index) 名称", "SAME", page: detail); try edit("MCP 环境变量 \(index) 值", "public", page: detail) }
         try press("保存", page: detail)
         checks["mcpDuplicateEnvironmentRowsRejectSaveWithoutChangingStoredBytes"] = try Data(contentsOf: file) == initial && control(AgentSettingsStatusField.self, "MCP 保存与连接状态", page: detail).stringValue.contains("名称重复")

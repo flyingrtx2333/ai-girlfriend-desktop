@@ -64,6 +64,10 @@ import AppKit
         checks["UnknownSystemErrorDoesNotInventPermissionCause"] = AgentSaveFailure.message(for: POSIXError(.EIO)) == "未能保存，请稍后重试。"
         let invalidJSON = capture { _ = try JSONSerialization.jsonObject(with: Data("{invalid".utf8)) }
         checks["ActualInvalidJSONKeepsValidationDiagnosticInsteadOfRetryAdvice"] = invalidJSON.map { AgentSaveFailure.message(for: $0) == $0.localizedDescription && !AgentSaveFailure.message(for: $0).contains("稍后重试") } == true
+        let emptyJSON = capture { _ = try AgentConfigurationJSON.object(Data()) }
+        let noOffset = emptyJSON.flatMap { AgentConfigurationJSON.draftSyntaxFailure(after: $0, in: "") }
+        checks["EmptyDraftHasReadableSyntaxFeedbackWithoutInventingALocation"] = noOffset?.errorDescription?.contains("请检查括号") == true && noOffset?.location == nil
+        checks["OtherSourceSyntaxFailureCannotLocateAValidDraft"] = emptyJSON.map { AgentConfigurationJSON.draftSyntaxFailure(after: $0, in: "{}") == nil } == true
         let partial = PetError("文件已保存，但名称无效，请打开源文件修正"), validation = PetError("请输入名称；说明中包含 Permission denied 和 No space left")
         checks["PartialSuccessAndValidationAreNotRewrittenByWordMatching"] = AgentSaveFailure.message(for: partial) == partial.message && AgentSaveFailure.message(for: validation) == validation.message
 

@@ -129,6 +129,51 @@ import AppKit
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 }
 
+@MainActor final class AgentSettingsJSONFeedback: NSStackView {
+    private let status: AgentSettingsStatusField
+    private let locate = AgentDialogButton(title: "定位错误", target: nil, action: nil)
+    private weak var editor: NSTextView?
+    private var offset: Int?
+    var revealEditor: (() -> Void)?
+    var stringValue: String {
+        get { status.stringValue }
+        set { status.stringValue = newValue }
+    }
+
+    init(_ label: String, editor: NSTextView) {
+        self.editor = editor
+        status = AgentSettingsStatusField(label)
+        super.init(frame: .zero)
+        alignment = .centerY; spacing = 8; isHidden = true
+        locate.target = self; locate.action = #selector(locateError); locate.isHidden = true
+        AgentDialogStyle.action(locate)
+        addArrangedSubview(status); addArrangedSubview(locate)
+        status.onChange = { [weak self] message in
+            self?.offset = nil
+            self?.locate.isHidden = true
+            self?.isHidden = message.isEmpty
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func showSaveFailure(_ error: Error) {
+        let syntax = editor.flatMap { AgentConfigurationJSON.draftSyntaxFailure(after: error, in: $0.string) }
+        status.showSaveFailure((syntax as Error?) ?? error)
+        offset = syntax?.location?.offset
+        locate.isHidden = offset == nil
+    }
+
+    @objc private func locateError() {
+        guard let editor, let offset, offset <= editor.string.utf16.count else { return }
+        revealEditor?()
+        guard let window = editor.window, !editor.isHiddenOrHasHiddenAncestor, window.makeFirstResponder(editor) else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let caret = NSRange(location: offset, length: 0)
+        editor.setSelectedRange(caret)
+        editor.scrollRangeToVisible(caret)
+    }
+}
+
 @MainActor final class AgentSettingsDetailPage: AgentSettingsPageController, NSWindowDelegate {
     var onCanLeave: (() -> Bool)?
     var onAppear: (() -> Void)?

@@ -100,14 +100,18 @@ import AppKit
         checks["hookConfigHostedAndEditorFocused"] = configuration.presentingWindow === host && configuration.window?.isVisible == false && host.firstResponder === editor && host.attachedSheet == nil
         checks["hookConfigIdentifiesGlobalScopeInsideEditor"] = configuration.detailHeading?.title == "编辑 Hooks" && configuration.detailHeading?.scope == "全局 Hooks"
         checks["hookConfigEmptyFeedbackCollapses"] = feedback.isHidden
-        editor.string = "{ invalid public configuration"; try press("保存", page: configuration)
-        checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == "{ invalid public configuration" && feedback.stringValue.contains("请检查括号") && bytes(source) == configBefore && bytes(authorization) == grantsBefore
+        let invalid = "{\n" + String(repeating: "\n", count: 80) + #"  "hooks": @{}"# + "\n}"
+        editor.string = invalid; try press("保存", page: configuration)
+        checks["hookConfigInvalidSaveKeepsDraftSourceAndGrant"] = try pane.currentController === configuration && editor.string == invalid && feedback.stringValue.contains("第 82 行，第 12 列") && bytes(source) == configBefore && bytes(authorization) == grantsBefore
+        try press("定位错误", page: configuration)
+        checks["hookConfigJumpFocusesTheActualParsePosition"] = host.firstResponder === editor && editor.selectedRange() == NSRange(location: (invalid as NSString).range(of: "@").location, length: 0)
         editor.string = originalConfig + String(repeating: "\n", count: 200)
         let sourceMode = try FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as! NSNumber
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: source.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: sourceMode], ofItemAtPath: source.path) }
         try press("保存", page: configuration)
         checks["hookConfigReadOnlySaveKeepsDraftSourceModeAndGrant"] = try pane.currentController === configuration && editor.string.hasSuffix(String(repeating: "\n", count: 200)) && feedback.stringValue.contains("只读") && bytes(source) == configBefore && FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as? Int == 0o400 && bytes(authorization) == grantsBefore
+        checks["hookConfigPermissionErrorDoesNotOfferASyntaxJump"] = find(NSButton.self, in: configuration.pageContentView, matching: { $0.title == "定位错误" && !$0.isHiddenOrHasHiddenAncestor }) == nil
         for (label, size) in [("normal", NSSize(width: 800, height: 540)), ("narrow", NSSize(width: 420, height: 360))] {
             host.setContentSize(size); pane.layoutSubtreeIfNeeded(); editor.layoutManager?.ensureLayout(for: editor.textContainer!)
             guard let scroll = editor.enclosingScrollView, let save = find(NSButton.self, in: configuration.pageContentView, matching: { $0.title == "保存" }), let page = configuration.pageContentView else { throw PetError("缺少 Hooks 配置编辑区域") }

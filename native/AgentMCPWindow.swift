@@ -33,7 +33,8 @@ import UniformTypeIdentifiers
     private let remove = NSMenuItem(title: "移除", action: nil, keyEquivalent: "")
     private let clearOAuth = NSMenuItem(title: "移除本机授权", action: nil, keyEquivalent: "")
     private let add = NSPopUpButton(frame: .zero, pullsDown: true), importButton = NSButton(title: "导入 JSON", target: nil, action: nil)
-    private let state = AgentSettingsStatusField("MCP 保存与连接状态"), access = AgentSettingsStatusField("MCP 访问范围")
+    private lazy var state = AgentSettingsJSONFeedback("MCP 保存与连接状态", editor: editor)
+    private let access = AgentSettingsStatusField("MCP 访问范围")
     var scopeWorkspace: String? { workspace }
     private var selected: AgentMCPServer?, dirty = false, creating = false, job: Task<Void, Never>?
     private var items: [AgentMCPServer] = []
@@ -82,6 +83,7 @@ import UniformTypeIdentifiers
         attachConfiguration(jsonCard)
         tabs.tabViewType = .noTabsNoBorder; tabs.setAccessibilityLabel("连接器详情标签"); tabs.delegate = self
         for (label, view) in [("配置", configurationHost), ("工具", tools as NSView)] { let tab = NSTabViewItem(identifier: label); tab.label = label; tab.view = view; tabs.addTabViewItem(tab) }
+        state.revealEditor = { [weak self] in self?.tabs.selectTabViewItem(at: 0) }
         detailKinds.selectedSegment = 0; detailKinds.target = self; detailKinds.action = #selector(changeDetails); detailKinds.setAccessibilityLabel("连接器详情类型")
         enabled.target = self; enabled.action = #selector(toggleEnabled)
         for button in [connection, loadJSON] { AgentDialogStyle.action(button) }
@@ -380,7 +382,7 @@ import UniformTypeIdentifiers
         let draftType = (dirty || creating) && editor.string.utf8.count <= 64_000 ? ((try? JSONSerialization.jsonObject(with: Data(editor.string.utf8))) as? [String: Any])?["type"] as? String : nil
         let type = configurationKind.selectedSegment == 0 ? form?.type : dirty || creating ? draftType : selected?.type
         access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (["http", "sse"].contains(type) ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
-        if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
+        if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器" }
     }
     func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存"; draftViewport.changed() }
     @objc private func create(_ sender: NSMenuItem) {

@@ -1,12 +1,44 @@
 import Foundation
 
 enum AgentConfigurationJSON {
+    struct SyntaxFailure: LocalizedError {
+        struct Location {
+            let offset: Int, line: Int, column: Int
+        }
+
+        var location: Location? = nil
+        var errorDescription: String? {
+            guard let location else { return "JSON 格式有误。请检查括号、双引号和逗号。" }
+            return "JSON 格式有误（第 \(location.line) 行，第 \(location.column) 列）"
+        }
+    }
+
     static func object(_ data: Data) throws -> [String: Any] {
         let value: Any
         do { value = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) }
-        catch { throw PetError("JSON 格式有误。请检查括号、双引号和逗号。") }
+        catch { throw SyntaxFailure() }
         guard let object = value as? [String: Any] else { throw PetError("配置需要一个 JSON 对象。") }
         return object
+    }
+
+    static func draftSyntaxFailure(after error: Error, in draft: String) -> SyntaxFailure? {
+        let cocoa = error as NSError
+        guard error is SyntaxFailure || (cocoa.domain == NSCocoaErrorDomain && cocoa.code == CocoaError.propertyListReadCorrupt.rawValue),
+              draft.utf8.count <= 128_000 else { return nil }
+        // A save can also parse an imported or on-disk file. Locate the error
+        // only if the current draft itself fails, using its own parser offset.
+        do { _ = try JSONSerialization.jsonObject(with: Data(draft.utf8), options: [.fragmentsAllowed]); return nil }
+        catch {
+            guard let bytes = (error as NSError).userInfo["NSJSONSerializationErrorIndex"] as? Int, bytes >= 0,
+                  let byteIndex = draft.utf8.index(draft.utf8.startIndex, offsetBy: bytes, limitedBy: draft.utf8.endIndex),
+                  let index = String.Index(byteIndex, within: draft) else { return SyntaxFailure() }
+            var line = 1, column = 1
+            for character in draft[..<index] {
+                if character.isNewline { line += 1; column = 1 }
+                else { column += 1 }
+            }
+            return SyntaxFailure(location: .init(offset: index.utf16Offset(in: draft), line: line, column: column))
+        }
     }
 }
 

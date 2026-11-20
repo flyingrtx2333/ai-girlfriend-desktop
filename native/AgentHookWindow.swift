@@ -522,7 +522,8 @@ private struct AgentHookEditTarget: Codable, Equatable {
 }
 
 @MainActor private final class AgentHookConfigWindow: AgentSettingsPageController, NSWindowDelegate, NSTextViewDelegate {
-    private let editor = NSTextView(), state = AgentSettingsStatusField("Hooks 配置保存状态")
+    private let editor = NSTextView()
+    private lazy var state = AgentSettingsJSONFeedback("Hooks 配置保存状态", editor: editor)
     private let save: (String) throws -> Void
     private let target: AgentHookEditTarget
     private var originalHash: String
