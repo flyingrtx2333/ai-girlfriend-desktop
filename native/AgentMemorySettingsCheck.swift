@@ -309,6 +309,14 @@ import AppKit
         checks["otherProjectMemoryHidesTheOriginalSourcePicker"] = sourcePicker?.isHiddenOrHasHiddenAncestor == true
         projectChild?.close(); projectPane.layoutSubtreeIfNeeded()
         checks["returnFromOtherProjectRestoresOriginalSourcePicker"] = projectPane.currentController === hostedPage && sourcePicker?.isHiddenOrHasHiddenAncestor == false && sourcePicker?.selectedItem?.representedObject as? String == second.path && editing?.stringValue == "项目 · " + second.lastPathComponent
+        let missingProjectPage = AgentMemorySettingsPage(store: tasks, taskID: missingID, workspace: unavailable.path, service: service)
+        guard projectPane.show(category: "memory", identity: missingID, scope: "项目", make: { _ in missingProjectPage }),
+              let settings = missingProjectPage.pageContentView,
+              let manageGlobal = find(settings, id: "memory-manage-global") as? NSButton else { throw PetError("缺少离线项目的全局记忆入口") }
+        let globalBefore = try AgentMemory.snapshot(.global, store: tasks, taskID: missingID)
+        manageGlobal.performClick(nil)
+        checks["globalMemoryStillOpensWhenCurrentProjectIsOffline"] = projectPane.currentController?.pageContentView.map { containsText($0, globalBefore.content) } == true
+        projectPane.currentController?.close()
         projectPane.finish(); projectHost.close()
         let initial = try AgentMemory.snapshot(.project, store: tasks, taskID: nil, workspace: standalone.path)
         let standaloneFile = standalone.appendingPathComponent(".bluefatfish/memory.md")

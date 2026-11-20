@@ -227,7 +227,7 @@ import AppKit
         guard sender.isEnabled, AgentMemoryScope.allCases.indices.contains(sender.tag) else { return }
         lastOpened = sender
         let scope = AgentMemoryScope.allCases[sender.tag]
-        presentSettingsChild(makeEditor(.init(entry: scope, context: context(taskID: taskID, workspace: workspace))))
+        presentSettingsChild(makeEditor(.init(entry: scope, context: context(for: scope, taskID: taskID, workspace: workspace))))
     }
     func openInstruction(_ scope: AgentMemoryScope) throws {
         guard let button = buttons.first(where: { AgentMemoryScope.allCases[$0.tag] == scope }), button.isEnabled else {
@@ -245,10 +245,13 @@ import AppKit
             return
         }
         lastOpened = sender
-        presentSettingsChild(makeEditor(.init(entry: .project, context: context(taskID: source.taskID, workspace: source.workspace))))
+        presentSettingsChild(makeEditor(.init(entry: .project, context: context(for: .project, taskID: source.taskID, workspace: source.workspace))))
     }
-    private func context(taskID: String?, workspace: String?) -> AgentSettingsRecovery.Context {
-        if taskID == nil, let workspace { return .init(managedWorkspace: workspace) }
+    private func context(for scope: AgentMemoryScope, taskID: String?, workspace: String?) -> AgentSettingsRecovery.Context {
+        if taskID == nil {
+            if scope.isProjectFile, let workspace { return .init(managedWorkspace: workspace) }
+            return .init(task: nil, workspace: nil)
+        }
         return .init(task: taskID.flatMap(store.task), workspace: workspace)
     }
     private func makeEditor(_ target: AgentRecordWindow.MemorySettingsTarget) -> AgentRecordWindow {
@@ -269,7 +272,7 @@ import AppKit
         let target = try AgentRecordWindow.MemorySettingsRecovery.decode(page).target
         if target.entry == .project {
             guard allProjects.contains(where: { $0.workspace == target.context.workspace }) else { throw PetError("原记忆项目暂不可用，草稿已保留") }
-        } else if target.context != context(taskID: taskID, workspace: workspace) {
+        } else if target.context != context(for: target.entry, taskID: taskID, workspace: workspace) {
             throw PetError("记忆编辑所属任务或来源已变化，草稿已保留")
         }
         try target.context.requireCurrent(store)

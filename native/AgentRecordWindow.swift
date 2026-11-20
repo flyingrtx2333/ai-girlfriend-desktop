@@ -1009,7 +1009,6 @@ import UniformTypeIdentifiers
             if sections.selectedSegment == 5, let document = AgentMemoryDocument(selection: value) {
                 let scope = document.scope
                 let task = memoryTaskID.flatMap(store.task)
-                try memorySettingsTarget?.context.requireCurrent(store)
                 let memory = try AgentMemory.snapshot(scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace,
                     topic: document.topic, pinEditorSource: memorySettingsTarget != nil)
                 openedMemorySource = memory.editorSource
@@ -1183,7 +1182,7 @@ import UniformTypeIdentifiers
         do {
             try markdown.finishEditing()
             if sections.selectedSegment == 5, let document = AgentMemoryDocument(selection: path), let hash = openedHash {
-                try memorySettingsTarget?.context.requireCurrent(store)
+                if document.scope.isProjectFile { try memorySettingsTarget?.context.requireCurrent(store) }
                 let saved = try AgentMemory.save(document.scope, content: text.string, expectedHash: hash, store: store, taskID: memoryTaskID,
                     workspace: memorySettingsTarget?.context.workspace ?? openedMemoryWorkspace ?? memoryWorkspace,
                     topic: document.topic, expectedExists: openedMemoryExists, expectedSource: openedMemorySource)
