@@ -1,5 +1,13 @@
 # P0 逐页界面验收台账
 
+## 2026-11-20 多市场目录与 GitHub 插件
+
+- 「设置 → 扩展管理 → 插件 → 插件市场」可保存最多 12 个 HTTPS 或公开 GitHub 目录，恢复上次选择并离线切换。新索引另存，旧单目录文件原样保留。设置页内可返回和取消移除。断网、超时及证书错误使用中文提示。[Qoder CLI 插件参考](https://docs.qoder.com/zh/cli/plugins-reference)
+- 支持公开 GitHub 仓库根目录、指定子目录，以及同仓库市场清单中的相对路径。审阅显示仓库、提交和目录。拉取指定提交的 ZIP 归档，安装和更新依旧由用户确认，完成后停用。归档下载上限 20 MB。[市场来源字段](https://code.claude.com/docs/en/plugins/marketplace-reference#plugin-sources) · [GitHub 归档接口](https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-zip)
+- 同一优化包通过 **26 项原生检查**与 **12 项独立核对**。两个实际 Git 提交分别从根目录及子目录安装和更新，库存工具读回的正文与 `git show` 的原文件一致。原生检查同时覆盖目录并发保留、仓库越界路径、固定提交、同名保护及移除目录后继续读取安装记录。
+- **44 项实窗及文件核对**覆盖旧版读回和三次最终版窗口验证。**1200×774** 浅色窗口把三个目录保存，实际将仓库库存从 **61** 更新为 **97**，并核对原文件、提交和旧版历史。关闭样例服务后，**780×540** 深色重开仍可切换，刷新失败时保留目录并显示中文。另在独立窗口从公开 GitHub 读取 12 个条目，实际按名称搜索出 1 个条目。保留 13 张原图，模型请求 0 次。[公开市场清单](https://github.com/anthropics/claude-code/blob/main/.claude-plugin/marketplace.json)
+- Mac mini 日用版 **0.9.4 `2cd91c1`** 已安装并运行，构建于 **2026-11-20 09:48（北京时间）**，进程 **49396**。关于、市场入口及原任务已读回。14 份正式资料的字节与权限一致，保留 `0465e5a` 回退副本。验收索引位于 `evidence/agent/plugin-market-repositories-u5n2c8k4/acceptance-index.json`。
+
 ## 2026-11-20 插件市场浏览与更新
 
 - 「设置 → 扩展管理 → 插件 → 插件市场」可加载公开 HTTPS 目录，按名称、作者、说明等搜索，并按分类筛选。目录中的 HTTPS ZIP 条目可审阅，提供 SHA-256 时核对压缩包，其他来源显示所需条件。[归档目录格式](https://code.claude.com/docs/en/plugins/marketplace-reference#archive-plugin-source)
