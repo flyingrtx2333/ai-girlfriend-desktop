@@ -2075,13 +2075,13 @@ final class FormDocumentView: NSView {
         settingsPageHost.isHidden = !managed; settingsScroll.isHidden = managed
         if managed {
             generalSettingsSave?.isHidden = true
-            let globalGit = settingsCategory == "git"
-            let id = globalGit ? nil : restoredSettingsContext.map(\.taskID) ?? (agentTaskID ?? companion?.agentStore?.selectedID)
+            let globalSettings = ["git", "worktrees"].contains(settingsCategory)
+            let id = globalSettings ? nil : restoredSettingsContext.map(\.taskID) ?? (agentTaskID ?? companion?.agentStore?.selectedID)
             let task = id.flatMap { companion?.agentStore?.task($0) }
-            let folders = globalGit || settingsCategory == "worktrees" ? [] : restoredSettingsContext?.folders ?? task?.workspacePaths ?? []
+            let folders = globalSettings ? [] : restoredSettingsContext?.folders ?? task?.workspacePaths ?? []
             let remembered = id.flatMap { settingsSourceFolders[$0] }
-            let workspace = globalGit ? nil : restoredSettingsContext != nil ? restoredSettingsContext?.workspace : remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
-            let context = globalGit ? AgentSettingsRecovery.Context(task: nil, workspace: nil) : restoredSettingsContext ?? AgentSettingsRecovery.Context(task: task, workspace: workspace)
+            let workspace = globalSettings ? nil : restoredSettingsContext != nil ? restoredSettingsContext?.workspace : remembered.flatMap { folders.contains($0) ? $0 : nil } ?? task?.workspace
+            let context = globalSettings ? AgentSettingsRecovery.Context(task: nil, workspace: nil) : restoredSettingsContext ?? AgentSettingsRecovery.Context(task: task, workspace: workspace)
             let identity = context.identity
             guard settingsPageHost.show(category: settingsCategory, identity: identity, scope: settingsCategory == "worktrees" ? "所有项目" : workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", recoveryContext: context, make: { [weak self] kind in
                 self?.makeSettingsManager(kind, taskID: id, workspace: workspace)
@@ -2344,7 +2344,7 @@ final class FormDocumentView: NSView {
             ("memory", "memory", "记忆与指令", "AGENTS 全局 全部项目 项目记忆 用户指令"),
             ("memory", "rules", "规则", "Rules 触发 适用场景 匹配模式"),
             ("git", "git", "分支前缀与提交说明", "Git 工作树 提交说明指令 生成提交说明"),
-            ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目")
+            ("worktrees", "worktrees", "保留与回收", "工作树 保留 自动 回收 备份 恢复 项目 数量 上限")
         ] {
             guard settingsCategories.contains(where: { $0.0 == category }) else { continue }
             group(category, title, keywords, key: key)
@@ -2973,7 +2973,7 @@ final class FormDocumentView: NSView {
         guard selectedTab == "settings" else { return nil }
         if let pendingSettingsNavigation { return pendingSettingsNavigation }
         let input = currentSettingsNavigationInput(), page = managedSettings.contains(settingsCategory) ? settingsPageHost.selectedPageKey : nil
-        let source = page == nil || settingsCategory == "git" ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
+        let source = page == nil || ["git", "worktrees"].contains(settingsCategory) ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
             contentY: settingsScroll.isHidden ? 0 : max(0, settingsScroll.contentView.bounds.minY),

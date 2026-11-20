@@ -112,6 +112,56 @@ import AppKit
             uiPath = child.workspace; uiBackup = receipt.backupID!; uiTask = child.taskID
             values["live"] = ["taskID": child.taskID, "workspace": child.workspace, "backupID": uiBackup, "artifactSHA256": AgentFiles.hash(artifact), "model": preferences.model, "contextLimit": preferences.contextLimit, "outputLimit": preferences.outputLimit, "inputTokens": task.inputTokens, "outputTokens": task.outputTokens]
         }
+        let savedPolicy = service.policy, policyURL = service.directory.appendingPathComponent("policy.json")
+        let legacyPolicy = try Data(contentsOf: policyURL)
+        checks["agePolicyKeepsTheOriginalFileFormat"] = try (JSONSerialization.jsonObject(with: legacyPolicy) as? [String: Any]).map { Set($0.keys) } == ["version", "enabled", "archivedOnly", "idleSeconds"]
+        let secondRoot = output.appendingPathComponent("second-project")
+        try fm.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        _ = try await git(["init", "-b", "main"], at: secondRoot)
+        try Data("independent public project\n".utf8).write(to: secondRoot.appendingPathComponent("public.txt"))
+        _ = try await git(["add", "--", "public.txt"], at: secondRoot)
+        _ = try await git(["-c", "user.name=Public Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Independent baseline"], at: secondRoot)
+        let secondParent = tasks.create(title: "按数量回收的另一项目", workspace: secondRoot.path)
+        let otherHelper = try AgentGit(store: tasks, taskID: secondParent, directory: AgentGit.metadata(workspace: secondRoot.path))
+        let other = try await otherHelper.createWorktree(branch: "count-other")
+        tasks.update(other.taskID) { $0.archived = true }
+        tasks.update(parentID) { $0.archived = false }
+        let oldest = try await helper.createWorktree(branch: "count-oldest"), oldestURL = URL(fileURLWithPath: oldest.workspace)
+        try Data("staged count sample\n".utf8).write(to: oldestURL.appendingPathComponent("public.txt"))
+        _ = try await git(["add", "--", "public.txt"], at: oldestURL)
+        try Data("working count sample\n".utf8).write(to: oldestURL.appendingPathComponent("public.txt"))
+        try Data("ignored count sample\n".utf8).write(to: oldestURL.appendingPathComponent("local-only.txt"))
+        let oldestTree = try AgentWorktreeSnapshot.read(oldestURL)
+        let oldestIndexURL = URL(fileURLWithPath: try await git(["rev-parse", "--git-path", "index"], at: oldestURL).trimmingCharacters(in: .whitespacesAndNewlines))
+        let oldestIndex = try Data(contentsOf: oldestIndexURL)
+        tasks.update(oldest.taskID) { $0.archived = true }
+        tasks.selectedID = local
+        let beforeCount = try service.receipts().filter { $0.backupID != nil }.count
+        var countPolicy = savedPolicy; countPolicy.maximumCount = 4; countPolicy.idleSeconds = 31_536_000
+        countPolicy.archivedOnly = true; countPolicy.enabled = true
+        do { try service.save(countPolicy, expectedRevision: service.revision); checks["countPolicyRequiresConsent"] = false }
+        catch { checks["countPolicyRequiresConsent"] = true }
+        try service.save(countPolicy, expectedRevision: service.revision, consent: true)
+        let reread = try AgentWorktreeRetentionPolicy.read(Data(contentsOf: policyURL))
+        checks["countPolicyRoundTripsThroughSchedulerStorage"] = reread == countPolicy && AgentWorktreeRetention(profile: store.directory).policy == countPolicy
+        service.checkNow()
+        guard try await until(12, { !service.isChecking && service.status.hasPrefix("已检查") }) else { throw PetError("按项目检查保留数量未结束：" + service.status) }
+        checks["oneFullProjectAndSeparateCheckoutDoNotTriggerGlobalRecycle"] = try fm.fileExists(atPath: oldest.workspace) && fm.fileExists(atPath: other.workspace) && service.receipts().filter { $0.backupID != nil }.count == beforeCount
+
+        let newest = try await helper.createWorktree(branch: "count-newest")
+        tasks.update(newest.taskID) { $0.archived = true }; tasks.selectedID = local
+        guard try await until(20, { try service.receipts().contains { $0.path == oldest.workspace && $0.backupID != nil } }) else { throw PetError("超额后未按数量回收旧工作树：" + service.status) }
+        guard let countBackupID = try service.receipts().first(where: { $0.path == oldest.workspace && $0.backupID != nil })?.backupID else { throw PetError("未读取到按数量回收的备份") }
+        let survivors = [initialPath, locked.workspace, pinned.workspace, newest.workspace, other.workspace]
+        guard try await until(12, { !service.isChecking }) else { throw PetError("超额回收未收尾") }
+        checks["countRecyclesOnlyOldestEligibleAndStopsAtPerProjectLimit"] = try !fm.fileExists(atPath: oldest.workspace) && survivors.allSatisfy { fm.fileExists(atPath: $0) } && service.receipts().filter { $0.backupID != nil }.count == beforeCount + 1
+        try service.save(savedPolicy, expectedRevision: service.revision)
+        let countRestored = try await helper.restoreWorktree(backupID: countBackupID)
+        let restoredCountIndex = URL(fileURLWithPath: try await git(["rev-parse", "--git-path", "index"], at: oldestURL).trimmingCharacters(in: .whitespacesAndNewlines))
+        checks["countBackupRestoresFilesAndRawIndex"] = try AgentWorktreeSnapshot.read(oldestURL).hash == oldestTree.hash && Data(contentsOf: restoredCountIndex) == oldestIndex && countRestored.state == "restored"
+        checks["switchingBackWritesByteIdenticalLegacyPolicy"] = try Data(contentsOf: policyURL) == legacyPolicy
+        values["countRetention"] = ["checkout": oldest.workspace, "backupID": countBackupID, "restoredIndexSHA256": AgentFiles.hash(oldestIndex),
+            "survivors": survivors, "project": repo.path, "secondProject": secondRoot.path, "limit": 4]
         checks["originalMainIndexRemainsExact"] = try Data(contentsOf: repo.appendingPathComponent(".git/index")) == sourceIndex
         checks["finalPolicyIsDisabledWithoutDiscardingBackups"] = try !service.policy.enabled && service.receipts().filter { $0.backupID != nil }.count >= 2
         values["retention"] = ["restorePath": uiPath, "backupID": uiBackup, "taskID": uiTask, "parentID": parentID, "noProjectTaskID": local, "initialPath": initialPath, "initialBackupID": first.backupID!, "secondPath": active.workspace, "secondBackupID": second.backupID!, "secondIndexSHA256": AgentFiles.hash(activeIndex), "secondIgnoredText": freshText, "policyFile": service.directory.appendingPathComponent("policy.json").path, "mainIndexSHA256": AgentFiles.hash(sourceIndex)]

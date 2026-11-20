@@ -233,7 +233,9 @@ enum AgentWorktreeSnapshot {
     private func recyclable(_ requested: String) async throws -> AgentWorktreeRecycleTarget {
         try validateWorkspace()
         let path = canonical(requested)
-        guard let entry = try await worktrees().first(where: { $0.path == path }), entry.unavailable == nil, entry.missingRegistration != true, let head = entry.head, !head.isEmpty else { throw PetError("工作树不可回收，请刷新并处理关联任务或锁定状态") }
+        let inventory = try await worktrees()
+        try worktreeInventoryCheck?(inventory)
+        guard let entry = inventory.first(where: { $0.path == path }), entry.unavailable == nil, entry.missingRegistration != true, let head = entry.head, !head.isEmpty else { throw PetError("工作树不可回收，请刷新并处理关联任务或锁定状态") }
         let externalURL: URL?, external: AgentExternalWorktreeIdentity?
         if entry.owned {
             let relative = String(path.dropFirst(files.root.path.count + 1)), lexical = files.root.appendingPathComponent(relative).standardizedFileURL

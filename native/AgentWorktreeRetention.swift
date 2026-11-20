@@ -6,11 +6,26 @@ struct AgentWorktreeRetentionPolicy: Codable, Equatable {
     var enabled = false
     var idleSeconds: Double = 30 * 86400
     var archivedOnly = true
+    var maximumCount: Int?
+
+    static func read(_ data: Data) throws -> Self {
+        let required: Set<String> = ["version", "enabled", "idleSeconds", "archivedOnly"]
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              required.isSubset(of: object.keys), Set(object.keys).isSubset(of: required.union(["maximumCount"])),
+              !(object["maximumCount"] is NSNull) else { throw PetError("回收设置含缺失或不支持的字段") }
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        try value.validate()
+        return value
+    }
     func validate() throws {
         guard version == 1, idleSeconds.isFinite, (1...31_536_000).contains(idleSeconds) else { throw PetError("保留期需要在 1 秒至 365 天之间") }
+        if let maximumCount, !(1...1_000).contains(maximumCount) { throw PetError("每个项目的保留数量需在 1 至 1000 之间") }
     }
     var summary: String {
-        (archivedOnly ? "仅已归档任务" : "全部闲置任务") + " · " + Self.duration(idleSeconds) + "后回收\n先完整备份文件与暂存状态，长期保留备份和分支。"
+        let scope = archivedOnly ? "仅已归档任务" : "全部闲置任务"
+        let condition = maximumCount.map { "每个项目最多保留 \($0) 个。超过时优先回收最久未使用的工作树。" }
+            ?? Self.duration(idleSeconds) + "后回收。"
+        return scope + " · " + condition + "\n先完整备份文件与暂存状态，长期保留备份和分支。"
     }
     static func duration(_ seconds: Double) -> String {
         if seconds.truncatingRemainder(dividingBy: 86400) == 0 { return "\(Int(seconds / 86400)) 天" }
@@ -29,6 +44,7 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
 }
 
 @MainActor final class AgentWorktreeRetention {
+    private enum DeferredRecycle: Error { case countSatisfied, activityChanged }
     private static let policyChanged = Notification.Name("BlueFatFishWorktreePolicyChanged")
     let directory: URL
     private(set) var policy = AgentWorktreeRetentionPolicy(), revision: String?, error: String?
@@ -53,10 +69,7 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         let previous = revision
         do {
             let data = try rawPolicy(); revision = data.map(AgentFiles.hash)
-            if let data {
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == ["version", "enabled", "idleSeconds", "archivedOnly"] else { throw PetError("回收设置含缺失或不支持的字段") }
-                let value = try JSONDecoder().decode(AgentWorktreeRetentionPolicy.self, from: data); try value.validate(); policy = value
-            } else { policy = AgentWorktreeRetentionPolicy() }
+            policy = try data.map(AgentWorktreeRetentionPolicy.read) ?? AgentWorktreeRetentionPolicy()
             error = nil
         } catch { self.error = error.localizedDescription; policy.enabled = false }
         if previous != revision { cancelWork() }
@@ -64,9 +77,11 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
     }
     func save(_ value: AgentWorktreeRetentionPolicy, expectedRevision: String?, consent: Bool = false) throws {
         try value.validate()
-        guard try rawPolicy().map(AgentFiles.hash) == expectedRevision else { throw PetError("回收设置已变化，请重新载入后保存") }
-        guard !value.enabled || value == policy || consent else { throw PetError("请先确认自动回收的范围与保留期") }
+        guard !value.enabled || value == policy || consent else { throw PetError("请先确认自动回收的范围与条件") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let lease = try AgentWorktreeLease(in: directory, label: "回收设置", name: "policy.lock")
+        defer { withExtendedLifetime(lease) {} }
+        guard try rawPolicy().map(AgentFiles.hash) == expectedRevision else { throw PetError("回收设置已变化，请重新载入后保存") }
         let data = try encoder.encode(value)
         try AgentFiles(workspace: directory.path).writeData(data, to: directory.appendingPathComponent("policy.json"), permissions: 0o600)
         policy = value; revision = AgentFiles.hash(data); error = nil; retryAfter = [:]
@@ -159,14 +174,26 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
         }
         return nil
     }
-    private func authorize(_ entry: AgentWorktreeEntry, activity: Date, expected: String?) throws {
+    private func requireActivePolicy(_ expected: String?) throws {
         try Task.checkCancellation()
         guard let store, ownerFD >= 0, policy.enabled, error == nil, try rawPolicy().map(AgentFiles.hash) == expected, store.writeError == nil else { throw PetError("回收设置、调度权或存储状态已变化") }
+    }
+    private func authorize(_ entry: AgentWorktreeEntry, activity: Date, expected: String?, inspectedAt: Date) throws {
+        try requireActivePolicy(expected)
         let tasks = try related(entry)
         if let reason = protectedReason(entry, tasks: tasks) { throw PetError(reason) }
         knownActivity[entry.path] = max(knownActivity[entry.path] ?? .distantPast, activity)
         let latest = max(tasks.map(\.updated).max() ?? .distantFuture, activity)
-        guard Date().timeIntervalSince(latest) >= policy.idleSeconds else { throw PetError("工作树近期仍有活动") }
+        if policy.maximumCount != nil {
+            guard latest <= inspectedAt else { throw DeferredRecycle.activityChanged }
+        } else {
+            guard Date().timeIntervalSince(latest) >= policy.idleSeconds else { throw PetError("工作树近期仍有活动") }
+        }
+    }
+    private static func retainedCheckouts(_ entries: [AgentWorktreeEntry]) -> [AgentWorktreeEntry] {
+        entries.filter { entry in
+            entry.owned && !entry.bare && entry.prunable == nil && entry.head != nil && FileManager.default.fileExists(atPath: entry.path)
+        }
     }
     private func beginCheck() {
         guard let store, policy.enabled, error == nil else { status = error ?? "自动回收未开启"; onChange?(); return }
@@ -183,30 +210,58 @@ struct AgentWorktreeRetentionReceipt: Codable, Identifiable {
                     let helper = try AgentGit(store: store, taskID: root.taskID, directory: URL(fileURLWithPath: root.metadata), allowsArchivedWorktreeSource: true, workspace: root.path)
                     guard try AgentGit.metadata(workspace: root.path).path == root.metadata else { throw PetError("项目 Git 元数据已变化") }
                     git = helper
-                    let entries = try await helper.worktrees()
-                    for entry in entries where entry.owned && entry.path != root.path {
-                        if Task.isCancelled { break }
+                    var entries = try await helper.worktrees().filter { $0.owned && $0.path != root.path }
+                    let inspectedAt = Date(), limit = policy.maximumCount
+                    var remaining: Int?
+                    if let limit {
+                        entries = Self.retainedCheckouts(entries)
+                        guard entries.count > limit else { continue }
+                        remaining = entries.count - limit
+                        let updates = Dictionary(uniqueKeysWithValues: store.tasks.map { ($0.id, $0.updated) })
+                        entries = entries.map { entry in
+                            let updated = entry.taskIDs.compactMap { updates[$0] }.max() ?? .distantFuture
+                            return (entry, max(updated, knownActivity[entry.path] ?? .distantPast))
+                        }.sorted { ($0.1, $0.0.path) < ($1.1, $1.0.path) }.map(\.0)
+                        helper.worktreeInventoryCheck = { [weak self] current in
+                            guard let self else { throw CancellationError() }
+                            try self.requireActivePolicy(revision)
+                            guard Self.retainedCheckouts(current).count > limit else { throw DeferredRecycle.countSatisfied }
+                        }
+                    }
+                    for entry in entries {
+                        if Task.isCancelled || remaining == 0 { break }
                         let tasks = try related(entry)
                         if let reason = protectedReason(entry, tasks: tasks) { protected.insert(reason); later(Date().addingTimeInterval(600)); continue }
                         if let retry = retryAfter[entry.path], retry > Date() { later(retry); continue }
-                        let latest = max(tasks.map(\.updated).max() ?? .distantFuture, knownActivity[entry.path] ?? .distantPast)
-                        let due = latest.addingTimeInterval(policy.idleSeconds)
-                        if due > Date() { later(due); continue }
+                        if limit == nil {
+                            let latest = max(tasks.map(\.updated).max() ?? .distantFuture, knownActivity[entry.path] ?? .distantPast)
+                            let due = latest.addingTimeInterval(policy.idleSeconds)
+                            if due > Date() { later(due); continue }
+                        }
                         target = entry.path
-                        helper.worktreeEligibilityCheck = { [weak self] current, modified in guard let self else { throw CancellationError() }; try self.authorize(current, activity: modified, expected: revision) }
+                        helper.worktreeEligibilityCheck = { [weak self] current, modified in
+                            guard let self else { throw CancellationError() }
+                            try self.authorize(current, activity: modified, expected: revision, inspectedAt: inspectedAt)
+                        }
+                        defer { target = nil; helper.worktreeEligibilityCheck = nil }
                         do {
                             let scan = Task.detached { try Self.fileActivity(URL(fileURLWithPath: entry.path)) }
                             let activity = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
-                            try authorize(entry, activity: activity, expected: revision)
+                            try authorize(entry, activity: activity, expected: revision, inspectedAt: inspectedAt)
                             let review = try await helper.prepareWorktreeRecycle(path: entry.path)
                             let backup = try await helper.recycleWorktree(reviewHash: review.hash)
-                            try saveReceipt(AgentWorktreeRetentionReceipt(root: root.path, path: entry.path, backupID: backup.id)); recycled += 1
+                            if let quota = remaining { remaining = quota - 1 }
+                            recycled += 1
+                            try saveReceipt(AgentWorktreeRetentionReceipt(root: root.path, path: entry.path, backupID: backup.id))
+                        } catch DeferredRecycle.countSatisfied {
+                            break
+                        } catch DeferredRecycle.activityChanged {
+                            later(Date().addingTimeInterval(1))
                         } catch {
                             if Task.isCancelled { break }
-                            if let activity = knownActivity[entry.path], activity.addingTimeInterval(policy.idleSeconds) > Date() { later(activity.addingTimeInterval(policy.idleSeconds)) }
+                            if limit == nil, let activity = knownActivity[entry.path], activity.addingTimeInterval(policy.idleSeconds) > Date() { later(activity.addingTimeInterval(policy.idleSeconds)) }
                             else { let retry = Date().addingTimeInterval(600); retryAfter[entry.path] = retry; later(retry); failures += 1; try? saveReceipt(AgentWorktreeRetentionReceipt(root: root.path, path: entry.path, error: error.localizedDescription)) }
                         }
-                        target = nil; helper.worktreeEligibilityCheck = nil
                     }
                 } catch { if !Task.isCancelled { failures += 1; later(Date().addingTimeInterval(600)) } }
             }

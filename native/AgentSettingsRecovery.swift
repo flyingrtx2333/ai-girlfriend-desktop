@@ -47,7 +47,7 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
-    static let roots: Set<String> = ["memory", "rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git"]
+    static let roots: Set<String> = ["memory", "rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git", "worktrees"]
     struct Navigation: Codable, Equatable, Sendable {
         var version = 1
         var category: String, page: String?
@@ -97,7 +97,7 @@ enum AgentSettingsRecovery {
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]
             case ("agents", "agents"), ("extensions", "agents"): return kinds == [root] || kinds == [root, "mcp-tool-rule"]
-            case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
+            case ("git", "git"), ("worktrees", "worktrees"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             default: return false
             }
         }

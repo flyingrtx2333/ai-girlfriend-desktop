@@ -846,7 +846,8 @@ struct AgentSettingsCatalogGroup {
     func restoreRecovery(_ value: AgentSettingsRecovery.State, make: @escaping (String) -> AgentSettingsPageController?) throws {
         guard value.valid else { throw PetError("设置草稿版本或范围无效，原记录已保留") }
         do {
-            guard show(category: value.category, identity: value.context.identity, scope: value.context.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置", recoveryContext: value.context, make: make) else { throw PetError("请先处理当前设置更改") }
+            let scope = value.category == "worktrees" ? "所有项目" : value.context.workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户设置"
+            guard show(category: value.category, identity: value.context.identity, scope: scope, recoveryContext: value.context, make: make) else { throw PetError("请先处理当前设置更改") }
             selectPage(value.root)
             guard let root = entries.first?.controller else { throw PetError("原设置页面暂不可用") }
             try root.restoreSettingsRecovery(value.pages[0]); root.settingsDidAppear()

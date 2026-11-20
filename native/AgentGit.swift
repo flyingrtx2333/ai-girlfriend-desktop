@@ -40,6 +40,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     let allowsExternalWorktrees: Bool
     private let selectedWorkspace: String?
     var worktreeEligibilityCheck: ((AgentWorktreeEntry, Date) throws -> Void)?
+    var worktreeInventoryCheck: (([AgentWorktreeEntry]) throws -> Void)?
     init(store: AgentStore, taskID: String, directory: URL, allowsArchivedWorktreeSource: Bool = false, workspace: String? = nil, allowsExternalWorktrees: Bool = false) throws {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
         let selectedFiles = try AgentFiles(workspace: workspace ?? task.workspace)
