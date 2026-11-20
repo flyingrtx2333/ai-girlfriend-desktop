@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
         var project: Bool, query: String, showsDetail: Bool
     }
     private let store: AgentStore, workspace: String?
+    var loadMarketReviewCopy: ((String) async throws -> Data)?
     private let scopes = NSSegmentedControl(labels: ["用户", "项目"], trackingMode: .selectOne, target: nil, action: nil)
     private var scopeWorkspace: String? { scopes.selectedSegment == 1 ? workspace : nil }
     private let list = AgentSettingsCatalogTable(), components = NSTableView(), search = NSSearchField(), readme = NSTextView()
@@ -243,6 +244,7 @@ import UniformTypeIdentifiers
         }
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "plugin-market" { return makeMarketPage(workspace: scopeWorkspace) }
         if page.kind == "plugin-review" {
             let target = try AgentPluginReviewPage.recoveryTarget(page)
             guard target.workspace == scopeWorkspace else { throw PetError("原插件审阅范围已变化，记录已保留") }
@@ -284,13 +286,30 @@ import UniformTypeIdentifiers
     @objc private func revealPackage() { if let item = selected { NSWorkspace.shared.activateFileViewerSelecting([item.root]) } }
     @objc private func openMarketplace() {
         guard job == nil else { return }
-        let workspace = scopeWorkspace
+        presentSettingsChild(makeMarketPage(workspace: scopeWorkspace))
+    }
+    private func makeMarketPage(workspace: String?) -> AgentPluginMarketPage {
         let page = AgentPluginMarketPage(plugins: service, workspace: workspace)
         page.onReview = { [weak self, weak page] package, installed in
             guard let self, let page else { return }
-            presentReview(package, replacing: installed, restoring: false, installWorkspace: workspace, marketPage: page)
+            let copy = AgentWorkspaceRecovery.MarketReviewCopy(try service.marketReviewData(package))
+            let target = AgentPluginReviewPage.DraftTarget(path: nil, workspace: workspace, name: package.metadata.name,
+                title: package.metadata.title, sourceHash: package.receipt.sourceHash,
+                installed: installed.map(AgentPluginReviewPage.InstallationTarget.init), marketCopyHash: copy.hash)
+            let review = try makeReview(package, replacing: installed, restoring: false, installWorkspace: workspace, marketPage: page, draft: target)
+            review.marketCopy = copy
+            page.presentSettingsChild(review)
         }
-        presentSettingsChild(page)
+        page.restoreReview = { [weak self, weak page] target in
+            guard let self, let page else { throw PetError("插件市场已关闭") }
+            let review = makeReviewPage(operation: target.operation, workspace: workspace, marketPage: page, draft: target)
+            review.onReload = { [weak self] in
+                guard let self else { throw PetError("插件市场已关闭，请重新打开") }
+                return try await reloadMarketReview(target)
+            }
+            return review
+        }
+        return page
     }
     @objc private func importPackage() { choosePackage(replacing: nil) }
     @objc private func updatePackage() { if let selected { choosePackage(replacing: selected) } }
@@ -334,6 +353,27 @@ import UniformTypeIdentifiers
             throw PetError("原插件或启用配置已变化。恢复原状态后可重新检查，或取消后重新审阅。")
         }
         return item
+    }
+    private func requireMarketScope(_ workspace: String?) throws {
+        if let workspace, try AgentFiles(workspace: workspace).root.path != workspace {
+            throw PetError("原项目位置已变化，请重新审阅")
+        }
+    }
+    private func reloadMarketReview(_ target: AgentPluginReviewPage.DraftTarget) async throws -> AgentPluginReviewPage.Snapshot {
+        guard let loadMarketReviewCopy, let hash = target.marketCopyHash else { throw PetError("缺少原市场插件审阅副本") }
+        let data = try await loadMarketReviewCopy(hash)
+        try Task.checkCancellation()
+        try requireMarketScope(target.workspace)
+        let package = try service.marketReviewPackage(data)
+        guard package.metadata.name == target.name, package.metadata.title == target.title, package.receipt.sourceHash == target.sourceHash else {
+            throw PetError("原市场插件包与审阅记录不一致")
+        }
+        let installed = try target.installed.map { try reviewInstallation($0, workspace: target.workspace) }
+        if installed == nil, try service.catalog(workspace: target.workspace, onlyScope: true).contains(where: { $0.metadata.name == target.name }) {
+            throw PetError("原安装位置已有同名插件，请重新审阅")
+        }
+        let oldFiles = try installed.map { try service.reviewPackage($0).files } ?? [:]
+        return .init(package: package, installed: installed, oldFiles: oldFiles)
     }
     private func reloadReview(_ target: AgentPluginReviewPage.DraftTarget) async throws -> AgentPluginReviewPage.Snapshot {
         if let path = target.path {
@@ -380,16 +420,12 @@ import UniformTypeIdentifiers
         presentReview(package, replacing: installed, restoring: restoring, activating: activating, installWorkspace: installWorkspace)
     }
     private func presentReview(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation?, restoring: Bool,
-                               activating: Bool = false, installWorkspace: String?, marketPage: AgentPluginMarketPage? = nil) {
+                               activating: Bool = false, installWorkspace: String?) {
         do {
             let page = try makeReview(package, replacing: installed, restoring: restoring, activating: activating,
-                                      installWorkspace: installWorkspace, marketPage: marketPage)
-            if let marketPage { marketPage.presentSettingsChild(page) }
-            else { presentSettingsChild(page) }
-        } catch {
-            if let marketPage { marketPage.showFailure(error) }
-            else { state.showSaveFailure(error) }
-        }
+                                      installWorkspace: installWorkspace)
+            presentSettingsChild(page)
+        } catch { state.showSaveFailure(error) }
     }
     private func makeReview(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation?, restoring: Bool,
                             activating: Bool = false, installWorkspace: String? = nil, historyPage: AgentPluginHistoryPage? = nil,
@@ -410,6 +446,7 @@ import UniformTypeIdentifiers
         let page = AgentPluginReviewPage(operation: operation, workspace: workspace, protectedData: service.profile, historyTarget: historyTarget, draftTarget: draft)
         page.onApply = { [weak self] snapshot in
             guard let self else { throw PetError("插件页面已关闭，请重新打开") }
+            if draft?.marketCopyHash != nil { try requireMarketScope(workspace) }
             if let binding = draft?.installed { _ = try reviewInstallation(binding, workspace: workspace) }
             if let installed = snapshot.installed {
                 if operation == .activate { try service.setEnabled(installed, true); return try service.installation(installed.id) }

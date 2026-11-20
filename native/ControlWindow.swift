@@ -1705,6 +1705,10 @@ final class FormDocumentView: NSView {
         switch key {
         case "plugins":
             let manager = AgentPluginWindow(store: store, workspace: workspace)
+            manager.loadMarketReviewCopy = { [weak self] hash in
+                guard let session = self?.workspaceSession else { throw PetError("原工作区窗口不可用") }
+                return try await session.loadMarketReviewCopy(hash)
+            }
             if let taskID {
                 manager.onInsert = { [weak self] in try self?.insertExtension($0, taskID: taskID) }
                 manager.onInsertRule = { [weak self] in try self?.insertRule($0, taskID: taskID) }

@@ -29,8 +29,11 @@ private actor AgentWorkspaceJournal {
     func savePage(_ page: AgentWorkspaceRecovery.Page, asset: URL?, windowID: String, pageID: String, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Page> {
         try storage.savePage(page, asset: asset, windowID: windowID, pageID: pageID, expected: expected)
     }
-    func saveWindow(_ layout: AgentWorkspaceRecovery.Window, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window> {
-        try storage.saveWindow(layout, expected: expected)
+    func saveWindow(_ layout: AgentWorkspaceRecovery.Window, expected: String?, marketCopy: AgentWorkspaceRecovery.MarketReviewCopy? = nil) throws -> AgentWorkspaceRecovery.Saved<AgentWorkspaceRecovery.Window> {
+        try storage.saveWindow(layout, expected: expected, marketCopy: marketCopy)
+    }
+    func loadMarketReviewCopy(windowID: String, hash: String) throws -> Data {
+        try storage.loadMarketReviewCopy(windowID: windowID, hash: hash)
     }
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
@@ -209,6 +212,9 @@ private actor AgentWorkspaceJournal {
             }
         }
     }
+    func loadMarketReviewCopy(_ hash: String) async throws -> Data {
+        try await journal.loadMarketReviewCopy(windowID: id, hash: hash)
+    }
     func restoreAutomation() {
         guard !stopped, !disabled, let value = coldAutomation, roots["automation"] == nil else { return }
         roots["automation"] = Task { @MainActor [weak self] in
@@ -323,8 +329,9 @@ private actor AgentWorkspaceJournal {
                 else { layout.settings = try owner.captureSettingsRecovery() }
                 layout.settingsNavigation = coldSettingsNavigation ?? owner.captureSettingsNavigation()
                 layout.automation = try coldAutomation ?? owner.captureAutomationRecovery()
+                let marketCopy = coldSettings == nil ? (owner.settingsRecoveryControllers.last as? AgentPluginReviewPage)?.marketCopy : nil
                 let expected = layoutHash, capturedLayout = layout
-                let saved = try await journal.saveWindow(capturedLayout, expected: expected)
+                let saved = try await journal.saveWindow(capturedLayout, expected: expected, marketCopy: marketCopy)
                 layoutHash = saved.hash; previous = saved.value
                 if !terminalRecoveryReadOnly, let terminals = owner.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value {
                     savedTerminals = try await journal.saveTerminals(terminals, expected: savedTerminals?.hash)

@@ -6,6 +6,11 @@ struct AgentPluginMarketOrigin: Codable, Equatable {
     let commit: AgentPluginMarketCommit?, repositoryPath: String?
     var gitCommit: AgentPluginMarketGit.Commit? = nil
 
+    var sourceName: String {
+        ([marketplace, commit?.label ?? gitCommit?.label ?? archive.host ?? "", repositoryPath ?? ""])
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
     func matches(_ directory: AgentPluginMarket.Directory, entry: String) -> Bool {
         catalog == directory.address && marketplace == directory.name && self.entry == entry
     }
@@ -369,10 +374,13 @@ struct AgentPluginMarket {
             gitCommit = verified
             path = location
         }
-        let origin = AgentPluginMarketOrigin(catalog: directory.address, archive: final, marketplace: directory.name,
+        // Download query parameters can contain temporary access signatures.
+        // The provenance retains the final host and path used for review.
+        var provenance = URLComponents(url: final, resolvingAgainstBaseURL: false)
+        provenance?.percentEncodedQuery = nil
+        let origin = AgentPluginMarketOrigin(catalog: directory.address, archive: provenance?.url ?? final, marketplace: directory.name,
             publisher: directory.publisher, entry: entry.name, commit: commit, repositoryPath: path, gitCommit: gitCommit)
-        let label = [commit?.label ?? gitCommit?.label ?? final.host ?? "", path ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        var package = try await plugins.inspectArchive(bytes, sourceName: directory.name + " · " + label, importing: true,
+        var package = try await plugins.inspectArchive(bytes, sourceName: origin.sourceName, importing: true,
             repositoryPath: gitCommit == nil ? path : "")
         guard (commit == nil && gitCommit == nil) || package.metadata.name == entry.name else { throw PetError("仓库插件名称与市场目录不一致") }
         package.receipt.marketOrigin = origin

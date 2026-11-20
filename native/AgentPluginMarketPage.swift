@@ -1,6 +1,12 @@
 import AppKit
 
 @MainActor final class AgentPluginMarketPage: AgentSettingsPageController, NSTableViewDelegate, NSTableViewDataSource, NSSearchFieldDelegate, NSWindowDelegate {
+    private struct Recovery: Codable {
+        var version = 1
+        let workspace: String?, catalogHash: String?, entry: String?, category: String?
+        let query: String, y: Double, selectedVisible: Bool
+        let querySelection: AgentTextViewport.Selection?
+    }
     private let plugins: AgentPlugins, workspace: String?
     private let address = AgentDialogTextField(), search = NSSearchField(), categories = NSPopUpButton(), saved = NSPopUpButton()
     private let table = AgentSettingsCatalogTable(), status = AgentSettingsStatusField("插件市场状态")
@@ -12,7 +18,10 @@ import AppKit
     private var catalogs = AgentPluginMarket.Catalogs(), entries: [AgentPluginMarket.Entry] = [], installations: [AgentPluginInstallation] = []
     private var directory: AgentPluginMarket.Directory? { catalogs.selected }
     private var job: Task<Void, Never>?
-    var onReview: ((AgentPluginPackage, AgentPluginInstallation?) -> Void)?
+    private var pendingRecovery: Recovery?
+    private var positionScheduled = false
+    var onReview: ((AgentPluginPackage, AgentPluginInstallation?) throws -> Void)?
+    var restoreReview: ((AgentPluginReviewPage.DraftTarget) throws -> AgentPluginReviewPage)?
 
     init(plugins: AgentPlugins, workspace: String?) {
         self.plugins = plugins; self.workspace = workspace
@@ -57,6 +66,11 @@ import AppKit
             catalog.widthAnchor.constraint(equalTo: content.widthAnchor), sourceHost.widthAnchor.constraint(equalTo: content.widthAnchor)
         ])
         window.contentView = root
+        if let clip = table.enclosingScrollView?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(positionChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(positionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         do { display(try plugins.market.cachedCatalogs()) }
         catch { display(.init()); status.showSaveFailure(error) }
     }
@@ -69,9 +83,79 @@ import AppKit
         super.settingsDidAppear()
         reloadInstalled()
         presentingWindow?.makeFirstResponder(directory == nil ? address : table)
+        schedulePosition()
     }
+    override func pageDidLayout() { schedulePosition() }
     override func settingsWillLeave() { job?.cancel() }
     func windowWillClose(_ notification: Notification) { job?.cancel() }
+
+    private static func catalogHash(_ address: URL) -> String { AgentFiles.hash(Data(address.absoluteString.utf8)) }
+
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        if let pendingRecovery { return try AgentSettingsRecovery.page("plugin-market", pendingRecovery) }
+        let query = search.stringValue
+        var selection: AgentTextViewport.Selection?
+        if let editor = search.currentEditor() as? NSTextView, editor === presentingWindow?.firstResponder {
+            let range = editor.selectedRange(), candidate = AgentTextViewport.Selection(location: range.location, length: range.length)
+            if candidate.valid(in: query.utf16.count) { selection = candidate }
+        }
+        return try AgentSettingsRecovery.page("plugin-market", Recovery(workspace: workspace, catalogHash: catalogs.selection.map(Self.catalogHash),
+            entry: selected?.name, category: categories.indexOfSelectedItem > 0 ? categories.titleOfSelectedItem : nil,
+            query: query, y: max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0),
+            selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: table), querySelection: selection))
+    }
+
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "plugin-market" else { throw PetError("设置记录不属于插件市场") }
+        let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "workspace", "catalogHash",
+            "entry", "category", "query", "y", "selectedVisible", "querySelection"])
+        if let selection = object["querySelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
+        let value = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard value.version == 1, value.workspace == workspace, AgentSettingsRecovery.validHash(value.catalogHash),
+              value.entry.map({ !$0.isEmpty && $0.utf8.count <= 128 }) != false, AgentSettingsRecovery.validScroll(value.y),
+              value.querySelection?.valid(in: value.query.utf16.count) != false else {
+            throw PetError("原插件市场范围或位置无效，记录已保留")
+        }
+        var index = catalogs
+        index.selection = index.directories.first { Self.catalogHash($0.address) == value.catalogHash }?.address
+        display(index)
+        if value.catalogHash != nil, index.selection == nil { status.stringValue = "原目录暂不可用" }
+        search.stringValue = value.query
+        if let category = value.category, categories.itemTitles.contains(category) { categories.selectItem(withTitle: category) }
+        filterEntries()
+        pendingRecovery = value
+    }
+
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "plugin-market-review" else { return nil }
+        let target = try AgentPluginReviewPage.recoveryTarget(page)
+        guard let restoreReview, target.workspace == workspace else { throw PetError("原市场插件审阅范围已变化，记录已保留") }
+        return try restoreReview(target)
+    }
+
+    private func schedulePosition() {
+        guard pendingRecovery != nil, !positionScheduled else { return }
+        positionScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { positionScheduled = false }
+            guard isPageVisible, let value = pendingRecovery, let scroll = table.enclosingScrollView else { return }
+            if let row = entries.firstIndex(where: { $0.name == value.entry }) {
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            } else { table.deselectAll(nil) }
+            AgentSettingsRecovery.restoreScroll(value.y, to: scroll)
+            if value.selectedVisible, table.selectedRow >= 0 { table.scrollRowToVisible(table.selectedRow) }
+            if let selection = value.querySelection, search.isEnabled, presentingWindow?.makeFirstResponder(search) == true {
+                (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
+            }
+            pendingRecovery = nil; onSettingsRecoveryChange?()
+        }
+    }
+
+    @objc private func positionChanged(_ notification: Notification) {
+        guard pendingRecovery == nil, isPageVisible else { return }
+        if let text = notification.object as? NSTextView, text !== search.currentEditor() { return }
+        onSettingsRecoveryChange?()
+    }
 
     private func display(_ updated: AgentPluginMarket.Catalogs) {
         if updated.selection != catalogs.selection {
@@ -90,10 +174,11 @@ import AppKit
         }
         if let position = catalogs.directories.firstIndex(where: { $0.address == catalogs.selection }) {
             saved.selectItem(at: position)
-        }
+        } else { saved.select(nil) }
         savedRow.isHidden = catalogs.directories.isEmpty
         address.stringValue = directory?.address.absoluteString ?? ""
         refreshDirectoryView()
+        onSettingsRecoveryChange?()
     }
 
     @objc private func changeDirectory() {
@@ -165,9 +250,10 @@ import AppKit
         if !entries.isEmpty { table.selectRowIndexes(IndexSet(integer: entries.firstIndex { $0.name == previous } ?? 0), byExtendingSelection: false) }
         AgentSettingsStyle.listState(table, text: directory == nil ? "输入目录地址开始浏览" : query.isEmpty && category == nil ? "目录暂无插件" : "未找到匹配插件")
         updateControls()
+        if pendingRecovery == nil { onSettingsRecoveryChange?() }
     }
     func controlTextDidChange(_ notification: Notification) { filterEntries() }
-    func tableViewSelectionDidChange(_ notification: Notification) { updateControls() }
+    func tableViewSelectionDidChange(_ notification: Notification) { updateControls(); positionChanged(notification) }
 
     func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
     override func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 78 }
@@ -194,7 +280,8 @@ import AppKit
         let ready = job == nil
         address.isEnabled = ready; refresh.isEnabled = ready; search.isEnabled = ready && directory != nil
         credentials.isEnabled = ready
-        saved.isEnabled = ready && catalogs.directories.count > 1; remove.isEnabled = ready && directory != nil
+        saved.isEnabled = ready && (catalogs.directories.count > 1 || directory == nil && !catalogs.directories.isEmpty)
+        remove.isEnabled = ready && directory != nil
         categories.isEnabled = ready && categories.numberOfItems > 1; table.isEnabled = ready
         let item = selected, current = item.flatMap(installed)
         review.title = current == nil ? "审阅安装" : "审阅更新"
@@ -235,7 +322,7 @@ import AppKit
             guard let self else { return }; defer { job = nil; updateControls() }
             do {
                 let (package, old) = try await plugins.market.prepare(selected, in: directory, scope: workspace, plugins: plugins)
-                try Task.checkCancellation(); status.stringValue = ""; onReview?(package, old)
+                try Task.checkCancellation(); status.stringValue = ""; try onReview?(package, old)
             } catch { if !Task.isCancelled { showFailure(error) } }
         }
         updateControls()

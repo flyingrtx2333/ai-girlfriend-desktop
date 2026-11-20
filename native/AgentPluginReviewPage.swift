@@ -20,14 +20,16 @@ import AppKit
         let path: String?, workspace: String?
         let name: String, title: String?, sourceHash: String
         let installed: InstallationTarget?
+        var marketCopyHash: String? = nil
 
-        var operation: Operation { path == nil ? .activate : installed == nil ? .install : .update }
+        var operation: Operation { path == nil && marketCopyHash == nil ? .activate : installed == nil ? .install : .update }
         var valid: Bool {
             func validPath(_ path: String) -> Bool { path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384 }
             return path.map(validPath) != false && workspace.map(validPath) != false && AgentExtensions.validName(name) &&
                 title.map({ !$0.contains("\0") && $0.utf8.count <= 2000 }) != false &&
                 AgentSettingsRecovery.validHash(sourceHash) && installed.map({ $0.valid && $0.id == AgentPlugins.scopedID(name, workspace: workspace) }) != false &&
-                (path != nil || (workspace != nil && installed != nil && installed?.enabled == false))
+                AgentSettingsRecovery.validHash(marketCopyHash) && (marketCopyHash == nil || path == nil) &&
+                (path != nil || marketCopyHash != nil || (workspace != nil && installed != nil && installed?.enabled == false))
         }
     }
     enum Operation {
@@ -89,11 +91,15 @@ import AppKit
     private var selecting = false, working = false, finished = false
     private var comparisonJob: Task<Void, Never>?, reloadJob: Task<Void, Never>?
     private var shouldReload = false
+    var marketCopy: AgentWorkspaceRecovery.MarketReviewCopy?
     var onReload: (() async throws -> Snapshot)?
     var onApply: ((Snapshot) throws -> AgentPluginInstallation)? { didSet { updateApply() } }
     var onApplied: ((AgentPluginInstallation) -> Void)?
     private var showingFiles: Bool { types.selectedSegment == 1 }
-    private var recoveryKind: String? { historyTarget != nil ? "plugin-history-review" : draftTarget.map { _ in "plugin-review" } }
+    private var recoveryKind: String? {
+        if historyTarget != nil { return "plugin-history-review" }
+        return draftTarget.map { $0.marketCopyHash == nil ? "plugin-review" : "plugin-market-review" }
+    }
 
     init(operation: Operation, workspace: String?, protectedData: URL, historyTarget: HistoryTarget? = nil, draftTarget: DraftTarget? = nil) {
         self.protectedData = protectedData; self.historyTarget = historyTarget; self.draftTarget = draftTarget
@@ -343,7 +349,8 @@ import AppKit
             readingSelectionVisible: reading?.focusedSelectionIsVisible(in: reader), filterSelection: filterSelection, reading: reading))
     }
     static func recoveryTarget(_ page: AgentSettingsRecovery.Page) throws -> DraftTarget {
-        guard page.kind == "plugin-review", let target = try decodeRecovery(page).draft else { throw PetError("插件审阅记录缺少原来源") }
+        guard ["plugin-review", "plugin-market-review"].contains(page.kind), let target = try decodeRecovery(page).draft,
+              (page.kind == "plugin-market-review") == (target.marketCopyHash != nil) else { throw PetError("插件审阅记录缺少原来源") }
         return target
     }
     private static func decodeRecovery(_ page: AgentSettingsRecovery.Page) throws -> ReviewRecovery {
@@ -351,7 +358,7 @@ import AppKit
             "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "readingSelectionVisible", "filterSelection", "reading"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
         if let draft = object["draft"] {
-            let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "title", "sourceHash", "installed"])
+            let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "title", "sourceHash", "installed", "marketCopyHash"])
             if let installed = value["installed"] { _ = try AgentSettingsRecovery.object(installed, keys: ["id", "receiptHash", "activationID", "enabled"]) }
         }
         if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }

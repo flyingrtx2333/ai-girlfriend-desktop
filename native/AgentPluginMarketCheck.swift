@@ -152,6 +152,7 @@ import AppKit
 
             let (v2, update) = try await market.prepare(entry("inventory-helper", second), in: second, scope: nil, plugins: plugins)
             checks["previewPinsSameOriginAndOldVersion"] = update?.receiptHash == active.receiptHash && v2.metadata.version == "2.0.0" && update?.enabled == true
+            checks.merge(try checkMarketReviewCopies(plugins, before: v1, after: v2)) { _, new in new }
             guard let update else { throw PetError("市场更新缺少原版本") }
             let applied = try plugins.update(v2, replacing: update)
             guard let record = applied.receipt.revisions?.first else { throw PetError("市场更新没有原版本记录") }
@@ -191,8 +192,52 @@ import AppKit
             results.merge(privateMarket.results) { _, new in new }
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 54 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 62 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
+    }
+
+    private func checkMarketReviewCopies(_ plugins: AgentPlugins, before: AgentPluginPackage, after: AgentPluginPackage) throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let storage = AgentWorkspaceRecovery(profile: plugins.profile)
+        let files = try AgentFiles(workspace: plugins.profile.path)
+        let id = UUID().uuidString, anotherID = UUID().uuidString
+        var layout = AgentWorkspaceRecovery.Window(id: id, number: 1, tasks: [])
+        let pages = ["plugins", "plugin-market", "plugin-market-review"].map { AgentSettingsRecovery.Page(kind: $0, state: Data()) }
+        layout.settings = .init(context: .init(task: nil, workspace: nil), category: "extensions", root: "plugins", active: true, pages: pages, y: 0)
+        let first = AgentWorkspaceRecovery.MarketReviewCopy(try plugins.marketReviewData(before))
+        let next = AgentWorkspaceRecovery.MarketReviewCopy(try plugins.marketReviewData(after))
+        let saved = try storage.saveWindow(layout, expected: nil, marketCopy: first)
+        guard let copy = saved.value.marketReviewCopy else { throw PetError("市场审阅副本未保存") }
+        let original = try files.literalURL("workspace-recovery/\(id)/market-review.\(copy.slot).data")
+        let reloaded = try plugins.marketReviewPackage(storage.loadMarketReviewCopy(windowID: id, hash: first.hash))
+        checks["offlineReviewUsesExactPinnedManifestAndBytes"] = reloaded.files == before.files && reloaded.receipt.sourceHash == before.receipt.sourceHash
+            && reloaded.receipt.marketOrigin == before.receipt.marketOrigin && reloaded.receipt.sourceName == before.receipt.sourceName
+        checks["marketReviewCopyHasPrivatePermissions"] = try files.entryMetadata(original).permissions == 0o600
+
+        var another = layout; another.id = anotherID; another.number = 2
+        let other = try storage.saveWindow(another, expected: nil, marketCopy: next)
+        do { _ = try storage.loadMarketReviewCopy(windowID: anotherID, hash: first.hash); checks["marketReviewCannotReadAnotherWindowsCopy"] = false }
+        catch { checks["marketReviewCannotReadAnotherWindowsCopy"] = try storage.loadMarketReviewCopy(windowID: anotherID, hash: next.hash) == next.data }
+
+        let retained = try storage.saveWindow(layout, expected: saved.hash)
+        checks["marketPositionOnlySaveRetainsOriginalCopy"] = retained.value.marketReviewCopy == copy
+        do { _ = try storage.saveWindow(layout, expected: String(repeating: "0", count: 64), marketCopy: next); checks["conflictingMarketJournalWritePreservesCopy"] = false }
+        catch { checks["conflictingMarketJournalWritePreservesCopy"] = try storage.loadMarketReviewCopy(windowID: id, hash: first.hash) == first.data }
+        try files.writeData(Data("unrelated bytes".utf8), to: original, permissions: 0o600)
+        do { _ = try storage.loadMarketReviewCopy(windowID: id, hash: first.hash); checks["changedMarketCopyIsRejectedWithoutDroppingJournal"] = false }
+        catch { checks["changedMarketCopyIsRejectedWithoutDroppingJournal"] = try storage.loadWindow(id)?.hash == retained.hash }
+
+        let replaced = try storage.saveWindow(layout, expected: retained.hash, marketCopy: next)
+        let restoreUpdate = try plugins.marketReviewPackage(storage.loadMarketReviewCopy(windowID: id, hash: next.hash))
+        checks["marketReplacementRetiresPriorCopyAfterCommit"] = try files.entryMetadata(original).kind == "missing"
+            && restoreUpdate.files == after.files && restoreUpdate.receipt.marketOrigin == after.receipt.marketOrigin
+        guard let replacedSlot = replaced.value.marketReviewCopy?.slot else { throw PetError("市场更新副本未保存") }
+        layout.settings?.pages.removeLast()
+        let back = try storage.saveWindow(layout, expected: replaced.hash)
+        let replacement = try files.literalURL("workspace-recovery/\(id)/market-review.\(replacedSlot).data")
+        checks["leavingMarketReviewRetiresItsCopyOnly"] = try back.value.marketReviewCopy == nil && files.entryMetadata(replacement).kind == "missing"
+            && storage.loadWindow(anotherID)?.hash == other.hash && storage.loadMarketReviewCopy(windowID: anotherID, hash: next.hash) == next.data
+        return checks
     }
 
     private func checkHTTPSGitMarket(_ output: URL, origin: URL, network: URLSession, firstSHA: String, secondSHA: String) async throws

@@ -82,6 +82,7 @@ struct AgentWorkspaceRecovery: Sendable {
         var floating: [FloatingPage] = []
         var knowledge: Knowledge? = nil
         var settings: AgentSettingsRecovery.State? = nil
+        var marketReviewCopy: Asset? = nil
         var settingsNavigation: AgentSettingsRecovery.Navigation? = nil
         var automation: Automation? = nil
         var closed = false
@@ -89,6 +90,10 @@ struct AgentWorkspaceRecovery: Sendable {
     struct Asset: Codable, Equatable, Sendable {
         var slot: Int
         var hash: String
+    }
+    struct MarketReviewCopy: Sendable {
+        let data: Data, hash: String
+        init(_ data: Data) { self.data = data; hash = AgentFiles.hash(data) }
     }
     struct Page: Codable, Equatable, Sendable {
         var version = 1
@@ -113,6 +118,8 @@ struct AgentWorkspaceRecovery: Sendable {
 
     let profile: URL
     private static let maximumState = 20_000_000
+    // A reviewed package contains at most 20 MB of files plus paths and metadata.
+    private static let maximumMarketCopy = 24_000_000
     private static let label = "工作区恢复记录"
 
     init(profile: URL) { self.profile = profile.standardizedFileURL.resolvingSymlinksInPath() }
@@ -177,6 +184,10 @@ struct AgentWorkspaceRecovery: Sendable {
         }
         guard value.settings?.valid != false, value.settingsNavigation?.valid != false,
               !(value.settings?.active == true && value.knowledge?.active == true) else { throw PetError("设置编辑恢复范围无效，原记录已保留") }
+        guard (value.settings?.pages.last?.kind == "plugin-market-review") == (value.marketReviewCopy != nil),
+              value.marketReviewCopy.map({ [0, 1].contains($0.slot) && Self.hash($0.hash) }) != false else {
+            throw PetError("市场插件审阅副本与窗口记录不一致")
+        }
         if let automation = value.automation {
             guard automation.context.valid, automation.state.count <= Self.maximumState else { throw PetError("自动化编辑恢复范围无效，原记录已保留") }
         }
@@ -191,7 +202,7 @@ struct AgentWorkspaceRecovery: Sendable {
         return object
     }
     private func decodeWindow(_ data: Data) throws -> Window {
-        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "settingsNavigation", "automation", "closed"])
+        let object = try keys(JSONSerialization.jsonObject(with: data), ["version", "id", "number", "taskID", "frame", "tasks", "floating", "knowledge", "settings", "marketReviewCopy", "settingsNavigation", "automation", "closed"])
         func frame(_ value: Any?) throws { if let value, !(value is NSNull) { _ = try keys(value, ["x", "y", "width", "height"]) } }
         func tab(_ value: Any) throws { _ = try keys(value, ["id", "root", "title", "hasIndependentChild"]) }
         try frame(object["frame"])
@@ -221,6 +232,7 @@ struct AgentWorkspaceRecovery: Sendable {
             }
         }
         if let settings = object["settings"], !(settings is NSNull) { try AgentSettingsRecovery.validateObject(settings) }
+        if let copy = object["marketReviewCopy"], !(copy is NSNull) { _ = try keys(copy, ["slot", "hash"]) }
         if let navigation = object["settingsNavigation"], !(navigation is NSNull) { try AgentSettingsRecovery.validateNavigation(navigation) }
         if let raw = object["automation"], !(raw is NSNull) {
             let automation = try keys(raw, ["context", "state"])
@@ -254,14 +266,55 @@ struct AgentWorkspaceRecovery: Sendable {
         guard value.id == id else { throw PetError("工作区窗口编号与保存位置不符") }
         return Saved(value: value, hash: AgentFiles.hash(data))
     }
-    @discardableResult func saveWindow(_ value: Window, expected: String?) throws -> Saved<Window> {
-        try validate(value); let data = try encoded(value)
+    @discardableResult func saveWindow(_ value: Window, expected: String?, marketCopy: MarketReviewCopy? = nil) throws -> Saved<Window> {
         return try locked(value.id) { files in
-            let path = try prefix(value.id) + "/layout.json"
-            let change = try AgentKnowledgeFileWrite(files: files, path: path, data: data, expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: Self.label)
-            if let before = change.before { guard try decodeWindow(before).id == value.id else { throw PetError("工作区窗口编号已变化") } }
+            let directory = try prefix(value.id), path = directory + "/layout.json"
+            let change = try AgentKnowledgeFileWrite(files: files, path: path, data: Data(), expectedHash: expected ?? AgentFiles.hash(Data()), missing: expected == nil, permissions: 0o600, label: Self.label)
+            let previous = try change.before.map(decodeWindow)
+            guard previous.map({ $0.id == value.id }) != false else { throw PetError("工作区窗口编号已变化") }
+            var saved = value
+            var staged: URL?
+            defer { if let staged { try? files.remove(staged) } }
+            let oldCopy = previous?.marketReviewCopy
+            saved.marketReviewCopy = nil
+            if saved.settings?.pages.last?.kind == "plugin-market-review" {
+                saved.marketReviewCopy = oldCopy
+                if let marketCopy, marketCopy.hash != oldCopy?.hash {
+                    guard marketCopy.data.count <= Self.maximumMarketCopy else { throw PetError("市场插件审阅副本超出容量") }
+                    try change.requireCurrent()
+                    let slot = oldCopy?.slot == 0 ? 1 : 0
+                    let target = try literal(files, directory + "/market-review.\(slot).data"), metadata = try files.entryMetadata(target)
+                    guard ["file", "missing"].contains(metadata.kind) else { throw PetError("市场插件审阅副本位置不可用") }
+                    // Publish the copy before its layout. The committed layout
+                    // keeps pointing to the old slot if publishing fails.
+                    try files.writeData(marketCopy.data, to: target, permissions: 0o600, expectedTarget: metadata.signature)
+                    staged = target
+                    saved.marketReviewCopy = Asset(slot: slot, hash: marketCopy.hash)
+                }
+            }
+            try validate(saved); let data = try encoded(saved)
             try change.requireCurrent(); try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
-            return Saved(value: value, hash: AgentFiles.hash(data))
+            staged = nil
+            if oldCopy != saved.marketReviewCopy {
+                for slot in 0...1 where slot != saved.marketReviewCopy?.slot {
+                    if let url = try? literal(files, directory + "/market-review.\(slot).data"),
+                       (try? files.entryMetadata(url).kind) == "file" { try? files.remove(url) }
+                }
+            }
+            return Saved(value: saved, hash: AgentFiles.hash(data))
+        }
+    }
+    func loadMarketReviewCopy(windowID: String, hash: String) throws -> Data {
+        try locked(windowID) { files in
+            guard let copy = try loadWindow(windowID)?.value.marketReviewCopy, copy.hash == hash else {
+                throw PetError("原市场插件审阅副本未找到")
+            }
+            let url = try literal(files, prefix(windowID) + "/market-review.\(copy.slot).data")
+            let metadata = try files.entryMetadata(url)
+            guard metadata.kind == "file", metadata.permissions == 0o600 else { throw PetError("原市场插件审阅副本不可用") }
+            let data = try files.readData(url, maximum: Self.maximumMarketCopy)
+            guard AgentFiles.hash(data) == hash else { throw PetError("原市场插件审阅副本已变化，需恢复原件或重新审阅") }
+            return data
         }
     }
     func loadTerminalLayout(windowID: String) throws -> Saved<AgentTerminalLayout>? {

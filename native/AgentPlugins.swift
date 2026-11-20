@@ -46,6 +46,12 @@ struct AgentPluginInstallation: Identifiable {
 }
 
 @MainActor final class AgentPlugins {
+    private struct MarketReview: Codable {
+        var version = 1
+        let origin: AgentPluginMarketOrigin
+        let sourceHash: String, files: [String: Data]
+    }
+
     let profile: URL
     let sharedHome: URL?
     lazy var market = AgentPluginMarket(profile: profile)
@@ -167,6 +173,18 @@ struct AgentPluginInstallation: Identifiable {
         let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: definitions, hiddenRoots: hiddenRoots, repositoryPath: repositoryPath)
         let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: nil) : files
         return try Self.package(payload, sourceName: sourceName, sourceHash: AgentFiles.hash(data))
+    }
+    func marketReviewData(_ package: AgentPluginPackage) throws -> Data {
+        guard let origin = package.receipt.marketOrigin else { throw PetError("插件缺少市场来源") }
+        let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
+        return try encoder.encode(MarketReview(origin: origin, sourceHash: package.receipt.sourceHash, files: package.files))
+    }
+    func marketReviewPackage(_ data: Data) throws -> AgentPluginPackage {
+        let review = try PropertyListDecoder().decode(MarketReview.self, from: data)
+        guard review.version == 1, AgentSettingsRecovery.validHash(review.sourceHash),
+              (try? AgentPluginMarket.address(review.origin.catalog)) != nil,
+              (try? AgentPluginMarket.address(review.origin.archive)) != nil else { throw PetError("原市场插件包记录无效") }
+        return try Self.package(review.files, sourceName: review.origin.sourceName, sourceHash: review.sourceHash, marketOrigin: review.origin)
     }
     @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil, importing installationID: String? = nil) throws -> AgentPluginInstallation {
         let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }, existing = try catalog(workspace: workspace, onlyScope: true)
