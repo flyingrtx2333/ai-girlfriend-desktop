@@ -186,9 +186,12 @@ import AppKit
             let git = try await checkHTTPSGitMarket(output, origin: origin, network: network, firstSHA: sha1, secondSHA: sha2)
             checks.merge(git.checks) { _, new in new }
             results.merge(git.results) { _, new in new }
+            let privateMarket = try await checkPrivatePluginMarket(output, origin: origin, network: network, firstSHA: sha1, secondSHA: sha2)
+            checks.merge(privateMarket.checks) { _, new in new }
+            results.merge(privateMarket.results) { _, new in new }
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 39 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 54 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
     }
 

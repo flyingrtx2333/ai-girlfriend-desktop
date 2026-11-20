@@ -32,8 +32,8 @@ struct AgentPluginMarketGit {
         value.range(of: "^[A-Fa-f0-9]{40}([A-Fa-f0-9]{24})?\\z", options: .regularExpression).map { _ in value.lowercased() }
     }
 
-    func directory(_ url: URL, maximum: Int) async throws -> (Data, Commit) {
-        try await withRepository(url, ref: nil, pinned: nil) { scratch, commit in
+    func directory(_ url: URL, maximum: Int, credential: AgentPluginMarketCredential? = nil) async throws -> (Data, Commit) {
+        try await withRepository(url, ref: nil, pinned: nil, credential: credential) { scratch, commit in
             let paths = [".qoder-plugin/marketplace.json", ".claude-plugin/marketplace.json"]
             let entries = try await local(["ls-tree", "-z", commit.sha, "--"] + paths, in: scratch)
             let files = String(decoding: entries, as: UTF8.self).split(separator: "\0").compactMap { entry -> String? in
@@ -47,8 +47,9 @@ struct AgentPluginMarketGit {
         }
     }
 
-    func archive(_ url: URL, ref: String?, pinned: String?, folder: String, maximum: Int) async throws -> (Data, Commit) {
-        try await withRepository(url, ref: ref, pinned: pinned) { scratch, commit in
+    func archive(_ url: URL, ref: String?, pinned: String?, folder: String, maximum: Int,
+                 credential: AgentPluginMarketCredential? = nil) async throws -> (Data, Commit) {
+        try await withRepository(url, ref: ref, pinned: pinned, credential: credential) { scratch, commit in
             let target = scratch.appendingPathComponent("selected.zip")
             let tree = commit.sha + (folder.isEmpty ? "" : ":" + folder)
             _ = try await local(["archive", "--format=zip", "--prefix=repository/", "--output=" + target.path, tree],
@@ -58,9 +59,9 @@ struct AgentPluginMarketGit {
         }
     }
 
-    private func withRepository<Value>(_ address: URL, ref: String?, pinned: String?,
+    private func withRepository<Value>(_ address: URL, ref: String?, pinned: String?, credential: AgentPluginMarketCredential?,
                                        use: (URL, Commit) async throws -> Value) async throws -> Value {
-        guard let url = Self.address(address), let host = url.host else { throw PetError("请使用不含登录参数的公开 HTTPS Git 地址") }
+        guard let url = Self.address(address), let host = url.host else { throw PetError("请填写不含登录参数的 HTTPS Git 地址") }
         let scratch = profile.appendingPathComponent(".plugin-git-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -69,6 +70,7 @@ struct AgentPluginMarketGit {
             throw PetError("当前 Git 缺少 HTTPS 地址校验支持，请更新 Xcode 命令行工具")
         }
         let network = try networkFlags(url, host: host, scratch: scratch)
+        let authentication = try credential.map { try authConfig($0, repository: url, in: scratch) }
         let branch = ref ?? "HEAD"
         let object: String
         if let pinned {
@@ -76,7 +78,7 @@ struct AgentPluginMarketGit {
             object = normalized
         } else {
             let discovery = try await run(["ls-remote", "--", url.absoluteString, "HEAD", branch], in: scratch, network: network,
-                failure: "无法读取 Git 仓库，请检查地址、分支或公开访问权限")
+                authentication: authentication, failure: "无法读取 Git 仓库，请检查地址、分支和读取权限")
             let refs = String(decoding: discovery, as: UTF8.self).split(separator: "\n")
             guard let first = refs.first, let hash = first.split(separator: "\t").first,
                   let detected = Self.sha(String(hash)) else { throw PetError("Git 仓库没有可读取的分支或标签") }
@@ -86,12 +88,25 @@ struct AgentPluginMarketGit {
         _ = try await run(["init", "--bare", "--quiet", "--template=", "--object-format=" + format, "objects.git"], in: scratch,
             failure: "无法准备 Git 插件目录")
         _ = try await run(["--git-dir=objects.git", "fetch", "--quiet", "--depth=1", "--no-tags", "--no-recurse-submodules",
-            "--", url.absoluteString, pinned == nil ? branch : object], in: scratch, network: network,
+            "--", url.absoluteString, pinned == nil ? branch : object], in: scratch, network: network, authentication: authentication,
             failure: "无法读取所选 Git 提交，请核对分支、标签或提交是否可访问")
         let bytes = try await local(["rev-parse", "--verify", "FETCH_HEAD^{commit}"], in: scratch)
         let text = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let commit = Self.sha(text), pinned == nil || commit == object else { throw PetError("Git 仓库返回的提交与所选版本不一致") }
         return try await use(scratch, Commit(repository: url, sha: commit))
+    }
+
+    private func authConfig(_ credential: AgentPluginMarketCredential, repository: URL, in scratch: URL) throws -> URL {
+        guard credential.username != nil, AgentPluginMarketCredential.path(repository) != nil else {
+            throw PetError("请检查 Git 仓库地址和访问凭据。")
+        }
+        let path = scratch.appendingPathComponent("https-auth.config")
+        let url = repository.absoluteString.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let config = "[http \"\(url)\"]\n\textraHeader = Authorization: \(credential.authorization)\n"
+        guard FileManager.default.createFile(atPath: path.path, contents: Data(config.utf8), attributes: [.posixPermissions: 0o600]) else {
+            throw PetError("无法准备 Git 的访问凭据。")
+        }
+        return path
     }
 
     private func networkFlags(_ url: URL, host: String, scratch: URL) throws -> [String] {
@@ -116,7 +131,8 @@ struct AgentPluginMarketGit {
         try await run(["--git-dir=objects.git"] + args, in: scratch, maximum: maximum, failure: failure)
     }
 
-    private func run(_ args: [String], in scratch: URL, network: [String] = [], maximum: Int = 100_000, failure: String) async throws -> Data {
+    private func run(_ args: [String], in scratch: URL, network: [String] = [], authentication: URL? = nil,
+                     maximum: Int = 100_000, failure: String) async throws -> Data {
         let git = try AgentGit.executablePath()
         let flags = ["--no-pager", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never",
             "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "credential.helper=",
@@ -124,9 +140,11 @@ struct AgentPluginMarketGit {
             "-c", "fetch.writeCommitGraph=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0"]
         // Apply a 64 MiB per-file cap before Git reads any network objects.
         let argv = ["-c", "ulimit -f 65536 && exec \"$@\"", "market-git", git] + flags + network + args
+        var environment = ["GIT_ASKPASS": "/usr/bin/false", "GIT_CONFIG_NOSYSTEM": "1"]
+        if let authentication { environment["GIT_CONFIG_GLOBAL"] = authentication.path }
         let result = try await AgentCommand().run(command: "/bin/sh", workspace: scratch, scratch: scratch,
             network: !network.isEmpty, timeout: network.isEmpty ? 10 : 45, maximumOutput: maximum, protectedData: profile,
-            environment: ["GIT_ASKPASS": "/usr/bin/false", "GIT_CONFIG_NOSYSTEM": "1"], arguments: argv)
+            environment: environment, arguments: argv)
         if result.timedOut == true { throw PetError("读取 Git 仓库超时，请稍后重试") }
         if result.truncated == true { throw PetError("Git 仓库文件超过可读上限") }
         if result.failed || result.stdoutData == nil {
@@ -136,6 +154,11 @@ struct AgentPluginMarketGit {
             }
             if result.exitCode == 128 + Int(SIGXFSZ) || diagnostic.contains("file size limit") {
                 throw PetError("Git 仓库的数据超过本机读取上限")
+            }
+            if ["returned error: 401", "returned error: 403", "authentication failed", "could not read username",
+                "unable to get password from user"].contains(where: diagnostic.contains)
+                || (authentication != nil && diagnostic.contains("repository not found")) {
+                throw PetError("Git 仓库拒绝访问，请检查访问凭据和读取权限。")
             }
             throw PetError(failure)
         }

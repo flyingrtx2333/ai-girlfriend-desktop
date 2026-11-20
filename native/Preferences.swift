@@ -168,7 +168,7 @@ struct PetCredentialConfig {
         if !old.isEmpty { try write(old, account: account) }
         return old
     }
-    func write(_ value: String, account: String) throws {
+    func write(_ value: String?, account: String) throws {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let (before, mode) = try bytes()
         guard mode == nil || mode! & 0o200 != 0 else { throw PetError("API Key 配置为只读，未保存。") }

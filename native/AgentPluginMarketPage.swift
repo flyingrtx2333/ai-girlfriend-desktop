@@ -5,6 +5,7 @@ import AppKit
     private let address = AgentDialogTextField(), search = NSSearchField(), categories = NSPopUpButton(), saved = NSPopUpButton()
     private let table = AgentSettingsCatalogTable(), status = AgentSettingsStatusField("插件市场状态")
     private let refresh = AgentDialogButton(title: "加载目录", target: nil, action: nil)
+    private let credentials = AgentDialogButton(title: "访问凭据", target: nil, action: nil)
     private let remove = AgentDialogButton(title: "移除目录", target: nil, action: nil)
     private let review = AgentDialogButton(title: "审阅插件", target: nil, action: nil)
     private let savedRow = NSStackView()
@@ -22,7 +23,8 @@ import AppKit
         address.target = self; address.action = #selector(loadDirectory)
         AgentSettingsStyle.field(address); address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refresh.target = self; refresh.action = #selector(loadDirectory); AgentDialogStyle.action(refresh)
-        let source = NSStackView(views: [address, refresh]); source.spacing = 8
+        credentials.target = self; credentials.action = #selector(editCredentials); AgentDialogStyle.action(credentials)
+        let source = NSStackView(views: [address, credentials, refresh]); source.spacing = 8
         source.heightAnchor.constraint(equalToConstant: 28).isActive = true
         saved.setAccessibilityLabel("已保存的插件目录")
         saved.target = self; saved.action = #selector(changeDirectory)
@@ -191,11 +193,24 @@ import AppKit
     private func updateControls() {
         let ready = job == nil
         address.isEnabled = ready; refresh.isEnabled = ready; search.isEnabled = ready && directory != nil
+        credentials.isEnabled = ready
         saved.isEnabled = ready && catalogs.directories.count > 1; remove.isEnabled = ready && directory != nil
         categories.isEnabled = ready && categories.numberOfItems > 1; table.isEnabled = ready
         let item = selected, current = item.flatMap(installed)
         review.title = current == nil ? "审阅安装" : "审阅更新"
         review.isEnabled = ready && item?.source != nil && item?.unavailable == nil && !(item.map { samePackage($0, as: current) } ?? false)
+    }
+
+    @objc private func editCredentials() {
+        guard job == nil else { return }
+        do {
+            let destination = try AgentPluginMarket.credentialDestination(address.stringValue)
+            let page = AgentPluginMarketCredentialPage(market: plugins.market, destination: destination)
+            page.onChange = { [weak self] saved in
+                self?.status.stringValue = saved ? "已保存访问凭据" : "已清除访问凭据"
+            }
+            presentSettingsChild(page)
+        } catch { showFailure(error) }
     }
 
     @objc private func loadDirectory() {

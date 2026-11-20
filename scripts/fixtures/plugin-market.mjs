@@ -20,6 +20,8 @@ def write(name, title, version, quantity):
 facts = [write('inventory-helper', '库存速查', '1.0.0', 42), write('inventory-helper', '库存速查', '2.0.0', 88)]
 write('review-notes', '审阅笔记', '1.0.0', 13)
 (root / 'facts.json').write_text(json.dumps(facts) + '\\n')
+private = [write('private-inventory', '私有库存', '1.0.0', 73), write('private-inventory', '私有库存', '2.0.0', 109)]
+(root / 'private-facts.json').write_text(json.dumps(private) + '\\n')
 
 repo = root / 'repository'
 repo.mkdir()
@@ -88,6 +90,9 @@ function sendZip(res, data) {
   return res.end(data);
 }
 const gitPath = '/git/catalog.git';
+const privateGitPath = '/private-git/catalog.git';
+const privateAPIHeader = 'Bearer market-test-bearer';
+const privateGitHeader = 'Basic ' + Buffer.from('market-example:market-test-basic').toString('base64');
 const gitRoot = path.join(root, 'git');
 const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
 function publishVersion(commit) {
@@ -96,9 +101,9 @@ function publishVersion(commit) {
     if (changed.status !== 0) throw Error('无法切换 Git 样例分支。');
   }
 }
-async function serveGit(req, res, url) {
-  const discovery = req.method === 'GET' && url.pathname === gitPath + '/info/refs' && url.searchParams.get('service') === 'git-upload-pack';
-  const pack = req.method === 'POST' && url.pathname === gitPath + '/git-upload-pack';
+async function serveGit(req, res, url, route) {
+  const discovery = req.method === 'GET' && url.pathname === route + '/info/refs' && url.searchParams.get('service') === 'git-upload-pack';
+  const pack = req.method === 'POST' && url.pathname === route + '/git-upload-pack';
   if (!discovery && !pack) return send(res, 405, {});
   let size = 0;
   const chunks = [];
@@ -110,11 +115,11 @@ async function serveGit(req, res, url) {
   const input = Buffer.concat(chunks);
   const requestBody = input.toString('utf8');
   const requested = requestBody.match(/want ([0-9a-f]{40}(?:[0-9a-f]{24})?)\b/);
-  log({ event: 'git-http', phase: discovery ? 'advertisement' : 'request', version, tls: !!req.socket.encrypted,
+  log({ event: route === privateGitPath ? 'private-git-http' : 'git-http', phase: discovery ? 'advertisement' : 'request', version, tls: !!req.socket.encrypted,
     credentialHeader: !!req.headers.authorization || !!req.headers.cookie, uploadPack: pack,
     hasFetch: /command=fetch/.test(requestBody), requested: requested?.[1] || null });
   const result = spawnSync('/usr/bin/git', ['http-backend'], { input, timeout: 10_000, maxBuffer: 8_000_000,
-    env: { ...gitEnv, GIT_PROJECT_ROOT: gitRoot, GIT_HTTP_EXPORT_ALL: '1', PATH_INFO: url.pathname.slice('/git'.length),
+    env: { ...gitEnv, GIT_PROJECT_ROOT: gitRoot, GIT_HTTP_EXPORT_ALL: '1', PATH_INFO: url.pathname.slice(route.lastIndexOf('/')),
       REQUEST_METHOD: req.method, QUERY_STRING: url.search.slice(1), CONTENT_TYPE: req.headers['content-type'] || '',
       CONTENT_LENGTH: String(input.length), HTTP_GIT_PROTOCOL: req.headers['git-protocol'] || 'version=2' } });
   if (result.status !== 0) return send(res, 502, {});
@@ -139,7 +144,14 @@ const server = createServer({ key: archive('test-key.pem'), cert: archive('test-
     publishVersion(revisions.find(revision => revision.version === version).commit);
     log({ event: 'fixture-state', version, invalid }); return send(res, 200, { version, invalid });
   }
-  if (url.pathname.startsWith(gitPath + '/')) return serveGit(req, res, url);
+  if (url.pathname.startsWith(gitPath + '/')) return serveGit(req, res, url, gitPath);
+  if (url.pathname.startsWith(privateGitPath + '/')) {
+    if (req.headers.authorization !== privateGitHeader) {
+      log({ event: 'private-git-denied', credentialHeader: !!req.headers.authorization });
+      return send(res, req.headers.authorization ? 403 : 401, {});
+    }
+    return serveGit(req, res, url, privateGitPath);
+  }
   if (url.pathname === '/git/redirect.git/info/refs') {
     log({ event: 'git-redirect' });
     res.writeHead(302, { Location: origin + '/git/redirect-destination.git/info/refs?service=git-upload-pack' });
@@ -151,6 +163,29 @@ const server = createServer({ key: archive('test-key.pem'), cert: archive('test-
   }
   if (req.method !== 'GET') return send(res, 405, {});
   const credentialHeader = !!req.headers.authorization || !!req.headers.cookie;
+  if (url.pathname.startsWith('/private/')) {
+    const authorized = req.headers.authorization === privateAPIHeader;
+    log({ event: 'private-directory-request', path: url.pathname, version, authorized, credentialHeader, tls: !!req.socket.encrypted });
+    if (!authorized) return send(res, credentialHeader ? 403 : 401, {});
+    if (url.pathname === '/private/marketplace.json') {
+      const stock = entry('private-inventory', '私有库存', '工作流', '查阅已授权的样例库存', version);
+      stock.source.url = origin + '/private/' + stock.source.url.split('/').at(-1);
+      const redirect = { name: 'redirect-check', displayName: '重定向样例', source: { source: 'archive', url: origin + '/private/redirect.zip' } };
+      const outside = { name: 'review-notes', displayName: '公开审阅笔记', source: { source: 'archive', url: origin + '/private-neighbor/review-notes.zip' } };
+      const cross = { name: 'repo-stock', displayName: '独立私有 Git', source: { source: 'git-subdir', url: origin + privateGitPath, path: 'plugins/repo-stock' } };
+      return send(res, 200, { name: 'private-plugin-market', owner: { name: '私有样例目录' }, plugins: [stock, redirect, outside, cross] });
+    }
+    if (url.pathname === '/private/redirect.zip') {
+      res.writeHead(302, { Location: origin + '/private/redirect-destination.zip' }); return res.end();
+    }
+    if (url.pathname === '/private/redirect-destination.zip') return sendZip(res, archive('review-notes-1.0.0.zip'));
+    if (/^\/private\/private-inventory-[12]\.0\.0\.zip$/.test(url.pathname)) return sendZip(res, archive(url.pathname.split('/').at(-1)));
+    return send(res, 404, {});
+  }
+  if (url.pathname === '/private-neighbor/review-notes.zip') {
+    log({ event: 'neighboring-public-archive', credentialHeader, tls: !!req.socket.encrypted });
+    return sendZip(res, archive('review-notes-1.0.0.zip'));
+  }
   const repository = '/repos/fixture-lab/extensions/';
   if (url.pathname.startsWith(repository)) {
     const current = revisions.find(revision => revision.version === version);

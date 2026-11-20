@@ -44,7 +44,7 @@ struct AgentPluginMarket {
                 }
             }
             if let gitCommit {
-                guard commit == nil, AgentPluginMarketGit.address(address) == gitCommit.repository,
+                guard commit == nil, AgentPluginMarket.gitRepository(for: address) == gitCommit.repository,
                       AgentPluginMarketGit.sha(gitCommit.sha) == gitCommit.sha else {
                     throw PetError("已保存的 Git 市场来源无效")
                 }
@@ -64,7 +64,12 @@ struct AgentPluginMarket {
 
     private struct HTTPFailure: LocalizedError {
         let status: Int
-        var errorDescription: String? { "市场下载失败（HTTP \(status)）。请核对地址或稍后重试。" }
+        let authenticated: Bool
+        var errorDescription: String? {
+            if status == 401 || (authenticated && status == 403) { return "市场拒绝访问（HTTP \(status)）。请检查访问凭据和读取权限。" }
+            if authenticated && (300..<400).contains(status) { return "此地址会跳转，请填写市场文件的最终 HTTPS 地址。" }
+            return "市场下载失败（HTTP \(status)）。请核对地址或稍后重试。"
+        }
     }
 
     private let profile: URL, network: URLSession
@@ -84,6 +89,10 @@ struct AgentPluginMarket {
     private final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            if task.originalRequest?.value(forHTTPHeaderField: "Authorization") != nil {
+                completionHandler(nil)
+                return
+            }
             if task.originalRequest?.url?.host == "api.github.com",
                request.url.map({ $0.port == nil && ["api.github.com", "codeload.github.com"].contains($0.host ?? "") }) != true {
                 completionHandler(nil)
@@ -107,6 +116,52 @@ struct AgentPluginMarket {
         return url
     }
 
+    private static func catalogAddress(_ input: String) throws -> URL {
+        let url = try address(URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)))
+        if let repository = AgentPluginMarketRepository(address: url) { return repository.address }
+        if url.path.lowercased().hasSuffix(".git") {
+            guard let repository = AgentPluginMarketGit.address(url) else { throw PetError("请填写不含登录参数的 HTTPS Git 地址") }
+            return repository
+        }
+        return url
+    }
+
+    static func gitRepository(for address: URL) -> URL? {
+        AgentPluginMarketRepository(address: address)?.cloneAddress
+            ?? (address.path.lowercased().hasSuffix(".git") ? AgentPluginMarketGit.address(address) : nil)
+    }
+
+    static func credentialDestination(_ input: String) throws -> URL {
+        let target = try catalogAddress(input)
+        guard AgentPluginMarketCredential.path(target) != nil else { throw PetError("请填写不含查询参数的 HTTPS 目录文件或 Git 仓库地址") }
+        return target
+    }
+
+    private var credentialConfig: PetCredentialConfig { .init(file: profile.appendingPathComponent("credentials.json")) }
+
+    private func credentialAccount(_ address: URL) -> String {
+        "plugin-market-" + AgentFiles.hash(Data(address.absoluteString.utf8))
+    }
+
+    func credential(for address: URL) throws -> AgentPluginMarketCredential? {
+        guard let stored = try credentialConfig.value(credentialAccount(address)) else { return nil }
+        guard let item = try? JSONDecoder().decode(AgentPluginMarketCredential.self, from: Data(stored.utf8)),
+              let value = try? AgentPluginMarketCredential(username: item.username ?? "", token: item.token,
+                  requiresUsername: Self.gitRepository(for: address) != nil) else {
+            throw PetError("该市场的访问凭据无法读取，请重新保存。")
+        }
+        return value
+    }
+
+    @MainActor func saveCredential(_ value: AgentPluginMarketCredential?, for address: URL) throws {
+        let destination = try Self.credentialDestination(address.absoluteString)
+        if let value, value.username == nil, Self.gitRepository(for: destination) != nil {
+            throw PetError("请填写 Git 用户名。")
+        }
+        let stored = try value.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        try credentialConfig.write(stored, account: credentialAccount(destination))
+    }
+
     private static func publicAddress(_ url: URL?) throws -> URL {
         let address = try address(url)
         guard (try? AgentWeb.validate(address)) != nil else { throw PetError("插件市场地址不可访问，请核对公开 HTTPS 地址") }
@@ -119,18 +174,20 @@ struct AgentPluginMarket {
         return try Self.publicAddress(url)
     }
 
-    private func download(_ url: URL, maximum: Int, accept: String) async throws -> (Data, URL) {
+    private func download(_ url: URL, maximum: Int, accept: String, credential: AgentPluginMarketCredential? = nil) async throws -> (Data, URL) {
         let initial = try networkAddress(url)
         var request = URLRequest(url: initial, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue(accept, forHTTPHeaderField: "Accept")
         request.setValue("BlueFatFish", forHTTPHeaderField: "User-Agent")
+        request.setValue(credential?.authorization, forHTTPHeaderField: "Authorization")
         let delegate = network.delegate as? URLSessionTaskDelegate
         do {
             let (stream, response) = try await network.bytes(for: request, delegate: delegate)
             defer { stream.task.cancel() }
             guard let http = response as? HTTPURLResponse else { throw PetError("市场未返回有效响应") }
-            guard (200..<300).contains(http.statusCode) else { throw HTTPFailure(status: http.statusCode) }
+            guard (200..<300).contains(http.statusCode) else { throw HTTPFailure(status: http.statusCode, authenticated: credential != nil) }
             let final = try networkAddress(http.url)
+            guard credential == nil || final == initial else { throw PetError("请填写市场文件的最终 HTTPS 地址。") }
             guard http.expectedContentLength <= maximum else { throw PetError("市场文件超过下载上限") }
             var data = Data()
             if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
@@ -158,26 +215,20 @@ struct AgentPluginMarket {
     }
 
     func refresh(_ address: String) async throws -> Catalogs {
-        let url = try Self.address(URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)))
-        let repository = AgentPluginMarketRepository(address: url)
-        let gitAddress: URL?
-        if repository == nil, url.path.lowercased().hasSuffix(".git") {
-            guard let candidate = AgentPluginMarketGit.address(url) else { throw PetError("请使用不含登录参数的公开 HTTPS Git 地址") }
-            gitAddress = candidate
-        } else { gitAddress = nil }
-        let key = repository?.address ?? gitAddress ?? url
+        let key = try Self.catalogAddress(address)
+        let credential = try credential(for: key)
         let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
         let original = try readIndex(files).index.items.first { $0.address == key }
         let fetched: Cache
-        if let repository {
+        if let repository = AgentPluginMarketRepository(address: key), credential == nil {
             let commit = try await resolve(repository, ref: nil)
             let manifest = try await repositoryDirectory(commit)
             fetched = Cache(address: key, catalog: manifest, commit: commit)
-        } else if let gitAddress {
-            let (manifest, commit) = try await git.directory(gitAddress, maximum: Self.listingLimit)
+        } else if let gitAddress = Self.gitRepository(for: key) {
+            let (manifest, commit) = try await git.directory(gitAddress, maximum: Self.listingLimit, credential: credential)
             fetched = Cache(address: key, catalog: manifest, commit: nil, gitCommit: commit)
         } else {
-            let (bytes, _) = try await download(url, maximum: Self.listingLimit, accept: "application/json")
+            let (bytes, _) = try await download(key, maximum: Self.listingLimit, accept: "application/json", credential: credential)
             fetched = Cache(address: key, catalog: bytes, commit: nil)
         }
         _ = try fetched.directory()
@@ -288,10 +339,20 @@ struct AgentPluginMarket {
         let bytes: Data, final: URL
         var commit: AgentPluginMarketCommit?, gitCommit: AgentPluginMarketGit.Commit?, path: String?
         let acceptedTypes = "application/zip, application/octet-stream"
+        let credential = try credential(for: directory.address)
+        let catalogRepository = Self.gitRepository(for: directory.address)
         switch source {
         case let .archive(url, digest):
-            (bytes, final) = try await download(url, maximum: Self.archiveLimit, accept: acceptedTypes)
+            let scoped = catalogRepository == nil && AgentPluginMarketCredential.contains(url, in: directory.address) ? credential : nil
+            (bytes, final) = try await download(url, maximum: Self.archiveLimit, accept: acceptedTypes, credential: scoped)
             if let digest, digest != AgentFiles.hash(bytes) { throw PetError("插件包的 SHA-256 与目录不一致，未安装") }
+        case let .repository(repository, ref, sha, location) where repository.cloneAddress == catalogRepository && credential != nil:
+            let (archive, verified) = try await git.archive(repository.cloneAddress, ref: ref, pinned: sha, folder: location,
+                maximum: Self.archiveLimit, credential: credential)
+            bytes = archive
+            final = verified.repository
+            gitCommit = verified
+            path = location
         case let .repository(repository, ref, sha, location):
             let verified: AgentPluginMarketCommit
             if let sha { verified = AgentPluginMarketCommit(repository: repository, sha: sha) }
@@ -301,7 +362,8 @@ struct AgentPluginMarket {
             commit = verified
             path = location
         case let .git(url, ref, sha, location):
-            let (archive, verified) = try await git.archive(url, ref: ref, pinned: sha, folder: location, maximum: Self.archiveLimit)
+            let (archive, verified) = try await git.archive(url, ref: ref, pinned: sha, folder: location,
+                maximum: Self.archiveLimit, credential: url == catalogRepository ? credential : nil)
             bytes = archive
             final = verified.repository
             gitCommit = verified

@@ -5,6 +5,7 @@ struct AgentPluginMarketRepository: Codable, Equatable {
 
     var slug: String { owner + "/" + name }
     var address: URL { URL(string: "https://github.com/" + slug)! }
+    var cloneAddress: URL { URL(string: address.absoluteString + ".git")! }
 
     init?(_ slug: String) {
         let parts = slug.split(separator: "/", omittingEmptySubsequences: false)
@@ -126,7 +127,7 @@ extension AgentPluginMarket {
             default:
                 throw PetError("需要 HTTPS ZIP 或 Git 仓库")
             }
-            guard repository != nil || gitURL != nil else { throw PetError("需要公开 HTTPS Git 仓库") }
+            guard repository != nil || gitURL != nil else { throw PetError("需要 HTTPS Git 仓库地址") }
             let ref = (object["ref"] as? String).flatMap(AgentPluginMarketRepository.ref)
             let sha = (object["sha"] as? String).flatMap { value in
                 repository != nil ? AgentPluginMarketRepository.commit(value) : AgentPluginMarketGit.sha(value)
@@ -135,7 +136,7 @@ extension AgentPluginMarket {
                 throw PetError("仓库分支、标签或提交编号无效")
             }
             if let repository { return .repository(repository, ref: ref, sha: sha, path: path) }
-            guard let gitURL else { throw PetError("需要公开 HTTPS Git 仓库") }
+            guard let gitURL else { throw PetError("需要 HTTPS Git 仓库地址") }
             return .git(gitURL, ref: ref, sha: sha, path: path)
         }
     }

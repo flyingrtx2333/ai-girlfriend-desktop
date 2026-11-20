@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const manual = process.argv[2] === '--serve';
 const app = process.env.BLUEFATFISH_APP;
 if ((!manual && (process.argv.length !== 2 || !app || verifyNativeCandidate(app).kind !== 'isolated-local')) || (manual && process.argv.length !== 3)) {
-  throw Error('选择独立验收应用 BLUEFATFISH_APP，或使用 --serve 启动公开目录样例。');
+  throw Error('选择独立验收应用 BLUEFATFISH_APP，或使用 --serve 启动目录样例。');
 }
 const output = await mkdtemp(path.join(root, 'evidence/agent/plugin-market-command-'));
 const server = path.join(output, 'server');
@@ -19,7 +19,10 @@ function openssl(args) {
   const run = spawnSync('/usr/bin/openssl', args, { cwd: server, encoding: 'utf8' });
   if (run.status !== 0) throw Error(run.stderr || '无法生成本机目录验收证书。');
 }
-openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=localhost', '-keyout', 'test-key.pem', '-out', 'test-cert.pem']);
+openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=localhost',
+  '-addext', 'subjectAltName=DNS:localhost', '-addext', 'basicConstraints=critical,CA:TRUE',
+  '-addext', 'keyUsage=critical,keyCertSign,digitalSignature,keyEncipherment', '-addext', 'subjectKeyIdentifier=hash',
+  '-keyout', 'test-key.pem', '-out', 'test-cert.pem']);
 openssl(['x509', '-in', 'test-cert.pem', '-outform', 'DER', '-out', 'test-cert.der']);
 const fixture = spawn(process.execPath, [path.join(root, 'scripts/fixtures/plugin-market.mjs'), server], { stdio: ['ignore', 'ignore', 'inherit'] });
 const exited = new Promise((resolve, reject) => { fixture.once('error', reject); fixture.once('close', resolve); });
@@ -49,6 +52,7 @@ try {
     const report = await json(path.join(output, 'plugin-market-report.json'));
     const requests = (await readFile(path.join(server, 'requests.jsonl'), 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
     const facts = await json(path.join(server, 'facts.json'));
+    const privateFacts = await json(path.join(server, 'private-facts.json'));
     const commits = await json(path.join(server, 'repository-facts.json'));
     const expected = (phase, item) => (report.results[phase] ?? '').includes(item.sku)
       && new RegExp('"quantity"\\s*:\\s*' + item.quantity + '\\b').test(report.results[phase] ?? '')
@@ -94,7 +98,24 @@ try {
         && row.requested === commits[0].commit && row.hasFetch),
       protectedGitRedirectDidNotMakeSecondRequest: requests.some(row => row.event === 'git-redirect')
         && !requests.some(row => row.event === 'git-followed-redirect'),
-      credentialFreeArchiveRequests: !requests.some(row => row.credentialHeader || row.event === 'unknown-path'),
+      publicRequestsRemainCredentialFree: !requests.some(row =>
+        (row.credentialHeader && !['private-directory-request', 'private-git-http', 'private-git-denied'].includes(row.event))
+        || row.event === 'unknown-path'),
+      privateListingAndPackageRequiredTheExactCredential: privateFacts.every(({ version }) =>
+        ['/private/marketplace.json', '/private/private-inventory-' + version + '.zip'].every(endpoint =>
+          requests.some(row => row.event === 'private-directory-request' && row.path === endpoint && row.version === version
+            && row.authorized && row.credentialHeader && row.tls))),
+      deniedEachPrivateMarketWithoutItsOwnToken: requests.some(row => row.event === 'private-directory-request' && !row.authorized && !row.credentialHeader)
+        && requests.some(row => row.event === 'private-directory-request' && !row.authorized && row.credentialHeader)
+        && requests.some(row => row.event === 'private-git-denied' && !row.credentialHeader)
+        && !requests.some(row => row.event === 'private-git-denied' && row.credentialHeader),
+      neighboringArchiveRequestedWithoutCredentials: requests.some(row => row.event === 'neighboring-public-archive' && row.tls && !row.credentialHeader),
+      privateRedirectNeverReachedItsDestination: requests.some(row => row.path === '/private/redirect.zip' && row.authorized)
+        && !requests.some(row => row.path === '/private/redirect-destination.zip'),
+      realAuthenticatedGitFetchUsesBothPinnedCommits: commits.every(({ commit }) =>
+        requests.some(row => row.event === 'private-git-http' && row.tls && row.credentialHeader && row.hasFetch && row.requested === commit)),
+      privateInstallAndUpdateMatchOriginalFixtures: commits.every(({ commit }, index) =>
+        expected('privateArchive' + verb[index], privateFacts[index]) && expected('privateGit' + verb[index], trackedFile(commit, 'plugins/repo-stock/' + stock))),
       noModels: report.modelRequests === 0
     };
     const success = processStatus.code === 0 && report.success && Object.values(independent).every(Boolean);
