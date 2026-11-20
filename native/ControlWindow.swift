@@ -307,7 +307,11 @@ final class FormDocumentView: NSView {
             }
             renderAgentMessages()
         }
-        taskFind.onClose = { [weak self] in guard let self, selectedTab == "chat" else { return }; self.window?.makeFirstResponder(composer) }
+        taskFind.onClose = { [weak self] in
+            guard let self, selectedTab == "chat" else { return }
+            reserveApprovalSpaceInTerminalSplit()
+            self.window?.makeFirstResponder(composer)
+        }
         taskSidebar.onSearchVersion = { [weak companion] id in companion?.agentStore?.taskSearchRevisions[id] ?? 0 }
         taskSidebar.onSearch = { [weak companion] query, candidates in
             guard let directory = companion?.agentStore?.directory else { return AgentTaskSearch.Result(checked: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0.version) }), issues: Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, "任务系统尚未初始化") })) }
@@ -1381,12 +1385,13 @@ final class FormDocumentView: NSView {
                 controls.allSatisfy { visible($0) && rect($0).minX >= rect(workbenchBadge).maxX }
         }
         func capture(_ key: String) {
-            let views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
+            var views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
                                            "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer,
                                            "conversation": terminalSplit.conversation, "history": history, "draftAttachments": draftAttachments,
                                            "approval": approvalPanel, "approvalTitle": approvalTitle, "approvalPreview": approvalScroll,
                                            "approvalOptions": approvalOptions, "allow": approveButton, "deny": denyButton,
                                            "status": status, "resume": resumeButton, "sidebarMore": sidebarMore, "sidebarSettings": settingsNav]
+            if let terminalPanel, terminalPanel.isShown { views["terminal"] = terminalPanel }
             frames[key] = views.mapValues {
                 let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
             }
@@ -1487,11 +1492,20 @@ final class FormDocumentView: NSView {
                     attached.append(file.id)
                 }
             }
-            renderAgentMessages(); showTaskFind(); root.layoutSubtreeIfNeeded()
+            renderAgentMessages(); showTaskFind()
+            if let search = taskFind.arrangedSubviews.compactMap({ $0 as? NSSearchField }).first {
+                search.stringValue = "完整展示"
+                _ = search.sendAction(search.action, to: search.target)
+            }
+            for _ in 0..<25 where messageSearch == nil { try? await Task.sleep(for: .milliseconds(20)) }
+            root.layoutSubtreeIfNeeded()
             capture("long-approval-terminal-with-search")
             checks["DockedApprovalFitsWithSearchAndDraftAttachments"] = attached.count == 3 &&
                 fullyInConversation(controls + [taskFind, draftAttachments]) && rect(draftAttachments).height == 26 &&
                 rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height && rect(approvalScroll).height >= 32
+            checks["SearchingWithDockedApprovalShowsTheMatchAndKeepsTheShellVisible"] = messageSearch?.messageID == task.messages.first?.id &&
+                task.messages.first.flatMap { messageRows[$0.id]?.label }.map { fullyInConversation([$0]) } == true &&
+                (terminalPanel?.bounds.height ?? 0) >= 120
             taskFind.close()
             terminalPanel?.hidePanel(); root.layoutSubtreeIfNeeded()
             capture("long-approval-terminal-closed")
@@ -1534,7 +1548,7 @@ final class FormDocumentView: NSView {
             capture("approval-terminal-resized")
             checks["ResizingAnOpenTerminalKeepsApprovalAndInputOnScreen"] = terminalPanel?.isShown == true &&
                 fullyInConversation([approvalTitle, approvalScroll, approvalOptions, denyButton, approveButton, sendButton]) &&
-                rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height
+                rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height && (terminalPanel?.bounds.height ?? 0) >= 150
             stopTaskTerminals()
             window.setFrame(wideFrame, display: true)
         }
@@ -1562,6 +1576,7 @@ final class FormDocumentView: NSView {
         guard let task = currentAgentTask else { return }
         if taskFind.isHidden { taskSidebar.dismissSearch(); clearMessageSearchHighlight(); renderAgentMessages() }
         taskFind.open(taskID: task.id, sources: taskFindSources(task))
+        reserveApprovalSpaceInTerminalSplit()
         window?.contentView?.layoutSubtreeIfNeeded()
     }
     func refreshShortcutControls() {
@@ -3950,7 +3965,7 @@ final class FormDocumentView: NSView {
     private func updateTerminalDock() {
         let shown = selectedTab == "chat" && terminalPanel?.isShown == true
         terminalSplit.showTerminal(shown ? terminalPanel : nil)
-        terminalSplit.reserveApprovalSpace(!approvalPanel.isHidden)
+        reserveApprovalSpaceInTerminalSplit()
         if let workbenchColumn {
             let spacing: CGFloat = shown ? 8 : 14
             if workbenchColumn.spacing != spacing { workbenchColumn.spacing = spacing }
@@ -3974,6 +3989,9 @@ final class FormDocumentView: NSView {
         let title = shown && !terminalSplit.isHidden ? "收起终端" : "打开终端"
         terminalButton.setAccessibilityLabel(title)
         terminalButton.toolTip = title
+    }
+    private func reserveApprovalSpaceInTerminalSplit() {
+        terminalSplit.reserveApprovalSpace(visible: !approvalPanel.isHidden, searching: !taskFind.isHidden)
     }
     @objc internal func showAgentGit() {
         guard let store = companion?.agentStore, let id = agentTaskID, saveAgentDraft() else { return }
@@ -4908,7 +4926,7 @@ final class FormDocumentView: NSView {
             approvalScroll.isHidden = approvalText.string.isEmpty; approvalPanel.isHidden = false
             fitApprovalPreview(to: history.bounds.width)
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
-        terminalSplit.reserveApprovalSpace(!approvalPanel.isHidden)
+        reserveApprovalSpaceInTerminalSplit()
         let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
         mcpInputRow.isHidden = mcpRequest == nil
         if let mcpRequest { mcpInputButton.title = "回答 " + String(mcpRequest.serverName.prefix(32)) }

@@ -5,12 +5,12 @@ import BlueFatFishTerminal
     let conversation = NSView()
     private weak var terminal: NSView?
     private var preferredHeight: CGFloat?
-    private var showsApproval = false
-    private var minimumTerminalHeight: CGFloat { showsApproval ? 150 : 162 }
+    private var minimumHeights: (conversation: CGFloat, terminal: CGFloat) = (248, 162)
 
     private var minimumConversationHeight: CGFloat {
-        min(showsApproval ? 320 : 248, max(0, bounds.height - minimumTerminalHeight - dividerThickness))
+        min(minimumHeights.conversation, maximumConversationHeight)
     }
+    private var maximumConversationHeight: CGFloat { max(0, bounds.height - minimumHeights.terminal - dividerThickness) }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -43,14 +43,21 @@ import BlueFatFishTerminal
             let height = bounds.height
             let target = preferredHeight ?? min(330, max(172, height * 0.41))
             adjustSubviews()
-            setPosition(max(minimumConversationHeight, height - target - dividerThickness), ofDividerAt: 0)
+            setPosition(clampedConversationHeight(height - target - dividerThickness), ofDividerAt: 0)
         } else { adjustSubviews() }
     }
 
-    func reserveApprovalSpace(_ visible: Bool) {
-        showsApproval = visible
-        guard visible, terminal != nil, conversation.frame.height < minimumConversationHeight else { return }
-        setPosition(minimumConversationHeight, ofDividerAt: 0)
+    func reserveApprovalSpace(visible: Bool, searching: Bool) {
+        if visible { minimumHeights = searching ? (350, 120) : (320, 150) }
+        else { minimumHeights = (248, 162) }
+        guard visible, terminal != nil else { return }
+        let current = conversation.frame.height
+        let target = clampedConversationHeight(current)
+        if abs(target - current) >= 1 { setPosition(target, ofDividerAt: 0) }
+    }
+
+    private func clampedConversationHeight(_ proposed: CGFloat) -> CGFloat {
+        max(minimumConversationHeight, min(proposed, maximumConversationHeight))
     }
 
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
@@ -58,7 +65,7 @@ import BlueFatFishTerminal
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposed: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        min(proposed, max(minimumConversationHeight, bounds.height - minimumTerminalHeight - dividerThickness))
+        min(proposed, maximumConversationHeight)
     }
 }
 
