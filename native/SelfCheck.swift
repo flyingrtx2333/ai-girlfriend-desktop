@@ -175,6 +175,9 @@ import WebKit
                     let id = try await prepareSettingsPagesCheck(output, tasks: tasks)
                     if CommandLine.arguments.contains("--settings-layout-fixtures") { try await prepareSettingsLayoutUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     if CommandLine.arguments.contains("--settings-states-fixtures") { _ = try await prepareSettingsPluginHistory(output, tasks: tasks) }
+                    if CommandLine.arguments.contains("--plugin-history-recovery-fixtures"), let workspace = tasks.task(id)?.workspace {
+                        try await AgentPluginReviewCheck.prepareHistory(output, tasks: tasks, workspace: workspace)
+                    }
                     if CommandLine.arguments.contains("--appearance-fixtures") { try await prepareAppearanceUI(output, tasks: tasks, runtime: runtime, taskID: id) }
                     control.showAgentTask(id)
                 }

@@ -243,9 +243,10 @@ import UniformTypeIdentifiers
         }
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
-        guard page.kind == "plugin-settings" else { return nil }
+        guard ["plugin-settings", "plugin-history"].contains(page.kind) else { return nil }
         guard let selected, detailPage?.settingsHostWindow != nil else { throw PetError("原插件详情暂不可用，草稿已保留") }
-        return makeSettingsEditor(selected)
+        if page.kind == "plugin-settings" { return makeSettingsEditor(selected) }
+        return makeHistoryPage(try service.installation(selected.id))
     }
     @objc private func disableProject() {
         guard let workspace = scopeWorkspace else { return }
@@ -277,7 +278,7 @@ import UniformTypeIdentifiers
         let page = AgentPluginMarketPage(plugins: service, workspace: workspace)
         page.onReview = { [weak self, weak page] package, installed in
             guard let self, let page else { return }
-            review(package, replacing: installed, restoring: false, installWorkspace: workspace, historyPage: nil, marketPage: page)
+            presentReview(package, replacing: installed, restoring: false, installWorkspace: workspace, marketPage: page)
         }
         presentSettingsChild(page)
     }
@@ -302,47 +303,60 @@ import UniformTypeIdentifiers
     @objc private func openHistory() {
         guard let selected, job == nil else { return }
         do {
-            let page = AgentPluginHistoryPage(item: try service.installation(selected.id))
-            page.onReview = { [weak self, weak page] revision in
-                guard let self, let page else { return }
-                do { review(try service.package(revision, of: page.item), replacing: page.item, restoring: true, historyPage: page) }
-                catch { page.showFailure(error) }
-            }
+            let page = makeHistoryPage(try service.installation(selected.id))
             if let detailPage, detailPage.isPageVisible { detailPage.presentSettingsChild(page) }
             else { presentSettingsChild(page) }
         } catch { state.showSaveFailure(error) }
     }
-    func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
-        review(package, replacing: installed, restoring: restoring, activating: activating, installWorkspace: installWorkspace, historyPage: nil)
+    private func makeHistoryPage(_ item: AgentPluginInstallation) -> AgentPluginHistoryPage {
+        let page = AgentPluginHistoryPage(item: item)
+        page.makeReview = { [weak self, weak page] revision in
+            guard let self, let page else { throw PetError("插件历史已关闭，请重新打开") }
+            let current = page.item, package = try service.package(revision, of: current)
+            return try makeReview(package, replacing: current, restoring: true, historyPage: page, revision: revision)
+        }
+        return page
     }
-    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool, activating: Bool = false, installWorkspace: String? = nil,
-                        historyPage: AgentPluginHistoryPage?, marketPage: AgentPluginMarketPage? = nil) {
+    func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
+        presentReview(package, replacing: installed, restoring: restoring, activating: activating, installWorkspace: installWorkspace)
+    }
+    private func presentReview(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation?, restoring: Bool,
+                               activating: Bool = false, installWorkspace: String?, marketPage: AgentPluginMarketPage? = nil) {
         do {
-            let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
-            let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring,
-                activating: activating, workspace: installed?.workspace ?? installWorkspace, protectedData: service.profile)
-            page.onApply = { [weak self] in
-                guard let self else { throw PetError("插件页面已关闭，请重新打开") }
-                if let installed, activating { try service.setEnabled(installed, true); return try service.installation(installed.id) }
-                if let installed { return try service.update(package, replacing: installed) }
-                return try service.install(package, workspace: installWorkspace)
-            }
-            page.onApplied = { [weak self, weak historyPage, weak marketPage] item in
-                guard let self else { return }
-                let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
-                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?()
-                if let marketPage { marketPage.didApply(item, updating: installed != nil); return }
-                presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list)
-                historyPage?.didRestore(item)
-            }
+            let page = try makeReview(package, replacing: installed, restoring: restoring, activating: activating,
+                                      installWorkspace: installWorkspace, marketPage: marketPage)
             if let marketPage { marketPage.presentSettingsChild(page) }
-            else if let historyPage { historyPage.presentSettingsChild(page) }
             else { presentSettingsChild(page) }
         } catch {
             if let marketPage { marketPage.showFailure(error) }
-            else if let historyPage { historyPage.showFailure(error) }
             else { state.showSaveFailure(error) }
         }
+    }
+    private func makeReview(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation?, restoring: Bool,
+                            activating: Bool = false, installWorkspace: String? = nil, historyPage: AgentPluginHistoryPage? = nil,
+                            revision: AgentPluginRevision? = nil, marketPage: AgentPluginMarketPage? = nil) throws -> AgentPluginReviewPage {
+        let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
+        let historyTarget = installed.flatMap { current in revision.map { AgentPluginReviewPage.HistoryTarget(receiptHash: current.receiptHash, revision: $0.directory) } }
+        let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring,
+            activating: activating, workspace: installed?.workspace ?? installWorkspace, protectedData: service.profile, historyTarget: historyTarget)
+        page.onApply = { [weak self] in
+            guard let self else { throw PetError("插件页面已关闭，请重新打开") }
+            if let installed, activating { try service.setEnabled(installed, true); return try service.installation(installed.id) }
+            if let installed {
+                if let revision { _ = try service.revision(revision, of: installed) }
+                return try service.update(package, replacing: installed)
+            }
+            return try service.install(package, workspace: installWorkspace)
+        }
+        page.onApplied = { [weak self, weak historyPage, weak marketPage] item in
+            guard let self else { return }
+            let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
+            search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?()
+            if let marketPage { marketPage.didApply(item, updating: installed != nil) }
+            else if let historyPage { historyPage.didRestore(item) }
+            else { presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list) }
+        }
+        return page
     }
     @objc private func removePackage() {
         guard let item = selected, let window = presentingWindow else { return }; let alert = AgentConfirmation(); alert.messageText = "移除「\(item.metadata.title)」？"; alert.informativeText = "插件会移到废纸篓，已有任务记录保留。"; alert.addButton(withTitle: "移除").hasDestructiveAction = true; alert.addButton(withTitle: "取消")
@@ -356,10 +370,15 @@ import UniformTypeIdentifiers
 }
 
 @MainActor private final class AgentPluginHistoryPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate {
+    private struct Recovery: Codable {
+        var version = 1
+        let plugin: String, receiptHash: String, revision: String?, y: Double
+    }
     private let table = AgentSettingsCatalogTable(), status = AgentSettingsStatusField("插件历史状态")
     private var revisions: [AgentPluginRevision] = []
+    private var pendingY: Double?
     private(set) var item: AgentPluginInstallation
-    var onReview: ((AgentPluginRevision) -> Void)?
+    var makeReview: ((AgentPluginRevision) throws -> AgentPluginReviewPage)?
     override var usesInternalScrolling: Bool { true }
     override var minimumSettingsContentHeight: CGFloat { 220 }
 
@@ -372,9 +391,49 @@ import UniformTypeIdentifiers
         table.delegate = self; table.dataSource = self; table.target = self; table.doubleAction = #selector(openSelection)
         table.setAccessibilityLabel("插件历史版本列表"); table.onOpen = { [weak self] in self?.openSelection() }
         window.contentView = AgentSettingsCatalog.content(table: table, toolbar: NSStackView(), status: status, symbol: "clock.arrow.circlepath")
+        if let clip = table.enclosingScrollView?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+        }
         refresh(item)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private var selectedRevision: AgentPluginRevision? {
+        revisions.indices.contains(table.selectedRow) ? revisions[table.selectedRow] : nil
+    }
+    override func settingsDidAppear() {
+        super.settingsDidAppear(); presentingWindow?.makeFirstResponder(table)
+        guard pendingY != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, isPageVisible, let y = pendingY, let scroll = table.enclosingScrollView else { return }
+            presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+            AgentSettingsRecovery.restoreScroll(y, to: scroll); pendingY = nil
+        }
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        let y = pendingY ?? max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0)
+        return try AgentSettingsRecovery.page("plugin-history", Recovery(plugin: item.id, receiptHash: item.receiptHash,
+            revision: selectedRevision?.directory, y: y))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "plugin-history" else { throw PetError("设置记录不属于插件历史") }
+        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "plugin", "receiptHash", "revision", "y"])
+        let value = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard value.version == 1, value.plugin == item.id, value.receiptHash == item.receiptHash, AgentSettingsRecovery.validScroll(value.y) else {
+            throw PetError("当前插件版本已变化，请重新打开历史版本")
+        }
+        if let revision = value.revision {
+            guard let row = revisions.firstIndex(where: { $0.directory == revision }) else { throw PetError("原历史版本已不可用，审阅记录已保留") }
+            table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+        pendingY = value.y
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "plugin-history-review" else { return nil }
+        guard let selectedRevision, let makeReview else { throw PetError("原历史版本未选中，审阅记录已保留") }
+        return try makeReview(selectedRevision)
+    }
 
     private func refresh(_ item: AgentPluginInstallation) {
         self.item = item
@@ -382,8 +441,15 @@ import UniformTypeIdentifiers
         revisions = Array((item.receipt.revisions ?? []).reversed())
         table.reloadData(); AgentSettingsStyle.listState(table, text: "暂无历史版本")
     }
-    func didRestore(_ item: AgentPluginInstallation) { refresh(item); status.stringValue = "已恢复，插件已停用" }
+    func didRestore(_ item: AgentPluginInstallation) {
+        let previous = selectedRevision
+        refresh(item)
+        if let previous, let row = revisions.firstIndex(of: previous) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
+        status.stringValue = "已恢复，插件已停用"; presentingWindow?.makeFirstResponder(table); onSettingsRecoveryChange?()
+    }
     func showFailure(_ error: Error) { status.showSaveFailure(error) }
+    func tableViewSelectionDidChange(_ notification: Notification) { onSettingsRecoveryChange?() }
+    @objc private func scrolled(_ notification: Notification) { if pendingY == nil { onSettingsRecoveryChange?() } }
     func numberOfRows(in tableView: NSTableView) -> Int { revisions.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard revisions.indices.contains(row) else { return nil }
@@ -396,7 +462,8 @@ import UniformTypeIdentifiers
         }
     }
     @objc private func openSelection() {
-        let row = table.selectedRow
-        if revisions.indices.contains(row) { onReview?(revisions[row]) }
+        guard let selectedRevision, let makeReview else { return }
+        do { presentSettingsChild(try makeReview(selectedRevision)) }
+        catch { showFailure(error) }
     }
 }

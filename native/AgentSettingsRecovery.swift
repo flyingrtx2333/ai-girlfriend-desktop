@@ -87,7 +87,9 @@ enum AgentSettingsRecovery {
             case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
                 return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
             case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
-            case ("extensions", "plugins"): return kinds == [root] || kinds == [root, "plugin-settings"]
+            case ("extensions", "plugins"):
+                return kinds == [root] || kinds == [root, "plugin-settings"] || kinds == [root, "plugin-history"]
+                    || kinds == [root, "plugin-history", "plugin-history-review"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
             case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
             case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
@@ -112,6 +114,11 @@ enum AgentSettingsRecovery {
         let value = try object(raw, keys: ["version", "category", "page", "source", "query", "selection", "focus",
             "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot"])
         if let selection = value["selection"], !(selection is NSNull) { _ = try object(selection, keys: ["location", "length"]) }
+    }
+    @MainActor static func restoreScroll(_ y: Double, to scroll: NSScrollView) {
+        let clip = scroll.contentView
+        let bounds = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.minX, y: y), size: clip.bounds.size))
+        clip.scroll(to: bounds.origin); scroll.reflectScrolledClipView(clip)
     }
 }
 

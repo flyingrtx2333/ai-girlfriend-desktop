@@ -1,6 +1,15 @@
 import AppKit
 
 @MainActor final class AgentPluginReviewPage: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+    struct HistoryTarget: Codable, Equatable {
+        let receiptHash: String, revision: String
+    }
+    private struct HistoryRecovery: Codable {
+        var version = 1
+        let target: HistoryTarget, showingFiles: Bool, selectedPath: String?, selectedComponent: Int
+        let query: String, fullText: Bool, tableY: Double
+        let filterSelection: AgentTextViewport.Selection?, reading: AgentTextViewport?
+    }
     private struct Item { let title: String, detail: String }
     private struct FileChange: Sendable {
         let path: String, before: Data?, after: Data?
@@ -30,6 +39,8 @@ import AppKit
     private let status = AgentSettingsStatusField("插件审阅状态")
     private let apply = AgentDialogButton(title: "安装", target: nil, action: nil), cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
     private let protectedData: URL
+    private let historyTarget: HistoryTarget?
+    private var pendingHistory: HistoryRecovery?
     private var components: [Item] = [], files: [FileChange] = [], visibleFiles: [FileChange] = []
     private var selectedComponent: Int = 0, selectedPath: String?
     private var selecting = false, working = false, finished = false
@@ -39,8 +50,8 @@ import AppKit
     private var showingFiles: Bool { types.selectedSegment == 1 }
 
     init(package: AgentPluginPackage, installed: AgentPluginInstallation?, oldFiles: [String: Data], restoring: Bool, activating: Bool,
-         workspace: String?, protectedData: URL) {
-        self.protectedData = protectedData
+         workspace: String?, protectedData: URL, historyTarget: HistoryTarget? = nil) {
+        self.protectedData = protectedData; self.historyTarget = historyTarget
         let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = action + "插件"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
@@ -83,7 +94,7 @@ import AppKit
         preview.textContainerInset = NSSize(width: 12, height: 12); preview.isVerticallyResizable = true; preview.autoresizingMask = [.width]; preview.textContainer?.widthTracksTextView = true; preview.layoutManager?.allowsNonContiguousLayout = true
         preview.setAccessibilityLabel("插件审阅详情")
         full.documentView = preview; full.hasVerticalScroller = true
-        comparison.target = self; comparison.action = #selector(showSelection); comparison.selectedSegment = 0
+        comparison.target = self; comparison.action = #selector(changeComparison); comparison.selectedSegment = 0
         comparison.setAccessibilityLabel("插件文件读取方式")
         currentPath.font = .monospacedSystemFont(ofSize: 11, weight: .medium); currentPath.lineBreakMode = .byTruncatingMiddle
         currentPath.setAccessibilityLabel("当前插件文件"); currentPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -115,16 +126,24 @@ import AppKit
             reader.heightAnchor.constraint(equalTo: split.heightAnchor), reading.widthAnchor.constraint(equalTo: reader.widthAnchor),
             detail.widthAnchor.constraint(equalTo: reader.widthAnchor), split.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
-        changeType()
+        if historyTarget != nil {
+            for scroll in [index, full] + [diff.text.enclosingScrollView].compactMap({ $0 }) {
+                let clip = scroll.contentView; clip.postsBoundsChangedNotifications = true
+                NotificationCenter.default.addObserver(self, selector: #selector(readingChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip)
+            }
+            NotificationCenter.default.addObserver(self, selector: #selector(readingChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
+        }
+        updateList()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
     override var usesInternalScrolling: Bool { true }
     override var minimumSettingsContentHeight: CGFloat { 240 }
     override func setSettingsActionsHost(_ host: NSStackView?) {
         super.setSettingsActionsHost(host)
         localHeading.isHidden = host != nil
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(list) }
+    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(list); scheduleHistoryPosition() }
     override func settingsWillLeave() { comparisonJob?.cancel() }
     func windowWillClose(_ notification: Notification) { comparisonJob?.cancel() }
     func numberOfRows(in tableView: NSTableView) -> Int { showingFiles ? visibleFiles.count : components.count }
@@ -136,6 +155,12 @@ import AppKit
         return label
     }
     @objc private func changeType() {
+        pendingHistory = nil; updateList(); historyChanged()
+    }
+    @objc private func changeComparison() {
+        pendingHistory = nil; showSelection(); historyChanged()
+    }
+    private func updateList() {
         search.isHidden = !showingFiles
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         visibleFiles = query.isEmpty ? files : files.filter { $0.path.localizedCaseInsensitiveContains(query) }
@@ -150,14 +175,17 @@ import AppKit
         showSelection()
     }
     func controlTextDidChange(_ notification: Notification) { changeType() }
+    func controlTextDidBeginEditing(_ notification: Notification) { historyChanged() }
+    func controlTextDidEndEditing(_ notification: Notification) { historyChanged() }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !selecting, list.selectedRow >= 0, list.selectedRow < list.numberOfRows else { return }
+        pendingHistory = nil
         if showingFiles { selectedPath = visibleFiles[list.selectedRow].path }
         else { selectedComponent = list.selectedRow }
-        showSelection()
+        showSelection(); historyChanged()
     }
-    @objc private func showSelection() {
-        comparisonJob?.cancel()
+    private func showSelection() {
+        comparisonJob?.cancel(); comparisonJob = nil
         let row = list.selectedRow
         let file = showingFiles && visibleFiles.indices.contains(row) ? visibleFiles[row] : nil
         reading.isHidden = file == nil
@@ -177,20 +205,77 @@ import AppKit
                 let patch = try await file.patch(protectedData: protectedData)
                 try Task.checkCancellation()
                 guard let self else { return }
+                comparisonJob = nil
                 if patch.isEmpty { showFull(Self.fullText(file)); return }
                 full.isHidden = true; diff.isHidden = false
                 diff.show(patch, oldTitle: "当前版本", newTitle: "候选版本", accessibilityContext: "插件")
                 diff.layoutSubtreeIfNeeded()
                 Self.rewind(diff.text)
+                scheduleHistoryPosition(); historyChanged()
             } catch {
-                guard !Task.isCancelled else { return }
-                self?.showFull("无法生成差异。以下为完整内容。\n\n" + Self.fullText(file))
+                guard !Task.isCancelled, let self else { return }
+                comparisonJob = nil
+                showFull("无法生成差异。以下为完整内容。\n\n" + Self.fullText(file)); historyChanged()
             }
         }
     }
     private func showFull(_ value: String) {
         diff.isHidden = true; full.isHidden = false
         preview.string = value; Self.rewind(preview)
+        scheduleHistoryPosition()
+    }
+    @objc private func readingChanged(_ notification: Notification) {
+        guard isPageVisible else { return }
+        if let text = notification.object as? NSTextView, text !== preview, text !== diff.text, text !== search.currentEditor() { return }
+        historyChanged()
+    }
+    private func historyChanged() {
+        if historyTarget != nil, pendingHistory == nil { onSettingsRecoveryChange?() }
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard let historyTarget else { return nil }
+        if let pendingHistory { return try AgentSettingsRecovery.page("plugin-history-review", pendingHistory) }
+        let query = search.stringValue, filterSelection: AgentTextViewport.Selection?
+        if let editor = search.currentEditor() as? NSTextView, editor === presentingWindow?.firstResponder {
+            let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+            filterSelection = selection.valid(in: query.utf16.count) ? selection : nil
+        } else { filterSelection = nil }
+        let reader = diff.isHidden ? preview : diff.text
+        let reading = comparisonJob == nil ? try AgentTextViewport(reader) : nil
+        return try AgentSettingsRecovery.page("plugin-history-review", HistoryRecovery(target: historyTarget, showingFiles: showingFiles,
+            selectedPath: selectedPath, selectedComponent: selectedComponent, query: query, fullText: comparison.selectedSegment == 1,
+            tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), filterSelection: filterSelection, reading: reading))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "plugin-history-review", let historyTarget else { throw PetError("设置记录不属于插件历史审阅") }
+        let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "showingFiles", "selectedPath",
+            "selectedComponent", "query", "fullText", "tableY", "filterSelection", "reading"])
+        if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
+        if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
+        if let text = object["reading"] { try AgentTextViewport.validateObject(text) }
+        let value = try JSONDecoder().decode(HistoryRecovery.self, from: page.state)
+        guard value.version == 1, value.target == historyTarget, AgentSettingsRecovery.validScroll(value.tableY),
+              value.selectedPath.map({ path in files.contains { $0.path == path } }) != false,
+              value.selectedComponent == 0 || components.indices.contains(value.selectedComponent),
+              value.filterSelection?.valid(in: value.query.utf16.count) != false, value.reading?.valid != false else {
+            throw PetError("插件历史审阅与原记录不一致，请重新打开历史版本")
+        }
+        pendingHistory = value; selectedPath = value.selectedPath; selectedComponent = value.selectedComponent
+        types.selectedSegment = value.showingFiles ? 1 : 0; comparison.selectedSegment = value.fullText ? 1 : 0
+        search.stringValue = value.query; updateList()
+    }
+    private func scheduleHistoryPosition() {
+        guard pendingHistory != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, isPageVisible, comparisonJob == nil, let value = pendingHistory else { return }
+            presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+            if let scroll = list.enclosingScrollView { AgentSettingsRecovery.restoreScroll(value.tableY, to: scroll) }
+            value.reading?.apply(to: diff.isHidden ? preview : diff.text, focus: value.filterSelection == nil)
+            if let selection = value.filterSelection, !search.isHidden, presentingWindow?.makeFirstResponder(search) == true {
+                (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
+            }
+            pendingHistory = nil; historyChanged()
+        }
     }
     private static func rewind(_ text: NSTextView) {
         guard let viewport = text.enclosingScrollView else { return }
