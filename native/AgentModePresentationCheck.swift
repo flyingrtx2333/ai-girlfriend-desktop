@@ -46,10 +46,22 @@ import AppKit
             guard controls.count == 6, let toggle = controls.first(where: { $0.identifier?.rawValue == "mode-coding-0" }) else { throw PetError("实际设置开关不完整") }
             checks["settingsPageContainsSixAccessibleModeControls"] = controls.allSatisfy { $0.accessibilityLabel()?.contains("：") == true }
             checks.merge(control.checkModeSettingsSearch()) { _, next in next }
+            var switchFrames: [String: [String: [CGFloat]]] = [:]
             for size in [NSSize(width: 1200, height: 774), NSSize(width: 780, height: 540)] {
                 control.window?.setFrame(NSRect(origin: .zero, size: size), display: false); content.layoutSubtreeIfNeeded()
-                checks["settings-\(Int(size.width))KeepsAllSwitchesInsideContentWidth"] = controls.allSatisfy { item in let frame = item.convert(item.bounds, to: content); return item.window === control.window && frame.minX >= 178 && frame.maxX <= size.width && frame.width >= 30 && frame.height >= 20 }
+                let key = String(Int(size.width))
+                switchFrames[key] = Dictionary(uniqueKeysWithValues: controls.map { item in
+                    let frame = item.convert(item.bounds, to: content), intrinsic = item.intrinsicContentSize
+                    return (item.identifier?.rawValue ?? "", [frame.minX, frame.width, frame.height, intrinsic.width, intrinsic.height])
+                })
+                checks["settings-\(key)KeepsAllSwitchesInsideContentWidth"] = controls.allSatisfy { item in
+                    let frame = item.convert(item.bounds, to: content), intrinsic = item.intrinsicContentSize
+                    return item.window === control.window && !item.isHiddenOrHasHiddenAncestor && item.controlSize == .mini &&
+                        frame.minX >= 178 && frame.maxX <= size.width && intrinsic.width > 0 && intrinsic.height > 0 &&
+                        frame.width + 1 >= intrinsic.width && frame.height + 1 >= intrinsic.height
+                }
             }
+            report["settingsSwitchFrames"] = switchFrames
             let focus = control.window?.firstResponder
             toggle.state = .on; _ = toggle.sendAction(toggle.action, to: toggle.target)
             checks["actualSettingsActionSavesOnlyItsModeAndKeepsFocus"] = service.settings.coding.projectEntry && service.settings.general == values.general && control.window?.firstResponder === focus
