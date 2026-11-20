@@ -184,7 +184,7 @@ final class FormDocumentView: NSView {
     private let approvalPanel = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
     private let approvalTitle = NSTextField(labelWithString: ""), approvalText = NSTextView(), approvalScroll = NSScrollView()
     private let approvalOptions = NSTextField(labelWithString: "")
-    private var approvalHeight: NSLayoutConstraint!
+    private var approvalHeight: NSLayoutConstraint!, approvalMinimumHeight: NSLayoutConstraint!
     private let approveButton = AgentDialogButton(title: "允许一次", target: nil, action: nil), denyButton = AgentDialogButton(title: "拒绝", target: nil, action: nil)
     private var visibleApproval: (task: String, call: String)?
     private var toolRows: [String: AgentToolRow] = [:], displayedTask: String?
@@ -255,6 +255,9 @@ final class FormDocumentView: NSView {
     private var homeGamesView: AgentHomeGamesView?
     private let workbenchEmptyTitle = NSButton(title: "新的任务", target: nil, action: nil)
     private let workbenchFeedback = NSStackView()
+    private var workbenchColumn: NSStackView!
+    private var workbenchColumnTop: NSLayoutConstraint!, workbenchColumnBottom: NSLayoutConstraint!
+    private var workbenchHistoryHeight: NSLayoutConstraint!, entryInputMinimumHeight: NSLayoutConstraint!
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, entryInputHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var entryToolbarGap: NSLayoutConstraint!
@@ -1008,7 +1011,9 @@ final class FormDocumentView: NSView {
         let entry = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); entry.layer?.cornerRadius = 12; entry.layer?.borderWidth = 1
         for view in [draftAttachments, input, entryToolbar] { entry.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         entryInputHeight = input.heightAnchor.constraint(equalToConstant: 60)
-        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
+        entryInputHeight.priority = .init(NSLayoutConstraint.Priority.defaultHigh.rawValue - 1)
+        entryInputMinimumHeight = input.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)
+        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryInputMinimumHeight, entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
         let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
         heading.setContentCompressionResistancePriority(.required, for: .vertical)
         heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
@@ -1038,12 +1043,25 @@ final class FormDocumentView: NSView {
         mcpInputButton.target = self; mcpInputButton.action = #selector(showMCPUserInput); mcpInputButton.setAccessibilityLabel("回答连接器问询")
         mcpInputButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let column = stack([taskFind, emptyBefore, workbenchEmpty, history, approvalPanel, mcpInputRow, workbenchFeedback, emptyAfter, entry], vertical: true, spacing: 14)
+        workbenchColumn = column
         conversation.addSubview(column)
         workbenchColumnLeading = column.leadingAnchor.constraint(equalTo: conversation.leadingAnchor, constant: 18)
         workbenchColumnTrailing = column.trailingAnchor.constraint(equalTo: conversation.trailingAnchor, constant: -18)
-        NSLayoutConstraint.activate([workbenchColumnLeading, workbenchColumnTrailing, column.topAnchor.constraint(equalTo: conversation.topAnchor, constant: 28), column.bottomAnchor.constraint(equalTo: conversation.bottomAnchor, constant: -30)])
+        let top = column.topAnchor.constraint(equalTo: conversation.topAnchor, constant: 28)
+        let bottom = column.bottomAnchor.constraint(equalTo: conversation.bottomAnchor, constant: -30)
+        // Tight splits give up blank margins before cutting off interactive rows.
+        for constraint in [top, bottom] { constraint.priority = .init(760) }
+        workbenchColumnTop = top; workbenchColumnBottom = bottom
+        NSLayoutConstraint.activate([
+            workbenchColumnLeading, workbenchColumnTrailing, top, bottom,
+            column.topAnchor.constraint(greaterThanOrEqualTo: conversation.topAnchor, constant: 6),
+            column.bottomAnchor.constraint(lessThanOrEqualTo: conversation.bottomAnchor, constant: -6)
+        ])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        history.setContentHuggingPriority(.defaultLow, for: .vertical); history.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+        history.setContentHuggingPriority(.defaultLow, for: .vertical)
+        workbenchHistoryHeight = history.heightAnchor.constraint(greaterThanOrEqualToConstant: 60)
+        workbenchHistoryHeight.priority = .init(NSLayoutConstraint.Priority.defaultHigh.rawValue + 1)
+        workbenchHistoryHeight.isActive = true
     }
     private func updateWorkbenchLayout(animated: Bool = false) {
         guard companion?.usesAgent == true, inspectorWidth != nil, let task = currentAgentTask else { return }
@@ -1111,10 +1129,10 @@ final class FormDocumentView: NSView {
         inspectorRule.isHidden = fullMonitor || fullWorkspace || !(showInspector || showWorkspace)
         headerInspectorRule.isHidden = !showInspector || fullMonitor
         pageTitle.isHidden = !chatting; workbenchBadge.isHidden = !chatting
-        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages || compactHeight; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
+        let terminalDocked = terminalPanel?.isShown == true
+        workbenchEmpty.isHidden = hasMessages; emptyBefore.isHidden = hasMessages || compactHeight || terminalDocked; emptyAfter.isHidden = hasMessages; history.isHidden = !hasMessages
         emptyBeforeHeight.constant = max(0, min(160, ((window?.contentView?.bounds.height ?? 800) - 560) * 0.6))
-        entryInputHeight.constant = compactHeight ? 44 : 60
-        let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
+        let gamesVisible = chatting && !hasMessages && !fullWorkspace && !fullMonitor && !terminalDocked && !task.archived && task.kind != "hook" && !task.isProjectDocumentation
         homeGamesView?.show(gamesVisible, context: task.id + ":" + task.organizationMode.rawValue)
         if gamesVisible, let store = companion?.agentStore { companion?.homeGames.refreshActivity(store) }
         workbenchEmptyTitle.title = task.team?.team.name ?? task.agent?.profile.name ?? "默认执行者"
@@ -1352,7 +1370,9 @@ final class FormDocumentView: NSView {
         func capture(_ key: String) {
             let views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
                                            "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer,
-                                           "approval": approvalPanel, "approvalPreview": approvalScroll, "allow": approveButton, "deny": denyButton,
+                                           "conversation": terminalSplit.conversation, "history": history, "draftAttachments": draftAttachments,
+                                           "approval": approvalPanel, "approvalTitle": approvalTitle, "approvalPreview": approvalScroll,
+                                           "approvalOptions": approvalOptions, "allow": approveButton, "deny": denyButton,
                                            "status": status, "resume": resumeButton, "sidebarMore": sidebarMore, "sidebarSettings": settingsNav]
             frames[key] = views.mapValues {
                 let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
@@ -1361,6 +1381,10 @@ final class FormDocumentView: NSView {
         }
         func overflowTools(_ task: AgentTaskRecord) -> [NSMenuItem] {
             taskMenu(task).items.filter { $0.action == desktopButton.action || $0.action == gitButton.action }
+        }
+        func fullyInConversation(_ views: [NSView]) -> Bool {
+            let pane = rect(terminalSplit.conversation).insetBy(dx: -1, dy: -1)
+            return views.allSatisfy { visible($0) && pane.contains(rect($0)) && $0.visibleRect.height + 1 >= $0.bounds.height }
         }
         showAgentTask(primary)
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
@@ -1428,6 +1452,41 @@ final class FormDocumentView: NSView {
             checks["BrowserApprovalShowsFullReasonAndArgumentsTogether"] = approvalTitle.stringValue == "浏览器审批" && visible(approvalScroll)
                 && approvalText.string.hasPrefix(reason + "\n") && approvalText.string.contains("https://example.test/notes") && approvalOptions.isHidden
         }
+        if let long = ids["longApproval"], let task = tasks.task(long), let workspace = task.workspace, let input = composer.enclosingScrollView {
+            showAgentTask(long)
+            let caret = NSRange(location: 3, length: 0)
+            composer.setSelectedRange(caret)
+            openTaskTerminal()
+            root.layoutSubtreeIfNeeded()
+            capture("long-approval-terminal")
+            let controls = [approvalTitle, approvalScroll, approvalOptions, denyButton, approveButton, input, sendButton]
+            checks["DockedTerminalKeepsApprovalTitlePreviewAndComposerFullyVisible"] = terminalPanel?.isShown == true &&
+                fullyInConversation(controls) && rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height &&
+                rect(approvalScroll).height >= 32 && rect(history).height >= 28 && !rect(approvalPanel).intersects(rect(input))
+            let actionFrame = rect(approveButton)
+            approvalText.scrollRangeToVisible(NSRange(location: (approvalText.string as NSString).length, length: 0))
+            checks["DockedApprovalStillScrollsToEndWithFixedDecisions"] = approvalScroll.contentView.bounds.minY > 0 &&
+                rect(approveButton) == actionFrame && approvalOptions.stringValue == "网络 开启 · 超时 17 秒"
+
+            var attached: [String] = []
+            for _ in 0..<3 {
+                if let file = try? await AgentAttachments.importFile(URL(fileURLWithPath: workspace).appendingPathComponent("README.md"), store: tasks, taskID: long) {
+                    attached.append(file.id)
+                }
+            }
+            renderAgentMessages(); showTaskFind(); root.layoutSubtreeIfNeeded()
+            capture("long-approval-terminal-with-search")
+            checks["DockedApprovalFitsWithSearchAndDraftAttachments"] = attached.count == 3 &&
+                fullyInConversation(controls + [taskFind, draftAttachments]) && rect(draftAttachments).height == 26 &&
+                rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height && rect(approvalScroll).height >= 32
+            taskFind.close()
+            terminalPanel?.hidePanel(); root.layoutSubtreeIfNeeded()
+            capture("long-approval-terminal-closed")
+            checks["ClosingTerminalRestoresDraftAttachmentsAndInputFocus"] = window.firstResponder === composer &&
+                composer.string == task.draft && composer.selectedRange() == caret && rect(draftAttachments).height == 78 &&
+                tasks.task(long)?.draftAttachmentIDs == attached && tasks.task(long)?.approvals.last?.decision == nil
+            stopTaskTerminals()
+        }
         showAgentTask(primary)
         if !workbenchInspector.isHidden { resultsButton.performClick(nil) }
         let draft = composer.string, caret = NSRange(location: 3, length: 0)
@@ -1450,6 +1509,12 @@ final class FormDocumentView: NSView {
         checks["WideMonitorSharesSpaceWithVisibleConversationAndActions"] = tasks.task(complete).map(header) == true && rect(workbenchInspector).width == 281 && visible(workbenchInspector) && visible(history) && visible(sendButton) && rect(history).maxX < rect(workbenchInspector).minX
         checks["WideWorkbenchShowsDirectToolsAndSeparateSidebarRows"] = visible(desktopButton) && visible(gitButton) &&
             tasks.task(complete).map { overflowTools($0).isEmpty } == true && abs(rect(sidebarMore).midY - rect(settingsNav).midY) >= 32
+        if let long = ids["longApproval"] {
+            showAgentTask(long); root.layoutSubtreeIfNeeded()
+            capture("wide-approval")
+            checks["WideApprovalUsesRoomForLongerReviewWithoutPushingOutComposer"] = rect(approvalScroll).height > 116 &&
+                fullyInConversation([approvalTitle, approvalScroll, approvalOptions, denyButton, approveButton, sendButton])
+        }
         return (checks, frames)
     }
     @objc private func toggleLeftSidebar() {
@@ -3862,6 +3927,24 @@ final class FormDocumentView: NSView {
     private func updateTerminalDock() {
         let shown = selectedTab == "chat" && terminalPanel?.isShown == true
         terminalSplit.showTerminal(shown ? terminalPanel : nil)
+        terminalSplit.reserveApprovalSpace(!approvalPanel.isHidden)
+        if let workbenchColumn {
+            let spacing: CGFloat = shown ? 8 : 14
+            if workbenchColumn.spacing != spacing { workbenchColumn.spacing = spacing }
+            workbenchColumnTop.constant = shown ? 12 : 28
+            workbenchColumnBottom.constant = shown ? -10 : -30
+            workbenchHistoryHeight.constant = shown ? 30 : 60
+            draftAttachments.maximumRows = shown ? 1 : 3
+            let textInset: CGFloat = shown ? 4 : 8
+            if composer.textContainerInset.height != textInset {
+                composer.textContainerInset = NSSize(width: composer.textContainerInset.width, height: textInset)
+            }
+            if let font = composer.font, let layout = composer.layoutManager {
+                entryInputMinimumHeight.constant = max(28, ceil(layout.defaultLineHeight(for: font)) + textInset * 2)
+            }
+            let windowHeight = window?.contentView?.bounds.height ?? 800
+            entryInputHeight.constant = shown ? 40 : windowHeight < 650 ? 44 : 60
+        }
         let title = shown && !terminalSplit.isHidden ? "收起终端" : "打开终端"
         terminalButton.setAccessibilityLabel(title)
         terminalButton.toolTip = title
@@ -4378,6 +4461,7 @@ final class FormDocumentView: NSView {
         approvalPanel.layer?.cornerRadius = 10; approvalPanel.layer?.borderWidth = 1; approvalPanel.isHidden = true
         approvalTitle.font = .systemFont(ofSize: 13, weight: .semibold); approvalTitle.textColor = AgentDialogStyle.warning
         approvalTitle.lineBreakMode = .byTruncatingTail; approvalTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        approvalTitle.setContentCompressionResistancePriority(.required, for: .vertical)
         approvalText.isEditable = false; approvalText.isRichText = false; approvalText.drawsBackground = false
         approvalText.textColor = .labelColor; approvalText.textContainerInset = NSSize(width: 0, height: 2)
         approvalText.setAccessibilityLabel("待处理请求详情")
@@ -4386,7 +4470,8 @@ final class FormDocumentView: NSView {
         approvalScroll.documentView = approvalText; approvalScroll.hasVerticalScroller = true
         approvalScroll.scrollerStyle = .overlay; approvalScroll.drawsBackground = false
         approvalHeight = approvalScroll.heightAnchor.constraint(equalToConstant: 24); approvalHeight.priority = .defaultHigh
-        NSLayoutConstraint.activate([approvalHeight, approvalScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 22)])
+        approvalMinimumHeight = approvalScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 22)
+        NSLayoutConstraint.activate([approvalHeight, approvalMinimumHeight])
         approveButton.target = self; approveButton.action = #selector(allowAgentAction)
         denyButton.target = self; denyButton.action = #selector(denyAgentAction)
         AgentDialogStyle.action(denyButton); AgentDialogStyle.action(approveButton, prominent: true)
@@ -4405,11 +4490,12 @@ final class FormDocumentView: NSView {
     }
     private func fitApprovalPreview(to width: CGFloat) {
         guard !approvalPanel.isHidden, let approvalHeight, let font = approvalText.font else { return }
-        let cap: CGFloat = (window?.contentView?.bounds.height ?? 540) < 650 ? 72 : 116
+        let cap: CGFloat = (window?.contentView?.bounds.height ?? 540) < 650 ? 72 : 156
         let sample = String(approvalText.string.prefix(4096)) as NSString
         let height = sample.boundingRect(with: NSSize(width: max(80, width - 24), height: .greatestFiniteMagnitude),
                                          options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font]).height
         approvalHeight.constant = min(cap, max(22, ceil(height) + 4))
+        approvalMinimumHeight.constant = terminalPanel?.isShown == true ? min(34, approvalHeight.constant) : 22
     }
     private func terminalApprovalPreview(_ command: String) -> String {
         command.unicodeScalars.reduce(into: "") { text, scalar in
@@ -4796,6 +4882,7 @@ final class FormDocumentView: NSView {
             approvalScroll.isHidden = approvalText.string.isEmpty; approvalPanel.isHidden = false
             fitApprovalPreview(to: history.bounds.width)
         } else { visibleApproval = nil; approvalPanel.isHidden = true }
+        terminalSplit.reserveApprovalSpace(!approvalPanel.isHidden)
         let mcpRequest = task.archived ? nil : tasks.mcp.userInputs.first(taskID: task.id)
         mcpInputRow.isHidden = mcpRequest == nil
         if let mcpRequest { mcpInputButton.title = "回答 " + String(mcpRequest.serverName.prefix(32)) }

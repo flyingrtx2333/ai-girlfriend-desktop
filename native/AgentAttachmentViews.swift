@@ -5,7 +5,11 @@ import Quartz
     private let rows = NSStackView(), scroll = NSScrollView()
     private var height: NSLayoutConstraint!, files: [AgentAttachment] = [], signature = ""
     var onOpen: ((String) -> Void)?, onRemove: ((String) -> Void)?
-    var maximumRows = 3
+    var maximumRows = 3 {
+        didSet {
+            if maximumRows != oldValue { updateHeight() }
+        }
+    }
     override init(frame: NSRect) {
         super.init(frame: frame); translatesAutoresizingMaskIntoConstraints = false
         rows.orientation = .vertical; rows.alignment = .leading; rows.spacing = 2
@@ -31,8 +35,9 @@ import Quartz
             let row = NSStackView(views: [open, remove]); row.spacing = 4; rows.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true; row.heightAnchor.constraint(equalToConstant: 24).isActive = true
         }
-        isHidden = files.isEmpty; height.constant = CGFloat(min(maximumRows, files.count) * 26); invalidateIntrinsicContentSize()
+        isHidden = files.isEmpty; updateHeight(); invalidateIntrinsicContentSize()
     }
+    private func updateHeight() { height.constant = CGFloat(min(maximumRows, files.count) * 26) }
     @objc private func openFile(_ sender: NSButton) { if files.indices.contains(sender.tag) { onOpen?(files[sender.tag].id) } }
     @objc private func removeFile(_ sender: NSButton) { if files.indices.contains(sender.tag) { onRemove?(files[sender.tag].id) } }
 }
