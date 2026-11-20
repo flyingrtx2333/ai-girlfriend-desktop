@@ -26,23 +26,25 @@ import AppKit
     var sourceTaskID: String?
     private let list = NSTableView(), history = NSTableView(), sections = NSSegmentedControl(labels: ["计划", "运行记录"], trackingMode: .selectOne, target: nil, action: nil)
     private let archived = NSPopUpButton(), awake = NSButton(checkboxWithTitle: "保持设备唤醒", target: nil, action: nil)
-    private let name = AgentAutomationTextField(), workspace = AgentAutomationTextField(), model = AgentAutomationTextField(), zone = AgentAutomationTextField(), time = AgentAutomationTextField(), interval = AgentAutomationTextField(), prompt = NSTextView()
-    private let cron = AgentAutomationTextField()
+    private let name = AgentDialogTextField(), workspace = AgentDialogTextField(), model = AgentDialogTextField(), zone = AgentDialogTextField()
+    private let time = AgentDialogTextField(), interval = AgentDialogTextField(), cron = AgentDialogTextField(), prompt = NSTextView()
     private let executor = NSPopUpButton(), frequency = NSPopUpButton(), weekdays = NSPopUpButton(frame: .zero, pullsDown: true), output = NSPopUpButton(), permission = NSPopUpButton()
-    private var scheduleGrid: NSGridView!
-    private let once = NSDatePicker(), expiry = NSDatePicker(), expiring = NSButton(checkboxWithTitle: "到期暂停", target: nil, action: nil)
-    private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), notify = NSButton(checkboxWithTitle: "运行结果通知", target: nil, action: nil)
-    private let enabled = NSButton(checkboxWithTitle: "启用计划", target: nil, action: nil)
-    private let next = NSTextField(labelWithString: ""), state = NSTextField(labelWithString: ""), detail = NSTextField(wrappingLabelWithString: "")
-    private let save = NSButton(title: "保存", target: nil, action: nil), pause = NSButton(title: "暂停", target: nil, action: nil), run = NSButton(title: "立即运行", target: nil, action: nil), archive = NSButton(title: "归档", target: nil, action: nil)
-    private let workspaceButton = NSButton(title: "选择…", target: nil, action: nil)
-    private let formScroll = NSScrollView(), records = NSStackView(), onlySelected = NSButton(checkboxWithTitle: "当前自动化", target: nil, action: nil), status = NSPopUpButton(), grouping = NSPopUpButton(), page = NSTextField(labelWithString: "")
-    private let promptField = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line)
-    private let previous = NSButton(title: "上一页", target: nil, action: nil), more = NSButton(title: "下一页", target: nil, action: nil), openTask = NSButton(title: "打开任务", target: nil, action: nil)
+    private var dateRow: NSView!, clockRow: NSView!, intervalRow: NSView!, cronRow: NSView!, expiryRow: NSView!
+    private let once = NSDatePicker(), expiry = NSDatePicker(), expiring = NSSwitch()
+    private let readOnly = NSSwitch(), network = NSSwitch(), notify = NSSwitch(), enabled = NSSwitch()
+    private let next = NSTextField(labelWithString: ""), state = AgentSettingsStatusField("自动化状态"), detail = NSTextField(wrappingLabelWithString: "")
+    private let save = AgentDialogButton(title: "保存", target: nil, action: nil), pause = AgentDialogButton(title: "暂停", target: nil, action: nil)
+    private let run = AgentDialogButton(title: "立即运行", target: nil, action: nil), archive = AgentDialogButton(title: "归档", target: nil, action: nil)
+    private let workspaceButton = AgentDialogButton(title: "选择…", target: nil, action: nil)
+    private var formScroll: NSScrollView!
+    private let records = NSStackView(), onlySelected = NSButton(checkboxWithTitle: "当前自动化", target: nil, action: nil), status = NSPopUpButton(), grouping = NSPopUpButton(), page = NSTextField(labelWithString: "")
+    private let promptField = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+    private let previous = AgentDialogButton(title: "上一页", target: nil, action: nil), more = AgentDialogButton(title: "下一页", target: nil, action: nil)
+    private let openTask = AgentDialogButton(title: "打开任务", target: nil, action: nil)
     private let catalog = NSView(), catalogScroll = NSScrollView(), body = NSView()
     private let empty = NSTextField(labelWithString: "还没有自动化"), title = NSTextField(labelWithString: "自动化")
-    private let add = NSButton(title: "新建自动化", target: nil, action: nil), assistant = NSButton(title: "用小鲸创建", target: nil, action: nil), back = NSButton(title: "返回自动化", target: nil, action: nil)
-    private var header: NSStackView!, column: NSStackView!, top: NSLayoutConstraint!
+    private let add = AgentDialogButton(title: "新建自动化", target: nil, action: nil), assistant = AgentDialogButton(title: "用小鲸创建", target: nil, action: nil), back = NSButton()
+    private var header: NSStackView!, column: NSStackView!, planActions: NSStackView!
     private weak var hostWindow: NSWindow?
     private var hostedContent: NSView?, editing = false, checkSelectionContrasts: [String: CGFloat] = [:]
     var presentingWindow: NSWindow? { hostWindow ?? window }
@@ -70,72 +72,95 @@ import AppKit
         catalogScroll.documentView = list; catalogScroll.hasVerticalScroller = true; list.style = .inset; list.backgroundColor = .clear
         add.target = self; add.action = #selector(create); archive.target = self; archive.action = #selector(archiveDefinition)
         assistant.target = self; assistant.action = #selector(createWithAssistant); back.target = self; back.action = #selector(returnToCatalog)
-        back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading; back.isBordered = false
+        AgentWorkbenchTheme.toolbar(back, title: "返回自动化", symbol: "arrow.left")
         title.font = .systemFont(ofSize: 20, weight: .semibold); title.lineBreakMode = .byTruncatingTail
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let heading = NSStackView(views: [back, title, NSView(), assistant, add]); heading.spacing = 10
+        let heading = NSStackView(views: [back, title, NSView(), assistant, add, save]); heading.alignment = .centerY; heading.spacing = 10
         sections.selectedSegment = 0; sections.target = self; sections.action = #selector(changeSection)
+        sections.font = .systemFont(ofSize: 13); sections.selectedSegmentBezelColor = AgentWorkbenchTheme.accent
         awake.state = service.keepAwake ? .on : .off; awake.target = self; awake.action = #selector(changeAwake)
-        let notifications = NSButton(title: "桌面通知", target: self, action: #selector(requestNotifications))
-        header = NSStackView(views: [sections, NSView(), awake, notifications]); header.spacing = 10
-        for field in [name, workspace, model, zone, time, interval, cron] { field.font = .systemFont(ofSize: 13); field.delegate = self }
+        let notifications = AgentDialogButton(title: "桌面通知", target: self, action: #selector(requestNotifications))
+        header = NSStackView(views: [sections, NSView(), awake, notifications]); header.alignment = .centerY; header.spacing = 10
+        for field in [name, workspace, model, zone, time, interval, cron] {
+            field.delegate = self; field.outlined = true
+            field.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         for (field, label) in [(name, "自动化名称"), (workspace, "自动化项目目录"), (model, "自动化模型"), (zone, "计划时区"), (time, "计划时间"), (interval, "间隔分钟"), (cron, "Cron 表达式")] { field.setAccessibilityLabel(label) }
         name.placeholderString = "名称"; workspace.isEditable = false; workspace.isSelectable = true; workspace.lineBreakMode = .byTruncatingMiddle; model.placeholderString = "跟随已配置模型"; zone.placeholderString = "Asia/Shanghai"; time.placeholderString = "09:00"; interval.placeholderString = "60"
-        cron.placeholderString = "0 9 * * 1-5"; cron.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        workspaceButton.target = self; workspaceButton.action = #selector(chooseWorkspace); let project = NSStackView(views: [workspace, workspaceButton]); project.spacing = 8
+        cron.placeholderString = "0 9 * * 1-5"
+        workspaceButton.target = self; workspaceButton.action = #selector(chooseWorkspace)
+        let project = NSStackView(views: [workspace, workspaceButton]); project.alignment = .centerY; project.spacing = 8
         for (popup, titles) in [(frequency, AgentAutomationFrequency.allCases.map(\.title)), (output, AgentAutomationOutput.allCases.map(\.title)), (permission, AgentPermissionMode.allCases.map(\.title))] { popup.addItems(withTitles: titles); popup.target = self; popup.action = #selector(changed) }
         executor.target = self; executor.action = #selector(changed); frequency.action = #selector(frequencyChanged)
         for (control, label) in [(executor, "自动化执行者"), (frequency, "计划频率"), (weekdays, "每周运行日期"), (output, "任务输出方式"), (permission, "执行授权")] { control.setAccessibilityLabel(label) }
         for picker in [once, expiry] { picker.datePickerStyle = .textFieldAndStepper; picker.datePickerElements = [.yearMonthDay, .hourMinuteSecond]; picker.target = self; picker.action = #selector(changed); picker.setAccessibilityLabel(picker === once ? "运行日期" : "到期日期") }
-        for button in [expiring, readOnly, network, notify, enabled] { button.target = self; button.action = #selector(changed) }
+        for (toggle, label) in [(expiring, "到期暂停"), (readOnly, "只读项目"), (network, "允许联网与外部连接"), (notify, "运行结果通知"), (enabled, "启用计划")] {
+            toggle.setAccessibilityLabel(label); toggle.target = self; toggle.action = #selector(changed)
+        }
         permission.toolTip = "按当前工具与项目范围执行。需要确认的操作仍会等待处理。"; readOnly.toolTip = "终端也不能写入项目；外部 MCP 无法保证只读，因此停用。"
         frequency.toolTip = "应用需在计划时段运行。错过超过一分钟时记入历史，不补跑。"
-        let clockRow = NSStackView(views: [time, weekdays]); clockRow.spacing = 8; time.widthAnchor.constraint(equalToConstant: 90).isActive = true
-        let expireRow = NSStackView(views: [expiring, expiry]); expireRow.spacing = 8
-        let scope = NSStackView(views: [readOnly, network]); scope.spacing = 14
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "项目"), project], [NSTextField(labelWithString: "执行者"), executor], [NSTextField(labelWithString: "模型"), model], [NSTextField(labelWithString: "计划"), frequency], [NSTextField(labelWithString: "日期"), once], [NSTextField(labelWithString: "时间"), clockRow], [NSTextField(labelWithString: "间隔分钟"), interval], [NSTextField(labelWithString: "Cron"), cron], [NSTextField(labelWithString: "时区"), zone], [NSTextField(labelWithString: "到期"), expireRow], [NSTextField(labelWithString: "输出"), output], [NSTextField(labelWithString: "执行授权"), permission], [NSTextField(labelWithString: "范围"), scope], [NSTextField(labelWithString: "通知"), notify], [NSTextField(labelWithString: "状态"), enabled], [NSTextField(labelWithString: "下次"), next]])
-        scheduleGrid = grid
-        grid.column(at: 0).width = 60; grid.column(at: 0).xPlacement = .trailing; grid.column(at: 1).xPlacement = .fill; grid.columnSpacing = 12; grid.rowSpacing = 10
-        next.font = .systemFont(ofSize: 11); next.textColor = AgentWorkbenchTheme.secondaryText; next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let clock = NSStackView(views: [time, AgentSettingsPopupFrame(weekdays), NSView()])
+        clock.alignment = .centerY; clock.spacing = 8; time.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        let expiration = NSStackView(views: [expiry, NSView(), expiring]); expiration.alignment = .centerY; expiration.spacing = 8
+        func row(_ label: String, _ control: NSView, trailing: Bool = false) -> NSStackView {
+            AgentSettingsStyle.formRow(label, control, trailing: trailing, showsIcon: false)
+        }
+        dateRow = row("日期", once)
+        clockRow = row("时间", clock)
+        intervalRow = row("间隔分钟", interval)
+        cronRow = row("Cron", cron)
+        expiryRow = row("到期暂停", expiration)
+        next.font = .systemFont(ofSize: 12); next.textColor = AgentWorkbenchTheme.secondaryText
+        next.lineBreakMode = .byTruncatingTail; next.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         prompt.isRichText = false; prompt.allowsUndo = true; prompt.delegate = self; prompt.font = .systemFont(ofSize: 13); prompt.textColor = .labelColor; prompt.textContainerInset = NSSize(width: 12, height: 12); prompt.isVerticallyResizable = true; prompt.autoresizingMask = [.width]; prompt.textContainer?.widthTracksTextView = true; prompt.isAutomaticQuoteSubstitutionEnabled = false; prompt.isAutomaticTextReplacementEnabled = false; prompt.setAccessibilityLabel("自动化任务指令")
         let editor = NSScrollView(); editor.documentView = prompt; editor.hasVerticalScroller = true; editor.scrollerStyle = .overlay; editor.borderType = .noBorder; editor.drawsBackground = false; prompt.drawsBackground = false
         promptField.addSubview(editor); editor.translatesAutoresizingMaskIntoConstraints = false
         promptField.layer?.cornerRadius = 8; promptField.layer?.borderWidth = 1; promptField.layer?.masksToBounds = true
         NSLayoutConstraint.activate([editor.leadingAnchor.constraint(equalTo: promptField.leadingAnchor, constant: 1), editor.trailingAnchor.constraint(equalTo: promptField.trailingAnchor, constant: -1), editor.topAnchor.constraint(equalTo: promptField.topAnchor, constant: 1), editor.bottomAnchor.constraint(equalTo: promptField.bottomAnchor, constant: -1), promptField.heightAnchor.constraint(equalToConstant: 180)])
-        let label = NSTextField(labelWithString: "任务指令"); label.font = .systemFont(ofSize: 12, weight: .medium)
-        let form = NSStackView(views: [grid, label, promptField]); form.orientation = .vertical; form.alignment = .leading; form.spacing = 12
-        let document = FormDocumentView(); document.translatesAutoresizingMaskIntoConstraints = false; document.addSubview(form)
-        for view in form.arrangedSubviews { view.widthAnchor.constraint(equalTo: form.widthAnchor).isActive = true }; form.translatesAutoresizingMaskIntoConstraints = false; formScroll.documentView = document; formScroll.hasVerticalScroller = true
-        NSLayoutConstraint.activate([document.widthAnchor.constraint(equalTo: formScroll.contentView.widthAnchor), form.leadingAnchor.constraint(equalTo: document.leadingAnchor), form.trailingAnchor.constraint(equalTo: document.trailingAnchor), form.topAnchor.constraint(equalTo: document.topAnchor), form.bottomAnchor.constraint(equalTo: document.bottomAnchor)])
+        formScroll = AgentSettingsStyle.form([
+            AgentSettingsStyle.section("", id: "automation-details", rows: [row("名称", name), row("项目", project), row("执行者", executor), row("模型", model)]),
+            AgentSettingsStyle.section("运行计划", id: "automation-schedule", rows: [row("频率", frequency), dateRow, clockRow, intervalRow, cronRow, row("时区", zone), expiryRow, row("下次运行", next)], separatesRows: false),
+            AgentSettingsStyle.section("任务指令", id: "automation-prompt", rows: [promptField]),
+            AgentSettingsStyle.section("执行设置", id: "automation-options", rows: [
+                row("输出方式", output), row("执行授权", permission),
+                row("只读项目", readOnly, trailing: true), row("允许联网与外部连接", network, trailing: true),
+                row("运行结果通知", notify, trailing: true), row("启用计划", enabled, trailing: true)
+            ])
+        ], label: "自动化配置")
         formScroll.contentView.postsBoundsChangedNotifications = true
         for popup in [status, grouping] { popup.target = self; popup.action = #selector(filterHistory) }
         status.addItems(withTitles: ["全部状态"] + AgentAutomationRunStatus.allCases.map(\.title)); grouping.addItems(withTitles: ["按日", "按周", "按月"])
         onlySelected.target = self; onlySelected.action = #selector(filterHistory); onlySelected.state = .off
-        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshHistory)), filters = NSStackView(views: [onlySelected, status, grouping, NSView(), refresh]); filters.spacing = 8
+        let refresh = AgentDialogButton(title: "刷新", target: self, action: #selector(refreshHistory))
+        let filters = NSStackView(views: [onlySelected, AgentSettingsPopupFrame(status), AgentSettingsPopupFrame(grouping), NSView(), refresh])
+        filters.alignment = .centerY; filters.spacing = 8
         let historyColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("runs")); history.addTableColumn(historyColumn); history.headerView = nil; history.delegate = self; history.dataSource = self; history.setAccessibilityLabel("自动化运行记录")
         let historyScroll = NSScrollView(); historyScroll.documentView = history; historyScroll.hasVerticalScroller = true; history.style = .inset; history.backgroundColor = .clear
-        for scroll in [catalogScroll, historyScroll, formScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
+        for scroll in [catalogScroll, historyScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
         detail.maximumNumberOfLines = 3; detail.font = .systemFont(ofSize: 12); detail.lineBreakMode = .byTruncatingTail
         previous.target = self; previous.action = #selector(previousPage); more.target = self; more.action = #selector(nextPage); openTask.target = self; openTask.action = #selector(openRun)
         let pages = NSStackView(views: [previous, page, more, NSView(), openTask]); pages.spacing = 8
         records.orientation = .vertical; records.alignment = .leading; records.spacing = 12; for view in [filters, historyScroll, detail, pages] { records.addArrangedSubview(view); view.widthAnchor.constraint(equalTo: records.widthAnchor).isActive = true }; records.isHidden = true
         historyScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true; historyScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         save.target = self; save.action = #selector(saveDefinition); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; pause.target = self; pause.action = #selector(togglePause); run.target = self; run.action = #selector(runNow)
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail; state.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [state, NSView(), run, pause, archive, save]); footer.spacing = 8
-        for view in [archived, catalogScroll, empty] { catalog.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        state.font = .systemFont(ofSize: 12)
+        planActions = NSStackView(views: [NSView(), run, pause, archive]); planActions.spacing = 8
+        for button in [assistant, notifications, workspaceButton, refresh, previous, more, openTask, run, pause, archive] { AgentDialogStyle.action(button) }
+        for button in [add, save] { AgentSettingsStyle.primaryAction(button) }
+        let archiveFilter = AgentSettingsPopupFrame(archived)
+        for view in [archiveFilter, catalogScroll, empty] { catalog.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         empty.font = .systemFont(ofSize: 14); empty.textColor = AgentWorkbenchTheme.secondaryText
-        NSLayoutConstraint.activate([archived.leadingAnchor.constraint(equalTo: catalog.leadingAnchor), archived.topAnchor.constraint(equalTo: catalog.topAnchor), catalogScroll.leadingAnchor.constraint(equalTo: catalog.leadingAnchor), catalogScroll.trailingAnchor.constraint(equalTo: catalog.trailingAnchor), catalogScroll.topAnchor.constraint(equalTo: archived.bottomAnchor, constant: 14), catalogScroll.bottomAnchor.constraint(equalTo: catalog.bottomAnchor), empty.centerXAnchor.constraint(equalTo: catalog.centerXAnchor), empty.centerYAnchor.constraint(equalTo: catalog.centerYAnchor)])
-        for view in [catalog, formScroll, records] {
+        NSLayoutConstraint.activate([archiveFilter.leadingAnchor.constraint(equalTo: catalog.leadingAnchor), archiveFilter.topAnchor.constraint(equalTo: catalog.topAnchor), catalogScroll.leadingAnchor.constraint(equalTo: catalog.leadingAnchor), catalogScroll.trailingAnchor.constraint(equalTo: catalog.trailingAnchor), catalogScroll.topAnchor.constraint(equalTo: archiveFilter.bottomAnchor, constant: 14), catalogScroll.bottomAnchor.constraint(equalTo: catalog.bottomAnchor), empty.centerXAnchor.constraint(equalTo: catalog.centerXAnchor), empty.centerYAnchor.constraint(equalTo: catalog.centerYAnchor)])
+        for view in [catalog, formScroll!, records] {
             body.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: body.leadingAnchor), view.trailingAnchor.constraint(equalTo: body.trailingAnchor), view.topAnchor.constraint(equalTo: body.topAnchor), view.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
         }
-        column = NSStackView(views: [heading, header, body, footer]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 18
+        column = NSStackView(views: [heading, header, state, body, planActions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 14
         content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         let width = column.widthAnchor.constraint(equalToConstant: 824); width.priority = .init(499)
-        top = column.topAnchor.constraint(equalTo: content.topAnchor, constant: 24)
-        NSLayoutConstraint.activate([column.centerXAnchor.constraint(equalTo: content.centerXAnchor), column.widthAnchor.constraint(lessThanOrEqualToConstant: 824), column.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 28), column.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -28), width, top, column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24), footer.heightAnchor.constraint(equalToConstant: 30)])
+        NSLayoutConstraint.activate([column.centerXAnchor.constraint(equalTo: content.centerXAnchor), column.widthAnchor.constraint(lessThanOrEqualToConstant: 824), column.leadingAnchor.constraint(greaterThanOrEqualTo: content.leadingAnchor, constant: 28), column.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -28), width, column.topAnchor.constraint(equalTo: content.topAnchor, constant: 24), column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24)])
         body.setContentHuggingPriority(.defaultLow, for: .vertical)
         observer = NotificationCenter.default.addObserver(forName: AgentAutomations.changed, object: service, queue: .main) { [weak self] _ in Task { @MainActor in self?.reload() } }; reload()
     }
@@ -144,7 +169,7 @@ import AppKit
     func content(in host: NSWindow) -> NSView? {
         guard let view = hostedContent ?? window?.contentView else { return nil }
         if hostedContent == nil { window?.contentView = nil; hostedContent = view }
-        hostWindow = host; top.constant = 68; updatePresentation(); return view
+        hostWindow = host; updatePresentation(); return view
     }
     func refresh() { reload() }
     func selectImported(_ id: String) throws {
@@ -166,7 +191,7 @@ import AppKit
         title.stringValue = editing ? (opened == nil ? "新建自动化" : opened!.name) : "自动化"
         back.isHidden = !editing; assistant.isHidden = editing; add.isHidden = editing; header.isHidden = editing
         catalog.isHidden = editing || showingHistory; formScroll.isHidden = !editing; records.isHidden = !showingHistory
-        for button in [run, pause, archive, save] { button.isHidden = !editing }
+        save.isHidden = !editing; planActions.isHidden = !editing || opened == nil
         empty.isHidden = !definitions.isEmpty; catalogScroll.isHidden = definitions.isEmpty
         hostedContent?.layoutSubtreeIfNeeded(); presentingWindow?.recalculateKeyViewLoop()
     }
@@ -221,9 +246,10 @@ import AppKit
     @objc private func toggleDay(_ sender: NSMenuItem) { if selectedDays.contains(sender.tag) { selectedDays.remove(sender.tag) } else { selectedDays.insert(sender.tag) }; refreshDays(); changed() }
     private func updateScheduleRows() {
         let kind = AgentAutomationFrequency.allCases[max(0, frequency.indexOfSelectedItem)]
-        scheduleGrid.row(at: 5).isHidden = ![.once, .interval, .cron].contains(kind); scheduleGrid.row(at: 6).isHidden = ![.daily, .weekly].contains(kind); scheduleGrid.row(at: 7).isHidden = kind != .interval
-        scheduleGrid.row(at: 8).isHidden = kind != .cron; scheduleGrid.row(at: 10).isHidden = kind == .once
-        weekdays.isHidden = kind != .weekly; expiry.isEnabled = expiring.state == .on
+        dateRow.isHidden = ![.once, .interval, .cron].contains(kind)
+        clockRow.isHidden = ![.daily, .weekly].contains(kind)
+        intervalRow.isHidden = kind != .interval; cronRow.isHidden = kind != .cron; expiryRow.isHidden = kind == .once
+        weekdays.superview?.isHidden = kind != .weekly
         if selectedID == nil { next.stringValue = "" }
         else if opened?.archived == true { next.stringValue = "已归档" }
         else if let value = try? capture() { next.stringValue = (value.schedule.next(after: Date()).map { AgentAutomations.dateText($0, zone: value.schedule.timeZone) } ?? "无有效运行时间") + (value.enabled ? "" : " · 未启用") }
@@ -233,8 +259,12 @@ import AppKit
         let selected = selectedID != nil, stored = opened != nil, archived = opened?.archived == true
         for view in [name, workspace, workspaceButton, model, zone, time, interval, cron, executor, frequency, weekdays, output, permission, once, expiry, expiring, readOnly, network, notify, enabled] as [NSControl] { view.isEnabled = selected && !archived }
         model.isEnabled = selected && !archived && executor.selectedItem?.representedObject as? String == "default"; prompt.isEditable = selected && !archived
-        save.isEnabled = dirty; run.isEnabled = stored && !dirty && !archived; pause.isEnabled = run.isEnabled; pause.title = opened?.enabled == true ? "暂停" : "启用"; archive.isEnabled = stored && !dirty; archive.title = archived ? "恢复" : "归档"; save.title = stored ? (dirty ? "保存" : "已保存") : "创建"
+        save.title = stored ? (dirty ? "保存" : "已保存") : "创建"; save.isEnabled = dirty
+        run.isEnabled = stored && !dirty && !archived
+        pause.title = opened?.enabled == true ? "暂停" : "启用"; pause.isEnabled = run.isEnabled
+        archive.title = archived ? "恢复" : "归档"; archive.isEnabled = stored && !dirty
         expiry.isEnabled = selected && !archived && expiring.state == .on
+        for popup in [executor, frequency, weekdays, output, permission] { (popup.superview as? AgentSettingsPopupFrame)?.refreshEnabledState() }
     }
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === list ? definitions.count : rows.count }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
@@ -316,8 +346,8 @@ import AppKit
             try service.save(value, expected: opened)
             newValue = nil; dirty = false; selectedID = value.id; reload(); onRecoveryChange?()
             if let origin { try AgentAutomationDrafts.markSaved(origin.id, taskID: origin.taskID, automationID: value.id, store: store) }
-            onSaved?(); state.stringValue = "已保存"
-        } catch { state.stringValue = error.localizedDescription }
+            onSaved?()
+        } catch { state.showSaveFailure(error) }
     }
     private func originalProposal(for id: String) throws -> AgentAutomationDraft? {
         guard let proposal else { return nil }
@@ -393,8 +423,8 @@ import AppKit
     @objc private func changeAwake() { do { try service.setKeepAwake(awake.state == .on) } catch { awake.state = service.keepAwake ? .on : .off; state.stringValue = error.localizedDescription } }
     @objc private func requestNotifications() { Task { do { guard let action = onRequestNotifications else { throw PetError("通知设置暂不可用") }; state.stringValue = try await action() ? "桌面通知已开启" : "请在系统设置中允许通知" } catch { state.stringValue = error.localizedDescription } } }
     func windowDidResize(_ notification: Notification) {
-        guard let i = CommandLine.arguments.firstIndex(of: "--check"), CommandLine.arguments.count > i + 1, let window, let root = window.contentView else { return }
-        let metrics: [String: Any] = ["window": [window.frame.width, window.frame.height], "rootFitting": [root.fittingSize.width, root.fittingSize.height], "gridFitting": [scheduleGrid.fittingSize.width, scheduleGrid.fittingSize.height], "workspaceFitting": [workspace.fittingSize.width, workspace.fittingSize.height], "recordsFitting": [records.fittingSize.width, records.fittingSize.height], "detailFitting": [detail.fittingSize.width, detail.fittingSize.height], "formVisible": !formScroll.isHidden, "formWidth": formScroll.bounds.width]
+        guard let i = CommandLine.arguments.firstIndex(of: "--check"), CommandLine.arguments.count > i + 1, let window, let root = window.contentView, let formScroll else { return }
+        let metrics: [String: Any] = ["window": [window.frame.width, window.frame.height], "rootFitting": [root.fittingSize.width, root.fittingSize.height], "formContentFitting": formScroll.documentView.map { [$0.fittingSize.width, $0.fittingSize.height] } ?? [], "workspaceFitting": [workspace.fittingSize.width, workspace.fittingSize.height], "recordsFitting": [records.fittingSize.width, records.fittingSize.height], "detailFitting": [detail.fittingSize.width, detail.fittingSize.height], "formVisible": !formScroll.isHidden, "formWidth": formScroll.bounds.width]
         let output = URL(fileURLWithPath: CommandLine.arguments[i + 1]).appendingPathComponent("automation-window-layout.json")
         try? JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: output, options: .atomic)
     }
@@ -428,6 +458,10 @@ import AppKit
         checks["runtimeRefreshPreservesUnsentEdits"] = dirty && name.stringValue == "已编辑的公开核对计划" && prompt.string == "读取公开 README 并核对标题。"
         let pendingName = name.stringValue; name.stringValue = ""; saveDefinition()
         checks["invalidSaveRetainsEditAndStoredDefinition"] = dirty && service.values.first(where: { $0.id == id })?.name == original.name && !state.stringValue.isEmpty
+        hostedContent?.layoutSubtreeIfNeeded()
+        checks["saveFeedbackUsesFullWidthOutsideTheScrollingForm"] = !state.isHidden && state.cell?.wraps == true &&
+            state.bounds.width >= column.bounds.width - 0.5 && state.visibleRect.height >= state.bounds.height - 0.5 &&
+            !state.isDescendant(of: formScroll) && !save.isDescendant(of: formScroll)
         name.stringValue = pendingName; saveDefinition()
         guard let saved = service.values.first(where: { $0.id == id }) else { throw PetError("实际自动化未保存") }
         checks["pageSaveUsesExistingPersistentService"] = !dirty && saved.name == pendingName && saved.prompt == prompt.string && saved.readOnly == original.readOnly && saved.network == original.network && saved.schedule.frequency == original.schedule.frequency
@@ -472,8 +506,4 @@ import AppKit
         } else { checks["historyDetailsMatchActualRecord"] = false }
         return checks
     }
-}
-
-private final class AgentAutomationTextField: NSTextField {
-    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height) }
 }

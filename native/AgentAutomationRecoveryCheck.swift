@@ -102,7 +102,13 @@ import AppKit
                 try text(manual, "自动化名称", "")
                 try text(manual, "间隔分钟", invalidInterval)
                 _ = try prompt(manual, "公开的手动计划草稿。")
-                try button(manual, "启用计划").performClick(nil); try button(manual, "运行结果通知").performClick(nil)
+                for label in ["启用计划", "运行结果通知"] {
+                    let toggle = try input(manual, NSSwitch.self, label)
+                    toggle.state = .off
+                    guard let action = toggle.action, NSApp.sendAction(action, to: toggle.target, from: toggle) else {
+                        throw PetError("缺少自动化操作 " + label)
+                    }
+                }
 
                 openTaskWindow(proposalTask, from: control)
                 guard let proposalWindow = additionalTaskWindows.last else { throw PetError("缺少会话提案窗口") }

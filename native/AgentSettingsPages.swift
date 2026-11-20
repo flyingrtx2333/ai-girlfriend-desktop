@@ -473,7 +473,7 @@ struct AgentSettingsCatalogGroup {
         field.font = .systemFont(ofSize: 13); field.controlSize = .large
         if field.isBezeled { field.bezelStyle = .roundedBezel; field.backgroundColor = AgentWorkbenchTheme.card }
     }
-    static func formRow(_ title: String, _ control: NSView, trailing: Bool) -> NSStackView {
+    static func formRow(_ title: String, _ control: NSView, trailing: Bool, showsIcon: Bool = true) -> NSStackView {
         func compact(_ view: NSView) {
             if let toggle = view as? NSSwitch { toggle.controlSize = .mini }
             view.subviews.forEach(compact)
@@ -483,7 +483,8 @@ struct AgentSettingsCatalogGroup {
         let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 14); label.textColor = .labelColor
         label.setContentCompressionResistancePriority(.required, for: .horizontal)
         if !trailing { label.widthAnchor.constraint(equalToConstant: 88).isActive = true }
-        let views: [NSView] = title.isEmpty ? [accessory] : trailing ? [rowIcon(title), label, NSView(), accessory] : [rowIcon(title), label, accessory]
+        let leading: [NSView] = showsIcon && !title.isEmpty ? [rowIcon(title), label] : [label]
+        let views: [NSView] = title.isEmpty ? [accessory] : leading + (trailing ? [NSView(), accessory] : [accessory])
         let row = NSStackView(views: views); row.alignment = .centerY; row.spacing = 12; row.translatesAutoresizingMaskIntoConstraints = false
         if !title.isEmpty { row.identifier = .init(searchRowPrefix + title) }
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 32).isActive = true
