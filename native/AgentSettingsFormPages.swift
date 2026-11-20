@@ -8,8 +8,11 @@ import AppKit
     private let footer = NSStackView()
     private var actions: [NSView] = []
     private var footerHeight: NSLayoutConstraint!
+    private weak var trackedField: NSTextField?
+    private var savedSelection: AgentTextViewport.Selection?, selectionText = ""
+    private var pendingSelection = false, applyingSelection = false, selectionScheduled = false
 
-    init(title: String, rows: [[NSView]], submitTitle: String) {
+    init(title: String, rows: [[NSView]], submitTitle: String, showsSectionHeading: Bool = true) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 380), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 420, height: 300); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
@@ -24,7 +27,7 @@ import AppKit
                 fields.append(AgentSettingsStyle.formRow(label, input, trailing: true))
             }
         }
-        let section = AgentSettingsStyle.section(title, id: "short-form", rows: fields)
+        let section = AgentSettingsStyle.section(showsSectionHeading ? title : "", id: "short-form", rows: fields)
         status.font = .systemFont(ofSize: 12); status.textColor = .systemRed
         let cancel = AgentDialogButton(title: "取消", target: self, action: #selector(cancelForm))
         let submit = AgentDialogButton(title: submitTitle, target: self, action: #selector(submitForm))
@@ -42,6 +45,7 @@ import AppKit
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
     override func setSettingsActionsHost(_ host: NSStackView?) {
         guard actionsHost !== host else { return }
         for view in actions {
@@ -52,9 +56,44 @@ import AppKit
     }
     override func settingsDidAppear() {
         super.settingsDidAppear()
+        if pendingSelection { scheduleSelection(); return }
         guard let host = presentingWindow, let firstInput, host.firstResponder !== firstInput else { return }
         if let field = firstInput as? NSTextField, field.currentEditor() === host.firstResponder { return }
         host.makeFirstResponder(firstInput)
+    }
+    override func pageDidLayout() { scheduleSelection() }
+    func trackSelection(in field: NSTextField) {
+        trackedField = field
+        NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
+    }
+    private func rememberSelection(in editor: NSTextView, field: NSTextField) {
+        let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+        if selection.valid(in: field.stringValue.utf16.count) { savedSelection = selection; selectionText = field.stringValue }
+    }
+    @objc private func selectionChanged(_ notification: Notification) {
+        guard !applyingSelection, let field = trackedField, let editor = notification.object as? NSTextView, editor === field.currentEditor() else { return }
+        rememberSelection(in: editor, field: field); onSettingsRecoveryChange?()
+    }
+    func captureFieldSelection() -> AgentTextViewport.Selection? {
+        guard let field = trackedField else { return nil }
+        if let editor = field.currentEditor() as? NSTextView { rememberSelection(in: editor, field: field) }
+        return selectionText == field.stringValue ? savedSelection : nil
+    }
+    func restoreFieldSelection(_ value: AgentTextViewport.Selection?) {
+        guard let field = trackedField else { return }
+        savedSelection = value; selectionText = field.stringValue; pendingSelection = true; scheduleSelection()
+    }
+    private func scheduleSelection() {
+        guard pendingSelection, !selectionScheduled else { return }; selectionScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; defer { selectionScheduled = false }
+            guard isPageVisible, let host = presentingWindow, let field = trackedField else { return }
+            applyingSelection = true; defer { applyingSelection = false }
+            host.contentView?.layoutSubtreeIfNeeded()
+            guard host.makeFirstResponder(field) else { return }
+            if let savedSelection { (field.currentEditor() as? NSTextView)?.setSelectedRange(savedSelection.range) }
+            pendingSelection = false
+        }
     }
     func controlTextDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { dirty = true; status.stringValue = ""; onSettingsRecoveryChange?() }
@@ -64,7 +103,7 @@ import AppKit
     var formRecoveryValues: (dirty: Bool, status: String) { (dirty, status.stringValue) }
     func restoreFormRecovery(dirty: Bool, status: String) { self.dirty = dirty; self.status.stringValue = status; onSettingsRecoveryChange?() }
     func finish() { dirty = false; close() }
-    @objc private func cancelForm() { guard let window, windowShouldClose(window) else { return }; close() }
+    @objc func cancelForm() { guard let window, windowShouldClose(window) else { return }; close() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard dirty else { return true }
         guard AgentUnsavedChanges.discard("放弃未保存的填写内容？") else { return false }; dirty = false; return true
@@ -74,8 +113,6 @@ import AppKit
 @MainActor final class AgentExtensionCreationPage: AgentSettingsFormPage {
     private let service: AgentExtensions, kind: AgentExtensionKind, workspace: String?
     private let name: NSTextField, scope: NSPopUpButton
-    private var savedSelection: AgentTextViewport.Selection?, selectionText = ""
-    private var pendingRecovery = false, applyingRecovery = false, recoveryScheduled = false
     var onCreated: ((AgentExtensionItem) -> Void)?
 
     init(service: AgentExtensions, kind: AgentExtensionKind, workspace: String?) {
@@ -84,42 +121,18 @@ import AppKit
         name.placeholderString = "名称"; name.setAccessibilityLabel("扩展名称")
         scope.addItems(withTitles: ["全局", "当前项目"]); scope.menu?.autoenablesItems = false; scope.item(at: 1)?.isEnabled = workspace != nil; scope.setAccessibilityLabel("扩展范围")
         super.init(title: kind == .skill ? "新建 Skill" : "新建命令", rows: [[NSTextField(labelWithString: "名称"), name], [NSTextField(labelWithString: "范围"), scope]], submitTitle: "创建")
-        NotificationCenter.default.addObserver(self, selector: #selector(selectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
+        trackSelection(in: name)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    deinit { NotificationCenter.default.removeObserver(self) }
-    @objc private func selectionChanged(_ note: Notification) {
-        guard !applyingRecovery, let editor = note.object as? NSTextView, editor === name.currentEditor() else { return }
-        let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
-        if selection.valid(in: (name.stringValue as NSString).length) { savedSelection = selection; selectionText = name.stringValue; onSettingsRecoveryChange?() }
-    }
-    override func settingsDidAppear() { if pendingRecovery { scheduleRecovery() } else { super.settingsDidAppear() } }
-    override func pageDidLayout() { scheduleRecovery() }
-    private func scheduleRecovery() {
-        guard pendingRecovery, !recoveryScheduled else { return }; recoveryScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }; defer { recoveryScheduled = false }
-            guard isPageVisible, let host = presentingWindow else { return }
-            applyingRecovery = true; defer { applyingRecovery = false }
-            host.contentView?.layoutSubtreeIfNeeded()
-            guard host.makeFirstResponder(name) else { return }
-            if let savedSelection { (name.currentEditor() as? NSTextView)?.setSelectedRange(savedSelection.range) }
-            pendingRecovery = false
-        }
-    }
     private struct Recovery: Codable {
         var version = 1
         var kind: AgentExtensionKind, workspace: String?, name: String, scope: Int, dirty: Bool, status: String
         var selection: AgentTextViewport.Selection?
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        if let editor = name.currentEditor() as? NSTextView {
-            let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
-            if selection.valid(in: (name.stringValue as NSString).length) { savedSelection = selection; selectionText = name.stringValue }
-        }
         let presentation = formRecoveryValues
         let value = Recovery(kind: kind, workspace: workspace, name: name.stringValue, scope: scope.indexOfSelectedItem, dirty: presentation.dirty,
-            status: presentation.status, selection: selectionText == name.stringValue ? savedSelection : nil)
+            status: presentation.status, selection: captureFieldSelection())
         return try AgentSettingsRecovery.page("extension-create", value)
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
@@ -129,8 +142,8 @@ import AppKit
         let value = try JSONDecoder().decode(Recovery.self, from: page.state)
         guard value.version == 1, value.kind == kind, value.workspace == workspace, (0...1).contains(value.scope),
               value.scope == 0 || workspace != nil, value.selection?.valid(in: (value.name as NSString).length) != false else { throw PetError("扩展新建草稿范围或选区无效，原记录已保留") }
-        name.stringValue = value.name; scope.selectItem(at: value.scope); savedSelection = value.selection; selectionText = value.name
-        restoreFormRecovery(dirty: value.dirty, status: value.status); pendingRecovery = true; scheduleRecovery()
+        name.stringValue = value.name; scope.selectItem(at: value.scope)
+        restoreFieldSelection(value.selection); restoreFormRecovery(dirty: value.dirty, status: value.status)
     }
     override func submit() {
         do {

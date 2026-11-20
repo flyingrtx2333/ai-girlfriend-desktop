@@ -302,7 +302,9 @@ import AppKit
         let projectHost = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
         projectHost.isReleasedWhenClosed = false
         let projectPane = AgentSettingsPageHost(); projectHost.contentView = projectPane; projectHost.orderFront(nil)
-        guard projectPane.show(category: "memory", identity: multiID, scope: "项目 · " + second.lastPathComponent, make: { _ in hostedPage }) else { throw PetError("缺少实际承载的项目记忆页") }
+        let hostedContext = AgentSettingsRecovery.Context(task: tasks.task(multiID), workspace: second.path)
+        guard projectPane.show(category: "memory", identity: hostedContext.identity, scope: "项目 · " + second.lastPathComponent,
+                               recoveryContext: hostedContext, make: { _ in hostedPage }) else { throw PetError("缺少实际承载的项目记忆页") }
         projectPane.setSourceFolders([second.path, secondary.path], selected: second.path, primary: second.path, onSelect: { _ in false })
         guard let hostedRoot = hostedPage.pageContentView else { throw PetError("跨项目列表未承载") }
         (find(hostedRoot, id: buttonID(secondary.path)) as? NSButton)?.performClick(nil)
@@ -314,6 +316,56 @@ import AppKit
         checks["otherProjectMemoryHidesTheOriginalSourcePicker"] = sourcePicker?.isHiddenOrHasHiddenAncestor == true
         projectChild?.close(); projectPane.layoutSubtreeIfNeeded()
         checks["returnFromOtherProjectRestoresOriginalSourcePicker"] = projectPane.currentController === hostedPage && sourcePicker?.isHiddenOrHasHiddenAncestor == false && sourcePicker?.selectedItem?.representedObject as? String == second.path && editing?.stringValue == "项目 · " + second.lastPathComponent
+
+        let folder = secondary.appendingPathComponent(".bluefatfish/memory"), heldTopics = folder.appendingPathExtension("held")
+        let replacementTopics = folder.appendingPathExtension("replacement")
+        let peerTopic = folder.appendingPathComponent("同名主题.md"), originalPeer = Data("同名原件".utf8)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try originalPeer.write(to: peerTopic)
+        (find(hostedRoot, id: buttonID(secondary.path)) as? NSButton)?.performClick(nil)
+        guard let record = projectPane.currentController as? AgentRecordWindow, let recordView = record.pageContentView,
+              let openTopic = find(recordView, id: "memory-create-topic") as? NSButton else { throw PetError("缺少主题创建入口") }
+        openTopic.performClick(nil)
+        guard let topic = projectPane.currentController as? AgentMemoryTopicPage, let topicView = topic.pageContentView,
+              let name = find(topicView, id: "memory-topic-name") as? NSTextField else { throw PetError("未在设置中显示主题表单") }
+        checks["newTopicUsesSettingsDetailWithOriginalScope"] = topic.detailHeading?.title == "新建记忆主题" &&
+            topic.detailHeading?.location == folder.path && projectHost.attachedSheet == nil
+        let originalName = "同名主题.md", nameRange = (originalName as NSString).range(of: "同名")
+        name.stringValue = originalName
+        topic.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: name))
+        topic.submit()
+        projectHost.makeFirstResponder(name)
+        (name.currentEditor() as? NSTextView)?.setSelectedRange(nameRange)
+        guard let topicState = try projectPane.captureRecovery(active: true), let topicDraft = topicState.pages.last else { throw PetError("主题草稿未记录") }
+        let savedName = try AgentMemoryTopicPage.Recovery.decode(topicDraft)
+        checks["topicRecoveryIncludesExactNameSelectionAndValidation"] = topicState.pages.map(\.kind) == ["memory", "memory-editor", "memory-topic"] &&
+            savedName.name == originalName && savedName.dirty && savedName.selection?.range == nameRange && savedName.status.contains("同名")
+        projectPane.finish()
+        try projectPane.restoreRecovery(topicState) { page in
+            page == "memory" ? AgentMemorySettingsPage(store: tasks, taskID: multiID, workspace: second.path, service: service) : nil
+        }
+        projectHost.makeKeyAndOrderFront(nil); await wait(0.1)
+        guard let recoveredTopic = projectPane.currentController as? AgentMemoryTopicPage, let recoveredView = recoveredTopic.pageContentView,
+              let recoveredName = find(recoveredView, id: "memory-topic-name") as? NSTextField else { throw PetError("原主题表单未恢复") }
+        let field = recoveredName.currentEditor() as? NSTextView
+        checks["topicRecoveryRestoresSelectionAndKeyboardFocus"] = recoveredName.stringValue == originalName && field?.selectedRange() == nameRange &&
+            projectHost.firstResponder === field && field != nil
+        let newName = "续写主题.md", newTopic = folder.appendingPathComponent(newName)
+        recoveredName.stringValue = newName
+        recoveredTopic.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: recoveredName))
+        try FileManager.default.moveItem(at: folder, to: heldTopics); try FileManager.default.copyItem(at: heldTopics, to: folder)
+        recoveredTopic.submit()
+        checks["topicDraftRejectsReplacementOfExistingTopicFolder"] = projectPane.currentController === recoveredTopic &&
+            !FileManager.default.fileExists(atPath: newTopic.path) && recoveredTopic.formRecoveryValues.status.contains("原记忆目录已变化")
+        try FileManager.default.moveItem(at: folder, to: replacementTopics); try FileManager.default.moveItem(at: heldTopics, to: folder)
+        recoveredTopic.submit()
+        let resumedEditor = projectPane.currentController as? AgentRecordWindow
+        let savedEditor = try resumedEditor?.captureSettingsRecovery().map(AgentRecordWindow.MemorySettingsRecovery.decode)
+        checks["topicDraftCreatesOnlyAtOriginalSourceAndReturnsToNewEditor"] = try Data(contentsOf: newTopic).isEmpty && Data(contentsOf: peerTopic) == originalPeer &&
+            !FileManager.default.fileExists(atPath: second.appendingPathComponent(".bluefatfish/memory/" + newName).path) &&
+            savedEditor?.document == "project/" + newName && (try projectPane.captureRecovery(active: true))?.pages.map(\.kind) == ["memory", "memory-editor"]
+        projectPane.currentController?.close()
+
         let missingProjectPage = AgentMemorySettingsPage(store: tasks, taskID: missingID, workspace: unavailable.path, service: service)
         guard projectPane.show(category: "memory", identity: missingID, scope: "项目", make: { _ in missingProjectPage }),
               let settings = missingProjectPage.pageContentView,

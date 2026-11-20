@@ -172,10 +172,32 @@ struct AgentMemoryEditorSource: Codable, Equatable {
         if omitted { lines.append("其余主题可通过 read_memory 的源目录和分页参数列出。") }
         return lines.joined(separator: "\n")
     }
-    static func createTopic(_ name: String, scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String?) throws -> AgentMemoryDocument {
+    struct TopicDestination: Codable, Equatable {
+        let source: AgentMemoryEditorSource
+        let folderIdentity: String?
+
+        var valid: Bool { source.valid && AgentSettingsRecovery.validHash(folderIdentity) }
+        func matches(_ current: Self) -> Bool {
+            source == current.source && (folderIdentity == nil || folderIdentity == current.folderIdentity)
+        }
+    }
+    static func topicDestination(_ scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String?) throws -> TopicDestination {
+        guard scope.hasTopics else { throw PetError("此范围不支持主题文件") }
+        return try topicDestination(scope, files: root(scope, store: store, taskID: taskID, workspace: workspace, followParentLinks: false))
+    }
+    private static func topicDestination(_ scope: AgentMemoryScope, files: AgentFiles) throws -> TopicDestination {
+        let folder = try files.literalURL(scope.topicDirectory)
+        let kind = try files.entryMetadata(folder).kind
+        guard kind == "directory" || kind == "missing" else { throw PetError("记忆目录不是普通目录") }
+        return try .init(source: editorSource(files, folder), folderIdentity: kind == "directory" ? directoryIdentity(folder) : nil)
+    }
+    static func createTopic(_ name: String, scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String?, expectedDestination: TopicDestination? = nil) throws -> AgentMemoryDocument {
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let topic = (cleaned as NSString).pathExtension.isEmpty ? cleaned + ".md" : cleaned
         let (files, url, _) = try file(scope, store: store, taskID: taskID, workspace: workspace, topic: topic)
+        if let expectedDestination, try !expectedDestination.matches(topicDestination(scope, files: files)) {
+            throw PetError("原记忆目录已变化，主题名称已保留")
+        }
         guard try files.entryMetadata(url).kind == "missing" else { throw PetError("已存在同名主题") }
         try files.writeData(Data(), to: url, permissions: scope == .global ? 0o600 : 0o644, expectedTarget: "missing")
         return AgentMemoryDocument(scope, topic: topic)
@@ -222,11 +244,14 @@ struct AgentMemoryEditorSource: Codable, Equatable {
             workspace: [.global, .userInstructions].contains(scope) ? nil : files.root.path, exists: exists, editorSource: source)
     }
     private static func editorSource(_ files: AgentFiles, _ url: URL) throws -> AgentMemoryEditorSource {
+        try .init(path: url.path, directoryIdentity: directoryIdentity(files.root))
+    }
+    static func directoryIdentity(_ directory: URL) throws -> String {
         var info = stat()
-        guard lstat(files.root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw PetError("原记忆目录暂不可用") }
-        let volume = (try? files.root.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? String(info.st_dev)
-        let identity = "\(files.root.path):\(volume):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
-        return .init(path: url.path, directoryIdentity: AgentFiles.hash(Data(identity.utf8)))
+        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw PetError("原记忆目录暂不可用") }
+        let volume = (try? directory.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? String(info.st_dev)
+        let identity = "\(directory.path):\(volume):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        return AgentFiles.hash(Data(identity.utf8))
     }
     static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil, expectedExists: Bool? = nil, expectedSource: AgentMemoryEditorSource? = nil) throws -> AgentMemorySnapshot {
         guard scope != .effectiveInstructions else { throw PetError("请编辑原指令文件，有效指令只读") }

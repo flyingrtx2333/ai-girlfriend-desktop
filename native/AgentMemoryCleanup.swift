@@ -9,10 +9,16 @@ import Foundation
     struct Preview: Equatable {
         let workspace: String?
         let root: String
+        let directoryIdentity: String
         let entries: [Entry]
+
+        var fingerprint: String {
+            let fields = [root, directoryIdentity] + entries.flatMap { [$0.path, $0.signature] }
+            return AgentFiles.hash(Data(fields.joined(separator: "\0").utf8))
+        }
     }
 
-    struct Outcome {
+    struct Outcome: Codable {
         var moved = 0
         var failures: [String] = []
     }
@@ -40,7 +46,7 @@ import Foundation
             let names = try files.regularFiles(in: topics).map(\.name).filter(AgentMemoryDocument.validTopic)
             entries += try names.sorted().compactMap { try inspect(scope.topicDirectory + "/" + $0) }
         }
-        return (files, Preview(workspace: workspace, root: files.root.path, entries: entries))
+        return (files, Preview(workspace: workspace, root: files.root.path, directoryIdentity: try AgentMemory.directoryIdentity(files.root), entries: entries))
     }
 
     static func apply(_ previews: [Preview], store: AgentStore, moveToTrash: (URL) throws -> Void = {

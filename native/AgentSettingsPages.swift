@@ -458,7 +458,6 @@ struct AgentSettingsCatalogGroup {
         return view
     }
     static func section(_ title: String, id: String, rows: [NSView], separatesRows: Bool = true) -> NSStackView {
-        let heading = sectionHeading(title)
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
         for row in rows {
             if separatesRows, !body.arrangedSubviews.isEmpty { let line = divider(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
@@ -468,8 +467,9 @@ struct AgentSettingsCatalogGroup {
         card.identifier = .init("settings-card-" + id); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
         card.addSubview(body); body.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([body.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16), body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16), body.topAnchor.constraint(equalTo: card.topAnchor, constant: 10), body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)])
-        let column = NSStackView(views: [heading, card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = sectionHeadingSpacing
-        column.identifier = .init("settings-section-" + id); heading.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true; card.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        let column = NSStackView(views: title.isEmpty ? [card] : [sectionHeading(title), card]); column.orientation = .vertical; column.alignment = .leading; column.spacing = sectionHeadingSpacing
+        column.identifier = .init("settings-section-" + id)
+        for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         return column
     }
     static func form(_ sections: [NSView], label: String) -> NSScrollView {

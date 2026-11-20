@@ -268,6 +268,7 @@ import AppKit
         return editor
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "memory-cleanup" { return try AgentMemoryCleanupPage.reopened(page, store: store) }
         guard page.kind == "memory-editor" else { return nil }
         let target = try AgentRecordWindow.MemorySettingsRecovery.decode(page).target
         if target.entry == .project {
@@ -277,5 +278,64 @@ import AppKit
         }
         try target.context.requireCurrent(store)
         return makeEditor(target)
+    }
+}
+
+@MainActor final class AgentMemoryTopicPage: AgentSettingsFormPage {
+    private let name = AgentDialogTextField()
+    private let destination: AgentMemory.TopicDestination
+    private let create: (String) throws -> AgentMemoryDocument
+    var onCreated: ((AgentMemoryDocument) -> Void)?
+
+    init(destination: AgentMemory.TopicDestination, scope: String, create: @escaping (String) throws -> AgentMemoryDocument) {
+        self.destination = destination; self.create = create
+        name.outlined = true; name.setAccessibilityLabel("主题文件名"); name.identifier = .init("memory-topic-name")
+        super.init(title: "新建记忆主题", rows: [[NSTextField(labelWithString: "主题文件名"), name]], submitTitle: "创建", showsSectionHeading: false)
+        detailHeading = .init(title: "新建记忆主题", scope: scope, location: destination.source.path)
+        trackSelection(in: name)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    struct Recovery: Codable {
+        var version = 1
+        let destination: AgentMemory.TopicDestination
+        let name: String, dirty: Bool, status: String
+        let selection: AgentTextViewport.Selection?
+
+        static func decode(_ page: AgentSettingsRecovery.Page) throws -> Self {
+            guard page.kind == "memory-topic" else { throw PetError("设置草稿不属于记忆主题") }
+            let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+                keys: ["version", "destination", "name", "dirty", "status", "selection"])
+            let target = try AgentSettingsRecovery.object(raw["destination"] ?? NSNull(), keys: ["source", "folderIdentity"])
+            _ = try AgentSettingsRecovery.object(target["source"] ?? NSNull(), keys: ["path", "directoryIdentity"])
+            if let selection = raw["selection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
+            let value = try JSONDecoder().decode(Self.self, from: page.state)
+            guard value.version == 1, value.destination.valid, value.selection?.valid(in: value.name.utf16.count) != false else {
+                throw PetError("主题草稿位置无效，原记录已保留")
+            }
+            return value
+        }
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        let form = formRecoveryValues
+        return try AgentSettingsRecovery.page("memory-topic", Recovery(destination: destination, name: name.stringValue,
+            dirty: form.dirty, status: form.status, selection: captureFieldSelection()))
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        let value = try Recovery.decode(page)
+        guard value.destination == destination else { throw PetError("主题草稿所属范围已变化") }
+        name.stringValue = value.name
+        restoreFieldSelection(value.selection); restoreFormRecovery(dirty: value.dirty, status: value.status)
+    }
+    override func submit() {
+        guard (name.currentEditor() as? NSTextView)?.hasMarkedText() != true else { return }
+        do { let document = try create(name.stringValue); finish(); onCreated?(document) }
+        catch { showError(error) }
+    }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard !textView.hasMarkedText() else { return false }
+        if selector == #selector(NSResponder.insertNewline(_:)) { submit(); return true }
+        if selector == #selector(NSResponder.cancelOperation(_:)) { cancelForm(); return true }
+        return false
     }
 }

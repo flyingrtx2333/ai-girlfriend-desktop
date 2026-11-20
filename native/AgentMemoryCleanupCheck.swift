@@ -78,6 +78,45 @@ import AppKit
         locate(settingsView, "memory-clear-projects", as: NSButton.self)?.performClick(nil)
         func table(in view: NSView) -> NSTableView? { (view as? NSTableView) ?? view.subviews.lazy.compactMap { table(in: $0) }.first }
         checks["cleanupEntryUsesOnlyVisibleProjectSearchResults"] = child is AgentMemoryCleanupPage && child?.pageContentView.flatMap { table(in: $0)?.numberOfRows } == 1
+        guard let review = child as? AgentMemoryCleanupPage, let reviewView = review.pageContentView,
+              let selectVisible = locate(reviewView, "memory-cleanup-select-all", as: NSButton.self) else { throw PetError("缺少原清理预览") }
+        selectVisible.performClick(nil)
+        guard let checkpoint = try review.captureSettingsRecovery() else { throw PetError("原清理预览未记录") }
+        let registeredLater = output.appendingPathComponent("Secondary Later")
+        try put(registeredLater.appendingPathComponent(".bluefatfish/memory.md"), "本次筛选之外的新项目")
+        try tasks.organization.register(registeredLater.path, mode: .coding)
+        func reopenPreview() throws -> (AgentMemoryCleanupPage, NSView, NSButton, NSButton) {
+            let page = try AgentMemoryCleanupPage.reopened(checkpoint, store: tasks)
+            try page.restoreSettingsRecovery(checkpoint)
+            guard let view = page.pageContentView,
+                  let move = locate(view, "memory-cleanup-trash", as: NSButton.self),
+                  let refresh = locate(view, "memory-cleanup-recheck", as: NSButton.self) else { throw PetError("原清理操作未恢复") }
+            return (page, view, move, refresh)
+        }
+        let (unchanged, unchangedView, restoredMove, unchangedRefresh) = try reopenPreview()
+        checks["cleanupRestoreKeepsExactCheckedScopesWhenRegistryChanges"] = table(in: unchangedView)?.numberOfRows == 1 &&
+            restoredMove.isEnabled && unchangedRefresh.isHidden && fm.fileExists(atPath: second.path) && moved.isEmpty
+        unchanged.window?.close()
+        let addedDuringReview = secondary.appendingPathComponent(".bluefatfish/memory/刚增加.md")
+        try put(addedDuringReview, "预览之后创建")
+        let (changed, changedView, changedMove, changedRefresh) = try reopenPreview()
+        checks["cleanupRestoreBlocksChangedListBeforeAnyMove"] = !changedMove.isEnabled && !changedRefresh.isHidden && moved.isEmpty &&
+            locate(changedView, "memory-cleanup-select-all", as: NSButton.self)?.state == .on
+        changedRefresh.performClick(nil)
+        checks["cleanupRecheckRequiresChoosingProjectScopesAgain"] = !changedMove.isEnabled && changedRefresh.isHidden &&
+            locate(changedView, "memory-cleanup-select-all", as: NSButton.self)?.state == .off && fm.fileExists(atPath: addedDuringReview.path)
+        changed.window?.close()
+        try fm.moveItem(at: addedDuringReview, to: output.appendingPathComponent("原新增文件.md"))
+        let held = secondary.appendingPathExtension("held"), replacement = secondary.appendingPathExtension("replacement")
+        try fm.moveItem(at: secondary, to: held); try fm.copyItem(at: held, to: secondary)
+        let (redirectedReview, redirectedView, redirectedMove, redirectedRefresh) = try reopenPreview()
+        checks["cleanupRestoreRejectsSamePathReplacement"] = !redirectedMove.isEnabled && !redirectedRefresh.isHidden
+        redirectedRefresh.performClick(nil)
+        checks["cleanupRecheckCannotAuthorizeReplacementDirectory"] = !redirectedMove.isEnabled &&
+            locate(redirectedView, "memory-cleanup-select-all", as: NSButton.self)?.isEnabled == false &&
+            fm.fileExists(atPath: second.path) && moved.isEmpty
+        redirectedReview.window?.close()
+        try fm.moveItem(at: secondary, to: replacement); try fm.moveItem(at: held, to: secondary)
         child?.window?.close(); settings.window?.close()
 
         let sources = AgentMemory.projects(store: tasks, preferredTaskID: taskID).filter { [alpha.path, secondary.path, locked.path].contains($0.workspace) }
@@ -111,6 +150,13 @@ import AppKit
             && [global, globalTopic, added].allSatisfy { fm.fileExists(atPath: $0.path) }
         recheck.performClick(nil); clear.performClick(nil)
         checks["recheckedGlobalCleanupIncludesMainAndAllTopics"] = moved.count == 6 && [global, globalTopic, added].allSatisfy { !fm.fileExists(atPath: $0.path) }
+        guard let receipt = try globalPage.captureSettingsRecovery() else { throw PetError("未记录清理结果") }
+        let reopenedResult = try AgentMemoryCleanupPage.reopened(receipt, store: tasks)
+        try reopenedResult.restoreSettingsRecovery(receipt)
+        checks["cleanupCompletedReceiptReopensWithoutAnyAction"] = reopenedResult.pageContentView.flatMap {
+            locate($0, "memory-cleanup-trash", as: NSButton.self)
+        }?.isHidden == true && moved.count == 6
+        reopenedResult.window?.close()
         globalPage.window?.close()
 
         let betaPlan = try AgentMemoryCleanup.preview(workspace: beta.path, store: tasks)

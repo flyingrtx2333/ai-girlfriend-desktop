@@ -259,7 +259,18 @@ import UniformTypeIdentifiers
         return !task.archived && ![.running, .waiting].contains(task.status)
     }
     @objc private func createMemoryTopic() {
-        guard let scope = memoryCatalogScope, let window = presentingWindow, !window.hasBlockingDialog, topicEditor == nil, memoryEditable, canLeave() else { return }
+        guard let scope = memoryCatalogScope, let window = presentingWindow, !window.hasBlockingDialog, topicEditor == nil, memoryEditable else { return }
+        if settingsHostWindow != nil, memorySettingsTarget != nil {
+            do {
+                let destination = try AgentMemory.topicDestination(scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace)
+                let wasDirty = dirty
+                guard canLeave() else { return }
+                if wasDirty { refreshCatalog(selecting: selection) }
+                presentSettingsChild(makeTopicPage(scope, destination: destination))
+            } catch { state.stringValue = error.localizedDescription }
+            return
+        }
+        guard canLeave() else { return }
         var created: AgentMemoryDocument?
         let editor = AgentNameEditor(title: "新建记忆主题", label: "主题文件名", value: "", actionTitle: "创建", save: { [weak self] name in
             guard let self, memoryEditable else { throw PetError("此记忆当前只读") }
@@ -271,6 +282,23 @@ import UniformTypeIdentifiers
         })
         topicEditor = editor
         editor.begin(in: window)
+    }
+    private func makeTopicPage(_ scope: AgentMemoryScope, destination: AgentMemory.TopicDestination) -> AgentMemoryTopicPage {
+        let page = AgentMemoryTopicPage(destination: destination, scope: settingsContext?.title ?? scope.title) { [weak self] name in
+            guard let self, memoryEditable, let target = memorySettingsTarget else { throw PetError("此记忆当前只读") }
+            if scope == .project { try target.context.requireCurrent(store) }
+            return try AgentMemory.createTopic(name, scope: scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace,
+                expectedDestination: destination)
+        }
+        page.onCreated = { [weak self] document in
+            guard let self else { return }
+            refreshCatalog(selecting: document.selection); presentingWindow?.makeFirstResponder(text)
+        }
+        return page
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "memory-topic", let scope = memoryCatalogScope, memorySettingsTarget?.entry == scope else { return nil }
+        return makeTopicPage(scope, destination: try AgentMemoryTopicPage.Recovery.decode(page).destination)
     }
     @objc private func revealMemoryFile() {
         guard let selection, let document = AgentMemoryDocument(selection: selection) else { return }
@@ -299,8 +327,8 @@ import UniformTypeIdentifiers
         var version = 1
         let target: MemorySettingsTarget
         let document: String
-        let openedHash: String
-        let exists: Bool
+        let openedHash: String?
+        let exists: Bool?
         let source: AgentMemoryEditorSource?
         let draft: String?
         let viewport: AgentTextViewport?
@@ -318,13 +346,15 @@ import UniformTypeIdentifiers
                   value.target.entry != .project || value.target.context.workspace != nil,
                   let document = AgentMemoryDocument(selection: value.document), value.target.canOpen.contains(document.scope),
                   AgentSettingsRecovery.validHash(value.openedHash), value.source?.valid != false, value.viewport?.valid != false,
-                  (value.source == nil) == [.summary, .effectiveInstructions].contains(document.scope),
+                  (value.openedHash == nil) == (value.exists == nil),
+                  value.openedHash != nil || value.source == nil && value.draft == nil && value.viewport == nil,
+                  value.openedHash == nil || (value.source == nil) == [.summary, .effectiveInstructions].contains(document.scope),
                   document.scope != .effectiveInstructions || value.draft == nil else { throw PetError("原记忆范围或草稿无效，记录已保留") }
             return value
         }
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        guard let memorySettingsTarget, topicEditor == nil, let selection, let openedHash, let openedMemoryExists else { return nil }
+        guard let memorySettingsTarget, topicEditor == nil, let selection else { return nil }
         let value = try MemorySettingsRecovery(target: memorySettingsTarget, document: selection, openedHash: openedHash,
             exists: openedMemoryExists, source: openedMemorySource, draft: dirty ? text.string : nil, viewport: captureTextViewport())
         let page = try AgentSettingsRecovery.page("memory-editor", value)
@@ -345,14 +375,16 @@ import UniformTypeIdentifiers
             openedMemoryWorkspace = memorySettingsTarget.context.workspace; openedMemorySource = value.source
             openedMemoryExists = value.exists; openedHash = value.openedHash
             text.string = draft; text.isEditable = memoryEditable; dirty = true
-            save.isHidden = false; save.isEnabled = memoryEditable; revealMemory.isEnabled = sameSource && value.exists
+            save.isHidden = false; save.isEnabled = memoryEditable; revealMemory.isEnabled = sameSource && value.exists == true
             state.stringValue = unchanged ? "已恢复未保存内容" : "原文件已变化，草稿已恢复"
             if let document = AgentMemoryDocument(selection: value.document) { updateMemoryHeading(document) }
             updateMemoryPicker(); text.undoManager?.removeAllActions()
             try prepareTextViewport(value.viewport)
-        } else {
+        } else if value.openedHash != nil {
             guard sameSource else { throw PetError("原记忆文件暂不可用，阅读位置已保留") }
             if openedHash == value.openedHash { try prepareTextViewport(value.viewport) }
+        } else if selection != value.document {
+            throw PetError("原记忆页面暂不可用，恢复记录已保留")
         }
         scheduleTextViewport(); onWorkspaceChange?()
     }

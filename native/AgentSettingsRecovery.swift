@@ -84,7 +84,8 @@ enum AgentSettingsRecovery {
                   pages.allSatisfy({ $0.state.count <= 20_000_000 }), AgentSettingsRecovery.validScroll(y) else { return false }
             let kinds = pages.map(\.kind)
             switch (category, root) {
-            case ("memory", "memory"): return kinds == [root] || kinds == [root, "memory-editor"]
+            case ("memory", "memory"):
+                return kinds == [root] || kinds == [root, "memory-editor"] || kinds == [root, "memory-editor", "memory-topic"] || kinds == [root, "memory-cleanup"]
             case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
                 return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
             case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
