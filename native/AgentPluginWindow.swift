@@ -373,10 +373,11 @@ import UniformTypeIdentifiers
     private struct Recovery: Codable {
         var version = 1
         let plugin: String, receiptHash: String, revision: String?, y: Double
+        let selectedVisible: Bool?
     }
     private let table = AgentSettingsCatalogTable(), status = AgentSettingsStatusField("插件历史状态")
     private var revisions: [AgentPluginRevision] = []
-    private var pendingY: Double?
+    private var pendingRecovery: Recovery?
     private(set) var item: AgentPluginInstallation
     var makeReview: ((AgentPluginRevision) throws -> AgentPluginReviewPage)?
     override var usesInternalScrolling: Bool { true }
@@ -404,21 +405,25 @@ import UniformTypeIdentifiers
     }
     override func settingsDidAppear() {
         super.settingsDidAppear(); presentingWindow?.makeFirstResponder(table)
-        guard pendingY != nil else { return }
+        guard pendingRecovery != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, isPageVisible, let y = pendingY, let scroll = table.enclosingScrollView else { return }
+            guard let self, isPageVisible, let value = pendingRecovery, let scroll = table.enclosingScrollView else { return }
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
-            AgentSettingsRecovery.restoreScroll(y, to: scroll); pendingY = nil
+            AgentSettingsRecovery.restoreScroll(value.y, to: scroll)
+            if value.selectedVisible == true, table.selectedRow >= 0 { table.scrollRowToVisible(table.selectedRow) }
+            pendingRecovery = nil; onSettingsRecoveryChange?()
         }
     }
+    private func recoveryPosition() -> Recovery {
+        Recovery(plugin: item.id, receiptHash: item.receiptHash, revision: selectedRevision?.directory,
+            y: max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0), selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: table))
+    }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        let y = pendingY ?? max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0)
-        return try AgentSettingsRecovery.page("plugin-history", Recovery(plugin: item.id, receiptHash: item.receiptHash,
-            revision: selectedRevision?.directory, y: y))
+        try AgentSettingsRecovery.page("plugin-history", pendingRecovery ?? recoveryPosition())
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "plugin-history" else { throw PetError("设置记录不属于插件历史") }
-        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "plugin", "receiptHash", "revision", "y"])
+        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "plugin", "receiptHash", "revision", "y", "selectedVisible"])
         let value = try JSONDecoder().decode(Recovery.self, from: page.state)
         guard value.version == 1, value.plugin == item.id, value.receiptHash == item.receiptHash, AgentSettingsRecovery.validScroll(value.y) else {
             throw PetError("当前插件版本已变化，请重新打开历史版本")
@@ -427,7 +432,7 @@ import UniformTypeIdentifiers
             guard let row = revisions.firstIndex(where: { $0.directory == revision }) else { throw PetError("原历史版本已不可用，审阅记录已保留") }
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
-        pendingY = value.y
+        pendingRecovery = value
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
         guard page.kind == "plugin-history-review" else { return nil }
@@ -443,13 +448,14 @@ import UniformTypeIdentifiers
     }
     func didRestore(_ item: AgentPluginInstallation) {
         let previous = selectedRevision
+        pendingRecovery = nil
         refresh(item)
         if let previous, let row = revisions.firstIndex(of: previous) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false); table.scrollRowToVisible(row) }
         status.stringValue = "已恢复，插件已停用"; presentingWindow?.makeFirstResponder(table); onSettingsRecoveryChange?()
     }
     func showFailure(_ error: Error) { status.showSaveFailure(error) }
     func tableViewSelectionDidChange(_ notification: Notification) { onSettingsRecoveryChange?() }
-    @objc private func scrolled(_ notification: Notification) { if pendingY == nil { onSettingsRecoveryChange?() } }
+    @objc private func scrolled(_ notification: Notification) { if pendingRecovery == nil { onSettingsRecoveryChange?() } }
     func numberOfRows(in tableView: NSTableView) -> Int { revisions.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard revisions.indices.contains(row) else { return nil }
@@ -463,7 +469,11 @@ import UniformTypeIdentifiers
     }
     @objc private func openSelection() {
         guard let selectedRevision, let makeReview else { return }
-        do { presentSettingsChild(try makeReview(selectedRevision)) }
+        do {
+            let review = try makeReview(selectedRevision)
+            if settingsHostWindow != nil { pendingRecovery = recoveryPosition() }
+            presentSettingsChild(review)
+        }
         catch { showFailure(error) }
     }
 }

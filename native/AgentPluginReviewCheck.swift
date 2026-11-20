@@ -219,6 +219,7 @@ import AppKit
             text.setSelectedRange(range); text.scrollRangeToVisible(range); return range
         }
         var checks: [String: Bool] = [:]
+        host.setContentSize(NSSize(width: 1200, height: 774))
         guard pane.show(category: "extensions", identity: context.identity, scope: "设置项目", recoveryContext: context, make: make),
               let manager = pane.currentController as? AgentPluginWindow else { throw PetError("缺少插件历史入口") }
         try manager.selectInstallation(current.id)
@@ -271,6 +272,9 @@ import AppKit
         checks["cancelAndListReopenPreserveOriginalBackupAndScroll"] = listState.pages.map(\.kind) == ["plugins", "plugin-history"]
             && returnedRows.selectedRow == oldest && reopenedRows.selectedRow == oldest
             && (reopenedRows.enclosingScrollView?.contentView.bounds.minY ?? 0) > 0
+        let restoredVisible = reopenedRows.enclosingScrollView?.documentVisibleRect ?? .zero
+        let selectedRow = reopenedRows.rect(ofRow: oldest)
+        checks["narrowHistoryShowsThePreviouslyVisibleSelectedRevision"] = selectedRow.minY >= restoredVisible.minY - 1 && selectedRow.maxY <= restoredVisible.maxY + 1
         let active = try openReview(), archivedReadme = archived.root.appendingPathComponent("payload/README.md")
         let old = try Data(contentsOf: archivedReadme)
         func replaceArchive(_ data: Data) throws {

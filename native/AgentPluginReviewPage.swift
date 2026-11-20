@@ -8,6 +8,7 @@ import AppKit
         var version = 1
         let target: HistoryTarget, showingFiles: Bool, selectedPath: String?, selectedComponent: Int
         let query: String, fullText: Bool, tableY: Double
+        let selectedVisible: Bool?
         let filterSelection: AgentTextViewport.Selection?, reading: AgentTextViewport?
     }
     private struct Item { let title: String, detail: String }
@@ -244,12 +245,13 @@ import AppKit
         let reading = comparisonJob == nil ? try AgentTextViewport(reader) : nil
         return try AgentSettingsRecovery.page("plugin-history-review", HistoryRecovery(target: historyTarget, showingFiles: showingFiles,
             selectedPath: selectedPath, selectedComponent: selectedComponent, query: query, fullText: comparison.selectedSegment == 1,
-            tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), filterSelection: filterSelection, reading: reading))
+            tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: list),
+            filterSelection: filterSelection, reading: reading))
     }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
         guard page.kind == "plugin-history-review", let historyTarget else { throw PetError("设置记录不属于插件历史审阅") }
         let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "showingFiles", "selectedPath",
-            "selectedComponent", "query", "fullText", "tableY", "filterSelection", "reading"])
+            "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "filterSelection", "reading"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
         if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
         if let text = object["reading"] { try AgentTextViewport.validateObject(text) }
@@ -270,6 +272,7 @@ import AppKit
             guard let self, isPageVisible, comparisonJob == nil, let value = pendingHistory else { return }
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let scroll = list.enclosingScrollView { AgentSettingsRecovery.restoreScroll(value.tableY, to: scroll) }
+            if value.selectedVisible == true, list.selectedRow >= 0 { list.scrollRowToVisible(list.selectedRow) }
             value.reading?.apply(to: diff.isHidden ? preview : diff.text, focus: value.filterSelection == nil)
             if let selection = value.filterSelection, !search.isHidden, presentingWindow?.makeFirstResponder(search) == true {
                 (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
