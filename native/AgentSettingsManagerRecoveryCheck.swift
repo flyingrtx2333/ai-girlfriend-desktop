@@ -25,7 +25,7 @@ import AppKit
             return value
         }
         func button(_ window: ControlWindow, _ title: String) throws -> NSButton {
-            guard let value = find(window.window?.contentView, NSButton.self, { $0.isEnabled && (title == "返回 " ? $0.title.hasPrefix(title) : $0.title == title) }) else {
+            guard let value = find(window.window?.contentView, NSButton.self, { $0.isEnabled && (title == "返回 " ? $0.accessibilityLabel()?.hasPrefix(title) == true : $0.title == title) }) else {
                 throw PetError("缺少设置操作 " + title)
             }
             return value

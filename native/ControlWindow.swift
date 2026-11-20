@@ -646,6 +646,7 @@ final class FormDocumentView: NSView {
             checks[kind + "CompactDetailUsesActualHeadingScopeAndBack"] = settingsHeading.stringValue == title &&
                 scopeLabel?.isHiddenOrHasHiddenAncestor == false && !scope.isEmpty && scope.minX >= titleFrame.maxX - 1 &&
                 back?.isHiddenOrHasHiddenAncestor == false && back?.accessibilityLabel()?.hasPrefix("返回 ") == true &&
+                back?.title.isEmpty == true && back?.image != nil && back?.imagePosition == .imageOnly && back?.toolTip == back?.accessibilityLabel() &&
                 backFrame.size == NSSize(width: 28, height: 28) && abs(backFrame.midY - titleFrame.midY) < 1 &&
                 backFrame.maxX <= titleFrame.minX && navigation?.isHidden == true
             let buttons = settingsWindowActions.arrangedSubviews.compactMap { $0 as? NSButton }
@@ -3041,7 +3042,7 @@ final class FormDocumentView: NSView {
             checks["managedSearchHasNoUnrelatedSave-" + query] = !settingsResults.isEmpty && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true
         }
         search("mCp")
-        checks["settingsSearchFiltersSidebarToMatchingCategories"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["monitor", "extensions"]
+        checks["settingsSearchFiltersSidebarToMatchingCategories"] = categoryButtons.enumerated().filter { !$0.element.isHidden }.map { settingsCategories[$0.offset].0 } == ["monitor", "imports", "extensions"]
         checks["settingsSearchFiltersSidebarGroupHeadings"] = settingsGroupLabels.filter { !$0.1.isHidden }.map(\.0) == ["个人", "集成"]
         search("Token")
         checks["regularSettingsSearchShowsNavigationWithoutEditableFieldsOrSave"] = settingsResults.contains { $0.category == "model" } && find(NSTextField.self, in: settingsForm, matching: { $0.isEditable }) == nil && generalSettingsSave?.isHidden == true && settingsFooter?.isHidden == true

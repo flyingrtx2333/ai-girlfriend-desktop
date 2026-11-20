@@ -581,7 +581,6 @@ struct AgentSettingsCatalogGroup {
             host.insertArrangedSubview(back, at: 0); host.addArrangedSubview(context)
             if titleHost != nil { NSLayoutConstraint.activate(compactBackSize) }
             else { NSLayoutConstraint.deactivate(compactBackSize) }
-            back.imagePosition = titleHost == nil ? .imageLeading : .imageOnly
             scopeWidth = titleHost.map { context.widthAnchor.constraint(lessThanOrEqualTo: $0.widthAnchor, multiplier: 0.42) }
             scopeWidth?.isActive = true
             updateHeader()
@@ -744,8 +743,10 @@ struct AgentSettingsCatalogGroup {
         context.isHidden = entries.isEmpty || (detail == nil && !sourceRow.isHidden) || (titleHost != nil && !actionsEnabled)
         let hasParent = entries.count > 1
         back.isHidden = !hasParent || (titleHost != nil && !actionsEnabled)
-        back.title = hasParent ? "返回 " + entries[entries.count - 2].title : "返回"
-        back.toolTip = back.title; back.setAccessibilityLabel(back.title)
+        let backLabel = hasParent ? "返回 " + entries[entries.count - 2].title : "返回"
+        back.title = titleHost == nil ? backLabel : ""
+        back.imagePosition = titleHost == nil ? .imageLeading : .imageOnly
+        back.toolTip = backLabel; back.setAccessibilityLabel(backLabel)
         tabs.isHidden = entries.count > 1 || keys.count < 2
         empty.isHidden = !entries.isEmpty
         header.isHidden = titleHost != nil ? tabs.isHidden : ["hooks", "worktrees"].contains(category) && entries.count == 1
