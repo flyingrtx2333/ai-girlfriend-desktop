@@ -47,7 +47,7 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
-    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "git"]
+    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git"]
     struct Navigation: Codable, Equatable, Sendable {
         var version = 1
         var category: String, page: String?
@@ -90,6 +90,7 @@ enum AgentSettingsRecovery {
             case ("extensions", "plugins"):
                 return kinds == [root] || kinds == [root, "plugin-settings"] || kinds == [root, "plugin-history"]
                     || kinds == [root, "plugin-history", "plugin-history-review"]
+            case ("extensions", "mcp"): return kinds == [root] || kinds == [root, "mcp-detail"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
             case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
             case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
@@ -106,7 +107,7 @@ enum AgentSettingsRecovery {
         for page in value["pages"] as? [Any] ?? [] { _ = try object(page, keys: ["kind", "state"]) }
     }
     static func validateContext(_ raw: Any) throws {
-        let context = try object(raw, keys: ["taskID", "workspace", "taskWorkspace", "scope", "mode", "archived", "ruleDirectories"])
+        let context = try object(raw, keys: ["taskID", "workspace", "taskWorkspace", "scope", "mode", "archived", "ruleDirectories", "managedProject"])
         if let scope = context["scope"], !(scope is NSNull) { _ = try object(scope, keys: ["group", "folders", "primary"]) }
         for directory in context["ruleDirectories"] as? [Any] ?? [] { _ = try object(directory, keys: ["workspace", "path"]) }
     }
@@ -144,7 +145,8 @@ enum AgentSettingsRecovery {
         var catalogY: Double? = nil
         var visibleSelectionHeight: Double? = nil
     }
-    private let text: NSTextView, fields: [String: NSTextField], catalog: NSView
+    private let text: NSTextView, catalog: NSView
+    private var fields: [String: NSTextField]
     private weak var form: NSScrollView?
     private weak var observedCatalogClip: NSClipView?
     private var tracksCatalogScroll = false
@@ -160,8 +162,14 @@ enum AgentSettingsRecovery {
         if let clip = text.enclosingScrollView?.contentView { clip.postsBoundsChangedNotifications = true; NotificationCenter.default.addObserver(self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification, object: clip) }
     }
     func trackForm(_ form: NSScrollView?) {
+        if let clip = self.form?.contentView { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: clip) }
         self.form = form; tracksCatalogScroll = true
         if let clip = form?.contentView { observeScroll(clip) }
+    }
+    func trackFields(_ fields: [String: NSTextField]) {
+        self.fields = fields
+        cached = cached.filter { fields[$0.key] != nil }
+        if focus != "catalog", fields[focus] == nil { focus = "body" }
     }
     private func observeScroll(_ clip: NSClipView) {
         clip.postsBoundsChangedNotifications = true
@@ -261,6 +269,9 @@ enum AgentSettingsRecovery {
             else if let field = fields[value.focus], let selection = value.fields[value.focus]?.selection { (field.currentEditor() as? NSTextView)?.setSelectedRange(selection.range) }
             if let y = value.formY, let form, form.window === window { applyScroll(y, to: form) }
             if target === text, value.visibleSelectionHeight != nil, let form, form.window === window { revealSelection(in: form) }
+            if target is NSTextField, let document = form?.documentView, target.isDescendant(of: document) {
+                document.scrollToVisible(target.convert(target.bounds, to: document))
+            }
             pending = nil
         }
     }

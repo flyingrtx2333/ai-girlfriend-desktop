@@ -101,7 +101,7 @@ final class FormDocumentView: NSView {
     var onSettingsRecoveryChange: (() -> Void)? { didSet { settingsPageHost.onRecoveryChange = onSettingsRecoveryChange } }
     var settingsRecoveryControllers: [AgentSettingsPageController] { settingsPageHost.controllers }
     func checkSelectSettingsRecoveryPage(_ key: String) throws {
-        guard ["--settings-editor-recovery-check", "--settings-editor-recovery-ui"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { throw PetError("设置恢复验收未启用") }
+        guard ["--settings-editor-recovery-check", "--settings-editor-recovery-ui", "--settings-mcp-recovery-check"].contains(where: CommandLine.arguments.contains), !CommandLine.arguments.contains("--live-agent") else { throw PetError("设置恢复验收未启用") }
         settingsPageHost.selectPage(key)
     }
     private var settingsSourceFolders: [String: String] = [:]

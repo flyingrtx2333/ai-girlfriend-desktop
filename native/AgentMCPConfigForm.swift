@@ -2,6 +2,13 @@ import AppKit
 import BlueFatFishMCP
 
 @MainActor final class AgentMCPConfigForm: NSObject, NSTextFieldDelegate {
+    struct DraftRow: Codable {
+        let key: String?, value: String
+    }
+    struct Draft: Codable {
+        let source: String, fields: [String: String], transport: Int, authentication: Int
+        let arguments: [DraftRow], environment: [DraftRow], headers: [DraftRow]
+    }
     private(set) var view = NSScrollView()
     private let name = AgentDialogTextField(), transport = NSPopUpButton(), command = AgentDialogTextField(), directory = AgentDialogTextField(), address = AgentDialogTextField(), bearer = AgentSecureTextField(), timeout = AgentDialogTextField()
     private let authentication = NSPopUpButton(), clientID = AgentDialogTextField()
@@ -11,6 +18,7 @@ import BlueFatFishMCP
     private let headers = AgentMCPConfigRows(title: "请求头", paired: true, secure: true, limit: 64)
     private var local = NSStackView(), remote = NSStackView()
     private let original: [String: Any]
+    private let source: String
     var onChange: (() -> Void)?
     var firstInput: NSView { name.isEnabled ? name : type == "stdio" ? command : address }
     var type: String { ["stdio", "http", "sse"][max(0, transport.indexOfSelectedItem)] }
@@ -20,7 +28,7 @@ import BlueFatFishMCP
         guard document.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后再切换。") }
         let value = try AgentConfigurationJSON.object(Data(document.utf8))
         guard let title = value["name"] as? String, let type = value["type"] as? String, ["stdio", "http", "sse"].contains(type) else { throw PetError("请先载入单个连接器的有效 JSON 配置") }
-        let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID"]
+        let keys = AgentMCP.configurationKeys
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("请先在 JSON 中处理未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard value["args"] == nil || value["args"] is [String], value["env"] == nil || value["env"] is [String: String], value["headers"] == nil || value["headers"] is [String: String],
               ["command", "cwd", "url", "bearerToken", "oauthClientID"].allSatisfy({ value[$0] == nil || value[$0] is String }), value["timeoutSeconds"] == nil || value["timeoutSeconds"] is Double else { throw PetError("JSON 配置字段格式无效，原文已保留") }
@@ -28,7 +36,7 @@ import BlueFatFishMCP
             throw PetError("请先在 JSON 中修正 OAuth 认证配置")
         }
         if let raw = value["timeoutSeconds"], CFGetTypeID(raw as CFTypeRef) == CFBooleanGetTypeID() { throw PetError("timeoutSeconds 必须是秒数") }
-        original = value
+        original = value; source = document
         super.init()
         name.stringValue = title; name.isEnabled = !pluginLocked
         transport.addItems(withTitles: ["STDIO", "HTTP", "SSE"]); transport.selectItem(at: ["stdio", "http", "sse"].firstIndex(of: type)!); transport.isEnabled = !pluginLocked
@@ -56,7 +64,7 @@ import BlueFatFishMCP
         redirect.setAccessibilityLabel("MCP 回调地址"); redirect.toolTip = "实际授权会使用可用的本机端口。"
         redirectRow = AgentSettingsStyle.formRow("回调地址", redirect, trailing: true)
         bearerRow = AgentSettingsStyle.labeledField("Bearer Token", bearer)
-        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, redirectRow, bearerRow, headers.view])
+        remote = AgentSettingsStyle.section("远程连接", id: "mcp-http", rows: [AgentSettingsStyle.labeledField("地址", address), authenticationRow, clientRow, redirectRow, bearerRow, headers.view], separatesRows: false)
         view = AgentSettingsStyle.form([
             AgentSettingsStyle.section("基本信息", id: "mcp-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.formRow("传输方式", transport, trailing: true)]),
             local, remote, AgentSettingsStyle.section("连接选项", id: "mcp-timeout", rows: [AgentSettingsStyle.labeledField("超时（毫秒）", timeout)])
@@ -84,6 +92,77 @@ import BlueFatFishMCP
         name.isEnabled = enabled && !pluginLocked; transport.isEnabled = enabled && !pluginLocked
         for rows in [arguments, environment, headers] { rows.setEnabled(enabled) }
     }
+    private var draftFields: [String: NSTextField] {
+        ["name": name, "command": command, "cwd": directory, "url": address, "bearerToken": bearer, "oauthClientID": clientID, "timeout": timeout]
+    }
+    var recoveryFields: [String: NSTextField] {
+        var fields = draftFields.filter { $0.key != "bearerToken" }
+        for (group, rows) in [("arg", arguments), ("env", environment), ("header", headers)] {
+            for (index, field) in rows.recoveryFields.enumerated() { fields[group + "-" + String(index)] = field }
+        }
+        return fields
+    }
+    func captureDraft() -> Draft? {
+        let draft = Draft(source: source, fields: draftFields.mapValues(\.stringValue), transport: transport.indexOfSelectedItem,
+                          authentication: authentication.indexOfSelectedItem, arguments: arguments.draftRows,
+                          environment: environment.draftRows, headers: headers.draftRows)
+        return Self.canPreserveDraft(draft) ? draft : nil
+    }
+    convenience init(draft: Draft, pluginLocked: Bool) throws {
+        guard Self.canPreserveDraft(draft) else { throw PetError("连接器表单草稿无效，原记录已保留") }
+        try self.init(document: draft.source, pluginLocked: pluginLocked)
+        for (key, input) in draftFields { input.stringValue = draft.fields[key] ?? "" }
+        transport.selectItem(at: draft.transport); authentication.selectItem(at: draft.authentication)
+        arguments.restore(draft.arguments); environment.restore(draft.environment); headers.restore(draft.headers)
+        updateTransport()
+    }
+    private static func canPreserveDraft(_ draft: Draft) -> Bool {
+        let keys: Set<String> = ["name", "command", "cwd", "url", "bearerToken", "oauthClientID", "timeout"]
+        let paired = draft.environment + draft.headers
+        return (0...2).contains(draft.transport) && (0...1).contains(draft.authentication) && Set(draft.fields.keys) == keys &&
+            draft.fields.values.allSatisfy { $0.utf8.count <= 64_000 } && masked(draft.fields["bearerToken"] ?? "") &&
+            draft.arguments.count <= 100 && draft.environment.count <= 64 && draft.headers.count <= 64 &&
+            draft.arguments.allSatisfy { $0.key == nil && $0.value.utf8.count <= 64_000 } &&
+            paired.allSatisfy { ($0.key?.utf8.count ?? Int.max) <= 64_000 && masked($0.value) } &&
+            canPreserveDocument(draft.source)
+    }
+    private static func masked(_ value: String) -> Bool {
+        value.isEmpty || value == AgentMCP.placeholder || value == AgentMCP.importPlaceholder
+    }
+
+    static func canPreserveDocument(_ text: String) -> Bool {
+        guard text.utf8.count <= 64_000, let value = try? AgentConfigurationJSON.object(Data(text.utf8)),
+              Set(value.keys).isSubset(of: AgentMCP.configurationKeys) else { return false }
+        let plainFields = AgentMCP.configurationKeys.subtracting(["env", "headers", "args", "timeoutSeconds"])
+        guard plainFields.allSatisfy({ value[$0] == nil || value[$0] is String }),
+              value["args"] == nil || value["args"] is [String],
+              value["timeoutSeconds"] == nil || value["timeoutSeconds"] is NSNumber else { return false }
+        // Check all occurrences before preserving the raw JSON, including duplicate keys.
+        let raw = text as NSString
+        let range = NSRange(location: 0, length: raw.length)
+        var maskedThrough = 0
+        for token in draftKeys.matches(in: text, range: range) {
+            if token.range.location < maskedThrough { continue }
+            guard let field = try? JSONDecoder().decode(String.self, from: Data(raw.substring(with: token.range(at: 1)).utf8)) else { return false }
+            let tail = NSRange(location: NSMaxRange(token.range), length: raw.length - NSMaxRange(token.range))
+            switch field.lowercased() {
+            case "bearertoken": if draftMaskedValue.firstMatch(in: text, options: .anchored, range: tail) == nil { return false }
+            case "env", "headers":
+                guard let map = draftMaskedMap.firstMatch(in: text, options: .anchored, range: tail) else { return false }
+                maskedThrough = NSMaxRange(map.range)
+            default: break
+            }
+        }
+        return true
+    }
+    private static let draftString = #""(?:\\.|[^"\\])*""#
+    private static let draftKeys = try! NSRegularExpression(pattern: "(" + draftString + #")\s*:"#)
+    private static let draftPlaceholder = #""(?:\$\{KEYCHAIN\}|\$\{INPUT_REQUIRED\})?""#
+    private static let draftMaskedValue = try! NSRegularExpression(pattern: #"\s*"# + draftPlaceholder)
+    private static let draftMaskedMap: NSRegularExpression = {
+        let entry = draftString + #"\s*:\s*"# + draftPlaceholder
+        return try! NSRegularExpression(pattern: #"\s*\{\s*(?:"# + entry + #"(?:\s*,\s*"# + entry + #")*)?\s*\}"#)
+    }()
     func document() throws -> String {
         var value: [String: Any] = ["name": name.stringValue, "type": type]
         if type == "stdio" {
@@ -149,6 +228,16 @@ import BlueFatFishMCP
     }
     func controlTextDidChange(_ notification: Notification) { onChange?() }
     func values() -> [String] { entries.map { $0.value.stringValue } }
+    var recoveryFields: [NSTextField] { entries.compactMap { secure ? $0.key : $0.value } }
+    var draftRows: [AgentMCPConfigForm.DraftRow] {
+        entries.map { .init(key: $0.key?.stringValue, value: $0.awaitsValue && $0.value.stringValue.isEmpty ? AgentMCP.importPlaceholder : $0.value.stringValue) }
+    }
+    func restore(_ draft: [AgentMCPConfigForm.DraftRow]) {
+        for entry in entries { rows.removeArrangedSubview(entry.row); entry.row.removeFromSuperview() }
+        entries.removeAll()
+        for entry in draft { insert(entry.key, entry.value) }
+        relabel()
+    }
     func pairs() throws -> [String: String] {
         var result: [String: String] = [:]
         for entry in entries {

@@ -456,11 +456,11 @@ struct AgentSettingsCatalogGroup {
         NSLayoutConstraint.activate([heading.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16), heading.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16), heading.topAnchor.constraint(equalTo: view.topAnchor), heading.bottomAnchor.constraint(equalTo: view.bottomAnchor)])
         return view
     }
-    static func section(_ title: String, id: String, rows: [NSView]) -> NSStackView {
+    static func section(_ title: String, id: String, rows: [NSView], separatesRows: Bool = true) -> NSStackView {
         let heading = sectionHeading(title)
         let body = NSStackView(); body.orientation = .vertical; body.alignment = .leading; body.spacing = 10
         for row in rows {
-            if !body.arrangedSubviews.isEmpty { let line = divider(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
+            if separatesRows, !body.arrangedSubviews.isEmpty { let line = divider(); body.addArrangedSubview(line); line.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true }
             body.addArrangedSubview(row); row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
         }
         let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)

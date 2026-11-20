@@ -3,6 +3,16 @@ import UniformTypeIdentifiers
 
 @MainActor final class AgentMCPWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate, NSTabViewDelegate, NSWindowDelegate {
     private struct CatalogRow { let heading: String?; let server: AgentMCPServer? }
+    private struct CatalogRecovery: Codable {
+        var version = 1
+        let workspace: String?, selected: String?, query: String, y: Double
+        let searchSelection: AgentTextViewport.Selection?, searchFocused: Bool, selectedVisible: Bool
+    }
+    private struct DetailRecovery: Codable {
+        var version = 1
+        let server: String?, revision: String?, text: String, dirty: Bool
+        let json: Bool, toolTab: Bool, form: AgentMCPConfigForm.Draft?, viewport: AgentSettingsDraftViewport.State
+    }
     private let service: AgentMCP, workspace: String?, sessionOwner = "manager-" + UUID().uuidString
     private let table = AgentMCPSettingsTable(), editor = NSTextView(), tools = AgentMCPToolCatalog()
     private let configurationKind = NSSegmentedControl(labels: ["表单", "JSON"], trackingMode: .selectOne, target: nil, action: nil)
@@ -14,6 +24,8 @@ import UniformTypeIdentifiers
     private let detailKinds = NSSegmentedControl(labels: ["配置", "工具"], trackingMode: .selectOne, target: nil, action: nil)
     private let search = NSSearchField(), listState = AgentSettingsStatusField("连接器列表状态"), empty = NSTextField(labelWithString: "暂无连接器")
     private var catalogRows: [CatalogRow] = [], detailPage: AgentMCPDetailPage?, requestedDetail = false
+    private var pendingCatalog: CatalogRecovery?, catalogRestoreScheduled = false
+    private lazy var draftViewport = AgentSettingsDraftViewport(text: editor, fields: [:], catalog: table) { [weak self] in self?.editorWindow }
     private let enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let connection = AgentDialogButton(title: "连接", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil)
@@ -98,7 +110,16 @@ import UniformTypeIdentifiers
             return true
         }
         page.onAppear = { [weak self] in self?.focusDetail() }
+        page.onLayout = { [weak self] in self?.draftViewport.schedule() }
+        page.onCapture = { [weak self] in try self?.captureDetailRecovery() }
+        page.onRestore = { [weak self] value in try self?.restoreDetailRecovery(value) }
         detailPage = page
+        draftViewport.onChange = { [weak self] in self?.detailPage?.onSettingsRecoveryChange?() }
+        if let clip = table.enclosingScrollView?.contentView {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(catalogScrolled), name: NSView.boundsDidChangeNotification, object: clip)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(searchSelectionChanged), name: NSTextView.didChangeSelectionNotification, object: nil)
         service.onChange = { [weak self] in self?.refreshCatalog() }
         reload()
     }
@@ -106,47 +127,58 @@ import UniformTypeIdentifiers
     override func settingsDidAppear() {
         super.settingsDidAppear(); service.onChange = { [weak self] in self?.refreshCatalog() }
         if requestedDetail { requestedDetail = false; showDetail() }
-        else { refreshCatalog(); presentingWindow?.makeFirstResponder(table) }
+        else { refreshCatalog(); if pendingCatalog == nil { presentingWindow?.makeFirstResponder(table) }; scheduleCatalogRestore() }
     }
+    override func pageDidLayout() { scheduleCatalogRestore() }
     override func canLeaveSettings() -> Bool { editingPage?.settingsHostWindow != nil ? true : super.canLeaveSettings() }
     private func showDetail() {
         guard let detailPage else { return }
         if editingPage != nil { detailPage.settingsDidAppear() }
         else { presentSettingsChild(detailPage) }
     }
-    @objc private func filterCatalog() { rebuildRows() }
+    @objc private func filterCatalog() { rebuildRows(); onSettingsRecoveryChange?() }
+    @objc private func catalogScrolled() { if pendingCatalog == nil { onSettingsRecoveryChange?() } }
+    @objc private func searchSelectionChanged(_ notification: Notification) {
+        if let input = search.currentEditor(), notification.object as? NSText === input, pendingCatalog == nil { onSettingsRecoveryChange?() }
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) { if pendingCatalog == nil { onSettingsRecoveryChange?() } }
     private func attachConfiguration(_ view: NSView) {
         configurationHost.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([view.leadingAnchor.constraint(equalTo: configurationHost.leadingAnchor), view.trailingAnchor.constraint(equalTo: configurationHost.trailingAnchor), view.topAnchor.constraint(equalTo: configurationHost.topAnchor), view.bottomAnchor.constraint(equalTo: configurationHost.bottomAnchor)])
     }
     private func installForm() throws {
-        let next = try AgentMCPConfigForm(document: editor.string, pluginLocked: selected?.plugin != nil)
+        setForm(try AgentMCPConfigForm(document: editor.string, pluginLocked: selected?.plugin != nil))
+    }
+    private func setForm(_ next: AgentMCPConfigForm) {
         form?.view.removeFromSuperview(); form = next; attachConfiguration(next.view)
         next.onChange = { [weak self, weak next] in
             guard let self, let next else { return }; self.dirty = true
             do { self.editor.string = try next.document(); self.refreshState(); self.state.stringValue = "未保存" }
             catch { self.refreshState(); self.state.stringValue = error.localizedDescription }
+            self.draftViewport.trackFields(next.recoveryFields); self.draftViewport.changed()
         }
     }
     private func applyConfigurationKind() {
         let json = configurationKind.selectedSegment == 1; jsonCard.isHidden = !json; form?.view.isHidden = json
         loadJSON.isHidden = !json || configurationKind.isHidden
         displayedConfiguration = configurationKind.selectedSegment
+        draftViewport.trackForm(json ? nil : form?.view)
+        draftViewport.trackFields(json ? [:] : form?.recoveryFields ?? [:])
     }
     private func prepareConfiguration() {
         do { try installForm() } catch { form?.view.removeFromSuperview(); form = nil; configurationKind.selectedSegment = 1 }
         applyConfigurationKind()
     }
     private func focusDetail() {
-        let target: NSView = tabs.selectedTabViewItem?.identifier as? String == "工具" ? tools : configurationKind.selectedSegment == 0 ? form?.firstInput ?? editor : editor
-        editorWindow?.makeFirstResponder(target)
+        if tabs.selectedTabViewItem?.identifier as? String == "工具" { editorWindow?.makeFirstResponder(tools); return }
+        draftViewport.appear(default: configurationKind.selectedSegment == 0 ? form?.firstInput ?? editor : editor)
     }
     @objc private func changeConfiguration() {
         guard configurationKind.selectedSegment != displayedConfiguration else { return }
         do {
             if configurationKind.selectedSegment == 0 { try installForm() }
             else if let form { editor.string = try form.document() }
-            applyConfigurationKind(); focusDetail()
+            applyConfigurationKind(); draftViewport.changed(); focusDetail()
         } catch { configurationKind.selectedSegment = displayedConfiguration; state.showSaveFailure(error); focusDetail() }
     }
     @objc private func reviewPastedJSON() {
@@ -157,7 +189,95 @@ import UniformTypeIdentifiers
         detailKinds.selectedSegment = tabViewItem.map { tabs.indexOfTabViewItem($0) } ?? 0
         configurationKind.isHidden = detailKinds.selectedSegment != 0
         loadJSON.isHidden = configurationKind.isHidden || configurationKind.selectedSegment != 1
-        if editingPage?.isPageVisible == true { focusDetail() }
+        if editingPage?.isPageVisible == true { focusDetail(); detailPage?.onSettingsRecoveryChange?() }
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        let input = search.currentEditor() as? NSTextView
+        let range = input?.selectedRange()
+        let selectedID = catalogRows.indices.contains(table.selectedRow) ? catalogRows[table.selectedRow].server?.id : selected?.id
+        let current = CatalogRecovery(workspace: workspace, selected: selectedID, query: search.stringValue,
+            y: max(0, table.enclosingScrollView?.contentView.bounds.minY ?? 0),
+            searchSelection: range.map { .init(location: $0.location, length: $0.length) },
+            searchFocused: input != nil && presentingWindow?.firstResponder === input, selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: table))
+        return try AgentSettingsRecovery.page("mcp", pendingCatalog ?? current)
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "mcp" else { throw PetError("设置草稿不属于连接器") }
+        _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+            keys: ["version", "workspace", "selected", "query", "y", "searchSelection", "searchFocused", "selectedVisible"])
+        let saved = try JSONDecoder().decode(CatalogRecovery.self, from: page.state)
+        guard saved.version == 1, saved.workspace == workspace, AgentSettingsRecovery.validScroll(saved.y),
+              saved.searchSelection?.valid(in: saved.query.utf16.count) != false else { throw PetError("原连接器目录范围已变化，草稿已保留") }
+        search.stringValue = saved.query; reload(saved.selected)
+        pendingCatalog = saved
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        page.kind == "mcp-detail" ? detailPage : nil
+    }
+    private func scheduleCatalogRestore() {
+        guard pendingCatalog != nil, !catalogRestoreScheduled else { return }
+        catalogRestoreScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }; catalogRestoreScheduled = false
+            guard let saved = pendingCatalog, isPageVisible, let scroll = table.enclosingScrollView else { return }
+            pageContentView?.layoutSubtreeIfNeeded()
+            AgentSettingsRecovery.restoreScroll(saved.y, to: scroll)
+            if saved.selectedVisible, table.selectedRow >= 0, !AgentSettingsRecovery.selectionIsVisible(in: table) {
+                table.scrollRowToVisible(table.selectedRow)
+            }
+            if saved.searchFocused, presentingWindow?.makeFirstResponder(search) == true, let selection = saved.searchSelection {
+                (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
+            } else if !saved.searchFocused { presentingWindow?.makeFirstResponder(table) }
+            pendingCatalog = nil; onSettingsRecoveryChange?()
+        }
+    }
+    private func captureDetailRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard creating || selected != nil, AgentMCPConfigForm.canPreserveDocument(editor.string) else { return nil }
+        let json = configurationKind.selectedSegment == 1
+        let formDraft = json ? nil : form?.captureDraft()
+        guard json || formDraft != nil else { return nil }
+        var position = try draftViewport.capture()
+        let toolTab = detailKinds.selectedSegment == 1
+        if let form, !json, ["body", "catalog"].contains(position.focus) ||
+            (!toolTab && form.recoveryFields[position.focus]?.isHiddenOrHasHiddenAncestor != false) {
+            if let field = form.recoveryFields.first(where: { $0.value === form.firstInput }) {
+                position.focus = field.key; position.text.focused = false
+            }
+        }
+        return try AgentSettingsRecovery.page("mcp-detail", DetailRecovery(server: selected?.id, revision: selected?.revision,
+            text: editor.string, dirty: dirty, json: json, toolTab: toolTab, form: formDraft, viewport: position))
+    }
+    private func restoreDetailRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "mcp-detail" else { throw PetError("设置草稿不属于连接器配置") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+            keys: ["version", "server", "revision", "text", "dirty", "json", "toolTab", "form", "viewport"])
+        if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
+        let saved = try JSONDecoder().decode(DetailRecovery.self, from: page.state)
+        guard saved.version == 1, (saved.server == nil) == (saved.revision == nil), saved.server != nil || saved.dirty,
+              saved.json == (saved.form == nil), AgentMCPConfigForm.canPreserveDocument(saved.text) else {
+            throw PetError("连接器配置草稿无效，原记录已保留")
+        }
+        let current = items.first { $0.id == saved.server }
+        guard saved.server == nil || current != nil else { throw PetError("原连接器暂不可用，草稿已保留") }
+        if let current, current.revision != saved.revision {
+            guard !saved.dirty else { throw PetError("原连接器配置已变化，草稿已保留") }
+            configurationKind.selectedSegment = saved.json ? 1 : 0
+            open(current); tabs.selectTabViewItem(at: saved.toolTab ? 1 : 0)
+            return
+        }
+        selected = current; select(current?.id); creating = current == nil; dirty = saved.dirty
+        draftViewport.reset(); editor.string = saved.text; editor.undoManager?.removeAllActions()
+        configurationKind.selectedSegment = saved.json ? 1 : 0
+        if let formDraft = saved.form { setForm(try AgentMCPConfigForm(draft: formDraft, pluginLocked: current?.plugin != nil)) }
+        tools.string = ""; applyConfigurationKind(); tabs.selectTabViewItem(at: saved.toolTab ? 1 : 0)
+        refreshState()
+        if dirty {
+            state.stringValue = creating ? "待保存" : "未保存"
+            if let form, !saved.json {
+                do { _ = try form.document() } catch { state.showSaveFailure(error) }
+            }
+        }
+        try draftViewport.restore(saved.viewport)
     }
     @objc private func browseContent() { onBrowseContent?(selected?.id) }
     private func refreshDetailActions() {
@@ -225,7 +345,7 @@ import UniformTypeIdentifiers
         select(next?.id); if let next { open(next) } else { selected = nil; creating = false; dirty = false; editor.string = ""; tools.string = ""; refreshState() }
     }
     private func open(_ server: AgentMCPServer) {
-        do { editor.string = try service.document(server); selected = server; creating = false; dirty = false; prepareConfiguration(); tools.string = ""; editor.undoManager?.removeAllActions(); showTools(); refreshState() }
+        do { editor.string = try service.document(server); selected = server; creating = false; dirty = false; draftViewport.reset(); prepareConfiguration(); tools.string = ""; editor.undoManager?.removeAllActions(); showTools(); refreshState() }
         catch { state.stringValue = error.localizedDescription }
     }
     private func showTools() {
@@ -256,7 +376,7 @@ import UniformTypeIdentifiers
         access.stringValue = (selected?.plugin.map { "插件 " + ((try? AgentPlugins.scope($0.name).name) ?? "") + " · " } ?? "") + (["http", "sse"].contains(type) ? "凭据保存在钥匙串" : type == "stdio" ? "本机程序使用当前账户权限" : "")
         if !dirty { state.stringValue = service.loadError ?? selected.map { service.status($0.id, owner: sessionOwner, workspace: workspace) } ?? "暂无连接器"; state.toolTip = state.stringValue }
     }
-    func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存" }
+    func textDidChange(_ notification: Notification) { dirty = true; refreshState(); state.stringValue = "未保存"; draftViewport.changed() }
     @objc private func create(_ sender: NSMenuItem) {
         guard job == nil, let type = sender.representedObject as? String, ["stdio", "http", "sse"].contains(type), canLeave() else { return }
         do { loadDraft(try service.document(type == "stdio" ? nil : AgentMCPServer(name: "新的连接器", type: type))) }
@@ -264,6 +384,7 @@ import UniformTypeIdentifiers
     }
     private func loadDraft(_ document: String) {
         selected = nil; creating = true; dirty = true; select(nil); tools.string = ""; editor.string = document
+        draftViewport.reset()
         configurationKind.selectedSegment = 0; prepareConfiguration()
         editor.undoManager?.removeAllActions(); tabs.selectTabViewItem(at: 0); editor.scrollRangeToVisible(NSRange(location: 0, length: 0))
         refreshState(); state.stringValue = "待保存"; showDetail(); focusDetail()
@@ -272,7 +393,7 @@ import UniformTypeIdentifiers
         do {
             if configurationKind.selectedSegment == 0, let form { editor.string = try form.document() }
             if let object = try? JSONSerialization.jsonObject(with: Data(editor.string.utf8)) as? [String: Any], object["mcpServers"] != nil { try reviewImport(document: editor.string); return }
-            let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存"
+            let server = try service.save(editor.string, id: selected?.id, expectedRevision: selected?.revision, workspace: workspace); dirty = false; reload(server.id); state.stringValue = "已保存"; detailPage?.onSettingsRecoveryChange?()
         }
         catch { state.showSaveFailure(error) }
     }
@@ -346,7 +467,8 @@ import UniformTypeIdentifiers
 }
 
 @MainActor private final class AgentMCPDetailPage: AgentSettingsPageController, NSWindowDelegate {
-    var onCanLeave: (() -> Bool)?, onAppear: (() -> Void)?
+    var onCanLeave: (() -> Bool)?, onAppear: (() -> Void)?, onLayout: (() -> Void)?
+    var onCapture: (() throws -> AgentSettingsRecovery.Page?)?, onRestore: ((AgentSettingsRecovery.Page) throws -> Void)?
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
     init(content: NSView) {
@@ -355,6 +477,9 @@ import UniformTypeIdentifiers
         super.init(window: window); window.contentView = content; window.delegate = self
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { try onCapture?() }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { try onRestore?(page) }
+    override func pageDidLayout() { onLayout?() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { onCanLeave?() ?? true }
     func windowDidBecomeKey(_ notification: Notification) { onAppear?() }
 }

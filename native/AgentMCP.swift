@@ -23,6 +23,7 @@ struct AgentMCPServer: Codable, Identifiable {
 
 @MainActor final class AgentMCP {
     nonisolated static let tools = ["list_mcp_servers", "connect_mcp", "list_mcp_tools", "call_mcp_tool", "list_mcp_resources", "read_mcp_resource", "disconnect_mcp"]
+    nonisolated static let configurationKeys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID"]
     nonisolated static let externalOperations = ["connect_mcp", "call_mcp_tool", "list_mcp_resources", "read_mcp_resource"]
     static let placeholder = "${KEYCHAIN}"
     nonisolated static let importPlaceholder = "${INPUT_REQUIRED}"
@@ -173,7 +174,7 @@ struct AgentMCPServer: Codable, Identifiable {
         if let loadError { throw PetError(loadError) }
         guard text.utf8.count <= 64_000 else { throw PetError("MCP 配置最多 64 KB，请缩短后保存。") }
         let value = try AgentConfigurationJSON.object(Data(text.utf8))
-        let keys: Set<String> = ["name", "type", "command", "args", "env", "cwd", "url", "bearerToken", "headers", "timeoutSeconds", "oauthClientID"]
+        let keys = Self.configurationKeys
         guard Set(value.keys).isSubset(of: keys) else { throw PetError("未知配置字段：" + Set(value.keys).subtracting(keys).sorted().joined(separator: ", ")) }
         guard let name = value["name"] as? String, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !name.contains("\0"), name.count <= 160,
               let type = value["type"] as? String, ["stdio", "http", "sse"].contains(type) else { throw PetError("需要名称和 type（stdio、http 或 sse）") }
