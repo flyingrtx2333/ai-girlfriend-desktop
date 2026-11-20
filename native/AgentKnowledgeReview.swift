@@ -89,11 +89,13 @@ struct AgentKnowledgeReviewVersion {
 @MainActor final class AgentKnowledgeReviewWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     private let versions: [AgentKnowledgeReviewVersion], load: (Int?) async throws -> AgentKnowledgeReviewSnapshot
     private let onApplied: (String) -> Void
-    private let table = NSTableView(), list = NSScrollView(), viewer = NSScrollView(), text = NSTextView(), body = NSView()
+    private let table = NSTableView(), list = NSScrollView(), viewer = NSScrollView(), text = NSTextView()
+    private let body = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+    private let divider = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private let diff = AgentGitDiffView(frame: .zero)
-    private let scope = NSTextField(labelWithString: ""), impact = NSTextField(wrappingLabelWithString: ""), state = NSTextField(labelWithString: "")
-    private let back = NSButton(title: "返回版本", target: nil, action: nil), cancel = NSButton(title: "取消", target: nil, action: nil)
-    private let preview = NSButton(title: "预览", target: nil, action: nil), apply = NSButton(title: "", target: nil, action: nil)
+    private let scope = NSTextField(labelWithString: ""), impact = NSTextField(wrappingLabelWithString: ""), state = AgentSettingsStatusField("审阅状态")
+    private let back = AgentDialogButton(title: "返回版本", target: nil, action: nil), cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
+    private let preview = AgentDialogButton(title: "预览", target: nil, action: nil), apply = AgentDialogButton(title: "", target: nil, action: nil)
     private var fullList: [NSLayoutConstraint] = [], documentList: [NSLayoutConstraint] = []
     private var snapshot: AgentKnowledgeReviewSnapshot?, selectedVersion: Int?, choosingVersion: Bool
     private var job: Task<Void, Never>?, closed = false, started = false
@@ -117,10 +119,10 @@ struct AgentKnowledgeReviewVersion {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 520, height: 420); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        self.scope.stringValue = scope; self.scope.lineBreakMode = .byTruncatingMiddle; self.scope.font = .systemFont(ofSize: 12, weight: .medium)
-        impact.font = .systemFont(ofSize: 12); impact.maximumNumberOfLines = 2
-        state.font = .systemFont(ofSize: 11); state.textColor = AgentWorkbenchTheme.secondaryText; state.lineBreakMode = .byTruncatingTail
-        for label in [self.scope, impact, state] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        self.scope.stringValue = scope; self.scope.lineBreakMode = .byTruncatingMiddle; self.scope.font = .systemFont(ofSize: 13, weight: .semibold)
+        self.scope.toolTip = scope
+        impact.font = .systemFont(ofSize: 12); impact.textColor = AgentWorkbenchTheme.secondaryText
+        for label in [self.scope, impact] { label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
         table.addTableColumn(NSTableColumn(identifier: .init("item"))); table.headerView = nil; table.rowHeight = 48; table.style = .inset; table.backgroundColor = .clear
         table.dataSource = self; table.delegate = self; table.target = self; table.doubleAction = #selector(openVersion)
         table.setAccessibilityLabel("知识版本与文档列表"); list.documentView = table; list.hasVerticalScroller = true
@@ -128,11 +130,20 @@ struct AgentKnowledgeReviewVersion {
         text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 12, height: 12); text.setAccessibilityLabel("知识版本正文")
         viewer.documentView = text; viewer.hasVerticalScroller = true
         for scroll in [list, viewer] { scroll.borderType = .noBorder; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; body.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false }
-        body.addSubview(diff); diff.translatesAutoresizingMaskIntoConstraints = false
+        body.layer?.cornerRadius = 8; body.layer?.borderWidth = 1; body.layer?.masksToBounds = true
+        for child in [diff, divider] { body.addSubview(child); child.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: body.leadingAnchor), list.topAnchor.constraint(equalTo: body.topAnchor), list.bottomAnchor.constraint(equalTo: body.bottomAnchor)])
         fullList = [list.trailingAnchor.constraint(equalTo: body.trailingAnchor)]
-        documentList = [list.widthAnchor.constraint(equalToConstant: 166), viewer.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 12), viewer.trailingAnchor.constraint(equalTo: body.trailingAnchor), viewer.topAnchor.constraint(equalTo: body.topAnchor), viewer.bottomAnchor.constraint(equalTo: body.bottomAnchor), diff.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), diff.trailingAnchor.constraint(equalTo: viewer.trailingAnchor), diff.topAnchor.constraint(equalTo: viewer.topAnchor), diff.bottomAnchor.constraint(equalTo: viewer.bottomAnchor)]
-        for (button, action) in [(back, #selector(showVersions)), (cancel, #selector(cancelReview)), (preview, #selector(readPreview)), (apply, #selector(applyPreview))] { button.target = self; button.action = action; button.bezelStyle = .rounded }
+        documentList = [list.widthAnchor.constraint(equalToConstant: 166),
+                        divider.leadingAnchor.constraint(equalTo: list.trailingAnchor), divider.widthAnchor.constraint(equalToConstant: 1),
+                        divider.topAnchor.constraint(equalTo: body.topAnchor), divider.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+                        viewer.leadingAnchor.constraint(equalTo: divider.trailingAnchor), viewer.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+                        viewer.topAnchor.constraint(equalTo: body.topAnchor), viewer.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+                        diff.leadingAnchor.constraint(equalTo: viewer.leadingAnchor), diff.trailingAnchor.constraint(equalTo: viewer.trailingAnchor),
+                        diff.topAnchor.constraint(equalTo: viewer.topAnchor), diff.bottomAnchor.constraint(equalTo: viewer.bottomAnchor)]
+        for (button, action) in [(back, #selector(showVersions)), (cancel, #selector(cancelReview)), (preview, #selector(readPreview)), (apply, #selector(applyPreview))] {
+            button.target = self; button.action = action; AgentDialogStyle.action(button, prominent: button === apply)
+        }
         apply.title = action; cancel.keyEquivalent = "\u{1b}"; cancel.keyEquivalentModifierMask = []
         let actions = NSStackView(views: [back, cancel, NSView(), preview, apply]); actions.spacing = 8
         let column = NSStackView(views: [self.scope, impact, body, state, actions]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 10
@@ -158,8 +169,10 @@ struct AgentKnowledgeReviewVersion {
     private func updatePage() {
         let focused = presentingWindow?.firstResponder as? NSView, keepFocus = hasKeyboardFocus
         NSLayoutConstraint.deactivate(fullList + documentList); NSLayoutConstraint.activate(choosingVersion ? fullList : documentList)
-        viewer.isHidden = choosingVersion || showingDiff; diff.isHidden = choosingVersion || !showingDiff; impact.isHidden = choosingVersion; back.isHidden = choosingVersion || versions.isEmpty
+        viewer.isHidden = choosingVersion || showingDiff; diff.isHidden = choosingVersion || !showingDiff; divider.isHidden = choosingVersion
+        impact.isHidden = choosingVersion; back.isHidden = choosingVersion || versions.isEmpty
         preview.title = choosingVersion ? "预览" : "重新预览"; apply.isHidden = choosingVersion
+        preview.prominent = choosingVersion
         let enabled = !hasPendingOperation && !closed
         for button in [back, cancel, preview] { button.isEnabled = enabled }
         preview.isEnabled = enabled && (!choosingVersion || selectedVersion != nil)
@@ -206,7 +219,7 @@ struct AgentKnowledgeReviewVersion {
         targetChanged = false; loadedFingerprint = nil; expectedTargetSignature = nil
         let waitingForVersion = choosingVersion && hasKeyboardFocus
         if waitingForVersion { presentingWindow?.makeFirstResponder(nil) }
-        let version = selectedVersion; snapshot = nil; showItem(nil); state.stringValue = "正在读取预览…"; state.textColor = AgentWorkbenchTheme.secondaryText
+        let version = selectedVersion; snapshot = nil; showItem(nil); state.stringValue = "正在读取预览…"
         job = Task { @MainActor [weak self] in
             guard let self else { return }; var focusList = false
             defer {
@@ -231,7 +244,7 @@ struct AgentKnowledgeReviewVersion {
                 showItem(value.items.indices.contains(item) ? value.items[item] : nil)
                 table.reloadData(); if value.items.indices.contains(item) { table.selectRowIndexes(IndexSet(integer: item), byExtendingSelection: false) }
                 state.stringValue = targetChanged ? "当前版本已变化，请重新预览后再恢复" : "\(value.items.count) 项"; updatePage()
-            } catch { if !closed, !Task.isCancelled { state.stringValue = error.localizedDescription; state.textColor = .systemRed; table.reloadData() } }
+            } catch { if !closed, !Task.isCancelled { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error; table.reloadData() } }
         }; updatePage()
     }
     @objc private func showVersions() {
@@ -244,12 +257,12 @@ struct AgentKnowledgeReviewVersion {
     @objc private func openVersion() { if choosingVersion { readPreview() } }
     @objc private func applyPreview() {
         guard job == nil, let value = snapshot, !closed, !targetChanged else { return }
-        state.stringValue = "正在" + apply.title + "…"; state.textColor = AgentWorkbenchTheme.secondaryText
+        state.stringValue = "正在" + apply.title + "…"
         job = Task { @MainActor [weak self] in
             guard let self else { return }; defer { job = nil; if !closed { updatePage() } }
             do {
                 let result = try await value.apply(); complete(result)
-            } catch { if !closed, !Task.isCancelled { snapshot = nil; showItem(nil); table.reloadData(); state.stringValue = error.localizedDescription; state.textColor = .systemRed } }
+            } catch { if !closed, !Task.isCancelled { snapshot = nil; showItem(nil); table.reloadData(); state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error } }
         }; updatePage()
     }
     private func complete(_ result: String) { closed = true; super.close(); onClose?(); onClose = nil; onApplied(result) }

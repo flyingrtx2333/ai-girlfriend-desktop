@@ -3,7 +3,7 @@ import AppKit
 // Reuse the managers' existing hosting and unsaved-content guards.
 @MainActor final class AgentKnowledgePageHost: NSView {
     private struct Entry { let controller: AgentSettingsPageController; let content: NSView }
-    private let back = NSButton(title: "返回", target: nil, action: nil), title = NSTextField(labelWithString: "知识中心")
+    private let back = AgentWorkbenchButton(), title = NSTextField(labelWithString: "知识中心")
     private let tabs = NSSegmentedControl(labels: ["知识库", "Repo Wiki"], trackingMode: .selectOne, target: nil, action: nil)
     private let body = NSView(), empty = NSTextField(labelWithString: "暂无内容")
     private var stacks: [String: [Entry]] = [:], root = "library", identity = ""
@@ -23,12 +23,11 @@ import AppKit
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        back.isBordered = false; back.image = NSImage(systemSymbolName: "arrow.left", accessibilityDescription: nil); back.imagePosition = .imageLeading
+        AgentWorkbenchTheme.toolbar(back, title: "返回", symbol: "arrow.left")
         back.target = self; back.action = #selector(goBack)
-        back.widthAnchor.constraint(lessThanOrEqualToConstant: 180).isActive = true; back.cell?.lineBreakMode = .byTruncatingTail; back.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.font = .systemFont(ofSize: 20, weight: .semibold); title.lineBreakMode = .byTruncatingMiddle; title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tabs.target = self; tabs.action = #selector(changeRoot); tabs.setAccessibilityLabel("知识中心类型")
-        let header = NSStackView(views: [back, title, NSView(), tabs]); header.spacing = 12
+        let header = NSStackView(views: [back, title, NSView(), tabs]); header.spacing = 8; header.alignment = .centerY
         let column = NSStackView(views: [header, body]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 18
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for child in [header, body] { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
@@ -101,7 +100,8 @@ import AppKit
     }
     private func updateHeader() {
         let entries = stacks[root] ?? []; back.isHidden = entries.count < 2
-        back.title = entries.count > 1 ? "返回 " + (entries[entries.count - 2].controller.window?.title ?? "知识中心") : "返回"
+        let destination = entries.count > 1 ? "返回 " + (entries[entries.count - 2].controller.window?.title ?? "知识中心") : "返回"
+        back.setAccessibilityLabel(destination); back.toolTip = destination
         title.stringValue = entries.count > 1 ? entries.last?.controller.window?.title ?? "知识中心" : "知识中心"
         tabs.selectedSegment = root == "library" ? 0 : 1; tabs.isHidden = entries.count > 1; empty.isHidden = !entries.isEmpty
     }

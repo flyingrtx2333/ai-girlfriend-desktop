@@ -45,19 +45,27 @@ import AppKit
             let f = try JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("wiki-lifecycle-fixtures.json"))) as! [String: Any]
             let id = f["taskID"] as! String, workspace = f["workspace"] as! String, files = try AgentFiles(workspace: workspace), host = control.knowledgePageHost
             let before = try await AgentWiki.snapshot(tasks, id, "zh"), originalDraft = tasks.task(id)?.draft
+            guard let mainWindow = control.window else { throw PetError("缺少 Wiki 验收主窗口") }
+            let narrow = NSSize(width: 780, height: 540)
+            mainWindow.setContentSize(narrow)
             control.showAgentKnowledge(); guard let catalog = host.currentController as? AgentRepoWikiWindow else { throw PetError("知识目录未打开") }
             for _ in 0..<200 { if catalog.checkState["loading"] as? Bool == false { break }; await wait(0.02) }
             checks["catalogTakesKeyboardFocusFromTaskSidebar"] = host.checkState()["focusInPage"] as? Bool == true
+            checks["catalogKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
             try catalog.checkOpen(workspace: workspace, action: "wiki")
             guard let reader = host.currentController as? AgentRecordWindow else { throw PetError("Wiki 正文未打开") }
             checks["readerTakesKeyboardFocusFromTaskSidebar"] = host.checkState()["focusInPage"] as? Bool == true
+            await wait(0.15)
+            mainWindow.contentView?.layoutSubtreeIfNeeded()
+            checks["openingReaderKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
             var created: [String] = []
             reader.configureWikiRuntime(runtime) { next in created.append(next); runtime.cancel(next) }
             func inspect(_ name: String, _ review: AgentKnowledgeReviewWindow) {
                 for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
                     control.window?.appearance = NSAppearance(named: appearance)
-                    for (sizeName, size) in [("normal", NSSize(width: 1200, height: 774)), ("narrow", NSSize(width: 800, height: 550))] {
+                    for (sizeName, size) in [("normal", NSSize(width: 1320, height: 800)), ("narrow", narrow)] {
                         control.window?.setContentSize(size); control.window?.contentView?.layoutSubtreeIfNeeded(); let value = host.checkState(); report[name + "-" + theme + "-" + sizeName] = value
+                        checks[name + "-" + theme + "-" + sizeName + "-keepsWindowSize"] = mainWindow.frame.size == size
                         for (key, value) in value["checks"] as? [String: Bool] ?? [:] { checks[name + "-" + theme + "-" + sizeName + "-" + key] = value }
                     }
                 }
@@ -71,8 +79,8 @@ import AppKit
             let actualDiff = try String(contentsOf: output.appendingPathComponent("initial-actual-diff.patch"), encoding: .utf8)
             checks["coloredDiffShowsCompleteActualCommittedPatch"] = update.checkState["showingDiff"] as? Bool == true && update.checkState["text"] as? String == actualDiff
             checks["updateTakesKeyboardFocusFromTaskSidebar"] = update.checkState["focusInReview"] as? Bool == true
+            checks["openingReviewKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
             update.checkSelectItem(1)
-            guard let mainWindow = control.window else { throw PetError("缺少主窗口重开样例") }
             mainWindow.performClose(nil)
             let closeDeadline = Date().addingTimeInterval(3)
             while mainWindow.isVisible, Date() < closeDeadline { await wait(0.02) }
@@ -98,6 +106,7 @@ import AppKit
             checks["repreviewFromActualDiffBodyKeepsKeyboardFocus"] = update.checkState["focusInReview"] as? Bool == true && update.checkState["text"] as? String == actualDiff && (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == true
             update.close(); let canceled = await reader.markdownEditingReadback()
             checks["cancelLeavesPublicationAndOriginalInputUntouched"] = try await AgentWiki.snapshot(tasks, id, "zh").pointer == before.pointer && tasks.task(id)?.draft == originalDraft && created.isEmpty && (canceled["state"] as? String)?.hasPrefix("正在") == false
+            checks["returningToReaderKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
             guard let stale = await reader.checkKnowledgeReview("update") else { throw PetError("过期审阅页未打开") }; await stale.checkLoad()
             let third = try Data(contentsOf: output.appendingPathComponent("third-snapshot/native/AgentWiki.swift")); try files.writeData(third, to: files.resolve("native/AgentWiki.swift"))
             let git = try AgentWiki.updateGit(store: tasks, taskID: id)

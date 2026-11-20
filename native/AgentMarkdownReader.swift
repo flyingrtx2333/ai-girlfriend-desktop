@@ -34,6 +34,8 @@ import AppKit
         text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true; text.textContainerInset = NSSize(width: 18, height: 16)
         text.setAccessibilityLabel("Markdown 预览")
         outline.target = self; outline.action = #selector(selectHeading); outline.setAccessibilityLabel("章节目录")
+        outline.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        outline.cell?.lineBreakMode = .byTruncatingTail
         edit.target = self; edit.action = #selector(toggleEditing); edit.bezelStyle = .texturedRounded; edit.controlSize = .small; edit.setAccessibilityLabel("编辑 Markdown 预览"); edit.toolTip = "就地编辑；Command+Return 完成，Esc 取消本次修改"
         tableActions.addItem(withTitle: "表格"); tableActions.controlSize = .small; tableActions.bezelStyle = .texturedRounded; tableActions.setAccessibilityLabel("表格操作")
         tableActions.menu?.autoenablesItems = false; tableActions.menu?.delegate = self
