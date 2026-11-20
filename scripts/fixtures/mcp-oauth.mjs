@@ -99,7 +99,7 @@ async function route(req, res) {
     if (rejectInitialization && message.method === 'initialize') {
       rejectInitialization = false;
       log({ event: 'public-credential-in-error' });
-      return json(res, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: '样例连接错误 ' + req.headers.authorization } });
+      return json(res, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: '样例连接错误', data: { detail: '样例详情 ' + req.headers.authorization } } });
     }
     const result = message.method === 'initialize' ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: '本机受保护库存', version: '1.0.0' } }
       : message.method === 'tools/list' ? { tools: [{ name: 'lookup_inventory', description: '读取公开样例库存', inputSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] } }] }
