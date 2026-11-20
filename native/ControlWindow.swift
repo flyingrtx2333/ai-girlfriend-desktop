@@ -226,6 +226,8 @@ final class FormDocumentView: NSView {
     private let automationButton = AgentWorkbenchButton(title: "自动化", target: nil, action: nil)
     private let sidebarExtensions = AgentWorkbenchButton(title: "扩展", target: nil, action: nil)
     private let sidebarLower = AgentSidebarNavigationList(), sidebarMore = AgentWorkbenchButton(title: "更多", target: nil, action: nil)
+    private var sidebarUtilities: NSStackView!
+    private var sidebarUtilityWidths: [NSLayoutConstraint] = []
     private var displayedSidebarLayout: AgentSidebarLayout.Settings?
     private let extensionPanel = AgentExtensionPanel(), extensionPicker = AgentExtensionPicker()
     private var extensionPickerTask: String?
@@ -245,6 +247,7 @@ final class FormDocumentView: NSView {
     private var conversationTrailing: NSLayoutConstraint!, fullConversationTrailing: NSLayoutConstraint!
     private var headerActionsTrailing: NSLayoutConstraint!, fullHeaderActionsTrailing: NSLayoutConstraint!
     private var workbenchActions: NSStackView!
+    private var taskOverflowControls: [NSButton] = []
     private var terminalPanel: AgentTerminalPanel?
     private let taskBack = AgentWorkbenchButton(), taskForward = AgentWorkbenchButton(), taskMore = AgentWorkbenchButton(), taskModel = AgentWorkbenchButton(), voiceInput = AgentWorkbenchButton(), sidebarToggle = AgentWorkbenchButton()
     private let workbenchSidebar = NSView()
@@ -850,8 +853,12 @@ final class FormDocumentView: NSView {
             button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         }
         sidebarLower.setAccessibilityLabel("侧栏下方入口")
-        let footer = stack([AgentWorkbenchTheme.rule(), sidebarLower, sidebarMore, settingsNav], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
-        for view in [sidebarLower as NSView, sidebarMore, settingsNav] { view.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
+        let utilities = stack([sidebarMore, settingsNav], vertical: true, spacing: 6)
+        sidebarUtilities = utilities
+        sidebarUtilityWidths = utilities.arrangedSubviews.map { $0.widthAnchor.constraint(equalTo: utilities.widthAnchor) }
+        NSLayoutConstraint.activate(sidebarUtilityWidths)
+        let footer = stack([AgentWorkbenchTheme.rule(), sidebarLower, utilities], vertical: true, spacing: 6); workbenchSidebar.addSubview(footer)
+        for view in [sidebarLower as NSView, utilities] { view.widthAnchor.constraint(equalTo: footer.widthAnchor).isActive = true }
         chatSidebarViews = [workbenchSidebar]
         let main = contentSurface; main.usesWorkbenchSurface = true; main.wantsLayer = true; main.layer?.backgroundColor = NSColor.clear.cgColor; main.layer?.cornerRadius = 16; main.layer?.masksToBounds = true; main.layer?.borderWidth = 1
         main.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(main)
@@ -1055,6 +1062,13 @@ final class FormDocumentView: NSView {
         sidebarTasksTop.constant = compactHeight ? 14 : 22
         sidebarTasksBottom.constant = compactHeight ? -8 : -12
         sidebarFooterBottom.constant = compactHeight ? -14 : -24
+        if (sidebarUtilities.orientation == .horizontal) != compactHeight {
+            NSLayoutConstraint.deactivate(sidebarUtilityWidths)
+            sidebarUtilities.orientation = compactHeight ? .horizontal : .vertical
+            sidebarUtilities.alignment = compactHeight ? .centerY : .leading
+            sidebarUtilities.distribution = compactHeight ? .fillEqually : .fill
+            if !compactHeight { NSLayoutConstraint.activate(sidebarUtilityWidths) }
+        }
         let settingsWidth: CGFloat = width < 980 ? 180 : 252
         sidebarWidth.constant = configuring ? settingsWidth : sidebarRequested ? workbenchSidebarWidth.constant : 0
         taskWorkspace.selectTask(task.id)
@@ -1110,7 +1124,12 @@ final class FormDocumentView: NSView {
         composer.placeholder = task.skillEvolutionJob?.creation != nil && task.messages.isEmpty ? "描述要创建的 Skill…" : hasMessages ? "添加要求…" : "描述任务…"
         let presentation = companion?.modePresentation.settings[task.organizationMode] ?? .defaults(task.organizationMode)
         projectButton.isHidden = !presentation.projectEntry; emptyProject.isHidden = !presentation.projectEntry
-        executionLocation.isHidden = !presentation.inputEnvironment; gitButton.isHidden = !presentation.changeReview
+        executionLocation.isHidden = !presentation.inputEnvironment
+        let titleAndActionsWidth = remaining - (showInspector && !fullMonitor ? target : 0) - titleLeading.constant
+        let compactTaskTools = titleAndActionsWidth < 500
+        desktopButton.isHidden = compactTaskTools; gitButton.isHidden = compactTaskTools || !presentation.changeReview
+        taskOverflowControls = compactTaskTools ? [desktopButton] + (presentation.changeReview ? [gitButton] : []) : []
+        if chatting, let focus, taskOverflowControls.contains(where: { $0 === focus }) { window?.makeFirstResponder(taskMore) }
         workbenchBadge.update(task)
         workbenchInspector.update(monitorContent); workbenchInspector.setPresentation(.fixed)
         updateFloatingMonitor(monitorContent, state: monitorState, show: chatting && monitorState.presentation == .floating && monitorState.visible)
@@ -1334,15 +1353,22 @@ final class FormDocumentView: NSView {
             let views: [String: NSView] = ["title": pageTitle, "badge": workbenchBadge, "monitorButton": resultsButton, "monitor": workbenchInspector,
                                            "content": chat, "leadingControls": entryLeading, "trailingControls": entryTrailing, "input": (composer.enclosingScrollView as NSView?) ?? composer,
                                            "approval": approvalPanel, "approvalPreview": approvalScroll, "allow": approveButton, "deny": denyButton,
-                                           "status": status, "resume": resumeButton]
+                                           "status": status, "resume": resumeButton, "sidebarMore": sidebarMore, "sidebarSettings": settingsNav]
             frames[key] = views.mapValues {
                 let frame = rect($0); return [frame.minX, frame.minY, frame.width, frame.height]
             }
+            frames[key]?["taskListHeight"] = [sidebarLayoutReadback()["taskListHeight"] as? CGFloat ?? 0]
+        }
+        func overflowTools(_ task: AgentTaskRecord) -> [NSMenuItem] {
+            taskMenu(task).items.filter { $0.action == desktopButton.action || $0.action == gitButton.action }
         }
         showAgentTask(primary)
         window.setFrame(NSRect(origin: window.frame.origin, size: NSSize(width: 780, height: 540)), display: true)
         root.layoutSubtreeIfNeeded()
         checks["ResizingRevealsCurrentTaskAndKeepsShortTitleReadable"] = taskSidebar.workbenchSelectionIsVisible(primary) && rect(pageTitle).width + 1 >= pageTitle.intrinsicContentSize.width
+        checks["CompactSidebarUtilitiesShareOneRowAndLeaveRoomForTasks"] = visible(sidebarMore) && visible(settingsNav) &&
+            abs(rect(sidebarMore).midY - rect(settingsNav).midY) < 1 && !rect(sidebarMore).intersects(rect(settingsNav)) &&
+            (sidebarLayoutReadback()["taskListHeight"] as? CGFloat ?? 0) >= 130
         for state in ["empty", "running", "waiting", "failed", "completed"] {
             guard let id = ids[state], let task = tasks.task(id) else { checks["WorkbenchState-" + state] = false; continue }
             showAgentTask(id)
@@ -1354,10 +1380,17 @@ final class FormDocumentView: NSView {
             checks["WorkbenchComposerFits-" + state] = !terminalSplit.isHidden && composer.enclosingScrollView.map(visible) == true && visible(modePopup) && visible(permissionPopup) && visible(sendButton) && !leading.intersects(trailing)
             capture(state)
             switch state {
-            case "empty": checks["EmptyWorkbenchOffersExecutorAndNoWorkspaceTerminal"] = visible(workbenchEmptyTitle) && terminalButton.isEnabled && history.isHidden
+            case "empty":
+                checks["EmptyWorkbenchOffersExecutorAndNoWorkspaceTerminal"] = visible(workbenchEmptyTitle) && terminalButton.isEnabled && history.isHidden
+                checks["NoWorkspaceGitRemainsDisabledInCompactTaskMenu"] = overflowTools(task).first { $0.action == gitButton.action }?.isEnabled == false
             case "running": checks["RunningWorkbenchShowsStopForLiveProcess"] = busy && sendButton.accessibilityLabel() == "停止任务" && !taskModel.isEnabled
             case "waiting":
                 checks["WaitingWorkbenchShowsApprovalWithDisabledSelectors"] = visible(approveButton) && visible(denyButton) && approveButton.isEnabled && denyButton.isEnabled && !modePopup.isEnabled && !taskModel.isEnabled
+                let tools = overflowTools(task)
+                checks["CompactApprovalTitleFitsAndPrimaryToolsStayVisible"] = rect(pageTitle).width + 1 >= pageTitle.intrinsicContentSize.width &&
+                    visible(browserButton) && visible(terminalButton) && visible(resultsButton) && visible(taskMore) && desktopButton.isHidden && gitButton.isHidden
+                checks["CompactTaskMenuKeepsBothToolActionsAndTheirAvailability"] = tools.map(\.action) == [desktopButton.action, gitButton.action] &&
+                    tools.allSatisfy { $0.target === self && $0.isEnabled }
                 checks["ApprovalShortPreviewFitsItsActualCommandAndNetworkState"] = approvalText.string == "/usr/bin/wc -c README.md"
                     && approvalOptions.stringValue == "网络 关闭" && visible(approvalOptions)
                     && rect(approvalScroll).height < 42 && approveButton.prominent && !denyButton.prominent
@@ -1415,6 +1448,8 @@ final class FormDocumentView: NSView {
         try? await Task.sleep(for: .milliseconds(200)); root.layoutSubtreeIfNeeded()
         capture("monitor-docked")
         checks["WideMonitorSharesSpaceWithVisibleConversationAndActions"] = tasks.task(complete).map(header) == true && rect(workbenchInspector).width == 281 && visible(workbenchInspector) && visible(history) && visible(sendButton) && rect(history).maxX < rect(workbenchInspector).minX
+        checks["WideWorkbenchShowsDirectToolsAndSeparateSidebarRows"] = visible(desktopButton) && visible(gitButton) &&
+            tasks.task(complete).map { overflowTools($0).isEmpty } == true && abs(rect(sidebarMore).midY - rect(settingsNav).midY) >= 32
         return (checks, frames)
     }
     @objc private func toggleLeftSidebar() {
@@ -1491,7 +1526,16 @@ final class FormDocumentView: NSView {
     }
     @objc private func showTaskMenu(_ sender: NSButton) {
         guard let task = currentAgentTask else { return }
+        taskMenu(task).popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+    private func taskMenu(_ task: AgentTaskRecord) -> NSMenu {
         let menu = NSMenu(); menu.autoenablesItems = false
+        for button in taskOverflowControls {
+            let item = NSMenuItem(title: button.accessibilityLabel() ?? button.title, action: button.action, keyEquivalent: "")
+            item.target = button.target; item.isEnabled = button.isEnabled; item.image = button.image
+            menu.addItem(item)
+        }
+        if !taskOverflowControls.isEmpty { menu.addItem(.separator()) }
         for (title, action) in [("重命名", "rename"), (task.pinned ? "取消置顶" : "置顶", "pin"), ("创建分支", "fork"), (task.archived ? "恢复任务" : "归档任务", "archive")] {
             let item = NSMenuItem(title: title, action: #selector(taskMenuAction(_:)), keyEquivalent: ""); item.target = self; item.representedObject = [task.id, action]; item.isEnabled = task.status != .running && (task.pendingFileRollback == nil || !["fork", "archive"].contains(action)); menu.addItem(item)
         }
@@ -1515,7 +1559,7 @@ final class FormDocumentView: NSView {
         let copyID = NSMenuItem(title: "复制任务编号", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); copyID.target = self; copyID.representedObject = [task.id, "copy-id"]; menu.addItem(copyID)
         menu.addItem(.separator())
         let remove = NSMenuItem(title: "永久删除…", action: #selector(taskMenuAction(_:)), keyEquivalent: ""); remove.target = self; remove.representedObject = [task.id, "delete"]; remove.isEnabled = task.status != .running; menu.addItem(remove)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+        return menu
     }
     @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
     @objc private func showTaskModelMenu(_ sender: NSButton) {
@@ -5446,8 +5490,10 @@ extension ControlWindow {
             (view as? AgentInspectorFileButton).map { $0.section == 3 ? 1 : 0 } ?? view.subviews.reduce(0) { $0 + changeRows($1) }
         }
         let mode = currentAgentTask?.organizationMode ?? displayedWorkMode
+        let gitInTaskMenu = taskOverflowControls.contains { $0 === gitButton }
         return ["mode": mode.rawValue, "projectEntryHidden": projectButton.isHidden, "emptyProjectHidden": emptyProject.isHidden,
-                "inputEnvironmentHidden": executionLocation.isHidden, "branchHidden": branchControl.isHidden, "gitEntryHidden": gitButton.isHidden,
+                "inputEnvironmentHidden": executionLocation.isHidden, "branchHidden": branchControl.isHidden,
+                "gitEntryHidden": gitButton.isHidden && !gitInTaskMenu, "gitEntryInTaskMenu": gitInTaskMenu,
                 "inspectorChangeRows": changeRows(workbenchInspector), "draft": composer.string,
                 "taskID": agentTaskID as Any? ?? NSNull(), "settingsCategory": settingsCategory]
     }
