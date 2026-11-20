@@ -49,9 +49,21 @@ try {
     const report = await json(path.join(output, 'plugin-market-report.json'));
     const requests = (await readFile(path.join(server, 'requests.jsonl'), 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
     const facts = await json(path.join(server, 'facts.json'));
+    const commits = await json(path.join(server, 'repository-facts.json'));
     const expected = (phase, item) => (report.results[phase] ?? '').includes(item.sku)
       && new RegExp('"quantity"\\s*:\\s*' + item.quantity + '\\b').test(report.results[phase] ?? '')
       && (report.results[phase] ?? '').includes('"' + item.version + '"');
+    function trackedFile(commit, file) {
+      const actual = spawnSync('/usr/bin/git', ['-C', path.join(server, 'repository'), 'show', commit + ':' + file], { encoding: 'utf8' });
+      if (actual.status !== 0) throw Error('无法独立读取样例提交的原始文件');
+      return JSON.parse(actual.stdout);
+    }
+    const stock = 'skills/inventory/resources/count.json';
+    const verb = ['Install', 'Update'];
+    const gitFacts = commits.every(({ commit }, index) =>
+      expected('repo' + verb[index], trackedFile(commit, 'plugins/repo-stock/' + stock))
+      && expected('root' + verb[index], trackedFile(commit, stock)));
+    const newVersion = requests.findIndex(row => row.event === 'fixture-state' && row.version === '2.0.0');
     const independent = {
       exactAppUsed: child.pid === report.appPID && hash(await readFile(binary)) === binaryHash,
       concreteHTTPSListings: ['1.0.0', '2.0.0'].every(version => requests.some(row => row.event === 'directory' && row.version === version && row.tls)),
@@ -61,6 +73,16 @@ try {
       }))).every(Boolean),
       badDigestActuallyFetched: requests.some(row => row.event === 'archive' && row.name === 'bad-checksum.zip' && row.sha256 !== '0'.repeat(64)),
       installedSkillsReadIndependentFacts: expected('install', facts[0]) && expected('update', facts[1]),
+      bothBranchRefsActuallyResolve: commits.every(({ commit }) => requests.some(row => row.event === 'git-ref' && row.ref === 'release/inventory' && row.commit === commit && row.tls)),
+      pinnedManifestsFetchedAtBothCommits: commits.every(({ commit }) =>
+        requests.some(row => row.event === 'git-manifest' && row.ref === commit && row.key === 'contents/.claude-plugin/marketplace.json' && row.tls)),
+      downloadedBothUnmodifiedGitArchives: (await Promise.all(commits.map(async ({ commit }) => {
+        const digest = hash(await readFile(path.join(server, commit + '.zip')));
+        return requests.some(row => row.event === 'git-archive' && row.commit === commit && row.sha256 === digest && row.tls);
+      }))).every(Boolean),
+      afterBranchMoveStillLoadsPinnedOldCommit: newVersion >= 0 && requests.slice(newVersion).some(row => row.event === 'git-archive' && row.commit === commits[0].commit)
+        && !requests.some(row => row.event === 'git-ref' && row.ref === 'removed-branch'),
+      installedRepositorySkillsReadIndependentlyVerifiedGitFiles: gitFacts,
       credentialFreeArchiveRequests: !requests.some(row => row.credentialHeader || row.event === 'unknown-path'),
       noModels: report.modelRequests === 0
     };

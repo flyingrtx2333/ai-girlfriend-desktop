@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 enum AgentArchive {
-    static func resources(_ archive: URL, scratchParent: URL, definitions: [String], hiddenRoots: Set<String> = []) async throws -> [String: Data] {
+    static func resources(_ archive: URL, scratchParent: URL, definitions: [String], hiddenRoots: Set<String> = [], repositoryPath: String? = nil) async throws -> [String: Data] {
         let scratch = scratchParent.appendingPathComponent(".extension-import-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -12,11 +12,38 @@ enum AgentArchive {
             let result = try await AgentCommand().run(command: args.map(AgentGit.quote).joined(separator: " "), workspace: scratch, scratch: scratch, network: false, timeout: 8, readOnly: true, maximumOutput: maximum)
             guard !result.failed, result.truncated != true, let data = result.stdoutData else { throw PetError("扩展包读取失败（exit=\(result.exitCode ?? -1)\(result.truncated == true ? "，输出超过上限" : "")）：" + String((result.stderr ?? result.text).prefix(500))) }; return data
         }
-        let listing = try await command(["/usr/bin/unzip", "-Z1", pinned.path], maximum: 200_000)
+        let listing = try await command(["/usr/bin/unzip", "-Z1", pinned.path], maximum: repositoryPath == nil ? 200_000 : 2_000_000)
         guard let text = String(data: listing, encoding: .utf8) else { throw PetError("扩展包中的路径不是 UTF-8") }
         let names = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        guard !names.isEmpty, names.count <= 2000, Set(names.map { $0.precomposedStringWithCanonicalMapping.lowercased() }).count == names.count else { throw PetError("扩展包为空、路径重复或资源超过 2000 项") }
+        guard !names.isEmpty, names.count <= (repositoryPath == nil ? 2000 : 20_000),
+              Set(names.map { $0.precomposedStringWithCanonicalMapping.lowercased() }).count == names.count else { throw PetError("扩展包为空、路径重复或资源数量超过上限") }
         for name in names { guard validPath(name) else { throw PetError("扩展包包含不安全或不支持的路径：" + String(name.prefix(160))) } }
+        let prefix = try rootPrefix(in: names, definitions: definitions, repositoryPath: repositoryPath)
+        let members = names.filter { $0.hasPrefix(prefix) && !$0.hasSuffix("/") }
+        guard members.count <= 2000 else { throw PetError("插件目录资源超过 2000 项") }
+        var result: [String: Data] = [:], total = 0
+        for name in members {
+            let path = String(name.dropFirst(prefix.count))
+            if !included(path, hiddenRoots: hiddenRoots) { continue }
+            guard !AgentFiles.sensitive(path), !path.isEmpty else { throw PetError("扩展包包含受保护文件：" + path) }
+            let bytes = try await command(["/usr/bin/unzip", "-p", pinned.path, name], maximum: 2_000_000); total += bytes.count
+            guard total <= 20_000_000 else { throw PetError("扩展包展开后超过 20MB") }; result[path] = bytes
+        }
+        // Read members as bytes only. Archive links never become filesystem links.
+        return result
+    }
+
+    private static func rootPrefix(in names: [String], definitions: [String], repositoryPath: String?) throws -> String {
+        if let repositoryPath {
+            let roots = Set(names.compactMap { $0.split(separator: "/").first.map(String.init) })
+            guard roots.count == 1, let root = roots.first, repositoryPath.isEmpty || validPath(repositoryPath) else {
+                throw PetError("仓库归档的目录结构无效")
+            }
+            let prefix = root + "/" + (repositoryPath.isEmpty ? "" : repositoryPath + "/")
+            let candidates = Set(definitions.map { prefix + $0 })
+            guard names.contains(where: candidates.contains) else { throw PetError("所选仓库目录缺少插件清单") }
+            return prefix
+        }
         var prefixes = Set<String>()
         for name in names {
             for definition in definitions where name == definition || name.hasSuffix("/" + definition) {
@@ -28,16 +55,7 @@ enum AgentArchive {
             ? prefixes.filter { candidate in !prefixes.contains(where: { $0 != candidate && candidate.hasPrefix($0) }) }
             : prefixes
         guard roots.count == 1, let prefix = roots.first else { throw PetError("扩展包必须只包含一个完整扩展目录") }
-        var result: [String: Data] = [:], total = 0
-        for name in names where name.hasPrefix(prefix) && !name.hasSuffix("/") {
-            let path = String(name.dropFirst(prefix.count))
-            if !included(path, hiddenRoots: hiddenRoots) { continue }
-            guard !AgentFiles.sensitive(path), !path.isEmpty else { throw PetError("扩展包包含受保护文件：" + path) }
-            let bytes = try await command(["/usr/bin/unzip", "-p", pinned.path, name], maximum: 2_000_000); total += bytes.count
-            guard total <= 20_000_000 else { throw PetError("扩展包展开后超过 20MB") }; result[path] = bytes
-        }
-        // Read members as bytes only. Archive links never become filesystem links.
-        return result
+        return prefix
     }
     private static func included(_ path: String, hiddenRoots: Set<String>) -> Bool {
         let segments = path.split(separator: "/")

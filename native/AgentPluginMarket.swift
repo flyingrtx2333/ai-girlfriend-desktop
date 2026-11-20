@@ -3,6 +3,7 @@ import Foundation
 struct AgentPluginMarketOrigin: Codable, Equatable {
     let catalog: URL, archive: URL
     let marketplace: String, publisher: String, entry: String
+    let commit: AgentPluginMarketCommit?, repositoryPath: String?
 
     func matches(_ directory: AgentPluginMarket.Directory, entry: String) -> Bool {
         catalog == directory.address && marketplace == directory.name && self.entry == entry
@@ -13,9 +14,9 @@ struct AgentPluginMarket {
     struct Entry {
         let name: String, title: String, description: String, author: String, category: String, version: String
         let tags: [String]
-        let archive: URL?, digest: String?, unavailable: String?
+        let source: Source?, unavailable: String?
 
-        var searchable: String { ([name, title, description, author, category] + tags).joined(separator: " ") }
+        var searchable: String { ([name, title, description, author, category, source?.label ?? ""] + tags).joined(separator: " ") }
     }
 
     struct Directory {
@@ -23,13 +24,45 @@ struct AgentPluginMarket {
         let entries: [Entry]
     }
 
-    private struct Cache: Codable {
+    struct Catalogs {
+        var directories: [Directory] = []
+        var selection: URL?
+        var selected: Directory? { directories.first { $0.address == selection } }
+    }
+
+    private struct Cache: Codable, Equatable {
         let address: URL, catalog: Data
+        let commit: AgentPluginMarketCommit?
+
+        func directory() throws -> Directory {
+            if let commit {
+                guard AgentPluginMarketRepository(address: address) == commit.repository,
+                      AgentPluginMarketRepository.commit(commit.sha) == commit.sha else {
+                    throw PetError("已保存的市场仓库来源无效")
+                }
+            }
+            return try AgentPluginMarket.directory(catalog, address: AgentPluginMarket.address(address), commit: commit)
+        }
+    }
+
+    private struct Index: Codable {
+        var selection: URL?
+        var items: [Cache] = []
+
+        func catalogs() throws -> Catalogs {
+            Catalogs(directories: try items.map { try $0.directory() }, selection: selection)
+        }
+    }
+
+    private struct HTTPFailure: LocalizedError {
+        let status: Int
+        var errorDescription: String? { "市场下载失败（HTTP \(status)）。请核对地址或稍后重试。" }
     }
 
     private let profile: URL, network: URLSession
     private let fixtureOrigin: URL?
     private static let listingLimit = 1_000_000, archiveLimit = 20_000_000
+    private static let catalogLimit = 12
     private static let cachePath = "extensions/plugin-market.json"
 
     init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil) {
@@ -40,6 +73,11 @@ struct AgentPluginMarket {
     private final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+            if task.originalRequest?.url?.host == "api.github.com",
+               request.url.map({ $0.port == nil && ["api.github.com", "codeload.github.com"].contains($0.host ?? "") }) != true {
+                completionHandler(nil)
+                return
+            }
             completionHandler((try? AgentPluginMarket.publicAddress(request.url)) == nil ? nil : request)
         }
     }
@@ -51,7 +89,7 @@ struct AgentPluginMarket {
         return URLSession(configuration: config, delegate: RedirectPolicy(), delegateQueue: nil)
     }()
 
-    private static func address(_ url: URL?) throws -> URL {
+    static func address(_ url: URL?) throws -> URL {
         guard let url, let components = URLComponents(url: url, resolvingAgainstBaseURL: false), components.scheme == "https",
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
               components.fragment == nil, url.absoluteString.utf8.count <= 4096 else { throw PetError("请输入有效的 HTTPS 地址") }
@@ -74,39 +112,100 @@ struct AgentPluginMarket {
         let initial = try networkAddress(url)
         var request = URLRequest(url: initial, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("BlueFatFish", forHTTPHeaderField: "User-Agent")
         let delegate = network.delegate as? URLSessionTaskDelegate
-        let (stream, response) = try await network.bytes(for: request, delegate: delegate)
-        defer { stream.task.cancel() }
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw PetError("市场下载失败（HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)）")
+        do {
+            let (stream, response) = try await network.bytes(for: request, delegate: delegate)
+            defer { stream.task.cancel() }
+            guard let http = response as? HTTPURLResponse else { throw PetError("市场未返回有效响应") }
+            guard (200..<300).contains(http.statusCode) else { throw HTTPFailure(status: http.statusCode) }
+            let final = try networkAddress(http.url)
+            guard http.expectedContentLength <= maximum else { throw PetError("市场文件超过下载上限") }
+            var data = Data()
+            if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
+            for try await byte in stream {
+                guard data.count < maximum else { throw PetError("市场文件超过下载上限") }
+                data.append(byte)
+            }
+            try Task.checkCancellation()
+            return (data, final)
+        } catch let error as URLError {
+            switch error.code {
+            case .cancelled: throw CancellationError()
+            case .timedOut: throw PetError("加载市场超时，请稍后重试")
+            case .serverCertificateHasBadDate, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .secureConnectionFailed:
+                throw PetError("市场的 HTTPS 证书校验失败，请核对地址")
+            default: throw PetError("无法连接插件市场，请检查网络或地址后重试")
+            }
         }
-        let final = try networkAddress(http.url)
-        guard http.expectedContentLength <= maximum else { throw PetError("市场文件超过下载上限") }
-        var data = Data()
-        if http.expectedContentLength > 0 { data.reserveCapacity(Int(http.expectedContentLength)) }
-        for try await byte in stream {
-            guard data.count < maximum else { throw PetError("市场文件超过下载上限") }
-            data.append(byte)
-        }
-        try Task.checkCancellation()
-        return (data, final)
     }
 
-    func cachedDirectory() throws -> Directory? {
+    func cachedCatalogs() throws -> Catalogs {
         let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
-        guard let bytes = try cacheBytes(files) else { return nil }
-        let cache = try JSONDecoder().decode(Cache.self, from: bytes)
-        return try Self.directory(cache.catalog, address: Self.address(cache.address))
+        return try readIndex(files).index.catalogs()
     }
 
-    func refresh(_ address: String) async throws -> Directory {
+    func refresh(_ address: String) async throws -> Catalogs {
         let url = try Self.address(URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let repository = AgentPluginMarketRepository(address: url)
+        let key = repository?.address ?? url
         let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
-        let previous = try cacheBytes(files)
-        let (bytes, _) = try await download(url, maximum: Self.listingLimit, accept: "application/json")
-        let result = try Self.directory(bytes, address: url)
+        let original = try readIndex(files).index.items.first { $0.address == key }
+        let fetched: Cache
+        if let repository {
+            let commit = try await resolve(repository, ref: nil)
+            let manifest = try await repositoryDirectory(commit)
+            fetched = Cache(address: key, catalog: manifest, commit: commit)
+        } else {
+            let (bytes, _) = try await download(url, maximum: Self.listingLimit, accept: "application/json")
+            fetched = Cache(address: key, catalog: bytes, commit: nil)
+        }
+        _ = try fetched.directory()
+        return try await register(fetched, replacing: original, files: files)
+    }
+
+    @MainActor private func register(_ fetched: Cache, replacing original: Cache?, files: AgentFiles) throws -> Catalogs {
+        let key = fetched.address
+        let current = try readIndex(files)
+        var index = current.index
+        if let position = index.items.firstIndex(where: { $0.address == key }) {
+            guard original == index.items[position] || fetched == index.items[position] else { throw Self.changedCatalog }
+            index.items[position] = fetched
+        } else {
+            guard original == nil else { throw Self.changedCatalog }
+            guard index.items.count < Self.catalogLimit else { throw PetError("最多保存 \(Self.catalogLimit) 个目录，请先移除一个目录") }
+            index.items.append(fetched)
+        }
+        index.selection = key
+        return try save(index, files: files, previous: current.bytes)
+    }
+
+    @MainActor func select(_ address: URL) throws -> Catalogs {
+        let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
+        let current = try readIndex(files)
+        guard current.index.items.contains(where: { $0.address == address }) else { throw Self.changedCatalog }
+        var index = current.index
+        index.selection = address
+        return try save(index, files: files, previous: current.bytes)
+    }
+
+    @MainActor func remove(_ address: URL) throws -> Catalogs {
+        let files = try AgentFiles(workspace: profile.path, followParentLinks: false)
+        let current = try readIndex(files)
+        var index = current.index
+        guard let offset = index.items.firstIndex(where: { $0.address == address }) else { throw Self.changedCatalog }
+        index.items.remove(at: offset)
+        if index.selection == address { index.selection = index.items.first?.address }
+        return try save(index, files: files, previous: current.bytes)
+    }
+
+    private static var changedCatalog: PetError { PetError("该目录已在另一窗口更改，请重新打开插件市场") }
+
+    private func save(_ index: Index, files: AgentFiles, previous: Data?) throws -> Catalogs {
+        let catalogs = try index.catalogs()
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
-        let encoded = try encoder.encode(Cache(address: url, catalog: bytes))
+        let encoded = try encoder.encode(index)
         if encoded != previous {
             let target = try files.literalURL(Self.cachePath)
             let write = try AgentKnowledgeFileWrite(files: files, path: target.path, data: encoded, expectedHash: previous.map(AgentFiles.hash),
@@ -114,22 +213,80 @@ struct AgentPluginMarket {
             try write.requireCurrent(); try Task.checkCancellation()
             try files.writeData(encoded, to: write.url, permissions: write.permissions, expectedTarget: write.signature)
         }
-        return result
+        return catalogs
     }
 
-    private func cacheBytes(_ files: AgentFiles) throws -> Data? {
+    private func readIndex(_ files: AgentFiles) throws -> (index: Index, bytes: Data?) {
         let target = try files.literalURL(Self.cachePath)
-        if try files.entryMetadata(target).kind == "missing" { return nil }
-        return try files.readData(target, maximum: 2_000_000)
+        if try files.entryMetadata(target).kind == "missing" { return (Index(), nil) }
+        let bytes = try files.readData(target, maximum: 17_000_000)
+        let decoder = JSONDecoder()
+        if let index = try? decoder.decode(Index.self, from: bytes) {
+            let addresses = Set(index.items.map(\.address))
+            guard index.items.count <= Self.catalogLimit, index.items.count == addresses.count,
+                  index.selection.map(addresses.contains) ?? addresses.isEmpty else { throw PetError("已保存的市场目录索引无效") }
+            return (index, bytes)
+        }
+        let original = try decoder.decode(Cache.self, from: bytes)
+        return (Index(selection: original.address, items: [original]), bytes)
+    }
+
+    private func api(_ repository: AgentPluginMarketRepository, path: [String], ref: String? = nil) -> URL {
+        let base = fixtureOrigin ?? URL(string: "https://api.github.com")!
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._"))
+        let segments = ["repos", repository.owner, repository.name] + path
+        var url = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        url.percentEncodedPath = "/" + segments.map { $0.addingPercentEncoding(withAllowedCharacters: allowed)! }.joined(separator: "/")
+        if let ref { url.queryItems = [URLQueryItem(name: "ref", value: ref)] }
+        return url.url!
+    }
+
+    private func resolve(_ repository: AgentPluginMarketRepository, ref: String?) async throws -> AgentPluginMarketCommit {
+        let (bytes, _) = try await download(api(repository, path: ["commits", ref ?? "HEAD"]), maximum: 256, accept: "application/vnd.github.sha")
+        let response = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let sha = AgentPluginMarketRepository.commit(response) else {
+            throw PetError("GitHub 未返回有效的提交编号")
+        }
+        return AgentPluginMarketCommit(repository: repository, sha: sha)
+    }
+
+    private func repositoryDirectory(_ commit: AgentPluginMarketCommit) async throws -> Data {
+        func manifest(in folder: String) async throws -> Data {
+            let url = api(commit.repository, path: ["contents", folder, "marketplace.json"], ref: commit.sha)
+            return try await download(url, maximum: Self.listingLimit, accept: "application/vnd.github.raw+json").0
+        }
+        do { return try await manifest(in: ".qoder-plugin") }
+        catch let error as HTTPFailure where error.status == 404 {
+            do { return try await manifest(in: ".claude-plugin") }
+            catch let error as HTTPFailure where error.status == 404 { throw PetError("仓库缺少插件市场清单") }
+        }
     }
 
     @MainActor func prepare(_ entry: Entry, in directory: Directory, scope: String?, plugins: AgentPlugins) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
-        guard let archive = entry.archive, entry.unavailable == nil else { throw PetError(entry.unavailable ?? "此插件没有可用的 ZIP 包") }
+        guard let source = entry.source, entry.unavailable == nil else { throw PetError(entry.unavailable ?? "此插件没有可用来源") }
+        let archive: URL, commit: AgentPluginMarketCommit?, path: String?
+        switch source {
+        case let .archive(url, _):
+            archive = url
+            commit = nil
+            path = nil
+        case let .repository(repository, ref, sha, location):
+            let verified: AgentPluginMarketCommit
+            if let sha { verified = AgentPluginMarketCommit(repository: repository, sha: sha) }
+            else { verified = try await resolve(repository, ref: ref) }
+            archive = api(repository, path: ["zipball", verified.sha])
+            commit = verified
+            path = location
+        }
         let (bytes, final) = try await download(archive, maximum: Self.archiveLimit, accept: "application/zip, application/octet-stream")
-        let digest = AgentFiles.hash(bytes)
-        guard entry.digest == nil || entry.digest == digest else { throw PetError("插件包的 SHA-256 与目录不一致，未安装") }
-        let origin = AgentPluginMarketOrigin(catalog: directory.address, archive: final, marketplace: directory.name, publisher: directory.publisher, entry: entry.name)
-        var package = try await plugins.inspectArchive(bytes, sourceName: directory.name + " · " + (final.host ?? ""), importing: true)
+        if case let .archive(_, digest?) = source, digest != AgentFiles.hash(bytes) {
+            throw PetError("插件包的 SHA-256 与目录不一致，未安装")
+        }
+        let origin = AgentPluginMarketOrigin(catalog: directory.address, archive: final, marketplace: directory.name,
+            publisher: directory.publisher, entry: entry.name, commit: commit, repositoryPath: path)
+        let label = commit.map { [$0.label, path ?? ""].filter { !$0.isEmpty }.joined(separator: " · ") } ?? (final.host ?? "")
+        var package = try await plugins.inspectArchive(bytes, sourceName: directory.name + " · " + label, importing: true, repositoryPath: path)
+        guard commit == nil || package.metadata.name == entry.name else { throw PetError("仓库插件名称与市场目录不一致") }
         package.receipt.marketOrigin = origin
         let installations = try plugins.catalog(workspace: scope, onlyScope: true)
         if let prior = installations.first(where: { $0.receipt.marketOrigin?.matches(directory, entry: entry.name) == true }) {
@@ -141,33 +298,37 @@ struct AgentPluginMarket {
         return (package, nil)
     }
 
-    private static func directory(_ bytes: Data, address: URL) throws -> Directory {
+    private static func directory(_ bytes: Data, address: URL, commit: AgentPluginMarketCommit?) throws -> Directory {
         let object = try AgentConfigurationJSON.object(bytes)
         guard let name = object["name"] as? String, !name.isEmpty, name.utf8.count <= 128,
               let owner = object["owner"] as? [String: Any], let publisher = owner["name"] as? String,
               !publisher.isEmpty, publisher.utf8.count <= 200, let entries = object["plugins"] as? [[String: Any]], entries.count <= 512 else {
             throw PetError("插件目录需要名称、发布者和插件列表")
         }
+        let pluginRoot = (object["metadata"] as? [String: Any])?["pluginRoot"]
         var names = Set<String>()
         let result = try entries.map { value -> Entry in
             guard let name = value["name"] as? String, !name.isEmpty, name.utf8.count <= 128, names.insert(name).inserted else {
                 throw PetError("市场插件名称无效或重复")
             }
             func text(_ key: String, limit: Int = 200) -> String { String((value[key] as? String ?? "").prefix(limit)) }
-            let source = value["source"] as? [String: Any], raw = source?["url"] as? String
-            let archive = source?["source"] as? String == "archive" ? (try? Self.address(raw.flatMap(URL.init(string:)))) : nil
-            let digest = source?["sha256"] as? String
-            let issue: String?
-            if archive == nil { issue = "需要 HTTPS ZIP 包" }
-            else if source?["sha256"] != nil, digest?.range(of: "^[A-Fa-f0-9]{64}\\z", options: .regularExpression) == nil { issue = "目录中的 SHA-256 无效" }
-            else if (value["dependencies"] as? [Any])?.isEmpty == false || (value["headers"] as? [String: Any])?.isEmpty == false || value["strict"] as? Bool == false { issue = "此条目需要额外的依赖或来源配置" }
-            else { issue = nil }
+            let source: Source?, issue: String?
+            do {
+                if (value["dependencies"] as? [Any])?.isEmpty == false || (value["headers"] as? [String: Any])?.isEmpty == false || value["strict"] as? Bool == false {
+                    throw PetError("此条目需要额外的依赖或来源配置")
+                }
+                source = try Source.parse(value["source"], directory: commit, pluginRoot: pluginRoot)
+                issue = nil
+            } catch {
+                source = nil
+                issue = error.localizedDescription
+            }
             let title = text("displayName")
             let author = value["author"] as? [String: Any]
             return Entry(name: name, title: title.isEmpty ? name : title, description: text("description", limit: 2000),
                 author: String((author?["name"] as? String ?? "").prefix(200)), category: text("category", limit: 80), version: text("version", limit: 128),
                 tags: Array((value["tags"] as? [String] ?? []).prefix(20)).map { String($0.prefix(80)) },
-                archive: archive, digest: digest?.lowercased(), unavailable: issue)
+                source: source, unavailable: issue)
         }
         return Directory(address: address, name: name, publisher: publisher, entries: result)
     }

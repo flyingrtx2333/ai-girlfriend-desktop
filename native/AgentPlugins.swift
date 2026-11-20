@@ -157,14 +157,14 @@ struct AgentPluginInstallation: Identifiable {
         let input = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try input.readData(input.literalURL(archive.lastPathComponent), maximum: 20_000_000)
         return try await inspectArchive(data, sourceName: archive.lastPathComponent, importing: importing)
     }
-    func inspectArchive(_ data: Data, sourceName: String, importing: Bool) async throws -> AgentPluginPackage {
+    func inspectArchive(_ data: Data, sourceName: String, importing: Bool, repositoryPath: String? = nil) async throws -> AgentPluginPackage {
         guard data.count <= 20_000_000 else { throw PetError("插件压缩包超过 20 MB") }
         let hiddenRoots = importing ? AgentImportedPlugin.hiddenRoots : [".qoder-plugin", ".claude-plugin", ".mcp.json"]
         let scratch = profile.appendingPathComponent(".plugin-review-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); defer { try? FileManager.default.removeItem(at: scratch) }
         let pinned = scratch.appendingPathComponent("package.zip"); try data.write(to: pinned)
         let definitions = importing ? AgentImportedPlugin.manifests : [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"]
-        let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: definitions, hiddenRoots: hiddenRoots)
+        let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: definitions, hiddenRoots: hiddenRoots, repositoryPath: repositoryPath)
         let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: nil) : files
         return try Self.package(payload, sourceName: sourceName, sourceHash: AgentFiles.hash(data))
     }
