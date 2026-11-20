@@ -1,5 +1,12 @@
 # P0 逐页界面验收台账
 
+## 2026-11-20 私有 HTTPS 插件市场
+
+- 「设置 → 扩展管理 → 插件 → 插件市场 → 访问凭据」在设置右侧编辑，保存与清除固定在页首。HTTPS 目录支持 Bearer 或 Basic，HTTPS Git 仓库使用用户名与具备读取权限的令牌。凭据存入本机应用配置，按目录地址隔离，重开时令牌输入框为空。[GitHub HTTPS 凭据](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#using-a-personal-access-token-on-the-command-line) · [GitLab HTTPS 凭据](https://docs.gitlab.com/user/profile/personal_access_tokens/#use-git-over-https)
+- 同一优化包通过 **54 项原生检查**和 **22 项独立核对**。本机 HTTPS 服务要求两种不同的样例令牌。原始 ZIP 与真实 Git 提交核对了安装、更新、历史、目录间凭据隔离和拒绝访问。错误令牌时保留上次目录，同站相邻目录收不到凭据，授权请求的跳转被拦截。初测捕获了 macOS Git 的匿名拒绝输出，修正中文提示后通过复验。
+- **32 项实窗及文件核对**覆盖 **1200×774** 浅色窗口的缺凭据提示、令牌遮挡、审阅及 ZIP 安装，以及 **780×540** 深色窗口的 Git 子目录安装、库存 **61 → 97** 的更新、旧版本保留和清除凭据。清除后实际刷新被拒，目录及已安装的 **2.0.0** 仍可浏览。两个窗口正常退出，保留 9 张原图，模型请求 0 次。
+- Mac mini 日用版 **0.9.4 `c436a3f`** 已安装并运行，构建于 **2026-11-20 11:11（北京时间）**，进程 **60338**。已读回关于、访问凭据入口与原任务，14 份正式资料的字节和权限一致，保留 `5d3a9b6` 回退副本。验收索引位于 `evidence/agent/plugin-market-private-https-y4k8m2v6/acceptance-index.json`。
+
 ## 2026-11-20 公开 HTTPS Git 插件市场
 
 - 「设置 → 扩展管理 → 插件 → 插件市场」可输入公开 HTTPS Git 的 `.git` 克隆地址。读取默认分支的市场清单并记录具体提交。HTTPS 目录也可声明仓库根目录或子目录，以及分支、标签和提交。审阅显示来源和组件，明确安装或更新后仍停用。[Qoder 市场清单参考](https://docs.qoder.com/zh/cli/plugins-reference)
