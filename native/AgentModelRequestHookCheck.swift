@@ -21,6 +21,7 @@ import AppKit
         let program = #"""
         import fs from 'node:fs';
         import http from 'node:http';
+        import path from 'node:path';
         let compactions = 0;
         const count = {prompt_tokens: 45, completion_tokens: 7, total_tokens: 52, prompt_tokens_details:{cached_tokens:4}, completion_tokens_details:{reasoning_tokens:2}};
         const server = http.createServer(async (req, res) => {
@@ -32,21 +33,37 @@ import AppKit
           const body = JSON.parse(Buffer.concat(chunks));
           const contents = body.messages.map(message => message.content).filter(value => typeof value === 'string');
           const system = contents[0], text = contents.join('\n');
+          const lastUser = body.messages.findLast(message => message.role === 'user' && typeof message.content === 'string')?.content ?? '';
           const kind = system.startsWith('根据提供的真实任务记录') ? 'recap' :
             contents.some(value => value.startsWith('用户要求原文（仅作为理解记录的依据，不必复述）：')) ? 'compact' :
+            text.includes('PUBLIC_QUEUED_SECOND') ? 'queue-retry' : text.includes('PUBLIC_QUEUE_FAILURE_FIRST') ? 'queue-failure' :
+            text.includes('PUBLIC_REPLACEMENT_AFTER_FAILURE') ? 'replacement' : text.includes('PUBLIC_LATE_FAILURE_FIRST') ? 'late-failure' :
             text.includes('PUBLIC_CANCEL_TURN') ? 'cancel' : text.includes('PUBLIC_ERROR_TURN') ? 'error' : 'turn';
-          fs.appendFileSync(process.argv[3], 'wire\t' + JSON.stringify({kind, contaminated:text.includes('PUBLIC_DIAGNOSTIC_ONLY')}) + '\n');
+          fs.appendFileSync(process.argv[3], 'wire\t' + JSON.stringify({kind, contaminated:text.includes('PUBLIC_DIAGNOSTIC_ONLY'),
+            queuedInputIsLatest:lastUser.startsWith('PUBLIC_QUEUED_SECOND'), queuedAttachmentOnWire:lastUser.includes('[附件编号：'),
+            syntheticContinuation:text.includes('继续完成原任务，保留之前的约束。')}) + '\n');
           if (kind === 'cancel') {
             const timer = setTimeout(() => {res.writeHead(504); res.end();}, 15_000);
             res.on('close', () => clearTimeout(timer)); return;
           }
-          if (kind === 'error') {
+          if (kind === 'queue-failure') {
+            const release = path.join(path.dirname(process.argv[3]), 'release-queue-failure');
+            const deadline = Date.now() + 8000;
+            const timer = setInterval(() => {
+              if (!fs.existsSync(release) && Date.now() < deadline) return;
+              clearInterval(timer);
+              res.writeHead(503, {'Content-Type':'application/json'});
+              res.end(JSON.stringify({error:{message:'公开本机传输失败'}}));
+            }, 20);
+            res.on('close', () => clearInterval(timer)); return;
+          }
+          if (kind === 'error' || kind === 'late-failure') {
             res.writeHead(500, {'Content-Type':'application/json'});
             res.end(JSON.stringify({error:{message:'公开服务失败 PUBLIC-FIXTURE-ONLY'}})); return;
           }
           const finish = kind === 'compact' && ++compactions === 1 ? 'length' : 'stop';
           const content = kind === 'compact' ? 'PUBLIC_COMPACTION_RESULT' : kind === 'recap' ? 'PUBLIC_RECAP_RESULT' : 'PUBLIC_DIALOGUE_RESULT';
-          if (kind === 'turn') {
+          if (['turn', 'queue-retry', 'replacement'].includes(kind)) {
             res.writeHead(200, {'Content-Type':'text/event-stream'});
             res.write('data: '+JSON.stringify({model:'fixture-observer',choices:[{delta:{content},finish_reason:'stop'}]})+'\n\n');
             res.end('data: '+JSON.stringify({usage:count})+'\n\ndata: [DONE]\n\n'); return;
@@ -116,7 +133,9 @@ import AppKit
             var p = PetPreferences(); p.model = "fixture-observer"; p.endpoint = "http://127.0.0.1:\(number)/v1"
             p.contextTokens = 8192; p.replyTokens = 512; p.visionMode = "off"; return p
         }
-        runtime.taskSettings = { var s = AgentGeneralSettings.Settings(); s.promptSuggestions = false; s.skillEvolutionSuggestions = false; return s }
+        var executionSettings = AgentGeneralSettings.Settings()
+        executionSettings.promptSuggestions = false; executionSettings.skillEvolutionSuggestions = false
+        runtime.taskSettings = { executionSettings }
         var requests = 0, permit = true
         runtime.modelRequestCheck = { guard permit, requests < 12 else { throw PetError("本机样例拒绝传输") }; requests += 1 }
         func rows() throws -> [(String, [String: Any])] {
@@ -194,6 +213,60 @@ import AppKit
             && recap.contains { $0.1["kind"] as? String == "recap" && $0.1["contaminated"] as? Bool == false }
             && recapped.recap?.text == "PUBLIC_RECAP_RESULT"
 
+        let queued = store.create(title: "请求失败时的已发送补充", workspace: workspace.path)
+        let attachmentURL = workspace.appendingPathComponent("公开补充.txt")
+        let attachmentBytes = Data("公开样例，供失败后继续核对。\n".utf8)
+        try attachmentBytes.write(to: attachmentURL)
+        let attachment = try await AgentAttachments.importFile(attachmentURL, store: store, taskID: queued)
+        let supplements = ["PUBLIC_QUEUED_FIRST · 先核对公开说明", "PUBLIC_QUEUED_SECOND · 继续核对这份附件"]
+        guard runtime.submit("PUBLIC_QUEUE_FAILURE_FIRST · 初次查询", taskID: queued) else { throw PetError("排队失败样例未启动") }
+        let waitingForWire = Date().addingTimeInterval(6)
+        while try !rows().contains(where: { $0.0 == "wire" && $0.1["kind"] as? String == "queue-failure" }), Date() < waitingForWire { await wait(0.025) }
+        guard try rows().contains(where: { $0.0 == "wire" && $0.1["kind"] as? String == "queue-failure" }) else { throw PetError("未观察到本机失败请求") }
+        guard runtime.submit(supplements[0], taskID: queued), runtime.submit(supplements[1], taskID: queued, attachmentIDs: [attachment.id]),
+              let accepted = store.task(queued)?.queuedMessages, accepted.map(\.content) == supplements else { throw PetError("两条补充未实际排队") }
+        try Data().write(to: workspace.appendingPathComponent("release-queue-failure"))
+        let stoppedWithQueue = try await settled(queued)
+        let visible = stoppedWithQueue.messages.filter { supplements.contains($0.content) }
+        checks["TransportFailureMakesAcceptedSupplementsVisibleInOrder"] = stoppedWithQueue.status == .failed && stoppedWithQueue.queuedCount == 0 && visible.map(\.id) == accepted.map(\.id) && visible.last?.attachmentIDs == [attachment.id]
+
+        let failureFolder = output.appendingPathComponent("failure-ui/profile/agent", isDirectory: true)
+        try fm.createDirectory(at: failureFolder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for name in [queued + ".json", queued] {
+            try fm.copyItem(at: store.directory.appendingPathComponent(name), to: failureFolder.appendingPathComponent(name))
+        }
+        let savedFailure = try JSONDecoder().decode(AgentTaskRecord.self, from: Data(contentsOf: failureFolder.appendingPathComponent(queued + ".json")))
+        checks["PersistedFailureRetainsExactInputIDsAndAttachmentBytes"] = try savedFailure.messages.filter { supplements.contains($0.content) }.map(\.id) == accepted.map(\.id)
+            && Data(contentsOf: AgentAttachments.source(store: store, taskID: queued, id: attachment.id)) == attachmentBytes
+        runtime.start(queued)
+        let retriedQueue = try await settled(queued)
+        let retryWire = try rows().last { $0.0 == "wire" && $0.1["kind"] as? String == "queue-retry" }?.1
+        checks["RetryUsesLatestAcceptedSupplementWithoutInventingAnotherUserMessage"] = retriedQueue.status == .completed && retryWire?["queuedInputIsLatest"] as? Bool == true
+            && retryWire?["queuedAttachmentOnWire"] as? Bool == true && retryWire?["syntheticContinuation"] as? Bool == false
+            && retriedQueue.messages.filter { supplements.contains($0.content) }.map(\.id) == accepted.map(\.id)
+
+        let cleanup = try JSONSerialization.data(withJSONObject: ["hooks": ["StopFailure": [["hooks": [[
+            "name": "公开失败收尾", "type": "command", "command": "/usr/bin/touch failure-hook-entered\nexec /bin/sleep 5", "timeout": 8
+        ]]]]]])
+        let config = try store.hooks.document(project: false, workspace: workspace.path)
+        try store.hooks.save(String(decoding: cleanup, as: UTF8.self), project: false, workspace: workspace.path, expectedHash: config.1)
+        guard let cleanupHook = try store.hooks.catalog(workspace: workspace.path).first(where: { $0.event == .stopFailure }) else { throw PetError("缺少失败收尾样例") }
+        try store.hooks.setEnabled(cleanupHook, true, workspace: workspace.path)
+        executionSettings.runningInput = .interrupt
+        let racing = store.create(title: "失败收尾期间的插话", workspace: workspace.path)
+        guard runtime.submit("PUBLIC_LATE_FAILURE_FIRST", taskID: racing) else { throw PetError("收尾竞争样例未启动") }
+        let cleanupMarker = workspace.appendingPathComponent("failure-hook-entered"), cleanupDeadline = Date().addingTimeInterval(7)
+        while !fm.fileExists(atPath: cleanupMarker.path), Date() < cleanupDeadline { await wait(0.025) }
+        guard fm.fileExists(atPath: cleanupMarker.path), runtime.isExecuting(racing), runtime.submit("PUBLIC_REPLACEMENT_AFTER_FAILURE", taskID: racing) else {
+            throw PetError("未能在真实失败收尾期间插话")
+        }
+        let replacement = try await settled(racing)
+        checks["InterruptedFailureCleanupCannotOverwriteTheReplacementTurn"] = try replacement.status == .completed && replacement.summary == "PUBLIC_DIALOGUE_RESULT"
+            && replacement.messages.filter { $0.content == "PUBLIC_REPLACEMENT_AFTER_FAILURE" }.count == 1
+            && replacement.events.filter { $0.hook?.event == .stopFailure && $0.status == "stopped" }.count == 1
+            && rows().filter { $0.0 == "wire" && $0.1["kind"] as? String == "replacement" }.count == 1
+        try store.hooks.setEnabled(cleanupHook, false, workspace: workspace.path)
+
         let denied = store.create(title: "公开传输门禁", workspace: workspace.path), count = try rows().count
         permit = false
         guard runtime.submit("PUBLIC_BLOCKED_BEFORE_WIRE", taskID: denied) else { throw PetError("本机门禁样例未开始") }
@@ -205,7 +278,7 @@ import AppKit
             && final.filter { $0.0 != "wire" }.allSatisfy { $0.1["transcript_path"] is NSNull && $0.1["prompt"] == nil && $0.1["messages"] == nil }
             && !traceText.contains(key)
         store.selectedID = owner
-        try JSONSerialization.data(withJSONObject: ["taskID": owner, "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
+        try JSONSerialization.data(withJSONObject: ["taskID": owner, "queuedFailureTaskID": queued, "replacementTaskID": racing, "loopbackRequests": transmitted.count], options: [.sortedKeys]).write(
             to: output.appendingPathComponent("model-request-fixture.json"), options: .atomic)
     }
 }

@@ -281,6 +281,7 @@ import Foundation
             // not count as approving that action.
             Self.skipPending(&record, reason: "用户补充了新要求，未执行此操作。")
             record.flushQueuedInputs()
+            record.unansweredQueuedMessageID = nil
             try? AgentSkillDrafts.prepareNewRound(&record,message:message)
             record.messages.append(message); record.activateExtensions(message); record.draftAttachmentIDs?.removeAll { attachmentIDs.contains($0) }; record.goalAccepted = nil; record.completionEvidence = nil
             record.goalExecution = nil
@@ -346,7 +347,11 @@ import Foundation
         store.update(id) { record in
             if record.mode == .goal, !continuingGoal || record.goalExecution == nil { record.goalExecution = AgentGoalExecution(maximumTurns: taskSettings().goalMaximumTurns) }
             if [.stopped, .failed].contains(task.status), !task.hasConfirmedKnowledgeCompletion {
-                record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。", mcpSelection:task.messages.last(where:\.isHumanInput)?.mcpSelection)); record.goalAccepted = nil
+                let latest = task.messages.last(where: \.isHumanInput)
+                if task.unansweredQueuedMessageID == nil || task.unansweredQueuedMessageID != latest?.id {
+                    record.messages.append(AgentMessage(role: "user", content: "继续完成原任务，保留之前的约束。", mcpSelection: latest?.mcpSelection))
+                }
+                record.goalAccepted = nil
             }
             if record.hookSession == nil { record.hookSession = UUID().uuidString; record.hookStopBlocks = 0 }
             record.status = .running
@@ -1077,6 +1082,7 @@ import Foundation
                     }
                     if let i = record.messages.firstIndex(where: { $0.id == assistant.id }) { record.messages[i].content = turn.content; record.messages[i].reasoning = turn.reasoning.isEmpty ? nil : turn.reasoning; record.messages[i].toolCalls = turn.calls.isEmpty ? nil : turn.calls; record.messages[i].duration = max(0, ProcessInfo.processInfo.systemUptime - replyStarted) }
                     record.pendingCalls = turn.calls
+                    record.unansweredQueuedMessageID = nil
                     if !visuals.isEmpty {
                         let detail = visuals.values.flatMap { $0 }.map { "\($0.name) · 第\($0.part)部分 · \($0.image.width)×\($0.image.height)" }.sorted().joined(separator: "\n")
                         if record.events.last(where: { $0.kind == "vision" })?.detail != detail { record.events.append(AgentEvent(kind: "vision", title: "查看附件图片", detail: detail, status: "completed")) }
@@ -1097,16 +1103,18 @@ import Foundation
             }
             store.update(id) { $0.status = .stopped; $0.events.append(AgentEvent(kind: "state", title: "本轮执行已达上限，可继续", detail: "目标尚未因此视为完成。", status: "stopped")) }
         } catch {
-            guard active[id]?.token == run.token else { return }
+            guard active[id]?.token == run.token, !run.restartAfterInterruption else { return }
             let cancelled = Task.isCancelled || (error as? URLError)?.code == .cancelled
-            if cancelled, run.restartAfterInterruption { return }
             if !cancelled {
                 _ = try? await hook(.stopFailure, id: id, trigger: run.token, fields: ["error": error.localizedDescription], secret: hookSecret)
+                guard active[id]?.token == run.token, !run.restartAfterInterruption else { return }
                 _ = try? await hook(.sessionEnd, id: id, trigger: store.task(id)?.hookSession ?? run.token, fields: ["reason": "error"], secret: hookSecret)
+                guard active[id]?.token == run.token, !run.restartAfterInterruption else { return }
             }
             store.update(id) { record in
                 record.hookSession = nil
                 Self.skipPending(&record, reason: "执行已停止，未继续此操作；恢复后先核对真实状态。")
+                record.flushQueuedInputs()
                 record.status = cancelled ? .stopped : .failed
                 record.messages.removeAll { $0.role == "assistant" && $0.content.isEmpty && ($0.toolCalls ?? []).isEmpty }
                 for i in record.events.indices where record.events[i].status == "running" { record.events[i].status = cancelled ? "stopped" : "failed" }

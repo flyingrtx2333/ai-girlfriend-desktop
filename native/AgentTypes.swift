@@ -190,6 +190,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     var kind: String?
     var queuedInputs: [String]?
     var queuedMessages: [AgentMessage]?
+    var unansweredQueuedMessageID: String?
     var goalAccepted: Bool?
     var goalExecution: AgentGoalExecution?
     var completionEvidence: [String]?
@@ -289,6 +290,7 @@ struct AgentTaskRecord: Codable, Identifiable {
     mutating func flushQueuedInputs() {
         let pending = (queuedInputs ?? []).map { AgentMessage(role: "user", content: $0) } + (queuedMessages ?? [])
         for message in pending { activateExtensions(message) }; messages += pending
+        if let newest = pending.last(where: \.isHumanInput) { unansweredQueuedMessageID = newest.id }
         queuedInputs = []; queuedMessages = []
     }
     mutating func activateExtensions(_ message: AgentMessage) {

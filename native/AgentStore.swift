@@ -125,6 +125,7 @@ import Foundation
         value.activityAt = task.activityAt ?? task.events.map(\.created).max() ?? (task.messages.isEmpty ? task.created : task.updated)
         value.messages = []; value.events = []; value.plan = []; value.changes = []; value.approvals = []; value.pendingCalls = []; value.canvases = nil; value.agentDrafts = nil; value.automationDrafts = nil
         value.artifacts = []; value.sources = []; value.queuedInputs = nil; value.queuedMessages = nil; value.draft = nil; value.contextSummary = nil; value.gitReview = nil; value.attachments = nil; value.draftAttachmentIDs = nil; value.summary = String(value.summary.prefix(240))
+        value.unansweredQueuedMessageID = nil
         value.hookContexts = nil; value.hookRejectedAnswers = nil
         value.hookPromptIDs = nil; value.hookContextIDs = nil
         value.modelReceipts = nil; value.contextSnapshot = nil; value.recap = nil; value.gitTurn = nil; value.gitPushReview = nil; value.gitPushReceipt = nil; value.gitRemoteSnapshot = nil
@@ -164,7 +165,8 @@ import Foundation
         if task.importOrigin != nil, task.importOrigin?.historyThroughID == nil {
             let boundary = try? AgentDataImport.historyBoundary(task, directory: directory); task.importOrigin?.historyThroughID = boundary
         }
-        let interrupted = !hooks.isRunning(id) && (task.status == .running || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
+        let hasWaitingSupplements = [.failed, .stopped].contains(task.status) && task.queuedCount > 0
+        let interrupted = !hooks.isRunning(id) && (task.status == .running || hasWaitingSupplements || task.pendingFileCapture != nil || task.events.contains { $0.status == "running" && $0.hook?.asynchronous == true })
         if interrupted { Self.recover(&task) }
         cache[id] = task
         rememberStoredTask(id, hash: AgentFiles.hash(data))
@@ -222,7 +224,10 @@ import Foundation
             task.events[i].status = "stopped"; task.events[i].hook?.delivery = "interrupted"
             task.events[i].detail += "\n应用中断，后台结果未确认；未自动重放"
         }
-        guard task.status == .running else { return }
+        guard task.status == .running else {
+            if [.failed, .stopped].contains(task.status), task.queuedCount > 0 { task.flushQueuedInputs() }
+            return
+        }
         task.status = .stopped; task.goalAccepted = nil; task.completionEvidence = nil
         task.hookSession = nil
         for call in task.pendingCalls {
@@ -550,6 +555,7 @@ import Foundation
             original.pendingCalls = []; original.approvals = []; original.status = .ready; original.archived = false
             original.workspaceArchiveID = nil
             original.changes = []; original.changeRounds = nil; original.changeTrackingFromID = nil; original.summary = ""; original.goalAccepted = nil; original.completionEvidence = nil; original.queuedInputs = nil; original.queuedMessages = nil; original.kind = nil
+            original.unansweredQueuedMessageID = nil
             original.skillEvolutionJob = nil; original.skillDraft = nil; original.skillDraftHistory = nil
             original.recap = nil; original.resultHistory = nil; original.gitReview = nil; original.gitTurn = nil; original.pendingFileCapture = nil; original.gitPushReview = nil; original.gitPushReceipt = nil; original.gitRemoteSnapshot = nil
             original.hookSession = nil; original.hookContexts = nil; original.hookContextIDs = nil
