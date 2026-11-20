@@ -226,9 +226,10 @@ import AppKit
         preview.isEnabled = !value && hasStart && !hasUnavailableStart; create.isEnabled = !value && review != nil
         for frame in [startFrame] + sourceFrames { frame.refreshEnabledState() }
     }
-    private func showFailure(_ message: String, title: String) {
-        state.stringValue = title; state.textColor = AgentDialogStyle.error; state.toolTip = message
-        diff.show(message, oldTitle: "工作树", newTitle: "错误详情"); diff.isHidden = false
+    private func showFailure(_ message: String, title: String, inline: Bool = false) {
+        state.stringValue = inline ? title + "\n" + message : title
+        state.textColor = AgentDialogStyle.error; state.toolTip = message
+        diff.show(inline ? "" : message, oldTitle: "工作树", newTitle: "错误详情"); diff.isHidden = inline
     }
     private func checkTask() throws {
         guard let task = store.task(taskID), !task.archived, ![.running, .waiting].contains(task.status) else { throw PetError("来源任务正在执行或已归档，请稍后重试") }
@@ -266,7 +267,8 @@ import AppKit
                 }
                 diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树"); diff.isHidden = value.patch.isEmpty
             } catch {
-                showFailure(error.localizedDescription, title: (error as? AgentWorktreeUpstreamAccessError)?.title ?? "预览失败")
+                let access = error as? AgentWorktreeUpstreamAccessError
+                showFailure(error.localizedDescription, title: access?.title ?? "预览失败", inline: access != nil)
                 review = nil
             }
             setBusy(false); onDraftChange?()
