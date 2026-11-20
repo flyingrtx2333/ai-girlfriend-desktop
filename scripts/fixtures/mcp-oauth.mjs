@@ -9,7 +9,7 @@ const log = value => appendFileSync(path.join(directory, 'requests.jsonl'), JSON
 const stock = { sku: 'LOCAL-17', name: '公开读盘样例', available: 47 };
 writeFileSync(path.join(directory, 'inventory.json'), JSON.stringify(stock) + '\n');
 const clients = new Map(), codes = new Map(), access = new Set(), refresh = new Set();
-let issuer, resource, browser;
+let issuer, resource, browser, rejectInitialization = false;
 const scope = 'inventory:read';
 const token = () => 'public-fixture-' + randomUUID();
 function json(res, status, value) {
@@ -82,6 +82,9 @@ async function route(req, res) {
   if (url.pathname === '/fixture/expire' && req.method === 'POST') {
     access.clear(); log({ event: 'fixture-expired' }); return json(res, 200, { expired: true });
   }
+  if (url.pathname === '/fixture/fail-initialize' && req.method === 'POST') {
+    rejectInitialization = true; return json(res, 200, { ready: true });
+  }
   if (url.pathname === '/mcp' || url.pathname === '/mcp-next') {
     if (req.method !== 'POST') { res.writeHead(405); return res.end(); }
     if (url.pathname === '/mcp-next') { log({ event: 'other-resource', receivedAuthorization: !!req.headers.authorization }); return json(res, 404, {}); }
@@ -93,6 +96,11 @@ async function route(req, res) {
       return res.end();
     }
     if (message.id === undefined) { res.writeHead(202); return res.end(); }
+    if (rejectInitialization && message.method === 'initialize') {
+      rejectInitialization = false;
+      log({ event: 'public-credential-in-error' });
+      return json(res, 200, { jsonrpc: '2.0', id: message.id, error: { code: -32603, message: '样例连接错误 ' + req.headers.authorization } });
+    }
     const result = message.method === 'initialize' ? { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: '本机受保护库存', version: '1.0.0' } }
       : message.method === 'tools/list' ? { tools: [{ name: 'lookup_inventory', description: '读取公开样例库存', inputSchema: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] } }] }
       : message.params?.arguments?.sku === stock.sku ? { content: [{ type: 'text', text: JSON.stringify(stock) }], structuredContent: stock } : { isError: true, content: [{ type: 'text', text: '未知样例' }] };

@@ -110,6 +110,14 @@ private struct MCPOAuthFixture: Decodable, Sendable {
             _ = try await URLSession.shared.data(for: expire)
             try await lookup(try reopened.server(server.id), on: reopened, phase: "refresh")
             checks["refreshRotationUpdatedStoredGrant"] = try Data(contentsOf: vault) != signedIn
+            var fail = URLRequest(url: fixture.browser.appendingPathComponent("fixture/fail-initialize")); fail.httpMethod = "POST"
+            _ = try await URLSession.shared.data(for: fail)
+            do { _ = try await reopened.connect(server.id, revision: server.revision, owner: owner, workspace: nil); checks["credentialsRedactedFromConnectionFailure"] = false }
+            catch {
+                let status = reopened.status(server.id, owner: owner)
+                checks["credentialsRedactedFromConnectionFailure"] = status.contains("凭据已隐藏") && !status.contains("public-fixture-")
+                    && !error.localizedDescription.contains("public-fixture-")
+            }
             let publicConfiguration = try String(contentsOf: registry, encoding: .utf8)
             checks["credentialsStayOutsideConnectorConfig"] = !publicConfiguration.contains("public-fixture-") && !publicConfiguration.contains("refreshToken") && !publicConfiguration.contains("local-client-")
             try reopened.clearOAuth(server.id, revision: server.revision, workspace: nil)
@@ -125,7 +133,7 @@ private struct MCPOAuthFixture: Decodable, Sendable {
             checks["actualInventoryAtLoginReopenRefreshAndReauthorization"] = inventory.count == 4 && inventory.values.allSatisfy { $0.contains("公开读盘样例") }
             reopened.disconnect()
         } catch { issue = error.localizedDescription }
-        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 11 && checks.values.allSatisfy { $0 },
+        let report: [String: Any] = ["checks": checks, "success": issue == nil && checks.count == 12 && checks.values.allSatisfy { $0 },
             "modelRequests": requests, "inventory": inventory, "error": issue ?? "", "appPID": getpid()]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("mcp-oauth-report.json"))
     }

@@ -64,6 +64,7 @@ try {
       inventoryMatchesIndependentSource: Object.keys(report.inventory).length === 4 && Object.values(report.inventory).every(matching) && events.filter(e => e.event === 'rpc' && e.method === 'tools/call' && e.authorized && e.sku === stock.sku).length === 4,
       onlyRequestedResourceReceivesGrant: !events.some(e => e.event === 'other-resource' || e.event === 'fixture-error'),
       credentialsOmittedFromLogs: !protocol.includes('public-fixture-') && !protocol.includes('local-client-'),
+      failedHandshakeActuallyReturned: events.some(e => e.event === 'public-credential-in-error'),
       noModels: report.modelRequests === 0
     };
     const success = status.code === 0 && report.success && Object.values(independent).every(Boolean);

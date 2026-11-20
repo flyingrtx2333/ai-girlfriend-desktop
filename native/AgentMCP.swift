@@ -524,6 +524,7 @@ struct AgentMCPServer: Codable, Identifiable {
             session.capabilities = initialize?["capabilities"] as? [String: Any] ?? [:]
             return ["server": server.name, "connection": session.token, "serverInfo": session.info, "tool_count": (try JSONSerialization.jsonObject(with: session.catalog) as? [Any])?.count ?? 0]
         } catch {
+            if server.oauthClientID != nil { session.redactions = await session.client.oauthCredentialValues() }
             if sessions[sessionKey] === session { sessions[sessionKey] = nil; states[sessionKey] = "连接失败：" + String(redact(error.localizedDescription, session).prefix(300)); notify() }
             await session.client.disconnect(); throw PetError(redact(error.localizedDescription, session))
         }
