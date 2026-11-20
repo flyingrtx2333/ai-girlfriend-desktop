@@ -361,6 +361,10 @@ import AppKit
         let offline = try reopen(installState); try await ready("重新检查", offline)
         checks["draftMissingSourceRemainsReadOnlyAndKeepsCheckpoint"] = try text(offline.pageContentView).contains("来源插件暂不可读") && capture().pages == installState.pages &&
             find(NSButton.self, in: offline.pageContentView, matching: { $0.title == "安装" })?.isEnabled == false
+        let unavailableReader = try control(NSSegmentedControl.self, "插件文件读取方式", page: offline)
+        select(unavailableReader, 0)
+        checks["draftUnavailableReaderCannotReplaceItsCheckpoint"] = try unavailableReader.isHiddenOrHasHiddenAncestor &&
+            offline.detailHeading?.title == page.detailHeading?.title && capture().pages == installState.pages
         try FileManager.default.moveItem(at: held, to: sources[0])
         let readme = sources[0].appendingPathComponent("README.md"), original = try Data(contentsOf: readme)
         try Data("公开来源已修改\n".utf8).write(to: readme, options: .atomic)

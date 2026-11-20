@@ -18,13 +18,14 @@ import AppKit
     }
     struct DraftTarget: Codable, Equatable {
         let path: String?, workspace: String?
-        let name: String, sourceHash: String
+        let name: String, title: String?, sourceHash: String
         let installed: InstallationTarget?
 
         var operation: Operation { path == nil ? .activate : installed == nil ? .install : .update }
         var valid: Bool {
             func validPath(_ path: String) -> Bool { path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384 }
             return path.map(validPath) != false && workspace.map(validPath) != false && AgentExtensions.validName(name) &&
+                title.map({ !$0.contains("\0") && $0.utf8.count <= 2000 }) != false &&
                 AgentSettingsRecovery.validHash(sourceHash) && installed.map({ $0.valid && $0.id == AgentPlugins.scopedID(name, workspace: workspace) }) != false &&
                 (path != nil || (workspace != nil && installed != nil && installed?.enabled == false))
         }
@@ -163,10 +164,10 @@ import AppKit
             NotificationCenter.default.addObserver(self, selector: #selector(readingChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         }
         let sourceName = draftTarget?.path.map { URL(fileURLWithPath: $0).lastPathComponent }
-        setHeading(draftTarget?.name, version: nil, location: draftTarget?.path)
+        setHeading(draftTarget?.title ?? draftTarget?.name, version: nil, location: draftTarget?.path)
         metadata.stringValue = sourceName ?? ""
         metadata.toolTip = draftTarget?.path
-        controls.isHidden = true
+        controls.isHidden = true; reading.isHidden = true; diff.isHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -250,6 +251,7 @@ import AppKit
         pendingReview = nil; updateList(); reviewChanged()
     }
     @objc private func changeComparison() {
+        guard snapshot != nil else { return }
         pendingReview = nil; showSelection(); reviewChanged()
     }
     private func updateList() {
@@ -349,7 +351,7 @@ import AppKit
             "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "readingSelectionVisible", "filterSelection", "reading"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
         if let draft = object["draft"] {
-            let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "sourceHash", "installed"])
+            let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "title", "sourceHash", "installed"])
             if let installed = value["installed"] { _ = try AgentSettingsRecovery.object(installed, keys: ["id", "receiptHash", "activationID", "enabled"]) }
         }
         if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }

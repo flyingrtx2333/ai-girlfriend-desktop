@@ -315,7 +315,7 @@ import UniformTypeIdentifiers
         let item = try installed ?? service.catalog(workspace: workspace, onlyScope: true).first { $0.metadata.name == package.metadata.name }
         if let item, item.metadata.name != package.metadata.name { throw PetError("新包名称与所选插件不同，未更新") }
         let draft = AgentPluginReviewPage.DraftTarget(path: source.path, workspace: workspace, name: package.metadata.name,
-            sourceHash: package.receipt.sourceHash, installed: item.map(AgentPluginReviewPage.InstallationTarget.init))
+            title: package.metadata.title, sourceHash: package.receipt.sourceHash, installed: item.map(AgentPluginReviewPage.InstallationTarget.init))
         let page = try makeReview(package, replacing: item, restoring: false, installWorkspace: workspace, draft: draft)
         presentSettingsChild(page)
         return page
@@ -323,7 +323,7 @@ import UniformTypeIdentifiers
     @discardableResult func reviewProjectActivation(_ item: AgentPluginInstallation) throws -> AgentPluginReviewPage {
         let package = try service.reviewPackage(item)
         let draft = AgentPluginReviewPage.DraftTarget(path: nil, workspace: item.workspace, name: item.metadata.name,
-            sourceHash: AgentExtensions.digest(package.files), installed: .init(item))
+            title: item.metadata.title, sourceHash: AgentExtensions.digest(package.files), installed: .init(item))
         let page = try makeReview(package, replacing: item, restoring: false, activating: true, draft: draft)
         presentSettingsChild(page)
         return page
