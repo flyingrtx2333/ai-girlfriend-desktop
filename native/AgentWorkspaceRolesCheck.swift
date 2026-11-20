@@ -160,6 +160,11 @@ import Darwin
                     $0.title == title && !$0.isHiddenOrHasHiddenAncestor && (enabled == nil || $0.isEnabled == enabled)
                 }
             }
+            func sourcePickerIsVisible() -> Bool {
+                find(NSPopUpButton.self, host.contentView) {
+                    $0.identifier?.rawValue == "settings-source-folder" && !$0.isHiddenOrHasHiddenAncestor
+                } != nil
+            }
             func verifyCardForm(_ prefix: String, page: AgentSettingsPageController, label: String, sections: [String]) async throws {
                 guard let content = host.contentView, let root = page.pageContentView,
                       let form = find(NSScrollView.self, root, { $0.accessibilityLabel() == label }), let document = form.documentView,
@@ -221,6 +226,7 @@ import Darwin
                   let skillMenu = find(NSPopUpButton.self, roleDetail.pageContentView, { $0.accessibilityLabel() == "Agent Skills" }),
                   let mcpMenu = find(NSPopUpButton.self, roleDetail.pageContentView, { $0.accessibilityLabel() == "Agent MCP" }) else { throw PetError("缺少角色能力选择") }
             checks["globalRoleHeadingUsesItsStorageScopeWithinProjectSettings"] = roleDetail.detailHeading == .init(title: "多源核对角色", scope: "用户")
+            checks["roleDetailsKeepBrowseSourceSwitchingInTheCatalog"] = !sourcePickerIsVisible()
             let skillRows = skillMenu.itemArray, mcpRows = mcpMenu.itemArray
             try await verifyCardForm("role", page: roleDetail, label: "智能体配置", sections: ["agent-basic", "agent-instructions", "agent-execution", "agent-capabilities"])
             await verifyNarrowLayout("actualRoleEditorFits780PointWindowWithBothSourceChoices", [skillMenu, mcpMenu])
@@ -245,6 +251,7 @@ import Darwin
             guard control.showSettingsCategory("teams"), let teamPage = control.settingsControllerForCheck as? AgentTeamWindow,
                   let teamCatalog = find(AgentSettingsCatalogTable.self, teamPage.pageContentView, { $0.accessibilityLabel() == "Agent 团队列表" })
             else { throw PetError("多源团队目录未打开") }
+            let showsCatalogSource = sourcePickerIsVisible()
             teamCatalog.onOpen?()
             guard let teamDetail = control.settingsControllerForCheck as? AgentSettingsDetailPage,
                   let leaders = find(NSPopUpButton.self, teamDetail.pageContentView, { $0.accessibilityLabel() == "团队负责人" }),
@@ -252,6 +259,7 @@ import Darwin
                   let roster = find(AgentSettingsStatusField.self, teamDetail.pageContentView, { $0.accessibilityLabel() == "已选团队成员" }),
                   let body = find(NSTextView.self, teamDetail.pageContentView, { $0.accessibilityLabel() == "团队协作指令" })
             else { throw PetError("多源团队设置未打开") }
+            checks["teamDetailsKeepBrowseSourceSwitchingInTheCatalog"] = showsCatalogSource && !sourcePickerIsVisible()
             checks["multiSourceTeamHeaderAndRosterNameTheActualWorkspaces"] = teamDetail.detailHeading?.title == mixedTeam.name
                 && teamDetail.detailHeading?.scope == "跨项目 · 2 个来源"
                 && teamDetail.detailHeading?.location == [alpha, beta].sorted().joined(separator: "\n")

@@ -98,7 +98,9 @@ import UniformTypeIdentifiers
     override func settingsContent(in host: NSWindow, styled: Bool = true) -> NSView? {
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
-            let page = AgentSettingsDetailPage(title: "智能体配置", content: AgentSettingsCatalog.detail(layout.detail))
+            let title = "智能体配置"
+            let page = AgentSettingsDetailPage(title: title, content: AgentSettingsCatalog.detail(layout.detail))
+            page.settingsContext = (title, "")
             page.detailActionRow = detailActions
             page.onCanLeave = { [weak self] in
                 guard let self, let window, windowShouldClose(window) else { return false }
