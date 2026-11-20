@@ -101,7 +101,11 @@ import AppKit
     func submit() {}
     func showError(_ error: Error) { status.showSaveFailure(error); onSettingsRecoveryChange?() }
     var formRecoveryValues: (dirty: Bool, status: String) { (dirty, status.stringValue) }
-    func restoreFormRecovery(dirty: Bool, status: String) { self.dirty = dirty; self.status.stringValue = status; onSettingsRecoveryChange?() }
+    func restoreFormRecovery(dirty: Bool, status: String) {
+        self.dirty = dirty; self.status.stringValue = status
+        if !status.isEmpty { self.status.textColor = AgentDialogStyle.error }
+        onSettingsRecoveryChange?()
+    }
     func finish() { dirty = false; close() }
     @objc func cancelForm() { guard let window, windowShouldClose(window) else { return }; close() }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
