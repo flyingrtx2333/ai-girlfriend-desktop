@@ -205,14 +205,8 @@ enum AgentSettingsRecovery {
                      visibleSelectionHeight: visibleSelectionHeight(viewport))
     }
     private func visibleSelectionHeight(_ viewport: AgentTextViewport) -> Double? {
-        guard viewport.focused, !text.isHiddenOrHasHiddenAncestor, let window = text.window,
-              let scroll = text.enclosingScrollView, let range = viewport.selections.first?.range else { return nil }
-        let selected = text.firstRect(forCharacterRange: range, actualRange: nil)
-        return selectionIntersectsViewport(selected, in: window) ? Double(scroll.contentSize.height) : nil
-    }
-    private func selectionIntersectsViewport(_ selected: NSRect, in window: NSWindow) -> Bool {
-        let visible = window.convertToScreen(text.convert(text.visibleRect, to: nil))
-        return selected.height > 0 && selected.minY < visible.maxY && visible.minY < selected.maxY
+        guard viewport.focusedSelectionIsVisible(in: text), let scroll = text.enclosingScrollView else { return nil }
+        return Double(scroll.contentSize.height)
     }
     func restore(_ value: State) throws {
         try validate(value, text: text.string, fields: fields.mapValues(\.stringValue))

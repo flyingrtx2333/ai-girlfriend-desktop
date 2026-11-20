@@ -353,7 +353,8 @@ import AppKit
         let restoredText = try control(NSTextView.self, "插件审阅详情", page: restored)
         checks["draftInstallRestoresFilterFileAndExactSelection"] = try control(NSSearchField.self, "筛选插件变更文件", page: restored).stringValue == "README" &&
             control(NSTextField.self, "当前插件文件", page: restored).stringValue == "README.md" && restoredText.selectedRange() == selection && host.firstResponder === restoredText &&
-            (restoredText.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 200 && plugins.catalog().allSatisfy { $0.id != name }
+            AgentTextViewport(restoredText).focusedSelectionIsVisible(in: restoredText) && (restoredText.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 200 &&
+            plugins.catalog().allSatisfy { $0.id != name }
 
         let held = sources[0].deletingLastPathComponent().appendingPathComponent("offline-original")
         try FileManager.default.moveItem(at: sources[0], to: held)

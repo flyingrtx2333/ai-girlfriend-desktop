@@ -45,6 +45,12 @@ struct AgentTextViewport: Codable, Equatable, Sendable {
     @MainActor func matches(_ text: NSTextView) -> Bool {
         valid && count == (text.string as NSString).length && hash == AgentFiles.hash(Data(text.string.utf8))
     }
+    @MainActor func focusedSelectionIsVisible(in text: NSTextView) -> Bool {
+        guard focused, !text.isHiddenOrHasHiddenAncestor, let window = text.window, let range = selections.first?.range else { return false }
+        let selected = text.firstRect(forCharacterRange: range, actualRange: nil)
+        let visible = window.convertToScreen(text.convert(text.visibleRect, to: nil))
+        return selected.height > 0 && selected.minY < visible.maxY && visible.minY < selected.maxY
+    }
     @MainActor @discardableResult func apply(to text: NSTextView, focus: Bool = true) -> Bool {
         guard matches(text), let scroll = text.enclosingScrollView, scroll.contentSize.width > 0, scroll.contentSize.height > 0 else { return false }
         if focus, focused, !text.isHiddenOrHasHiddenAncestor { text.window?.makeFirstResponder(text) }

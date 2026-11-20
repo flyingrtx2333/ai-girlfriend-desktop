@@ -45,7 +45,7 @@ import AppKit
         let target: HistoryTarget?, draft: DraftTarget?
         let showingFiles: Bool, selectedPath: String?, selectedComponent: Int
         let query: String, fullText: Bool, tableY: Double
-        let selectedVisible: Bool?
+        let selectedVisible: Bool?, readingSelectionVisible: Bool?
         let filterSelection: AgentTextViewport.Selection?, reading: AgentTextViewport?
     }
     private struct Item { let title: String, detail: String }
@@ -338,7 +338,7 @@ import AppKit
         return try AgentSettingsRecovery.page(recoveryKind, ReviewRecovery(target: historyTarget, draft: draftTarget, showingFiles: showingFiles,
             selectedPath: selectedPath, selectedComponent: selectedComponent, query: query, fullText: comparison.selectedSegment == 1,
             tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: list),
-            filterSelection: filterSelection, reading: reading))
+            readingSelectionVisible: reading?.focusedSelectionIsVisible(in: reader), filterSelection: filterSelection, reading: reading))
     }
     static func recoveryTarget(_ page: AgentSettingsRecovery.Page) throws -> DraftTarget {
         guard page.kind == "plugin-review", let target = try decodeRecovery(page).draft else { throw PetError("插件审阅记录缺少原来源") }
@@ -346,7 +346,7 @@ import AppKit
     }
     private static func decodeRecovery(_ page: AgentSettingsRecovery.Page) throws -> ReviewRecovery {
         let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "draft", "showingFiles", "selectedPath",
-            "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "filterSelection", "reading"])
+            "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "readingSelectionVisible", "filterSelection", "reading"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
         if let draft = object["draft"] {
             let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "sourceHash", "installed"])
@@ -385,7 +385,11 @@ import AppKit
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let scroll = list.enclosingScrollView { AgentSettingsRecovery.restoreScroll(value.tableY, to: scroll) }
             if value.selectedVisible == true, list.selectedRow >= 0 { list.scrollRowToVisible(list.selectedRow) }
-            value.reading?.apply(to: diff.isHidden ? preview : diff.text, focus: value.filterSelection == nil)
+            let reader = diff.isHidden ? preview : diff.text
+            if let reading = value.reading, reading.apply(to: reader, focus: value.filterSelection == nil),
+               value.readingSelectionVisible == true, !reading.focusedSelectionIsVisible(in: reader) {
+                reader.scrollRangeToVisible(reader.selectedRange())
+            }
             if let selection = value.filterSelection, !search.isHidden, presentingWindow?.makeFirstResponder(search) == true {
                 (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
             }
