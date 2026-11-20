@@ -175,6 +175,7 @@ import AppKit
             let remaining = try market.remove(repositoryAddress)
             checks["removingSelectedDirectoryKeepsOtherSourcesAndItsInstalledPlugin"] = try remaining.directories.count == 2
                 && remaining.selection == listing && plugins.installation(currentStock.id).receiptHash == exactStock.receiptHash
+            checks["priorVersionCanStillReadItsOriginalCache"] = try files.readData(cache) == originalCache
 
             let restored = try plugins.update(plugins.package(record, of: upgraded), replacing: upgraded)
             checks["restorePreservesMarketplaceReceiptAndStockBytes"] = restored.receipt.marketOrigin == original.receipt.marketOrigin
@@ -182,7 +183,7 @@ import AppKit
             checks["resourceReadsMatchBothInstalledVersions"] = results["install"]?.contains("42") == true && results["update"]?.contains("88") == true
         } catch { failure = error.localizedDescription }
         let report: [String: Any] = ["checks": checks, "results": results, "error": failure, "modelRequests": requests, "appPID": getpid(),
-            "success": failure.isEmpty && checks.count == 25 && checks.values.allSatisfy { $0 } && requests == 0]
+            "success": failure.isEmpty && checks.count == 26 && checks.values.allSatisfy { $0 } && requests == 0]
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-report.json"))
     }
 }

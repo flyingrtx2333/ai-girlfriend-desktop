@@ -63,7 +63,8 @@ struct AgentPluginMarket {
     private let fixtureOrigin: URL?
     private static let listingLimit = 1_000_000, archiveLimit = 20_000_000
     private static let catalogLimit = 12
-    private static let cachePath = "extensions/plugin-market.json"
+    private static let cachePath = "extensions/plugin-markets.json"
+    private static let legacyCachePath = "extensions/plugin-market.json"
 
     init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil) {
         self.profile = profile; self.fixtureOrigin = fixtureOrigin
@@ -218,17 +219,19 @@ struct AgentPluginMarket {
 
     private func readIndex(_ files: AgentFiles) throws -> (index: Index, bytes: Data?) {
         let target = try files.literalURL(Self.cachePath)
-        if try files.entryMetadata(target).kind == "missing" { return (Index(), nil) }
-        let bytes = try files.readData(target, maximum: 17_000_000)
         let decoder = JSONDecoder()
-        if let index = try? decoder.decode(Index.self, from: bytes) {
-            let addresses = Set(index.items.map(\.address))
-            guard index.items.count <= Self.catalogLimit, index.items.count == addresses.count,
-                  index.selection.map(addresses.contains) ?? addresses.isEmpty else { throw PetError("已保存的市场目录索引无效") }
-            return (index, bytes)
+        if try files.entryMetadata(target).kind == "missing" {
+            let legacy = try files.literalURL(Self.legacyCachePath)
+            if try files.entryMetadata(legacy).kind == "missing" { return (Index(), nil) }
+            let previous = try decoder.decode(Cache.self, from: files.readData(legacy, maximum: 2_000_000))
+            return (Index(selection: previous.address, items: [previous]), nil)
         }
-        let original = try decoder.decode(Cache.self, from: bytes)
-        return (Index(selection: original.address, items: [original]), bytes)
+        let bytes = try files.readData(target, maximum: 17_000_000)
+        let index = try decoder.decode(Index.self, from: bytes)
+        let addresses = Set(index.items.map(\.address))
+        guard index.items.count <= Self.catalogLimit, index.items.count == addresses.count,
+              index.selection.map(addresses.contains) ?? addresses.isEmpty else { throw PetError("已保存的市场目录索引无效") }
+        return (index, bytes)
     }
 
     private func api(_ repository: AgentPluginMarketRepository, path: [String], ref: String? = nil) -> URL {
