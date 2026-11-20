@@ -67,6 +67,7 @@ import AppKit
                 return (max(a, b) + 0.05) / (min(a, b) + 0.05)
             }
             var colors: [String: [CGFloat]] = [:], contrasts: [String: [String: CGFloat]] = [:], selections: [String: [[CGFloat]]] = [:]
+            var settingsSaveContrasts: [String: CGFloat] = [:]
             for theme in [AgentTheme.light, .dark] {
                 var value = appearance.settings; value.theme = theme; value.textSize = 16
                 try appearance.save(value); await wait(0.03)
@@ -92,9 +93,23 @@ import AppKit
                 manager.close()
                 _ = control.showSettingsCategory("persona")
                 func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-                let save = control.window?.contentView.flatMap { root in descendants(root).compactMap { $0 as? NSButton }.first { $0.title == "保存" } }
-                let foreground = save.flatMap { $0.attributedTitle.length > 0 ? $0.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor : nil }
-                checks[theme.rawValue + "ActualSettingsSaveTextContrast"] = save.flatMap { button in foreground.flatMap { front in button.bezelColor.map { contrast(front, $0, look) >= 4.5 } } } == true
+                let root = control.window?.contentView
+                root?.layoutSubtreeIfNeeded()
+                let save = root.flatMap { descendants($0).compactMap { $0 as? AgentDialogButton }.first {
+                    $0.title == "保存" && $0.prominent && $0.isEnabled && !$0.isHiddenOrHasHiddenAncestor
+                } }
+                var ratio: CGFloat = 0
+                if let save, save.attributedTitle.length > 0,
+                   let foreground = save.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+                   let bitmap = save.bitmapImageRepForCachingDisplay(in: save.bounds) {
+                    save.cacheDisplay(in: save.bounds, to: bitmap)
+                    // The side of the control samples the painted fill outside the centered title.
+                    if let background = bitmap.colorAt(x: bitmap.pixelsWide / 6, y: bitmap.pixelsHigh / 2) {
+                        ratio = contrast(foreground, background, save.effectiveAppearance)
+                    }
+                }
+                settingsSaveContrasts[theme.rawValue] = ratio
+                checks[theme.rawValue + "ActualSettingsSaveTextContrast"] = ratio >= 4.5
                 control.show(tab: "chat")
             }
             checks["LightAndDarkSurfacesActuallyDiffer"] = colors["light"] != colors["dark"]
@@ -131,6 +146,7 @@ import AppKit
             checks["SymlinkAppearanceIsRejected"] = guarded.error != nil
             checks["ModelAndHistoryBytesUnchanged"] = try preferenceEncoder.encode(store.preferences) == preferences && ["settings.json", "history.json"].map { try? Data(contentsOf: store.directory.appendingPathComponent($0)) } == originalFiles
             report["resolvedSurfaces"] = colors; report["contrastRatios"] = contrasts; report["actualSelectedTaskLayerColors"] = selections
+            report["actualSettingsSaveContrastRatios"] = settingsSaveContrasts
             report["success"] = checks.count >= 20 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
