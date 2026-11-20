@@ -215,7 +215,11 @@ import BlueFatFishTerminal
     private var currentID: String?
     private var mounted: NSView?
     private var nextNumber = 1
-    private var dark = false
+    private(set) var appearancePreference: AgentTerminalAppearance = .application
+    private var appliedDark: Bool?
+    private var usesDarkAppearance: Bool {
+        appearancePreference.fixedDark ?? (effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+    }
     private let maximumPanes = AgentTerminalLayout.maximumPanes
     private let tabs = NSPopUpButton(frame: .zero, pullsDown: false)
     private let body = NSView()
@@ -259,7 +263,7 @@ import BlueFatFishTerminal
             (add, "新建终端", "plus", #selector(addTab)),
             (right, "向右分屏", "rectangle.split.2x1", #selector(splitRight)),
             (down, "向下分屏", "rectangle.split.1x2", #selector(splitDown)),
-            (theme, "切换为深色终端", "moon", #selector(toggleTheme)),
+            (theme, "终端外观", "circle.lefthalf.filled", #selector(showTheme(_:))),
             (hide, "收起终端面板", "chevron.down", #selector(hidePanel)),
         ] {
             AgentWorkbenchTheme.toolbar(button, title: label, symbol: symbol)
@@ -364,7 +368,7 @@ import BlueFatFishTerminal
         guard let directory = try? AgentFiles(workspace: pane.startDirectory).root, directory.path == pane.startDirectory else {
             throw PetError("终端目录暂不可用，请恢复目录后重试")
         }
-        let surface = TerminalSurface(); surface.setDark(dark)
+        let surface = TerminalSurface(); surface.setDark(usesDarkAppearance)
         let operation = pane.id
         let taskID = state.id
         let retention = store.worktreeRetention
@@ -484,18 +488,53 @@ import BlueFatFishTerminal
         onLayoutChange?()
     }
 
-    @objc private func toggleTheme() {
-        dark.toggle()
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
         refreshTheme()
-        for state in states.values { state.tabs.flatMap(\.panes).forEach { $0.surface?.setDark(dark) } }
-        focus(); onLayoutChange?()
     }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshTheme()
+    }
+
+    @objc private func showTheme(_ sender: NSButton) {
+        let menu = NSMenu()
+        for option in AgentTerminalAppearance.allCases {
+            let item = NSMenuItem(title: option.title, action: #selector(chooseTheme(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = option.rawValue
+            item.state = option == appearancePreference ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height), in: sender)
+    }
+
+    @objc private func chooseTheme(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let choice = AgentTerminalAppearance(rawValue: raw) else { return }
+        if appearancePreference != choice {
+            appearancePreference = choice
+            refreshTheme()
+            onLayoutChange?()
+        }
+        focus()
+    }
+
     private func refreshTheme() {
-        let title = dark ? "切换为浅色终端" : "切换为深色终端"
-        theme.image = NSImage(systemSymbolName: dark ? "sun.max" : "moon", accessibilityDescription: nil)
+        let symbol: String
+        switch appearancePreference {
+        case .application: symbol = "circle.lefthalf.filled"
+        case .light: symbol = "sun.max"
+        case .dark: symbol = "moon"
+        }
+        theme.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         theme.image?.size = NSSize(width: 16, height: 16)
-        theme.setAccessibilityLabel(title)
-        theme.toolTip = title
+        theme.setAccessibilityValue(appearancePreference.title)
+        theme.toolTip = "终端外观 · " + appearancePreference.title
+        let dark = usesDarkAppearance
+        guard appliedDark != dark else { return }
+        appliedDark = dark
+        for state in states.values { state.tabs.flatMap(\.panes).forEach { $0.surface?.setDark(dark) } }
     }
 
     private func updatePath() {
@@ -554,12 +593,12 @@ import BlueFatFishTerminal
             records.append(.init(id: state.id, workspace: state.workspace, scope: state.workspaceScope, directory: state.directory.path,
                 shown: state.shown, index: state.index, tabs: tabs))
         }
-        return AgentTerminalLayout(windowID: windowID, dark: dark, height: height, nextNumber: nextNumber, tasks: records)
+        return AgentTerminalLayout(windowID: windowID, dark: usesDarkAppearance, height: height, nextNumber: nextNumber, tasks: records)
     }
 
-    func restore(_ layout: AgentTerminalLayout) {
+    func restore(_ layout: AgentTerminalLayout, appearance: AgentTerminalAppearance) {
         guard states.isEmpty, let store else { return }
-        dark = layout.dark; nextNumber = layout.nextNumber; refreshTheme()
+        appearancePreference = appearance; nextNumber = layout.nextNumber; refreshTheme()
         for saved in layout.tasks {
             guard let task = store.task(saved.id), taskIsAvailable(task, store: store),
                   task.workspace == saved.workspace, task.workspaceScope == saved.scope else { continue }
@@ -595,10 +634,12 @@ import BlueFatFishTerminal
                  ["active": tab.active.number, "panes": tab.panes.map { pane in
                      ["number": pane.number, "id": pane.id.uuidString, "pid": pane.pid, "width": pane.bounds.width, "height": pane.bounds.height,
                       "directory": pane.startDirectory, "exitCode": pane.record.exitCode as Any? ?? NSNull(),
+                      "dark": pane.surface.map { $0.view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } as Any? ?? NSNull(),
                       "terminal": pane.surface?.textForVerification() ?? ""]
                  }]
              }] as [String: Any]
         }
-        return ["shown": isShown && superview != nil && !isHiddenOrHasHiddenAncestor, "taskID": currentID as Any? ?? NSNull(), "dark": dark, "states": all]
+        return ["shown": isShown && superview != nil && !isHiddenOrHasHiddenAncestor, "taskID": currentID as Any? ?? NSNull(),
+                "dark": usesDarkAppearance, "appearance": appearancePreference.rawValue, "states": all]
     }
 }

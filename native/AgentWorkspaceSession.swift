@@ -38,6 +38,9 @@ private actor AgentWorkspaceJournal {
     func saveTerminals(_ layout: AgentTerminalLayout, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalLayout> {
         try storage.saveTerminalLayout(layout, expected: expected)
     }
+    func saveTerminalAppearance(_ appearance: AgentTerminalAppearanceRecord, expected: String?) throws -> AgentWorkspaceRecovery.Saved<AgentTerminalAppearanceRecord> {
+        try storage.saveTerminalAppearance(appearance, expected: expected)
+    }
 }
 
 // One serialized journal per task window. Cold tabs keep their stored page until
@@ -49,6 +52,8 @@ private actor AgentWorkspaceJournal {
     private var layoutHash: String?, previous: AgentWorkspaceRecovery.Window?
     private var savedTerminals: AgentWorkspaceRecovery.Saved<AgentTerminalLayout>?
     private var terminalRecoveryReadOnly = false
+    private var savedTerminalAppearance: AgentWorkspaceRecovery.Saved<AgentTerminalAppearanceRecord>?
+    private var terminalAppearanceReadOnly = false
     private var pages: [String: AgentWorkspaceRecovery.Page] = [:], pageHashes: [String: String] = [:]
     private var revision = 0, savedRevision = -1, disabled = false, stopped = false, closing = false
     private var job: Task<Void, Never>?, roots: [String: Task<Void, Never>] = [:]
@@ -94,8 +99,17 @@ private actor AgentWorkspaceJournal {
         catch { disabled = true; owner.setStatus(error.localizedDescription, error: true) }
         if saved != nil, !disabled {
             do {
-                savedTerminals = try AgentWorkspaceRecovery(profile: profile).loadTerminalLayout(windowID: id)
-                if let savedTerminals { owner.restoreTerminalLayout(savedTerminals.value) }
+                let recovery = AgentWorkspaceRecovery(profile: profile)
+                savedTerminals = try recovery.loadTerminalLayout(windowID: id)
+                if let layout = savedTerminals?.value {
+                    do { savedTerminalAppearance = try recovery.loadTerminalAppearance(windowID: id) }
+                    catch {
+                        terminalAppearanceReadOnly = true
+                        owner.setStatus("终端外观未恢复，原记录已保留：" + error.localizedDescription, error: true)
+                    }
+                    let appearance = savedTerminalAppearance?.value.preference(forLegacyDark: layout.dark) ?? AgentTerminalAppearance(dark: layout.dark)
+                    owner.restoreTerminalLayout(layout, appearance: appearance)
+                }
             } catch {
                 terminalRecoveryReadOnly = true
                 owner.setStatus("终端记录未恢复，原记录已保留：" + error.localizedDescription, error: true)
@@ -333,8 +347,14 @@ private actor AgentWorkspaceJournal {
                 let expected = layoutHash, capturedLayout = layout
                 let saved = try await journal.saveWindow(capturedLayout, expected: expected, marketCopy: marketCopy)
                 layoutHash = saved.hash; previous = saved.value
-                if !terminalRecoveryReadOnly, let terminals = owner.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value {
-                    savedTerminals = try await journal.saveTerminals(terminals, expected: savedTerminals?.hash)
+                if !terminalRecoveryReadOnly, let terminals = owner.captureTerminalLayout(windowID: id) {
+                    let appearance = terminalAppearance(for: terminals, preference: owner.terminalAppearancePreference)
+                    if terminals != savedTerminals?.value {
+                        savedTerminals = try await journal.saveTerminals(terminals, expected: savedTerminals?.hash)
+                    }
+                    if let appearance, appearance != savedTerminalAppearance?.value {
+                        savedTerminalAppearance = try await journal.saveTerminalAppearance(appearance, expected: savedTerminalAppearance?.hash)
+                    }
                 }
                 savedRevision = targetRevision
                 if let failure { owner.clearWorkspaceRecoveryStatus(failure.localizedDescription) }
@@ -380,13 +400,20 @@ private actor AgentWorkspaceJournal {
         pageHashes[pageID] = saved.hash; pages[pageID] = saved.value
         owner?.taskWorkspace.applyRecoveredTabStates([pageID: saved.value.dirty])
     }
+    private func terminalAppearance(for layout: AgentTerminalLayout, preference: AgentTerminalAppearance?) -> AgentTerminalAppearanceRecord? {
+        guard !terminalAppearanceReadOnly, let preference, preference == .application || savedTerminalAppearance != nil else { return nil }
+        return AgentTerminalAppearanceRecord(windowID: id, preference: preference, fallbackDark: layout.dark)
+    }
     func flush() async throws {
         guard !disabled else { return }
         for root in Array(roots.values) { await root.value }
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }
-        if !terminalRecoveryReadOnly, let terminals = owner?.captureTerminalLayout(windowID: id), terminals != savedTerminals?.value { revision &+= 1 }
+        if !terminalRecoveryReadOnly, let owner, let terminals = owner.captureTerminalLayout(windowID: id) {
+            let appearance = terminalAppearance(for: terminals, preference: owner.terminalAppearancePreference)
+            if terminals != savedTerminals?.value || (appearance != nil && appearance != savedTerminalAppearance?.value) { revision &+= 1 }
+        }
         if let tabStateJob { await tabStateJob.value }
         if let job { await job.value }
         if savedRevision != revision { await savePending() }

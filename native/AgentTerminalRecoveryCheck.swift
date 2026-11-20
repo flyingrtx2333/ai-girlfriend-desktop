@@ -30,6 +30,31 @@ import Darwin
             checks["windowLayoutMaintainsOldFormatAndBytes"] = try journal.loadWindow(windowID)?.hash == prior.hash
             checks["onlyTerminalMetadataIsStored"] = try JSONSerialization.jsonObject(with: original) is [String: Any]
                 && !String(decoding: original, as: UTF8.self).contains("pid") && !String(decoding: original, as: UTF8.self).contains("transcript")
+            checks["legacyLayoutHasNoAppearanceSidecar"] = try journal.loadTerminalAppearance(windowID: windowID) == nil
+            let follow = AgentTerminalAppearanceRecord(windowID: windowID, preference: .application, fallbackDark: true)
+            let savedAppearance = try journal.saveTerminalAppearance(follow, expected: nil)
+            let appearanceFile = try files.literalURL("workspace-recovery/" + windowID + "/terminal-appearance.json")
+            let appearanceBytes = try Data(contentsOf: appearanceFile)
+            checks["followPreferenceRoundTripsPrivately"] = try journal.loadTerminalAppearance(windowID: windowID)?.value == follow
+                && files.entryMetadata(appearanceFile).permissions == 0o600
+            checks["followPreferenceKeepsLegacyTerminalFormatAndBytes"] = try Data(contentsOf: file) == original
+                && journal.loadTerminalLayout(windowID: windowID)?.hash == saved.hash
+            checks["matchingFallbackRestoresFollowPreference"] = follow.preference(forLegacyDark: true) == .application
+            checks["changedColorFromOlderVersionOverridesTheStalePreference"] = follow.preference(forLegacyDark: false) == .light
+            var invalidAppearance = follow
+            invalidAppearance.preference = .light
+            rejected("inconsistentExplicitAppearanceCannotBeSaved") {
+                _ = try journal.saveTerminalAppearance(invalidAppearance, expected: savedAppearance.hash)
+            }
+            rejected("staleAppearanceWriterCannotOverwritePreference") {
+                _ = try journal.saveTerminalAppearance(follow, expected: AgentFiles.hash(Data()))
+            }
+            checks["failedAppearanceWritesRetainBothOriginalRecords"] = try Data(contentsOf: file) == original
+                && Data(contentsOf: appearanceFile) == appearanceBytes
+            let explicit = AgentTerminalAppearanceRecord(windowID: windowID, preference: .dark, fallbackDark: true)
+            _ = try journal.saveTerminalAppearance(explicit, expected: savedAppearance.hash)
+            checks["explicitPreferenceCanReplaceFollowAtTheSameColor"] = try journal.loadTerminalAppearance(windowID: windowID)?.value == explicit
+                && Data(contentsOf: file) == original
             var invalid = layout; invalid.tasks[0].tabs[0].active = UUID()
             rejected("unknownActivePaneIsRejected") { _ = try journal.saveTerminalLayout(invalid, expected: saved.hash) }
             invalid = layout; invalid.tasks[0].tabs[0].root = .branch(vertical: false, fraction: 0.5, first: .pane(first), second: .pane(first))
@@ -49,7 +74,7 @@ import Darwin
             let cwd = try AgentFiles(workspace: FileManager.default.currentDirectoryPath).root.path
             checks["kernelReadsActualWorkingDirectory"] = AgentTerminalLayout.directory(of: getpid()) == cwd
         } catch { failure = error.localizedDescription }
-        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 14 && checks.values.allSatisfy { $0 },
+        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 23 && checks.values.allSatisfy { $0 },
                                      "modelRequests": 0, "pid": getpid()]
         report["error"] = failure
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])

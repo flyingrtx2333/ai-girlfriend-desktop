@@ -341,6 +341,30 @@ struct AgentWorkspaceRecovery: Sendable {
             return Saved(value: value, hash: AgentFiles.hash(data))
         }
     }
+    // The original terminal layout remains readable by older applications.
+    func loadTerminalAppearance(windowID: String) throws -> Saved<AgentTerminalAppearanceRecord>? {
+        let files = try files(), url = try literal(files, prefix(windowID) + "/terminal-appearance.json")
+        let metadata = try files.entryMetadata(url)
+        if metadata.kind == "missing" { return nil }
+        guard metadata.kind == "file" else { throw PetError("终端外观记录不是普通文件") }
+        let data = try files.readData(url, maximum: 4096)
+        _ = try keys(JSONSerialization.jsonObject(with: data), ["version", "windowID", "preference", "fallbackDark"])
+        let value = try JSONDecoder().decode(AgentTerminalAppearanceRecord.self, from: data)
+        try value.validate(windowID: windowID)
+        return Saved(value: value, hash: AgentFiles.hash(data))
+    }
+    func saveTerminalAppearance(_ value: AgentTerminalAppearanceRecord, expected: String?) throws -> Saved<AgentTerminalAppearanceRecord> {
+        try value.validate(windowID: value.windowID)
+        let data = try encoded(value)
+        return try locked(value.windowID) { files in
+            let path = try prefix(value.windowID) + "/terminal-appearance.json"
+            let change = try AgentKnowledgeFileWrite(files: files, path: path, data: data, expectedHash: expected ?? AgentFiles.hash(Data()),
+                missing: expected == nil, permissions: 0o600, label: "终端外观记录")
+            try change.requireCurrent()
+            try files.writeData(data, to: change.url, permissions: 0o600, expectedTarget: change.signature)
+            return Saved(value: value, hash: AgentFiles.hash(data))
+        }
+    }
     // Tab chrome needs only metadata. It must not hash a large Office asset or
     // construct an editor merely to retain the last known unsaved marker.
     func loadTabDirtyState(windowID: String, pageID: String, taskID: String) throws -> Bool? {

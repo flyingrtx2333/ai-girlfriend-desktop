@@ -3955,11 +3955,12 @@ final class FormDocumentView: NSView {
     internal func captureTerminalLayout(windowID: String) -> AgentTerminalLayout? {
         terminalPanel?.layoutToRestore(windowID: windowID, height: terminalSplit.recoveryHeight)
     }
-    internal func restoreTerminalLayout(_ layout: AgentTerminalLayout) {
+    internal var terminalAppearancePreference: AgentTerminalAppearance? { terminalPanel?.appearancePreference }
+    internal func restoreTerminalLayout(_ layout: AgentTerminalLayout, appearance: AgentTerminalAppearance) {
         guard let companion, let store = companion.agentStore else { return }
         let panel = taskTerminalPanel(store: store, checkHome: companion.checkDirectory)
         terminalSplit.restoreHeight(layout.height)
-        panel.restore(layout); panel.selectTask(selectedTab == "chat" ? currentAgentTask : nil)
+        panel.restore(layout, appearance: appearance); panel.selectTask(selectedTab == "chat" ? currentAgentTask : nil)
         updateTerminalDock()
     }
     private func updateTerminalDock() {

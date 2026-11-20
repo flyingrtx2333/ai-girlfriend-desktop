@@ -1,6 +1,46 @@
 import Foundation
 import Darwin
 
+enum AgentTerminalAppearance: String, Codable, CaseIterable, Sendable {
+    case application, light, dark
+
+    init(dark: Bool) { self = dark ? .dark : .light }
+
+    var fixedDark: Bool? {
+        switch self {
+        case .application: return nil
+        case .light: return false
+        case .dark: return true
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .application: return "跟随应用"
+        case .light: return "浅色"
+        case .dark: return "深色"
+        }
+    }
+}
+
+struct AgentTerminalAppearanceRecord: Codable, Equatable, Sendable {
+    var version = 1
+    var windowID: String
+    var preference: AgentTerminalAppearance
+    var fallbackDark: Bool
+
+    func preference(forLegacyDark dark: Bool) -> AgentTerminalAppearance {
+        fallbackDark == dark ? preference : AgentTerminalAppearance(dark: dark)
+    }
+
+    func validate(windowID expected: String) throws {
+        guard version == 1, windowID == expected, UUID(uuidString: windowID)?.uuidString == windowID,
+              preference.fixedDark.map({ $0 == fallbackDark }) ?? true else {
+            throw PetError("终端外观记录格式无效，原记录已保留")
+        }
+    }
+}
+
 struct AgentTerminalLayout: Codable, Equatable, Sendable {
     struct Pane: Codable, Equatable, Sendable {
         var id = UUID()
