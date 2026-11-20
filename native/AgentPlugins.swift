@@ -13,6 +13,7 @@ struct AgentPluginReceipt: Codable {
     var sourceName: String, sourceHash: String, installedAt: Date, enabled = false
     var installationID: String? = nil, activationID: String? = nil
     var revisions: [AgentPluginRevision]? = nil
+    var marketOrigin: AgentPluginMarketOrigin? = nil
 }
 struct AgentPluginMetadata {
     var name: String, title: String, version: String, author: String, description: String
@@ -47,6 +48,7 @@ struct AgentPluginInstallation: Identifiable {
 @MainActor final class AgentPlugins {
     let profile: URL
     let sharedHome: URL?
+    lazy var market = AgentPluginMarket(profile: profile)
     private(set) var warnings: [String] = []
     private var observers: [UUID: (String) -> Void] = [:]
     func observeChanges(_ action: @escaping (String) -> Void) -> UUID { let id = UUID(); observers[id] = action; return id }
@@ -72,7 +74,8 @@ struct AgentPluginInstallation: Identifiable {
         guard author.count <= 200, !author.contains("\0") else { throw PetError("插件作者信息无效") }
         return (AgentPluginMetadata(name: name, title: try text("displayName", fallback: name), version: try text("version"), author: author, description: try text("description")), value)
     }
-    private static func package(_ files: [String: Data], sourceName: String, sourceHash: String, inferredName: String? = nil) throws -> AgentPluginPackage {
+    private static func package(_ files: [String: Data], sourceName: String, sourceHash: String, inferredName: String? = nil,
+                                marketOrigin: AgentPluginMarketOrigin? = nil) throws -> AgentPluginPackage {
         var files = files
         if files[".qoder-plugin/plugin.json"] == nil && files[".claude-plugin/plugin.json"] == nil, let inferredName {
             guard validName(inferredName) else { throw PetError("没有插件清单时，文件夹名称须使用小写字母、数字和连字符；也可添加 .qoder-plugin/plugin.json 指定名称") }
@@ -135,7 +138,7 @@ struct AgentPluginInstallation: Identifiable {
         let hookCount = hooks.reduce(0) { $0 + $1.preview.count }
         let rules = try ruleDefinitions(value, paths: Set(files.keys)) { path in guard let data = files[path] else { throw PetError("插件规则不存在") }; return data }
         guard !(components.isEmpty && mcpServers.isEmpty && agents.isEmpty && hookCount == 0 && rules.isEmpty), components.count + mcpServers.count + agents.count + hookCount + rules.count <= 500 else { throw PetError("插件须包含1至500项 Skills、命令、Agent、规则、Hooks 或 MCP 连接器") }
-        let receipt = AgentPluginReceipt(name: info.name, manifest: manifest, components: components, hashes: files.mapValues(AgentFiles.hash), sourceName: sourceName, sourceHash: sourceHash, installedAt: Date(), installationID: UUID().uuidString, activationID: UUID().uuidString)
+        let receipt = AgentPluginReceipt(name: info.name, manifest: manifest, components: components, hashes: files.mapValues(AgentFiles.hash), sourceName: sourceName, sourceHash: sourceHash, installedAt: Date(), installationID: UUID().uuidString, activationID: UUID().uuidString, marketOrigin: marketOrigin)
         guard try JSONEncoder().encode(receipt).count <= 500_000 else { throw PetError("插件资源索引过大，请缩小插件包") }
         return AgentPluginPackage(metadata: info, receipt: receipt, files: files, mcpServers: mcpServers, agents: agents, hooks: hooks, rules: rules)
     }
@@ -152,18 +155,23 @@ struct AgentPluginInstallation: Identifiable {
         }
         guard archive.pathExtension.lowercased() == "zip" else { throw PetError("请选择插件文件夹或ZIP") }
         let input = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try input.readData(input.literalURL(archive.lastPathComponent), maximum: 20_000_000)
+        return try await inspectArchive(data, sourceName: archive.lastPathComponent, importing: importing)
+    }
+    func inspectArchive(_ data: Data, sourceName: String, importing: Bool) async throws -> AgentPluginPackage {
+        guard data.count <= 20_000_000 else { throw PetError("插件压缩包超过 20 MB") }
+        let hiddenRoots = importing ? AgentImportedPlugin.hiddenRoots : [".qoder-plugin", ".claude-plugin", ".mcp.json"]
         let scratch = profile.appendingPathComponent(".plugin-review-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); defer { try? FileManager.default.removeItem(at: scratch) }
         let pinned = scratch.appendingPathComponent("package.zip"); try data.write(to: pinned)
         let definitions = importing ? AgentImportedPlugin.manifests : [".qoder-plugin/plugin.json", ".claude-plugin/plugin.json"]
         let files = try await AgentArchive.resources(pinned, scratchParent: scratch, definitions: definitions, hiddenRoots: hiddenRoots)
         let payload = importing ? try AgentImportedPlugin.normalize(files, inferredName: nil) : files
-        return try Self.package(payload, sourceName: archive.lastPathComponent, sourceHash: AgentFiles.hash(data))
+        return try Self.package(payload, sourceName: sourceName, sourceHash: AgentFiles.hash(data))
     }
     @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil, importing installationID: String? = nil) throws -> AgentPluginInstallation {
         let workspace = try workspace.map { try AgentFiles(workspace: $0).root.path }, existing = try catalog(workspace: workspace, onlyScope: true)
         guard existing.count < 64 else { throw PetError("此范围插件数量已达到64项") }
-        var package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
+        var package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash, marketOrigin: candidate.receipt.marketOrigin)
         guard existing.reduce(0, { $0 + $1.mcpServers.count }) + package.mcpServers.count <= 64 else { throw PetError("插件 MCP 总数最多64项") }
         guard existing.reduce(0, { $0 + $1.hooks.reduce(0, { $0 + $1.preview.count }) }) + package.hooks.reduce(0, { $0 + $1.preview.count }) <= 128 else { throw PetError("插件 Hooks 总数最多128项") }
         guard existing.reduce(0, { $0 + $1.rules.count }) + package.rules.count <= 256 else { throw PetError("插件规则总数最多256项") }
@@ -254,10 +262,10 @@ struct AgentPluginInstallation: Identifiable {
             let data = try content(path, installation: snapshot); total += data.count
             guard total <= 20_000_000 else { throw PetError("历史插件资源超过20 MB") }; files[path] = data
         }
-        return try Self.package(files, sourceName: snapshot.receipt.sourceName, sourceHash: snapshot.receipt.sourceHash)
+        return try Self.package(files, sourceName: snapshot.receipt.sourceName, sourceHash: snapshot.receipt.sourceHash, marketOrigin: snapshot.receipt.marketOrigin)
     }
     @discardableResult func update(_ candidate: AgentPluginPackage, replacing reviewed: AgentPluginInstallation, onPrepared: (() throws -> Void)? = nil) throws -> AgentPluginInstallation {
-        let current = try unchanged(reviewed), package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash)
+        let current = try unchanged(reviewed), package = try Self.package(candidate.files, sourceName: candidate.receipt.sourceName, sourceHash: candidate.receipt.sourceHash, marketOrigin: candidate.receipt.marketOrigin)
         guard package.metadata.name == current.metadata.name else { throw PetError("新包名称与所选插件不同，未更新") }
         guard package.receipt.hashes != current.receipt.hashes else { throw PetError("插件内容与当前版本一致") }
         let others = try catalog(workspace: current.workspace, onlyScope: true).filter { $0.id != current.id }

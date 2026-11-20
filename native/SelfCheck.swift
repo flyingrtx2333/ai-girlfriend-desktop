@@ -135,6 +135,7 @@ import WebKit
                     runtime.modelRequestCheck = { try budget.request(); requests = budget.used }
                 } else { runtime.modelRequestCheck = { requests += 1; throw PetError("本轮手动窗口检查禁止模型请求") } }
                 if CommandLine.arguments.contains("--mcp-oauth-ui") { try configureMCPOAuthFixture(output, service: tasks.mcp, opensBrowser: true) }
+                if CommandLine.arguments.contains("--plugin-market-ui") { _ = try configurePluginMarketFixture(output, plugins: tasks.extensions.plugins) }
                 if CommandLine.arguments.contains("--automation-draft-ui") {
                     guard !attentionLiveUI else { throw PetError("自动化草稿窗口不调用模型") }
                     tasks.automations.start(store: tasks, runtime: runtime)
@@ -380,6 +381,7 @@ import WebKit
         if CommandLine.arguments.contains("--plugin-team-check") { await runAgentPluginTeamCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-scope-check") { await runAgentPluginScopeCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-check") { await runAgentPluginUpdateCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--plugin-market-check") { await runPluginMarketCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-crash-check") { await runAgentPluginUpdateCrashCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--plugin-update-recovery-check") { await runAgentPluginUpdateRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--rules-live-check") { await runAgentRulesLiveCheck(output); NSApp.terminate(nil); return }

@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
     private let catalogState = AgentSettingsStatusField("插件列表状态")
     private let enabled = NSButton(checkboxWithTitle: "启用插件", target: nil, action: nil), use = AgentDialogButton(title: "在任务中使用", target: nil, action: nil)
     private let upload = AgentDialogButton(title: "导入插件…", target: nil, action: nil)
+    private let marketplace = AgentDialogButton(title: "插件市场", target: nil, action: nil)
     private let disableAll = NSButton(title: "全部停用", target: nil, action: nil)
     private let more = NSPopUpButton(frame: .zero, pullsDown: true)
     private lazy var moreFrame = AgentSettingsPopupFrame(more)
@@ -47,6 +48,7 @@ import UniformTypeIdentifiers
         scopes.selectedSegment = 0; scopes.target = self; scopes.action = #selector(changeScope); scopes.setEnabled(workspace != nil, forSegment: 1); scopes.setAccessibilityLabel("插件范围"); scopes.setToolTip(workspace, forSegment: 1)
         search.placeholderString = "搜索插件"; search.delegate = self
         upload.target = self; upload.action = #selector(importPackage); enabled.target = self; enabled.action = #selector(toggleEnabled)
+        marketplace.target = self; marketplace.action = #selector(openMarketplace); AgentDialogStyle.action(marketplace)
         use.target = self; use.action = #selector(useComponent); AgentDialogStyle.action(use)
         let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshList))
         disableAll.target = self; disableAll.action = #selector(disableProject)
@@ -56,7 +58,7 @@ import UniformTypeIdentifiers
         }
         for item in [settings, source, .separator(), update, history, .separator(), remove] { more.menu?.addItem(item) }
         moreFrame.widthAnchor.constraint(equalToConstant: 76).isActive = true
-        let header = NSStackView(views: [scopes, search, refresh, upload]); header.spacing = 8
+        let header = NSStackView(views: [scopes, search, refresh, marketplace, upload]); header.spacing = 8
         var scrolls: [NSScrollView] = []
         for (table, label) in [(list, "插件列表"), (components, "插件组件")] {
             table.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier(label))); table.headerView = nil; table.delegate = self; table.dataSource = self; table.rowHeight = table === list ? 44 : 30; table.setAccessibilityLabel(label)
@@ -107,7 +109,7 @@ import UniformTypeIdentifiers
             list.target = self; list.action = #selector(openSelectedPlugin); list.onOpen = { [weak self] in self?.showDetail() }
             list.groupName = { [weak self] _ in self?.scopeWorkspace == nil ? "用户插件" : "项目插件" }
             AgentSettingsStyle.primaryAction(upload)
-            window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState, actions: [upload], symbol: "puzzlepiece.extension"); list.reloadData()
+            window?.contentView = AgentSettingsCatalog.content(table: list, toolbar: layout.toolbar, status: catalogState, actions: [marketplace, upload], symbol: "puzzlepiece.extension"); list.reloadData()
         }
         return super.settingsContent(in: host, styled: styled)
     }
@@ -195,6 +197,7 @@ import UniformTypeIdentifiers
         AgentSettingsStyle.listState(list, text: search.stringValue.isEmpty ? "暂无插件" : "未找到匹配插件")
         AgentSettingsStyle.listState(components, text: selected == nil ? "选择插件查看组件" : "暂无组件")
         let idle = job == nil; scopes.isEnabled = idle; scopes.setEnabled(workspace != nil, forSegment: 1); list.isEnabled = idle; search.isEnabled = idle; upload.isEnabled = idle; enabled.isEnabled = idle && selected != nil; remove.isEnabled = idle && selected != nil; source.isEnabled = idle && selected != nil
+        marketplace.isEnabled = idle
         disableAll.isHidden = scopeWorkspace == nil; disableAll.isEnabled = idle && service.hasProjectActivations(scopeWorkspace)
         settings.isEnabled = idle && selected != nil; more.isEnabled = idle && selected != nil
         (more.superview as? AgentSettingsPopupFrame)?.refreshEnabledState()
@@ -268,6 +271,16 @@ import UniformTypeIdentifiers
         do { let item = try store.extensions.item(entries[components.selectedRow].id, workspace: workspace); try onInsert(item); close() } catch { state.stringValue = error.localizedDescription }
     }
     @objc private func revealPackage() { if let item = selected { NSWorkspace.shared.activateFileViewerSelecting([item.root]) } }
+    @objc private func openMarketplace() {
+        guard job == nil else { return }
+        let workspace = scopeWorkspace
+        let page = AgentPluginMarketPage(plugins: service, workspace: workspace)
+        page.onReview = { [weak self, weak page] package, installed in
+            guard let self, let page else { return }
+            review(package, replacing: installed, restoring: false, installWorkspace: workspace, historyPage: nil, marketPage: page)
+        }
+        presentSettingsChild(page)
+    }
     @objc private func importPackage() { choosePackage(replacing: nil) }
     @objc private func updatePackage() { if let selected { choosePackage(replacing: selected) } }
     private func choosePackage(replacing installed: AgentPluginInstallation?) {
@@ -302,7 +315,8 @@ import UniformTypeIdentifiers
     func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool = false, activating: Bool = false, installWorkspace: String? = nil) {
         review(package, replacing: installed, restoring: restoring, activating: activating, installWorkspace: installWorkspace, historyPage: nil)
     }
-    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool, activating: Bool = false, installWorkspace: String? = nil, historyPage: AgentPluginHistoryPage?) {
+    private func review(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation? = nil, restoring: Bool, activating: Bool = false, installWorkspace: String? = nil,
+                        historyPage: AgentPluginHistoryPage?, marketPage: AgentPluginMarketPage? = nil) {
         do {
             let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
             let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring, activating: activating, workspace: installed?.workspace ?? installWorkspace)
@@ -312,15 +326,21 @@ import UniformTypeIdentifiers
                 if let installed { return try service.update(package, replacing: installed) }
                 return try service.install(package, workspace: installWorkspace)
             }
-            page.onApplied = { [weak self, weak historyPage] item in
+            page.onApplied = { [weak self, weak historyPage, weak marketPage] item in
                 guard let self else { return }
                 let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
-                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?(); presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list)
+                search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?()
+                if let marketPage { marketPage.didApply(item, updating: installed != nil); return }
+                presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list)
                 historyPage?.didRestore(item)
             }
-            if let historyPage { historyPage.presentSettingsChild(page) } else { presentSettingsChild(page) }
+            if let marketPage { marketPage.presentSettingsChild(page) }
+            else if let historyPage { historyPage.presentSettingsChild(page) }
+            else { presentSettingsChild(page) }
         } catch {
-            if let historyPage { historyPage.showFailure(error) } else { state.showSaveFailure(error) }
+            if let marketPage { marketPage.showFailure(error) }
+            else if let historyPage { historyPage.showFailure(error) }
+            else { state.showSaveFailure(error) }
         }
     }
     @objc private func removePackage() {

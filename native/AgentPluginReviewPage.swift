@@ -4,7 +4,7 @@ import AppKit
     private struct Item { let title: String, detail: String }
     private let types = NSSegmentedControl(), list = NSTableView(), preview = NSTextView()
     private let status = NSTextField(wrappingLabelWithString: "")
-    private let apply = NSButton(), cancel = NSButton(title: "取消", target: nil, action: nil)
+    private let apply = AgentDialogButton(title: "安装", target: nil, action: nil), cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
     private var sections: [[Item]] = [], working = false, finished = false
     var onApply: (() throws -> AgentPluginInstallation)? { didSet { apply.isEnabled = onApply != nil && !working && !finished } }
     var onApplied: ((AgentPluginInstallation) -> Void)?
@@ -53,6 +53,7 @@ import AppKit
         status.font = .systemFont(ofSize: 12); status.textColor = .systemRed; status.isHidden = true
         apply.title = activating ? "审阅并启用" : installed == nil ? "安装" : action + "并停用"; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
         cancel.target = self; cancel.action = #selector(cancelReview)
+        AgentSettingsStyle.primaryAction(apply); AgentDialogStyle.action(cancel)
         let footer = NSStackView(views: [NSView(), cancel, apply]); footer.spacing = 10
         let layout = NSStackView(views: [heading, metadata, consequence, types, split, status, footer]); layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 10; layout.distribution = .fill
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false

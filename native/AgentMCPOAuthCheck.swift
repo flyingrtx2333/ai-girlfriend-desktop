@@ -1,7 +1,7 @@
 import AppKit
 import Security
 
-private final class OAuthFixtureTrust: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+final class AgentCheckLocalTLS: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let certificate: Data, port: Int
     init(certificate: Data, port: Int) { self.certificate = certificate; self.port = port }
 
@@ -44,7 +44,7 @@ private struct MCPOAuthFixture: Decodable, Sendable {
         let cert = try Data(contentsOf: output.appendingPathComponent("server/test-cert.der"))
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 7; config.timeoutIntervalForResource = 10
-        let network = URLSession(configuration: config, delegate: OAuthFixtureTrust(certificate: cert, port: port), delegateQueue: nil)
+        let network = URLSession(configuration: config, delegate: AgentCheckLocalTLS(certificate: cert, port: port), delegateQueue: nil)
         service.oauthFixture = (network, { authorization in
             let address = try fixture.localBrowserURL(authorization)
             if opensBrowser {
