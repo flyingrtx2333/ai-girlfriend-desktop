@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
     private let skills = NSPopUpButton(frame: .zero, pullsDown: true), mcp = NSPopUpButton(frame: .zero, pullsDown: true)
     private let readOnly = NSButton(checkboxWithTitle: "只读项目", target: nil, action: nil), network = NSButton(checkboxWithTitle: "允许联网与外部连接", target: nil, action: nil), enabled = NSButton(checkboxWithTitle: "启用", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("Agent 保存状态")
+    private lazy var detailActions = AgentSettingsDetailActions([use, save])
     private var values: [AgentProfile] = [], selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedTools = Set<String>()
     private var openedPluginModelHash: String?, openedProjectHash: String?
     private var storedIDs = Set<String>()
@@ -41,7 +42,10 @@ import UniformTypeIdentifiers
         for button in [add, template, importButton] { AgentDialogStyle.action(button, prominent: button === add) }
         let listActions = NSStackView(views: [add, template, importButton]); listActions.spacing = 6
         name.placeholderString = "名称"; purpose.placeholderString = "职责"; model.placeholderString = "跟随当前模型"
-        for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] { field.delegate = self; field.font = .systemFont(ofSize: 13); field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for (field, label) in [(name, "Agent 名称"), (purpose, "Agent 职责"), (model, "Agent 模型")] {
+            AgentSettingsStyle.field(field)
+            field.delegate = self; field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         permission.addItems(withTitles: AgentPermissionMode.allCases.map(\.title)); permission.target = self; permission.action = #selector(changed)
         permission.setAccessibilityLabel("Agent 审批方式")
         tools.setAccessibilityLabel("Agent 工具权限"); skills.setAccessibilityLabel("Agent Skills"); mcp.setAccessibilityLabel("Agent MCP")
@@ -54,24 +58,23 @@ import UniformTypeIdentifiers
         let editor = NSScrollView(); editor.documentView = instructions; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder
         editor.heightAnchor.constraint(equalToConstant: 180).isActive = true
         let form = AgentSettingsStyle.form([
-            AgentSettingsStyle.section("基本信息", id: "agent-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.labeledField("职责", purpose), AgentSettingsStyle.formRow("", enabled, trailing: true)]),
-            AgentSettingsStyle.section("执行配置", id: "agent-execution", rows: [AgentSettingsStyle.labeledField("模型", model), AgentSettingsStyle.formRow("审批方式", permission, trailing: true), AgentSettingsStyle.formRow("", readOnly, trailing: true), AgentSettingsStyle.formRow("", network, trailing: true)]),
+            AgentSettingsStyle.section("基本信息", id: "agent-basic", rows: [AgentSettingsStyle.formRow("名称", name, trailing: false), AgentSettingsStyle.formRow("职责", purpose, trailing: false), AgentSettingsStyle.formRow("", enabled, trailing: true)]),
             AgentSettingsStyle.section("工作指令", id: "agent-instructions", rows: [editor]),
+            AgentSettingsStyle.section("执行配置", id: "agent-execution", rows: [AgentSettingsStyle.labeledField("模型", model), AgentSettingsStyle.formRow("审批方式", permission, trailing: true), AgentSettingsStyle.formRow("", readOnly, trailing: true), AgentSettingsStyle.formRow("", network, trailing: true)]),
             AgentSettingsStyle.section("可选能力", id: "agent-capabilities", rows: [AgentSettingsStyle.formRow("Skills", skills, trailing: true), AgentSettingsStyle.formRow("MCP", mcp, trailing: true), AgentSettingsStyle.formRow("工具权限", tools, trailing: true)])
         ], label: "智能体配置")
         draftViewport.trackForm(form)
         save.target = self; save.action = #selector(saveProfile); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         AgentSettingsStyle.primaryAction(save); AgentDialogStyle.action(use)
         use.target = self; use.action = #selector(useProfile)
-        let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
-        let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        let detail = NSStackView(views: [detailActions, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
         catalogLayout = (listActions, detail)
-        for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+        for view in [detailActions, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
         for view in [list, listActions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             listActions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), listActions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), listActions.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: listActions.leadingAnchor), list.topAnchor.constraint(equalTo: listActions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: listActions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
+            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: listActions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
         ])
         reload()
     }
@@ -96,6 +99,7 @@ import UniformTypeIdentifiers
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
             let page = AgentSettingsDetailPage(title: "智能体配置", content: AgentSettingsCatalog.detail(layout.detail))
+            page.detailActionRow = detailActions
             page.onCanLeave = { [weak self] in
                 guard let self, let window, windowShouldClose(window) else { return false }
                 if dirty { dirty = false; reload() }; return true
@@ -169,7 +173,7 @@ import UniformTypeIdentifiers
         refreshMenus()
         dirty = false; instructions.undoManager?.removeAllActions(); selectRow(id); updateControls()
         state.stringValue = value?.pluginSource.map { "由插件管理 · " + ((try? AgentPlugins.scope($0.name).name) ?? "") }
-            ?? value?.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+            ?? (detailPage == nil ? value?.sourceWorkspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } : nil) ?? ""
     }
     private func editedValue() -> AgentProfile? {
         guard var value = values.first(where: { $0.id == selectedID }) else { return nil }
@@ -182,9 +186,18 @@ import UniformTypeIdentifiers
     }
     private func updateControls() {
         AgentSettingsStyle.listState(table, text: "暂无智能体")
-        let hasValue = selectedID != nil, packaged = values.first { $0.id == selectedID }?.pluginSource != nil
+        let value = values.first { $0.id == selectedID }
+        let hasValue = selectedID != nil, packaged = value?.pluginSource != nil
         for item in [name, purpose, permission, tools, skills, mcp, readOnly, network, enabled] as [NSControl] { item.isEnabled = hasValue && !packaged }
         model.isEnabled = hasValue; instructions.isEditable = hasValue && !packaged; save.isEnabled = dirty; use.isEnabled = !dirty && enabled.state == .on && hasValue
+        detailPage?.detailHeading = value.map { profile in
+            let project = profile.sourceWorkspace ?? profile.pluginSource.flatMap { (try? AgentPlugins.scope($0.name))?.workspace }
+            let location = project.map { URL(fileURLWithPath: $0).lastPathComponent }
+            let source = packaged ? (project == nil ? "用户插件" : "项目插件") : (project == nil ? "用户" : "项目")
+            let title = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .init(title: title.isEmpty ? "新建智能体" : title,
+                scope: [source, location].compactMap { $0 }.joined(separator: " · "), location: project)
+        }
     }
     func selectProfile(_ id: String) { guard !dirty else { state.stringValue = "请先保存 Agent 更改"; return }; selectedID = id; reload(); if settingsHostWindow != nil { showDetail() } else { requestedDetail = true } }
     func configureDraft(_ draft: AgentProfileDraft) throws {
@@ -279,24 +292,21 @@ import UniformTypeIdentifiers
     @objc private func saveProfile() {
         do {
             _ = try sourceTask()
-            if let value = editedValue(), let index = values.firstIndex(where: { $0.id == value.id }) { values[index] = value }
-            let savedID = selectedID
-            let value = values.first(where: { $0.id == selectedID })
-            if let value, value.pluginSource != nil { try store.agents.savePluginModel(value, model: model.stringValue, expectedHash: openedPluginModelHash) }
-            else if let project = value?.sourceWorkspace {
+            guard let value = editedValue() else { return }
+            let updated = values.map { $0.id == value.id ? value : $0 }
+            if value.pluginSource != nil { try store.agents.savePluginModel(value, model: value.model, expectedHash: openedPluginModelHash) }
+            else if let project = value.sourceWorkspace {
                 guard project == workspace else { throw PetError("Agent 所属项目已变化") }
                 try AgentMCPDataImport.requireDestination(project, store: store)
-                try store.agents.save(store.agents.encode(values, workspace: project), expectedHash: openedProjectHash, workspace: project)
-            } else { try store.agents.save(store.agents.encode(values), expectedHash: openedHash) }
+                try store.agents.save(store.agents.encode(updated, workspace: project), expectedHash: openedProjectHash, workspace: project)
+            } else { try store.agents.save(store.agents.encode(updated), expectedHash: openedHash) }
             dirty = false; reload(); state.stringValue = "已保存"
-            if let savedID {
-                do {
-                    if let origin = draftOrigin, origin.profileID == savedID {
-                        try AgentProfileDrafts.markSaved(origin.id, taskID: origin.taskID, profileID: savedID, store: store); draftOrigin = nil
-                    }
-                    try onSaved?(savedID)
-                } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription }
-            }
+            do {
+                if let origin = draftOrigin, origin.profileID == value.id {
+                    try AgentProfileDrafts.markSaved(origin.id, taskID: origin.taskID, profileID: value.id, store: store); draftOrigin = nil
+                }
+                try onSaved?(value.id)
+            } catch { state.stringValue = "Agent 已保存；" + error.localizedDescription }
         } catch { state.showSaveFailure(error) }
     }
     @objc private func useProfile() { do { guard !dirty, let selectedID else { throw PetError("请先保存 Agent") }; let context = try sourceTask(); let id = try store.agents.createTask(selectedID, store: store, workspace: context == nil ? workspace : context?.workspace, workMode: workMode, context: context); onUse?(id); window?.orderOut(nil) } catch { state.stringValue = error.localizedDescription } }

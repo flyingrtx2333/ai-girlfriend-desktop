@@ -10,6 +10,8 @@ import AppKit
     private let leader = NSPopUpButton(), members = NSPopUpButton(frame: .zero, pullsDown: true)
     private let enabled = NSButton(checkboxWithTitle: "启用团队及成员", target: nil, action: nil)
     private let save = AgentDialogButton(title: "保存", target: nil, action: nil), use = AgentDialogButton(title: "新建任务", target: nil, action: nil), state = AgentSettingsStatusField("团队保存状态")
+    private let roster = AgentSettingsStatusField("已选团队成员")
+    private lazy var detailActions = AgentSettingsDetailActions([use, save])
     private var values: [AgentTeam] = [], agents: [AgentProfile] = [], pendingAgents: [AgentProfile] = []
     private var selectedID: String?, openedHash: String?, dirty = false, loading = false, selectedMembers = Set<String>()
     private var pendingAgentsHash: String?
@@ -37,32 +39,42 @@ import AppKit
         for button in [add, template] { AgentDialogStyle.action(button, prominent: button === add) }
         let actions = NSStackView(views: [add, template]); actions.spacing = 8
         name.placeholderString = "名称"; purpose.placeholderString = "职责"
-        for (field, label) in [(name, "团队名称"), (purpose, "团队职责")] { field.delegate = self; field.setAccessibilityLabel(label); field.font = .systemFont(ofSize: 13); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal) }
+        for (field, label) in [(name, "团队名称"), (purpose, "团队职责")] {
+            AgentSettingsStyle.field(field)
+            field.delegate = self; field.setAccessibilityLabel(label); field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
         for popup in [leader, members] { popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); popup.cell?.lineBreakMode = .byTruncatingTail }
         leader.target = self; leader.action = #selector(leaderChanged); leader.setAccessibilityLabel("团队负责人"); members.setAccessibilityLabel("团队成员")
         enabled.target = self; enabled.action = #selector(changed)
-        let manage = NSButton(title: "管理 Agent", target: self, action: #selector(manageAgents))
+        let manage = AgentDialogButton(title: "管理 Agent", target: self, action: #selector(manageAgents))
+        AgentDialogStyle.action(manage)
         instructions.isRichText = false; instructions.allowsUndo = true; instructions.delegate = self; instructions.font = .systemFont(ofSize: 13); instructions.textContainerInset = NSSize(width: 12, height: 12); instructions.isVerticallyResizable = true; instructions.autoresizingMask = [.width]; instructions.textContainer?.widthTracksTextView = true
         instructions.isAutomaticQuoteSubstitutionEnabled = false; instructions.isAutomaticTextReplacementEnabled = false; instructions.setAccessibilityLabel("团队协作指令")
         let editor = NSScrollView(); editor.documentView = instructions; editor.hasVerticalScroller = true; editor.borderType = .bezelBorder
         editor.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        let chooser = AgentSettingsStyle.formRow("额外成员", members, trailing: true)
+        roster.alignment = .right
+        let memberSelection = NSStackView(views: [chooser, roster])
+        memberSelection.orientation = .vertical; memberSelection.alignment = .leading; memberSelection.spacing = 2
+        for row in [chooser, roster] { row.widthAnchor.constraint(equalTo: memberSelection.widthAnchor).isActive = true }
+        let memberActions = NSStackView(views: [enabled, NSView(), manage])
+        memberActions.alignment = .centerY; memberActions.spacing = 8
         let form = AgentSettingsStyle.form([
-            AgentSettingsStyle.section("团队信息", id: "team-basic", rows: [AgentSettingsStyle.labeledField("名称", name), AgentSettingsStyle.labeledField("职责", purpose), AgentSettingsStyle.formRow("", enabled, trailing: true)]),
-            AgentSettingsStyle.section("协作指令", id: "team-instructions", rows: [editor]),
-            AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), AgentSettingsStyle.formRow("额外成员", members, trailing: true), AgentSettingsStyle.formRow("", manage, trailing: true)])
+            AgentSettingsStyle.section("团队信息", id: "team-basic", rows: [AgentSettingsStyle.formRow("名称", name, trailing: false), AgentSettingsStyle.formRow("职责", purpose, trailing: false)]),
+            AgentSettingsStyle.section("成员", id: "team-members", rows: [AgentSettingsStyle.formRow("负责人", leader, trailing: true), memberSelection, memberActions]),
+            AgentSettingsStyle.section("协作指令", id: "team-instructions", rows: [editor])
         ], label: "团队配置")
         draftViewport.trackForm(form)
         save.target = self; save.action = #selector(saveTeam); save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command; use.target = self; use.action = #selector(useTeam)
         AgentSettingsStyle.primaryAction(save); AgentDialogStyle.action(use)
-        let footer = NSStackView(views: [NSView(), use, save]); footer.spacing = 10
-        let detail = NSStackView(views: [footer, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
+        let detail = NSStackView(views: [detailActions, state, form]); detail.orientation = .vertical; detail.alignment = .leading; detail.spacing = 12
         catalogLayout = (actions, detail)
-        for view in [footer, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
+        for view in [detailActions, state, form] { view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true }
         for view in [list, actions, detail] { content.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([
             actions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), actions.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), actions.heightAnchor.constraint(equalToConstant: 28),
             list.leadingAnchor.constraint(equalTo: actions.leadingAnchor), list.topAnchor.constraint(equalTo: actions.bottomAnchor, constant: 12), list.widthAnchor.constraint(equalToConstant: 190), list.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
-            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: actions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), footer.heightAnchor.constraint(equalToConstant: 28), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
+            detail.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 18), detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16), detail.topAnchor.constraint(equalTo: actions.topAnchor), detail.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14), form.heightAnchor.constraint(greaterThanOrEqualToConstant: 120)
         ]); reload()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -70,6 +82,7 @@ import AppKit
         if detailPage == nil, let content = window?.contentView, let layout = catalogLayout {
             AgentSettingsCatalog.detach(content)
             let page = AgentSettingsDetailPage(title: "团队配置", content: AgentSettingsCatalog.detail(layout.detail))
+            page.detailActionRow = detailActions
             page.onCanLeave = { [weak self] in
                 guard let self, let window, windowShouldClose(window) else { return false }
                 if dirty { dirty = false; pendingAgents = []; pendingAgentsHash = nil; reload() }; return true
@@ -151,14 +164,35 @@ import AppKit
         for value in roles where value.id != leaderID {
             let item = NSMenuItem(title: roleTitle(value), action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = value.id; item.state = selectedMembers.contains(value.id) ? .on : .off; members.menu?.addItem(item)
         }
-        for id in selectedMembers where !roles.contains(where: { $0.id == id }) { let item = NSMenuItem(title: "成员不可用", action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = id; item.state = .on; members.menu?.addItem(item) }
+        let unavailable = selectedMembers.subtracting(roles.map(\.id))
+        for id in unavailable.sorted() { let item = NSMenuItem(title: "成员不可用", action: #selector(toggleMember(_:)), keyEquivalent: ""); item.target = self; item.representedObject = id; item.state = .on; members.menu?.addItem(item) }
+        var names = roles.filter { selectedMembers.contains($0.id) }.map(roleTitle)
+        if !unavailable.isEmpty { names.append("\(unavailable.count) 名成员不可用") }
+        roster.stringValue = names.joined(separator: "、")
     }
     @objc private func leaderChanged() { if let id = leader.selectedItem?.representedObject as? String { selectedMembers.remove(id) }; refreshMembers(); changed() }
     @objc private func toggleMember(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         if selectedMembers.contains(id) { selectedMembers.remove(id) } else { guard selectedMembers.count < 4 else { state.stringValue = "最多四名成员"; return }; selectedMembers.insert(id) }; refreshMembers(); changed()
     }
-    private func updateControls() { AgentSettingsStyle.listState(table, text: "暂无团队"); let selected = selectedID != nil; for item in [name, purpose, leader, members, enabled] as [NSControl] { item.isEnabled = selected }; instructions.isEditable = selected; save.isEnabled = dirty; use.isEnabled = selected && !dirty && enabled.state == .on && (selectedID.map { (try? usableTeam($0)) != nil } ?? false) }
+    private func updateControls() {
+        AgentSettingsStyle.listState(table, text: "暂无团队")
+        let selected = selectedID != nil
+        for item in [name, purpose, leader, members, enabled] as [NSControl] { item.isEnabled = selected }
+        instructions.isEditable = selected
+        save.isEnabled = dirty
+        use.isEnabled = selected && !dirty && enabled.state == .on && (selectedID.map { (try? usableTeam($0)) != nil } ?? false)
+        detailPage?.detailHeading = values.first { $0.id == selectedID }.map { team in
+            let projects = ((try? store.teams.sourceWorkspaces(team)) ?? []).sorted()
+            let scope: String
+            if projects.count > 1 { scope = "跨项目 · \(projects.count) 个来源" }
+            else if let project = projects.first { scope = "项目 · " + URL(fileURLWithPath: project).lastPathComponent }
+            else { scope = "用户" }
+            let title = team.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .init(title: title.isEmpty ? "新建团队" : title, scope: scope,
+                location: projects.isEmpty ? nil : projects.joined(separator: "\n"))
+        }
+    }
     func controlTextDidChange(_ obj: Notification) { changed() }
     func textDidChange(_ notification: Notification) { changed() }
     @objc private func changed() { guard !loading else { return }; dirty = true; draftViewport.changed(); state.stringValue = "未保存"; updateControls() }
