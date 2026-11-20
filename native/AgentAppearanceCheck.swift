@@ -68,6 +68,7 @@ import AppKit
             }
             var colors: [String: [CGFloat]] = [:], contrasts: [String: [String: CGFloat]] = [:], selections: [String: [[CGFloat]]] = [:]
             var settingsSaveContrasts: [String: CGFloat] = [:]
+            var settingsSaveColors: [String: [String: [CGFloat]]] = [:]
             for theme in [AgentTheme.light, .dark] {
                 var value = appearance.settings; value.theme = theme; value.textSize = 16
                 try appearance.save(value); await wait(0.03)
@@ -106,6 +107,11 @@ import AppKit
                     // The side of the control samples the painted fill outside the centered title.
                     if let background = bitmap.colorAt(x: bitmap.pixelsWide / 6, y: bitmap.pixelsHigh / 2) {
                         ratio = contrast(foreground, background, save.effectiveAppearance)
+                        settingsSaveColors[theme.rawValue] = [
+                            "text": resolved(foreground, in: save.effectiveAppearance),
+                            "paintedFill": resolved(background, in: save.effectiveAppearance),
+                            "accent": resolved(AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: save), in: save.effectiveAppearance)
+                        ]
                     }
                 }
                 settingsSaveContrasts[theme.rawValue] = ratio
@@ -147,6 +153,7 @@ import AppKit
             checks["ModelAndHistoryBytesUnchanged"] = try preferenceEncoder.encode(store.preferences) == preferences && ["settings.json", "history.json"].map { try? Data(contentsOf: store.directory.appendingPathComponent($0)) } == originalFiles
             report["resolvedSurfaces"] = colors; report["contrastRatios"] = contrasts; report["actualSelectedTaskLayerColors"] = selections
             report["actualSettingsSaveContrastRatios"] = settingsSaveContrasts
+            report["actualSettingsSaveColors"] = settingsSaveColors
             report["success"] = checks.count >= 20 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()
