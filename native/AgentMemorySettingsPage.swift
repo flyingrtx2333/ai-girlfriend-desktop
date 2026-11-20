@@ -16,6 +16,15 @@ import AppKit
     private var projectSources: [AgentMemoryProjectSource] = [], projectButtons: [NSButton] = [], projectStates: [NSTextField] = []
     private var saveFailed = false
     private weak var lastOpened: NSButton?
+    private struct Recovery: Codable {
+        var version = 1
+        let query: String
+        let y: Double
+        let selection: AgentTextViewport.Selection?
+        let searchFocused: Bool
+        let openedButton: String?
+    }
+    private var pendingRecovery: Recovery?, recoveryScheduled = false
     override var minimumSettingsContentHeight: CGFloat { 220 }
     override var usesInternalScrolling: Bool { true }
 
@@ -68,11 +77,62 @@ import AppKit
         if taskID != nil { sections.append(summary) }
         let content = AgentSettingsStyle.form(sections, label: "记忆与指令设置")
         window.contentView = content; update()
+        content.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)), name: NSView.boundsDidChangeNotification, object: content.contentView)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    deinit { NotificationCenter.default.removeObserver(self) }
     override func settingsDidAppear() {
         service.reload(); update()
+        if pendingRecovery != nil { scheduleRecovery(); return }
         if isPageVisible, let lastOpened, lastOpened.window === presentingWindow, lastOpened.isEnabled { presentingWindow?.makeFirstResponder(lastOpened) }
+    }
+    override func pageDidLayout() { scheduleRecovery() }
+    @objc private func scrolled(_ note: Notification) { if pendingRecovery == nil { onSettingsRecoveryChange?() } }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        if let pendingRecovery { return try AgentSettingsRecovery.page("memory", pendingRecovery) }
+        guard let scroll = pageContentView as? NSScrollView else { return nil }
+        let field = projectSearch.currentEditor() as? NSTextView
+        let selection = field.map { editor in
+            let range = editor.selectedRange()
+            return AgentTextViewport.Selection(location: range.location, length: range.length)
+        }
+        let saved = Recovery(query: projectSearch.stringValue, y: max(0, scroll.contentView.bounds.minY), selection: selection,
+                             searchFocused: field != nil && presentingWindow?.firstResponder === field,
+                             openedButton: lastOpened?.identifier?.rawValue)
+        return try AgentSettingsRecovery.page("memory", saved)
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        guard page.kind == "memory" else { throw PetError("设置记录不属于记忆目录") }
+        let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+            keys: ["version", "query", "y", "selection", "searchFocused", "openedButton"])
+        if let selection = raw["selection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
+        let saved = try JSONDecoder().decode(Recovery.self, from: page.state)
+        guard saved.version == 1, AgentSettingsRecovery.validScroll(saved.y), !saved.query.contains("\0"),
+              saved.selection?.valid(in: saved.query.utf16.count) != false,
+              saved.openedButton.map({ $0.utf8.count <= 96 && $0.hasPrefix("memory-") }) != false else { throw PetError("记忆目录位置无效，原记录已保留") }
+        pendingRecovery = saved
+        projectSearch.stringValue = saved.query
+        filterProjects(); scheduleRecovery()
+    }
+    private func scheduleRecovery() {
+        guard pendingRecovery != nil, !recoveryScheduled else { return }
+        recoveryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            defer { recoveryScheduled = false }
+            guard let saved = pendingRecovery, isPageVisible, let scroll = pageContentView as? NSScrollView else { return }
+            presentingWindow?.contentView?.layoutSubtreeIfNeeded()
+            AgentSettingsRecovery.restoreScroll(saved.y, to: scroll)
+            let candidates = buttons + projectButtons + [clearGlobal, clearProjects]
+            lastOpened = saved.openedButton.flatMap { id in
+                candidates.first { $0.identifier?.rawValue == id }
+            }
+            if saved.searchFocused, presentingWindow?.makeFirstResponder(projectSearch) == true, let range = saved.selection?.range {
+                (projectSearch.currentEditor() as? NSTextView)?.setSelectedRange(range)
+            } else if let lastOpened, lastOpened.isEnabled { presentingWindow?.makeFirstResponder(lastOpened) }
+            pendingRecovery = nil; onSettingsRecoveryChange?()
+        }
     }
     private func update() {
         global.state = service.settings.globalMemory ? .on : .off; project.state = service.settings.projectMemory ? .on : .off
@@ -108,6 +168,7 @@ import AppKit
         return count + (value.latest.map { " · " + $0.formatted(date: .numeric, time: .shortened) } ?? "")
     }
     @objc private func filterProjects() {
+        defer { onSettingsRecoveryChange?() }
         let query = projectSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let sources = allProjects.filter {
             query.isEmpty || $0.title.localizedStandardContains(query) || $0.workspace.localizedStandardContains(query)
@@ -166,10 +227,7 @@ import AppKit
         guard sender.isEnabled, AgentMemoryScope.allCases.indices.contains(sender.tag) else { return }
         lastOpened = sender
         let scope = AgentMemoryScope.allCases[sender.tag]
-        let editor = AgentRecordWindow(store: store, taskID: taskID, section: 5, memoryOnly: true, memoryWorkspace: workspace, memoryCatalogScope: scope.hasTopics ? scope : nil)
-        editor.window?.title = scope.title; editor.selectItem(section: 5, value: scope.rawValue)
-        if scope == .global { editor.settingsContext = (scope.title, store.directory.path) }
-        presentSettingsChild(editor)
+        presentSettingsChild(makeEditor(.init(entry: scope, context: context(taskID: taskID, workspace: workspace))))
     }
     func openInstruction(_ scope: AgentMemoryScope) throws {
         guard let button = buttons.first(where: { AgentMemoryScope.allCases[$0.tag] == scope }), button.isEnabled else {
@@ -187,9 +245,34 @@ import AppKit
             return
         }
         lastOpened = sender
-        let editor = AgentRecordWindow(store: store, taskID: source.taskID, section: 5, memoryOnly: true, memoryWorkspace: source.workspace, memoryCatalogScope: .project)
-        editor.window?.title = source.title + " · 项目记忆"; editor.selectItem(section: 5, value: AgentMemoryScope.project.rawValue)
-        editor.settingsContext = ("项目 · " + source.title, source.workspace)
-        presentSettingsChild(editor)
+        presentSettingsChild(makeEditor(.init(entry: .project, context: context(taskID: source.taskID, workspace: source.workspace))))
+    }
+    private func context(taskID: String?, workspace: String?) -> AgentSettingsRecovery.Context {
+        if taskID == nil, let workspace { return .init(managedWorkspace: workspace) }
+        return .init(task: taskID.flatMap(store.task), workspace: workspace)
+    }
+    private func makeEditor(_ target: AgentRecordWindow.MemorySettingsTarget) -> AgentRecordWindow {
+        let scope = target.entry
+        let editor = AgentRecordWindow(store: store, taskID: target.context.taskID, section: 5, memoryOnly: true,
+            memoryWorkspace: target.context.workspace, memoryCatalogScope: scope.hasTopics ? scope : nil, memorySettingsTarget: target)
+        editor.window?.title = scope.title; editor.selectItem(section: 5, value: scope.rawValue)
+        if scope == .global { editor.settingsContext = (scope.title, store.directory.path) }
+        if scope == .project, let workspace = target.context.workspace {
+            let title = allProjects.first(where: { $0.workspace == workspace })?.title ?? URL(fileURLWithPath: workspace).lastPathComponent
+            editor.window?.title = title + " · 项目记忆"; editor.settingsContext = ("项目 · " + title, workspace)
+        }
+        editor.onWorkspaceChange = { [weak editor] in editor?.onSettingsRecoveryChange?() }
+        return editor
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "memory-editor" else { return nil }
+        let target = try AgentRecordWindow.MemorySettingsRecovery.decode(page).target
+        if target.entry == .project {
+            guard allProjects.contains(where: { $0.workspace == target.context.workspace }) else { throw PetError("原记忆项目暂不可用，草稿已保留") }
+        } else if target.context != context(taskID: taskID, workspace: workspace) {
+            throw PetError("记忆编辑所属任务或来源已变化，草稿已保留")
+        }
+        try target.context.requireCurrent(store)
+        return makeEditor(target)
     }
 }

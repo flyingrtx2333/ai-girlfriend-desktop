@@ -47,7 +47,7 @@ enum AgentSettingsRecovery {
         hash.map { $0.utf8.count == 64 && $0.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) } } ?? true
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
-    static let roots: Set<String> = ["rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git"]
+    static let roots: Set<String> = ["memory", "rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git"]
     struct Navigation: Codable, Equatable, Sendable {
         var version = 1
         var category: String, page: String?
@@ -84,6 +84,7 @@ enum AgentSettingsRecovery {
                   pages.allSatisfy({ $0.state.count <= 20_000_000 }), AgentSettingsRecovery.validScroll(y) else { return false }
             let kinds = pages.map(\.kind)
             switch (category, root) {
+            case ("memory", "memory"): return kinds == [root] || kinds == [root, "memory-editor"]
             case ("memory", "rules"), ("extensions", "skills"), ("extensions", "commands"):
                 return kinds.allSatisfy { ["rules", "skills", "commands", "extension-create"].contains($0) }
             case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]

@@ -1,6 +1,169 @@
 import AppKit
 
 @MainActor extension AppDelegate {
+    private struct MemoryRecoveryFixture: Codable {
+        let tasks: [String: String], windows: [String: String], files: [String: String]
+    }
+
+    func runMemorySettingsRecoveryCheck(_ output: URL) async {
+        let args = CommandLine.arguments
+        let stage = args.firstIndex(of: "--recovery-stage").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil } ?? "seed"
+        let recordURL = output.appendingPathComponent("memory-settings-fixture.json")
+        let roles = ["global", "project", "instructions"]
+        let marker = "续编定位 中文🧭"
+        let body = (1...66).map { "公开记忆行 \($0) · " + ($0 == 53 ? marker : "用于独立验收") }.joined(separator: "\n")
+        func draft(_ role: String) -> String { role + "\n" + body }
+        func original(_ role: String) -> Data { Data(("公开原文 · " + role + "\n").utf8) }
+        var checks: [String: Bool] = [:], requests = 0, failure: String?
+        func find<T: NSView>(_ type: T.Type, in view: NSView?, matching: (T) -> Bool) -> T? {
+            guard let view, !view.isHiddenOrHasHiddenAncestor else { return nil }
+            if let result = view as? T, matching(result) { return result }
+            for child in view.subviews { if let result = find(type, in: child, matching: matching) { return result } }
+            return nil
+        }
+        func control<T: NSView>(_ type: T.Type, _ owner: ControlWindow, id: String) throws -> T {
+            guard let view = find(type, in: owner.window?.contentView, matching: { $0.identifier?.rawValue == id }) else {
+                throw PetError("记忆验收缺少控件 " + id)
+            }
+            return view
+        }
+        func editor(_ owner: ControlWindow) throws -> (AgentRecordWindow, NSTextView) {
+            guard let record = owner.settingsRecoveryControllers.last as? AgentRecordWindow,
+                  let text = find(NSTextView.self, in: record.pageContentView, matching: { $0.accessibilityLabel() == "文档原文" }) else {
+                throw PetError("原记忆编辑器未显示")
+            }
+            return (record, text)
+        }
+        func popup(_ control: NSPopUpButton, value: String) throws {
+            guard let item = control.itemArray.first(where: { $0.representedObject as? String == value }),
+                  let action = control.action else { throw PetError("缺少原记忆来源或主题") }
+            control.select(item); NSApp.sendAction(action, to: control.target, from: control)
+        }
+        do {
+            ensureAgent()
+            guard let tasks = agentStore, let runtime = agentRuntime,
+                  tasks.extensions.sharedHome?.standardizedFileURL == output.appendingPathComponent("shared-home").standardizedFileURL else {
+                throw PetError("记忆恢复验收只接受独立目录")
+            }
+            runtime.modelRequestCheck = { requests += 1; throw PetError("记忆恢复验收禁止模型请求") }
+            let project = output.appendingPathComponent("公开独立项目"), other = output.appendingPathComponent("公开同名项目")
+            let primary = output.appendingPathComponent("公开主来源"), secondary = output.appendingPathComponent("公开次来源")
+            let topic = ".bluefatfish/memory/同名主题.md"
+            let peer = other.appendingPathComponent(topic)
+            if stage == "seed" {
+                for folder in [project, other, primary, secondary] {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+                }
+                for folder in [project, other] {
+                    try tasks.organization.register(folder.path, mode: .coding)
+                    try FileManager.default.createDirectory(at: folder.appendingPathComponent(".bluefatfish/memory"), withIntermediateDirectories: true)
+                }
+                let files = ["global": tasks.directory.appendingPathComponent("memory.md").path,
+                             "project": project.appendingPathComponent(topic).path, "instructions": secondary.appendingPathComponent("AGENTS.md").path]
+                for name in roles { try original(name).write(to: URL(fileURLWithPath: files[name]!)) }
+                try original("peer").write(to: peer); try original("primary").write(to: primary.appendingPathComponent("AGENTS.md"))
+                let ids = ["global": tasks.create(title: "全局记忆续编样例"), "project": tasks.create(title: "独立项目续编样例"),
+                           "instructions": tasks.create(title: "次来源指令续编样例", workspace: primary.path)]
+                tasks.update(ids["instructions"]!) {
+                    $0.workspaceScope = AgentWorkspaceScope(group: output.appendingPathComponent("sources").path, folders: [primary.path, secondary.path], primary: primary.path)
+                }
+                var owners: [String: ControlWindow] = [:]
+                for name in roles {
+                    let id = ids[name]!
+                    tasks.update(id) { $0.draft = "PUBLIC_MEMORY_COMPOSER_" + name }
+                    let owner: ControlWindow
+                    if name == "global" { self.control.showAgentTask(id); owner = self.control }
+                    else {
+                        openTaskWindow(id, from: self.control)
+                        guard let opened = additionalTaskWindows.last else { throw PetError("缺少独立任务窗口") }; owner = opened
+                    }
+                    guard owner.showSettingsCategory("memory") else { throw PetError("无法打开记忆设置") }
+                    owners[name] = owner
+                    switch name {
+                    case "global":
+                        try control(NSButton.self, owner, id: "memory-manage-global").performClick(nil)
+                    case "project":
+                        let search = try control(NSSearchField.self, owner, id: "memory-project-search")
+                        search.stringValue = "公开独立"; NSApp.sendAction(search.action!, to: search.target, from: search)
+                        let manage = "memory-project-" + AgentFiles.hash(Data(project.path.utf8))
+                        try control(NSButton.self, owner, id: manage).performClick(nil)
+                        try popup(control(NSPopUpButton.self, owner, id: "memory-files"), value: "project/同名主题.md")
+                    default:
+                        try popup(control(NSPopUpButton.self, owner, id: "settings-source-folder"), value: secondary.path)
+                        try control(NSButton.self, owner, id: "memory-manage-instructions").performClick(nil)
+                    }
+                    let (record, text) = try editor(owner)
+                    checks[name + "NormalEntryUsesOriginal"] = text.string == String(decoding: original(name), as: UTF8.self)
+                    owner.window?.makeKeyAndOrderFront(nil)
+                    text.string = draft(name); record.textDidChange(.init(name: NSText.didChangeNotification, object: text))
+                    owner.window?.makeFirstResponder(text)
+                    let range = (text.string as NSString).range(of: marker)
+                    text.setSelectedRange(range); text.scrollRangeToVisible(range)
+                    guard let persisted = try owner.captureSettingsRecovery(), let leaf = persisted.pages.last else { throw PetError("缺少记忆草稿检查点") }
+                    let checkpoint = try AgentRecordWindow.MemorySettingsRecovery.decode(leaf)
+                    checks[name + "CheckpointsExactBodyAndSelection"] = persisted.valid && checkpoint.draft == draft(name) &&
+                        checkpoint.viewport?.selections.first?.range == range && checkpoint.viewport?.focused == true &&
+                        (checkpoint.viewport?.y ?? 0) > 0
+                    checks[name + "CheckpointsOriginalFileWithoutWriting"] = try checkpoint.source?.path == files[name] &&
+                        Data(contentsOf: URL(fileURLWithPath: files[name]!)) == original(name)
+                }
+                guard await flushWorkspaceWindows(), owners.values.allSatisfy({ $0.workspaceSession?.id != nil }) else { throw PetError("记忆设置窗口未保存") }
+                let fixture = MemoryRecoveryFixture(tasks: ids, windows: owners.mapValues { $0.workspaceSession!.id }, files: files)
+                try JSONEncoder().encode(fixture).write(to: recordURL, options: .atomic)
+            } else {
+                let fixture = try JSONDecoder().decode(MemoryRecoveryFixture.self, from: Data(contentsOf: recordURL))
+                restoreAdditionalWorkspaceWindows()
+                guard await flushWorkspaceWindows() else { throw PetError("原记忆设置窗口未恢复") }
+                for name in roles {
+                    guard let owner = taskControls.first(where: { $0.workspaceSession?.id == fixture.windows[name] && $0.agentTaskID == fixture.tasks[name] }),
+                          let path = fixture.files[name] else { throw PetError("原记忆窗口归属已丢失") }
+                    let file = URL(fileURLWithPath: path)
+                    if stage == "closed" {
+                        let root = try owner.captureSettingsRecovery()
+                        checks[name + "ExplicitReturnStaysAtDirectory"] = root?.pages.map(\.kind) == ["memory"] && owner.settingsRecoveryControllers.last is AgentMemorySettingsPage
+                        checks[name + "OriginalFileRetainsExplicitSave"] = try Data(contentsOf: file) == Data(draft(name).utf8)
+                        continue
+                    }
+                    owner.window?.setContentSize(NSSize(width: 780, height: 540)); owner.window?.makeKeyAndOrderFront(nil); await wait(0.12)
+                    let (record, text) = try editor(owner)
+                    let expected = (draft(name) as NSString).range(of: marker)
+                    let viewport = try AgentTextViewport(text)
+                    checks[name + "ReopensDraftInOriginalEditor"] = text.string == draft(name) && record.workspaceHasUnsavedChanges && viewport.selections.first?.range == expected &&
+                        viewport.focused && viewport.y > 0 && viewport.focusedSelectionIsVisible(in: text)
+                    checks[name + "ComposerAndSourceUnchangedBeforeSave"] = try tasks.task(fixture.tasks[name]!)?.draft == "PUBLIC_MEMORY_COMPOSER_" + name &&
+                        Data(contentsOf: file) == original(name)
+                    guard let save = find(NSButton.self, in: record.pageContentView, matching: { $0.title == "保存" && $0.isEnabled }) else { throw PetError("未恢复保存入口") }
+                    if name == "project" {
+                        save.performClick(nil)
+                        checks["SameBytesInReplacementFolderDoNotAcceptSave"] = try record.workspaceHasUnsavedChanges &&
+                            text.string == draft(name) && Data(contentsOf: file) == original(name)
+                        try FileManager.default.moveItem(at: project, to: project.appendingPathExtension("replacement"))
+                        try FileManager.default.moveItem(at: project.appendingPathExtension("original"), to: project)
+                    }
+                    save.performClick(nil)
+                    checks[name + "ExplicitSaveWritesOnlyOriginal"] = try !record.workspaceHasUnsavedChanges && Data(contentsOf: file) == Data(draft(name).utf8)
+                    try control(NSButton.self, owner, id: "settings-detail-back").performClick(nil); await wait(0.12)
+                    checks[name + "ReturnsToOriginalDirectory"] = owner.settingsRecoveryControllers.last is AgentMemorySettingsPage
+                    if name == "project" {
+                        let search = try control(NSSearchField.self, owner, id: "memory-project-search")
+                        checks["OriginalProjectFilterReturns"] = search.stringValue == "公开独立"
+                    }
+                }
+                checks["SameNameAndPrimarySourcesAreUntouched"] = try Data(contentsOf: peer) == original("peer") &&
+                    Data(contentsOf: primary.appendingPathComponent("AGENTS.md")) == original("primary")
+            }
+            checks["CheckpointFinished"] = await flushWorkspaceWindows()
+        } catch { failure = error.localizedDescription }
+        var report: [String: Any] = ["stage": stage, "success": failure == nil && !checks.isEmpty && checks.values.allSatisfy { $0 },
+                                     "checks": checks, "modelRequests": requests, "pid": getpid()]
+        if let failure { report["error"] = failure }
+        if let bytes = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
+            try? bytes.write(to: output.appendingPathComponent("memory-settings-report-" + stage + ".json"), options: .atomic)
+        }
+    }
+}
+
+@MainActor extension AppDelegate {
     func checkMemorySettings(_ output: URL) async throws -> [String: Bool] {
         var checks: [String: Bool] = [:]
         let profile = output.appendingPathComponent("memory-settings-profile"), workspace = output.appendingPathComponent("memory-settings-project")

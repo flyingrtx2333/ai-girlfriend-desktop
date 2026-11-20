@@ -6,8 +6,10 @@ import UniformTypeIdentifiers
     private let taskHosted: Bool, documentOnly: Bool, wikiOnly: Bool
     private let memoryTaskID: String?, memoryWorkspace: String?
     private let memoryCatalogScope: AgentMemoryScope?
+    private let memorySettingsTarget: MemorySettingsTarget?
     private var openedMemoryWorkspace: String?, recoveryBlockedReason: String?
     private var openedMemoryExists: Bool?, memoryTopicError: String?, topicEditor: AgentNameEditor?
+    private var openedMemorySource: AgentMemoryEditorSource?
     private let memoryPicker = NSPopUpButton()
     private let addMemory = NSButton(title: "新建主题…", target: nil, action: nil)
     private let revealMemory = NSButton(title: "在访达中显示", target: nil, action: nil)
@@ -92,9 +94,9 @@ import UniformTypeIdentifiers
     var hasIndependentVideoWindow: Bool { videoWindow?.hasIndependentWindow == true }
     var hasIndependentWorkspaceChild: Bool { hasIndependentVideoWindow || sourceWindow?.hasIndependentWindow == true || sourceWindow?.hasIndependentVideoWindow == true || wikiPlanWindow?.hasIndependentWindow == true }
     var hasVideoPlayback: Bool { hasInlineVideoPlayback || hasIndependentVideoWindow || sourceWindow?.hasVideoPlayback == true }
-    init(store: AgentStore, taskID: String?, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil, memoryCatalogScope: AgentMemoryScope? = nil) {
+    init(store: AgentStore, taskID: String?, section: Int = 0, memoryOnly: Bool = false, wikiOnly: Bool = false, taskHosted: Bool = false, documentOnly: Bool = false, memoryWorkspace: String? = nil, memoryCatalogScope: AgentMemoryScope? = nil, memorySettingsTarget: MemorySettingsTarget? = nil) {
         self.store = store; self.taskID = taskID ?? ""; self.taskHosted = taskHosted; self.documentOnly = documentOnly; self.wikiOnly = wikiOnly; self.memoryTaskID = taskID; self.memoryWorkspace = memoryWorkspace
-        self.memoryCatalogScope = memoryCatalogScope
+        self.memoryCatalogScope = memoryCatalogScope; self.memorySettingsTarget = memorySettingsTarget
         let taskID = self.taskID
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 600), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = store.task(taskID)?.title ?? "任务记录"; window.minSize = NSSize(width: 650, height: 450); window.center(); window.isReleasedWhenClosed = false
@@ -284,6 +286,76 @@ import UniformTypeIdentifiers
         guard wikiPlanWindow?.prepareWorkspaceNavigation() != false else { return false }
         do { try markdown.prepareWorkspaceNavigation(); video.pause(); videoWindow?.preview.pause(); sourceWindow?.prepareWorkspaceNavigation(); return true } catch { state.stringValue = error.localizedDescription; return false }
     }
+    struct MemorySettingsTarget: Codable, Equatable {
+        let entry: AgentMemoryScope
+        let context: AgentSettingsRecovery.Context
+        var canOpen: [AgentMemoryScope] {
+            if entry.hasTopics { return [entry] }
+            if context.taskID != nil { return AgentMemoryScope.allCases }
+            return context.workspace == nil ? [.global, .userInstructions] : [.project, .instructions, .localInstructions]
+        }
+    }
+    struct MemorySettingsRecovery: Codable {
+        var version = 1
+        let target: MemorySettingsTarget
+        let document: String
+        let openedHash: String
+        let exists: Bool
+        let source: AgentMemoryEditorSource?
+        let draft: String?
+        let viewport: AgentTextViewport?
+
+        static func decode(_ page: AgentSettingsRecovery.Page) throws -> Self {
+            guard page.kind == "memory-editor" else { throw PetError("设置草稿不属于记忆编辑器") }
+            let raw = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state),
+                keys: ["version", "target", "document", "openedHash", "exists", "source", "draft", "viewport"])
+            let target = try AgentSettingsRecovery.object(raw["target"] ?? NSNull(), keys: ["entry", "context"])
+            if let context = target["context"] { try AgentSettingsRecovery.validateContext(context) }
+            if let source = raw["source"] { _ = try AgentSettingsRecovery.object(source, keys: ["path", "directoryIdentity"]) }
+            if let viewport = raw["viewport"] { try AgentTextViewport.validateObject(viewport) }
+            let value = try JSONDecoder().decode(Self.self, from: page.state)
+            guard value.version == 1, value.target.context.valid, value.target.canOpen.contains(value.target.entry),
+                  value.target.entry != .project || value.target.context.workspace != nil,
+                  let document = AgentMemoryDocument(selection: value.document), value.target.canOpen.contains(document.scope),
+                  AgentSettingsRecovery.validHash(value.openedHash), value.source?.valid != false, value.viewport?.valid != false,
+                  (value.source == nil) == [.summary, .effectiveInstructions].contains(document.scope),
+                  document.scope != .effectiveInstructions || value.draft == nil else { throw PetError("原记忆范围或草稿无效，记录已保留") }
+            return value
+        }
+    }
+    override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
+        guard let memorySettingsTarget, topicEditor == nil, let selection, let openedHash, let openedMemoryExists else { return nil }
+        let value = try MemorySettingsRecovery(target: memorySettingsTarget, document: selection, openedHash: openedHash,
+            exists: openedMemoryExists, source: openedMemorySource, draft: dirty ? text.string : nil, viewport: captureTextViewport())
+        let page = try AgentSettingsRecovery.page("memory-editor", value)
+        _ = try MemorySettingsRecovery.decode(page); return page
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        let value = try MemorySettingsRecovery.decode(page)
+        guard let memorySettingsTarget, value.target == memorySettingsTarget else { throw PetError("记忆草稿所属范围已变化") }
+        try memorySettingsTarget.context.requireCurrent(store)
+        refreshCatalog(selecting: value.document)
+        let sameSource = selection == value.document && openedMemorySource == value.source && openedMemoryExists == value.exists
+        if let draft = value.draft {
+            let unchanged = sameSource && openedHash == value.openedHash
+            if !items.contains(where: { $0.value == value.document }), let document = AgentMemoryDocument(selection: value.document) {
+                items.append((document.topic ?? document.scope.title, value.document)); table.reloadData()
+            }
+            selection = value.document
+            openedMemoryWorkspace = memorySettingsTarget.context.workspace; openedMemorySource = value.source
+            openedMemoryExists = value.exists; openedHash = value.openedHash
+            text.string = draft; text.isEditable = memoryEditable; dirty = true
+            save.isHidden = false; save.isEnabled = memoryEditable; revealMemory.isEnabled = sameSource && value.exists
+            state.stringValue = unchanged ? "已恢复未保存内容" : "原文件已变化，草稿已恢复"
+            if let document = AgentMemoryDocument(selection: value.document) { updateMemoryHeading(document) }
+            updateMemoryPicker(); text.undoManager?.removeAllActions()
+            try prepareTextViewport(value.viewport)
+        } else {
+            guard sameSource else { throw PetError("原记忆文件暂不可用，阅读位置已保留") }
+            if openedHash == value.openedHash { try prepareTextViewport(value.viewport) }
+        }
+        scheduleTextViewport(); onWorkspaceChange?()
+    }
     struct RecoveryState: Codable {
         var version = 1
         var taskID: String
@@ -368,16 +440,7 @@ import UniformTypeIdentifiers
         }
         let markdownViewport = markdownFile == nil ? nil : try markdown.captureViewRecovery(source: text.string)
         let plan = try wikiPlanWindow?.captureWorkspaceRecovery()
-        let viewport: AgentTextViewport?
-        if openedHash != nil, !hasInlineVideoPlayback {
-            if let pendingTextViewport, pendingTextViewport.matches(text) { viewport = pendingTextViewport }
-            else {
-                pendingTextViewport = nil; var current = try AgentTextViewport(text)
-                if isPageVisible, !viewer.isHidden, !textViewportScheduled, current.focused { rememberedTextFocus = true }
-                current.focused = rememberedTextFocus
-                viewport = current
-            }
-        } else { viewport = nil }
+        let viewport = try captureTextViewport()
         let directory = try (sections.selectedSegment == 6 ? wikiCatalogScope : nil).map { try wikiTree.captureRecovery(workspace: $0.workspace, branch: $0.branch) }
         let value = RecoveryState(taskID: taskID, documentOnly: documentOnly, section: sections.selectedSegment, selection: selection,
             file: openedFile?.path, memoryWorkspace: openedMemoryWorkspace ?? memoryWorkspace, openedHash: openedHash,
@@ -447,10 +510,22 @@ import UniformTypeIdentifiers
         try restoreTextViewports(value); try restoreSourceWindow(value.sourceWindow); restoreVideoWindow(value.videoWindow); try restoreWikiPlan(value.wikiPlan)
         try restoreVersionReview(value.versionReview)
     }
-    private func restoreTextViewports(_ value: RecoveryState) throws {
-        if let viewport = value.textViewport {
+    private func captureTextViewport() throws -> AgentTextViewport? {
+        guard openedHash != nil, !hasInlineVideoPlayback else { return nil }
+        if let pendingTextViewport, pendingTextViewport.matches(text) { return pendingTextViewport }
+        pendingTextViewport = nil
+        var current = try AgentTextViewport(text)
+        if isPageVisible, !viewer.isHidden, !textViewportScheduled, current.focused { rememberedTextFocus = true }
+        current.focused = rememberedTextFocus
+        return current
+    }
+    private func prepareTextViewport(_ viewport: AgentTextViewport?) throws {
+        if let viewport {
             guard viewport.matches(text) else { throw PetError("正文已变化，原文本位置已保留") }; pendingTextViewport = viewport; rememberedTextFocus = viewport.focused
         }
+    }
+    private func restoreTextViewports(_ value: RecoveryState) throws {
+        try prepareTextViewport(value.textViewport)
         if let viewport = value.markdownViewport { try markdown.restoreViewRecovery(viewport) }
         scheduleTextViewport()
     }
@@ -470,6 +545,17 @@ import UniformTypeIdentifiers
         }
     }
     @objc private func textViewportChanged(_ notification: Notification) { if !applyingTextViewport, pendingTextViewport == nil { if presentingWindow?.firstResponder === text { rememberedTextFocus = true }; onWorkspaceChange?() } }
+    private func updateMemoryHeading(_ document: AgentMemoryDocument) {
+        guard let target = memorySettingsTarget else { return }
+        let fileWorkspace = document.scope.isProjectFile ? target.context.workspace ?? openedMemoryWorkspace : nil
+        let scope: String
+        if let workspace = fileWorkspace {
+            scope = "项目 · " + URL(fileURLWithPath: workspace).lastPathComponent
+        } else if [.summary, .effectiveInstructions].contains(document.scope), let task = memoryTaskID.flatMap(store.task) {
+            scope = task.title
+        } else { scope = "用户" }
+        detailHeading = .init(title: document.topic ?? document.scope.title, scope: scope, location: fileWorkspace ?? openedMemorySource?.path)
+    }
     private func retainVideoWindow(_ next: AgentVideoWindow) {
         videoWindow?.close(); videoWindow = next
         next.onWorkspaceChange = { [weak self] in self?.onWorkspaceChange?() }
@@ -519,7 +605,7 @@ import UniformTypeIdentifiers
     private func refreshCatalog(selecting preferred: String?, restoringWiki: Bool = false) {
         defer { onWorkspaceChange?() }
         guard canLeave() else { sections.selectedSegment = activeSection; return }; activeSection = sections.selectedSegment
-        load?.cancel(); selection = nil; openedHash = nil; openedMemoryExists = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
+        load?.cancel(); selection = nil; openedHash = nil; openedMemoryExists = nil; openedMemorySource = nil; state.stringValue = ""; text.isEditable = false; resetDocumentMode()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true
         allowInstruction.isHidden = true; revokeInstruction.isHidden = true
         generate.isHidden = sections.selectedSegment != 6; generate.isEnabled = onGenerateWiki != nil && wikiTree.selectedLanguage != "legacy"
@@ -915,7 +1001,7 @@ import UniformTypeIdentifiers
     }
     private func loadSelection(_ value: String) {
         defer { updateTaskItemPicker(); onWorkspaceChange?() }
-        load?.cancel(); selection = value; openedHash = nil; openedMemoryExists = nil; recoveryBlockedReason = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
+        load?.cancel(); selection = value; openedHash = nil; openedMemoryExists = nil; openedMemorySource = nil; recoveryBlockedReason = nil; text.isEditable = false; state.stringValue = ""; resetDocumentMode()
         revealMemory.isEnabled = false
         text.undoManager?.removeAllActions()
         save.isHidden = true; undo.isHidden = true; open.isHidden = true; compare.isHidden = true; open.title = "打开"
@@ -923,9 +1009,13 @@ import UniformTypeIdentifiers
             if sections.selectedSegment == 5, let document = AgentMemoryDocument(selection: value) {
                 let scope = document.scope
                 let task = memoryTaskID.flatMap(store.task)
-                let memory = try AgentMemory.snapshot(scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace, topic: document.topic)
+                try memorySettingsTarget?.context.requireCurrent(store)
+                let memory = try AgentMemory.snapshot(scope, store: store, taskID: memoryTaskID, workspace: memoryWorkspace,
+                    topic: document.topic, pinEditorSource: memorySettingsTarget != nil)
+                openedMemorySource = memory.editorSource
                 openedMemoryWorkspace = memory.workspace ?? memoryWorkspace ?? task?.workspace
-                if document.topic != nil { openedMemoryExists = memory.exists }
+                if memorySettingsTarget != nil || document.topic != nil { openedMemoryExists = memory.exists }
+                updateMemoryHeading(document)
                 text.string = memory.content; openedHash = memory.hash; state.stringValue = memoryTopicError ?? memory.location
                 text.isEditable = scope != .effectiveInstructions && memoryEditable
                 save.isHidden = scope == .effectiveInstructions; save.isEnabled = text.isEditable
@@ -1093,9 +1183,12 @@ import UniformTypeIdentifiers
         do {
             try markdown.finishEditing()
             if sections.selectedSegment == 5, let document = AgentMemoryDocument(selection: path), let hash = openedHash {
-                let saved = try AgentMemory.save(document.scope, content: text.string, expectedHash: hash, store: store, taskID: memoryTaskID, workspace: openedMemoryWorkspace ?? memoryWorkspace, topic: document.topic, expectedExists: openedMemoryExists)
-                if document.topic != nil { openedMemoryExists = saved.exists }
-                openedHash = saved.hash; revealMemory.isEnabled = saved.exists; dirty = false; state.stringValue = "已保存"; return
+                try memorySettingsTarget?.context.requireCurrent(store)
+                let saved = try AgentMemory.save(document.scope, content: text.string, expectedHash: hash, store: store, taskID: memoryTaskID,
+                    workspace: memorySettingsTarget?.context.workspace ?? openedMemoryWorkspace ?? memoryWorkspace,
+                    topic: document.topic, expectedExists: openedMemoryExists, expectedSource: openedMemorySource)
+                if memorySettingsTarget != nil || document.topic != nil { openedMemoryExists = saved.exists }
+                openedHash = saved.hash; revealMemory.isEnabled = saved.exists; dirty = false; state.stringValue = "已保存"; onWorkspaceChange?(); return
             }
             guard let task else { return }
             let (files,file) = try AgentWorkspaceScope.location(task,path:path), current = try files.readData(file)

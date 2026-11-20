@@ -1,6 +1,6 @@
 import Foundation
 
-enum AgentMemoryScope: String, CaseIterable {
+enum AgentMemoryScope: String, CaseIterable, Codable {
     case global, project, instructions, summary, userInstructions, localInstructions, effectiveInstructions
     var title: String { switch self { case .global: return "全局记忆"; case .project: return "项目记忆"; case .instructions: return "项目指令"; case .summary: return "任务摘要"; case .userInstructions: return "用户指令"; case .localInstructions: return "本机项目指令"; case .effectiveInstructions: return "有效指令" } }
     var isInstructions: Bool { [.instructions, .userInstructions, .localInstructions].contains(self) }
@@ -35,6 +35,7 @@ struct AgentMemorySnapshot {
     var location: String
     var workspace: String? = nil
     var exists = true
+    var editorSource: AgentMemoryEditorSource? = nil
 }
 struct AgentMemoryCatalog {
     var topics: [String] = []
@@ -44,6 +45,13 @@ struct AgentMemoryCatalog {
 }
 struct AgentMemoryProjectSource: Equatable {
     let taskID: String?, workspace: String, title: String
+}
+
+struct AgentMemoryEditorSource: Codable, Equatable {
+    let path: String
+    let directoryIdentity: String
+
+    var valid: Bool { path.hasPrefix("/") && !path.contains("\0") && path.utf8.count < 8192 && AgentSettingsRecovery.validHash(directoryIdentity) }
 }
 
 @MainActor enum AgentMemory {
@@ -189,7 +197,7 @@ struct AgentMemoryProjectSource: Equatable {
         guard try files.entryMetadata(url).kind == "file" else { throw PetError("记忆文件已移除") }
         return url
     }
-    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil) throws -> AgentMemorySnapshot {
+    static func snapshot(_ scope: AgentMemoryScope, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil, pinEditorSource: Bool = false) throws -> AgentMemorySnapshot {
         guard topic == nil || scope.hasTopics else { throw PetError("此范围不支持主题文件") }
         if scope == .effectiveInstructions {
             guard let taskID, let task = store.task(taskID) else { throw PetError("任务不存在") }
@@ -209,9 +217,17 @@ struct AgentMemoryProjectSource: Equatable {
         guard let text = String(data: data, encoding: .utf8) else { throw PetError("记忆文件不是 UTF-8 文本") }
         let path = topic.map { scope.topicDirectory + "/" + $0 } ?? files.relative(url)
         let location = scope == .global ? "全局 " + (topic == nil ? scope.primaryPath : path) : path
-        return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: location, workspace: [.global, .userInstructions].contains(scope) ? nil : files.root.path, exists: exists)
+        let source = try pinEditorSource ? editorSource(files, url) : nil
+        return AgentMemorySnapshot(content: text, hash: AgentFiles.hash(data), location: location,
+            workspace: [.global, .userInstructions].contains(scope) ? nil : files.root.path, exists: exists, editorSource: source)
     }
-    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil, expectedExists: Bool? = nil) throws -> AgentMemorySnapshot {
+    private static func editorSource(_ files: AgentFiles, _ url: URL) throws -> AgentMemoryEditorSource {
+        var info = stat()
+        guard lstat(files.root.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw PetError("原记忆目录暂不可用") }
+        let identity = "\(files.root.path):\(info.st_dev):\(info.st_ino):\(info.st_birthtimespec.tv_sec):\(info.st_birthtimespec.tv_nsec)"
+        return .init(path: url.path, directoryIdentity: AgentFiles.hash(Data(identity.utf8)))
+    }
+    static func save(_ scope: AgentMemoryScope, content: String, expectedHash: String, store: AgentStore, taskID: String?, workspace: String? = nil, topic: String? = nil, expectedExists: Bool? = nil, expectedSource: AgentMemoryEditorSource? = nil) throws -> AgentMemorySnapshot {
         guard scope != .effectiveInstructions else { throw PetError("请编辑原指令文件，有效指令只读") }
         if let taskID, store.task(taskID) == nil { throw PetError("任务不存在") }
         let previous = try snapshot(scope, store: store, taskID: taskID, workspace: workspace, topic: topic)
@@ -224,6 +240,7 @@ struct AgentMemoryProjectSource: Equatable {
             if let error = store.writeError { throw PetError(error) }
         } else {
             let (files, url, maximum) = try file(scope, store: store, taskID: taskID, workspace: workspace, topic: topic)
+            if let expectedSource, try expectedSource != editorSource(files, url) { throw PetError("原记忆位置已变化，草稿已保留") }
             guard data.count <= maximum else { throw PetError(scope.isInstructions ? "指令最多 64 KB" : "记忆最多 24 KB") }
             let metadata = try files.entryMetadata(url)
             guard metadata.kind == "missing" || (metadata.permissions ?? 0) & 0o222 != 0 else { throw PetError(scope.title + "文件只读，未保存") }
