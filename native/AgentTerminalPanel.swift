@@ -6,10 +6,10 @@ import BlueFatFishTerminal
     private weak var terminal: NSView?
     private var preferredHeight: CGFloat?
     private var showsApproval = false
-    private let minimumTerminalHeight: CGFloat = 162
+    private var minimumTerminalHeight: CGFloat { showsApproval ? 150 : 162 }
 
     private var minimumConversationHeight: CGFloat {
-        min(showsApproval ? 300 : 248, max(0, bounds.height - minimumTerminalHeight - dividerThickness))
+        min(showsApproval ? 320 : 248, max(0, bounds.height - minimumTerminalHeight - dividerThickness))
     }
 
     override init(frame: NSRect) {

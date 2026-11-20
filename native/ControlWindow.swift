@@ -258,6 +258,7 @@ final class FormDocumentView: NSView {
     private var workbenchColumn: NSStackView!
     private var workbenchColumnTop: NSLayoutConstraint!, workbenchColumnBottom: NSLayoutConstraint!
     private var workbenchHistoryHeight: NSLayoutConstraint!, entryInputMinimumHeight: NSLayoutConstraint!
+    private var entryTopInset: NSLayoutConstraint!, entryToolbarGapAbove: NSLayoutConstraint!, entryBottomInset: NSLayoutConstraint!
     private let entryToolbar = NSView(), entryLeading = NSStackView(), entryTrailing = NSStackView(), inspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line), headerInspectorRule = AgentThemeView(fill: AgentWorkbenchTheme.line)
     private var inspectorWidth: NSLayoutConstraint!, inspectorPreferredWidth: NSLayoutConstraint!, sidebarWidth: NSLayoutConstraint!, entryToolbarHeight: NSLayoutConstraint!, entryInputHeight: NSLayoutConstraint!, emptyBeforeHeight: NSLayoutConstraint!
     private var entryToolbarGap: NSLayoutConstraint!
@@ -1013,7 +1014,19 @@ final class FormDocumentView: NSView {
         entryInputHeight = input.heightAnchor.constraint(equalToConstant: 60)
         entryInputHeight.priority = .init(NSLayoutConstraint.Priority.defaultHigh.rawValue - 1)
         entryInputMinimumHeight = input.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)
-        NSLayoutConstraint.activate([draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8), input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14), input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14), input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryInputMinimumHeight, entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12), entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10), entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8), entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)])
+        entryTopInset = draftAttachments.topAnchor.constraint(equalTo: entry.topAnchor, constant: 8)
+        entryToolbarGapAbove = entryToolbar.topAnchor.constraint(equalTo: input.bottomAnchor, constant: 8)
+        entryBottomInset = entryToolbar.bottomAnchor.constraint(equalTo: entry.bottomAnchor, constant: -10)
+        NSLayoutConstraint.activate([
+            draftAttachments.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14),
+            draftAttachments.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14),
+            entryTopInset, input.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 14),
+            input.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -14),
+            input.topAnchor.constraint(equalTo: draftAttachments.bottomAnchor), entryInputHeight, entryInputMinimumHeight,
+            entryToolbar.leadingAnchor.constraint(equalTo: entry.leadingAnchor, constant: 12),
+            entryToolbar.trailingAnchor.constraint(equalTo: entry.trailingAnchor, constant: -10),
+            entryToolbarGapAbove, entryBottomInset
+        ])
         let heading = workbenchEmptyTitle; heading.font = .systemFont(ofSize: 24, weight: .semibold); heading.isBordered = false
         heading.setContentCompressionResistancePriority(.required, for: .vertical)
         heading.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
@@ -1514,6 +1527,16 @@ final class FormDocumentView: NSView {
             capture("wide-approval")
             checks["WideApprovalUsesRoomForLongerReviewWithoutPushingOutComposer"] = rect(approvalScroll).height > 116 &&
                 fullyInConversation([approvalTitle, approvalScroll, approvalOptions, denyButton, approveButton, sendButton])
+            openTaskTerminal()
+            let wideFrame = window.frame
+            window.setFrame(NSRect(origin: wideFrame.origin, size: NSSize(width: 780, height: 540)), display: true)
+            root.layoutSubtreeIfNeeded()
+            capture("approval-terminal-resized")
+            checks["ResizingAnOpenTerminalKeepsApprovalAndInputOnScreen"] = terminalPanel?.isShown == true &&
+                fullyInConversation([approvalTitle, approvalScroll, approvalOptions, denyButton, approveButton, sendButton]) &&
+                rect(approvalTitle).height + 1 >= approvalTitle.intrinsicContentSize.height
+            stopTaskTerminals()
+            window.setFrame(wideFrame, display: true)
         }
         return (checks, frames)
     }
@@ -3934,6 +3957,9 @@ final class FormDocumentView: NSView {
             workbenchColumnTop.constant = shown ? 12 : 28
             workbenchColumnBottom.constant = shown ? -10 : -30
             workbenchHistoryHeight.constant = shown ? 30 : 60
+            entryTopInset.constant = shown ? 5 : 8
+            entryToolbarGapAbove.constant = shown ? 4 : 8
+            entryBottomInset.constant = shown ? -6 : -10
             draftAttachments.maximumRows = shown ? 1 : 3
             let textInset: CGFloat = shown ? 4 : 8
             if composer.textContainerInset.height != textInset {
