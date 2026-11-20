@@ -4,9 +4,46 @@ import AppKit
     struct HistoryTarget: Codable, Equatable {
         let receiptHash: String, revision: String
     }
-    private struct HistoryRecovery: Codable {
+    struct InstallationTarget: Codable, Equatable {
+        let id: String, receiptHash: String, activationID: String
+        let enabled: Bool
+
+        init(_ item: AgentPluginInstallation) {
+            id = item.id; receiptHash = item.receiptHash; activationID = item.activationID; enabled = item.enabled
+        }
+        var valid: Bool {
+            !id.isEmpty && id.utf8.count <= 32_768 && !id.contains("\0") && AgentSettingsRecovery.validHash(receiptHash) &&
+                (AgentSettingsRecovery.validHash(activationID) || UUID(uuidString: activationID) != nil)
+        }
+    }
+    struct DraftTarget: Codable, Equatable {
+        let path: String?, workspace: String?
+        let name: String, sourceHash: String
+        let installed: InstallationTarget?
+
+        var operation: Operation { path == nil ? .activate : installed == nil ? .install : .update }
+        var valid: Bool {
+            func validPath(_ path: String) -> Bool { path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384 }
+            return path.map(validPath) != false && workspace.map(validPath) != false && AgentExtensions.validName(name) &&
+                AgentSettingsRecovery.validHash(sourceHash) && installed.map({ $0.valid && $0.id == AgentPlugins.scopedID(name, workspace: workspace) }) != false &&
+                (path != nil || (workspace != nil && installed != nil && installed?.enabled == false))
+        }
+    }
+    enum Operation {
+        case install, update, restore, activate
+        var title: String {
+            switch self { case .install: return "安装"; case .update: return "更新"; case .restore: return "恢复"; case .activate: return "启用" }
+        }
+        var confirmation: String { self == .activate ? "审阅并启用" : comparesVersions ? title + "并停用" : title }
+        var comparesVersions: Bool { self == .update || self == .restore }
+    }
+    struct Snapshot {
+        let package: AgentPluginPackage, installed: AgentPluginInstallation?, oldFiles: [String: Data]
+    }
+    private struct ReviewRecovery: Codable {
         var version = 1
-        let target: HistoryTarget, showingFiles: Bool, selectedPath: String?, selectedComponent: Int
+        let target: HistoryTarget?, draft: DraftTarget?
+        let showingFiles: Bool, selectedPath: String?, selectedComponent: Int
         let query: String, fullText: Bool, tableY: Double
         let selectedVisible: Bool?
         let filterSelection: AgentTextViewport.Selection?, reading: AgentTextViewport?
@@ -34,60 +71,50 @@ import AppKit
 
     private let types = NSSegmentedControl(), list = NSTableView(), search = NSSearchField()
     private let preview = NSTextView(), diff = AgentGitDiffView()
-    private let full = NSScrollView(), localHeading = NSStackView(), reading = NSStackView()
+    private let full = NSScrollView(), localHeading = NSStackView(), reading = NSStackView(), controls = NSStackView()
+    private let heading = NSTextField(labelWithString: ""), scopeLabel = AgentPluginReviewPage.metadataLabel("")
+    private let metadata = AgentPluginReviewPage.metadataLabel("")
     private let currentPath = NSTextField(labelWithString: "")
     private let comparison = NSSegmentedControl(labels: ["差异", "全文"], trackingMode: .selectOne, target: nil, action: nil)
     private let status = AgentSettingsStatusField("插件审阅状态")
     private let apply = AgentDialogButton(title: "安装", target: nil, action: nil), cancel = AgentDialogButton(title: "取消", target: nil, action: nil)
-    private let protectedData: URL
+    private let retry = AgentDialogButton(title: "重新检查", target: nil, action: nil)
+    private let protectedData: URL, workspace: String?, operation: Operation
     private let historyTarget: HistoryTarget?
-    private var pendingHistory: HistoryRecovery?
+    private let draftTarget: DraftTarget?
+    private var pendingReview: ReviewRecovery?, snapshot: Snapshot?
     private var components: [Item] = [], files: [FileChange] = [], visibleFiles: [FileChange] = []
     private var selectedComponent: Int = 0, selectedPath: String?
     private var selecting = false, working = false, finished = false
-    private var comparisonJob: Task<Void, Never>?
-    var onApply: (() throws -> AgentPluginInstallation)? { didSet { apply.isEnabled = onApply != nil && !working && !finished } }
+    private var comparisonJob: Task<Void, Never>?, reloadJob: Task<Void, Never>?
+    private var shouldReload = false
+    var onReload: (() async throws -> Snapshot)?
+    var onApply: ((Snapshot) throws -> AgentPluginInstallation)? { didSet { updateApply() } }
     var onApplied: ((AgentPluginInstallation) -> Void)?
     private var showingFiles: Bool { types.selectedSegment == 1 }
+    private var recoveryKind: String? { historyTarget != nil ? "plugin-history-review" : draftTarget.map { _ in "plugin-review" } }
 
-    init(package: AgentPluginPackage, installed: AgentPluginInstallation?, oldFiles: [String: Data], restoring: Bool, activating: Bool,
-         workspace: String?, protectedData: URL, historyTarget: HistoryTarget? = nil) {
-        self.protectedData = protectedData; self.historyTarget = historyTarget
-        let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
+    init(operation: Operation, workspace: String?, protectedData: URL, historyTarget: HistoryTarget? = nil, draftTarget: DraftTarget? = nil) {
+        self.protectedData = protectedData; self.historyTarget = historyTarget; self.draftTarget = draftTarget
+        self.workspace = workspace; self.operation = operation
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = action + "插件"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
+        window.title = operation.title + "插件"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        components = package.receipt.components.map { component in
-            Item(title: (component.kind == .skill ? "Skill · " : "命令 · ") + component.name, detail: component.path + "\n\n" + Self.body(package.files[component.path]))
-        }
-        components += package.mcpServers.map { Item(title: "MCP · " + $0.key, detail: $0.destination + ($0.fields.isEmpty ? "" : "\n\n" + $0.fields.joined(separator: "\n"))) }
-        components += package.agents.map { Item(title: "Agent · " + $0.key, detail: $0.summary + "\n\n" + $0.profile.instructions) }
-        for config in package.hooks { for hook in config.preview { components.append(Item(title: "Hook · " + hook.name, detail: hook.event.rawValue + "\n\n" + hook.display)) } }
-        components += package.rules.map { Item(title: "规则 · " + $0.key, detail: $0.trigger.title + ($0.patterns.isEmpty ? "" : " · " + $0.patterns.joined(separator: ", ")) + "\n\n" + $0.body) }
-        let paths = Set(oldFiles.keys).union(package.files.keys).sorted().filter { oldFiles[$0] != package.files[$0] }
-        files = paths.map { FileChange(path: $0, before: oldFiles[$0], after: package.files[$0]) }
         types.segmentCount = 2; types.trackingMode = .selectOne
-        types.setLabel("组件（\(components.count)）", forSegment: 0); types.setLabel("文件变更（\(files.count)）", forSegment: 1)
-        types.selectedSegment = installed != nil && !activating ? 1 : 0; types.target = self; types.action = #selector(changeType)
+        types.setLabel("组件", forSegment: 0); types.setLabel("文件变更", forSegment: 1)
+        types.selectedSegment = operation.comparesVersions ? 1 : 0; types.target = self; types.action = #selector(changeType)
         types.setAccessibilityLabel("插件审阅内容")
-        let title = action + "「" + package.metadata.title + "」"
-        let candidate = package.metadata.version.isEmpty ? "未标版本" : package.metadata.version
-        let version = installed.map { ($0.metadata.version.isEmpty ? "未标版本" : $0.metadata.version) + (activating ? "" : " → " + candidate) } ?? candidate
-        let scope = [workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户", version].joined(separator: " · ")
-        detailHeading = .init(title: title, scope: scope, location: package.receipt.sourceName)
-        let heading = NSTextField(labelWithString: title)
         heading.font = .systemFont(ofSize: 18, weight: .semibold); heading.lineBreakMode = .byTruncatingMiddle
-        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); heading.toolTip = title
+        heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         localHeading.orientation = .vertical; localHeading.alignment = .leading; localHeading.spacing = 4
-        localHeading.addArrangedSubview(heading); localHeading.addArrangedSubview(Self.metadataLabel(scope))
+        localHeading.addArrangedSubview(heading); localHeading.addArrangedSubview(scopeLabel)
         heading.widthAnchor.constraint(equalTo: localHeading.widthAnchor).isActive = true
-        let metadata = Self.metadataLabel([package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · "))
-        let consequence = NSTextField(wrappingLabelWithString: "完成后停用并保留旧版本。重新启用时需核对组件配置。")
-        consequence.font = .systemFont(ofSize: 12); consequence.textColor = AgentWorkbenchTheme.secondaryText; consequence.isHidden = installed == nil || activating
+        let consequence = NSTextField(wrappingLabelWithString: operation.title + "后停用并保留当前版本。")
+        consequence.font = .systemFont(ofSize: 12); consequence.textColor = AgentWorkbenchTheme.secondaryText; consequence.isHidden = !operation.comparesVersions
         search.placeholderString = "筛选文件"; search.setAccessibilityLabel("筛选插件变更文件"); search.delegate = self
         search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         search.widthAnchor.constraint(lessThanOrEqualToConstant: 176).isActive = true
-        let controls = NSStackView(views: [types, NSView(), search]); controls.alignment = .centerY; controls.spacing = 8
+        [types, NSView(), search].forEach(controls.addArrangedSubview); controls.alignment = .centerY; controls.spacing = 8
         controls.heightAnchor.constraint(equalToConstant: 28).isActive = true
         list.addTableColumn(NSTableColumn(identifier: NSUserInterfaceItemIdentifier("review"))); list.headerView = nil; list.rowHeight = 36; list.dataSource = self; list.delegate = self; list.setAccessibilityLabel("插件审阅列表")
         let index = NSScrollView(); index.documentView = list; index.hasVerticalScroller = true
@@ -113,10 +140,11 @@ import AppKit
         let reader = NSStackView(views: [reading, detail])
         reader.orientation = .vertical; reader.alignment = .leading; reader.spacing = 8
         let split = NSStackView(views: [index, reader]); split.spacing = 12; split.alignment = .top
-        apply.title = activating ? "审阅并启用" : installed == nil ? "安装" : action + "并停用"; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
+        apply.title = operation.confirmation; apply.target = self; apply.action = #selector(applyReview); apply.isEnabled = false
         cancel.target = self; cancel.action = #selector(cancelReview)
-        AgentSettingsStyle.primaryAction(apply); AgentDialogStyle.action(cancel)
-        let actions = AgentSettingsDetailActions([cancel, apply]); detailActionRow = actions
+        retry.target = self; retry.action = #selector(reloadSource); retry.isHidden = true
+        AgentSettingsStyle.primaryAction(apply); AgentDialogStyle.action(cancel); AgentDialogStyle.action(retry)
+        let actions = AgentSettingsDetailActions(draftTarget == nil ? [cancel, apply] : [retry, cancel, apply]); detailActionRow = actions
         let layout = NSStackView(views: [localHeading, metadata, consequence, status, controls, split, actions])
         layout.orientation = .vertical; layout.alignment = .leading; layout.spacing = 8
         let root = AgentThemeView(); window.contentView = root; root.addSubview(layout); layout.translatesAutoresizingMaskIntoConstraints = false
@@ -127,14 +155,18 @@ import AppKit
             reader.heightAnchor.constraint(equalTo: split.heightAnchor), reading.widthAnchor.constraint(equalTo: reader.widthAnchor),
             detail.widthAnchor.constraint(equalTo: reader.widthAnchor), split.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
-        if historyTarget != nil {
+        if recoveryKind != nil {
             for scroll in [index, full] + [diff.text.enclosingScrollView].compactMap({ $0 }) {
                 let clip = scroll.contentView; clip.postsBoundsChangedNotifications = true
                 NotificationCenter.default.addObserver(self, selector: #selector(readingChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip)
             }
             NotificationCenter.default.addObserver(self, selector: #selector(readingChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         }
-        updateList()
+        let sourceName = draftTarget?.path.map { URL(fileURLWithPath: $0).lastPathComponent }
+        setHeading(draftTarget?.name, version: nil, location: draftTarget?.path)
+        metadata.stringValue = sourceName ?? ""
+        metadata.toolTip = draftTarget?.path
+        controls.isHidden = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -144,9 +176,67 @@ import AppKit
         super.setSettingsActionsHost(host)
         localHeading.isHidden = host != nil
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); presentingWindow?.makeFirstResponder(list); scheduleHistoryPosition() }
-    override func settingsWillLeave() { comparisonJob?.cancel() }
-    func windowWillClose(_ notification: Notification) { comparisonJob?.cancel() }
+    override func settingsDidAppear() {
+        super.settingsDidAppear()
+        if shouldReload { shouldReload = false; reloadSource() }
+        else if snapshot != nil { presentingWindow?.makeFirstResponder(list); scheduleReviewPosition() }
+    }
+    override func settingsWillLeave() { comparisonJob?.cancel(); reloadJob?.cancel() }
+    func windowWillClose(_ notification: Notification) { comparisonJob?.cancel(); reloadJob?.cancel() }
+
+    func display(_ snapshot: Snapshot) {
+        self.snapshot = snapshot
+        let package = snapshot.package, oldFiles = snapshot.oldFiles
+        components = package.receipt.components.map { component in
+            Item(title: (component.kind == .skill ? "Skill · " : "命令 · ") + component.name, detail: component.path + "\n\n" + Self.body(package.files[component.path]))
+        }
+        components += package.mcpServers.map { Item(title: "MCP · " + $0.key, detail: $0.destination + ($0.fields.isEmpty ? "" : "\n\n" + $0.fields.joined(separator: "\n"))) }
+        components += package.agents.map { Item(title: "Agent · " + $0.key, detail: $0.summary + "\n\n" + $0.profile.instructions) }
+        for config in package.hooks { for hook in config.preview { components.append(Item(title: "Hook · " + hook.name, detail: hook.event.rawValue + "\n\n" + hook.display)) } }
+        components += package.rules.map { Item(title: "规则 · " + $0.key, detail: $0.trigger.title + ($0.patterns.isEmpty ? "" : " · " + $0.patterns.joined(separator: ", ")) + "\n\n" + $0.body) }
+        let paths = Set(oldFiles.keys).union(package.files.keys).sorted().filter { oldFiles[$0] != package.files[$0] }
+        files = paths.map { FileChange(path: $0, before: oldFiles[$0], after: package.files[$0]) }
+        types.setLabel("组件（\(components.count)）", forSegment: 0); types.setLabel("文件变更（\(files.count)）", forSegment: 1)
+        controls.isHidden = false
+        let candidate = package.metadata.version.isEmpty ? "未标版本" : package.metadata.version
+        let version = snapshot.installed.map { item in
+            (item.metadata.version.isEmpty ? "未标版本" : item.metadata.version) + (operation.comparesVersions ? " → " + candidate : "")
+        } ?? candidate
+        setHeading(package.metadata.title, version: version, location: draftTarget?.path ?? package.receipt.sourceName)
+        metadata.stringValue = [package.metadata.author, package.receipt.sourceName].filter { !$0.isEmpty }.joined(separator: " · ")
+        metadata.toolTip = draftTarget?.path ?? metadata.stringValue
+        if let pendingReview { restoreControls(pendingReview) }
+        else { updateList() }
+        updateApply()
+    }
+    private func setHeading(_ name: String?, version: String?, location: String?) {
+        let title = operation.title + (name.map { "「" + $0 + "」" } ?? "插件")
+        let scope = [workspace.map { "项目 · " + URL(fileURLWithPath: $0).lastPathComponent } ?? "用户", version].compactMap { $0 }.joined(separator: " · ")
+        detailHeading = .init(title: title, scope: scope, location: location)
+        heading.stringValue = title; heading.toolTip = title
+        scopeLabel.stringValue = scope; scopeLabel.toolTip = scope
+    }
+    @objc private func reloadSource() {
+        guard let onReload, reloadJob == nil, snapshot == nil else { return }
+        status.stringValue = "正在核对原插件…"
+        retry.isHidden = true
+        reloadJob = Task { [weak self] in
+            do {
+                let content = try await onReload()
+                try Task.checkCancellation()
+                guard let self else { return }
+                reloadJob = nil
+                status.stringValue = ""
+                display(content)
+                presentingWindow?.makeFirstResponder(list)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                reloadJob = nil
+                status.showSaveFailure(error); retry.isHidden = false
+                presentingWindow?.makeFirstResponder(retry)
+            }
+        }
+    }
     func numberOfRows(in tableView: NSTableView) -> Int { showingFiles ? visibleFiles.count : components.count }
     override func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsTableRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -156,10 +246,11 @@ import AppKit
         return label
     }
     @objc private func changeType() {
-        pendingHistory = nil; updateList(); historyChanged()
+        guard snapshot != nil else { return }
+        pendingReview = nil; updateList(); reviewChanged()
     }
     @objc private func changeComparison() {
-        pendingHistory = nil; showSelection(); historyChanged()
+        pendingReview = nil; showSelection(); reviewChanged()
     }
     private func updateList() {
         search.isHidden = !showingFiles
@@ -176,14 +267,14 @@ import AppKit
         showSelection()
     }
     func controlTextDidChange(_ notification: Notification) { changeType() }
-    func controlTextDidBeginEditing(_ notification: Notification) { historyChanged() }
-    func controlTextDidEndEditing(_ notification: Notification) { historyChanged() }
+    func controlTextDidBeginEditing(_ notification: Notification) { reviewChanged() }
+    func controlTextDidEndEditing(_ notification: Notification) { reviewChanged() }
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !selecting, list.selectedRow >= 0, list.selectedRow < list.numberOfRows else { return }
-        pendingHistory = nil
+        pendingReview = nil
         if showingFiles { selectedPath = visibleFiles[list.selectedRow].path }
         else { selectedComponent = list.selectedRow }
-        showSelection(); historyChanged()
+        showSelection(); reviewChanged()
     }
     private func showSelection() {
         comparisonJob?.cancel(); comparisonJob = nil
@@ -212,30 +303,31 @@ import AppKit
                 diff.show(patch, oldTitle: "当前版本", newTitle: "候选版本", accessibilityContext: "插件")
                 diff.layoutSubtreeIfNeeded()
                 Self.rewind(diff.text)
-                scheduleHistoryPosition(); historyChanged()
+                scheduleReviewPosition(); reviewChanged()
             } catch {
                 guard !Task.isCancelled, let self else { return }
                 comparisonJob = nil
-                showFull("无法生成差异。以下为完整内容。\n\n" + Self.fullText(file)); historyChanged()
+                showFull("无法生成差异。以下为完整内容。\n\n" + Self.fullText(file)); reviewChanged()
             }
         }
     }
     private func showFull(_ value: String) {
         diff.isHidden = true; full.isHidden = false
         preview.string = value; Self.rewind(preview)
-        scheduleHistoryPosition()
+        scheduleReviewPosition()
     }
     @objc private func readingChanged(_ notification: Notification) {
         guard isPageVisible else { return }
         if let text = notification.object as? NSTextView, text !== preview, text !== diff.text, text !== search.currentEditor() { return }
-        historyChanged()
+        reviewChanged()
     }
-    private func historyChanged() {
-        if historyTarget != nil, pendingHistory == nil { onSettingsRecoveryChange?() }
+    private func reviewChanged() {
+        if recoveryKind != nil, snapshot != nil, pendingReview == nil { onSettingsRecoveryChange?() }
     }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? {
-        guard let historyTarget else { return nil }
-        if let pendingHistory { return try AgentSettingsRecovery.page("plugin-history-review", pendingHistory) }
+        guard let recoveryKind else { return nil }
+        if let pendingReview { return try AgentSettingsRecovery.page(recoveryKind, pendingReview) }
+        guard snapshot != nil else { return nil }
         let query = search.stringValue, filterSelection: AgentTextViewport.Selection?
         if let editor = search.currentEditor() as? NSTextView, editor === presentingWindow?.firstResponder {
             let range = editor.selectedRange(), selection = AgentTextViewport.Selection(location: range.location, length: range.length)
@@ -243,33 +335,53 @@ import AppKit
         } else { filterSelection = nil }
         let reader = diff.isHidden ? preview : diff.text
         let reading = comparisonJob == nil ? try AgentTextViewport(reader) : nil
-        return try AgentSettingsRecovery.page("plugin-history-review", HistoryRecovery(target: historyTarget, showingFiles: showingFiles,
+        return try AgentSettingsRecovery.page(recoveryKind, ReviewRecovery(target: historyTarget, draft: draftTarget, showingFiles: showingFiles,
             selectedPath: selectedPath, selectedComponent: selectedComponent, query: query, fullText: comparison.selectedSegment == 1,
             tableY: max(0, list.enclosingScrollView?.contentView.bounds.minY ?? 0), selectedVisible: AgentSettingsRecovery.selectionIsVisible(in: list),
             filterSelection: filterSelection, reading: reading))
     }
-    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
-        guard page.kind == "plugin-history-review", let historyTarget else { throw PetError("设置记录不属于插件历史审阅") }
-        let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "showingFiles", "selectedPath",
+    static func recoveryTarget(_ page: AgentSettingsRecovery.Page) throws -> DraftTarget {
+        guard page.kind == "plugin-review", let target = try decodeRecovery(page).draft else { throw PetError("插件审阅记录缺少原来源") }
+        return target
+    }
+    private static func decodeRecovery(_ page: AgentSettingsRecovery.Page) throws -> ReviewRecovery {
+        let object = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: page.state), keys: ["version", "target", "draft", "showingFiles", "selectedPath",
             "selectedComponent", "query", "fullText", "tableY", "selectedVisible", "filterSelection", "reading"])
         if let target = object["target"] { _ = try AgentSettingsRecovery.object(target, keys: ["receiptHash", "revision"]) }
+        if let draft = object["draft"] {
+            let value = try AgentSettingsRecovery.object(draft, keys: ["path", "workspace", "name", "sourceHash", "installed"])
+            if let installed = value["installed"] { _ = try AgentSettingsRecovery.object(installed, keys: ["id", "receiptHash", "activationID", "enabled"]) }
+        }
         if let selection = object["filterSelection"] { _ = try AgentSettingsRecovery.object(selection, keys: ["location", "length"]) }
         if let text = object["reading"] { try AgentTextViewport.validateObject(text) }
-        let value = try JSONDecoder().decode(HistoryRecovery.self, from: page.state)
-        guard value.version == 1, value.target == historyTarget, AgentSettingsRecovery.validScroll(value.tableY),
-              value.selectedPath.map({ path in files.contains { $0.path == path } }) != false,
-              value.selectedComponent == 0 || components.indices.contains(value.selectedComponent),
+        let value = try JSONDecoder().decode(ReviewRecovery.self, from: page.state)
+        guard value.version == 1, (value.target == nil) != (value.draft == nil), value.draft?.valid != false,
+              AgentSettingsRecovery.validScroll(value.tableY), value.selectedComponent >= 0, value.selectedComponent < 500,
+              value.selectedPath.map(AgentArchive.validPath) != false,
               value.filterSelection?.valid(in: value.query.utf16.count) != false, value.reading?.valid != false else {
-            throw PetError("插件历史审阅与原记录不一致，请重新打开历史版本")
+            throw PetError("原插件审阅记录无效，已保留")
         }
-        pendingHistory = value; selectedPath = value.selectedPath; selectedComponent = value.selectedComponent
+        return value
+    }
+    override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws {
+        let value = try Self.decodeRecovery(page)
+        guard page.kind == recoveryKind, value.target == historyTarget, value.draft == draftTarget else { throw PetError("插件审阅与原记录不一致") }
+        pendingReview = value
+        if snapshot != nil {
+            guard value.selectedPath.map({ path in files.contains { $0.path == path } }) != false,
+                  value.selectedComponent == 0 || components.indices.contains(value.selectedComponent) else { throw PetError("插件历史审阅与原记录不一致，请重新打开历史版本") }
+            restoreControls(value)
+        } else { shouldReload = true }
+    }
+    private func restoreControls(_ value: ReviewRecovery) {
+        selectedPath = value.selectedPath; selectedComponent = value.selectedComponent
         types.selectedSegment = value.showingFiles ? 1 : 0; comparison.selectedSegment = value.fullText ? 1 : 0
         search.stringValue = value.query; updateList()
     }
-    private func scheduleHistoryPosition() {
-        guard pendingHistory != nil else { return }
+    private func scheduleReviewPosition() {
+        guard pendingReview != nil, snapshot != nil else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, isPageVisible, comparisonJob == nil, let value = pendingHistory else { return }
+            guard let self, isPageVisible, comparisonJob == nil, let value = pendingReview else { return }
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             if let scroll = list.enclosingScrollView { AgentSettingsRecovery.restoreScroll(value.tableY, to: scroll) }
             if value.selectedVisible == true, list.selectedRow >= 0 { list.scrollRowToVisible(list.selectedRow) }
@@ -277,7 +389,7 @@ import AppKit
             if let selection = value.filterSelection, !search.isHidden, presentingWindow?.makeFirstResponder(search) == true {
                 (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
             }
-            pendingHistory = nil; historyChanged()
+            pendingReview = nil; reviewChanged()
         }
     }
     private static func rewind(_ text: NSTextView) {
@@ -305,11 +417,12 @@ import AppKit
         file.path + "\n\n当前版本\n" + body(file.before) + "\n\n候选版本\n" + body(file.after)
     }
     @objc private func applyReview() {
-        guard !working, !finished, let onApply else { return }
-        working = true; apply.isEnabled = false; cancel.isEnabled = false
-        do { let item = try onApply(); finished = true; working = false; close(); onApplied?(item) }
-        catch { status.showSaveFailure(error); working = false; apply.isEnabled = true; cancel.isEnabled = true }
+        guard !working, !finished, let onApply, let snapshot else { return }
+        working = true; updateApply(); cancel.isEnabled = false
+        do { let item = try onApply(snapshot); finished = true; working = false; close(); onApplied?(item) }
+        catch { status.showSaveFailure(error); working = false; updateApply(); cancel.isEnabled = true }
     }
+    private func updateApply() { apply.isEnabled = onApply != nil && snapshot != nil && !working && !finished }
     @objc private func cancelReview() { guard !working else { return }; close() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !working }
 }

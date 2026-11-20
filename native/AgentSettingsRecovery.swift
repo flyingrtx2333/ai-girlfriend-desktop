@@ -89,7 +89,7 @@ enum AgentSettingsRecovery {
             case ("hooks", "hooks"): return kinds == [root] || kinds == [root, "hook-config"]
             case ("extensions", "plugins"):
                 return kinds == [root] || kinds == [root, "plugin-settings"] || kinds == [root, "plugin-history"]
-                    || kinds == [root, "plugin-history", "plugin-history-review"]
+                    || kinds == [root, "plugin-history", "plugin-history-review"] || kinds == [root, "plugin-review"]
             case ("extensions", "mcp"):
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
             case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]

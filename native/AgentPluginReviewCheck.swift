@@ -19,6 +19,16 @@ import AppKit
         control.selectedSegment = segment
         if let action = control.action { NSApp.sendAction(action, to: control.target, from: control) }
     }
+    private static func reveal(_ marker: String, in text: NSTextView, host: NSWindow) throws -> NSRange {
+        let range = (text.string as NSString).range(of: marker)
+        guard range.location != NSNotFound, host.makeFirstResponder(text) else { throw PetError("缺少可选择的公开审阅行") }
+        host.contentView?.layoutSubtreeIfNeeded()
+        if let layout = text.layoutManager, let container = text.textContainer, let scroll = text.enclosingScrollView {
+            layout.ensureLayout(for: container)
+            text.setFrameSize(NSSize(width: text.frame.width, height: max(scroll.contentSize.height, layout.usedRect(for: container).maxY + text.textContainerInset.height * 2)))
+        }
+        text.setSelectedRange(range); text.scrollRangeToVisible(range); return range
+    }
     private static func waitForPatch(_ reader: AgentGitDiffView, containing text: String) async throws -> Bool {
         for _ in 0..<100 {
             if !reader.isHidden, reader.patch.contains(text) { return true }
@@ -208,16 +218,6 @@ import AppKit
         func reopen(_ value: AgentSettingsRecovery.State) throws {
             pane.finish(); try pane.restoreRecovery(value, make: make)
         }
-        func reveal(_ marker: String, in text: NSTextView) throws -> NSRange {
-            let range = (text.string as NSString).range(of: marker)
-            guard range.location != NSNotFound, host.makeFirstResponder(text) else { throw PetError("缺少可选择的公开审阅行") }
-            host.contentView?.layoutSubtreeIfNeeded()
-            if let layout = text.layoutManager, let container = text.textContainer, let scroll = text.enclosingScrollView {
-                layout.ensureLayout(for: container)
-                text.setFrameSize(NSSize(width: text.frame.width, height: max(scroll.contentSize.height, layout.usedRect(for: container).maxY + text.textContainerInset.height * 2)))
-            }
-            text.setSelectedRange(range); text.scrollRangeToVisible(range); return range
-        }
         var checks: [String: Bool] = [:]
         host.setContentSize(NSSize(width: 1200, height: 774))
         guard pane.show(category: "extensions", identity: context.identity, scope: "设置项目", recoveryContext: context, make: make),
@@ -235,7 +235,7 @@ import AppKit
         filter.stringValue = "README"; review.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: filter))
         let mode = try control(NSSegmentedControl.self, "插件文件读取方式", page: review)
         select(mode, 1)
-        let full = try control(NSTextView.self, "插件审阅详情", page: review), fullSelection = try reveal("HISTORY-LINE-99-v1", in: full)
+        let full = try control(NSTextView.self, "插件审阅详情", page: review), fullSelection = try reveal("HISTORY-LINE-99-v1", in: full, host: host)
         let fullState = try capture()
         checks["historyCaptureRecordsOnlyTheValidSettingsPath"] = fullState.pages.map(\.kind) == ["plugins", "plugin-history", "plugin-history-review"]
         var missingParent = fullState; missingParent.pages.remove(at: 1)
@@ -252,7 +252,7 @@ import AppKit
         select(try control(NSSegmentedControl.self, "插件文件读取方式", page: restored), 0)
         guard let diff = find(AgentGitDiffView.self, in: restored.pageContentView, matching: { _ in true }),
               try await waitForPatch(diff, containing: "+HISTORY-LINE-101-v1") else { throw PetError("缺少真实历史差异") }
-        let diffSelection = try reveal("HISTORY-LINE-101-v1", in: diff.text)
+        let diffSelection = try reveal("HISTORY-LINE-101-v1", in: diff.text, host: host)
         let diffState = try capture(); try reopen(diffState)
         guard let diffReview = pane.currentController as? AgentPluginReviewPage,
               let restoredDiff = find(AgentGitDiffView.self, in: diffReview.pageContentView, matching: { _ in true }),
@@ -299,6 +299,108 @@ import AppKit
         catch { checks["changedCurrentVersionDoesNotReviveObsoleteReview"] = try error.localizedDescription.contains("当前插件版本已变化") && plugins.installation(current.id).receiptHash == result.receiptHash }
         return checks
     }
+
+    static func draftRecovery(tasks: AgentStore, taskID: String, pane: AgentSettingsPageHost, host: NSWindow, output: URL) async throws -> [String: Bool] {
+        guard let task = tasks.task(taskID), let workspace = task.workspace else { throw PetError("缺少插件草稿验收范围") }
+        let plugins = tasks.extensions.plugins, context = AgentSettingsRecovery.Context(task: task, workspace: workspace)
+        let sources = try prepareSources(output.appendingPathComponent("插件审阅续读"), history: true)
+        let name = "pending-public-review"
+        for source in sources {
+            let url = source.appendingPathComponent(".qoder-plugin/plugin.json")
+            guard var manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else { throw PetError("缺少公开插件清单") }
+            manifest["name"] = name
+            try JSONSerialization.data(withJSONObject: manifest, options: .sortedKeys).write(to: url)
+        }
+        func make(_ kind: String) -> AgentSettingsPageController? { kind == "plugins" ? AgentPluginWindow(store: tasks, workspace: workspace) : nil }
+        func root() throws -> AgentPluginWindow {
+            pane.finish()
+            guard pane.show(category: "extensions", identity: context.identity, scope: "设置项目", recoveryContext: context, make: make),
+                  let manager = pane.currentController as? AgentPluginWindow else { throw PetError("缺少普通插件入口") }
+            return manager
+        }
+        func capture() throws -> AgentSettingsRecovery.State {
+            guard let saved = try pane.captureRecovery(active: true) else { throw PetError("未保存插件审阅草稿") }
+            return saved
+        }
+        func reopen(_ saved: AgentSettingsRecovery.State) throws -> AgentPluginReviewPage {
+            pane.finish(); try pane.restoreRecovery(saved, make: make)
+            guard let page = pane.currentController as? AgentPluginReviewPage else { throw PetError("重开未进入原插件审阅") }
+            return page
+        }
+        func ready(_ title: String, _ page: AgentPluginReviewPage) async throws {
+            for _ in 0..<100 {
+                if find(NSButton.self, in: page.pageContentView, matching: { $0.title == title && $0.isEnabled && !$0.isHidden }) != nil {
+                    try await Task.sleep(for: .milliseconds(80)); return
+                }
+                try await Task.sleep(for: .milliseconds(30))
+            }
+            throw PetError("插件审阅操作未就绪：" + title + " · " + String(text(page.pageContentView).prefix(240)))
+        }
+        var checks: [String: Bool] = [:]
+        host.setContentSize(NSSize(width: 1200, height: 774))
+        let page = try await root().reviewLocalPackage(sources[0], workspace: nil)
+        select(try control(NSSegmentedControl.self, "插件审阅内容", page: page), 1)
+        let search = try control(NSSearchField.self, "筛选插件变更文件", page: page)
+        search.stringValue = "README"; page.controlTextDidChange(.init(name: NSControl.textDidChangeNotification, object: search))
+        select(try control(NSSegmentedControl.self, "插件文件读取方式", page: page), 1)
+        let marker = "HISTORY-LINE-128-v1", selection = try reveal(marker, in: control(NSTextView.self, "插件审阅详情", page: page), host: host)
+        let installState = try capture(), draft = try AgentPluginReviewPage.recoveryTarget(installState.pages.last!)
+        checks["draftInstallRetainsSourceAndOnlyReadingMetadata"] = installState.pages.map(\.kind) == ["plugins", "plugin-review"] &&
+            draft.path == sources[0].path && draft.workspace == nil && draft.installed == nil && !String(decoding: installState.pages.last!.state, as: UTF8.self).contains(marker)
+        host.setContentSize(NSSize(width: 780, height: 540))
+        let restored = try reopen(installState)
+        try await ready("安装", restored)
+        let restoredText = try control(NSTextView.self, "插件审阅详情", page: restored)
+        checks["draftInstallRestoresFilterFileAndExactSelection"] = try control(NSSearchField.self, "筛选插件变更文件", page: restored).stringValue == "README" &&
+            control(NSTextField.self, "当前插件文件", page: restored).stringValue == "README.md" && restoredText.selectedRange() == selection && host.firstResponder === restoredText &&
+            (restoredText.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 200 && plugins.catalog().allSatisfy { $0.id != name }
+
+        let held = sources[0].deletingLastPathComponent().appendingPathComponent("offline-original")
+        try FileManager.default.moveItem(at: sources[0], to: held)
+        let offline = try reopen(installState); try await ready("重新检查", offline)
+        checks["draftMissingSourceRemainsReadOnlyAndKeepsCheckpoint"] = try text(offline.pageContentView).contains("来源插件暂不可读") && capture().pages == installState.pages &&
+            find(NSButton.self, in: offline.pageContentView, matching: { $0.title == "安装" })?.isEnabled == false
+        try FileManager.default.moveItem(at: held, to: sources[0])
+        let readme = sources[0].appendingPathComponent("README.md"), original = try Data(contentsOf: readme)
+        try Data("公开来源已修改\n".utf8).write(to: readme, options: .atomic)
+        try press("重新检查", page: offline); try await ready("重新检查", offline)
+        checks["draftEditedSourceCannotResumeOldReviewAsNewContent"] = try text(offline.pageContentView).contains("来源插件已变化") && capture().pages == installState.pages
+        try original.write(to: readme, options: .atomic)
+        try press("重新检查", page: offline); try await ready("安装", offline)
+        checks["draftRetryRestoresOriginalReadingSelection"] = try control(NSTextView.self, "插件审阅详情", page: offline).selectedRange() == selection
+        try press("安装", page: offline)
+        let current = try plugins.installation(name)
+        checks["draftExplicitInstallWritesOnlyUserScopeAndClosesReview"] = try current.metadata.version == "1.0.0" && current.workspace == nil && !current.enabled &&
+            plugins.content("README.md", installation: current) == original && capture().pages.map(\.kind) == ["plugins"]
+
+        let manager = try root(); try manager.selectInstallation(current.id)
+        _ = try await manager.reviewLocalPackage(sources[1], replacing: current, workspace: nil)
+        let updateState = try capture()
+        let receipt = current.root.appendingPathComponent("receipt.json"), bytes = try Data(contentsOf: receipt)
+        var changed = current.receipt; changed.activationID = UUID().uuidString
+        try JSONEncoder().encode(changed).write(to: receipt)
+        let outdated = try reopen(updateState); try await ready("重新检查", outdated)
+        checks["draftUpdateRejectsDifferentInstalledReceipt"] = try text(outdated.pageContentView).contains("原插件或启用配置已变化") && capture().pages == updateState.pages
+        try bytes.write(to: receipt)
+        try press("重新检查", page: outdated); try await ready("更新并停用", outdated)
+        try press("更新并停用", page: outdated)
+        let updated = try plugins.installation(name)
+        checks["draftUpdateKeepsTheExactOriginalBackup"] = updated.metadata.version == "2.0.0" && !updated.enabled && updated.receipt.revisions?.last?.receiptHash == current.receiptHash
+
+        let project = try plugins.install(await plugins.inspect(sources[0]), workspace: workspace)
+        let projectManager = try root(); try projectManager.selectInstallation(project.id)
+        _ = try projectManager.reviewProjectActivation(project)
+        let projectState = try capture(), projectReview = try reopen(projectState)
+        try await ready("审阅并启用", projectReview)
+        checks["draftProjectActivationReopensWithoutApproving"] = try !plugins.installation(project.id).enabled && projectReview.detailHeading?.scope.contains("项目 · 设置项目") == true
+        try press("取消", page: projectReview)
+        checks["draftCancelReturnsToOriginalPluginAndDropsReview"] = try pane.currentController is AgentSettingsDetailPage && capture().pages.map(\.kind) == ["plugins"]
+        let confirmed = try reopen(projectState); try await ready("审阅并启用", confirmed)
+        try press("审阅并启用", page: confirmed)
+        checks["draftExplicitProjectApprovalKeepsTheUserPluginUntouched"] = try plugins.installation(project.id).enabled && plugins.installation(name).receiptHash == updated.receiptHash
+        pane.finish()
+        return checks
+    }
 }
 
 @MainActor extension AppDelegate {
@@ -317,6 +419,8 @@ import AppKit
             var checks = try await AgentPluginReviewCheck.run(tasks: tasks, taskID: task, pane: pane, host: host, output: output)
             report["checks"] = checks
             checks.merge(try await AgentPluginReviewCheck.historyRecovery(tasks: tasks, taskID: task, pane: pane, host: host, output: output)) { _, new in new }
+            report["checks"] = checks
+            checks.merge(try await AgentPluginReviewCheck.draftRecovery(tasks: tasks, taskID: task, pane: pane, host: host, output: output)) { _, new in new }
             report["checks"] = checks
             report["success"] = checks.values.allSatisfy { $0 }
             host.close()

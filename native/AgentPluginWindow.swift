@@ -243,6 +243,16 @@ import UniformTypeIdentifiers
         }
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        if page.kind == "plugin-review" {
+            let target = try AgentPluginReviewPage.recoveryTarget(page)
+            guard target.workspace == scopeWorkspace else { throw PetError("原插件审阅范围已变化，记录已保留") }
+            let review = makeReviewPage(operation: target.operation, workspace: target.workspace, draft: target)
+            review.onReload = { [weak self] in
+                guard let self else { throw PetError("插件页面已关闭，请重新打开") }
+                return try await reloadReview(target)
+            }
+            return review
+        }
         guard ["plugin-settings", "plugin-history"].contains(page.kind) else { return nil }
         guard let selected, detailPage?.settingsHostWindow != nil else { throw PetError("原插件详情暂不可用，草稿已保留") }
         if page.kind == "plugin-settings" { return makeSettingsEditor(selected) }
@@ -256,7 +266,7 @@ import UniformTypeIdentifiers
     @objc private func toggleEnabled() {
         guard let item = selected else { return }
         do {
-            if item.workspace != nil && enabled.state == .on { enabled.state = .off; review(try service.reviewPackage(item), replacing: item, activating: true); return }
+            if item.workspace != nil && enabled.state == .on { enabled.state = .off; try reviewProjectActivation(item); return }
             try service.setEnabled(item, enabled.state == .on); reload(select: item.id); onChange?() }
         catch { enabled.state = item.enabled ? .on : .off; state.stringValue = error.localizedDescription }
     }
@@ -291,14 +301,63 @@ import UniformTypeIdentifiers
             state.stringValue = "读取插件…"; job = Task { [weak self] in
                 guard let self else { return }; defer { job = nil; updateControls() }
                 do {
-                    let package = try await service.inspect(url); try Task.checkCancellation()
-                    let target = try installed ?? service.catalog(workspace: targetWorkspace, onlyScope: true).first { $0.metadata.name == package.metadata.name }
-                    if let target, target.metadata.name != package.metadata.name { throw PetError("新包名称与所选插件不同，未更新") }
-                    review(package, replacing: target, installWorkspace: targetWorkspace)
+                    try await reviewLocalPackage(url, replacing: installed, workspace: targetWorkspace)
                 }
                 catch { if !Task.isCancelled { state.stringValue = error.localizedDescription } }
             }; updateControls()
         }
+    }
+    @discardableResult func reviewLocalPackage(_ url: URL, replacing installed: AgentPluginInstallation? = nil,
+                                               workspace: String?) async throws -> AgentPluginReviewPage {
+        let source = url.standardizedFileURL
+        let package = try await service.inspect(source)
+        try Task.checkCancellation()
+        let item = try installed ?? service.catalog(workspace: workspace, onlyScope: true).first { $0.metadata.name == package.metadata.name }
+        if let item, item.metadata.name != package.metadata.name { throw PetError("新包名称与所选插件不同，未更新") }
+        let draft = AgentPluginReviewPage.DraftTarget(path: source.path, workspace: workspace, name: package.metadata.name,
+            sourceHash: package.receipt.sourceHash, installed: item.map(AgentPluginReviewPage.InstallationTarget.init))
+        let page = try makeReview(package, replacing: item, restoring: false, installWorkspace: workspace, draft: draft)
+        presentSettingsChild(page)
+        return page
+    }
+    @discardableResult func reviewProjectActivation(_ item: AgentPluginInstallation) throws -> AgentPluginReviewPage {
+        let package = try service.reviewPackage(item)
+        let draft = AgentPluginReviewPage.DraftTarget(path: nil, workspace: item.workspace, name: item.metadata.name,
+            sourceHash: AgentExtensions.digest(package.files), installed: .init(item))
+        let page = try makeReview(package, replacing: item, restoring: false, activating: true, draft: draft)
+        presentSettingsChild(page)
+        return page
+    }
+    private func reviewInstallation(_ binding: AgentPluginReviewPage.InstallationTarget, workspace: String?) throws -> AgentPluginInstallation {
+        guard let item = try? service.installation(binding.id), item.workspace == workspace,
+              AgentPluginReviewPage.InstallationTarget(item) == binding else {
+            throw PetError("原插件或启用配置已变化。恢复原状态后可重新检查，或取消后重新审阅。")
+        }
+        return item
+    }
+    private func reloadReview(_ target: AgentPluginReviewPage.DraftTarget) async throws -> AgentPluginReviewPage.Snapshot {
+        if let path = target.path {
+            let package: AgentPluginPackage
+            do { package = try await service.inspect(URL(fileURLWithPath: path)) }
+            catch {
+                try Task.checkCancellation()
+                throw PetError("来源插件暂不可读。恢复原文件后可重新检查。")
+            }
+            guard package.metadata.name == target.name, package.receipt.sourceHash == target.sourceHash else {
+                throw PetError("来源插件已变化。恢复原文件后可重新检查，或取消后重新审阅。")
+            }
+            let installed = try target.installed.map { try reviewInstallation($0, workspace: target.workspace) }
+            if installed == nil, try service.catalog(workspace: target.workspace, onlyScope: true).contains(where: { $0.metadata.name == target.name }) {
+                throw PetError("目标范围已有同名插件。请取消后重新审阅。")
+            }
+            let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
+            return .init(package: package, installed: installed, oldFiles: old)
+        }
+        guard let binding = target.installed else { throw PetError("原插件审阅记录无效") }
+        let installed = try reviewInstallation(binding, workspace: target.workspace)
+        let package = try service.reviewPackage(installed)
+        guard package.metadata.name == target.name, AgentExtensions.digest(package.files) == target.sourceHash else { throw PetError("来源插件已变化，请重新审阅。") }
+        return .init(package: package, installed: installed, oldFiles: package.files)
     }
     @objc private func openHistory() {
         guard let selected, job == nil else { return }
@@ -334,25 +393,35 @@ import UniformTypeIdentifiers
     }
     private func makeReview(_ package: AgentPluginPackage, replacing installed: AgentPluginInstallation?, restoring: Bool,
                             activating: Bool = false, installWorkspace: String? = nil, historyPage: AgentPluginHistoryPage? = nil,
-                            revision: AgentPluginRevision? = nil, marketPage: AgentPluginMarketPage? = nil) throws -> AgentPluginReviewPage {
+                            revision: AgentPluginRevision? = nil, marketPage: AgentPluginMarketPage? = nil,
+                            draft: AgentPluginReviewPage.DraftTarget? = nil) throws -> AgentPluginReviewPage {
         let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
         let historyTarget = installed.flatMap { current in revision.map { AgentPluginReviewPage.HistoryTarget(receiptHash: current.receiptHash, revision: $0.directory) } }
-        let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring,
-            activating: activating, workspace: installed?.workspace ?? installWorkspace, protectedData: service.profile, historyTarget: historyTarget)
-        page.onApply = { [weak self] in
+        let operation: AgentPluginReviewPage.Operation = activating ? .activate : restoring ? .restore : installed == nil ? .install : .update
+        let page = makeReviewPage(operation: operation, workspace: installed?.workspace ?? installWorkspace,
+            historyTarget: historyTarget, historyPage: historyPage, revision: revision, marketPage: marketPage, draft: draft)
+        page.display(.init(package: package, installed: installed, oldFiles: old))
+        return page
+    }
+    private func makeReviewPage(operation: AgentPluginReviewPage.Operation, workspace: String?,
+                                historyTarget: AgentPluginReviewPage.HistoryTarget? = nil, historyPage: AgentPluginHistoryPage? = nil,
+                                revision: AgentPluginRevision? = nil, marketPage: AgentPluginMarketPage? = nil,
+                                draft: AgentPluginReviewPage.DraftTarget? = nil) -> AgentPluginReviewPage {
+        let page = AgentPluginReviewPage(operation: operation, workspace: workspace, protectedData: service.profile, historyTarget: historyTarget, draftTarget: draft)
+        page.onApply = { [weak self] snapshot in
             guard let self else { throw PetError("插件页面已关闭，请重新打开") }
-            if let installed, activating { try service.setEnabled(installed, true); return try service.installation(installed.id) }
-            if let installed {
+            if let binding = draft?.installed { _ = try reviewInstallation(binding, workspace: workspace) }
+            if let installed = snapshot.installed {
+                if operation == .activate { try service.setEnabled(installed, true); return try service.installation(installed.id) }
                 if let revision { _ = try service.revision(revision, of: installed) }
-                return try service.update(package, replacing: installed)
+                return try service.update(snapshot.package, replacing: installed)
             }
-            return try service.install(package, workspace: installWorkspace)
+            return try service.install(snapshot.package, workspace: workspace)
         }
         page.onApplied = { [weak self, weak historyPage, weak marketPage] item in
             guard let self else { return }
-            let action = activating ? "启用" : installed == nil ? "安装" : restoring ? "恢复" : "更新"
-            search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + action + (installed == nil || activating ? "" : "，已停用"); onChange?()
-            if let marketPage { marketPage.didApply(item, updating: installed != nil) }
+            search.stringValue = ""; reload(select: item.id); state.stringValue = "已" + operation.title + (operation.comparesVersions ? "，已停用" : ""); onChange?()
+            if let marketPage { marketPage.didApply(item, updating: operation == .update) }
             else if let historyPage { historyPage.didRestore(item) }
             else { presentingWindow?.makeFirstResponder(detailPage?.isPageVisible == true ? components : list) }
         }
