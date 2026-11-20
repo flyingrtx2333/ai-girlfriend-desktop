@@ -223,7 +223,7 @@ struct AgentPluginMarketGit {
         }
         let result = try await AgentCommand().run(command: "/bin/sh", workspace: scratch, scratch: scratch,
             network: !network.isEmpty, timeout: network.isEmpty ? 10 : 45, maximumOutput: maximum, protectedData: profile,
-            readRoots: sshHosts ?? [], environment: environment, arguments: argv)
+            readRoots: sshHosts ?? [], sshClient: sshHosts != nil, environment: environment, arguments: argv)
         if result.timedOut == true { throw PetError("读取 Git 仓库超时，请稍后重试") }
         if result.truncated == true { throw PetError("Git 仓库文件超过可读上限") }
         if result.failed || result.stdoutData == nil {
