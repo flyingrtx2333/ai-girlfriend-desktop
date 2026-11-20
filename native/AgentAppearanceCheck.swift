@@ -101,18 +101,11 @@ import AppKit
                 } }
                 var ratio: CGFloat = 0
                 if let save, save.attributedTitle.length > 0,
-                   let foreground = save.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
-                   let bitmap = save.bitmapImageRepForCachingDisplay(in: save.bounds) {
-                    save.cacheDisplay(in: save.bounds, to: bitmap)
-                    // The side of the control samples the painted fill outside the centered title.
-                    if let background = bitmap.colorAt(x: bitmap.pixelsWide / 6, y: bitmap.pixelsHigh / 2) {
-                        ratio = contrast(foreground, background, save.effectiveAppearance)
-                        settingsSaveColors[theme.rawValue] = [
-                            "text": resolved(foreground, in: save.effectiveAppearance),
-                            "paintedFill": resolved(background, in: save.effectiveAppearance),
-                            "accent": resolved(AgentThemeContext.resolve(AgentWorkbenchTheme.accent, in: save), in: save.effectiveAppearance)
-                        ]
-                    }
+                   let foreground = save.attributedTitle.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor {
+                    let fill = save.drawingFillColor
+                    ratio = contrast(foreground, fill, save.effectiveAppearance)
+                    settingsSaveColors[theme.rawValue] = ["text": resolved(foreground, in: save.effectiveAppearance),
+                                                          "fill": resolved(fill, in: save.effectiveAppearance)]
                 }
                 settingsSaveContrasts[theme.rawValue] = ratio
                 checks[theme.rawValue + "ActualSettingsSaveTextContrast"] = ratio >= 4.5

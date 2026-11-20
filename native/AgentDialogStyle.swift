@@ -50,12 +50,15 @@ import AppKit
     }
     override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
     override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
-    override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: 0.5, dy: 0.5), path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+    var drawingFillColor: NSColor {
         let inactive = !isEnabled && !palette
         let enabledFill = prominent ? (hasDestructiveAction ? AgentDialogStyle.destructive : AgentWorkbenchTheme.accent) : hasDestructiveAction ? AgentWorkbenchTheme.removed : AgentWorkbenchTheme.subtle
-        AgentThemeContext.resolve(inactive ? AgentWorkbenchTheme.surface : enabledFill, in: self).withAlphaComponent(isEnabled || inactive ? 1 : 0.4).setFill(); path.fill()
-        if inactive { AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke() }
+        return AgentThemeContext.resolve(inactive ? AgentWorkbenchTheme.surface : enabledFill, in: self).withAlphaComponent(isEnabled || inactive ? 1 : 0.4)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 0.5, dy: 0.5), path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+        drawingFillColor.setFill(); path.fill()
+        if !isEnabled && !palette { AgentThemeContext.resolve(AgentWorkbenchTheme.line, in: self).setStroke(); path.lineWidth = 1; path.stroke() }
         if isEnabled && (hovered || isHighlighted) {
             NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.12 : 0.06).setFill(); path.fill()
         }
