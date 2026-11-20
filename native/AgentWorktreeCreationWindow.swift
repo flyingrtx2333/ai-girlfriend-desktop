@@ -265,7 +265,10 @@ import AppKit
                     state.stringValue = parts.compactMap { $0 }.joined(separator: " · ")
                 }
                 diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树"); diff.isHidden = value.patch.isEmpty
-            } catch { showFailure(error.localizedDescription, title: "预览失败"); review = nil }
+            } catch {
+                showFailure(error.localizedDescription, title: (error as? AgentWorktreeUpstreamAccessError)?.title ?? "预览失败")
+                review = nil
+            }
             setBusy(false); onDraftChange?()
         }
     }

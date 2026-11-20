@@ -14,6 +14,27 @@ struct AgentWorktreeUpstream: Codable {
     }
 }
 
+struct AgentWorktreeUpstreamAccessError: LocalizedError {
+    let title: String
+    let detail: String
+    var errorDescription: String? { detail }
+
+    static func recognize(_ result: AgentToolResult, scheme: String, target: String) -> Self? {
+        guard result.failed, !result.timedOut, let stderr = result.stderr?.lowercased() else { return nil }
+        if scheme == "ssh", stderr.contains("permission denied (publickey") {
+            return Self(title: "上游认证失败", detail: target + "\n请确认该远端的 SSH 密钥可用后重新预览。")
+        }
+        guard scheme == "http" || scheme == "https" else { return nil }
+        if stderr.contains("requested url returned error: 403") {
+            return Self(title: "上游访问被拒绝", detail: target + "\n请确认当前账号拥有仓库读取权限后重新预览。")
+        }
+        let loginErrors = ["requested url returned error: 401", "fatal: authentication failed for", "fatal: unable to get password from user",
+                           "fatal: could not read username for", "fatal: could not read password for"]
+        guard loginErrors.contains(where: stderr.contains) else { return nil }
+        return Self(title: "上游认证失败", detail: target + "\n请更新该远端的 Git 凭据后重新预览。")
+    }
+}
+
 @MainActor extension AgentGit {
     private struct UpstreamTarget: Hashable {
         let remote: String
@@ -107,10 +128,19 @@ struct AgentWorktreeUpstream: Codable {
         }
         let upstreamRef = "refs/heads/upstream"
         let repo = ["-C", transport.repository.path]
+        let remoteBranch = target.remote + "/" + String(target.branch.dropFirst("refs/heads/".count))
+        let fetch: AgentToolResult
         do {
-            _ = try await transport.output(repo + ["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-gc", "--", origin.input, target.branch + ":" + upstreamRef], endpoint: endpoint)
+            fetch = try await transport.run(repo + ["fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "--no-auto-gc", "--", origin.input, target.branch + ":" + upstreamRef], endpoint: endpoint)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            throw PetError("无法获取 " + target.remote + "/" + String(target.branch.dropFirst("refs/heads/".count)) + "\n" + error.localizedDescription)
+            throw PetError("无法获取 " + remoteBranch + "\n" + error.localizedDescription)
+        }
+        if fetch.failed || fetch.truncated == true {
+            let source = files.root.lastPathComponent + " · " + remoteBranch
+            if let access = AgentWorktreeUpstreamAccessError.recognize(fetch, scheme: endpoint.scheme, target: source) { throw access }
+            throw PetError("无法获取 " + remoteBranch + "\n" + String(fetch.text.prefix(3000)))
         }
         let fetched = try await transport.output(repo + ["rev-parse", "--verify", upstreamRef + "^{commit}"]).trimmingCharacters(in: .newlines)
         if fetched != old {

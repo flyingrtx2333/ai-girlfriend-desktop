@@ -185,6 +185,21 @@ import AppKit
         func set(_ enabled: Bool) throws {
             try preferences.saveWorktreeFetchPreference(enabled, replacing: preferences.worktreeFetchPreference().revision)
         }
+        func accessError(_ stderr: String, scheme: String = "https", timedOut: Bool = false) -> AgentWorktreeUpstreamAccessError? {
+            AgentWorktreeUpstreamAccessError.recognize(AgentToolResult(text: stderr, failed: true, stderr: stderr, timedOut: timedOut),
+                                                       scheme: scheme, target: "worktree-source · origin/main")
+        }
+        let missingCredential = accessError("fatal: failed to get: -50\nfatal: unable to get password from user\nhelper-output-marker")
+        result["upstreamMissingCredentialsAreActionableWithoutHelperOutput"] = missingCredential?.title == "上游认证失败" &&
+            missingCredential?.detail == "worktree-source · origin/main\n请更新该远端的 Git 凭据后重新预览。"
+        result["upstreamHTTP401AndRejectedCredentialsReportAuthentication"] = ["The requested URL returned error: 401", "fatal: Authentication failed for 'https://example.invalid/repo.git'"].allSatisfy {
+            accessError($0)?.title == "上游认证失败"
+        }
+        result["upstreamHTTP403ReportsMissingRepositoryAccess"] = accessError("The requested URL returned error: 403")?.title == "上游访问被拒绝"
+        result["upstreamSSHRejectionIdentifiesKeyAuthentication"] = accessError("git@example.invalid: Permission denied (publickey).", scheme: "ssh")?.detail.contains("SSH 密钥") == true
+        result["otherUpstreamFailuresRemainDistinctFromAuthentication"] = accessError("Could not resolve host") == nil &&
+            accessError("Host key verification failed", scheme: "ssh") == nil &&
+            accessError("The requested URL returned error: 401", timedOut: true) == nil
 
         let before = try preferences.worktreeFetchPreference()
         let localOnly = try await helper.prepareWorktreeCreation(branch: "upstream-off", refreshUpstream: before.enabled)
