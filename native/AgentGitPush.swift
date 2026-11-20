@@ -20,7 +20,7 @@ import Foundation
             }
             result.append(AgentGitRemote(name: name, urls: locations))
         }
-        var snapshot = AgentGitRemoteSnapshot(remotes: result, configHash: try await pushConfigHash(), processID: AgentGitTransport.processID, hash: "")
+        var snapshot = AgentGitRemoteSnapshot(remotes: result, configHash: try await gitConfigurationHash(), processID: AgentGitTransport.processID, hash: "")
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; snapshot.hash = AgentFiles.hash(try encoder.encode(snapshot))
         store.update(taskID) { $0.gitRemoteSnapshot = snapshot }
         guard store.writeError == nil else { throw PetError("无法保存远端列表") }
@@ -47,11 +47,6 @@ import Foundation
         let result = try await run(["remote", "add", name, endpoint.input], write: true)
         guard !result.failed else { throw PetError(String(result.text.prefix(1000))) }
         store.update(taskID) { $0.gitRemoteSnapshot = nil; $0.gitPushReview = nil }
-    }
-    private func pushConfigHash() async throws -> String {
-        let value = try await run(["config", "--null", "--list"], maximumOutput: 1_000_000)
-        guard !value.failed, value.truncated != true else { throw PetError("无法核对 Git 配置") }
-        return AgentFiles.hash(Data((value.stdout ?? "").utf8))
     }
     private func pushScopeHash() throws -> String {
         guard let task = store.task(taskID) else { throw PetError("任务不存在") }
@@ -102,12 +97,12 @@ import Foundation
         let input = try await pushInput(remote: remote, urlIndex: urlIndex), target = try await pushBranch(branch), state = try await status()
         guard let head = state.head else { throw PetError("请先创建首次提交") }
         let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"]), sourceRef = symbolic.failed ? "HEAD" : (symbolic.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let configuration = try await pushConfigHash(), hook = try await prePushHook(), scope = try pushScopeHash()
+        let configuration = try await gitConfigurationHash(), hook = try await prePushHook(), scope = try pushScopeHash()
         guard let snapshot = task.gitRemoteSnapshot, snapshot.processID == AgentGitTransport.processID, snapshot.configHash == configuration, remoteHash == nil || remoteHash == snapshot.hash,
               let cached = snapshot.remotes.first(where: { $0.name == remote }), cached.urls.indices.contains(urlIndex) else { throw PetError("远端配置已变化，请先刷新 Git 远端列表，再确认连接") }
         let sessionID = UUID().uuidString, transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: sessionID)
-        pushTransport = transport; var saved = false
-        defer { pushTransport = nil; if !saved { transport.cleanup() } }
+        remoteTransport = transport; var saved = false
+        defer { remoteTransport = nil; if !saved { transport.cleanup() } }
         let format = try await output(["rev-parse", "--show-object-format"]).trimmingCharacters(in: .whitespacesAndNewlines)
         try await transport.initialize(format: format)
         let endpoint = try await transport.effective(input.endpoint)
@@ -141,7 +136,7 @@ import Foundation
         let tracking = try await trackingReference(remote: remote, branch: target)
         var review = AgentGitPushReview(sessionID: sessionID, processID: AgentGitTransport.processID, taskID: taskID, promptID: task.messages.last(where: \.isHumanInput)?.id ?? task.id, workspace: files.root.path, gitDirectory: directory.path, remote: remote, urlIndex: urlIndex, configuredURL: input.raw, endpoint: endpoint, sourceBranch: symbolic.failed ? "HEAD（分离状态）" : state.branch, sourceRef: sourceRef, sourceHead: head, targetBranch: target, remoteHead: before, configHash: configuration, transportConfigHash: try await transport.configurationHash(), scopeHash: scope, hookPath: hook.path, hookHash: hook.hash, trackingRef: tracking.0, trackingHead: tracking.1, setUpstream: setUpstream, commitCount: total, commits: commits, diff: diff.stdout ?? "", diffTruncated: diff.truncated == true, uncommittedFiles: state.changes.count, hash: "")
         review.hash = try reviewHash(review)
-        guard try await pushConfigHash() == configuration, try await status().head == head else { throw PetError("本地提交或配置已变化，请重新准备推送") }
+        guard try await gitConfigurationHash() == configuration, try await status().head == head else { throw PetError("本地提交或配置已变化，请重新准备推送") }
         try draftScope?.requireCurrent(store.task(taskID), preserving: "推送草稿已保留")
         let previous = store.task(taskID)?.gitPushReview
         store.update(taskID) { $0.gitPushReview = review }
@@ -162,7 +157,7 @@ import Foundation
         let input = try await pushInput(remote: review.remote, urlIndex: review.urlIndex)
         let state = try await status(), hook = try await prePushHook()
         guard input.raw == review.configuredURL, state.head == review.sourceHead,
-              try await pushConfigHash() == review.configHash, hook.path == review.hookPath, hook.hash == review.hookHash,
+              try await gitConfigurationHash() == review.configHash, hook.path == review.hookPath, hook.hash == review.hookHash,
               try await transport.configurationHash() == review.transportConfigHash,
               try await transport.effective(input.endpoint) == review.endpoint else { throw PetError("提交、远端或 Git 检查已变化，请重新审阅推送") }
         let localRef = try await run(["symbolic-ref", "--quiet", "HEAD"])
@@ -174,9 +169,9 @@ import Foundation
     func push(reviewHash: String, timeout: Double = 180, draftScope: AgentGitDraftRecovery.Scope? = nil) async throws -> AgentGitPushReceipt {
         try draftScope?.requireCurrent(store.task(taskID), preserving: "请回到原分支重新检查远端")
         let review = try storedPushReview(hash: reviewHash), transport = try AgentGitTransport(store: store, taskID: taskID, sessionID: review.sessionID)
-        pushTransport = transport
+        remoteTransport = transport
         defer {
-            pushTransport = nil; transport.cleanup()
+            remoteTransport = nil; transport.cleanup()
             if store.task(taskID)?.gitPushReview?.hash == review.hash { store.update(taskID) { $0.gitPushReview = nil } }
         }
         try await validatePush(review, transport: transport)
@@ -220,7 +215,7 @@ import Foundation
         }
     }
     private func updatePushTracking(_ review: AgentGitPushReview) async throws -> String {
-        guard try await pushConfigHash() == review.configHash else { return "远端已核对；本地配置已变化，未更新跟踪分支" }
+        guard try await gitConfigurationHash() == review.configHash else { return "远端已核对；本地配置已变化，未更新跟踪分支" }
         guard let tracking = review.trackingRef else { return review.setUpstream ? "远端已核对；当前 fetch 映射无法设置上游" : "" }
         let update = try await run(["update-ref", tracking, review.sourceHead, review.trackingHead ?? String(repeating: "0", count: review.sourceHead.count)], write: true)
         guard !update.failed else { return "远端已核对；跟踪分支已变化，未覆盖本地引用" }

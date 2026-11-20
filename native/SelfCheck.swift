@@ -188,6 +188,10 @@ import WebKit
                     control.showAgentTask(try await prepareWorkspaceWorktreeFixtures(output, tasks: tasks))
                 }
                 if CommandLine.arguments.contains("--workspace-worktrees-reopen") { tasks.worktreeRetention.start(store: tasks) }
+                if CommandLine.arguments.contains("--worktree-upstream-fixtures") {
+                    let fixture = try await prepareWorktreeUpstreamFixture(output, tasks: tasks)
+                    control.showAgentTask(fixture.taskID)
+                }
                 if CommandLine.arguments.contains("--plugin-review-fixtures") { _ = try AgentPluginReviewCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-import-fixtures") { _ = try AgentMCPImportCheck.prepareSources(output) }
                 if CommandLine.arguments.contains("--mcp-cards-fixtures") { try await AgentMCPImportCheck.prepareCardsUI(output, tasks: tasks) }

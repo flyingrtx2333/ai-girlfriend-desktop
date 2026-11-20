@@ -13,15 +13,19 @@ struct AgentGitPreferences {
 
     let profile: URL
     private let filename = "git-preferences.json"
+    private let worktreeFetchFilename = "worktree-fetch-upstream.json"
 
-    func read() throws -> Snapshot {
+    private func readData(_ name: String, maximum: Int) throws -> Data? {
         let files = try AgentFiles(workspace: profile.path)
-        let url = try files.literalURL(filename), entry = try files.entryMetadata(url)
-        guard try files.resolve(filename) == url, ["missing", "file"].contains(entry.kind) else {
+        let url = try files.literalURL(name), entry = try files.entryMetadata(url)
+        guard try files.resolve(name) == url, ["missing", "file"].contains(entry.kind) else {
             throw PetError("Git 设置必须是普通文件")
         }
-        if entry.kind == "missing" { return Snapshot() }
-        let data = try files.readData(url, maximum: 128_000)
+        return entry.kind == "missing" ? nil : try files.readData(url, maximum: maximum)
+    }
+
+    func read() throws -> Snapshot {
+        guard let data = try readData(filename, maximum: 128_000) else { return Snapshot() }
         _ = try AgentSettingsRecovery.object(JSONSerialization.jsonObject(with: data), keys: ["branchPrefix", "commitInstructions"])
         let values = try JSONDecoder().decode(Values.self, from: data)
         try Self.validate(values)
@@ -32,12 +36,26 @@ struct AgentGitPreferences {
         try Self.validate(values)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(values)
+        try writeData(data, to: filename, replacing: revision, label: "Git 设置")
+        return Snapshot(values: values, revision: AgentFiles.hash(data))
+    }
+
+    func worktreeFetchPreference() throws -> (enabled: Bool, revision: String?) {
+        guard let data = try readData(worktreeFetchFilename, maximum: 32) else { return (false, nil) }
+        return (try JSONDecoder().decode(Bool.self, from: data), AgentFiles.hash(data))
+    }
+
+    func saveWorktreeFetchPreference(_ enabled: Bool, replacing revision: String?) throws {
+        let data = try JSONEncoder().encode(enabled)
+        try writeData(data, to: worktreeFetchFilename, replacing: revision, label: "工作树上游设置")
+    }
+
+    private func writeData(_ data: Data, to name: String, replacing revision: String?, label: String) throws {
         let files = try AgentFiles(workspace: profile.path)
-        let write = try AgentKnowledgeFileWrite(files: files, path: filename, data: data, expectedHash: revision,
-                                                missing: revision == nil, permissions: 0o600, label: "Git 设置")
+        let write = try AgentKnowledgeFileWrite(files: files, path: name, data: data, expectedHash: revision,
+                                                missing: revision == nil, permissions: 0o600, label: label)
         try write.requireCurrent()
         try write.files.writeData(data, to: write.url, permissions: 0o600, expectedTarget: write.signature)
-        return Snapshot(values: values, revision: AgentFiles.hash(data))
     }
 
     func suggestedBranch() -> String {

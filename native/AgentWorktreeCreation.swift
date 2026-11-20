@@ -42,17 +42,22 @@ struct AgentWorktreeCreationReview: Codable {
     var sources: [AgentWorktreeCreationReview]?
     var resumeTaskID: String?
     var retained: [AgentWorktreeRetainedReview]?
+    var refreshUpstream: Bool?
+    var upstream: AgentWorktreeUpstream?
     var summary: String {
         if let sources {
-            return "\(sources.count) 个待创建源文件夹" + ((retained?.isEmpty == false) ? " · 保留 \(retained!.count) 个已有源" : "") + "\n" + sources.map { URL(fileURLWithPath: $0.root).lastPathComponent + " · " + $0.branch + " · " + String($0.baseCommit.prefix(12)) }.joined(separator: "\n") + "\n" + (includeChanges ? "带入待创建源的当前修改，保持未暂存；忽略文件不带入。" : "使用各源选定的提交。")
+            return "\(sources.count) 个待创建源文件夹" + ((retained?.isEmpty == false) ? " · 保留 \(retained!.count) 个已有源" : "") + "\n" + sources.map { source in
+                URL(fileURLWithPath: source.root).lastPathComponent + " · " + source.branch + " · " + String(source.baseCommit.prefix(12)) + (source.upstream.map { " · " + $0.summary(base: source.baseCommit) } ?? "")
+            }.joined(separator: "\n") + "\n" + (includeChanges ? "带入待创建源的当前修改，保持未暂存；忽略文件不带入。" : "使用各源选定的提交。")
         }
         return "新分支：" + branch + "\n起点：" + startPoint + " · " + String(baseCommit.prefix(12)) + "\n" +
+        (upstream.map { $0.summary(base: baseCommit) + "\n" } ?? "") +
         (includeChanges ? "带入 \(paths.count) 个文件的当前修改，保持未暂存；忽略文件不带入。" : "不带入当前未提交修改。")
     }
 }
 
 @MainActor extension AgentGit {
-    private func creationScope() throws -> String {
+    func creationScope() throws -> String {
         try validateWorkspace()
         guard let task = store.task(taskID), task.automation == nil, task.agent?.ownerID == nil,
               !["hook", "wiki"].contains(task.kind ?? "") else { throw PetError("请从独立任务创建工作树") }
@@ -160,20 +165,22 @@ struct AgentWorktreeCreationReview: Codable {
         if !paths.isEmpty { _ = try await creationRun(["add", "-A", "--pathspec-from-file=" + list.path, "--pathspec-file-nul"], session: session, protected: protected, index: index) }
         return try await creationRun(["write-tree"], session: session, protected: protected, index: index).trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    func prepareWorktreeCreation(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false, sourceStartPoints: [String: String] = [:], resumeTaskID: String? = nil, singleSource: Bool = false) async throws -> AgentWorktreeCreationReview {
+    func prepareWorktreeCreation(branch: String, startPoint: String = "HEAD", includeChanges: Bool = false, sourceStartPoints: [String: String] = [:], resumeTaskID: String? = nil, singleSource: Bool = false, refreshUpstream: Bool? = nil) async throws -> AgentWorktreeCreationReview {
         if !singleSource, let task = store.task(taskID), task.workspacePaths.count > 1 {
-            return try await prepareWorkspaceWorktree(branch: branch, startPoint: startPoint, includeChanges: includeChanges, sourceStartPoints: sourceStartPoints, resumeTaskID: resumeTaskID)
+            return try await prepareWorkspaceWorktree(branch: branch, startPoint: startPoint, includeChanges: includeChanges, sourceStartPoints: sourceStartPoints, resumeTaskID: resumeTaskID, refreshUpstream: refreshUpstream)
         }
         let scope = try creationScope(), state = try await creationState()
         guard !branch.isEmpty, branch.utf8.count <= 200, !branch.hasPrefix("-"), !branch.contains("\0"),
               try await run(["check-ref-format", "--branch", branch]).exitCode == 0 else { throw PetError("分支名称无效") }
         guard try await run(["show-ref", "--verify", "--quiet", "refs/heads/" + branch]).exitCode == 1 else { throw PetError("新分支已存在，请更换名称") }
         let base = try await worktreeStartingPoint(startPoint), hash = UUID().uuidString, session = try creationDirectory(hash)
+        let fetched = refreshUpstream == true ? try await refreshWorktreeUpstream(base, headRef: state.ref, scope: scope) : nil
+        let commit = fetched?.commit ?? base.commit
         try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let baseTree = try await output(["rev-parse", base.commit + "^{tree}"]).trimmingCharacters(in: .whitespacesAndNewlines)
-        var review = AgentWorktreeCreationReview(taskID: taskID, root: files.root.path, scope: scope, branch: branch, startPoint: base.ref, baseCommit: base.commit,
+        let baseTree = try await output(["rev-parse", commit + "^{tree}"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        var review = AgentWorktreeCreationReview(taskID: taskID, root: files.root.path, scope: scope, branch: branch, startPoint: base.ref, baseCommit: commit,
             sourceHead: state.head, sourceRef: state.ref, sourceIndex: state.index, includeChanges: includeChanges, targetTree: baseTree, paths: [], patch: "")
-        review.hash = hash
+        review.hash = hash; review.upstream = fetched?.upstream; review.refreshUpstream = refreshUpstream
         if includeChanges {
             let tree = try await currentWorkingTree(head: state.head, session: session, protected: state.protected)
             review.sourceTree = tree
@@ -181,23 +188,23 @@ struct AgentWorktreeCreationReview: Codable {
             if !patch.isEmpty {
                 let input = session.appendingPathComponent("source.patch"), target = session.appendingPathComponent("target-index").path
                 try Data(patch.utf8).write(to: input, options: .atomic)
-                _ = try await creationRun(["read-tree", base.commit], session: session, protected: state.protected, index: target)
+                _ = try await creationRun(["read-tree", commit], session: session, protected: state.protected, index: target)
                 do { _ = try await creationRun(["apply", "--cached", "--3way", "--whitespace=nowarn", input.path], session: session, protected: state.protected, index: target) }
                 catch { throw PetError("当前修改无法完整合并到所选起点，尚未创建工作树：\n" + error.localizedDescription) }
                 review.targetTree = try await creationRun(["write-tree"], session: session, protected: state.protected, index: target).trimmingCharacters(in: .whitespacesAndNewlines)
-                review.patch = try await creationRun(["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", base.commit, review.targetTree, "--"], session: session, protected: state.protected)
-                review.paths = try await creationRun(["diff", "--name-only", "-z", base.commit, review.targetTree, "--"], session: session, protected: state.protected).components(separatedBy: "\0").filter { !$0.isEmpty }
+                review.patch = try await creationRun(["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", commit, review.targetTree, "--"], session: session, protected: state.protected)
+                review.paths = try await creationRun(["diff", "--name-only", "-z", commit, review.targetTree, "--"], session: session, protected: state.protected).components(separatedBy: "\0").filter { !$0.isEmpty }
             }
         }
         let after = try await creationState()
-        guard after.head == state.head, after.ref == state.ref, after.index == state.index, try creationScope() == scope,
-              try await worktreeStartingPoint(base.ref).commit == base.commit else { throw PetError("来源或起点已变化，请重新预览") }
+        guard after.head == state.head, after.ref == state.ref, after.index == state.index, try creationScope() == scope else { throw PetError("来源或起点已变化，请重新预览") }
+        try await validateCreationStartingPoint(review)
         try saveCreation(review); return review
     }
     private func validateCreation(_ review: AgentWorktreeCreationReview) async throws -> (head: String, ref: String, index: String, protected: [URL]) {
         let scope = try creationScope(), state = try await creationState()
-        guard scope == review.scope, state.head == review.sourceHead, state.ref == review.sourceRef, state.index == review.sourceIndex,
-              try await worktreeStartingPoint(review.startPoint).commit == review.baseCommit else { throw PetError("分支、暂存区或任务范围已变化，请重新预览") }
+        guard scope == review.scope, state.head == review.sourceHead, state.ref == review.sourceRef, state.index == review.sourceIndex else { throw PetError("分支、暂存区或任务范围已变化，请重新预览") }
+        try await validateCreationStartingPoint(review)
         if review.includeChanges {
             let session = scratch.appendingPathComponent("worktree-verify-" + UUID().uuidString)
             try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -334,7 +341,7 @@ struct AgentWorktreeCreationReview: Codable {
         let fingerprint = AgentFiles.hash(try encoder.encode(status) + Data((tree.hash + indexHash + origin.path + origin.metadata).utf8))
         return AgentWorktreeRetainedReview(origin: origin, fingerprint: fingerprint, status: status)
     }
-    private func prepareWorkspaceWorktree(branch: String, startPoint: String, includeChanges: Bool, sourceStartPoints: [String: String], resumeTaskID: String?) async throws -> AgentWorktreeCreationReview {
+    private func prepareWorkspaceWorktree(branch: String, startPoint: String, includeChanges: Bool, sourceStartPoints: [String: String], resumeTaskID: String?, refreshUpstream: Bool?) async throws -> AgentWorktreeCreationReview {
         let roots = try workspaceSources(), scope = try creationScope()
         guard Set(sourceStartPoints.keys).isSubset(of: Set(roots)) else { throw PetError("起点分支包含不属于当前任务的源目录") }
         workspaceWorktreeHelpers = []; defer { workspaceWorktreeHelpers = [] }
@@ -352,7 +359,7 @@ struct AgentWorktreeCreationReview: Codable {
                 while name.utf8.count > 180 { name.removeLast() }
                 name += "-retry-" + String(UUID().uuidString.lowercased().prefix(8))
             }
-            reviews.append(try await helper.prepareWorktreeCreation(branch: name, startPoint: sourceStartPoints[root] ?? (index == 0 ? startPoint : "HEAD"), includeChanges: includeChanges, singleSource: true))
+            reviews.append(try await helper.prepareWorktreeCreation(branch: name, startPoint: sourceStartPoints[root] ?? (index == 0 ? startPoint : "HEAD"), includeChanges: includeChanges, singleSource: true, refreshUpstream: refreshUpstream))
         }
         guard try creationScope() == scope else { throw PetError("来源范围已变化，请重新预览") }
         var review = reviews.first ?? AgentWorktreeCreationReview(taskID: taskID, root: files.root.path, scope: scope, branch: branch, startPoint: startPoint, baseCommit: "", sourceHead: "", sourceRef: "", sourceIndex: "", includeChanges: includeChanges, targetTree: "", paths: [], patch: "")
@@ -361,7 +368,10 @@ struct AgentWorktreeCreationReview: Codable {
         if let primary = retained.first(where: { $0.origin.root == roots[0] }) { review.baseCommit = primary.status.head ?? "" }
         review.sources = reviews; review.resumeTaskID = resumeTaskID; review.retained = retained
         review.paths = reviews.flatMap { item in item.paths.map { item.root + "/" + $0 } }
-        review.patch = reviews.map { "源文件夹：" + $0.root + "\n新分支：" + $0.branch + "\n起点：" + $0.startPoint + " · " + $0.baseCommit + "\n" + $0.patch }.joined(separator: "\n\n")
+        review.patch = reviews.map { source in
+            "源文件夹：" + source.root + "\n新分支：" + source.branch + "\n起点：" + source.startPoint + " · " + source.baseCommit + "\n" +
+            (source.upstream.map { $0.summary(base: source.baseCommit) + "\n" } ?? "") + source.patch
+        }.joined(separator: "\n\n")
         for item in retained { review.patch += "\n已保留源：" + item.origin.root + "\n工作树：" + item.origin.path + "\n分支：" + item.status.branch + "\n提交：" + (item.status.head ?? "") + "\n" + item.status.changes.map { $0.status + " " + $0.path }.joined(separator: "\n") + "\n" }
         try saveCreation(review); return review
     }

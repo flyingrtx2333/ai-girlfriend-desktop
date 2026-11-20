@@ -95,6 +95,9 @@ import AppKit
             try fm.removeItem(at: hook)
             let sourceHead = try await git(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), sourceRef = try await git(["symbolic-ref", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines), sourceStaged = try await git(["show", ":public.txt"])
             checks["sourceHeadBranchIndexAndWorkingVersionsPreserved"] = try sourceHead == mainHead && sourceRef == "refs/heads/main" && Data(contentsOf: repo.appendingPathComponent(".git/index")) == index && String(contentsOf: repo.appendingPathComponent("public.txt"), encoding: .utf8) == "working-public\n" && sourceStaged == "staged-public\n"
+            let upstream = try await checkWorktreeUpstream(output, tasks: tasks)
+            checks.merge(upstream.checks) { _, current in current }
+            report["upstream"] = upstream.values
             guard checks.values.allSatisfy({ $0 }) else { throw PetError("真实 Git 创建流程未通过") }
             report.merge(["taskID": id, "workspace": repo.path, "mainHead": mainHead, "releaseHead": releaseHead, "sourceIndexSHA256": AgentFiles.hash(index), "carriedWorkspace": carried.workspace, "carriedTaskID": carried.taskID, "oddPath": odd]) { _, value in value }
             if CommandLine.arguments.contains("--live-agent") {
@@ -134,5 +137,134 @@ import AppKit
             report["success"] = false; report["checks"] = checks; report["error"] = error.localizedDescription
             try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("creation-report.json"))
         }
+    }
+
+    struct WorktreeUpstreamFixture {
+        let taskID: String, source: URL, remote: URL, before: String, after: String, indexHash: String
+    }
+
+    func prepareWorktreeUpstreamFixture(_ output: URL, tasks: AgentStore) async throws -> WorktreeUpstreamFixture {
+        let remote = output.appendingPathComponent("public-upstream"), source = output.appendingPathComponent("worktree-source")
+        try FileManager.default.createDirectory(at: remote, withIntermediateDirectories: true)
+        func git(_ args: [String], at url: URL) async throws -> String {
+            try await workspaceWorktreeGit(args, root: url, output: output)
+        }
+        _ = try await git(["init", "-b", "main"], at: remote)
+        for (key, value) in [("user.name", "Public Upstream Fixture"), ("user.email", "upstream@example.invalid"), ("commit.gpgsign", "false")] {
+            _ = try await git(["config", key, value], at: remote)
+        }
+        try Data("base upstream sample\n".utf8).write(to: remote.appendingPathComponent("source.txt"))
+        _ = try await git(["add", "--", "source.txt"], at: remote)
+        _ = try await git(["commit", "-m", "Public upstream baseline"], at: remote)
+        let before = try await git(["rev-parse", "HEAD"], at: remote).trimmingCharacters(in: .newlines)
+        _ = try await git(["clone", "--no-local", "--", remote.path, source.path], at: remote)
+        try Data("staged-public-source\n".utf8).write(to: source.appendingPathComponent("source.txt"))
+        _ = try await git(["add", "--", "source.txt"], at: source)
+        try Data("working-public-source\n".utf8).write(to: source.appendingPathComponent("source.txt"))
+        try Data("from the actual upstream commit\n".utf8).write(to: remote.appendingPathComponent("upstream.txt"))
+        _ = try await git(["add", "--", "upstream.txt"], at: remote)
+        _ = try await git(["commit", "-m", "Advance public upstream"], at: remote)
+        let after = try await git(["rev-parse", "HEAD"], at: remote).trimmingCharacters(in: .newlines)
+        let taskID = tasks.create(title: "上游更新公开样例", workspace: source.path)
+        tasks.update(taskID) { $0.draft = "保留原任务草稿 · 公开上游样例" }
+        let indexHash = try AgentFiles.hash(Data(contentsOf: source.appendingPathComponent(".git/index")))
+        let fixture = WorktreeUpstreamFixture(taskID: taskID, source: source, remote: remote, before: before, after: after, indexHash: indexHash)
+        let record = ["taskID": taskID, "source": source.path, "remote": remote.path, "before": before, "after": after, "indexHash": indexHash]
+        try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("worktree-upstream-fixture.json"))
+        return fixture
+    }
+
+    private func checkWorktreeUpstream(_ output: URL, tasks: AgentStore) async throws -> (checks: [String: Bool], values: [String: Any]) {
+        let fixture = try await prepareWorktreeUpstreamFixture(output, tasks: tasks), fm = FileManager.default
+        let helper = try AgentGit(store: tasks, taskID: fixture.taskID, directory: AgentGit.metadata(workspace: fixture.source.path))
+        let preferences = tasks.gitPreferences, branch = "refs/remotes/origin/main"
+        var result: [String: Bool] = [:]
+        func source(_ args: [String]) async throws -> String {
+            try await workspaceWorktreeGit(args, root: fixture.source, output: output).trimmingCharacters(in: .newlines)
+        }
+        func set(_ enabled: Bool) throws {
+            try preferences.saveWorktreeFetchPreference(enabled, replacing: preferences.worktreeFetchPreference().revision)
+        }
+
+        let before = try preferences.worktreeFetchPreference()
+        let localOnly = try await helper.prepareWorktreeCreation(branch: "upstream-off", refreshUpstream: before.enabled)
+        let oldTracking = try await source(["rev-parse", branch])
+        result["defaultOffUsesExistingCommitWithoutRefreshingTrackingRef"] = !before.enabled && before.revision == nil && localOnly.baseCommit == fixture.before && oldTracking == fixture.before
+        try set(true)
+        do { _ = try await helper.createReviewedWorktree(localOnly.hash); result["changedFetchPreferenceRejectsEarlierPreview"] = false }
+        catch { result["changedFetchPreferenceRejectsEarlierPreview"] = error.localizedDescription.contains("获取上游设置已变化") }
+        let fresh = try await helper.prepareWorktreeCreation(branch: "upstream-fresh", includeChanges: true, refreshUpstream: true)
+        let updatedTracking = try await source(["rev-parse", branch])
+        result["fastForwardUpstreamIsActuallyFetchedAndReviewed"] = fresh.baseCommit == fixture.after && fresh.upstream?.fetchedCommit == fixture.after && updatedTracking == fixture.after
+        let checkout = try await helper.createReviewedWorktree(fresh.hash)
+        let target = URL(fileURLWithPath: checkout.workspace)
+        let createdHead = try await workspaceWorktreeGit(["rev-parse", "HEAD"], root: target, output: output).trimmingCharacters(in: .newlines)
+        let targetIndex = try await workspaceWorktreeGit(["diff", "--cached", "--name-only"], root: target, output: output)
+        result["checkoutActuallyUsesFetchedCommitWithWorkingChangesUnstaged"] = try createdHead == fixture.after && targetIndex.isEmpty &&
+            String(contentsOf: target.appendingPathComponent("upstream.txt"), encoding: .utf8) == "from the actual upstream commit\n" &&
+            String(contentsOf: target.appendingPathComponent("source.txt"), encoding: .utf8) == "working-public-source\n"
+
+        let stale = try await helper.prepareWorktreeCreation(branch: "upstream-stale", refreshUpstream: true)
+        _ = try await source(["update-ref", branch, fixture.before])
+        do { _ = try await helper.createReviewedWorktree(stale.hash); result["movedTrackingRefInvalidatesPreview"] = false }
+        catch { result["movedTrackingRefInvalidatesPreview"] = error.localizedDescription.contains("上游分支或远端设置已变化") }
+
+        let renamed = "refs/remotes/origin/stable"
+        _ = try await source(["config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:" + renamed])
+        _ = try await source(["update-ref", renamed, fixture.before])
+        let mapped = try await helper.prepareWorktreeCreation(branch: "upstream-mapped", startPoint: renamed, refreshUpstream: true)
+        let unchangedOriginal = try await source(["rev-parse", branch])
+        result["selectedRemoteUsesConfiguredRefspecRatherThanGuessingBranchName"] = mapped.baseCommit == fixture.after && mapped.upstream?.branch == "refs/heads/main" && unchangedOriginal == fixture.before
+
+        let local = try await source(["-c", "user.name=Public Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", "HEAD^{tree}", "-p", fixture.before, "-m", "Independent local commit"])
+        _ = try await source(["update-ref", "refs/heads/local-topic", local])
+        _ = try await source(["config", "branch.local-topic.remote", "origin"])
+        _ = try await source(["config", "branch.local-topic.merge", "refs/heads/main"])
+        let divergent = try await helper.prepareWorktreeCreation(branch: "upstream-divergent", startPoint: "refs/heads/local-topic", refreshUpstream: true)
+        result["divergedLocalHistoryRemainsTheStartingCommit"] = divergent.upstream?.fetchedCommit == fixture.after && divergent.baseCommit == local && divergent.summary.contains("使用本地提交")
+        do { _ = try await helper.createReviewedWorktree(mapped.hash); result["changedRemoteConfigurationInvalidatesPreview"] = false }
+        catch { result["changedRemoteConfigurationInvalidatesPreview"] = error.localizedDescription.contains("上游分支或远端设置已变化") }
+
+        _ = try await source(["remote", "set-url", "origin", "https://example.invalid/public-upstream.git"])
+        tasks.update(fixture.taskID) { $0.inheritedLimits = AgentInheritedLimits(readOnly: false, network: false, permission: .workspace) }
+        do { _ = try await helper.prepareWorktreeCreation(branch: "upstream-network-denied", refreshUpstream: true); result["inheritedOfflinePermissionStopsBeforeContactingRemote"] = false }
+        catch { result["inheritedOfflinePermissionStopsBeforeContactingRemote"] = error.localizedDescription.contains("当前任务禁止联网") }
+        tasks.update(fixture.taskID) { $0.inheritedLimits = nil }
+        _ = try await source(["remote", "set-url", "origin", output.appendingPathComponent("missing-upstream").path])
+        do { _ = try await helper.prepareWorktreeCreation(branch: "upstream-unavailable", refreshUpstream: true); result["unavailableUpstreamFailsBeforeCreatingCheckout"] = false }
+        catch { result["unavailableUpstreamFailsBeforeCreatingCheckout"] = error.localizedDescription.contains("无法获取 origin/main") }
+        _ = try await source(["remote", "set-url", "origin", fixture.remote.path])
+        let sourceHead = try await source(["rev-parse", "HEAD"]), sourceStaged = try await source(["show", ":source.txt"])
+        let sourceRefs = try await source(["for-each-ref", "--format=%(refname)", "refs/heads"])
+        result["sourceCheckoutIndexFilesAndUnconfirmedBranchesRemainIntact"] = try sourceHead == fixture.before && sourceStaged == "staged-public-source" &&
+            AgentFiles.hash(Data(contentsOf: fixture.source.appendingPathComponent(".git/index"))) == fixture.indexHash &&
+            String(contentsOf: fixture.source.appendingPathComponent("source.txt"), encoding: .utf8) == "working-public-source\n" &&
+            sourceRefs.split(separator: "\n").count == 3 && fm.fileExists(atPath: target.path)
+
+        let secondaryArea = output.appendingPathComponent("secondary-upstream")
+        let secondary = try await prepareWorktreeUpstreamFixture(secondaryArea, tasks: tasks)
+        let secondFile = secondary.remote.appendingPathComponent("secondary.txt")
+        try Data("second project's own upstream\n".utf8).write(to: secondFile)
+        _ = try await workspaceWorktreeGit(["add", "--", secondFile.lastPathComponent], root: secondary.remote, output: secondaryArea)
+        _ = try await workspaceWorktreeGit(["commit", "-m", "Independent secondary upstream"], root: secondary.remote, output: secondaryArea)
+        let secondHead = try await workspaceWorktreeGit(["rev-parse", "HEAD"], root: secondary.remote, output: secondaryArea).trimmingCharacters(in: .newlines)
+        let roots = [fixture.source.path, secondary.source.path]
+        let multiTask = tasks.create(title: "两源上游更新", workspaceScope: AgentWorkspaceScope(group: fixture.source.path, folders: roots, primary: fixture.source.path))
+        let multiHelper = try AgentGit(store: tasks, taskID: multiTask, directory: helper.directory)
+        let multiple = try await multiHelper.prepareWorktreeCreation(branch: "upstream-two-sources", refreshUpstream: true)
+        let created = try await multiHelper.createReviewedWorktree(multiple.hash)
+        let origins = created.sources ?? []
+        var actualHeads: [String: String] = [:]
+        for item in origins {
+            actualHeads[item.root] = try await workspaceWorktreeGit(["rev-parse", "HEAD"], root: URL(fileURLWithPath: item.path), output: output).trimmingCharacters(in: .newlines)
+        }
+        result["multiSourceReviewAndCheckoutsUseEachProjectsOwnFreshCommit"] = multiple.sources?.compactMap(\.upstream).count == 2 &&
+            secondHead != fixture.after && actualHeads == [fixture.source.path: fixture.after, secondary.source.path: secondHead]
+        let secondaryOrigin = origins.first { $0.root == secondary.source.path }
+        result["multiSourceFetchPreservesSecondaryOriginalIndexAndReadsActualNewFile"] = try AgentFiles.hash(Data(contentsOf: secondary.source.appendingPathComponent(".git/index"))) == secondary.indexHash &&
+            secondaryOrigin.map { fm.fileExists(atPath: $0.path + "/secondary.txt") } == true && !fm.fileExists(atPath: secondary.source.appendingPathComponent("secondary.txt").path)
+        try set(false)
+        return (result, ["taskID": fixture.taskID, "source": fixture.source.path, "remote": fixture.remote.path, "before": fixture.before,
+                         "fetched": fixture.after, "workspace": checkout.workspace, "indexHash": fixture.indexHash, "modelRequests": 0])
     }
 }

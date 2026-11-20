@@ -31,7 +31,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
     let store: AgentStore, taskID: String, files: AgentFiles, directory: URL
     let scratch: URL
     private var command: AgentCommand?
-    var pushTransport: AgentGitTransport?
+    var remoteTransport: AgentGitTransport?
     var pushHookCommand: AgentCommand?
     var worktreeCopy: AgentCommand?
     var workspaceWorktreeHelpers: [AgentGit] = []
@@ -64,7 +64,7 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let raw = String(line.dropFirst(8)), url = URL(fileURLWithPath: raw, relativeTo: files.root.appendingPathComponent("", isDirectory: true)).standardizedFileURL.resolvingSymlinksInPath()
         return !checkout && url.deletingLastPathComponent().lastPathComponent == "worktrees" ? url.deletingLastPathComponent().deletingLastPathComponent() : url
     }
-    func cancel() { command?.cancel(); pushTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
+    func cancel() { command?.cancel(); remoteTransport?.cancel(); pushHookCommand?.cancel(); worktreeCopy?.cancel(); workspaceWorktreeHelpers.forEach { $0.cancel() } }
     nonisolated static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     func run(_ args: [String], write: Bool = false, maximumOutput: Int = 100_000, timeout: Double? = nil, environment: [String: String] = [:], inputFile: URL? = nil, readRoots: [URL] = [], literalPaths: Bool = true, stdoutFile: URL? = nil, externalWorktree: URL? = nil, metadataOnly: Bool = false, leaseDescriptor: Int32? = nil) async throws -> AgentToolResult {
         guard externalWorktree == nil || allowsExternalWorktrees else { throw PetError("外部工作树需要在管理页操作") }
@@ -83,6 +83,11 @@ struct AgentGitWorktree: Codable { var taskID: String; var workspace: String; va
         let result = try await run(args)
         guard !result.failed else { throw PetError(String(result.text.prefix(3000))) }
         guard result.truncated != true else { throw PetError("Git 输出较大，请缩小文件范围") }; return result.stdout ?? ""
+    }
+    func gitConfigurationHash() async throws -> String {
+        let value = try await run(["config", "--null", "--list"], maximumOutput: 1_000_000)
+        guard !value.failed, value.truncated != true else { throw PetError("无法核对 Git 配置") }
+        return AgentFiles.hash(Data((value.stdout ?? "").utf8))
     }
     func validateWorkspace() throws {
         guard let task = store.task(taskID), !task.archived || allowsArchivedWorktreeSource else { throw PetError("任务不存在或已归档") }

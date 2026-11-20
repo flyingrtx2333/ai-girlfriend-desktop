@@ -249,7 +249,10 @@ import AppKit
         job = Task { [weak self] in
             guard let self else { return }
             do {
-                try checkTask(); let value = try await git.prepareWorktreeCreation(branch: name, startPoint: base, includeChanges: carry, sourceStartPoints: starts, resumeTaskID: resumeTaskID)
+                try checkTask()
+                let refresh = try store.gitPreferences.worktreeFetchPreference().enabled
+                if refresh { state.stringValue = "正在获取上游并预览…" }
+                let value = try await git.prepareWorktreeCreation(branch: name, startPoint: base, includeChanges: carry, sourceStartPoints: starts, resumeTaskID: resumeTaskID, refreshUpstream: refresh)
                 try Task.checkCancellation()
                 guard selectedStarts == starts, matchesInputs(value) else { throw PetError("创建选项已变化，请重新预览") }
                 review = value
@@ -257,7 +260,9 @@ import AppKit
                     state.stringValue = "\(sources.count) 个待创建源 · 已保留 \(value.retained?.count ?? 0) 个 · \(value.paths.count) 个文件"
                 } else {
                     let commit = "起点 " + String(value.baseCommit.prefix(12))
-                    state.stringValue = value.includeChanges ? "\(commit) · 将带入 \(value.paths.count) 个文件 · 保持未暂存" : commit
+                    let parts = [value.upstream?.summary(base: value.baseCommit), commit,
+                                 value.includeChanges ? "将带入 \(value.paths.count) 个文件 · 保持未暂存" : nil]
+                    state.stringValue = parts.compactMap { $0 }.joined(separator: " · ")
                 }
                 diff.show(value.patch, oldTitle: "所选起点", newTitle: "新工作树"); diff.isHidden = value.patch.isEmpty
             } catch { showFailure(error.localizedDescription, title: "预览失败"); review = nil }

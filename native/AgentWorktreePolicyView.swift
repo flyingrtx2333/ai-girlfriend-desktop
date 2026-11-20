@@ -21,7 +21,7 @@ import AppKit
         }
         return content
     }
-    override func settingsDidAppear() { super.settingsDidAppear(); policy.refreshState() }
+    override func settingsDidAppear() { super.settingsDidAppear(); policy.reloadUpstreamPreference(); policy.refreshState() }
     override func captureSettingsRecovery() throws -> AgentSettingsRecovery.Page? { try policy.captureRecovery() }
     override func restoreSettingsRecovery(_ page: AgentSettingsRecovery.Page) throws { try policy.restoreRecovery(page) }
     func windowShouldClose(_ sender: NSWindow) -> Bool { policy.prepareToLeave() }
@@ -31,6 +31,9 @@ import AppKit
     var onOpenManager: ((AgentWorktreeWindow) -> Void)?
     var onDraftChange: (() -> Void)?
     private let store: AgentStore, onOpenTask: (String) -> Void
+    private let fetchUpstream = NSSwitch()
+    private let upstreamStatus = AgentSettingsStatusField("上游设置保存状态")
+    private var upstreamRevision: String?
     private let enabled = NSSwitch(), scope = NSPopUpButton(), period = NSPopUpButton(), projects = NSPopUpButton()
     private let condition = NSPopUpButton(), maximum = NSPopUpButton()
     private let apply = AgentDialogButton(title: "应用回收设置", target: nil, action: nil), reload = NSButton(title: "重新载入", target: nil, action: nil)
@@ -46,6 +49,11 @@ import AppKit
     private var historyHeight: NSLayoutConstraint?
     init(store: AgentStore, onOpenTask: @escaping (String) -> Void) {
         self.store = store; self.onOpenTask = onOpenTask; super.init(frame: .zero)
+        fetchUpstream.setAccessibilityLabel("创建前获取上游更新")
+        fetchUpstream.toolTip = "预览时获取所选起点已配置的上游分支"
+        fetchUpstream.target = self; fetchUpstream.action = #selector(saveUpstreamPreference)
+        let creation = AgentSettingsStyle.section("", id: "worktree-creation", rows: [
+            AgentSettingsStyle.formRow("创建前获取上游更新", fetchUpstream, trailing: true), upstreamStatus], separatesRows: false)
         enabled.setAccessibilityLabel("自动回收工作树"); scope.setAccessibilityLabel("自动回收范围"); period.setAccessibilityLabel("工作树保留期"); projects.setAccessibilityLabel("工作树项目")
         condition.setAccessibilityLabel("工作树回收条件"); maximum.setAccessibilityLabel("每项目工作树保留上限")
         scope.addItems(withTitles: ["仅已归档任务", "全部闲置任务"])
@@ -65,22 +73,42 @@ import AppKit
         history.isEditable = false; history.isSelectable = true; history.font = .systemFont(ofSize: 13); history.setAccessibilityLabel("自动回收记录")
         history.textContainerInset = NSSize(width: 8, height: 8); history.autoresizingMask = [.width]; history.textContainer?.widthTracksTextView = true
         historyScroll.documentView = history; historyScroll.hasVerticalScroller = true; historyScroll.identifier = .init("form-input")
-        let amount = NSStackView(views: [periodFrame, maximumFrame]); amount.alignment = .centerY
+        let amount = NSStackView(views: [AgentSettingsPopupFrame(condition), periodFrame, maximumFrame]); amount.alignment = .centerY; amount.spacing = 8
         let policy = AgentSettingsStyle.section("自动回收", id: "worktree-policy", rows: [
             AgentSettingsStyle.formRow("启用", enabled, trailing: true), AgentSettingsStyle.formRow("回收范围", scope, trailing: true),
-            AgentSettingsStyle.formRow("回收条件", condition, trailing: true), AgentSettingsStyle.formRow("保留", amount, trailing: true),
+            AgentSettingsStyle.formRow("保留方式", amount, trailing: true),
             AgentSettingsStyle.formRow("备份", backup, trailing: true), actions])
         let details = NSStackView(views: [project, state, historyScroll]); details.orientation = .vertical; details.alignment = .leading; details.spacing = 10
         for view in details.arrangedSubviews { view.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
         let records = AgentSettingsStyle.section("工作树与记录", id: "worktree-history", rows: [details])
-        let column = NSStackView(views: [policy, records]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 24
+        let column = NSStackView(views: [creation, policy, records]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 24
+        column.setCustomSpacing(16, after: creation)
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         let historyHeight = historyScroll.heightAnchor.constraint(equalToConstant: 150); self.historyHeight = historyHeight
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: leadingAnchor), column.trailingAnchor.constraint(equalTo: trailingAnchor), column.topAnchor.constraint(equalTo: topAnchor), column.bottomAnchor.constraint(equalTo: bottomAnchor), historyHeight])
         for view in column.arrangedSubviews { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
-        loadControls()
+        reloadUpstreamPreference(); loadControls()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    func reloadUpstreamPreference() {
+        do {
+            let value = try store.gitPreferences.worktreeFetchPreference()
+            fetchUpstream.state = value.enabled ? .on : .off
+            fetchUpstream.isEnabled = true; upstreamRevision = value.revision; upstreamStatus.stringValue = ""
+        } catch {
+            fetchUpstream.state = .off; fetchUpstream.isEnabled = false
+            upstreamStatus.showSaveFailure(error)
+        }
+    }
+    @objc private func saveUpstreamPreference() {
+        do {
+            try store.gitPreferences.saveWorktreeFetchPreference(fetchUpstream.state == .on, replacing: upstreamRevision)
+            reloadUpstreamPreference()
+        } catch {
+            reloadUpstreamPreference()
+            upstreamStatus.showSaveFailure(error)
+        }
+    }
     private var draftPolicy: AgentWorktreeRetentionPolicy {
         var value = AgentWorktreeRetentionPolicy(); value.enabled = enabled.state == .on; value.archivedOnly = scope.indexOfSelectedItem == 0
         if periods.indices.contains(period.indexOfSelectedItem) { value.idleSeconds = periods[period.indexOfSelectedItem] }
@@ -196,11 +224,11 @@ import AppKit
     }
     func workspaceReadback() -> [String: Any] {
         guard AgentTaskWorkspace.readbackEnabled else { return [:] }
-        let controls: [NSView] = [enabled, scope, condition, period, maximum, projects, apply, reload, check, manage, backups, emptyProjects]
+        let controls: [NSView] = [fetchUpstream, enabled, scope, condition, period, maximum, projects, apply, reload, check, manage, backups, emptyProjects]
         let records = try? store.worktreeRetention.receipts(), historySize = history.enclosingScrollView?.bounds.size ?? .zero
         let empty = records?.isEmpty == true
         let historyFits = empty ? (roots.isEmpty ? historyScroll.isHidden : abs(historySize.height - 56) < 1 && !historyScroll.isHidden) : historySize.height >= 150 && !historyScroll.isHidden && !history.string.isEmpty
-        return ["enabled": enabled.state == .on, "archivedOnly": scope.indexOfSelectedItem == 0, "idleSeconds": draftPolicy.idleSeconds, "pendingChanges": hasPendingChanges,
+        return ["enabled": enabled.state == .on, "fetchUpstream": fetchUpstream.state == .on, "archivedOnly": scope.indexOfSelectedItem == 0, "idleSeconds": draftPolicy.idleSeconds, "pendingChanges": hasPendingChanges,
                 "maximumCount": draftPolicy.maximumCount.map { $0 as Any } ?? NSNull(), "periodVisible": !periodFrame.isHidden, "maximumVisible": !maximumFrame.isHidden,
                 "selectedProject": roots.indices.contains(projects.indexOfSelectedItem) ? roots[projects.indexOfSelectedItem].path : "", "projects": roots.map(\.path), "manageEnabled": manage.isEnabled, "state": state.stringValue, "history": history.string, "historyCount": records?.count ?? -1, "historySize": [historySize.width, historySize.height],
                 "emptyProjectsVisible": !emptyProjects.isHidden, "projectPickerVisible": !projectFrame.isHidden, "historyVisible": !historyScroll.isHidden,
