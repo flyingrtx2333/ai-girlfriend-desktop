@@ -251,9 +251,12 @@ import UniformTypeIdentifiers
     }
     struct RecoveryState: Codable {
         var version = 1
-        var taskID: String?, openedWorkspace: String?, destinationWorkspace: String?, editingBaseID: String?, editingRevision: String
-        var baseID: String?, sourceID: String?, name: String, project: Bool, baseQuery: String, fileQuery: String, filter: Int, archived: Bool
-        var selection: AgentTextViewport.Selection?, focus: String, status: String, baseY: Double, fileY: Double
+        var taskID: String?, openedWorkspace: String?, destinationWorkspace: String?, editingBaseID: String?
+        var editingRevision: String
+        var baseID: String?, sourceID: String?
+        var name: String, project: Bool, baseQuery: String, fileQuery: String, filter: Int, archived: Bool
+        var selection: AgentTextViewport.Selection?
+        var focus: String, status: String, baseY: Double, fileY: Double
         var valid: Bool {
             let paths = [openedWorkspace, destinationWorkspace].compactMap { $0 }
             let ids = [taskID, editingBaseID, baseID, sourceID].compactMap { $0 }
