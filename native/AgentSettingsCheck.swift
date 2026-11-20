@@ -240,6 +240,7 @@ import Darwin
             checks.merge(try AgentSettingsFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host)) { _, next in next }
             checks.merge(try await AgentPluginReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try AgentMCPImportCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
+            checks.merge(try await AgentMCPImportCheck.recovery(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentMCPFormCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await AgentManagementReviewCheck.run(tasks: tasks, taskID: id, pane: pane, host: host, output: output)) { _, next in next }
             checks.merge(try await checkSettingsPluginHistory(output, tasks: tasks, workspace: workspace, pane: pane, host: host)) { _, next in next }

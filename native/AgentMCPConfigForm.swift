@@ -130,39 +130,44 @@ import BlueFatFishMCP
         value.isEmpty || value == AgentMCP.placeholder || value == AgentMCP.importPlaceholder
     }
 
-    static func canPreserveDocument(_ text: String) -> Bool {
-        guard text.utf8.count <= 64_000, let value = try? AgentConfigurationJSON.object(Data(text.utf8)),
-              Set(value.keys).isSubset(of: AgentMCP.configurationKeys) else { return false }
-        let plainFields = AgentMCP.configurationKeys.subtracting(["env", "headers", "args", "timeoutSeconds"])
-        guard plainFields.allSatisfy({ value[$0] == nil || value[$0] is String }),
-              value["args"] == nil || value["args"] is [String],
-              value["timeoutSeconds"] == nil || value["timeoutSeconds"] is NSNumber else { return false }
-        // Check all occurrences before preserving the raw JSON, including duplicate keys.
+    static func canPreserveDocument(_ text: String, allowingImport: Bool = false) -> Bool {
+        guard text.utf8.count <= 64_000, let value = try? AgentConfigurationJSON.object(Data(text.utf8)), hasUniqueKeys(text) else { return false }
+        if allowingImport, value["mcpServers"] != nil {
+            guard value.count == 1, let servers = value["mcpServers"] as? [String: [String: Any]], (1...64).contains(servers.count) else { return false }
+            return servers.values.allSatisfy { canPreserveDefinition($0, legacyTimeout: true) }
+        }
+        return canPreserveDefinition(value, legacyTimeout: false)
+    }
+    private static func canPreserveDefinition(_ value: [String: Any], legacyTimeout: Bool) -> Bool {
+        var keys = AgentMCP.configurationKeys
+        if legacyTimeout { keys.insert("timeout") }
+        let maps = ["env", "headers"], numbers = ["timeoutSeconds", "timeout"]
+        let plain = keys.subtracting(maps + numbers + ["args"])
+        return Set(value.keys).isSubset(of: keys) && plain.allSatisfy { value[$0] == nil || value[$0] is String } &&
+            numbers.allSatisfy { value[$0] == nil || value[$0] is NSNumber } && (value["args"] == nil || value["args"] is [String]) &&
+            masked(value["bearerToken"] as? String ?? "") && maps.allSatisfy { key in
+                value[key] == nil || (value[key] as? [String: String])?.values.allSatisfy(masked) == true
+            }
+    }
+    private static let jsonTokens = try! NSRegularExpression(pattern: #""(?:\\.|[^"\\])*"|[{}:]"#)
+    private static func hasUniqueKeys(_ text: String) -> Bool {
+        // JSONSerialization collapses duplicates. Verify the original keys before retaining any raw text.
         let raw = text as NSString
-        let range = NSRange(location: 0, length: raw.length)
-        var maskedThrough = 0
-        for token in draftKeys.matches(in: text, range: range) {
-            if token.range.location < maskedThrough { continue }
-            guard let field = try? JSONDecoder().decode(String.self, from: Data(raw.substring(with: token.range(at: 1)).utf8)) else { return false }
-            let tail = NSRange(location: NSMaxRange(token.range), length: raw.length - NSMaxRange(token.range))
-            switch field.lowercased() {
-            case "bearertoken": if draftMaskedValue.firstMatch(in: text, options: .anchored, range: tail) == nil { return false }
-            case "env", "headers":
-                guard let map = draftMaskedMap.firstMatch(in: text, options: .anchored, range: tail) else { return false }
-                maskedThrough = NSMaxRange(map.range)
-            default: break
+        let decoder = JSONDecoder()
+        var objects: [Set<String>] = [], keyToken: String?
+        for match in jsonTokens.matches(in: text, range: NSRange(location: 0, length: raw.length)) {
+            let token = raw.substring(with: match.range)
+            switch token {
+            case "{": objects.append([]); keyToken = nil
+            case "}": guard objects.popLast() != nil else { return false }; keyToken = nil
+            case ":":
+                guard let keyToken, let key = try? decoder.decode(String.self, from: Data(keyToken.utf8)),
+                      !objects.isEmpty, objects[objects.count - 1].insert(key).inserted else { return false }
+            default: keyToken = token
             }
         }
-        return true
+        return objects.isEmpty
     }
-    private static let draftString = #""(?:\\.|[^"\\])*""#
-    private static let draftKeys = try! NSRegularExpression(pattern: "(" + draftString + #")\s*:"#)
-    private static let draftPlaceholder = #""(?:\$\{KEYCHAIN\}|\$\{INPUT_REQUIRED\})?""#
-    private static let draftMaskedValue = try! NSRegularExpression(pattern: #"\s*"# + draftPlaceholder)
-    private static let draftMaskedMap: NSRegularExpression = {
-        let entry = draftString + #"\s*:\s*"# + draftPlaceholder
-        return try! NSRegularExpression(pattern: #"\s*\{\s*(?:"# + entry + #"(?:\s*,\s*"# + entry + #")*)?\s*\}"#)
-    }()
     func document() throws -> String {
         var value: [String: Any] = ["name": name.stringValue, "type": type]
         if type == "stdio" {

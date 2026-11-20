@@ -137,4 +137,113 @@ import AppKit
         checks["mcpImportLeavesNormallyAfterSave"] = pane.leave()
         return checks
     }
+
+    static func recovery(tasks: AgentStore, taskID: String, pane: AgentSettingsPageHost, host: NSWindow, output: URL) async throws -> [String: Bool] {
+        let task = tasks.task(taskID), workspace = task?.workspace, service = tasks.mcp
+        let context = AgentSettingsRecovery.Context(task: task, workspace: workspace)
+        let registry = service.profile.appendingPathComponent("extensions/mcp.json")
+        let originalRegistry = try Data(contentsOf: registry)
+        let source = output.appendingPathComponent("mcp-review-recovery.json"), secret = "PUBLIC_FIXTURE_IMPORT_SECRET_251"
+        let marker = "PUBLIC_IMPORT_LINE_71 中文😀"
+        var entries: [String: [String: Any]] = [:]
+        for index in 0..<23 { entries[String(format: "Review %02d", index)] = ["command": "/usr/bin/true"] }
+        entries["Review 19"] = ["command": "/usr/bin/true", "args": (0..<79).map { "PUBLIC_IMPORT_LINE_\($0) 中文😀" }]
+        entries["Review 22"] = ["command": "/usr/bin/true", "env": ["PUBLIC": secret]]
+        let bytes = Data(try encode(["mcpServers": entries]).utf8)
+        let edited = Data(try encode(["mcpServers": ["Updated review": ["url": "https://example.com/updated"]]]).utf8)
+        try bytes.write(to: source, options: .atomic)
+        func make(_ kind: String) -> AgentSettingsPageController? { kind == "mcp" ? AgentMCPWindow(service: service, workspace: workspace) : nil }
+        func root() throws -> AgentMCPWindow {
+            guard pane.show(category: "extensions", identity: context.identity, scope: "设置项目", recoveryContext: context, make: make) else {
+                throw PetError("连接器审阅恢复缺少设置入口")
+            }
+            pane.selectPage("mcp")
+            guard let manager = pane.currentController as? AgentMCPWindow else { throw PetError("连接器审阅恢复缺少目录") }
+            return manager
+        }
+        func current() throws -> AgentMCPImportPage {
+            guard let page = pane.currentController as? AgentMCPImportPage else { throw PetError("连接器审阅未恢复到原页面") }
+            return page
+        }
+        func capture() throws -> AgentSettingsRecovery.State {
+            guard let value = try pane.captureRecovery(active: true) else { throw PetError("缺少连接器审阅恢复记录") }
+            return value
+        }
+        func reopen(_ value: AgentSettingsRecovery.State) async throws -> AgentMCPImportPage {
+            pane.finish(); try pane.restoreRecovery(value, make: make)
+            try await Task.sleep(nanoseconds: 80_000_000)
+            return try current()
+        }
+        func loadEnabled(_ page: AgentMCPImportPage) -> Bool {
+            find(NSButton.self, in: page.pageContentView) { $0.title == "载入草稿" }?.isEnabled == true
+        }
+
+        var checks: [String: Bool] = [:]
+        host.setContentSize(NSSize(width: 1200, height: 774))
+        try root().reviewImport(source)
+        let attached = try current(), list = try control(NSTableView.self, "待导入 MCP 连接器", page: attached)
+        list.selectRowIndexes(IndexSet(integer: 19), byExtendingSelection: false); list.scrollRowToVisible(19)
+        let view = try control(NSTextView.self, "MCP 导入配置预览", page: attached)
+        host.contentView?.layoutSubtreeIfNeeded()
+        let range = (view.string as NSString).range(of: marker)
+        guard range.location != NSNotFound, host.makeFirstResponder(view), let layout = view.layoutManager, let container = view.textContainer else {
+            throw PetError("缺少长连接器预览与选区")
+        }
+        layout.ensureLayout(for: container); view.setFrameSize(NSSize(width: view.frame.width, height: layout.usedRect(for: container).maxY + 24))
+        view.setSelectedRange(range); view.scrollRangeToVisible(range)
+        let saved = try capture()
+        checks["mcpImportFileCheckpointRetainsScopeAndNeverCopiesPreview"] = saved.context == context && saved.pages.map(\.kind) == ["mcp", "mcp-import"] &&
+            saved.pages.last.map { !String(decoding: $0.state, as: UTF8.self).contains(secret) && !String(decoding: $0.state, as: UTF8.self).contains(marker) } == true
+        host.setContentSize(NSSize(width: 780, height: 540))
+        let returned = try await reopen(saved)
+        let restoredList = try control(NSTableView.self, "待导入 MCP 连接器", page: returned)
+        let restoredText = try control(NSTextView.self, "MCP 导入配置预览", page: returned)
+        checks["mcpImportReopensSelectedRowAndLongPreviewSelection"] = restoredList.selectedRow == 19 && AgentSettingsRecovery.selectionIsVisible(in: restoredList) &&
+            restoredText.selectedRange() == range && host.firstResponder === restoredText && (restoredText.enclosingScrollView?.documentVisibleRect.minY ?? 0) > 200
+
+        try edited.write(to: source, options: .atomic)
+        try press("载入草稿", page: returned)
+        checks["mcpImportRejectsSourceChangedWhileReading"] = !loadEnabled(returned) && pane.currentController === returned && text(returned.pageContentView).contains("来源文件已变化")
+        let changed = try await reopen(saved)
+        checks["mcpImportChangedSourceKeepsReviewAndCheckpoint"] = try !loadEnabled(changed) && text(changed.pageContentView).contains("来源文件已变化") && capture().pages.last == saved.pages.last
+        let held = source.deletingLastPathComponent().appendingPathComponent("mcp-review-recovery-held.json")
+        try FileManager.default.moveItem(at: source, to: held)
+        let missing = try await reopen(saved)
+        checks["mcpImportMissingFileOffersRetryWithoutAdoptingAnotherSource"] = try !loadEnabled(missing) && text(missing.pageContentView).contains("来源文件暂不可读") && capture().pages.last == saved.pages.last
+        try FileManager.default.moveItem(at: held, to: source)
+        try bytes.write(to: source, options: .atomic); try press("重新读取", page: missing)
+        try await Task.sleep(nanoseconds: 80_000_000)
+        checks["mcpImportOriginalFileReturnsToSameReviewPosition"] = try loadEnabled(missing) && control(NSTableView.self, "待导入 MCP 连接器", page: missing).selectedRow == 19 &&
+            control(NSTextView.self, "MCP 导入配置预览", page: missing).selectedRange() == range
+        try edited.write(to: source, options: .atomic); try press("载入草稿", page: missing); try press("重新读取", page: missing)
+        checks["mcpImportExplicitReloadReviewsNewContentBeforeLoad"] = try loadEnabled(missing) && control(NSTextView.self, "MCP 导入配置预览", page: missing).string.contains("https://example.com/updated")
+        try press("载入草稿", page: missing)
+        guard let draft = pane.currentController else { throw PetError("重新读取的连接器草稿未显示") }
+        try selectJSON(page: draft)
+        checks["mcpImportRecoveredLoadKeepsRegistryAndOriginalSourceBytes"] = try control(NSTextView.self, "MCP 配置 JSON", page: draft).string.contains("https://example.com/updated") &&
+            Data(contentsOf: registry) == originalRegistry && Data(contentsOf: source) == edited
+
+        pane.finish()
+        let manager = try root()
+        guard let existing = service.availableServers(workspace: workspace).first else { throw PetError("粘贴审阅缺少样例连接器") }
+        manager.selectServer(existing.id)
+        guard let detail = pane.currentController else { throw PetError("粘贴审阅缺少 JSON 编辑器") }
+        try selectJSON(page: detail)
+        let pasted = #"{"mcpServers":{"env":{"command":"/usr/bin/true","timeout":3500},"headers":{"url":"https://example.com/second","bearerToken":"${INPUT_REQUIRED}"}}}"#
+        let editor = try control(NSTextView.self, "MCP 配置 JSON", page: detail)
+        editor.string = pasted; manager.textDidChange(.init(name: NSText.didChangeNotification, object: editor))
+        try press("载入 JSON", page: detail)
+        let pastePage = try current()
+        try control(NSTableView.self, "待导入 MCP 连接器", page: pastePage).selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        let pasteState = try capture(), pasteRestored = try await reopen(pasteState)
+        checks["mcpImportPastedContainerRecoversChosenDefinitionAndEditor"] = try pasteState.pages.map(\.kind) == ["mcp", "mcp-detail", "mcp-import"] &&
+            control(NSTextView.self, "MCP 导入配置预览", page: pasteRestored).string.contains("https://example.com/second")
+        try press("取消", page: pasteRestored)
+        guard let parent = pane.currentController else { throw PetError("粘贴审阅返回时缺少原编辑器") }
+        checks["mcpImportPastedCancelRestoresExactUnsavedJSON"] = try control(NSTextView.self, "MCP 配置 JSON", page: parent).string == pasted && Data(contentsOf: registry) == originalRegistry
+        let concealed = #"{"mcpServers":{"duplicated":{"bearerToken":""# + secret + #""},"duplicated":{"bearerToken":"${KEYCHAIN}"}}}"#
+        checks["mcpImportPastedDuplicateKeysCannotConcealUnmaskedCredentials"] = !AgentMCPConfigForm.canPreserveDocument(concealed, allowingImport: true)
+        pane.finish()
+        return checks
+    }
 }

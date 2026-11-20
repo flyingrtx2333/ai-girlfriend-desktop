@@ -212,7 +212,13 @@ import UniformTypeIdentifiers
         pendingCatalog = saved
     }
     override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
-        page.kind == "mcp-detail" ? detailPage : nil
+        switch page.kind {
+        case "mcp-detail": return detailPage
+        case "mcp-import":
+            let review = try AgentMCPImportPage(recovery: page)
+            bindImport(review); return review
+        default: return nil
+        }
     }
     private func scheduleCatalogRestore() {
         guard pendingCatalog != nil, !catalogRestoreScheduled else { return }
@@ -232,8 +238,8 @@ import UniformTypeIdentifiers
         }
     }
     private func captureDetailRecovery() throws -> AgentSettingsRecovery.Page? {
-        guard creating || selected != nil, AgentMCPConfigForm.canPreserveDocument(editor.string) else { return nil }
         let json = configurationKind.selectedSegment == 1
+        guard creating || selected != nil, AgentMCPConfigForm.canPreserveDocument(editor.string, allowingImport: json) else { return nil }
         let formDraft = json ? nil : form?.captureDraft()
         guard json || formDraft != nil else { return nil }
         var position = try draftViewport.capture()
@@ -254,7 +260,7 @@ import UniformTypeIdentifiers
         if let viewport = raw["viewport"] { try AgentSettingsDraftViewport.validateObject(viewport) }
         let saved = try JSONDecoder().decode(DetailRecovery.self, from: page.state)
         guard saved.version == 1, (saved.server == nil) == (saved.revision == nil), saved.server != nil || saved.dirty,
-              saved.json == (saved.form == nil), AgentMCPConfigForm.canPreserveDocument(saved.text) else {
+              saved.json == (saved.form == nil), AgentMCPConfigForm.canPreserveDocument(saved.text, allowingImport: saved.json) else {
             throw PetError("连接器配置草稿无效，原记录已保留")
         }
         let current = items.first { $0.id == saved.server }
@@ -447,8 +453,11 @@ import UniformTypeIdentifiers
         presentImport(try AgentMCPImportPage(document: document))
     }
     private func presentImport(_ page: AgentMCPImportPage) {
-        page.onLoad = { [weak self] document in self?.loadDraft(document) }
+        bindImport(page)
         if let editingPage { editingPage.presentSettingsChild(page) } else { presentSettingsChild(page) }
+    }
+    private func bindImport(_ page: AgentMCPImportPage) {
+        page.onLoad = { [weak self] document in self?.loadDraft(document) }
     }
     private func canLeave() -> Bool {
         guard !dirty else { return AgentUnsavedChanges.discard("放弃未保存的配置？", discardTitle: "放弃") }
