@@ -15,6 +15,17 @@ import AppKit
     private static func text(_ view: NSView?) -> String {
         guard let view else { return "" }; return (view as? NSTextView)?.string ?? (view as? NSTextField)?.stringValue ?? view.subviews.map { text($0) }.joined(separator: "\n")
     }
+    private static func select(_ control: NSSegmentedControl, _ segment: Int) {
+        control.selectedSegment = segment
+        if let action = control.action { NSApp.sendAction(action, to: control.target, from: control) }
+    }
+    private static func waitForPatch(_ reader: AgentGitDiffView, containing text: String) async throws -> Bool {
+        for _ in 0..<100 {
+            if !reader.isHidden, reader.patch.contains(text) { return true }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
     static func prepareSources(_ output: URL) throws -> [URL] {
         let fm = FileManager.default, source = output.appendingPathComponent("插件审阅来源")
         func prepare(_ version: Int) throws -> URL {
@@ -25,6 +36,7 @@ import AppKit
             for (name, value) in values { files[name] = Data(value.utf8) }
             files[".mcp.json"] = try JSONSerialization.data(withJSONObject: ["mcpServers": ["local": ["command": "/usr/bin/true", "args": ["public-v\(version)"]]]], options: [.sortedKeys])
             files["hooks/hooks.json"] = try JSONSerialization.data(withJSONObject: ["hooks": ["SessionStart": [["hooks": [["name": "public", "type": "command", "command": "/usr/bin/true", "args": ["hook-v\(version)"], "network": false, "timeout": 10]]]]]], options: [.sortedKeys])
+            files["skills/check/resources/sample.bin"] = Data([0] + Array(repeating: UInt8(version), count: version))
             for index in 0..<105 { files[String(format: "skills/check/resources/item-%03d.txt", index)] = Data("公开资源 \(index) version-\(version)。\n".utf8) }
             for (name, bytes) in files { let file = root.appendingPathComponent(name); try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true); try bytes.write(to: file) }
             return root
@@ -45,6 +57,14 @@ import AppKit
         manager.review(first)
         guard let installation = pane.currentController as? AgentPluginReviewPage else { throw PetError("安装审阅未进入子页面") }
         checks["pluginInstallReviewHostedWithoutSheet"] = installation.presentingWindow === host && installation.window?.isVisible == false && host.attachedSheet == nil
+        checks["pluginReviewHeadingGivesActionNameAndVersion"] = installation.detailHeading?.title == "安装「设置审阅插件」"
+            && installation.detailHeading?.scope == "用户 · 1.0.0"
+        let actions = NSStackView()
+        installation.setSettingsActionsHost(actions)
+        checks["pluginReviewActionsAttachToSharedToolbar"] = actions.arrangedSubviews.compactMap { ($0 as? NSButton)?.title } == ["取消", "安装"]
+            && installation.detailActionRow?.isHidden == true
+        installation.setSettingsActionsHost(nil)
+        checks["pluginReviewActionsReturnToLocalRow"] = actions.arrangedSubviews.isEmpty && installation.detailActionRow?.isHidden == false
         checks["pluginInstallReviewDoesNotPublishBeforeApply"] = try plugins.catalog().allSatisfy { $0.metadata.name != first.metadata.name }
         let installRows = try control(NSTableView.self, "插件审阅列表", page: installation)
         checks["pluginReviewContainsAllSixComponentKinds"] = installRows.numberOfRows == 6
@@ -69,11 +89,42 @@ import AppKit
         manager.review(second, replacing: current)
         guard let update = pane.currentController as? AgentPluginReviewPage else { throw PetError("更新审阅未进入子页面") }
         let rows = try control(NSTableView.self, "插件审阅列表", page: update), detail = try control(NSTextView.self, "插件审阅详情", page: update)
+        let mode = try control(NSSegmentedControl.self, "插件文件读取方式", page: update)
+        let types = try control(NSSegmentedControl.self, "插件审阅内容", page: update)
+        let filter = try control(NSSearchField.self, "筛选插件变更文件", page: update)
+        guard let diff = find(AgentGitDiffView.self, in: update.pageContentView, matching: { _ in true }) else { throw PetError("缺少插件差异阅读器") }
         let changed = Set(first.files.keys).union(second.files.keys).sorted().filter { first.files[$0] != second.files[$0] }
         checks["pluginReviewShowsEveryChangedPathBeyondOneHundred"] = changed.count > 100 && rows.numberOfRows == changed.count
         let path = "skills/check/resources/item-104.txt", index = changed.firstIndex(of: path)!
         rows.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false); rows.scrollRowToVisible(index)
+        let patchReady = try await waitForPatch(diff, containing: "+公开资源 104 version-2。")
+        let currentPath = try control(NSTextField.self, "当前插件文件", page: update)
+        checks["pluginReviewReadsActualDiffAtSelectedPath"] = patchReady
+            && diff.patch.hasPrefix("@@ -1 +1 @@") && currentPath.stringValue == path
+            && diff.patch.contains("-公开资源 104 version-1。") && diff.patch.contains("+公开资源 104 version-2。")
+            && diff.text.records.contains { $0.kind == .removed && $0.old == 1 }
+            && diff.text.records.contains { $0.kind == .added && $0.new == 1 }
+        select(mode, 1)
         checks["pluginReviewCanReadLatePathAndBothActualVersions"] = detail.string.contains(path) && detail.string.contains("version-1") && detail.string.contains("version-2")
+        func filterFiles(_ query: String) {
+            filter.stringValue = query
+            update.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: filter))
+        }
+        filterFiles("item-104")
+        select(types, 0)
+        select(types, 1)
+        checks["pluginReviewRetainsFileFilterSelectionAndFullTextMode"] = rows.numberOfRows == 1 && filter.stringValue == "item-104"
+            && mode.selectedSegment == 1 && detail.string.contains(path)
+        filterFiles("no-such-plugin-file")
+        checks["pluginReviewGivesSearchEmptyStateWithoutOldDiff"] = rows.numberOfRows == 0 && detail.string == "未找到匹配文件" && diff.isHidden
+        filterFiles("sample.bin")
+        select(mode, 0)
+        checks["pluginReviewBinaryFileKeepsByteCountsVisible"] = rows.numberOfRows == 1 && diff.isHidden
+            && detail.string.contains("二进制文件 · 2 字节") && detail.string.contains("二进制文件 · 3 字节")
+        filterFiles("item-104")
+        select(types, 0)
+        try await Task.sleep(nanoseconds: 120_000_000)
+        checks["pluginReviewCanceledComparisonCannotOverwriteComponent"] = diff.isHidden && detail.string.contains("完整技能正文")
         try press("取消", page: update)
         checks["pluginReviewCancelKeepsActualInstalledReceipt"] = try pane.currentController === manager && plugins.installation(current.id).receiptHash == original && host.firstResponder is NSTableView
         manager.review(second, replacing: current)
@@ -114,5 +165,30 @@ import AppKit
         checks["pluginReviewCreatesNoVisibleManagementWindows"] = NSApp.windows.filter(\.isVisible).count == visible
         checks["pluginReviewLeavesNormally"] = pane.leave()
         return checks
+    }
+}
+
+@MainActor extension AppDelegate {
+    func runPluginReviewCheck(_ output: URL) async {
+        var report: [String: Any] = ["appPID": getpid(), "modelRequests": 0]
+        do {
+            let tasks = AgentStore(directory: store.directory, legacy: [], extensionHome: output.appendingPathComponent("shared-home"))
+            let project = output.appendingPathComponent("设置项目")
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let task = tasks.create(title: "插件审阅验收", workspace: project.path)
+            let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 540),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            host.isReleasedWhenClosed = false
+            let pane = AgentSettingsPageHost(); host.contentView = pane
+            host.makeKeyAndOrderFront(nil)
+            let checks = try await AgentPluginReviewCheck.run(tasks: tasks, taskID: task, pane: pane, host: host, output: output)
+            report["checks"] = checks
+            report["success"] = checks.values.allSatisfy { $0 }
+            host.close()
+        } catch {
+            report["error"] = error.localizedDescription
+            report["success"] = false
+        }
+        try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys, .prettyPrinted]).write(to: output.appendingPathComponent("plugin-review-report.json"))
     }
 }

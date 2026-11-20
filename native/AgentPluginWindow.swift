@@ -319,7 +319,8 @@ import UniformTypeIdentifiers
                         historyPage: AgentPluginHistoryPage?, marketPage: AgentPluginMarketPage? = nil) {
         do {
             let old = try installed.map { try service.reviewPackage($0).files } ?? [:]
-            let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring, activating: activating, workspace: installed?.workspace ?? installWorkspace)
+            let page = AgentPluginReviewPage(package: package, installed: installed, oldFiles: old, restoring: restoring,
+                activating: activating, workspace: installed?.workspace ?? installWorkspace, protectedData: service.profile)
             page.onApply = { [weak self] in
                 guard let self else { throw PetError("插件页面已关闭，请重新打开") }
                 if let installed, activating { try service.setEnabled(installed, true); return try service.installation(installed.id) }
