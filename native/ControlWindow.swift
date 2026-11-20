@@ -2433,6 +2433,8 @@ final class FormDocumentView: NSView {
         bottom.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
     }
 
+    func reopen() { show(tab: selectedTab) }
+
     func show(tab: String) {
         if selectedTab != tab, !canLeaveMainPage() { return }
         if window?.isVisible != true { refreshPreferences() }

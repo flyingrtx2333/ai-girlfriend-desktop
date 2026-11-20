@@ -204,7 +204,8 @@ final class PetWebView: WKWebView {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !taskControls.contains(where: { $0.window?.isVisible == true }) { inputControl.show(tab: "chat") }; return true
+        if !taskControls.contains(where: { $0.window?.isVisible == true }) { inputControl.reopen() }
+        return true
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminationReady { return .terminateNow }

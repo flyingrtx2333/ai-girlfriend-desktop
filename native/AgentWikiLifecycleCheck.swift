@@ -71,6 +71,18 @@ import AppKit
             let actualDiff = try String(contentsOf: output.appendingPathComponent("initial-actual-diff.patch"), encoding: .utf8)
             checks["coloredDiffShowsCompleteActualCommittedPatch"] = update.checkState["showingDiff"] as? Bool == true && update.checkState["text"] as? String == actualDiff
             checks["updateTakesKeyboardFocusFromTaskSidebar"] = update.checkState["focusInReview"] as? Bool == true
+            update.checkSelectItem(1)
+            guard let mainWindow = control.window else { throw PetError("缺少主窗口重开样例") }
+            mainWindow.performClose(nil)
+            let closeDeadline = Date().addingTimeInterval(3)
+            while mainWindow.isVisible, Date() < closeDeadline { await wait(0.02) }
+            checks["closingMainWindowRetainsReviewWhileHidden"] = !mainWindow.isVisible && host.currentController === update
+            _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+            checks["applicationReopenShowsSameReviewAndSelectedItem"] = control.window === mainWindow && mainWindow.isVisible &&
+                control.isShowingKnowledge && host.currentController === update && update.checkState["selectedItem"] as? Int == 1 &&
+                (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == true
+            update.checkSelectItem(0)
+            checks["applicationReopenRetainsActualDiffAndTaskDraft"] = update.checkState["text"] as? String == actualDiff && tasks.task(id)?.draft == originalDraft
             control.show(tab: "chat")
             checks["hiddenReviewFailsVisibilityCheckWithoutLosingPreview"] = (host.checkState()["checks"] as? [String: Bool])?["currentPageIsVisible"] == false && host.currentController === update && update.checkState["text"] as? String == actualDiff
             control.showAgentKnowledge()
