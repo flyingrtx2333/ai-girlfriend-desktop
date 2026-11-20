@@ -10,11 +10,32 @@ struct AgentPluginMarketGit {
     struct Fixture {
         let origin: URL, certificate: Data
     }
+    struct SSHFixture {
+        let repository: URL, knownHosts: URL
+    }
 
     let profile: URL
     var fixture: Fixture?
+    var sshFixture: SSHFixture? = nil
+
+    static func address(_ input: String) -> URL? {
+        guard input.utf8.count <= 4096, input.rangeOfCharacter(from: .controlCharacters) == nil else { return nil }
+        if input.contains("://") { return URL(string: input).flatMap(address) }
+        // A scp-style relative path is relative to the login directory.
+        // Preserve that meaning when storing the equivalent SSH URL.
+        let authorityEnd = input.firstIndex(of: "]").map { input.index(after: $0) } ?? input.startIndex
+        guard let colon = input[authorityEnd...].firstIndex(of: ":"), colon != input.startIndex,
+              !input[..<colon].contains("/"),
+              var parts = URLComponents(string: "ssh://" + input[..<colon]),
+              parts.path.isEmpty else { return nil }
+        let path = String(input[input.index(after: colon)...])
+        guard !path.isEmpty else { return nil }
+        parts.path = path.hasPrefix("/") ? path : (path.hasPrefix("~") ? "/" : "/~/") + path
+        return parts.url.flatMap(address)
+    }
 
     static func address(_ url: URL) -> URL? {
+        if url.scheme?.lowercased() == "ssh" { return sshAddress(url) }
         guard let checked = try? AgentPluginMarket.address(url), checked.query == nil,
               var parts = URLComponents(url: checked, resolvingAgainstBaseURL: false),
               let host = checked.host, !host.hasPrefix("-"), checked.port.map({ (1...65535).contains($0) }) != false,
@@ -23,6 +44,22 @@ struct AgentPluginMarketGit {
         parts.host = parts.host?.lowercased()
         if parts.port == 443 { parts.port = nil }
         if parts.percentEncodedPath.hasSuffix("/") { parts.percentEncodedPath.removeLast() }
+        return parts.url
+    }
+
+    private static func sshAddress(_ url: URL) -> URL? {
+        guard url.absoluteString.utf8.count <= 4096,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = parts.host, host.range(of: #"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9A-Fa-f:]+\])\z"#, options: .regularExpression) != nil,
+              parts.user.map({ $0.range(of: #"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\z"#, options: .regularExpression) != nil }) != false,
+              parts.password == nil, parts.query == nil, parts.fragment == nil,
+              parts.port.map({ (1...65535).contains($0) }) != false,
+              parts.path.hasPrefix("/"), parts.path.rangeOfCharacter(from: .controlCharacters) == nil,
+              AgentArchive.validPath(String(parts.path.dropFirst())) else { return nil }
+        parts.scheme = "ssh"; parts.host = host.lowercased()
+        if parts.port == 22 { parts.port = nil }
+        let path = parts.path.hasSuffix("/") ? String(parts.path.dropLast()) : parts.path
+        parts.path = path
         return parts.url
     }
 
@@ -61,16 +98,24 @@ struct AgentPluginMarketGit {
 
     private func withRepository<Value>(_ address: URL, ref: String?, pinned: String?, credential: AgentPluginMarketCredential?,
                                        use: (URL, Commit) async throws -> Value) async throws -> Value {
-        guard let url = Self.address(address), let host = url.host else { throw PetError("请填写不含登录参数的 HTTPS Git 地址") }
+        guard let url = Self.address(address), let host = url.host else { throw PetError("请填写有效的 HTTPS 或 SSH Git 地址") }
         let scratch = profile.appendingPathComponent(".plugin-git-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let config = try await run(["help", "--config"], in: scratch, maximum: 200_000, failure: "无法核对 Git 的 HTTPS 能力")
-        guard String(decoding: config, as: UTF8.self).split(separator: "\n").contains("http.curloptResolve") else {
-            throw PetError("当前 Git 缺少 HTTPS 地址校验支持，请更新 Xcode 命令行工具")
+        let network: [String], sshHosts: [URL]?, authentication: URL?
+        if url.scheme == "ssh" {
+            network = ["-c", "protocol.ssh.allow=always"]
+            sshHosts = try configureSSH(url, in: scratch)
+            authentication = nil
+        } else {
+            let config = try await run(["help", "--config"], in: scratch, maximum: 200_000, failure: "无法核对 Git 的 HTTPS 能力")
+            guard String(decoding: config, as: UTF8.self).split(separator: "\n").contains("http.curloptResolve") else {
+                throw PetError("当前 Git 缺少 HTTPS 地址校验支持，请更新 Xcode 命令行工具")
+            }
+            network = try networkFlags(url, host: host, scratch: scratch)
+            sshHosts = nil
+            authentication = try credential.map { try authConfig($0, repository: url, in: scratch) }
         }
-        let network = try networkFlags(url, host: host, scratch: scratch)
-        let authentication = try credential.map { try authConfig($0, repository: url, in: scratch) }
         let branch = ref ?? "HEAD"
         let object: String
         if let pinned {
@@ -78,7 +123,7 @@ struct AgentPluginMarketGit {
             object = normalized
         } else {
             let discovery = try await run(["ls-remote", "--", url.absoluteString, "HEAD", branch], in: scratch, network: network,
-                authentication: authentication, failure: "无法读取 Git 仓库，请检查地址、分支和读取权限")
+                authentication: authentication, sshHosts: sshHosts, failure: "无法读取 Git 仓库，请检查地址、分支和读取权限")
             let refs = String(decoding: discovery, as: UTF8.self).split(separator: "\n")
             guard let first = refs.first, let hash = first.split(separator: "\t").first,
                   let detected = Self.sha(String(hash)) else { throw PetError("Git 仓库没有可读取的分支或标签") }
@@ -89,11 +134,39 @@ struct AgentPluginMarketGit {
             failure: "无法准备 Git 插件目录")
         _ = try await run(["--git-dir=objects.git", "fetch", "--quiet", "--depth=1", "--no-tags", "--no-recurse-submodules",
             "--", url.absoluteString, pinned == nil ? branch : object], in: scratch, network: network, authentication: authentication,
-            failure: "无法读取所选 Git 提交，请核对分支、标签或提交是否可访问")
+            sshHosts: sshHosts, failure: "无法读取所选 Git 提交，请核对分支、标签或提交是否可访问")
         let bytes = try await local(["rev-parse", "--verify", "FETCH_HEAD^{commit}"], in: scratch)
         let text = String(decoding: bytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let commit = Self.sha(text), pinned == nil || commit == object else { throw PetError("Git 仓库返回的提交与所选版本不一致") }
         return try await use(scratch, Commit(repository: url, sha: commit))
+    }
+
+    private func configureSSH(_ repository: URL, in scratch: URL) throws -> [URL] {
+        // Use the local agent and public host keys. Keep local SSH config,
+        // private keys and forwarding outside the repository fetch process.
+        var config = """
+        Host *
+          BatchMode yes
+          StrictHostKeyChecking yes
+          UpdateHostKeys no
+          IdentityFile none
+          IdentityAgent SSH_AUTH_SOCK
+          PreferredAuthentications publickey
+          ClearAllForwardings yes
+          ForwardAgent no
+        """ + "\n"
+        let hosts: [URL]
+        if let sshFixture, sshFixture.repository == repository {
+            let known = try Data(contentsOf: sshFixture.knownHosts)
+            try known.write(to: scratch.appendingPathComponent("ssh-known-hosts"))
+            config += "  UserKnownHostsFile ./ssh-known-hosts\n  GlobalKnownHostsFile /dev/null\n"
+            hosts = []
+        } else {
+            let ssh = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh", isDirectory: true)
+            hosts = ["known_hosts", "known_hosts2"].map { ssh.appendingPathComponent($0) }
+        }
+        try config.write(to: scratch.appendingPathComponent("ssh-config"), atomically: true, encoding: .utf8)
+        return hosts
     }
 
     private func authConfig(_ credential: AgentPluginMarketCredential, repository: URL, in scratch: URL) throws -> URL {
@@ -132,7 +205,7 @@ struct AgentPluginMarketGit {
     }
 
     private func run(_ args: [String], in scratch: URL, network: [String] = [], authentication: URL? = nil,
-                     maximum: Int = 100_000, failure: String) async throws -> Data {
+                     sshHosts: [URL]? = nil, maximum: Int = 100_000, failure: String) async throws -> Data {
         let git = try AgentGit.executablePath()
         let flags = ["--no-pager", "--literal-pathspecs", "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never",
             "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "credential.helper=",
@@ -142,13 +215,24 @@ struct AgentPluginMarketGit {
         let argv = ["-c", "ulimit -f 65536 && exec \"$@\"", "market-git", git] + flags + network + args
         var environment = ["GIT_ASKPASS": "/usr/bin/false", "GIT_CONFIG_NOSYSTEM": "1"]
         if let authentication { environment["GIT_CONFIG_GLOBAL"] = authentication.path }
+        if sshHosts != nil {
+            environment["GIT_SSH_VARIANT"] = "ssh"
+            environment["GIT_SSH_COMMAND"] = "/usr/bin/ssh -F ssh-config"
+            environment["SSH_ASKPASS_REQUIRE"] = "never"
+            environment["SSH_AUTH_SOCK"] = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
+        }
         let result = try await AgentCommand().run(command: "/bin/sh", workspace: scratch, scratch: scratch,
             network: !network.isEmpty, timeout: network.isEmpty ? 10 : 45, maximumOutput: maximum, protectedData: profile,
-            environment: environment, arguments: argv)
+            readRoots: sshHosts ?? [], environment: environment, arguments: argv)
         if result.timedOut == true { throw PetError("读取 Git 仓库超时，请稍后重试") }
         if result.truncated == true { throw PetError("Git 仓库文件超过可读上限") }
         if result.failed || result.stdoutData == nil {
             let diagnostic = (result.stderr ?? "").lowercased()
+            if sshHosts != nil {
+                if diagnostic.contains("host identification has changed") { throw PetError("SSH 主机指纹已变化，请先核对主机身份。") }
+                if diagnostic.contains("host key verification failed") { throw PetError("SSH 主机身份未受信任，请核对主机指纹与本机已知主机记录。") }
+                if diagnostic.contains("permission denied (publickey") { throw PetError("SSH 密钥认证失败，请检查本机 SSH 代理和仓库读取权限。") }
+            }
             if diagnostic.contains("certificate") || diagnostic.contains("ssl connect") {
                 throw PetError("Git 仓库的 HTTPS 证书校验失败，请核对地址")
             }

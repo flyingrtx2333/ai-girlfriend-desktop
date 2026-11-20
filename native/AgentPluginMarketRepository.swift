@@ -118,7 +118,7 @@ extension AgentPluginMarket {
                     let url = URL(string: value)
                     repository = url.flatMap(AgentPluginMarketRepository.init(address:))
                     if type == "git-subdir", repository == nil { repository = AgentPluginMarketRepository(value) }
-                    if repository == nil { gitURL = url.flatMap(AgentPluginMarketGit.address) }
+                    if repository == nil { gitURL = AgentPluginMarketGit.address(value) }
                 }
                 if type == "git-subdir" {
                     guard let folder = object["path"] as? String else { throw PetError("仓库来源需要插件目录路径") }
@@ -127,7 +127,7 @@ extension AgentPluginMarket {
             default:
                 throw PetError("需要 HTTPS ZIP 或 Git 仓库")
             }
-            guard repository != nil || gitURL != nil else { throw PetError("需要 HTTPS Git 仓库地址") }
+            guard repository != nil || gitURL != nil else { throw PetError("需要 HTTPS 或 SSH Git 仓库地址") }
             let ref = (object["ref"] as? String).flatMap(AgentPluginMarketRepository.ref)
             let sha = (object["sha"] as? String).flatMap { value in
                 repository != nil ? AgentPluginMarketRepository.commit(value) : AgentPluginMarketGit.sha(value)
@@ -136,7 +136,8 @@ extension AgentPluginMarket {
                 throw PetError("仓库分支、标签或提交编号无效")
             }
             if let repository { return .repository(repository, ref: ref, sha: sha, path: path) }
-            guard let gitURL else { throw PetError("需要 HTTPS Git 仓库地址") }
+            guard let gitURL else { throw PetError("需要 HTTPS 或 SSH Git 仓库地址") }
+            if gitURL.scheme == "ssh", gitURL != gitDirectory?.repository { throw PetError(AgentPluginMarket.separateSSHRepository) }
             return .git(gitURL, ref: ref, sha: sha, path: path)
         }
     }

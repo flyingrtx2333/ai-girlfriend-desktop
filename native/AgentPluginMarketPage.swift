@@ -33,7 +33,7 @@ import AppKit
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "插件市场"; window.minSize = NSSize(width: 420, height: 360); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
-        address.placeholderString = "HTTPS 目录或 Git 仓库地址"; address.setAccessibilityLabel("插件市场目录地址")
+        address.placeholderString = "HTTPS 目录或 HTTPS／SSH Git 地址"; address.setAccessibilityLabel("插件市场目录地址")
         address.target = self; address.action = #selector(loadDirectory)
         AgentSettingsStyle.field(address); address.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refresh.target = self; refresh.action = #selector(loadDirectory); AgentDialogStyle.action(refresh)

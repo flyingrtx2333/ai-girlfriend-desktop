@@ -54,7 +54,8 @@ struct AgentPluginMarket {
                     throw PetError("已保存的 Git 市场来源无效")
                 }
             }
-            return try AgentPluginMarket.directory(catalog, address: AgentPluginMarket.address(address), commit: commit, gitCommit: gitCommit)
+            if address.scheme == "ssh", gitCommit == nil { throw PetError("已保存的 SSH 市场缺少提交") }
+            return try AgentPluginMarket.directory(catalog, address: AgentPluginMarket.savedAddress(address), commit: commit, gitCommit: gitCommit)
         }
     }
 
@@ -85,10 +86,11 @@ struct AgentPluginMarket {
     private static let cachePath = "extensions/plugin-markets.json"
     private static let legacyCachePath = "extensions/plugin-market.json"
 
-    init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil, gitFixture: AgentPluginMarketGit.Fixture? = nil) {
+    init(profile: URL, network: URLSession? = nil, fixtureOrigin: URL? = nil, gitFixture: AgentPluginMarketGit.Fixture? = nil,
+         sshFixture: AgentPluginMarketGit.SSHFixture? = nil) {
         self.profile = profile; self.fixtureOrigin = fixtureOrigin
         self.network = network ?? Self.publicSession
-        self.git = AgentPluginMarketGit(profile: profile, fixture: gitFixture)
+        self.git = AgentPluginMarketGit(profile: profile, fixture: gitFixture, sshFixture: sshFixture)
     }
 
     private final class RedirectPolicy: NSObject, URLSessionTaskDelegate {
@@ -122,7 +124,11 @@ struct AgentPluginMarket {
     }
 
     private static func catalogAddress(_ input: String) throws -> URL {
-        let url = try address(URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let repository = AgentPluginMarketGit.address(text), repository.scheme == "ssh" { return repository }
+        let url: URL
+        do { url = try address(URL(string: text)) }
+        catch { throw PetError("请输入有效的 HTTPS 目录或 HTTPS／SSH Git 地址") }
         if let repository = AgentPluginMarketRepository(address: url) { return repository.address }
         if url.path.lowercased().hasSuffix(".git") {
             guard let repository = AgentPluginMarketGit.address(url) else { throw PetError("请填写不含登录参数的 HTTPS Git 地址") }
@@ -131,13 +137,20 @@ struct AgentPluginMarket {
         return url
     }
 
+    static func savedAddress(_ url: URL) throws -> URL {
+        if url.scheme == "ssh", AgentPluginMarketGit.address(url) == url { return url }
+        return try address(url)
+    }
+
     static func gitRepository(for address: URL) -> URL? {
-        AgentPluginMarketRepository(address: address)?.cloneAddress
+        if address.scheme == "ssh" { return AgentPluginMarketGit.address(address) }
+        return AgentPluginMarketRepository(address: address)?.cloneAddress
             ?? (address.path.lowercased().hasSuffix(".git") ? AgentPluginMarketGit.address(address) : nil)
     }
 
     static func credentialDestination(_ input: String) throws -> URL {
         let target = try catalogAddress(input)
+        if target.scheme == "ssh" { throw PetError("SSH 仓库使用本机 SSH 代理与已知主机记录。") }
         guard AgentPluginMarketCredential.path(target) != nil else { throw PetError("请填写不含查询参数的 HTTPS 目录文件或 Git 仓库地址") }
         return target
     }
@@ -149,6 +162,7 @@ struct AgentPluginMarket {
     }
 
     func credential(for address: URL) throws -> AgentPluginMarketCredential? {
+        guard address.scheme == "https" else { return nil }
         guard let stored = try credentialConfig.value(credentialAccount(address)) else { return nil }
         guard let item = try? JSONDecoder().decode(AgentPluginMarketCredential.self, from: Data(stored.utf8)),
               let value = try? AgentPluginMarketCredential(username: item.username ?? "", token: item.token,
@@ -367,6 +381,7 @@ struct AgentPluginMarket {
             commit = verified
             path = location
         case let .git(url, ref, sha, location):
+            guard url.scheme != "ssh" || url == catalogRepository else { throw PetError(Self.separateSSHRepository) }
             let (archive, verified) = try await git.archive(url, ref: ref, pinned: sha, folder: location,
                 maximum: Self.archiveLimit, credential: url == catalogRepository ? credential : nil)
             bytes = archive
@@ -393,6 +408,8 @@ struct AgentPluginMarket {
         guard !installations.contains(where: { $0.metadata.name == package.metadata.name }) else { throw PetError("已有其他来源的同名插件，请到已安装列表核对") }
         return (package, nil)
     }
+
+    static let separateSSHRepository = "请先将该 SSH 仓库直接添加为市场目录。"
 
     private static func directory(_ bytes: Data, address: URL, commit: AgentPluginMarketCommit?, gitCommit: AgentPluginMarketGit.Commit?) throws -> Directory {
         let object = try AgentConfigurationJSON.object(bytes)

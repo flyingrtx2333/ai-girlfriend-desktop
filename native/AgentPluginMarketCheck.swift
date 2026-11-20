@@ -19,6 +19,92 @@ import AppKit
         return (origin, network)
     }
 
+    func configurePluginSSHMarketFixture(_ output: URL, plugins: AgentPlugins) throws -> URL {
+        guard checkDirectory == output, Bundle.main.object(forInfoDictionaryKey: "BlueFatFishAcceptanceOnly") as? Bool == true else {
+            throw PetError("SSH 市场样例只可在独立验收包中使用")
+        }
+        let source = try AgentConfigurationJSON.object(Data(contentsOf: output.appendingPathComponent("ssh-market-fixture.json")))
+        guard let text = source["address"] as? String, let address = AgentPluginMarketGit.address(text),
+              address.scheme == "ssh", address.host == "127.0.0.1", address.port != nil else {
+            throw PetError("SSH 市场样例必须使用本机回环地址")
+        }
+        let trust = output.appendingPathComponent("ssh-known-hosts")
+        plugins.market = AgentPluginMarket(profile: plugins.profile, sshFixture: .init(repository: address, knownHosts: trust))
+        return address
+    }
+
+    func runPluginSSHMarketCheck(_ output: URL) async {
+        var checks: [String: Bool] = [:], report: [String: Any] = [:]
+        do {
+            let plugins = AgentPlugins(profile: store.directory)
+            let address = try configurePluginSSHMarketFixture(output, plugins: plugins), market = plugins.market
+            let source = try AgentConfigurationJSON.object(Data(contentsOf: output.appendingPathComponent("ssh-market-fixture.json")))
+            let fixture = output.deletingLastPathComponent().appendingPathComponent("fixture", isDirectory: true)
+            let repo = fixture.appendingPathComponent("catalog.git"), resolved = URL(fileURLWithPath: address.path).resolvingSymlinksInPath()
+            guard resolved.path == repo.resolvingSymlinksInPath().path, let versions = source["commits"] as? [[String: Any]],
+                  versions.count == 2, let first = (versions[0]["sha"] as? String).flatMap(AgentPluginMarketGit.sha),
+                  let second = (versions[1]["sha"] as? String).flatMap(AgentPluginMarketGit.sha) else { throw PetError("SSH 仓库样例不完整") }
+            let trust = output.appendingPathComponent("ssh-known-hosts"), verified = try Data(contentsOf: trust)
+            func reject(_ message: String) async -> Bool {
+                do { _ = try await market.refresh(address.absoluteString); return false }
+                catch { return error.localizedDescription.contains(message) }
+            }
+            func open() async throws -> AgentPluginMarket.Directory {
+                guard let directory = try await market.refresh(address.absoluteString).selected else { throw PetError("没有载入 SSH 市场") }
+                return directory
+            }
+            func prepare(_ directory: AgentPluginMarket.Directory) async throws -> (AgentPluginPackage, AgentPluginInstallation?) {
+                guard let entry = directory.entries.first(where: { $0.name == "ssh-inventory" }) else { throw PetError("缺少 SSH 插件条目") }
+                return try await market.prepare(entry, in: directory, scope: nil, plugins: plugins)
+            }
+            checks["sshURIAndScpPathsPreserveRepositoryLocation"] =
+                AgentPluginMarketGit.address("ssh://git@Example.test:22/srv/plugins/")?.absoluteString == "ssh://git@example.test/srv/plugins" &&
+                AgentPluginMarketGit.address("git@example.test:team/plugins.git")?.absoluteString == "ssh://git@example.test/~/team/plugins.git" &&
+                AgentPluginMarketGit.address("git@example.test:/srv/plugins.git")?.absoluteString == "ssh://git@example.test/srv/plugins.git"
+            checks["sshAddressesRequireARepositoryAndRejectCredentialsInURL"] = ["ssh://git@example.test/", "ssh://git:secret@example.test/repo", "ssh://git@example.test/repo?x=1", "ssh://git@example.test/a/%2e%2e/b"].allSatisfy { AgentPluginMarketGit.address($0) == nil }
+
+            try Data().write(to: trust)
+            checks["untrustedSSHKeyRejectsFirstConnection"] = await reject("SSH 主机身份未受信任")
+            try verified.write(to: trust)
+            let initial = try await open()
+            checks["sshDirectoryLoadsTheExplicitRepository"] = initial.address == address && initial.entries.count == 2
+            checks["separateSSHRepositoryDoesNotInheritAuthorization"] = initial.entries.first(where: { $0.name == "separate-inventory" })?.unavailable == AgentPluginMarket.separateSSHRepository
+            let (package, prior) = try await prepare(initial)
+            let oldCommit = AgentPluginMarketGit.Commit(repository: address, sha: first)
+            checks["sshPreviewUsesTheDirectoryCommitAndSubfolder"] = package.receipt.marketOrigin?.gitCommit == oldCommit && package.receipt.marketOrigin?.repositoryPath == "plugins/ssh-inventory"
+            checks["sshPreviewRequiresExplicitInstallation"] = try prior == nil && plugins.catalog().isEmpty
+            let roundTrip = try plugins.marketReviewPackage(plugins.marketReviewData(package))
+            checks["sshReviewCanReopenFromItsVerifiedBytes"] = roundTrip.files == package.files && roundTrip.receipt.marketOrigin == package.receipt.marketOrigin
+            let firstInstall = try plugins.install(package)
+            checks["sshInstallationStartsDisabled"] = !firstInstall.enabled && firstInstall.receipt.marketOrigin?.gitCommit == oldCommit
+
+            let index = store.directory.appendingPathComponent("extensions/plugin-markets.json")
+            let previous = try Data(contentsOf: index)
+            try Data(contentsOf: fixture.appendingPathComponent("wrong-hosts")).write(to: trust)
+            checks["changedSSHKeyRejectsRefresh"] = await reject("SSH 主机指纹已变化")
+            checks["failedSSHRefreshKeepsCatalogAndInstalledPlugin"] = try Data(contentsOf: index) == previous && plugins.catalog().first?.receiptHash == firstInstall.receiptHash
+            try verified.write(to: trust)
+            let advance = Process(); advance.executableURL = URL(fileURLWithPath: try AgentGit.executablePath())
+            advance.arguments = ["-c", "core.hooksPath=/dev/null", "--git-dir", repo.path, "update-ref", "refs/heads/main", second, first]
+            advance.environment = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"]
+            try advance.run(); advance.waitUntilExit()
+            guard advance.terminationStatus == 0 else { throw PetError("无法推进独立 SSH 样例仓库") }
+            let (pinned, _) = try await prepare(initial)
+            checks["sshCachedDirectoryStillFetchesTheReviewCommit"] = pinned.receipt.marketOrigin?.gitCommit == oldCommit && pinned.files == package.files
+            let latest = try await open(), (updated, from) = try await prepare(latest)
+            guard let from else { throw PetError("SSH 插件的已安装版本不存在") }
+            let installation = try plugins.update(updated, replacing: from)
+            checks["sshUpdateRetainsThePreviousRevision"] = installation.receipt.marketOrigin?.gitCommit == .init(repository: address, sha: second) && !installation.enabled && installation.receipt.revisions?.first?.version == firstInstall.metadata.version
+            let asset = "skills/inventory/resources/count.json"
+            report["originalSHA"] = first; report["updatedSHA"] = second
+            report["originalAssetSHA256"] = package.files[asset].map(AgentFiles.hash)
+            report["updatedAssetSHA256"] = updated.files[asset].map(AgentFiles.hash)
+        } catch { report["error"] = error.localizedDescription }
+        report["checks"] = checks; report["appPID"] = getpid(); report["modelRequests"] = 0
+        report["success"] = checks.count == 13 && checks.values.allSatisfy { $0 } && report["error"] == nil
+        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("plugin-market-ssh-report.json"))
+    }
+
     func runPluginMarketCheck(_ output: URL) async {
         var checks: [String: Bool] = [:], results: [String: String] = [:], requests = 0, failure = ""
         defer { agentRuntime?.stopAll() }

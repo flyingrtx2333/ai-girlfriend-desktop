@@ -182,8 +182,13 @@ struct AgentPluginInstallation: Identifiable {
     func marketReviewPackage(_ data: Data) throws -> AgentPluginPackage {
         let review = try PropertyListDecoder().decode(MarketReview.self, from: data)
         guard review.version == 1, AgentSettingsRecovery.validHash(review.sourceHash),
-              (try? AgentPluginMarket.address(review.origin.catalog)) != nil,
-              (try? AgentPluginMarket.address(review.origin.archive)) != nil else { throw PetError("原市场插件包记录无效") }
+              (try? AgentPluginMarket.savedAddress(review.origin.catalog)) != nil,
+              (try? AgentPluginMarket.savedAddress(review.origin.archive)) != nil else { throw PetError("原市场插件包记录无效") }
+        if review.origin.archive.scheme == "ssh" {
+            guard let commit = review.origin.gitCommit, commit.repository == review.origin.archive,
+                  AgentPluginMarket.gitRepository(for: review.origin.catalog) == commit.repository,
+                  AgentPluginMarketGit.sha(commit.sha) == commit.sha else { throw PetError("原 SSH 插件包来源无效") }
+        }
         return try Self.package(review.files, sourceName: review.origin.sourceName, sourceHash: review.sourceHash, marketOrigin: review.origin)
     }
     @discardableResult func install(_ candidate: AgentPluginPackage, workspace: String? = nil, importing installationID: String? = nil) throws -> AgentPluginInstallation {
