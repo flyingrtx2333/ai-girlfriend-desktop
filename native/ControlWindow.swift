@@ -1668,7 +1668,7 @@ final class FormDocumentView: NSView {
     @objc private func showTaskModelMenu(_ sender: NSButton) {
         if taskModelPopover?.isShown == true { taskModelPopover?.close(); return }
         guard selectedTab == "chat", let runtime = companion?.agentRuntime, let id = agentTaskID,
-              let window, sender.window === window, !window.hasBlockingDialog, saveAgentDraft() else { return }
+              let window, let content = window.contentView, sender.window === window, !window.hasBlockingDialog, saveAgentDraft() else { return }
         let popover = NSPopover()
         let picker = AgentTaskModelPicker(runtime: runtime, taskID: id, popover: popover, owner: window) { [weak self, weak popover] returnFocus in
             guard let self, let popover, taskModelPopover === popover else { return }
@@ -1678,9 +1678,13 @@ final class FormDocumentView: NSView {
         popover.behavior = .transient; popover.animates = false; popover.appearance = window.effectiveAppearance
         popover.contentViewController = picker; popover.contentSize = picker.preferredContentSize; popover.delegate = picker
         taskModelPopover = popover
-        window.contentView?.layoutSubtreeIfNeeded()
+        content.layoutSubtreeIfNeeded()
+        let buttonFrame = sender.convert(sender.bounds, to: content)
+        let inset = picker.preferredContentSize.width / 2 + 12
+        let anchorX = max(content.bounds.minX + inset, min(buttonFrame.midX, content.bounds.maxX - inset))
+        let anchor = sender.convert(NSRect(x: anchorX - 1, y: buttonFrame.minY, width: 2, height: buttonFrame.height), from: content)
         let topEdge: NSRectEdge = sender.isFlipped ? .minY : .maxY
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: topEdge)
+        popover.show(relativeTo: anchor, of: sender, preferredEdge: topEdge)
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
