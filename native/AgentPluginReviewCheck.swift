@@ -406,6 +406,42 @@ import AppKit
         pane.finish()
         return checks
     }
+
+    static func unicodeZIP(tasks: AgentStore, output: URL) async throws -> [String: Bool] {
+        let source = output.appendingPathComponent("中文插件仓库"), relative = "plugins/公开插件"
+        let package = source.appendingPathComponent(relative), plugin = "unicode-zip-public"
+        let manifest = try JSONSerialization.data(withJSONObject: ["name": plugin, "displayName": "中文路径插件", "version": "1.0.0"], options: [.sortedKeys])
+        let expected = [".qoder-plugin/plugin.json": manifest, "commands/review.md": Data("核对公开资源\n".utf8),
+                        "assets/café/含空格 😀.txt": Data("公开二进制样例\n".utf8) + Data([0, 255, 1])]
+        for (path, bytes) in expected {
+            let file = package.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes.write(to: file)
+        }
+        func createZIP(_ name: String) async throws -> URL {
+            let archive = output.appendingPathComponent(name)
+            let result = try await AgentCommand().run(command: "/usr/bin/ditto", workspace: output, scratch: output,
+                network: false, timeout: 8, readOnly: true, arguments: ["-c", "-k", "--norsrc", "--keepParent", source.path, archive.path])
+            guard !result.failed else { throw PetError("无法创建中文归档样例：" + (result.stderr ?? result.text)) }
+            return archive
+        }
+        let archive = try await createZIP("本地中文路径.zip"), original = try Data(contentsOf: archive)
+        let plugins = tasks.extensions.plugins, local = try await plugins.inspect(archive)
+        let repository = try await plugins.inspectArchive(original, sourceName: "公开仓库", importing: false, repositoryPath: relative)
+        let isStaged = try plugins.catalog().allSatisfy { $0.id != plugin }
+        let installed = try plugins.install(local), stored = try plugins.reviewPackage(installed).files
+        let trouble = package.appendingPathComponent("assets/有制表符\t的文本.txt")
+        try Data("仅供名称校验的公开文字\n".utf8).write(to: trouble)
+        let rejected = try await createZIP("拒绝控制字符.zip")
+        let protectsNames: Bool
+        do { _ = try await plugins.inspect(rejected); protectsNames = false }
+        catch { protectsNames = error.localizedDescription.contains("控制字符") }
+        return ["archiveUnicodeNamesReadExactBytes": local.files == expected,
+                "archiveUnicodeRepositorySubdirectoryUsesExactBytes": repository.files == expected,
+                "archiveUnicodeReviewKeepsInstallExplicit": isStaged && stored == expected && !installed.enabled,
+                "archiveUnicodeReviewUsesUnmodifiedSourceHash": try local.receipt.sourceHash == AgentFiles.hash(original) && Data(contentsOf: archive) == original,
+                "archiveUnicodePathsStillRejectControlCharacters": protectsNames]
+    }
 }
 
 @MainActor extension AppDelegate {
@@ -426,6 +462,8 @@ import AppKit
             checks.merge(try await AgentPluginReviewCheck.historyRecovery(tasks: tasks, taskID: task, pane: pane, host: host, output: output)) { _, new in new }
             report["checks"] = checks
             checks.merge(try await AgentPluginReviewCheck.draftRecovery(tasks: tasks, taskID: task, pane: pane, host: host, output: output)) { _, new in new }
+            report["checks"] = checks
+            checks.merge(try await AgentPluginReviewCheck.unicodeZIP(tasks: tasks, output: output)) { _, new in new }
             report["checks"] = checks
             report["success"] = checks.values.allSatisfy { $0 }
             host.close()

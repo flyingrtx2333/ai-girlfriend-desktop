@@ -8,14 +8,24 @@ enum AgentArchive {
         defer { try? FileManager.default.removeItem(at: scratch) }
         let parent = try AgentFiles(workspace: archive.deletingLastPathComponent().path), data = try parent.readData(parent.literalURL(archive.lastPathComponent), maximum: 20_000_000)
         let pinned = scratch.appendingPathComponent("input.zip"); try data.write(to: pinned)
-        func command(_ args: [String], maximum: Int) async throws -> Data {
-            let result = try await AgentCommand().run(command: args.map(AgentGit.quote).joined(separator: " "), workspace: scratch, scratch: scratch, network: false, timeout: 8, readOnly: true, maximumOutput: maximum)
+        func unzip(_ args: [String], maximum: Int) async throws -> Data {
+            let result = try await AgentCommand().run(command: "/usr/bin/unzip", workspace: scratch, scratch: scratch, network: false, timeout: 8, readOnly: true, maximumOutput: maximum, arguments: args)
             guard !result.failed, result.truncated != true, let data = result.stdoutData else { throw PetError("扩展包读取失败（exit=\(result.exitCode ?? -1)\(result.truncated == true ? "，输出超过上限" : "")）：" + String((result.stderr ?? result.text).prefix(500))) }; return data
         }
-        let listing = try await command(["/usr/bin/unzip", "-Z1", pinned.path], maximum: repositoryPath == nil ? 200_000 : 2_000_000)
-        guard let text = String(data: listing, encoding: .utf8) else { throw PetError("扩展包中的路径不是 UTF-8") }
-        let names = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        guard !names.isEmpty, names.count <= (repositoryPath == nil ? 2000 : 20_000),
+        let listingLimit = repositoryPath == nil ? 200_000 : 2_000_000
+        let entryLimit = repositoryPath == nil ? 2000 : 20_000
+        let listing = try await unzip(["-Z1", pinned.path], maximum: listingLimit)
+        let names: [String]
+        if let text = String(data: listing, encoding: .utf8), !text.contains("?") {
+            names = text.split(separator: "\n").map(String.init)
+        } else {
+            // ZipInfo can replace parts of UTF-8 names when printing. Use the
+            // directory's exact bytes so unzip receives the original spelling.
+            let count = listing.split(separator: 0x0a).count
+            guard (1...entryLimit).contains(count) else { throw PetError("扩展包为空或资源数量超过上限") }
+            names = try zipDirectoryNames(data, expectedCount: count, limit: listingLimit)
+        }
+        guard !names.isEmpty, names.count <= entryLimit,
               Set(names.map { $0.precomposedStringWithCanonicalMapping.lowercased() }).count == names.count else { throw PetError("扩展包为空、路径重复或资源数量超过上限") }
         for name in names { guard validPath(name) else { throw PetError("扩展包包含不安全或不支持的路径：" + String(name.prefix(160))) } }
         let prefix = try rootPrefix(in: names, definitions: definitions, repositoryPath: repositoryPath)
@@ -26,11 +36,60 @@ enum AgentArchive {
             let path = String(name.dropFirst(prefix.count))
             if !included(path, hiddenRoots: hiddenRoots) { continue }
             guard !AgentFiles.sensitive(path), !path.isEmpty else { throw PetError("扩展包包含受保护文件：" + path) }
-            let bytes = try await command(["/usr/bin/unzip", "-p", pinned.path, name], maximum: 2_000_000); total += bytes.count
+            let bytes = try await unzip(["-p", pinned.path, name], maximum: 2_000_000); total += bytes.count
             guard total <= 20_000_000 else { throw PetError("扩展包展开后超过 20MB") }; result[path] = bytes
         }
         // Read members as bytes only. Archive links never become filesystem links.
         return result
+    }
+
+    // ZIP APPNOTE §§4.3.12–4.3.16. Only the directory is read here. The
+    // existing isolated unzip command still reads and verifies member data.
+    private static func zipDirectoryNames(_ data: Data, expectedCount: Int, limit: Int) throws -> [String] {
+        try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            func word(_ offset: Int) -> Int { Int(UInt16(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt16.self))) }
+            func long(_ offset: Int) -> Int { Int(UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt32.self))) }
+            func wide(_ offset: Int) -> UInt64 { UInt64(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) }
+            let invalid = PetError("扩展包的 ZIP 路径目录无效")
+            guard bytes.count >= 22 else { throw invalid }
+            let last = bytes.count - 22, earliest = max(0, last - 65_535)
+            guard let end = (earliest...last).reversed().first(where: { offset in
+                long(offset) == 0x06054b50 && word(offset + 20) == last - offset
+            }) else { throw invalid }
+
+            var start = long(end + 16), length = long(end + 12), count = word(end + 10), directoryEnd = end
+            let locator = end - 20
+            if locator >= 0, long(locator) == 0x07064b50 {
+                guard long(locator + 4) == 0, long(locator + 16) == 1, let extendedEnd = Int(exactly: wide(locator + 8)),
+                      extendedEnd <= locator - 56, long(extendedEnd) == 0x06064b50,
+                      wide(extendedEnd + 4) == UInt64(locator - extendedEnd - 12), long(extendedEnd + 16) == 0, long(extendedEnd + 20) == 0,
+                      wide(extendedEnd + 24) == UInt64(expectedCount), wide(extendedEnd + 32) == UInt64(expectedCount),
+                      let offset = Int(exactly: wide(extendedEnd + 48)), let size = Int(exactly: wide(extendedEnd + 40)) else { throw invalid }
+                start = offset; length = size; count = expectedCount; directoryEnd = extendedEnd
+            } else {
+                guard word(end + 4) == 0, word(end + 6) == 0, word(end + 8) == count else { throw invalid }
+            }
+            guard count == expectedCount, length <= directoryEnd, start == directoryEnd - length else { throw invalid }
+
+            var cursor = start, nameBytes = 0, result: [String] = []
+            result.reserveCapacity(count)
+            for _ in 0..<count {
+                guard directoryEnd - cursor >= 46, long(cursor) == 0x02014b50, word(cursor + 34) == 0 else { throw invalid }
+                let size = word(cursor + 28), next = cursor + 46 + size + word(cursor + 30) + word(cursor + 32)
+                guard size > 0, next <= directoryEnd else { throw invalid }
+                nameBytes += size + 1
+                guard nameBytes <= limit else { throw PetError("扩展包的路径清单超过上限") }
+                let raw = bytes[(cursor + 46)..<(cursor + 46 + size)]
+                guard !raw.contains(where: { $0 < 32 || $0 == 127 }), let name = String(bytes: raw, encoding: .utf8) else {
+                    throw PetError("扩展包包含无效的 UTF-8 路径或控制字符")
+                }
+                result.append(name); cursor = next
+            }
+            if cursor != directoryEnd {
+                guard directoryEnd - cursor >= 6, long(cursor) == 0x05054b50, word(cursor + 4) == directoryEnd - cursor - 6 else { throw invalid }
+            }
+            return result
+        }
     }
 
     private static func rootPrefix(in names: [String], definitions: [String], repositoryPath: String?) throws -> String {
