@@ -199,7 +199,7 @@ final class FormDocumentView: NSView {
     private var draftSave: DispatchWorkItem?
     private var recordWindow: AgentRecordWindow?
     private var artifactDocuments: [AgentRecordWindow] = []
-    private var taskModelWindow: AgentTaskModelWindow?
+    private var taskModelPopover: NSPopover?
     private var contextWindow: AgentContextWindow?
     private let taskMCPContext = AgentWorkbenchButton()
     private let taskContext = AgentWorkbenchButton()
@@ -1666,9 +1666,19 @@ final class FormDocumentView: NSView {
     }
     @objc private func taskMenuAction(_ sender: NSMenuItem) { if let value = sender.representedObject as? [String], value.count == 2 { agentTaskAction(value[0], action: value[1]) } }
     @objc private func showTaskModelMenu(_ sender: NSButton) {
-        guard let runtime = companion?.agentRuntime, let id = agentTaskID else { return }
-        taskModelWindow?.window?.performClose(nil); taskModelWindow = AgentTaskModelWindow(runtime: runtime, taskID: id)
-        taskModelWindow?.showWindow(nil); taskModelWindow?.window?.makeKeyAndOrderFront(nil)
+        if taskModelPopover?.isShown == true { taskModelPopover?.close(); return }
+        guard selectedTab == "chat", let runtime = companion?.agentRuntime, let id = agentTaskID,
+              let window, sender.window === window, !window.hasBlockingDialog, saveAgentDraft() else { return }
+        let popover = NSPopover()
+        let picker = AgentTaskModelPicker(runtime: runtime, taskID: id, popover: popover, owner: window) { [weak self, weak popover] returnFocus in
+            guard let self, let popover, taskModelPopover === popover else { return }
+            taskModelPopover = nil
+            if returnFocus, selectedTab == "chat", agentTaskID == id, self.window?.isVisible == true { focusTaskInput() }
+        }
+        popover.behavior = .transient; popover.animates = false; popover.appearance = window.effectiveAppearance
+        popover.contentViewController = picker; popover.contentSize = picker.preferredContentSize; popover.delegate = picker
+        taskModelPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
@@ -2443,7 +2453,7 @@ final class FormDocumentView: NSView {
     }
     @objc private func selectTab(_ sender: NSButton) { companion?.screenCompanion.interaction(); show(tab: sender.tag == 0 ? "chat" : "settings") }
     private func changeTab() {
-        if selectedTab != "chat" { taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
+        if selectedTab != "chat" { taskModelPopover?.close(); taskFind.close(notify: false); clearMessageSearchHighlight(); dismissExtensionCandidates() }
         chat.isHidden = selectedTab != "chat"; settings.isHidden = selectedTab != "settings"; attentionContent.isHidden = selectedTab != "attention"; automationContent.isHidden = selectedTab != "automation"; knowledgeContent.isHidden = selectedTab != "knowledge"
         taskSidebar.setMainPage(selectedTab)
         refreshKnowledgeNavigation()
@@ -2896,6 +2906,7 @@ final class FormDocumentView: NSView {
         }
         taskFind.reset()
         taskSwitcher?.cancel()
+        taskModelPopover?.close()
         nameEditor?.cancel()
         workspaceEditor?.cancel()
         pendingRender?.cancel(); draftSave?.cancel(); branchTask?.cancel(); invalidateModelCheck(); dismissExtensionCandidates()
@@ -2935,7 +2946,7 @@ final class FormDocumentView: NSView {
                 record.window?.close()
             }
         }
-        let panels: [NSWindowController?] = [recordWindow, taskModelWindow, contextWindow, worktreeWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
+        let panels: [NSWindowController?] = [recordWindow, contextWindow, worktreeWindow, extensionWindow, profileWindow, teamWindow, attachmentWindow]
         for panel in panels { if let child = panel?.window, child.isVisible { child.performClose(nil); if child.isVisible { return false } } }
         return true
     }
@@ -3521,7 +3532,7 @@ final class FormDocumentView: NSView {
     func selectAgentTask(_ id: String, searchQuery: String? = nil, messageID: String? = nil) {
         dismissExtensionCandidates()
         guard let tasks = companion?.agentStore, let record = tasks.task(id), saveAgentDraft(), canLeaveMainPage() else { return }
-        if id != agentTaskID { pendingAttachmentTarget = nil }
+        if id != agentTaskID { taskModelPopover?.close(); pendingAttachmentTarget = nil }
         if let sideTaskTabID, sideTaskTabID != id {
             if record.sideTask != nil && record.parentID == sideTaskTabID { self.sideTaskTabID = id }
             else { companion?.showTaskInMainWindow(id); return }
@@ -4653,7 +4664,7 @@ final class FormDocumentView: NSView {
         window?.title = (task.sideTask != nil && task.title == "新的任务" ? "新的侧任务" : task.title) + " · 小鲸" + (taskWindowNumber == 1 ? "" : "（\(taskWindowNumber)）")
         if contextWindow?.window?.isVisible == true { contextWindow?.refresh() }
         taskWorkspace.controllers.compactMap { $0 as? AgentContextWindow }.filter(\.isPageVisible).forEach { $0.refresh() }
-        if taskModelWindow?.window?.isVisible == true { taskModelWindow?.refreshState() }
+        if let popover = taskModelPopover, popover.isShown { (popover.contentViewController as? AgentTaskModelPicker)?.refreshState() }
         recordWindow?.refreshLiveRecords(task.id)
         for record in artifactDocuments { record.refreshLiveRecords(task.id) }
         taskWorkspace.controllers.compactMap { $0 as? AgentRecordWindow }.forEach { $0.refreshLiveRecords(task.id) }

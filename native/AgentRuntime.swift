@@ -472,12 +472,20 @@ import Foundation
         return try store.models.resolve(delegatedModels[id]?.preferences ?? preferences(), task: task)
     }
     func chooseModel(_ id: String, model: String?) throws {
-        guard let task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty else { throw PetError("请先停止执行或处理待确认操作") }
+        guard var task = store.task(id), !task.archived, task.kind != "hook", !isBusy(id), task.pendingCalls.isEmpty else { throw PetError("请先停止执行或处理待确认操作") }
         if let model, !AgentTaskModels.validID(model) { throw PetError("请输入有效的模型 ID（少于 200 字符）") }
-        var preview = task; preview.modelOverride = model
-        _ = try store.models.resolve(preferences(), task: preview)
+        guard task.modelOverride != model else { return }
+        try store.sideTasks.requireOpen(task)
+        let revision = try store.recordVersion(id)
+        task.modelOverride = model
+        _ = try store.models.resolve(preferences(), task: task)
+        task.activityAt = task.activityAt ?? task.updated
+        task.updated = Date()
+        let transaction = store.directory.appendingPathComponent("model-selection-transactions/" + UUID().uuidString)
+        try store.commitTaskRecord(task, expectedHash: revision, transaction: transaction, label: "选择任务模型")
+        try? FileManager.default.removeItem(at: transaction)
         promptSuggestions.cancel(id); skillEvolution.cancel(id)
-        store.update(id) { $0.modelOverride = model }; notifyChange(id)
+        notifyChange(id)
     }
     func refreshTaskModels() async throws { try await store.models.refresh(preferences(), key: keychain.read("chat")) }
     func modelChoices(_ id: String) -> [String] {

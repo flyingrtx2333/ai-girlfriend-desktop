@@ -56,6 +56,7 @@ struct AgentTaskRecap: Codable {
     }
     func refresh(_ p: PetPreferences, key: String) async throws {
         let values = try await CompanionService.models(endpoint: p.endpoint, key: key)
+        try Task.checkCancellation()
         let cleaned = values.filter { Self.validID($0.id) }
         guard !cleaned.isEmpty else { throw PetError("服务未返回可用模型，可直接输入模型 ID") }
         let value = Catalog(endpoint: endpoint(p), updated: Date(), models: cleaned)
