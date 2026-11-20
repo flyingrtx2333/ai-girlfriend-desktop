@@ -25,7 +25,8 @@ import AppKit
         self.runtime = runtime; self.taskID = taskID; self.popover = popover; self.owner = owner; self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
         preferredContentSize = NSSize(width: 424, height: 368)
-        let content = AgentThemeView(fill: AgentWorkbenchTheme.surface)
+        let content = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
+        content.layer?.cornerRadius = 10; content.layer?.borderWidth = 1
         content.setAccessibilityLabel("任务模型选择")
         view = content
 

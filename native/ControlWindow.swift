@@ -1678,7 +1678,9 @@ final class FormDocumentView: NSView {
         popover.behavior = .transient; popover.animates = false; popover.appearance = window.effectiveAppearance
         popover.contentViewController = picker; popover.contentSize = picker.preferredContentSize; popover.delegate = picker
         taskModelPopover = popover
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let topEdge: NSRectEdge = sender.isFlipped ? .minY : .maxY
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: topEdge)
     }
     @objc private func showTaskContext() { presentTaskContext(section: 0) }
     @objc private func showTaskRecap() { presentTaskContext(section: 1) }
