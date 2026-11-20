@@ -95,8 +95,8 @@ enum AgentSettingsRecovery {
                     || kinds == [root, "plugin-market"] || kinds == [root, "plugin-market", "plugin-market-review"]
             case ("extensions", "mcp"):
                 return kinds == [root] || kinds == [root, "mcp-detail"] || kinds == [root, "mcp-import"] || kinds == [root, "mcp-detail", "mcp-import"]
-            case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"]
-            case ("agents", "agents"), ("extensions", "agents"): return kinds == [root]
+            case ("teams", "teams"): return kinds == [root] || kinds == [root, "agents"] || kinds == [root, "agents", "mcp-tool-rule"]
+            case ("agents", "agents"), ("extensions", "agents"): return kinds == [root] || kinds == [root, "mcp-tool-rule"]
             case ("git", "git"): return kinds == [root] && context.taskID == nil && context.workspace == nil
             default: return false
             }

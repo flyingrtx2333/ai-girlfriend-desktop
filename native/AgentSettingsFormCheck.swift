@@ -156,6 +156,7 @@ import AppKit
         let savedDraft = try tasks.agents.list(workspace: workspace).first { $0.id == draft.profile.id }
         checks["HostedDraftSavePreservesInstructionsAndDisabledPermissions"] = savedDraft?.name == "页内草稿核对员修改" && savedDraft?.instructions == draft.profile.instructions && savedDraft?.enabled == false && savedDraft?.readOnly == true && savedDraft?.network == false
         checks["HostedDraftLeavesNormallyAfterSave"] = pane.leave()
+        checks.merge(try checkMCPRuleRecovery(tasks: tasks, taskID: taskID, roleID: role.id, pane: pane, host: host)) { _, value in value }
         let emptyRoot = tasks.directory.appendingPathComponent("empty-catalog"), home = emptyRoot.appendingPathComponent("home")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         let emptyStore = AgentStore(directory: emptyRoot.appendingPathComponent("profile"), legacy: [], extensionHome: home), emptyTask = emptyStore.create(title: "空列表验收")
@@ -210,6 +211,63 @@ import AppKit
             }
             guard pane.leave() else { throw PetError("空列表未正常退出：" + key) }
         }
+        return checks
+    }
+
+    private static func checkMCPRuleRecovery(tasks: AgentStore, taskID: String, roleID: String, pane: AgentSettingsPageHost, host: NSWindow) throws -> [String: Bool] {
+        let task = tasks.task(taskID), workspace = task?.workspace, context = AgentSettingsRecovery.Context(task: task, workspace: workspace)
+        let document = #"{"name":"恢复规则公开连接器","type":"stdio","command":"/usr/bin/true","args":[],"env":{},"timeoutSeconds":12}"#
+        let connector = try tasks.mcp.save(document, workspace: workspace)
+        let original = try tasks.agents.document().1
+        let manager = AgentProfileWindow(store: tasks, workspace: workspace, taskID: taskID)
+        guard pane.show(category: "agents", identity: context.identity, scope: "设置项目", recoveryContext: context, make: { _ in manager }) else { throw PetError("无法进入工具权限恢复检查") }
+        manager.selectProfile(roleID)
+        let toggle = NSMenuItem(); toggle.representedObject = connector.id
+        NSApp.sendAction(NSSelectorFromString("toggleMCP:"), to: manager, from: toggle)
+        NSApp.sendAction(NSSelectorFromString("addMCPRule"), to: manager, from: nil)
+        guard let form = pane.currentController as? AgentMCPToolRulePage else { throw PetError("缺少工具权限恢复表单") }
+        let targets = try menu("MCP 连接器", in: form)
+        guard let option = targets.itemArray.first(where: { $0.representedObject as? String == connector.id }) else { throw PetError("缺少恢复样例连接器") }
+        targets.select(option)
+        try menu("MCP 工具权限", in: form).selectItem(withTitle: AgentToolPermission.deny.title)
+        let invalid = "公开🐳" + String(repeating: "x", count: 129)
+        try edit("MCP 工具名", invalid, in: form); try press("应用", in: form)
+        let tool = try field("MCP 工具名", in: form)
+        host.makeFirstResponder(tool)
+        (tool.currentEditor() as? NSTextView)?.setSelectedRange((invalid as NSString).range(of: "公开🐳"))
+        guard let saved = try pane.captureRecovery(active: true), let child = saved.pages.last else { throw PetError("工具权限草稿未被记录") }
+        var checks: [String: Bool] = [:]
+        checks["ToolPermissionFormHasItsOwnTitleAndAgentScope"] = form.detailHeading?.title == "MCP 工具权限" && form.detailHeading?.scope == "设置审阅员"
+        checks["ChildAndOriginalParentCanBePreservedAtQuit"] = try saved.pages.map(\.kind) == ["agents", "mcp-tool-rule"] && pane.prepareToQuit(preserving: Set(pane.controllers.map(ObjectIdentifier.init))) && tasks.agents.document().1 == original
+        let wrongProfile = AgentMCPToolRulePage(servers: [connector], profileID: UUID().uuidString, profileName: "其他智能体")
+        do { try wrongProfile.restoreSettingsRecovery(child); checks["ChildRejectsAnotherAgent"] = false }
+        catch { checks["ChildRejectsAnotherAgent"] = true }
+        func reopen() throws -> AgentMCPToolRulePage {
+            pane.finish()
+            let root = AgentProfileWindow(store: tasks, workspace: workspace, taskID: taskID)
+            try pane.restoreRecovery(saved) { key in key == "agents" ? root : nil }
+            guard let page = pane.currentController as? AgentMCPToolRulePage else { throw PetError("工具权限未恢复到原页") }
+            return page
+        }
+        let restored = try reopen()
+        checks["ChildRecoversInvalidTextPermissionSelectionAndActualError"] = try field("MCP 工具名", in: restored).stringValue == invalid &&
+            menu("MCP 工具权限", in: restored).selectedItem?.title == AgentToolPermission.deny.title &&
+            menu("MCP 连接器", in: restored).selectedItem?.representedObject as? String == connector.id && text(restored.pageContentView).contains("有效的实际工具名")
+        let changed = try tasks.mcp.save(document.replacingOccurrences(of: ":12", with: ":24"), id: connector.id, expectedRevision: connector.revision, workspace: workspace)
+        try edit("MCP 工具名", "read_public", in: restored); try press("应用", in: restored)
+        checks["ChangedConnectorInAnOpenFormCannotApplyTheOldRevision"] = try changed.revision != connector.revision && pane.currentController === restored && text(restored.pageContentView).contains("连接器配置已变化") && tasks.agents.document().1 == original
+        let stale = try reopen(), staleTargets = try menu("MCP 连接器", in: stale)
+        checks["ChangedConnectorRestoresDraftButRequiresExplicitReselection"] = try field("MCP 工具名", in: stale).stringValue == invalid &&
+            staleTargets.selectedItem?.title.contains("需重新选择") == true && !stale.submitButton.isEnabled && text(stale.pageContentView).contains("原连接器已变化") && tasks.agents.document().1 == original
+        guard let current = staleTargets.itemArray.first(where: { $0.representedObject as? String == changed.id }), let action = staleTargets.action else { throw PetError("缺少重新选择入口") }
+        staleTargets.select(current); NSApp.sendAction(action, to: staleTargets.target, from: staleTargets)
+        try edit("MCP 工具名", "read_public", in: stale); try press("应用", in: stale)
+        guard let parent = pane.currentController as? AgentSettingsDetailPage else { throw PetError("应用未返回原智能体") }
+        checks["ExplicitReselectionStagesOnlyInTheOriginalParent"] = try pane.captureRecovery(active: true)?.pages.map(\.kind) == ["agents"] && tasks.agents.document().1 == original
+        try press("保存", in: parent)
+        let effective = try tasks.agents.list(workspace: workspace).first { $0.id == roleID }
+        checks["SavingTheOriginalParentPersistsExactDeniedRule"] = effective?.mcpToolPermissions?.contains(.init(serverID: connector.id, tool: "read_public", permission: .deny)) == true
+        checks["RestoredRuleClosesNormallyAfterExplicitSave"] = pane.leave()
         return checks
     }
 }

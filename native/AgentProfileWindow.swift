@@ -268,14 +268,28 @@ import UniformTypeIdentifiers
         if let rule = AgentToolPermission(rawValue: value[2]) { mcpPermissions.append(AgentMCPToolPermission(serverID: value[0], tool: value[1], permission: rule)) }; refreshMenus(); changed()
     }
     @objc private func addMCPRule() {
-        let servers = ((try? availableServers()) ?? []).filter { selectedMCP.contains($0.id) }; guard !servers.isEmpty else { return }
-        let page = AgentMCPToolRulePage(servers: servers), profileID = selectedID
-        page.onApply = { [weak self] rule in
-            guard let self, selectedID == profileID, selectedMCP.contains(rule.serverID), try availableServers().contains(where: { $0.id == rule.serverID }) else { throw PetError("连接器已变化，请返回重新选择") }
+        guard let profile = editedValue(), profile.pluginSource == nil else { return }
+        let servers = ((try? availableServers()) ?? []).filter { selectedMCP.contains($0.id) }
+        guard !servers.isEmpty else { return }
+        presentSettingsChild(makeMCPRulePage(profile: profile, servers: servers))
+    }
+    private func makeMCPRulePage(profile: AgentProfile, servers: [AgentMCPServer]) -> AgentMCPToolRulePage {
+        let profileID = profile.id
+        let page = AgentMCPToolRulePage(servers: servers, profileID: profileID, profileName: profile.name)
+        page.onApply = { [weak self] rule, revision in
+            guard let self, selectedID == profileID, selectedMCP.contains(rule.serverID),
+                  try availableServers().contains(where: { $0.id == rule.serverID && $0.revision == revision }) else {
+                throw PetError("连接器配置已变化，请返回后重新选择")
+            }
             mcpPermissions.removeAll { $0.serverID == rule.serverID && $0.tool == rule.tool }; mcpPermissions.append(rule); refreshMenus(); changed()
         }
         page.onApplied = { [weak self] in guard let self else { return }; presentingWindow?.makeFirstResponder(mcp) }
-        presentSettingsChild(page)
+        return page
+    }
+    override func makeSettingsRecoveryChild(_ page: AgentSettingsRecovery.Page) throws -> AgentSettingsPageController? {
+        guard page.kind == "mcp-tool-rule", detailPage?.settingsHostWindow != nil,
+              let profile = editedValue(), profile.pluginSource == nil else { return nil }
+        return makeMCPRulePage(profile: profile, servers: try availableServers().filter { selectedMCP.contains($0.id) })
     }
     @objc private func create() { guard !dirty else { state.stringValue = "请先保存更改"; return }; let value = AgentProfile(name: "", description: "", instructions: ""); values.append(value); table.reloadData(); open(value.id); changed(); showDetail(); presentingWindow?.makeFirstResponder(name) }
     @objc private func chooseTemplate(_ sender: NSButton) {
