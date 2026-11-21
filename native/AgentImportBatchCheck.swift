@@ -26,18 +26,33 @@ import AppKit
             while pending(), Date() < limit { await wait(0.05) }
             guard !pending() else { throw PetError("SSH 窗口操作未结束") }
         }
-        func detectSSH(_ route: AgentImportRoute) throws {
+        func chooseSSH(_ route: AgentImportRoute) throws {
             guard control.showSettingsCategory("imports"),
                   let location = find(content, NSSegmentedControl.self, { $0.accessibilityIdentifier() == "import-location" }),
-                  let action = location.action else { throw PetError("缺少 SSH 导入入口") }
+                  let action = location.action,
+                  let source = find(content, NSSegmentedControl.self, { $0.accessibilityIdentifier() == "import-sources" }),
+                  let choose = source.action else { throw PetError("缺少 SSH 导入入口") }
             location.selectedSegment = 1
             NSApp.sendAction(action, to: location.target, from: location)
+            source.selectedSegment = AgentImportSource.allCases.firstIndex(of: route.source) ?? 0
+            NSApp.sendAction(choose, to: source.target, from: source)
             guard let host = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-host" }),
                   let directory = find(content, NSTextField.self, { $0.accessibilityIdentifier() == "import-ssh-directory" }) else { throw PetError("缺少 SSH 来源字段") }
             host.stringValue = route.sshHost ?? ""
             directory.stringValue = route.root
             directory.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: directory))
-            try button("检测任务记录").performClick(nil)
+        }
+        func openCategory(_ category: AgentImportCategory) throws {
+            let id = "import-category-" + category.rawValue
+            guard let row = find(content, NSButton.self, { $0.accessibilityIdentifier() == id && $0.isEnabled }) else {
+                throw PetError("缺少导入类别 " + category.title)
+            }
+            row.performClick(nil)
+        }
+        func detectSSH(_ route: AgentImportRoute) throws {
+            try chooseSSH(route)
+            try openCategory(route.category)
+            try button("重新检测").performClick(nil)
         }
         var checks: [String: Bool] = [:]
         var requests = 0
@@ -45,6 +60,114 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-memory-import-check") {
+            let memory = AgentImportRoute(source: .codex, category: .memory, root: root.path, workspace: nil, sshHost: route.sshHost)
+            let phase = output.appendingPathComponent("ssh-memory-paused.json")
+            let primary = root.appendingPathComponent("memories_v2/MEMORY.md")
+            let summary = root.appendingPathComponent("memories/memory_summary.md")
+            let fm = FileManager.default
+            func installed(_ record: AgentImportCandidate) throws -> Data {
+                try AgentMemoryImport.destinationURLs(record, store: tasks).reduce(into: Data()) { $0.append(try Data(contentsOf: $1)) }
+            }
+            func write(_ value: [String: Any], to url: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: url, options: .atomic)
+            }
+            if !fm.fileExists(atPath: phase.path) {
+                try chooseSSH(route)
+                let categories = AgentImportCategory.allCases.filter { category in
+                    find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
+                }
+                checks["overviewShowsTaskAndMemoryOnly"] = Set(categories) == Set([.tasks, .memory])
+                try button("检测可导入内容").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: memory) == nil }
+                let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }
+                let confirm = try button("导入 4 项")
+                checks["oneScanShowsBothCategories"] = importer.preview(for: route)?.available.count == 2 && valid.count == 2 && confirm.isEnabled
+                let previousPaths = Set([primary.path, summary.path])
+                checks["codexOnlyReadsDurableMarkdownAndReportsInvalidFiles"] = Set(valid.map(\.file)) == previousPaths && records.count == 4 &&
+                    records.contains { $0.issue?.contains("UTF-8") == true } && records.contains { $0.issue?.contains("4 MB") == true }
+                guard let index = records.firstIndex(where: { $0.file == primary.path }) else { throw PetError("缺少 SSH 主记忆预览") }
+                let expected = try Data(contentsOf: primary)
+                checks["previewHashesTheExactBytesAndPlansTopics"] = records[index].rawHash == AgentFiles.hash(expected) &&
+                    records[index].memory?.parts.count == AgentMemoryImport.split(expected).count && records[index].sshHost == route.sshHost
+                try openCategory(.memory)
+                guard let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入记忆" }) else { throw PetError("缺少 SSH 记忆列表") }
+                list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let saved = control.captureSettingsNavigation()?.dataImport
+                checks["previewShowsRemoteOriginAndGlobalTarget"] = detail?.string.contains("whale-import:" + primary.path) == true &&
+                    detail?.string.contains("全局记忆") == true && find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                checks["navigationKeepsBothReviewedRoutes"] = saved?.category == .memory && saved?.ssh == true &&
+                    saved?.routes.first(where: { $0.route == memory })?.checked?.count == 2 &&
+                    saved?.routes.first(where: { $0.route == route })?.checked?.count == 2
+                try button("返回导入").performClick(nil)
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if let importer, importer.batch?.state == "running", importer.batch?.items.filter({ $0.state == "imported" }).count == 2 {
+                        importer.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                try button("导入 4 项").performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("SSH 混合批次没有暂停") }
+                checks["pausingAfterTasksFreezesBothMemories"] = batch.items.filter { $0.state == "imported" && batch.route(for: $0) == route }.count == 2 &&
+                    batch.items.filter { $0.state == "pending" && batch.route(for: $0) == memory }.count == 2
+                try Data("预览后修改的公开来源\n".utf8).write(to: summary)
+                try write(["batch": batch.id, "pid": getpid(), "checks": checks], to: phase)
+                return
+            }
+            let initial = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = initial["checks"] as? [String: Bool] ?? [:]
+            checks["anotherProcessRestoresPausedRemoteBatch"] = initial["pid"] as? Int != Int(getpid()) &&
+                importer.batch?.id == initial["batch"] as? String && importer.unfinished && importer.batch?.state == "paused"
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复 SSH 导入页") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            guard let completed = importer.batch, let main = completed.items.first(where: { $0.record.file == primary.path }),
+                  let changed = completed.items.first(where: { $0.record.file == summary.path }) else { throw PetError("缺少 SSH 恢复结果") }
+            let imported = try installed(main.record), expected = try Data(contentsOf: primary)
+            checks["globalMemoryRetainsExactBytesAfterRestart"] = main.state == "imported" && imported == expected
+            let rejected = try installed(changed.record)
+            checks["changedRemoteMemoryIsRejectedWithoutBlockingTheBatch"] = completed.state == "completed" && changed.state == "failed" &&
+                changed.detail.contains("来源记忆已更新") && rejected.isEmpty
+            checks["restoringDoesNotReimportTheCompletedTasks"] = tasks.tasks.filter { $0.importOrigin?.sshHost == route.sshHost }.count == 2
+
+            let qoderRoot = output.appendingPathComponent("Qoder 项目别名")
+            let project = output.appendingPathComponent("本机目标项目")
+            let qoder = AgentImportRoute(source: .qoder, category: .memory, root: qoderRoot.path, workspace: nil, sshHost: route.sshHost)
+            let target = AgentImportRoute(source: .qoder, category: .memory, root: qoder.root, workspace: project.path, sshHost: qoder.sshHost)
+            try fm.createDirectory(at: project, withIntermediateDirectories: true)
+            try tasks.organization.register(project.path, mode: .coding)
+            try detectSSH(qoder)
+            try await settle { importer.scanning || importer.preview(for: qoder) == nil }
+            checks["qoderProjectAliasRequiresLocalProjectTarget"] = importer.preview(for: qoder)?.issue?.contains("选择目标项目") == true
+            guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "记忆目标" }),
+                  let item = picker.itemArray.first(where: { $0.representedObject as? String == project.path }),
+                  let action = picker.action else { throw PetError("SSH 记忆缺少项目目标选择") }
+            picker.select(item)
+            NSApp.sendAction(action, to: picker.target, from: picker)
+            checks["navigationKeepsRemoteHostAndLocalProject"] = control.captureSettingsNavigation()?.dataImport?.routes.contains { $0.route == target } == true
+            try button("重新检测").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: target) == nil }
+            guard let records = importer.preview(for: target)?.records, records.count == 1, let record = records.first, record.issue == nil else {
+                throw PetError(importer.preview(for: target)?.issue ?? "Qoder 项目记忆预览有误")
+            }
+            try button("导入 1 项").performClick(nil)
+            try await settle { importer.active }
+            let bytes = try installed(record), global = try AgentMemory.importDestination(store: tasks, workspace: nil).folder
+            let sourceBytes = try Data(contentsOf: qoderRoot.appendingPathComponent("memory/项目约定.md"))
+            checks["qoderMemoryIsOnlyWrittenToTheChosenProject"] = importer.batch?.items.first?.state == "imported" &&
+                bytes == sourceBytes && !fm.fileExists(atPath: global.appendingPathComponent("项目约定.md").path)
+            let profile = tasks.directory.deletingLastPathComponent()
+            checks["noTransferScratchRemains"] = try !fm.contentsOfDirectory(atPath: profile.path).contains { $0.hasPrefix("ssh-import-transfer-") }
+            let success = checks.values.allSatisfy { $0 } && requests == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-memory-report.json"))
+            guard success else { throw PetError("SSH 记忆导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-import-stream-check") {
             struct Fixture: Decodable {
                 struct Record: Decodable { let id: String; let sha256: String }

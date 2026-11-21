@@ -2,11 +2,12 @@ import Foundation
 import BlueFatFishTerminal
 import Darwin
 
-/// Fetches only session JSONL. Remote paths are arguments to a fixed read-only
-/// script, and the response is decoded as bytes without extracting an archive.
+/// Remote session and memory paths are arguments to fixed read-only scripts.
+/// Preview decoding retains one file at a time and never extracts an archive.
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
+    static let categories: [AgentImportCategory] = [.tasks, .memory]
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -26,6 +27,7 @@ struct AgentSSHImport: Sendable {
     }
 
     func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
+        guard route.category == .tasks else { throw PetError("缺少 SSH 任务来源") }
         let directories = AgentImportReaders.sessionDirectories(route.source)
         let pattern = route.source == .codex ? "*.jsonl" : "????????-????-????-????-????????????.jsonl"
         return try await response(route, script: Self.scan, arguments: [String(AgentImportReaders.maximumBytes), pattern] + directories,
@@ -34,10 +36,61 @@ struct AgentSSHImport: Sendable {
         }
     }
 
+    func discoverMemory(_ route: AgentImportRoute) async throws -> [AgentMemoryImport.Preview] {
+        try await memoryResponse(route, wanted: "") { input in
+            let records: [AgentMemoryImport.Preview] = try Self.scanFrames(input, maximum: AgentMemoryImport.maximumBytes,
+                                                                          oversized: "来源记忆文件超过 4 MB") { path, bytes in
+                guard Self.validMemoryFile(path, route: route) else { return nil }
+                return AgentMemoryImport.preview(route.source, file: Self.prefix(route) + path, workspace: route.workspace, sshHost: route.sshHost) {
+                    try bytes.get()
+                }
+            }
+            return records.sorted { $0.record.file.localizedStandardCompare($1.record.file) == .orderedAscending }
+        }
+    }
+
+    func readMemory(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> Data {
+        let prefix = Self.prefix(route), path = String(record.file.dropFirst(prefix.count))
+        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .memory,
+              record.targetWorkspace == route.workspace, record.file.hasPrefix(prefix), Self.validMemoryFile(path, route: route) else {
+            throw PetError("SSH 记忆与原来源不符，请重新检测")
+        }
+        return try await memoryResponse(route, wanted: path) { input in
+            let files: [Data] = try Self.scanFrames(input, maximum: AgentMemoryImport.maximumBytes, oversized: "来源记忆文件超过 4 MB") { name, bytes in
+                guard name == path else { throw FrameError.invalid }
+                return try bytes.get()
+            }
+            guard files.count == 1, let data = files.first else { throw PetError("远端记忆文件已移除或离开检测目录") }
+            return data
+        }
+    }
+
+    private func memoryResponse<Value>(_ route: AgentImportRoute, wanted: String,
+                                       decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .memory else { throw PetError("缺少 SSH 记忆来源") }
+        let arguments = [String(AgentMemoryImport.maximumBytes), route.source.rawValue,
+                         route.workspace == nil ? "global" : "project", route.source.homeName, wanted]
+        return try await response(route, script: Self.scanMemory, arguments: arguments + AgentMemoryImport.folders(for: route.source),
+                                  timeout: wanted.isEmpty ? 1800 : 60, decode: decode)
+    }
+
+    private static func validMemoryFile(_ path: String, route: AgentImportRoute) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        let folders = AgentMemoryImport.folders(for: route.source)
+        guard (1...2).contains(parts.count), let name = parts.last,
+              parts.count == 1 || folders.contains(String(parts[0])) else { return false }
+        let folder = parts.count == 2 ? String(parts[0]) : (route.root as NSString).lastPathComponent
+        return AgentMemoryImport.allowed(String(name), consolidated: route.source == .codex && folders.contains(folder))
+    }
+
+    private static func prefix(_ route: AgentImportRoute) -> String {
+        route.root.hasSuffix("/") ? route.root : route.root + "/"
+    }
+
     func read(_ record: AgentImportCandidate, route: AgentImportRoute) async throws -> AgentImportDocument {
-        let prefix = route.root.hasSuffix("/") ? route.root : route.root + "/"
+        let prefix = Self.prefix(route)
         let file = String(record.file.dropFirst(prefix.count))
-        guard record.sshHost == route.sshHost, record.source == route.source, record.category == .tasks,
+        guard route.category == .tasks, record.sshHost == route.sshHost, record.source == route.source, record.category == .tasks,
               record.file.hasPrefix(prefix), Self.validFile(file, source: route.source) else { throw PetError("SSH 记录与原来源不符，请重新检测") }
         let maximum = AgentImportReaders.maximumBytes
         let bytes = try await response(route, script: Self.readFile, arguments: [file, String(maximum + 1)], timeout: 60) { input in
@@ -48,48 +101,53 @@ struct AgentSSHImport: Sendable {
     }
 
     private static func decode(_ bytes: Data, file: String, route: AgentImportRoute) throws -> AgentImportDocument {
-        let prefix = route.root.hasSuffix("/") ? route.root : route.root + "/"
-        return try AgentImportReaders.decode(route.source, file: prefix + file, raw: bytes,
+        return try AgentImportReaders.decode(route.source, file: prefix(route) + file, raw: bytes,
             sshHost: route.sshHost, archived: file.hasPrefix("archived_sessions/"))
     }
 
     private static func parseScan(_ input: FileHandle, route: AgentImportRoute) throws -> [AgentImportCandidate] {
+        let records: [AgentImportCandidate] = try scanFrames(input, maximum: AgentImportReaders.maximumBytes,
+                                                            oversized: "来源超过64 MB") { path, bytes in
+            guard validFile(path, source: route.source) else { return nil }
+            do { return try decode(bytes.get(), file: path, route: route).candidate }
+            catch {
+                let file = (path as NSString).lastPathComponent
+                let id = "invalid-" + AgentFiles.hash(Data(path.utf8))
+                return .init(source: route.source, sourceID: id, file: prefix(route) + path, rawHash: "", sourceHash: "",
+                    title: file, created: Date(), updated: Date(), issue: error.localizedDescription, sshHost: route.sshHost)
+            }
+        }
+        return records.sorted { $0.updated != $1.updated ? $0.updated > $1.updated : $0.id < $1.id }
+    }
+
+    private static func scanFrames<Value>(_ input: FileHandle, maximum: Int, oversized: String,
+                                          decode: (String, Result<Data, PetError>) throws -> Value?) throws -> [Value] {
         var reader = ResponseReader(input: input)
         guard try reader.field(limit: 16) == "BFF-SESSIONS-1" else { throw FrameError.invalid }
-        var result: [AgentImportCandidate] = [], count = 0
+        var result: [Value] = [], count = 0
         while true {
             let path = try reader.field(limit: 16_384)
             if path.isEmpty { break }
             count += 1
             guard count <= AgentImportReaders.maximumRecords else { throw PetError("来源超过5000份记录，请选择较小的来源副本") }
             let length = try reader.field(limit: 10)
-            let contents: Data?
-            if length == "-" || length == "?" { contents = nil }
+            let contents: Result<Data, PetError>
+            if length == "-" { contents = .failure(PetError(oversized)) }
+            else if length == "?" { contents = .failure(PetError("无法读取远端文件")) }
             else {
-                guard let size = Int(length), (0...AgentImportReaders.maximumBytes).contains(size) else { throw FrameError.invalid }
-                contents = try reader.body(count: size)
+                guard let size = Int(length), (0...maximum).contains(size) else { throw FrameError.invalid }
+                contents = .success(try reader.body(count: size))
             }
-            guard validFile(path, source: route.source) else { continue }
-            do {
-                guard let contents else { throw PetError(length == "-" ? "来源超过64 MB" : "无法读取远端文件") }
-                let candidate = try autoreleasepool { try decode(contents, file: path, route: route).candidate }
-                result.append(candidate)
-            } catch {
-                let file = (path as NSString).lastPathComponent
-                let prefix = route.root.hasSuffix("/") ? route.root : route.root + "/"
-                let id = "invalid-" + AgentFiles.hash(Data(path.utf8))
-                result.append(.init(source: route.source, sourceID: id, file: prefix + path, rawHash: "", sourceHash: "",
-                    title: file, created: Date(), updated: Date(), issue: error.localizedDescription, sshHost: route.sshHost))
-            }
+            if let candidate = try autoreleasepool(invoking: { try decode(path, contents) }) { result.append(candidate) }
         }
         guard try !reader.hasByte() else { throw FrameError.invalid }
-        return result.sorted { $0.updated != $1.updated ? $0.updated > $1.updated : $0.id < $1.id }
+        return result
     }
 
     private enum FrameError: LocalizedError, Equatable {
         case incomplete, invalid
 
-        var errorDescription: String? { "SSH 会话目录传输不完整或格式异常，请重新检测" }
+        var errorDescription: String? { "SSH 来源传输不完整或格式异常，请重新检测" }
     }
 
     private struct ResponseReader {
@@ -148,7 +206,8 @@ struct AgentSSHImport: Sendable {
 
     private func response<Value>(_ route: AgentImportRoute, script: String, arguments: [String], timeout: Double,
                                  decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
-        guard let host = route.sshHost, Self.valid(host: host, root: route.root), route.category == .tasks, route.workspace == nil else {
+        guard let host = route.sshHost, Self.valid(host: host, root: route.root), Self.categories.contains(route.category),
+              route.category != .tasks || route.workspace == nil else {
             throw PetError("请填写有效的 SSH 主机与远程目录")
         }
         try Task.checkCancellation()
@@ -164,7 +223,7 @@ struct AgentSSHImport: Sendable {
         let writer = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
         guard descriptors.allSatisfy({ fcntl($0, F_SETFD, FD_CLOEXEC) == 0 }) else { throw PetError("无法配置 SSH 传输管道") }
         let command = AgentCommand()
-        async let transfer: Void = run(command, host: host, root: route.root, arguments: arguments, scratch: scratch,
+        async let transfer: Void = run(command, host: host, root: route.root, category: route.category, arguments: arguments, scratch: scratch,
                                        input: input, output: writer, timeout: timeout)
         let parsed: Result<Value, Error> = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -189,7 +248,7 @@ struct AgentSSHImport: Sendable {
         }
     }
 
-    private func run(_ command: AgentCommand, host: String, root: String, arguments: [String], scratch: URL,
+    private func run(_ command: AgentCommand, host: String, root: String, category: AgentImportCategory, arguments: [String], scratch: URL,
                      input: URL, output: FileHandle, timeout: Double) async throws {
         defer { try? output.close() }
         let fm = FileManager.default
@@ -209,14 +268,16 @@ struct AgentSSHImport: Sendable {
             timeout: timeout, readOnly: true, maximumOutput: 8192, protectedData: profile, inputFile: input, outputDescriptor: output.fileDescriptor,
             readRoots: [sshDirectory], sshClient: true, environment: environment,
             arguments: ssh)
-        if result.timedOut == true { throw PetError("读取 SSH 会话超时，请重新检测") }
+        if result.timedOut == true { throw PetError("读取 SSH 来源超时，请重新检测") }
         if result.failed {
             let diagnostic = result.stderr?.lowercased() ?? ""
             if diagnostic.contains("host identification has changed") { throw PetError("SSH 主机密钥已变化，请核对主机身份") }
             if diagnostic.contains("host key verification failed") { throw PetError("SSH 主机尚未验证，请先核对已知主机密钥") }
             if diagnostic.contains("permission denied") && result.exitCode == 255 { throw PetError("SSH 无法使用当前密钥登录，请检查本机配置") }
-            if result.exitCode == 42 { throw PetError("找不到远程会话目录，或目录不可读取") }
+            if result.exitCode == 42 { throw PetError("找不到远程" + (category == .memory ? "记忆" : "会话") + "目录，或目录不可读取") }
             if result.exitCode == 43 { throw PetError("远端来源文件已移动、不可读取或是链接，请重新检测") }
+            if result.exitCode == 44 { throw PetError("未找到远程记忆文件夹，请核对 SSH 来源目录") }
+            if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
             throw PetError("无法读取 SSH 来源，请检查连接与远端目录后重试")
         }
     }
@@ -236,6 +297,22 @@ struct AgentSSHImport: Sendable {
     cd -P "$root" || exit 42
     """# + "\n"
 
+    private static let emitRecord = #"""
+    emit_file() {
+        if ! size=$(wc -c 2>/dev/null < "$1"); then
+            printf "%s\0?\0" "${1#./}"
+            return
+        fi
+        size=$((size + 0))
+        if [ "$size" -gt "$limit" ]; then
+            printf "%s\0-\0" "${1#./}"
+        else
+            printf "%s\0%s\0" "${1#./}" "$size"
+            head -c "$size" "$1"
+        fi
+    }
+    """# + "\n"
+
     private static let scan = #"""
     limit=$1
     pattern=$2
@@ -246,24 +323,65 @@ struct AgentSSHImport: Sendable {
         [ -d "$directory" ] && [ ! -L "$directory" ] || continue
         found=yes
         find "$directory" -name '.*' -prune -o -type f -name "$pattern" -exec /bin/sh -c '
+            \#(emitRecord)
             limit=$1
             shift
-            for file do
-                if ! size=$(wc -c 2>/dev/null < "$file"); then
-                    printf "%s\0?\0" "$file"
-                    continue
-                fi
-                size=$((size + 0))
-                if [ "$size" -gt "$limit" ]; then
-                    printf "%s\0-\0" "$file"
-                else
-                    printf "%s\0%s\0" "$file" "$size"
-                    head -c "$size" "$file" || exit 43
-                fi
-            done
+            for file do emit_file "$file" || exit 43; done
         ' read-sessions "$limit" {} + || exit 43
     done
     [ "$found" = yes ] || exit 42
+    printf '\0'
+    """#
+
+    private static let scanMemory = emitRecord + #"""
+    limit=$1
+    source=$2
+    destination=$3
+    home_name=$4
+    wanted=$5
+    shift 5
+    here=$(pwd -P) || exit 42
+    [ "$here" != / ] || exit 44
+    visit() {
+        folder=$1
+        location=$here
+        if [ "$folder" != . ]; then location="$here/$folder"; fi
+        leaf=${location##*/}
+        parent=${location%/*}
+        projects=${parent%/*}
+        if [ "$source" = qoder ] && [ "$destination" = global ] && [ "$leaf" = memory ] && [ "${projects##*/}" = projects ]; then
+            return 46
+        fi
+        for file in "$folder"/*; do
+            [ -f "$file" ] && [ ! -L "$file" ] || continue
+            if [ -n "$wanted" ] && [ "${file#./}" != "$wanted" ]; then continue; fi
+            lower=$(printf '%s' "${file##*/}" | tr '[:upper:]' '[:lower:]')
+            case "$lower" in
+                agents.md|agents.local.md) continue ;;
+                *.md|*.markdown) ;;
+                *) continue ;;
+            esac
+            if [ "$source" = codex ]; then
+                case "$leaf:$lower" in
+                    memories:memory.md|memories:memory_summary.md|memories_v2:memory.md|memories_v2:memory_summary.md) ;;
+                    memories:*|memories_v2:*) continue ;;
+                esac
+            fi
+            emit_file "$file" || return 43
+        done
+        return 0
+    }
+    found=no
+    printf 'BFF-SESSIONS-1\0'
+    for directory do
+        [ -d "$directory" ] && [ ! -L "$directory" ] || continue
+        found=yes
+        visit "$directory" || exit $?
+    done
+    if [ "$found" = no ]; then
+        [ "${here##*/}" != "$home_name" ] || exit 44
+        visit . || exit $?
+    fi
     printf '\0'
     """#
 

@@ -14,7 +14,8 @@ import SQLite3
                 try await checkSSHImport(output, tasks: tasks, binaryHash: binaryHash)
                 return
             }
-            if CommandLine.arguments.contains("--ssh-import-window-native") || CommandLine.arguments.contains("--ssh-import-stream-check") {
+            if CommandLine.arguments.contains("--ssh-import-window-native") || CommandLine.arguments.contains("--ssh-import-stream-check") ||
+                CommandLine.arguments.contains("--ssh-memory-import-check") {
                 try await checkSSHImportWindow(output, tasks: tasks, binaryHash: binaryHash)
                 return
             }

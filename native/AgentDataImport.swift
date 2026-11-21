@@ -52,7 +52,7 @@ struct AgentImportBatch: Codable {
     private let directory: URL, journal: URL
     private var signature = "missing", loadIssue: String?
     private var work: Task<Void, Never>?
-    private var sshScan: Task<[AgentImportCandidate], Error>?
+    private var sshScan: (route: AgentImportRoute, task: Task<[AgentImportCandidate], Error>)?
     private var lock: Int32 = -1
     private(set) var batch: AgentImportBatch?
     private var recentRoute: AgentImportRoute?
@@ -60,7 +60,7 @@ struct AgentImportBatch: Codable {
     var preview: [AgentImportCandidate] { recentRoute.flatMap { previews[$0]?.records } ?? [] }
     private(set) var scanning = false
     private(set) var stoppedScan: AgentImportRoute?
-    var stoppingScan: Bool { sshScan?.isCancelled == true }
+    var stoppingScan: Bool { sshScan?.task.isCancelled == true }
     private(set) var operationIssue: String?
     var issue: String? { operationIssue ?? recentRoute.flatMap { previews[$0]?.issue } }
     var onChange: (() -> Void)?
@@ -98,11 +98,11 @@ struct AgentImportBatch: Codable {
 
     func preview(for route: AgentImportRoute) -> AgentImportPreview? { previews[route] }
 
-    func canStopScan(for route: AgentImportRoute) -> Bool { recentRoute == route && sshScan?.isCancelled == false }
+    func canStopScan(for route: AgentImportRoute) -> Bool { sshScan?.route == route && sshScan?.task.isCancelled == false }
 
     func stopScan(for route: AgentImportRoute) {
         guard canStopScan(for: route) else { return }
-        sshScan?.cancel()
+        sshScan?.task.cancel()
         onChange?()
     }
 
@@ -122,7 +122,10 @@ struct AgentImportBatch: Codable {
         onChange?()
         defer { scanning = false; onChange?() }
         for route in routes {
-            do { previews[route] = .init(records: try await discover(route)) }
+            do {
+                let records = try await (route.sshHost == nil ? discover(route) : discoverSSH(route))
+                previews[route] = .init(records: records)
+            }
             catch is CancellationError { stoppedScan = route; break }
             catch { previews[route] = .init(records: [], issue: error.localizedDescription) }
             onChange?()
@@ -130,9 +133,8 @@ struct AgentImportBatch: Codable {
     }
 
     private func discoverSSH(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
-        let transport = ssh
-        let task = Task { try await transport.discover(route) }
-        sshScan = task
+        let task = Task { try await discover(route) }
+        sshScan = (route, task)
         onChange?()
         defer { sshScan = nil }
         return try await withTaskCancellationHandler {
@@ -144,12 +146,14 @@ struct AgentImportBatch: Codable {
     }
 
     private func discover(_ route: AgentImportRoute) async throws -> [AgentImportCandidate] {
-        if route.sshHost != nil, route.category != .tasks { throw PetError("SSH 来源支持任务记录") }
+        if route.sshHost != nil, !AgentSSHImport.categories.contains(route.category) { throw PetError("SSH 来源支持任务记录和记忆") }
         let source = route.source, root = route.directory, workspace = route.workspace
         switch route.category {
         case .memory:
             let destination = try AgentMemory.importDestination(store: store, workspace: workspace)
-            let records = try await Task.detached(priority: .utility) { try AgentMemoryImport.discover(source, root: root, workspace: workspace) }.value
+            let records: [AgentMemoryImport.Preview]
+            if route.sshHost != nil { records = try await ssh.discoverMemory(route) }
+            else { records = try await Task.detached(priority: .utility) { try AgentMemoryImport.discover(source, root: root, workspace: workspace) }.value }
             var reserved = Set<String>()
             return records.map { entry in
                 do { return try AgentMemoryImport.plan(entry, destination: destination, reserved: &reserved) }
@@ -170,7 +174,7 @@ struct AgentImportBatch: Codable {
             return try await AgentStandaloneDataImport.discover(source, root: root, workspace: workspace, store: store)
         case .tasks:
             let records: [AgentImportCandidate]
-            if route.sshHost != nil { records = try await discoverSSH(route) }
+            if route.sshHost != nil { records = try await ssh.discover(route) }
             else { records = try await Task.detached(priority: .utility) { try AgentImportReaders.discover(source, root: root) }.value }
             let duplicates = Dictionary(grouping: records, by: \.id)
             return try records.map { record in
@@ -265,20 +269,26 @@ struct AgentImportBatch: Codable {
             let item = current.items[index]
             let candidate = item.record, route = current.route(for: item), root = route.root, source = route.source
             do {
-                if route.sshHost != nil || candidate.sshHost != nil {
+                if candidate.memory != nil {
+                    let id = current.id
+                    guard UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
+                    let data: Data
+                    if route.sshHost != nil || candidate.sshHost != nil {
+                        data = try await ssh.readMemory(candidate, route: route)
+                        guard batch?.state == "running" else { return }
+                    } else {
+                        let base = URL(fileURLWithPath: root)
+                        data = try await Task.detached(priority: .utility) { try AgentMemoryImport.read(candidate, root: base) }.value
+                    }
+                    let recordID = AgentFiles.hash(Data(candidate.id.utf8))
+                    let backup = directory.appendingPathComponent("memory-transfers").appendingPathComponent(id).appendingPathComponent(recordID)
+                    try AgentMemoryImport.install(data, record: candidate, store: store, backup: backup)
+                } else if route.sshHost != nil || candidate.sshHost != nil {
                     let document = try await ssh.read(candidate, route: route)
                     guard batch?.state == "running" else { return }
                     guard document.candidate.id == candidate.id, document.candidate.sourceHash == candidate.sourceHash,
                           document.candidate.rawHash == candidate.rawHash else { throw PetError("远端来源已更新，请重新检测；本次未替换任务") }
                     try install(document, candidate: candidate)
-                } else if candidate.memory != nil {
-                    let id = current.id
-                    guard UUID(uuidString: id) != nil else { throw PetError("导入批次编号无效") }
-                    let base = URL(fileURLWithPath: root)
-                    let data = try await Task.detached(priority: .utility) { try AgentMemoryImport.read(candidate, root: base) }.value
-                    let recordID = AgentFiles.hash(Data(candidate.id.utf8))
-                    let backup = directory.appendingPathComponent("memory-transfers").appendingPathComponent(id).appendingPathComponent(recordID)
-                    try AgentMemoryImport.install(data, record: candidate, store: store, backup: backup)
                 } else if candidate.skill != nil {
                     try await AgentSkillImport.install(candidate, root: URL(fileURLWithPath: root), store: store)
                 } else if candidate.connector != nil {

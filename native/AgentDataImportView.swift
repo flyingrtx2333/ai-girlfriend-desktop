@@ -25,9 +25,9 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             value.hasPrefix(source.rawValue + ":") && !value.contains("\0") && value.utf8.count <= 512
         }
         let keys = routes.map { $0.route.source.rawValue + "/" + $0.route.category.rawValue + ($0.route.sshHost == nil ? "" : "/ssh") }
-        return (ssh != true || category == nil || category == .tasks) && Set(keys).count == routes.count && routes.allSatisfy { item in
+        return (ssh != true || category.map { AgentSSHImport.categories.contains($0) } != false) && Set(keys).count == routes.count && routes.allSatisfy { item in
             let route = item.route
-            let path = route.sshHost.map { route.category == .tasks && route.workspace == nil && AgentSSHImport.valid(host: $0, root: route.root) } ?? validPath(route.root)
+            let path = route.sshHost.map { AgentSSHImport.categories.contains(route.category) && AgentSSHImport.valid(host: $0, root: route.root) } ?? validPath(route.root)
             return path && route.workspace.map { route.category.globalTarget != nil && validPath($0) } != false &&
                 item.checked.map { checked in
                     checked.count <= 5_000 && checked.allSatisfy { validID($0.key, source: item.route.source) && AgentSettingsRecovery.validHash($0.value) }
@@ -116,7 +116,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
     private var categoryRows: [AgentImportCategory: AgentImportCategoryRow] = [:]
     private var categoryDividers: [AgentImportCategory: NSView] = [:]
     private var routes: [AgentImportSource: [AgentImportCategory: AgentImportRoute]] = [:]
-    private var remoteRoutes: [AgentImportSource: AgentImportRoute] = [:]
+    private var remoteRoutes: [AgentImportSource: [AgentImportCategory: AgentImportRoute]] = [:]
     private var selections: [AgentImportRoute: Selection] = [:]
     private var reviewed: [AgentImportRoute: [String: String]] = [:]
     private var changedChecks: [AgentImportRoute: Int] = [:]
@@ -136,7 +136,10 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
     var onOpenHooks: ((URL, String?) throws -> Void)?
     private var selectedSource: AgentImportSource { AgentImportSource.allCases[max(0, sources.selectedSegment)] }
     private var usesSSH: Bool { locations.selectedSegment == 1 }
-    private var categories: [AgentImportCategory] { usesSSH ? [.tasks] : AgentImportCategory.allCases }
+    private var categories: [AgentImportCategory] { usesSSH ? AgentSSHImport.categories : AgentImportCategory.allCases }
+    private var stoppableRoute: AgentImportRoute? {
+        usesSSH ? categories.lazy.map(route).first { service.canStopScan(for: $0) } : nil
+    }
     private var selectedCategory: AgentImportCategory { editing ?? .tasks }
     private var currentRoute: AgentImportRoute { route(selectedCategory) }
     private var canConfigure: Bool { !service.active && !service.scanning && !service.unfinished }
@@ -230,16 +233,20 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         for route in reviewed.keys where route.sshHost == nil { known[route.source, default: [:]][route.category] = route }
         var remote = remoteRoutes
         if usesSSH {
-            let draft = route(.tasks)
-            if let host = draft.sshHost, AgentSSHImport.valid(host: host, root: draft.root) { remote[draft.source] = draft }
+            for category in categories {
+                let draft = route(category)
+                if let host = draft.sshHost, AgentSSHImport.valid(host: host, root: draft.root) { remote[draft.source, default: [:]][category] = draft }
+            }
         }
         let local = AgentImportSource.allCases.flatMap { source in
             AgentImportCategory.allCases.compactMap { category in
                 known[source]?[category].map { AgentImportNavigation.SourceRoute(route: $0, checked: reviewed[$0]) }
             }
         }
-        let saved = local + AgentImportSource.allCases.compactMap { source in
-            remote[source].map { .init(route: $0, checked: reviewed[$0]) }
+        let saved = local + AgentImportSource.allCases.flatMap { source in
+            AgentSSHImport.categories.compactMap { category in
+                remote[source]?[category].map { AgentImportNavigation.SourceRoute(route: $0, checked: reviewed[$0]) }
+            }
         }
         let reading = editing.flatMap { readings[route($0)] }
         let value = AgentImportNavigation(source: selectedSource, category: editing, routes: saved, reading: reading, ssh: usesSSH ? true : nil)
@@ -258,7 +265,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             reviewed.removeAll()
             for entry in value.routes {
                 let route = entry.route
-                if route.sshHost != nil { remoteRoutes[route.source] = route }
+                if route.sshHost != nil { remoteRoutes[route.source, default: [:]][route.category] = route }
                 else { routes[route.source, default: [:]][route.category] = route }
                 reviewed[route] = entry.checked
             }
@@ -304,9 +311,12 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             sources.selectedSegment = AgentImportSource.allCases.firstIndex(of: batch.source) ?? 0
             reviewed = reviewed.filter { $0.key.source != batch.source || $0.key.sshHost != batch.sshHost }
             changedChecks = changedChecks.filter { $0.key.source != batch.source || $0.key.sshHost != batch.sshHost }
+            if let host = batch.sshHost {
+                remoteRoutes[batch.source, default: [:]][.tasks] = .init(source: batch.source, category: .tasks, root: batch.root, workspace: nil, sshHost: host)
+            }
             for item in batch.items {
                 let route = batch.route(for: item)
-                if route.sshHost != nil { remoteRoutes[route.source] = route }
+                if route.sshHost != nil { remoteRoutes[route.source, default: [:]][route.category] = route }
                 else { routes[route.source, default: [:]][route.category] = route }
             }
             loadRemoteFields()
@@ -315,7 +325,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         let grouped = batch.map { batch in Dictionary(grouping: batch.items) { batch.route(for: $0) } } ?? [:]
         var picked = 0, hasPreview = false
         for (category, row) in categoryRows {
-            let hidden = usesSSH && category != .tasks
+            let hidden = !categories.contains(category)
             row.isHidden = hidden; categoryDividers[category]?.isHidden = hidden
         }
         for category in categories {
@@ -325,12 +335,11 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             hasPreview = hasPreview || preview != nil
             updateCategory(route, preview: preview, items: grouped[route] ?? [])
         }
-        let canStop = usesSSH && service.canStopScan(for: route(.tasks))
+        let canStop = stoppableRoute != nil
         locations.isEnabled = canConfigure; sources.isEnabled = canConfigure; detectAll.isEnabled = canConfigure || canStop
         connection.isHidden = !usesSSH
         sshHost.isEnabled = canConfigure; sshRoot.isEnabled = canConfigure
         if canStop { detectAll.title = "停止检测" }
-        else if usesSSH { detectAll.title = hasPreview ? "重新检测" : "检测任务记录" }
         else { detectAll.title = hasPreview ? "重新检测全部" : "检测可导入内容" }
         overview.isHidden = editing != nil; editor.isHidden = editing == nil
         let preview = editing.flatMap { service.preview(for: route($0)) }
@@ -345,13 +354,14 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         pause.isHidden = !service.active; pause.isEnabled = batch?.state == "running"
         resume.isHidden = !service.unfinished || service.active; cancel.isHidden = !service.unfinished && !service.active
         let changed = editing.map { changedChecks[route($0), default: 0] } ?? categories.reduce(0) { $0 + changedChecks[route($1), default: 0] }
-        let remoteIssue = usesSSH ? service.preview(for: route(.tasks))?.issue : nil
+        let allRemoteFailed = usesSSH && editing == nil && categories.allSatisfy { service.preview(for: route($0))?.issue != nil }
+        let remoteIssue = allRemoteFailed ? service.preview(for: route(.tasks))?.issue : nil
         if let issue = inputIssue ?? service.operationIssue ?? preview?.issue ?? remoteIssue { state.stringValue = issue; state.textColor = .systemRed }
         else {
             state.textColor = AgentWorkbenchTheme.secondaryText
             if service.stoppingScan { state.stringValue = "正在停止检测…" }
             else if service.scanning { state.stringValue = "正在检测…" }
-            else if service.stoppedScan == route(.tasks) { state.stringValue = "已停止检测" }
+            else if categories.contains(where: { service.stoppedScan == route($0) }) { state.stringValue = "已停止检测" }
             else if let batch, batch.source == selectedSource, batch.sshHost == route(.tasks).sshHost,
                     service.active || service.unfinished || !hasPreview {
                 let done = batch.items.filter { $0.state == "imported" }.count, failed = batch.items.filter { $0.state == "failed" }.count
@@ -360,7 +370,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
             else if let preview {
                 let available = preview.available.count, skipped = preview.records.count - available
                 state.stringValue = preview.records.isEmpty ? "此类别无可导入内容" : "\(available) 项可导入" + (skipped > 0 ? " · 跳过 \(skipped) 项" : "")
-            } else if usesSSH, reviewed[route(.tasks)] != nil { state.stringValue = "重新检测后恢复原勾选" }
+            } else if usesSSH, categories.contains(where: { reviewed[route($0)] != nil }) { state.stringValue = "重新检测后恢复原勾选" }
             else { state.stringValue = hasPreview ? "" : "尚未检测" }
         }
         state.toolTip = state.stringValue
@@ -412,7 +422,7 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         folder.title = route.sshHost.map { "SSH · " + $0 } ?? (isDefault ? "~/" + String(root.path.dropFirst(home.path.count + 1)) : root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent)
         folder.toolTip = route.sshHost.map { $0 + ":" + route.root } ?? root.path
         folder.setAccessibilityLabel(route.sshHost == nil ? "来源目录" : "SSH 来源")
-        let canStop = usesSSH && service.canStopScan(for: route)
+        let canStop = stoppableRoute != nil
         folder.isEnabled = canConfigure; detect.isEnabled = canConfigure || canStop
         if canStop { detect.title = "停止检测" }
         else { detect.title = preview == nil && !usesSSH ? "检测此类" : "重新检测" }
@@ -503,12 +513,14 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         if let plan = record.memory {
             let names = plan.parts.prefix(8).map(\.name).joined(separator: "、")
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局记忆"
-            var lines = [record.title, "来源 · " + record.file, destination]
+            let source = record.sshHost.map { $0 + ":" + record.file } ?? record.file
+            var lines = [record.title, "来源 · " + source, destination]
             if !names.isEmpty { lines.append("目标文件 · " + names + (plan.parts.count > 8 ? " 等\(plan.parts.count)份" : "")) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             open.isEnabled = states[record.id] == "已导入" || record.issue == "已经导入"
-            original.isEnabled = (try? AgentMemoryImport.sourceURL(record, root: root)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentMemoryImport.sourceURL(record, root: root)) != nil
             return
         }
         if let plan = record.skill {
@@ -590,7 +602,9 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
     }
     private func route(_ category: AgentImportCategory) -> AgentImportRoute {
         if usesSSH {
-            return .init(source: selectedSource, category: category, root: sshRoot.stringValue, workspace: nil,
+            let saved = remoteRoutes[selectedSource]?[category]
+            if service.active || service.unfinished, let saved { return saved }
+            return .init(source: selectedSource, category: category, root: sshRoot.stringValue, workspace: saved?.workspace,
                          sshHost: sshHost.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return routes[selectedSource]?[category] ?? .init(source: selectedSource, category: category, root: defaultRoot(category).path, workspace: nil)
@@ -603,18 +617,23 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         changedChecks.removeValue(forKey: previous)
         readings.removeValue(forKey: previous)
         shownRoute = nil
-        routes[newRoute.source, default: [:]][newRoute.category] = newRoute
+        if newRoute.sshHost != nil { remoteRoutes[newRoute.source, default: [:]][newRoute.category] = newRoute }
+        else { routes[newRoute.source, default: [:]][newRoute.category] = newRoute }
         refresh()
     }
     private func loadRemoteFields(fallbackHost: String = "") {
-        let route = remoteRoutes[selectedSource]
+        let route = remoteRoutes[selectedSource]?[.tasks] ?? remoteRoutes[selectedSource]?[.memory]
         sshHost.stringValue = route?.sshHost ?? fallbackHost
         sshRoot.stringValue = route?.root ?? "~/" + selectedSource.homeName
     }
+    private func rememberRemoteRoute(_ route: AgentImportRoute) {
+        if let host = route.sshHost, AgentSSHImport.valid(host: host, root: route.root) {
+            remoteRoutes[route.source, default: [:]][route.category] = route
+        }
+    }
     func controlTextDidChange(_ obj: Notification) {
         guard usesSSH else { return }
-        let route = self.route(.tasks)
-        if let host = route.sshHost, AgentSSHImport.valid(host: host, root: route.root) { remoteRoutes[route.source] = route }
+        categories.map(route).forEach(rememberRemoteRoute)
         inputIssue = nil
         refresh()
     }
@@ -639,7 +658,8 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
     }
     @objc private func changeDestination() {
         let route = currentRoute
-        setRoute(.init(source: route.source, category: route.category, root: route.root, workspace: destination.selectedItem?.representedObject as? String))
+        setRoute(.init(source: route.source, category: route.category, root: route.root,
+                       workspace: destination.selectedItem?.representedObject as? String, sshHost: route.sshHost))
     }
     @objc private func chooseFolder() {
         if usesSSH { closeCategory(); window?.makeFirstResponder(sshHost); return }
@@ -657,32 +677,30 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         }
     }
     @objc private func detectSource() {
-        if usesSSH { detectSSH(); return }
+        if usesSSH { detectSSH(categories); return }
         let routes = AgentImportCategory.allCases.map(route)
         Task { await service.detect(routes) }
     }
     @objc private func detectRecords() {
-        if usesSSH { detectSSH(); return }
+        if usesSSH { detectSSH([selectedCategory]); return }
         let route = currentRoute
         Task { await service.detect([route]) }
     }
-    private func detectSSH() {
-        let route = self.route(.tasks)
-        if service.canStopScan(for: route) { service.stopScan(for: route); return }
+    private func detectSSH(_ categories: [AgentImportCategory]) {
+        if let route = stoppableRoute { service.stopScan(for: route); return }
         guard canConfigure else { return }
         window?.makeFirstResponder(nil)
-        let confirmed = self.route(.tasks)
-        guard let host = confirmed.sshHost, AgentSSHImport.valid(host: host, root: confirmed.root) else {
+        let confirmed = categories.map(route)
+        guard let first = confirmed.first, let host = first.sshHost, AgentSSHImport.valid(host: host, root: first.root) else {
             inputIssue = "请填写 SSH 主机和远程目录（绝对路径或 ~/）"
             refresh()
             if editing == nil { window?.makeFirstResponder(sshHost) }
             return
         }
         inputIssue = nil
-        remoteRoutes[confirmed.source] = confirmed
-        editing = .tasks
+        confirmed.forEach(rememberRemoteRoute)
         refresh()
-        Task { await service.detect([confirmed]) }
+        Task { await service.detect(confirmed) }
     }
     @objc private func toggleRecord(_ sender: NSButton) {
         let route = currentRoute

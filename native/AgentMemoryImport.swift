@@ -11,7 +11,7 @@ struct AgentMemoryImportPlan: Codable {
 }
 
 enum AgentMemoryImport {
-    private static let maximumBytes = 4_000_000
+    static let maximumBytes = 4_000_000
     private static let topicBytes = 24_000
 
     struct Preview {
@@ -28,7 +28,7 @@ enum AgentMemoryImport {
     }
 
     private static func directories(_ source: AgentImportSource, files: AgentFiles, workspace: String?) throws -> [(url: URL, consolidated: Bool)] {
-        let children = source == .codex ? ["memories_v2", "memories"] : ["memory"]
+        let children = folders(for: source)
         var result: [(URL, Bool)] = []
         for child in children {
             let url = try files.literalURL(child)
@@ -44,7 +44,11 @@ enum AgentMemoryImport {
         return result
     }
 
-    private static func allowed(_ name: String, consolidated: Bool) -> Bool {
+    static func folders(for source: AgentImportSource) -> [String] {
+        source == .codex ? ["memories_v2", "memories"] : ["memory"]
+    }
+
+    static func allowed(_ name: String, consolidated: Bool) -> Bool {
         let lower = name.lowercased()
         guard AgentMemoryDocument.validTopic(name), !["agents.md", "agents.local.md"].contains(lower) else { return false }
         return !consolidated || ["memory.md", "memory_summary.md"].contains(lower)
@@ -58,23 +62,35 @@ enum AgentMemoryImport {
                 try Task.checkCancellation()
                 guard result.count < 5000 else { throw PetError("来源超过5000份记忆文件，请选择较小的来源目录") }
                 let url = folder.appendingPathComponent(entry.name)
-                let sourceID = "memory:" + AgentFiles.hash(Data(url.path.utf8))
-                var record = AgentImportCandidate(source: source, sourceID: sourceID, file: url.path, rawHash: "", sourceHash: "", title: entry.name, created: entry.modified, updated: entry.modified)
-                record.memory = AgentMemoryImportPlan(workspace: workspace, parts: [])
-                do {
-                    let data = try read(url, files: files)
-                    let hash = AgentFiles.hash(data)
-                    record.sourceHash = hash; record.rawHash = hash
-                    record.preview = String(String(decoding: data, as: UTF8.self).prefix(1000))
-                    result.append(Preview(record: record, hashes: split(data).map(AgentFiles.hash)))
-                } catch { record.issue = error.localizedDescription; result.append(Preview(record: record, hashes: [])) }
+                result.append(preview(source, file: url.path, workspace: workspace, date: entry.modified) {
+                    try read(url, files: files)
+                })
             }
         }
         return result
     }
 
+    static func preview(_ source: AgentImportSource, file: String, workspace: String?, date: Date = Date(),
+                        sshHost: String? = nil, readBytes: () throws -> Data) -> Preview {
+        let sourceID = "memory:" + AgentFiles.hash(Data(file.utf8))
+        let name = (file as NSString).lastPathComponent
+        var record = AgentImportCandidate(source: source, sourceID: sourceID, file: file, rawHash: "", sourceHash: "", title: name,
+            created: date, updated: date, sshHost: sshHost)
+        record.memory = AgentMemoryImportPlan(workspace: workspace, parts: [])
+        do {
+            let data = try readBytes(), text = try decodedText(data)
+            let hash = AgentFiles.hash(data)
+            record.sourceHash = hash; record.rawHash = hash
+            record.preview = String(text.prefix(1000))
+            return Preview(record: record, hashes: split(data).map(AgentFiles.hash))
+        } catch {
+            record.issue = error.localizedDescription
+            return Preview(record: record, hashes: [])
+        }
+    }
+
     static func sourceURL(_ record: AgentImportCandidate, root: URL) throws -> URL {
-        guard let plan = record.memory else { throw PetError("缺少记忆来源") }
+        guard let plan = record.memory, record.sshHost == nil else { throw PetError("缺少本机记忆来源") }
         let files = try sourceFiles(root)
         let file = try files.literalURL(record.file)
         let folders = try directories(record.source, files: files, workspace: plan.workspace)
@@ -84,7 +100,9 @@ enum AgentMemoryImport {
     }
 
     static func read(_ record: AgentImportCandidate, root: URL) throws -> Data {
-        try read(sourceURL(record, root: root), files: sourceFiles(root))
+        let data = try read(sourceURL(record, root: root), files: sourceFiles(root))
+        _ = try decodedText(data)
+        return data
     }
 
     private static func read(_ file: URL, files: AgentFiles) throws -> Data {
@@ -92,8 +110,12 @@ enum AgentMemoryImport {
         guard before.kind == "file" else { throw PetError("记忆来源不是普通文件") }
         let data = try files.readData(file, maximum: maximumBytes)
         guard try files.entryMetadata(file).signature == before.signature else { throw PetError("来源正在变化，请重新检测") }
-        guard !data.contains(0), String(data: data, encoding: .utf8) != nil else { throw PetError("记忆源文件需要 UTF-8 Markdown") }
         return data
+    }
+
+    private static func decodedText(_ data: Data) throws -> String {
+        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else { throw PetError("记忆源文件需要 UTF-8 Markdown") }
+        return text
     }
 
     static func split(_ data: Data) -> [Data] {
