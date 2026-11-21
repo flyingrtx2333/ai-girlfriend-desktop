@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum AgentAttentionKind: String, Codable, CaseIterable, Sendable {
     case question, approval, plan, result
@@ -70,11 +71,14 @@ struct AgentAttentionItem: Identifiable, Equatable, Sendable {
     private struct Document: Codable { var version = 1; var settings = Settings(); var handled: [String: Date] = [:] }
     private struct Cached: Sendable { var signature: String; var items: [AgentAttentionItem] }
     private struct ReplyDocument: Codable { var version = 1; var drafts: [String: String] = [:] }
+    struct DraftConflict: LocalizedError {
+        let current: String
+        var errorDescription: String? { "答复草稿已在另一窗口更新" }
+    }
     private weak var store: AgentStore?
     private let file: URL
     private var document = Document(), opened = "missing", loadIssue: String?
     private var cache: [String: Cached] = [:], signature = ""
-    private var replyDocuments: [String: ReplyDocument] = [:], replySignatures: [String: String] = [:]
     private var refreshTask: Task<Void, Never>?, generation = 0
     private(set) var items: [AgentAttentionItem] = []
     private(set) var issue: String?, revision = 0, loading = false
@@ -108,42 +112,84 @@ struct AgentAttentionItem: Identifiable, Equatable, Sendable {
         guard let task = store?.task(item.taskID), let current = AgentAttentionItem.project(task).first(where: { $0.id == item.id }), current.callID == nil else { throw PetError("此项目已变化，请刷新后重试") }
         var next = document; next.handled[item.id] = handled ? Date() : nil; try save(next); signature = ""; refresh()
     }
-    func replyDraft(_ item: AgentAttentionItem) throws -> String {
+    private func replyFile(_ item: AgentAttentionItem) throws -> (AgentFiles, URL) {
         guard let store, UUID(uuidString: item.taskID) != nil, store.task(item.taskID) != nil else { throw PetError("任务已不可用") }
-        if replyDocuments[item.taskID] == nil {
-            let files = try AgentFiles(workspace: store.directory.path), file = try files.literalURL(item.taskID + "/attention-drafts.json")
-            if FileManager.default.fileExists(atPath: file.path) || (try? file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
-                let signature = try files.entryMetadata(file).signature
-                let document = try JSONDecoder().decode(ReplyDocument.self, from: files.readData(file, maximum: 1_000_000))
-                guard document.version == 1, try files.entryMetadata(file).signature == signature else { throw PetError("答复草稿正在变化，请重新打开需要我") }
-                replyDocuments[item.taskID] = document; replySignatures[item.taskID] = signature
-            } else { replyDocuments[item.taskID] = ReplyDocument(); replySignatures[item.taskID] = "missing" }
-        }
-        return replyDocuments[item.taskID]?.drafts[item.id] ?? ""
+        let files = try AgentFiles(workspace: store.directory.path, followParentLinks: false)
+        return (files, try files.literalURL(item.taskID + "/attention-drafts.json"))
     }
-    func saveReply(_ item: AgentAttentionItem, text: String) throws {
-        _ = try replyDraft(item)
-        guard text.utf8.count <= 65_536, let store, var next = replyDocuments[item.taskID] else { throw PetError("答复草稿不能超过64KB") }
-        if (next.drafts[item.id] ?? "") == text { return }
+    private func readReplies(_ files: AgentFiles, _ file: URL) throws -> (document: ReplyDocument, signature: String) {
+        let stamp = try files.entryMetadata(file)
+        if stamp.kind == "missing" { return (ReplyDocument(), stamp.signature) }
+        guard stamp.kind == "file" else { throw PetError("答复草稿文件不可用") }
+        let document = try JSONDecoder().decode(ReplyDocument.self, from: files.readData(file, maximum: 1_000_000))
+        guard document.version == 1, try files.entryMetadata(file).signature == stamp.signature else {
+            throw PetError("答复草稿正在变化，请重试")
+        }
+        return (document, stamp.signature)
+    }
+    func replyDraft(_ item: AgentAttentionItem) throws -> String {
+        let (files, file) = try replyFile(item)
+        return try readReplies(files, file).document.drafts[item.id] ?? ""
+    }
+    private func withReplyLock<T>(_ item: AgentAttentionItem, _ operation: (AgentFiles, URL) throws -> T) throws -> T {
+        let (files, file) = try replyFile(item)
+        let lock = file.deletingLastPathComponent().appendingPathComponent(".attention-drafts.lock")
+        let (parent, name) = try files.parentDescriptor(lock, create: true); defer { close(parent) }
+        let fd = openat(parent, name, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0o600)
+        guard fd >= 0 else { throw PetError("答复草稿无法锁定") }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw PetError("另一窗口正在处理答复，请重试") }
+        return try operation(files, file)
+    }
+    private func writeReply(_ item: AgentAttentionItem, text: String, document: ReplyDocument, signature: String,
+                            files: AgentFiles, file: URL) throws {
+        var next = document
         next.drafts[item.id] = text.isEmpty ? nil : text
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; let data = try encoder.encode(next)
         guard data.count <= 1_000_000 else { throw PetError("此任务的答复草稿超过1MB") }
-        let files = try AgentFiles(workspace: store.directory.path), file = try files.literalURL(item.taskID + "/attention-drafts.json")
-        try files.writeData(data, to: file, permissions: 0o600, expectedTarget: replySignatures[item.taskID] ?? "missing")
-        replySignatures[item.taskID] = try files.entryMetadata(file).signature; replyDocuments[item.taskID] = next
+        try files.writeData(data, to: file, permissions: 0o600, expectedTarget: signature)
+    }
+    func saveReply(_ item: AgentAttentionItem, text: String, expected: String) throws {
+        guard text.utf8.count <= 65_536 else { throw PetError("答复草稿不能超过64KB") }
+        try withReplyLock(item) { files, file in
+            let snapshot = try readReplies(files, file), current = snapshot.document.drafts[item.id] ?? ""
+            if current == text { return }
+            guard current == expected else { throw DraftConflict(current: current) }
+            try writeReply(item, text: text, document: snapshot.document, signature: snapshot.signature, files: files, file: file)
+        }
     }
     @discardableResult func decide(_ item: AgentAttentionItem, decision: String, runtime: AgentRuntime) throws -> String? {
+        let warning: String?
+        if item.kind == .question {
+            let answer = String(decision.dropFirst(7))
+            guard decision.hasPrefix("answer:"), !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw PetError("答复不能为空")
+            }
+            warning = try withReplyLock(item) { files, file in
+                let snapshot = try readReplies(files, file), current = snapshot.document.drafts[item.id] ?? ""
+                guard current == answer else { throw DraftConflict(current: current) }
+                try recordDecision(item, decision: decision, runtime: runtime)
+                do {
+                    try writeReply(item, text: "", document: snapshot.document, signature: snapshot.signature, files: files, file: file)
+                    return nil
+                } catch { return "答复已提交，草稿清理未完成：" + error.localizedDescription }
+            }
+        } else {
+            guard ["allow", "deny"].contains(decision) else { throw PetError("审批操作无效") }
+            try recordDecision(item, decision: decision, runtime: runtime); warning = nil
+        }
+        refresh(force: true)
+        return warning
+    }
+    private func recordDecision(_ item: AgentAttentionItem, decision: String, runtime: AgentRuntime) throws {
         guard settings.enabled, items.contains(where: { $0.id == item.id && $0.requestSignature == item.requestSignature }), let task = store?.task(item.taskID), !task.archived, task.status == .waiting,
               let call = task.pendingCalls.first, call.id == item.callID,
               let approval = task.approvals.last(where: { $0.call.id == call.id && $0.decision == nil }), AgentAttentionItem.requestSignature(approval) == item.requestSignature,
-              call.name == approval.call.name, call.arguments == approval.call.arguments, task.workspace == approval.workspace,
-              item.kind == .question ? decision.hasPrefix("answer:") && !decision.dropFirst(7).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty : ["allow", "deny"].contains(decision) else { throw PetError("请求已变化，请刷新后核对") }
+              call.name == approval.call.name, call.arguments == approval.call.arguments, task.workspace == approval.workspace else { throw PetError("请求已变化，请刷新后核对") }
         runtime.decide(taskID: item.taskID, callID: call.id, decision: decision)
         if let error = store?.writeError { throw PetError("处理结果未保存：" + error) }
-        var warning: String?
-        if item.kind == .question { do { try saveReply(item, text: "") } catch { warning = "答复已提交；草稿清理未完成：" + error.localizedDescription } }
-        refresh(force: true)
-        return warning
     }
     func executePlan(_ item: AgentAttentionItem, runtime: AgentRuntime) throws {
         guard settings.enabled, let store, let task = store.task(item.taskID), !task.archived, task.mode == .plan, task.status == .completed,

@@ -69,6 +69,7 @@ import WebKit
         if CommandLine.arguments.contains("--semantic-security-check") { await runSemanticSecurityCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--attention-page-check") {
             if CommandLine.arguments.contains("--attention-recovery-check") { await runAttentionRecoveryCheck(output) }
+            else if CommandLine.arguments.contains("--attention-draft-conflict-check") { await runAttentionDraftConflictCheck(output) }
             else { await runAttentionPageCheck(output) }
             NSApp.terminate(nil); return
         }

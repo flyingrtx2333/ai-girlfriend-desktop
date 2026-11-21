@@ -25,6 +25,12 @@ import AppKit
     private let detailTitle = NSTextField(wrappingLabelWithString: ""), metadata = NSTextField(labelWithString: ""), body = NSTextView()
     private let reply = NSTextView(), replyScroll = NSScrollView(), replyCaption = NSTextField(labelWithString: "答复")
     private let replyField = AgentThemeView(fill: .textBackgroundColor, stroke: AgentWorkbenchTheme.line)
+    private let savedDraft = NSTextView(), savedDraftScroll = NSScrollView()
+    private let draftHeading = NSStackView(), draftCaption = NSTextField(labelWithString: "已保存稿")
+    private let draftNotice = NSTextField(wrappingLabelWithString: "")
+    private let toggleDraftPreview = AgentDialogButton(title: "查看原问题", target: nil, action: nil)
+    private let useSavedDraft = AgentDialogButton(title: "载入已保存稿", target: nil, action: nil)
+    private let saveLocalDraft = AgentDialogButton(title: "保存本窗口稿", target: nil, action: nil)
     private let open = AgentDialogButton(title: "打开任务", target: nil, action: nil), mark = AgentDialogButton(title: "标记已处理", target: nil, action: nil)
     private let answer = AgentDialogButton(title: "回复并继续", target: nil, action: nil), allow = AgentDialogButton(title: "允许一次", target: nil, action: nil), deny = AgentDialogButton(title: "拒绝", target: nil, action: nil)
     private let execute = AgentDialogButton(title: "采纳计划并执行", target: nil, action: nil)
@@ -35,6 +41,7 @@ import AppKit
     private var preferredFocus: AgentAttentionRecovery.Focus?, needsSelection = false
     private var suppressSelection = false, draftSave: DispatchWorkItem?, operationIssue: String?
     private var replySavedText = "", replyLoaded = true
+    private var draftConflict: AgentAttention.DraftConflict?, showingSavedDraft = false
     private weak var hostWindow: NSWindow?
     private var hostedContent: NSView?
     private let panes = NSView(), empty = NSTextField(labelWithString: "暂无待关注的事项")
@@ -90,26 +97,37 @@ import AppKit
         table.style = .fullWidth; table.backgroundColor = .clear; table.intercellSpacing = .zero
         detailTitle.font = .systemFont(ofSize: 16, weight: .semibold); detailTitle.maximumNumberOfLines = 3
         metadata.font = .systemFont(ofSize: 11); metadata.textColor = AgentWorkbenchTheme.secondaryText; metadata.lineBreakMode = .byTruncatingTail
-        for text in [body, reply] {
+        for text in [body, reply, savedDraft] {
             text.isRichText = false; text.font = .systemFont(ofSize: 13); text.textColor = .labelColor; text.drawsBackground = false; text.textContainerInset = NSSize(width: 10, height: 10)
             text.isVerticallyResizable = true; text.autoresizingMask = [.width]; text.textContainer?.widthTracksTextView = true
         }
         body.isEditable = false; body.setAccessibilityLabel("需要我事项详情")
         body.textContainerInset = NSSize(width: 0, height: 4); body.textContainer?.lineFragmentPadding = 0
         bodyScroll.documentView = body; bodyScroll.hasVerticalScroller = true
+        savedDraft.isEditable = false; savedDraft.setAccessibilityLabel("已保存的答复草稿")
+        savedDraft.textContainerInset = body.textContainerInset; savedDraft.textContainer?.lineFragmentPadding = 0
+        savedDraftScroll.documentView = savedDraft; savedDraftScroll.hasVerticalScroller = true
+        draftCaption.font = .systemFont(ofSize: 12, weight: .medium)
+        for view in [draftCaption, NSView(), toggleDraftPreview] { draftHeading.addArrangedSubview(view) }
+        draftHeading.alignment = .centerY
         reply.delegate = self; reply.allowsUndo = true; reply.setAccessibilityLabel("答复此问题"); replyScroll.documentView = reply; replyScroll.hasVerticalScroller = true; replyScroll.borderType = .bezelBorder
         replyField.addSubview(replyScroll); replyScroll.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([replyScroll.leadingAnchor.constraint(equalTo: replyField.leadingAnchor, constant: 1), replyScroll.trailingAnchor.constraint(equalTo: replyField.trailingAnchor, constant: -1), replyScroll.topAnchor.constraint(equalTo: replyField.topAnchor, constant: 1), replyScroll.bottomAnchor.constraint(equalTo: replyField.bottomAnchor, constant: -1), replyField.heightAnchor.constraint(equalToConstant: 88)])
         replyCaption.font = .systemFont(ofSize: 12, weight: .medium)
-        for (button, action) in [(open, #selector(openTask)), (mark, #selector(markHandled)), (answer, #selector(answerQuestion)), (allow, #selector(allowRequest)), (deny, #selector(denyRequest)), (execute, #selector(executePlan))] {
+        for (button, action) in [(open, #selector(openTask)), (mark, #selector(markHandled)), (answer, #selector(answerQuestion)), (allow, #selector(allowRequest)), (deny, #selector(denyRequest)), (execute, #selector(executePlan)),
+                                 (toggleDraftPreview, #selector(toggleSavedDraft)), (useSavedDraft, #selector(loadReviewedDraft)), (saveLocalDraft, #selector(saveReviewedDraft))] {
             button.target = self; button.action = action
             AgentDialogStyle.action(button, prominent: button === answer || button === allow || button === execute)
         }
         detailTitle.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailTitle.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let detailHeading = NSStackView(views: [detailTitle, NSView(), open]); detailHeading.spacing = 12; detailHeading.alignment = .top
-        let actions = NSStackView(views: [NSView(), mark, deny, allow, execute, answer]); actions.spacing = 8
-        for view in [detailHeading, metadata, bodyScroll, replyCaption, replyField, actions] { details.addArrangedSubview(view) }
+        draftNotice.font = .systemFont(ofSize: 12); draftNotice.textColor = .systemRed
+        draftNotice.setAccessibilityLabel("答复草稿冲突")
+        draftNotice.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let actions = NSStackView(views: [draftNotice, NSView(), mark, deny, allow, execute, useSavedDraft, saveLocalDraft, answer])
+        actions.spacing = 8; actions.alignment = .centerY
+        for view in [detailHeading, metadata, draftHeading, bodyScroll, savedDraftScroll, replyCaption, replyField, actions] { details.addArrangedSubview(view) }
         details.orientation = .vertical; details.alignment = .leading; details.spacing = 12
         for child in details.arrangedSubviews { child.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true }
         for view in [list, details, empty] { panes.addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
@@ -125,7 +143,7 @@ import AppKit
                             listWidth, details.leadingAnchor.constraint(equalTo: list.trailingAnchor, constant: 32)]
         compactConstraints = [list.trailingAnchor.constraint(equalTo: panes.trailingAnchor), details.leadingAnchor.constraint(equalTo: panes.leadingAnchor)]
         NSLayoutConstraint.activate(splitConstraints)
-        for scroll in [list, bodyScroll, replyScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
+        for scroll in [list, bodyScroll, replyScroll, savedDraftScroll] { scroll.scrollerStyle = .overlay; scroll.borderType = .noBorder; scroll.drawsBackground = false }
         replyField.layer?.cornerRadius = 8; replyField.layer?.masksToBounds = true; replyField.layer?.borderWidth = 1
         status.font = .systemFont(ofSize: 12); status.lineBreakMode = .byWordWrapping; status.maximumNumberOfLines = 0; status.isSelectable = true; status.setAccessibilityLabel("需要我状态")
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -140,7 +158,8 @@ import AppKit
         let width = content.widthAnchor.constraint(equalToConstant: 824); width.priority = .init(499)
         NSLayoutConstraint.activate([content.centerXAnchor.constraint(equalTo: root.centerXAnchor), content.widthAnchor.constraint(lessThanOrEqualToConstant: 824), content.leadingAnchor.constraint(greaterThanOrEqualTo: root.leadingAnchor, constant: 28), content.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -28), width, contentTop, content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -24)])
         for child in content.arrangedSubviews { child.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true }
-        panes.setContentHuggingPriority(.defaultLow, for: .vertical); bodyScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
+        panes.setContentHuggingPriority(.defaultLow, for: .vertical)
+        for scroll in [bodyScroll, savedDraftScroll] { scroll.setContentHuggingPriority(.defaultLow, for: .vertical) }
         for scroll in [list, bodyScroll, replyScroll] {
             let clip = scroll.contentView; clip.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: clip)
@@ -187,8 +206,19 @@ import AppKit
         empty.isHidden = hasItems
         back.isHidden = !reading; headingTitle.isHidden = reading; tabs.isHidden = reading; filterBar.isHidden = reading
         more.isHidden = !canLoadMore || reading
-        status.isHidden = reading && operationIssue == nil && attention.issue == nil && attention.settings.enabled && !attention.loading
+        let comparing = draftConflict != nil
+        status.isHidden = comparing || reading && operationIssue == nil && attention.issue == nil && attention.settings.enabled && !attention.loading
         footer.isHidden = (status.isHidden || status.stringValue.isEmpty) && more.isHidden
+        draftHeading.isHidden = !comparing
+        draftNotice.isHidden = !comparing
+        if comparing { draftNotice.stringValue = operationIssue ?? "答复草稿已更新，请核对后选择" }
+        let viewingSaved = comparing && showingSavedDraft
+        bodyScroll.isHidden = viewingSaved; savedDraftScroll.isHidden = !viewingSaved
+        draftCaption.stringValue = viewingSaved ? "已保存稿" : "原问题"
+        toggleDraftPreview.title = viewingSaved ? "查看原问题" : "查看已保存稿"
+        useSavedDraft.isHidden = !comparing; saveLocalDraft.isHidden = !comparing
+        answer.isHidden = comparing || selected?.kind != .question || selected?.handled != false || selected?.mcpInputID != nil
+        replyCaption.stringValue = comparing ? "本窗口草稿" : selected?.handled == true ? "未发送答复" : "答复"
     }
     @discardableResult private func activateItem() -> Bool {
         guard selected != nil else { return false }
@@ -329,7 +359,10 @@ import AppKit
         states[activeTab].position = nil; operationIssue = nil; refresh(); onRecoveryChange?()
     }
     @objc private func loadMore() { guard persistReply() else { return }; states[activeTab].limit += 50; refresh(); onRecoveryChange?() }
-    @objc private func reload() { operationIssue = nil; attention.refresh(force: true); refresh() }
+    @objc private func reload() {
+        if draftConflict == nil { operationIssue = nil }
+        attention.refresh(force: true); refresh()
+    }
     func refresh() {
         guard isVisible || selected == nil else { return }
         if pendingRecovery != nil, !isVisible || attention.loading { return }
@@ -414,6 +447,7 @@ import AppKit
         let item = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow] : nil, changed = item?.id != selected?.id
         selected = item; states[activeTab].item = item?.id; detailTitle.stringValue = item?.title ?? ""
         if pendingDetail?.item != item?.id { pendingDetail = nil }
+        if changed, draftConflict != nil { draftConflict = nil; operationIssue = nil; status.stringValue = "" }
         guard let item else {
             metadata.stringValue = ""; body.string = ""
             for view in [replyCaption, replyField, open, mark, answer, allow, deny, execute] { view.isHidden = true }; return
@@ -425,7 +459,6 @@ import AppKit
         if body.string != text { body.string = text }; open.isHidden = false
         let question = item.kind == .question && item.mcpInputID == nil
         mark.isHidden = item.callID != nil || item.mcpInputID != nil; mark.title = item.handled ? "标记待处理" : "标记已处理"
-        answer.isHidden = !question || item.handled
         allow.isHidden = item.kind != .approval || item.handled; deny.isHidden = allow.isHidden
         execute.isHidden = item.kind == .question || item.handled || !item.canExecutePlan
         if item.mcpInputID != nil { reply.string = ""; replySavedText = ""; replyLoaded = false }
@@ -435,7 +468,7 @@ import AppKit
                 catch { reply.string = ""; replySavedText = ""; replyLoaded = false; operationIssue = "答复草稿无法读取：" + error.localizedDescription }
             }
             replyCaption.isHidden = item.handled && reply.string.isEmpty; replyField.isHidden = replyCaption.isHidden
-            replyCaption.stringValue = item.handled ? "未发送答复" : "答复"; reply.isEditable = !item.handled && replyLoaded
+            reply.isEditable = !item.handled && replyLoaded
         } else { replyCaption.isHidden = true; replyField.isHidden = true }
         updateActions()
     }
@@ -448,10 +481,11 @@ import AppKit
     private func updateActions() {
         let enabled = attention.settings.enabled && !attention.loading
         for button in [mark, allow, deny, execute] { button.isEnabled = enabled }
-        answer.isEnabled = enabled && replyLoaded && !reply.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        answer.isEnabled = enabled && draftConflict == nil && replyLoaded && !reply.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     func textDidChange(_ notification: Notification) {
         guard notification.object as? NSTextView === reply else { return }; updateActions(); draftSave?.cancel()
+        guard draftConflict == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, persistReply() else { return }; onRecoveryChange?()
         }
@@ -462,23 +496,71 @@ import AppKit
         guard let item = selected, item.kind == .question, item.mcpInputID == nil else { return true }
         do {
             if reply.string != replySavedText {
-                try attention.saveReply(item, text: reply.string); replySavedText = reply.string
+                guard draftConflict == nil else { return false }
+                try attention.saveReply(item, text: reply.string, expected: replySavedText); replySavedText = reply.string
             }
-            if operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = AgentWorkbenchTheme.secondaryText; updateVisibility() }
+            if draftConflict == nil, operationIssue?.hasPrefix("答复草稿未保存：") == true { operationIssue = nil; status.stringValue = "答复草稿已保存"; status.textColor = AgentWorkbenchTheme.secondaryText; updateVisibility() }
             return true
+        } catch let conflict as AgentAttention.DraftConflict {
+            showDraftConflict(conflict); return false
+        } catch {
+            showDraftIssue("答复草稿未保存：" + error.localizedDescription); return false
         }
-        catch { operationIssue = "答复草稿未保存：" + error.localizedDescription; status.stringValue = operationIssue!; status.textColor = .systemRed; updateVisibility(); return false }
+    }
+    private func showDraftIssue(_ message: String) {
+        operationIssue = message; status.stringValue = message; status.textColor = .systemRed
+        updateVisibility(); updateActions()
+    }
+    private func showDraftConflict(_ conflict: AgentAttention.DraftConflict) {
+        draftSave?.cancel(); draftSave = nil
+        draftConflict = conflict; showingSavedDraft = true
+        savedDraft.string = conflict.current.isEmpty ? "当前没有已保存的答复" : conflict.current
+        savedDraftScroll.contentView.scroll(to: .zero); savedDraftScroll.reflectScrolledClipView(savedDraftScroll.contentView)
+        showDraftIssue("答复草稿已更新，请核对后选择")
+        presentingWindow?.recalculateKeyViewLoop()
+    }
+    @objc private func toggleSavedDraft() {
+        guard draftConflict != nil else { return }
+        showingSavedDraft.toggle(); updateVisibility(); presentingWindow?.recalculateKeyViewLoop()
+    }
+    @objc private func loadReviewedDraft() { resolveDraft(keepLocal: false) }
+    @objc private func saveReviewedDraft() { resolveDraft(keepLocal: true) }
+    private func resolveDraft(keepLocal: Bool) {
+        guard let item = selected, let conflict = draftConflict else { return }
+        do {
+            let current = try attention.replyDraft(item)
+            guard current == conflict.current else { throw AgentAttention.DraftConflict(current: current) }
+            if keepLocal {
+                try attention.saveReply(item, text: reply.string, expected: current)
+            } else {
+                reply.string = current; reply.undoManager?.removeAllActions()
+            }
+            replySavedText = reply.string; draftConflict = nil; operationIssue = nil
+            refresh(); onRecoveryChange?()
+            if !reply.isHiddenOrHasHiddenAncestor { presentingWindow?.makeFirstResponder(reply) }
+        } catch let conflict as AgentAttention.DraftConflict {
+            showDraftConflict(conflict)
+        } catch { showDraftIssue(error.localizedDescription) }
     }
     @objc private func openTask() { if persistReply(), let item = selected { onOpenTask?(item.taskID) } }
     @objc private func markHandled() { perform { guard let item = self.selected else { return nil }; try self.attention.mark(item, handled: !item.handled); return nil } }
-    @objc private func answerQuestion() { perform { guard let item = self.selected else { return nil }; let warning = try self.attention.decide(item, decision: "answer:" + self.reply.string, runtime: self.runtime); self.reply.string = ""; self.replySavedText = ""; return warning } }
+    @objc private func answerQuestion() {
+        guard draftConflict == nil else { return }
+        perform {
+            guard let item = self.selected else { return nil }
+            let warning = try self.attention.decide(item, decision: "answer:" + self.reply.string, runtime: self.runtime)
+            self.reply.string = ""; self.replySavedText = ""; return warning
+        }
+    }
     @objc private func allowRequest() { decide("allow") }
     @objc private func denyRequest() { decide("deny") }
     private func decide(_ value: String) { perform { guard let item = self.selected else { return nil }; return try self.attention.decide(item, decision: value, runtime: self.runtime) } }
     @objc private func executePlan() { perform { guard let item = self.selected else { return nil }; try self.attention.executePlan(item, runtime: self.runtime); return nil } }
     private func perform(_ action: () throws -> String?) {
         guard persistReply() else { return }
-        do { operationIssue = try action() } catch { operationIssue = error.localizedDescription }
+        do { operationIssue = try action() }
+        catch let conflict as AgentAttention.DraftConflict { showDraftConflict(conflict); return }
+        catch { operationIssue = error.localizedDescription }
         refresh()
     }
     func prepareToClose() -> Bool {

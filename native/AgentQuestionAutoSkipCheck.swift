@@ -66,7 +66,7 @@ import AppKit
             policy.refresh(); time += 150; policy.refresh()
             checks["ExistingComposerDraftIsNeverSkippedOrRewritten"] = try tasks.task(draft)?.status == .waiting && Data(contentsOf: draftFile) == draftBytes
             let inbox = seed("收件箱答复草稿"), inboxItem = AgentAttentionItem.project(tasks.task(inbox)!).first!
-            try tasks.attention.saveReply(inboxItem, text: "保留需要我中的答复")
+            try tasks.attention.saveReply(inboxItem, text: "保留需要我中的答复", expected: tasks.attention.replyDraft(inboxItem))
             checks["ExistingInboxReplyDraftBlocksAutoSkip"] = try !runtime.skipQuestion(AgentQuestionAutoSkip.request(tasks.task(inbox)!)!) && tasks.task(inbox)?.status == .waiting && tasks.attention.replyDraft(inboxItem) == "保留需要我中的答复"
 
             let approval = seed("审批边界", name: "write_file"), hook = seed("Hook 边界"), archived = seed("归档边界"), queued = seed("新输入边界")
