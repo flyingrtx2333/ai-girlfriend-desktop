@@ -180,12 +180,61 @@ import UserNotifications
             checks["IndependentCheckCannotRequestOSPermission"] = refused
             refused = false; do { try await notifications.test(taskID: a) } catch { refused = true }
             checks["IndependentCheckCannotDeliverOSNotification"] = refused
+            control.showAgentTask(a)
+            guard control.showSettingsCategory("model"), let root = window.contentView,
+                  let model = descendants(root).compactMap({ $0 as? NSTextField }).first(where: { $0.accessibilityLabel() == "模型 ID" && !$0.isHiddenOrHasHiddenAncestor }) else { throw PetError("缺少通知导航验收表单") }
+            let savedModel = model.stringValue, edit = "public/notification-draft"
+            model.stringValue = edit; window.makeFirstResponder(model)
+            let draftSelection = NSRange(location: 7, length: 11)
+            (model.currentEditor() as? NSTextView)?.setSelectedRange(draftSelection)
+            window.makeKeyAndOrderFront(nil); await wait(0.05)
+            var confirmations = 0, inOriginalWindow = true
+            let timer = Timer(timeInterval: 0.02, repeats: true) { _ in
+                MainActor.assumeIsolated {
+                    guard let dialog = NSApp.modalWindow?.agentDialog,
+                          let button = descendants(dialog.view).compactMap({ $0 as? NSButton }).first(where: { $0.title == "继续编辑" }) else { return }
+                    confirmations += 1; inOriginalWindow = inOriginalWindow && NSApp.modalWindow === window
+                    button.performClick(nil)
+                }
+            }
+            RunLoop.main.add(timer, forMode: .modalPanel)
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: routed)
+            report["notificationCancelConfirmations"] = confirmations
+            checks["CancelNotificationNavigationOffersExactlyOneConfirmation"] = confirmations == 1
+            checks["CancelNotificationNavigationKeepsOriginalWindowAndDraft"] = control.agentTaskID == a && !model.isHiddenOrHasHiddenAncestor && model.stringValue == edit && (model.currentEditor() as? NSTextView)?.selectedRange() == draftSelection
+            let firstConfirmationCount = confirmations
+            second.window?.makeKeyAndOrderFront(nil); await wait(0.05)
+            let wasOtherWindowFocused = second.window?.isKeyWindow == true
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: a)
+            timer.invalidate()
+            checks["FollowingAnInactiveTasksNotificationUsesItsOwnConfirmationWindow"] = wasOtherWindowFocused && confirmations == firstConfirmationCount + 1 && inOriginalWindow && model.stringValue == edit
+            checks["CancelledNotificationDoesNotClaimItOpenedTheTarget"] = (await notifications.verificationReadback())["openedTaskID"] as? String == ""
+            model.stringValue = savedModel
+            control.show(tab: "chat")
+            guard let handler = notifications.onOpen else { throw PetError("通知导航尚未注册") }
+            notifications.onOpen = nil
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: routed)
+            notifications.receiveResponse(action: UNNotificationDismissActionIdentifier, taskID: b)
+            checks["EarlyNotificationWaitsForStartupNavigation"] = control.isShowingNotifiedConversation(a)
+            notifications.onOpen = handler
+            let afterStartup = await notifications.verificationReadback()
+            checks["StartupRoutesTheOriginalNotificationAfterReady"] = control.isShowingNotifiedConversation(routed) && afterStartup["openedTaskID"] as? String == routed
+            notifications.receiveResponse(action: UNNotificationDismissActionIdentifier, taskID: b)
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: "invalid")
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: UUID().uuidString)
+            let afterIgnored = await notifications.verificationReadback()
+            checks["DismissedMalformedAndUnavailableNotificationsDoNotNavigate"] = control.isShowingNotifiedConversation(routed) && afterIgnored["openedTaskID"] as? String == routed
+            second.window?.orderOut(nil)
+            notifications.receiveResponse(action: UNNotificationDefaultActionIdentifier, taskID: b)
+            let afterReopen = await notifications.verificationReadback()
+            checks["ClickReusesTheOriginalTaskWindow"] = second.isShowingNotifiedConversation(b) && control.agentTaskID == routed && afterReopen["openedTaskID"] as? String == b
+            checks["NotificationRoutingLeavesOriginalSavedDrafts"] = tasks.task(a)?.draft == "原有中文草稿 🧭" && tasks.task(b)?.draft == "另一个窗口的原草稿"
             checks["NoModelMessagesOrReceiptsWereSaved"] = tasks.tasks.allSatisfy { !$0.messages.contains { $0.role == "assistant" } && ($0.modelReceipts ?? []).isEmpty && $0.inputTokens == 0 && $0.outputTokens == 0 }
             report["capturedNativeRequests"] = captured.map { ["id": $0.identifier, "body": $0.content.body, "taskID": $0.content.userInfo["task_id"] as? String ?? ""] }
             for (key, value) in try await checkTaskExecutionPreferences(output) { checks["Execution-" + key] = value }
             for (key, value) in try await checkSlashMenu(output) { checks["Slash-" + key] = value }
             checks["SlashFixtureCreatesNoModelRepliesOrReceipts"] = tasks.tasks.allSatisfy { !$0.messages.contains(where: \.isReply) && ($0.modelReceipts ?? []).isEmpty }
-            report["boundary"] = "Native metadata copies exercise notification policy and request construction. Execution preferences additionally exercise actual local command cancellation and persisted goal budgets in a separate isolated profile. No model answer, provider request or delivered OS notification is claimed."
+            report["boundary"] = "Native metadata and response handling exercise notification policy, request construction and task-window routing. Execution preferences also exercise local cancellation and persisted goal budgets in an isolated profile. No model answer, provider request or OS notification delivery was exercised."
             report["success"] = checks.count >= 35 && checks.values.allSatisfy { $0 }
         } catch { report["error"] = error.localizedDescription; report["success"] = false }
         report["checks"] = checks; report["modelRequests"] = requests; report["appPID"] = getpid()

@@ -178,7 +178,18 @@ final class PetWebView: WKWebView {
             restoreAdditionalWorkspaceWindows()
             if !store.keychain.contains("chat") { control.show(tab: "settings") }
         }
-        applicationLaunched = true; importOpenedFiles()
+        applicationLaunched = true
+        let openNotification: (String) -> Bool = { [weak self] id in self?.openTaskFromNotification(id) == true }
+        if checkDirectory == nil, !workspaceRecoveryWindows.isEmpty {
+            let sessions = taskControls.compactMap(\.workspaceSession)
+            Task { @MainActor [weak self] in
+                for session in sessions { await session.waitForPendingRestores() }
+                self?.automationNotifications.onOpen = openNotification
+            }
+        } else {
+            automationNotifications.onOpen = openNotification
+        }
+        importOpenedFiles()
     }
     func applicationWillTerminate(_ notification: Notification) {
         questionAutoSkip?.stop()

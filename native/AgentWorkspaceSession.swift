@@ -409,9 +409,12 @@ private actor AgentWorkspaceJournal {
         guard !terminalAppearanceReadOnly, let preference, preference == .application || savedTerminalAppearance != nil else { return nil }
         return AgentTerminalAppearanceRecord(windowID: id, preference: preference, fallbackDark: layout.dark)
     }
+    func waitForPendingRestores() async {
+        for root in Array(roots.values) { await root.value }
+    }
     func flush() async throws {
         guard !disabled else { return }
-        for root in Array(roots.values) { await root.value }
+        await waitForPendingRestores()
         // Read the latest media position even between throttled time events.
         if editors.contains(where: { ($0.2 as? AgentRecordWindow)?.hasVideoPlayback == true }) || owner?.knowledgePageHost.recoveryReaders.contains(where: \.hasVideoPlayback) == true { revision &+= 1 }
         if editors.contains(where: { ($0.2 as? AgentGitWindow)?.recoveryWorktreeForm?.hasDraft == true }) { revision &+= 1 }

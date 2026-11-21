@@ -117,7 +117,6 @@ import AppKit
             guard let self, !self.closing else { return }; self.taskControls.forEach { $0.refreshAutomationBadge() }
             if self.checkDirectory == nil, tasks.attention.settings.automationNotifications { self.automationNotifications.post(run) }
         }
-        automationNotifications.onOpen = { [weak self] id in guard let self, tasks.task(id) != nil else { return }; let window = self.taskControl(for: id); window.showAgentTask(id); window.show(tab: "chat") }
         tasks.worktreeRetention.onChange = { [weak self] in for window in self?.taskControls ?? [] { window.refreshWorktreeRetention() } }
         if checkDirectory == nil { tasks.automations.start(store: tasks, runtime: runtime); tasks.worktreeRetention.start(store: tasks); tasks.knowledgeCards.resume(); tasks.wikiMaintenance.resume() }
         tasks.attention.refresh()

@@ -23,6 +23,19 @@ import AppKit
         if inputControl.agentTaskID == id { return inputControl }
         return taskControls.first(where: { $0.agentTaskID == id && $0.window?.isVisible == true }) ?? inputControl
     }
+    func openTaskFromNotification(_ id: String) -> Bool {
+        guard !closing else { return false }
+        ensureAgent()
+        guard let task = agentStore?.task(id), task.sideTask?.retained != false else { return false }
+        let owner = taskControl(for: id)
+        if owner.agentTaskID == id { return owner.openNotifiedConversation(id) }
+        if let existing = taskControls.first(where: { $0.agentTaskID == id }) { return existing.openNotifiedConversation(id) }
+        if task.sideTask != nil {
+            openSideTask(id, from: owner)
+            return taskControls.contains { $0.isShowingNotifiedConversation(id) }
+        }
+        return (owner.sideTaskTabID == nil ? owner : control).openNotifiedConversation(id)
+    }
     func windowDraft(_ id: String, attributes: [NSAttributedString.Key: Any]) -> AgentWindowDraft? {
         guard let task = agentStore?.task(id) else { return nil }
         if let value = taskWindowDrafts.object(forKey: id as NSString) { value.refresh(task.draft ?? "", attributes: attributes); return value }

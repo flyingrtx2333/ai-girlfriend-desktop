@@ -2,7 +2,7 @@ import AppKit
 import UserNotifications
 
 @MainActor final class AgentAutomationNotifications: NSObject, UNUserNotificationCenterDelegate {
-    var onOpen: ((String) -> Void)?
+    var onOpen: ((String) -> Bool)? { didSet { openPendingTask() } }
     var preferences: () -> AgentGeneralSettings.Settings = { .init() }
     var isTaskFocused: (String) -> Bool = { _ in NSApp.isActive }
     var taskRecord: ((String) -> AgentTaskRecord?)?
@@ -10,6 +10,7 @@ import UserNotifications
     var postForCheck: ((UNNotificationRequest) -> Void)?
     private var seenRequests = Set<String>(), seenCompletions: [String: String] = [:]
     private var posted: [String] = [], openedTask: String?
+    private var pendingTaskID: String?, openingTaskID: String?
     override init() { super.init(); UNUserNotificationCenter.current().delegate = self }
     func request() async throws -> Bool {
         guard allowsSystemDelivery else { throw PetError("独立验收模式未启用系统通知") }
@@ -62,6 +63,19 @@ import UserNotifications
         }
     }
     func test(taskID: String?) async throws { try await send("test." + UUID().uuidString, title: "小鲸", body: "通知已就绪", taskID: taskID) }
+    func receiveResponse(action: String, taskID: String?) {
+        guard action == UNNotificationDefaultActionIdentifier, let taskID, UUID(uuidString: taskID) != nil, taskID != openingTaskID else { return }
+        pendingTaskID = taskID
+        openPendingTask()
+    }
+    private func openPendingTask() {
+        guard openingTaskID == nil else { return }
+        while let onOpen, let taskID = pendingTaskID {
+            pendingTaskID = nil; openingTaskID = taskID
+            if onOpen(taskID) { openedTask = taskID }
+            openingTaskID = nil
+        }
+    }
     func verificationReadback() async -> [String: Any] {
         guard ["--general-settings-check", "--manual-ui"].contains(where: CommandLine.arguments.contains) else { return [:] }
         let center = UNUserNotificationCenter.current(), authorization = await center.notificationSettings().authorizationStatus
@@ -70,7 +84,10 @@ import UserNotifications
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) { completionHandler([.banner, .list, .sound]) }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        let id = response.notification.request.content.userInfo["task_id"] as? String
-        Task { @MainActor [weak self] in if let id { self?.openedTask = id; self?.onOpen?(id) }; completionHandler() }
+        let action = response.actionIdentifier, id = response.notification.request.content.userInfo["task_id"] as? String
+        Task { @MainActor [weak self] in
+            completionHandler()
+            self?.receiveResponse(action: action, taskID: id)
+        }
     }
 }

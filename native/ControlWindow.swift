@@ -2772,7 +2772,7 @@ final class FormDocumentView: NSView {
         guard !savedBasicSettings.isEmpty, basicSettingsValues() != savedBasicSettings else { return true }
         if preservingRecovery, let draft = captureModelSettings()?.draft, workspaceSession?.hasPreservedModelDraft(draft) == true { return true }
         let input = settingsEditingInput, selection = settingsEditingSelection
-        guard AgentUnsavedChanges.discard("放弃未保存的设置更改？") else {
+        guard AgentUnsavedChanges.discard("放弃未保存的设置更改？", owner: window) else {
             if let input, input.window === window, !input.isHiddenOrHasHiddenAncestor, window?.makeFirstResponder(input) == true,
                let selection, let editor = window?.firstResponder as? NSTextView, NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
             return false
@@ -5998,6 +5998,18 @@ extension ControlWindow {
 
 @MainActor extension ControlWindow {
     func showAgentTask(_ id: String) { selectAgentTask(id) }
+    func isShowingNotifiedConversation(_ id: String) -> Bool {
+        agentTaskID == id && selectedTab == "chat" && window?.isVisible == true
+    }
+    func openNotifiedConversation(_ id: String) -> Bool {
+        guard let window, !window.hasBlockingDialog else { return false }
+        if agentTaskID != id || selectedTab != "chat" { selectAgentTask(id) }
+        guard agentTaskID == id, selectedTab == "chat" else { return false }
+        show(tab: "chat")
+        window.tabGroup?.selectedWindow = window
+        window.makeKeyAndOrderFront(nil)
+        return isShowingNotifiedConversation(id)
+    }
     func prepareRepoWikiOverviewCheck() { showAgentKnowledge() }
     func repoWikiOverviewReadback() async -> [String: Any] {
         guard CommandLine.arguments.contains("--repo-wiki-overview-check") else { return [:] }
