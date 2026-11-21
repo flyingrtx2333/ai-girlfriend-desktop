@@ -126,8 +126,8 @@ enum AgentSidebarSection: Int, CaseIterable {
 @MainActor final class AgentSidebarLayoutSettingsView: NSStackView, NSTableViewDataSource, NSTableViewDelegate {
     private let service: AgentSidebarLayout
     private var tables: [AgentSidebarSection: NSTableView] = [:], heights: [AgentSidebarSection: NSLayoutConstraint] = [:]
-    private let status = NSTextField(labelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
-    private let restore = NSButton(title: "恢复默认", target: nil, action: nil)
+    private let status = AgentSettingsStatusField("侧栏保存状态"), reload = AgentDialogButton(title: "重新载入", target: nil, action: nil)
+    private let restore = AgentDialogButton(title: "恢复默认", target: nil, action: nil)
     private let morePreview = NSTextField(labelWithString: "•••  更多")
     private static let dragType = NSPasteboard.PasteboardType("com.xjs.bluefatfish.sidebar-menu")
     init(service: AgentSidebarLayout) {
@@ -153,26 +153,26 @@ enum AgentSidebarSection: Int, CaseIterable {
             scroll.widthAnchor.constraint(equalTo: box.widthAnchor).isActive = true
             return box
         }
-        let heading = label("侧栏菜单"); addArrangedSubview(heading)
-        let gap = NSView(); gap.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        reload.target = self; reload.action = #selector(reloadSettings)
+        restore.target = self; restore.action = #selector(restoreSettings)
+        for button in [reload, restore] { AgentDialogStyle.action(button) }
+        let actions = NSStackView(views: [status, NSView(), reload, restore]); actions.alignment = .centerY; actions.spacing = 8
+        addArrangedSubview(actions); actions.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+
+        let gap = NSView(); gap.heightAnchor.constraint(equalToConstant: 14).isActive = true
         let top = section(.upper), bottom = section(.lower), more = section(.more)
         morePreview.font = .systemFont(ofSize: 13); morePreview.textColor = AgentWorkbenchTheme.secondaryText
         let preview = NSStackView(views: [fixed("新的任务", symbol: "plus.square"), top, gap, bottom, morePreview, fixed("设置", symbol: "gearshape")]); preview.orientation = .vertical; preview.alignment = .leading; preview.spacing = 12
         for view in preview.arrangedSubviews { view.widthAnchor.constraint(equalTo: preview.widthAnchor).isActive = true }
         func card(_ content: NSView) -> NSView {
-            let card = AgentThemeView(fill: AgentWorkbenchTheme.surface, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 10; card.layer?.borderWidth = 1
+            let card = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line); card.layer?.cornerRadius = 12; card.layer?.borderWidth = 1
             card.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12), content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12), content.topAnchor.constraint(equalTo: card.topAnchor, constant: 12), content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -12)])
             return card
         }
-        let moreColumn = NSStackView(views: [more, NSView()]); moreColumn.orientation = .vertical; moreColumn.alignment = .leading; more.widthAnchor.constraint(equalTo: moreColumn.widthAnchor).isActive = true
-        let left = card(preview), right = card(moreColumn)
+        let left = card(preview), right = card(more)
         let columns = NSStackView(views: [left, right]); columns.alignment = .top; columns.spacing = 12; columns.distribution = .fillEqually
-        right.heightAnchor.constraint(equalTo: left.heightAnchor).isActive = true
         addArrangedSubview(columns); columns.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText; status.setAccessibilityLabel("侧栏保存状态")
-        reload.target = self; reload.action = #selector(reloadSettings); restore.target = self; restore.action = #selector(restoreSettings)
-        let footer = NSStackView(views: [status, NSView(), reload, restore]); footer.spacing = 10; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentSidebarLayout.changed, object: service)
         refresh()
     }
@@ -215,7 +215,7 @@ enum AgentSidebarSection: Int, CaseIterable {
                 window?.makeFirstResponder(table)
             }
             return true
-        } catch { status.stringValue = error.localizedDescription; reload.isHidden = false; return false }
+        } catch { status.showSaveFailure(error); reload.isHidden = false; return false }
     }
     @discardableResult func moveSelection(in table: NSTableView, key: UInt16) -> Bool {
         guard [123, 124, 125, 126].contains(key) else { return false }
@@ -251,6 +251,6 @@ enum AgentSidebarSection: Int, CaseIterable {
     @objc private func reloadSettings() { service.reload(); service.publish(); status.stringValue = service.error ?? "已重新载入"; refresh() }
     @objc private func restoreSettings() {
         do { try service.save(AgentSidebarLayout.Settings()); status.stringValue = "已保存"; refresh() }
-        catch { status.stringValue = error.localizedDescription; reload.isHidden = false }
+        catch { status.showSaveFailure(error); reload.isHidden = false }
     }
 }

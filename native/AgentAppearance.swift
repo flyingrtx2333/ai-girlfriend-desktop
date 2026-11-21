@@ -70,36 +70,32 @@ enum AgentTheme: String, Codable, CaseIterable {
 
 @MainActor final class AgentAppearanceSettingsView: NSStackView {
     private let service: AgentAppearance, theme = NSPopUpButton(), size = NSPopUpButton()
-    private let status = NSTextField(labelWithString: ""), reload = NSButton(title: "重新载入", target: nil, action: nil)
-    init(service: AgentAppearance, sidebar: AgentSidebarLayout? = nil, styles: AgentThemeStyles? = nil, content: AgentContentAppearance? = nil, fileIcons: AgentFileIcons? = nil, mode: @escaping () -> AgentWorkMode = { .coding }) {
+    private let status = AgentSettingsStatusField("外观保存状态"), reload = AgentDialogButton(title: "重新载入", target: nil, action: nil)
+    init(service: AgentAppearance, styles: AgentThemeStyles? = nil, content: AgentContentAppearance? = nil, fileIcons: AgentFileIcons? = nil, sidebarMenu: NSButton? = nil, mode: @escaping () -> AgentWorkMode = { .coding }) {
         self.service = service; super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 10
+        orientation = .vertical; alignment = .leading; spacing = 20
         theme.addItems(withTitles: AgentTheme.allCases.map(\.title)); theme.setAccessibilityLabel("界面主题")
         size.addItems(withTitles: AgentAppearance.textSizes.map { "\($0)" }); size.setAccessibilityLabel("对话字号")
-        for (title, control) in [("明暗模式", theme), ("对话字号", size)] {
-            control.target = self; control.action = #selector(change)
-            if !arrangedSubviews.isEmpty { let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
-            let row = AgentSettingsStyle.formRow(title, control, trailing: true); addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            if control === theme, let styles {
-                let editor = AgentThemeStyleSelectionView(service: styles, gallery: true, mode: mode)
-                addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            }
+        for control in [theme, size] { control.target = self; control.action = #selector(change) }
+        reload.target = self; reload.action = #selector(reloadSettings); AgentDialogStyle.action(reload)
+        let feedback = NSStackView(views: [status, NSView(), reload]); feedback.alignment = .centerY; feedback.spacing = 8
+        addArrangedSubview(feedback)
+
+        var themeRows: [NSView] = [AgentSettingsStyle.formRow("明暗模式", theme, trailing: true)]
+        if let styles { themeRows.append(AgentThemeStyleSelectionView(service: styles, gallery: true, mode: mode)) }
+        addArrangedSubview(AgentSettingsStyle.section("主题", id: "appearance-theme", rows: themeRows, separatesRows: false))
+
+        var conversationRows: [NSView] = [AgentSettingsStyle.formRow("对话字号", size, trailing: true)]
+        if let content { conversationRows.append(AgentContentAppearanceSettingsView(service: content)) }
+        addArrangedSubview(AgentSettingsStyle.section("对话", id: "appearance-conversation", rows: conversationRows))
+
+        var interfaceRows: [NSView] = []
+        if let fileIcons { interfaceRows.append(AgentFileIconsSettingsView(service: fileIcons)) }
+        if let sidebarMenu { interfaceRows.append(AgentSettingsStyle.formRow("侧栏菜单", sidebarMenu, trailing: true)) }
+        if !interfaceRows.isEmpty {
+            addArrangedSubview(AgentSettingsStyle.section("界面", id: "appearance-interface", rows: interfaceRows))
         }
-        status.font = .systemFont(ofSize: 12); status.textColor = AgentWorkbenchTheme.secondaryText
-        reload.target = self; reload.action = #selector(reloadSettings)
-        let footer = NSStackView(views: [status, NSView(), reload]); footer.spacing = 12; addArrangedSubview(footer); footer.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        if let content {
-            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            let editor = AgentContentAppearanceSettingsView(service: content); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
-        if let fileIcons {
-            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            let editor = AgentFileIconsSettingsView(service: fileIcons); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
-        if let sidebar {
-            let rule = AgentSettingsStyle.divider(); addArrangedSubview(rule); rule.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-            let editor = AgentSidebarLayoutSettingsView(service: sidebar); addArrangedSubview(editor); editor.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
+        for view in arrangedSubviews { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: AgentAppearance.changed, object: service)
         refresh()
     }
@@ -117,7 +113,7 @@ enum AgentTheme: String, Codable, CaseIterable {
         value.theme = AgentTheme.allCases[max(0, theme.indexOfSelectedItem)]
         value.textSize = AgentAppearance.textSizes[max(0, size.indexOfSelectedItem)]
         do { try service.save(value); status.stringValue = "已保存" }
-        catch { status.stringValue = error.localizedDescription }
+        catch { status.showSaveFailure(error) }
         refresh()
     }
     @objc private func reloadSettings() { service.reload(); service.apply(); status.stringValue = service.error ?? "已重新载入"; refresh() }

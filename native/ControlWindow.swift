@@ -158,6 +158,10 @@ final class FormDocumentView: NSView {
     private let modelDirectoryBack = AgentWorkbenchButton()
     private let modelDirectory = AgentModelDirectoryView()
     private var modelDirectoryReturnY: CGFloat?
+    private let sidebarMenuButton = AgentDialogButton(title: "调整顺序", target: nil, action: nil)
+    private let sidebarMenuBack = AgentWorkbenchButton()
+    private var sidebarMenuSettings: AgentSidebarLayoutSettingsView?
+    private var sidebarMenuLocation: AgentSettingsRecovery.SidebarMenuLocation?
     private let modelStatus = AgentSettingsStatusField("检测状态")
     private let vision = NSPopUpButton(), reasoning = NSPopUpButton()
     private let contextTokens = AgentComboBox(), replyTokens = AgentComboBox()
@@ -718,6 +722,28 @@ final class FormDocumentView: NSView {
             checks["modelDirectoryChoiceOnlyChangesModelDraft"] = modelDirectory.isHidden && model.stringValue == "public/model-16" &&
                 companion?.store.preferences.model == savedModel && basicSettingsValues().enumerated().allSatisfy { $0.offset == 1 || $0.element == draft[$0.offset] }
             modelDirectory.clear(); refreshPreferences()
+        }
+        if let panel = sidebarMenuSettings, showSettingsCategory("appearance") {
+            window.setContentSize(NSSize(width: 780, height: 540)); window.contentView?.layoutSubtreeIfNeeded()
+            let cards = descendants(settingsForm).compactMap { $0.identifier?.rawValue }.filter { $0.hasPrefix("settings-card-appearance-") }
+            checks["appearanceUsesSeparatePurposeCards"] = Set(cards) == ["settings-card-appearance-theme", "settings-card-appearance-conversation", "settings-card-appearance-interface"] && panel.window == nil
+            sidebarMenuButton.scrollToVisible(sidebarMenuButton.bounds)
+            let parentY = settingsScroll.contentView.bounds.minY
+            sidebarMenuButton.performClick(nil); window.contentView?.layoutSubtreeIfNeeded()
+            checks["sidebarMenuUsesSettingsPaneWithBackAndSelectedCategory"] = settingsHeading.stringValue == "侧栏菜单" &&
+                !sidebarMenuBack.isHidden && panel.window === window && sidebarMenuButton.window == nil && settingsFooter?.isHidden == true &&
+                categoryButtons.first { $0.identifier?.rawValue == "settings-category-appearance" }?.state == .on
+            let menu = captureSettingsNavigation()
+            let encodedMenu = try? JSONEncoder().encode(menu)
+            checks["sidebarMenuNavigationKeepsParentAndDetailPositions"] = menu?.sidebarMenu?.parentY == parentY &&
+                menu?.sidebarMenu?.y == 0 && encodedMenu.flatMap { try? JSONDecoder().decode(AgentSettingsRecovery.Navigation.self, from: $0) } == menu
+            settingsSearch.stringValue = "侧栏"; updateSettingsSections()
+            let searchable = settingsHeading.stringValue == "搜索结果" && sidebarMenuBack.isHidden && settingsResults.contains { $0.title == "侧栏菜单" }
+            settingsSearch.stringValue = ""; updateSettingsSections()
+            checks["sidebarMenuSearchReturnsToSameEditor"] = searchable && settingsHeading.stringValue == "侧栏菜单" && panel.window === window
+            sidebarMenuBack.performClick(nil)
+            checks["sidebarMenuBackRestoresAppearanceAndScroll"] = settingsHeading.stringValue == "外观" && sidebarMenuBack.isHidden && panel.window == nil &&
+                abs(settingsScroll.contentView.bounds.minY - parentY) < 1 && captureSettingsNavigation()?.sidebarMenu == nil
         }
         returnToChat(); window.setContentSize(original); window.contentView?.layoutSubtreeIfNeeded()
         checks["ChatHidesSettingsWindowActions"] = settingsWindowActions.isHidden
@@ -1814,7 +1840,7 @@ final class FormDocumentView: NSView {
     }
     private func leaveSettingsPage() -> Bool {
         if canLeaveBasicSettings(), settingsPageHost.leave() {
-            endModelDirectory(); restoredSettingsContext = nil; return true
+            endModelDirectory(); sidebarMenuLocation = nil; restoredSettingsContext = nil; return true
         }
         if selectedTab == "settings", !settingsSearch.stringValue.isEmpty {
             let input = settingsEditingInput, selection = settingsEditingSelection
@@ -2126,14 +2152,21 @@ final class FormDocumentView: NSView {
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if settingsCategory != "model" { endModelDirectory() }
+        if settingsCategory != "appearance" { sidebarMenuLocation = nil }
+        if !query.isEmpty, let panel = sidebarMenuSettings, settingsForm.arrangedSubviews.first === panel {
+            sidebarMenuLocation?.y = max(0, settingsScroll.contentView.bounds.minY)
+        }
+        let sidebarPanel = query.isEmpty && sidebarMenuLocation != nil ? sidebarMenuSettings : nil
         let showingModelDirectory = query.isEmpty && modelDirectoryReturnY != nil
         modelDirectory.isHidden = !showingModelDirectory; modelDirectoryBack.isHidden = !showingModelDirectory
+        sidebarMenuBack.isHidden = sidebarPanel == nil
         if let title = settingsHeading.superview {
-            let compactHeader = showingModelDirectory || query.isEmpty && managedSettings.contains(settingsCategory)
+            let compactHeader = showingModelDirectory || sidebarPanel != nil || query.isEmpty && managedSettings.contains(settingsCategory)
             settingsColumn?.setCustomSpacing(compactHeader ? 16 : 30, after: title)
         }
         let selected = settingsCategories.first { $0.0 == settingsCategory } ?? settingsCategories[0]
-        settingsHeading.stringValue = showingModelDirectory ? "模型列表" : query.isEmpty ? selected.1 : "搜索结果"
+        if sidebarPanel != nil { settingsHeading.stringValue = "侧栏菜单" }
+        else { settingsHeading.stringValue = showingModelDirectory ? "模型列表" : query.isEmpty ? selected.1 : "搜索结果" }
         settingsHeading.toolTip = nil
         pageTitle.stringValue = settingsHeading.stringValue
         settingsResults = query.isEmpty ? [] : settingsSearchMatches(query)
@@ -2148,6 +2181,18 @@ final class FormDocumentView: NSView {
         if showingModelDirectory {
             settingsPageHost.isHidden = true; settingsScroll.isHidden = true
             generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
+            return
+        }
+        if let sidebarPanel {
+            settingsPageHost.isHidden = true; settingsScroll.isHidden = false
+            generalSettingsSave?.isHidden = true; settingsFooter?.isHidden = true
+            if settingsForm.arrangedSubviews.first !== sidebarPanel {
+                settingsForm.arrangedSubviews.forEach { settingsForm.removeArrangedSubview($0); $0.removeFromSuperview() }
+                settingsForm.addArrangedSubview(sidebarPanel)
+                sidebarPanel.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
+                window?.contentView?.layoutSubtreeIfNeeded()
+                restoreSettingsScroll(sidebarMenuLocation?.y ?? 0, to: settingsScroll)
+            }
             return
         }
         if !query.isEmpty {
@@ -2283,7 +2328,7 @@ final class FormDocumentView: NSView {
         var panelOnly = false
         func group(_ category: String, _ title: String, _ keywords: String, key: String? = nil) {
             let heading = AgentSettingsStyle.sectionHeading(title)
-            panelOnly = ["general", "monitor", "shortcuts", "attention"].contains(category)
+            panelOnly = ["general", "monitor", "shortcuts", "attention", "appearance"].contains(category)
             let framed = !panelOnly
             let card = AgentThemeView(fill: framed ? AgentWorkbenchTheme.surface : .clear, stroke: framed ? AgentWorkbenchTheme.line : nil); card.translatesAutoresizingMaskIntoConstraints = false
             card.layer?.cornerRadius = 12; card.layer?.borderWidth = framed ? 1 : 0
@@ -2415,8 +2460,16 @@ final class FormDocumentView: NSView {
                 row("", panel)
             }
             group("appearance", "外观", "外观 主题 配色 森林 薄荷 蜜蜂 羊皮纸 深色 浅色 系统 字号 字体风格 无衬线 衬线 内容宽度 标准 宽 侧栏 菜单 上方 下方 更多 排序 Theme Appearance Font Width Sidebar 文件图标 Material File Icons 小鲸")
-            let panel = AgentAppearanceSettingsView(service: companion.appearance, sidebar: companion.usesAgent ? companion.sidebarLayout : nil, styles: companion.usesAgent ? companion.themeStyles : nil, content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
-            row("", panel); panel.widthAnchor.constraint(equalTo: body.widthAnchor, constant: -32).isActive = true
+            if companion.usesAgent {
+                sidebarMenuSettings = AgentSidebarLayoutSettingsView(service: companion.sidebarLayout)
+                AgentDialogStyle.action(sidebarMenuButton)
+                sidebarMenuButton.setAccessibilityLabel("调整侧栏菜单顺序")
+                sidebarMenuButton.target = self; sidebarMenuButton.action = #selector(openSidebarMenu)
+            }
+            let panel = AgentAppearanceSettingsView(service: companion.appearance, styles: companion.usesAgent ? companion.themeStyles : nil,
+                content: companion.usesAgent ? companion.contentAppearance : nil, fileIcons: companion.usesAgent ? companion.fileIcons : nil,
+                sidebarMenu: sidebarMenuSettings == nil ? nil : sidebarMenuButton, mode: { [weak self] in self?.currentAgentTask?.organizationMode ?? .coding })
+            row("", panel)
         }
         group("persona", "人设", "角色 人设 性格 提示词 persona")
         persona.usesSingleLineMode = false; persona.lineBreakMode = .byWordWrapping
@@ -2491,7 +2544,9 @@ final class FormDocumentView: NSView {
         settingsBody.addSubview(modelDirectory); pin(modelDirectory, to: settingsBody, inset: 16)
         modelDirectory.isHidden = true
         settingsPageHost.isHidden = true
-        let title = NSStackView(views: [modelDirectoryBack, settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
+        AgentWorkbenchTheme.toolbar(sidebarMenuBack, title: "返回外观", symbol: "chevron.left")
+        sidebarMenuBack.target = self; sidebarMenuBack.action = #selector(closeSidebarMenu); sidebarMenuBack.isHidden = true
+        let title = NSStackView(views: [modelDirectoryBack, sidebarMenuBack, settingsHeading, NSView()]); title.alignment = .centerY; title.spacing = 12
         title.edgeInsets = NSEdgeInsets(top: 0, left: 16, bottom: 0, right: 16); title.translatesAutoresizingMaskIntoConstraints = false
         settingsPageHost.titleHost = title
         settingsPageHost.onDetailHeading = { [weak self] detail in
@@ -2732,6 +2787,22 @@ final class FormDocumentView: NSView {
         guard modelDirectoryReturnY != nil else { return }
         modelDirectoryReturnY = nil
         if modelRequestKind == .catalog { requestModel(.catalog) }
+    }
+
+    @objc private func openSidebarMenu() {
+        guard selectedTab == "settings", settingsCategory == "appearance", sidebarMenuSettings != nil,
+              sidebarMenuButton.window === window, !sidebarMenuButton.isHiddenOrHasHiddenAncestor, sidebarMenuLocation == nil else { return }
+        sidebarMenuLocation = .init(parentY: max(0, settingsScroll.contentView.bounds.minY), y: 0)
+        updateSettingsSections(); window?.makeFirstResponder(sidebarMenuBack)
+        workspaceSession?.changed()
+    }
+
+    @objc private func closeSidebarMenu() {
+        guard let location = sidebarMenuLocation else { return }
+        sidebarMenuLocation = nil; updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
+        restoreSettingsScroll(location.parentY, to: settingsScroll)
+        window?.makeFirstResponder(sidebarMenuButton)
+        workspaceSession?.changed()
     }
 
     private func modelRequestKey(for url: URL) throws -> String {
@@ -3083,11 +3154,13 @@ final class FormDocumentView: NSView {
         if let pendingSettingsNavigation { return pendingSettingsNavigation }
         let input = currentSettingsNavigationInput(), page = managedSettings.contains(settingsCategory) ? settingsPageHost.selectedPageKey : nil
         let source = page == nil || ["git", "worktrees"].contains(settingsCategory) ? nil : agentTaskID.flatMap { settingsSourceFolders[$0] }
+        var menu = sidebarMenuLocation
+        if let panel = sidebarMenuSettings, settingsForm.arrangedSubviews.first === panel { menu?.y = max(0, settingsScroll.contentView.bounds.minY) }
         let value = AgentSettingsRecovery.Navigation(category: settingsCategory, page: page, source: source, query: input.query,
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
             contentY: settingsScroll.isHidden ? (modelDirectoryReturnY ?? 0) : max(0, settingsScroll.contentView.bounds.minY),
             sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot,
-            dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil)
+            dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil, sidebarMenu: menu)
         return value.valid ? value : nil
     }
     func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
@@ -3102,6 +3175,9 @@ final class FormDocumentView: NSView {
         if let source = value.source, let id = agentTaskID, currentAgentTask?.workspacePaths.contains(source) == true { settingsSourceFolders[id] = source }
         pendingSettingsNavigation = value
         show(tab: "settings")
+        if sidebarMenuSettings != nil, sidebarMenuLocation != value.sidebarMenu {
+            sidebarMenuLocation = value.sidebarMenu; updateSettingsSections()
+        }
         if let dataImport = value.dataImport { dataImportView?.restoreNavigation(dataImport) }
         if let page = value.page { settingsPageHost.selectPage(page) }
         setSettingsReturn(to: value.returnTab, knowledgeRoot: value.knowledgeRoot)

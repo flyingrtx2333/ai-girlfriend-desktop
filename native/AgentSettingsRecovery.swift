@@ -48,6 +48,10 @@ enum AgentSettingsRecovery {
     }
     static func validScroll(_ value: Double?) -> Bool { value.map { $0.isFinite && (0...1_000_000_000).contains($0) } ?? true }
     static let roots: Set<String> = ["memory", "rules", "skills", "commands", "hooks", "agents", "teams", "plugins", "mcp", "git", "worktrees"]
+    struct SidebarMenuLocation: Codable, Equatable, Sendable {
+        var parentY: Double, y: Double
+        var valid: Bool { AgentSettingsRecovery.validScroll(parentY) && AgentSettingsRecovery.validScroll(y) }
+    }
     struct Navigation: Codable, Equatable, Sendable {
         var version = 1
         var category: String, page: String?
@@ -57,6 +61,7 @@ enum AgentSettingsRecovery {
         var contentY: Double, sidebarY: Double
         var returnTab: String, knowledgeRoot: String?
         var dataImport: AgentImportNavigation? = nil
+        var sidebarMenu: SidebarMenuLocation? = nil
 
         var valid: Bool {
             func identifier(_ value: String) -> Bool {
@@ -71,7 +76,8 @@ enum AgentSettingsRecovery {
                 AgentSettingsRecovery.validScroll(contentY) && AgentSettingsRecovery.validScroll(sidebarY) &&
                 ["chat", "attention", "automation", "knowledge"].contains(returnTab) &&
                 knowledgeRoot.map({ returnTab == "knowledge" && ["library", "wiki"].contains($0) }) != false &&
-                dataImport.map({ category == "imports" && $0.valid }) != false
+                dataImport.map({ category == "imports" && $0.valid }) != false &&
+                sidebarMenu.map({ category == "appearance" && page == nil && source == nil && $0.valid }) != false
         }
     }
     struct State: Codable, Equatable, Sendable {
@@ -119,9 +125,10 @@ enum AgentSettingsRecovery {
     }
     static func validateNavigation(_ raw: Any) throws {
         let value = try object(raw, keys: ["version", "category", "page", "source", "query", "selection", "focus",
-            "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot", "dataImport"])
+            "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot", "dataImport", "sidebarMenu"])
         if let selection = value["selection"], !(selection is NSNull) { _ = try object(selection, keys: ["location", "length"]) }
         if let dataImport = value["dataImport"], !(dataImport is NSNull) { try AgentImportNavigation.validateObject(dataImport) }
+        if let sidebarMenu = value["sidebarMenu"], !(sidebarMenu is NSNull) { _ = try object(sidebarMenu, keys: ["parentY", "y"]) }
     }
     @MainActor static func restoreScroll(_ y: Double, to scroll: NSScrollView) {
         let clip = scroll.contentView
