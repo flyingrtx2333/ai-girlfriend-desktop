@@ -66,7 +66,7 @@ struct AgentTaskRecap: Codable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         catalog = value
     }
-    static func validID(_ value: String) -> Bool {
+    nonisolated static func validID(_ value: String) -> Bool {
         !value.isEmpty && value.count < 200 && value == value.trimmingCharacters(in: .whitespacesAndNewlines) && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
     }
 }

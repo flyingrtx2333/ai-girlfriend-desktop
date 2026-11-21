@@ -3,6 +3,7 @@ import AppKit
 @MainActor final class AgentModelDirectoryView: NSView, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     var onRead: (() -> Void)?
     var onChoose: ((String) -> Void)?
+    var onRecoveryChange: (() -> Void)?
     private(set) var models: [ModelInfo] = []
 
     private let search = AgentSettingsSidebarSearchField(), table = AgentSettingsCatalogTable(), scroll = NSScrollView()
@@ -12,7 +13,10 @@ import AppKit
     private let results = AgentThemeView(fill: .clear, stroke: AgentWorkbenchTheme.line)
     private var rows: [ModelInfo] = []
     private var currentID = "", message = "未读取模型列表"
-    private var reading = false, failed = false
+    private var reading = false, failed = false, cached = false
+    private var pendingSelection: String?
+    private var lastFocus = AgentModelSettingsRecovery.Directory.Focus.search
+    private var searchSelection: AgentTextViewport.Selection?
 
     init() {
         super.init(frame: .zero)
@@ -43,12 +47,16 @@ import AppKit
             scroll.topAnchor.constraint(equalTo: results.topAnchor, constant: 1), scroll.bottomAnchor.constraint(equalTo: results.bottomAnchor, constant: -1),
             status.widthAnchor.constraint(equalTo: column.widthAnchor)
         ])
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(searchSelectionChanged(_:)), name: NSTextView.didChangeSelectionNotification, object: nil)
         updateRows()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     func focus(model: String) {
         updateCurrentModel(model)
+        lastFocus = .search
         window?.makeFirstResponder(search)
     }
     func updateCurrentModel(_ id: String) {
@@ -56,14 +64,60 @@ import AppKit
         select(rows.firstIndex { $0.id == id })
     }
     func clear() {
-        models = []; search.stringValue = ""; message = "未读取模型列表"; failed = false
+        models = []; search.stringValue = ""; message = "未读取模型列表"; failed = false; cached = false
+        pendingSelection = nil; searchSelection = nil
         updateRows()
     }
     func setModels(_ values: [ModelInfo]) {
         var seen = Set<String>()
         models = values.filter { AgentTaskModels.validID($0.id) && seen.insert($0.id).inserted }
-        message = models.isEmpty ? "服务未返回可用模型" : ""; failed = false
+        message = models.isEmpty ? "服务未返回可用模型" : ""; failed = false; cached = false
         updateRows()
+        onRecoveryChange?()
+    }
+
+    func recovery(provider: String?) -> AgentModelSettingsRecovery.Directory {
+        rememberFocus()
+        let id = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : pendingSelection
+        return .init(provider: provider, models: AgentModelSettingsRecovery.Directory.cache(models, provider: provider),
+            query: search.stringValue, selection: searchSelection, selected: id, y: max(0, scroll.contentView.bounds.minY), focus: lastFocus)
+    }
+
+    func restore(_ value: AgentModelSettingsRecovery.Directory, provider: String?) {
+        table.deselectAll(nil)
+        models = value.provider == provider ? value.models : []
+        search.stringValue = value.query
+        pendingSelection = value.provider == provider ? value.selected : nil
+        message = models.isEmpty ? "未读取模型列表" : ""
+        failed = false; cached = !models.isEmpty
+        updateRows()
+        lastFocus = value.focus; searchSelection = value.selection
+    }
+
+    func restoreViewport(_ value: AgentModelSettingsRecovery.Directory, focus: Bool) {
+        guard !isHiddenOrHasHiddenAncestor else { return }
+        window?.contentView?.layoutSubtreeIfNeeded()
+        AgentSettingsRecovery.restoreScroll(value.y, to: scroll)
+        guard focus else { return }
+        if value.focus == .list && !rows.isEmpty { window?.makeFirstResponder(table) }
+        else if window?.makeFirstResponder(search) == true, let selection = value.selection {
+            (search.currentEditor() as? NSTextView)?.setSelectedRange(selection.range)
+        }
+    }
+
+    private func rememberFocus() {
+        if let fieldEditor = search.currentEditor() as? NSTextView, window?.firstResponder === fieldEditor {
+            let range = fieldEditor.selectedRange()
+            searchSelection = .init(location: range.location, length: range.length)
+            lastFocus = .search
+        } else if window?.firstResponder === table { lastFocus = .list }
+        if searchSelection?.valid(in: search.stringValue.utf16.count) == false { searchSelection = nil }
+    }
+
+    @objc private func scrolled() { onRecoveryChange?() }
+    @objc private func searchSelectionChanged(_ notification: Notification) {
+        guard let fieldEditor = notification.object as? NSTextView, fieldEditor === search.currentEditor() else { return }
+        rememberFocus(); onRecoveryChange?()
     }
     func setRequestState(reading: Bool, detecting: Bool) {
         self.reading = reading; read.isEnabled = !detecting
@@ -75,7 +129,7 @@ import AppKit
     }
     private func updateFeedback() {
         status.stringValue = reading ? "正在读取模型列表…" : !message.isEmpty ? message
-            : rows.isEmpty ? "未找到匹配模型" : ""
+            : rows.isEmpty ? "未找到匹配模型" : cached ? "上次读取的列表" : ""
         if failed && !reading { status.textColor = AgentDialogStyle.error }
         choose.isEnabled = !reading && rows.indices.contains(table.selectedRow)
     }
@@ -85,12 +139,14 @@ import AppKit
         updateFeedback()
     }
     private func updateRows() {
-        let selected = rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : currentID
+        let selected = pendingSelection ?? (rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].id : currentID)
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         rows = models.filter { query.isEmpty || $0.id.localizedCaseInsensitiveContains(query) || $0.name?.localizedCaseInsensitiveContains(query) == true }
         table.reloadData(); scroll.isHidden = rows.isEmpty
         results.layer?.borderWidth = rows.isEmpty ? 0 : 1
-        select(rows.firstIndex { $0.id == selected })
+        let row = rows.firstIndex { $0.id == selected }
+        if row != nil { pendingSelection = nil }
+        select(row)
     }
 
     @objc private func readList() { onRead?() }
@@ -98,7 +154,7 @@ import AppKit
         guard !reading, rows.indices.contains(table.selectedRow) else { return }
         onChoose?(rows[table.selectedRow].id)
     }
-    func controlTextDidChange(_ notification: Notification) { updateRows() }
+    func controlTextDidChange(_ notification: Notification) { pendingSelection = nil; updateRows(); rememberFocus(); onRecoveryChange?() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard selector == #selector(NSResponder.moveDown(_:)), !rows.isEmpty else { return false }
         window?.makeFirstResponder(table)
@@ -106,7 +162,7 @@ import AppKit
         return true
     }
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-    func tableViewSelectionDidChange(_ notification: Notification) { updateFeedback() }
+    func tableViewSelectionDidChange(_ notification: Notification) { updateFeedback(); rememberFocus(); onRecoveryChange?() }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { AgentSettingsCatalogRow() }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let model = rows[row]

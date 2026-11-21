@@ -71,6 +71,10 @@ private actor AgentWorkspaceJournal {
     private var floatingFailures: [String: String] = [:]
     private var floating: [String: (AgentWorkspaceRecovery.FloatingPage, AgentSettingsPageController)] = [:]
     private(set) var preservedEditors = Set<ObjectIdentifier>()
+    func hasPreservedModelDraft(_ draft: AgentModelSettingsRecovery.Draft) -> Bool {
+        guard !disabled, !stopped, let saved = previous?.settingsNavigation?.modelSettings?.draft else { return false }
+        return saved.base == draft.base && saved.form == draft.form
+    }
     var isCurrent: Bool { disabled || stopped || (savedRevision == revision && roots.isEmpty && tabStateJob == nil) }
     var floatingControllers: [AgentSettingsPageController] { floating.values.map(\.1) }
     var floatingRecoveryReadback: [String: Any] {

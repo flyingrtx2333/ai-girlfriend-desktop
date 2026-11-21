@@ -62,6 +62,7 @@ enum AgentSettingsRecovery {
         var returnTab: String, knowledgeRoot: String?
         var dataImport: AgentImportNavigation? = nil
         var sidebarMenu: SidebarMenuLocation? = nil
+        var modelSettings: AgentModelSettingsRecovery? = nil
 
         var valid: Bool {
             func identifier(_ value: String) -> Bool {
@@ -77,7 +78,8 @@ enum AgentSettingsRecovery {
                 ["chat", "attention", "automation", "knowledge"].contains(returnTab) &&
                 knowledgeRoot.map({ returnTab == "knowledge" && ["library", "wiki"].contains($0) }) != false &&
                 dataImport.map({ category == "imports" && $0.valid }) != false &&
-                sidebarMenu.map({ category == "appearance" && page == nil && source == nil && $0.valid }) != false
+                sidebarMenu.map({ category == "appearance" && page == nil && source == nil && $0.valid }) != false &&
+                modelSettings.map({ category == "model" && page == nil && source == nil && $0.valid }) != false
         }
     }
     struct State: Codable, Equatable, Sendable {
@@ -125,10 +127,11 @@ enum AgentSettingsRecovery {
     }
     static func validateNavigation(_ raw: Any) throws {
         let value = try object(raw, keys: ["version", "category", "page", "source", "query", "selection", "focus",
-            "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot", "dataImport", "sidebarMenu"])
+            "resultVisible", "contentY", "sidebarY", "returnTab", "knowledgeRoot", "dataImport", "sidebarMenu", "modelSettings"])
         if let selection = value["selection"], !(selection is NSNull) { _ = try object(selection, keys: ["location", "length"]) }
         if let dataImport = value["dataImport"], !(dataImport is NSNull) { try AgentImportNavigation.validateObject(dataImport) }
         if let sidebarMenu = value["sidebarMenu"], !(sidebarMenu is NSNull) { _ = try object(sidebarMenu, keys: ["parentY", "y"]) }
+        if let modelSettings = value["modelSettings"], !(modelSettings is NSNull) { try AgentModelSettingsRecovery.validateObject(modelSettings) }
     }
     @MainActor static func restoreScroll(_ y: Double, to scroll: NSScrollView) {
         let clip = scroll.contentView

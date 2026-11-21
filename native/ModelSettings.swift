@@ -1,6 +1,6 @@
 import Foundation
 
-struct ModelInfo: Codable {
+struct ModelInfo: Codable, Equatable, Sendable {
     var endpoint: String
     var id: String
     var name: String?
@@ -17,6 +17,111 @@ struct ModelInfo: Codable {
         if let modalities = object["input_modalities"] as? [String] { vision = modalities.contains("image") }
         if let effort = object["effort"] as? [String: Any], let levels = effort["supported_levels"] as? [String] {
             reasoningLevels = levels.filter { ["minimal", "low", "medium", "high", "xhigh", "max"].contains($0) }
+        }
+    }
+}
+
+struct AgentModelSettingsRecovery: Codable, Equatable, Sendable {
+    enum Field: String, Codable, CaseIterable, Sendable { case endpoint, model, context, reply }
+
+    struct Form: Codable, Equatable, Sendable {
+        var endpoint: String, model: String, context: String, reply: String
+        var vision: Int, reasoning: Int
+
+        subscript(_ field: Field) -> String {
+            switch field {
+            case .endpoint: return endpoint
+            case .model: return model
+            case .context: return context
+            case .reply: return reply
+            }
+        }
+
+        var values: [String] { Field.allCases.map { self[$0] } + [String(vision), String(reasoning)] }
+        var provider: String? { try? CompanionService.endpoint(endpoint, chat: true).absoluteString }
+        var valid: Bool {
+            values.allSatisfy { $0.utf8.count <= 4096 && !$0.contains("\0") } && provider != nil &&
+                (0...2).contains(vision) && (0...7).contains(reasoning)
+        }
+    }
+
+    struct Draft: Codable, Equatable, Sendable {
+        let base: String
+        let form: Form
+        let focus: Field?
+        let selection: AgentTextViewport.Selection?
+
+        var valid: Bool {
+            AgentSettingsRecovery.validHash(base) && form.valid &&
+                (selection == nil || focus.flatMap { selection?.valid(in: form[$0].utf16.count) } == true)
+        }
+
+        static func fingerprint(_ preferences: PetPreferences) -> String? {
+            struct Saved: Encodable {
+                let endpoint: String, model: String, vision: String, reasoning: String
+                let context: Int, reply: Int
+                let info: ModelInfo?
+            }
+            let saved = Saved(endpoint: preferences.endpoint, model: preferences.model, vision: preferences.visionMode,
+                reasoning: preferences.reasoningEffort, context: preferences.contextTokens, reply: preferences.replyTokens, info: preferences.currentModelInfo)
+            let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+            return (try? encoder.encode(saved)).map(AgentFiles.hash)
+        }
+    }
+
+    struct Directory: Codable, Equatable, Sendable {
+        enum Focus: String, Codable, Sendable { case search, list }
+        var provider: String?
+        var models: [ModelInfo]
+        var query: String, selection: AgentTextViewport.Selection?, selected: String?
+        var y: Double
+        var focus: Focus
+
+        var valid: Bool {
+            query.utf8.count <= 4096 && !query.contains("\0") && selection?.valid(in: query.utf16.count) != false &&
+                selected.map(AgentTaskModels.validID) != false && AgentSettingsRecovery.validScroll(y) && models.count <= 500 &&
+                Set(models.map(\.id)).count == models.count && models.allSatisfy { $0.endpoint == provider && Self.safe($0) } &&
+                provider.map { $0.utf8.count <= 16_384 && (try? CompanionService.endpoint($0, chat: true).absoluteString) == $0 } != false
+        }
+
+        static func cache(_ models: [ModelInfo], provider: String?) -> [ModelInfo] {
+            guard let provider, models.count <= 500 else { return [] }
+            return models.compactMap { original in
+                var info = original
+                info.name = original.name.map { String($0.prefix(200)) }
+                info.reasoningLevels = original.reasoningLevels.map { Array(Set($0)).sorted() }
+                return info.endpoint == provider && safe(info) ? info : nil
+            }
+        }
+
+        private static func safe(_ info: ModelInfo) -> Bool {
+            AgentTaskModels.validID(info.id) && info.id.utf8.count <= 4096 &&
+                info.name.map { $0.utf8.count <= 4096 && !$0.contains("\0") } != false &&
+                info.contextWindow.map { (1024...16_777_216).contains($0) } != false && info.maxOutputTokens.map { $0 > 0 } != false &&
+                info.reasoningLevels.map { $0.count <= 6 && Set($0).isSubset(of: ["minimal", "low", "medium", "high", "xhigh", "max"]) } != false
+        }
+    }
+
+    var draft: Draft?
+    var directory: Directory?
+    var valid: Bool { (draft != nil || directory != nil) && draft?.valid != false && directory?.valid != false }
+
+    static func validateObject(_ raw: Any) throws {
+        func selection(_ value: Any?) throws {
+            if let value, !(value is NSNull) { _ = try AgentSettingsRecovery.object(value, keys: ["location", "length"]) }
+        }
+        let object = try AgentSettingsRecovery.object(raw, keys: ["draft", "directory"])
+        if let raw = object["draft"], !(raw is NSNull) {
+            let draft = try AgentSettingsRecovery.object(raw, keys: ["base", "form", "focus", "selection"])
+            _ = try AgentSettingsRecovery.object(draft["form"] ?? NSNull(), keys: ["endpoint", "model", "context", "reply", "vision", "reasoning"])
+            try selection(draft["selection"])
+        }
+        if let raw = object["directory"], !(raw is NSNull) {
+            let directory = try AgentSettingsRecovery.object(raw, keys: ["provider", "models", "query", "selection", "selected", "y", "focus"])
+            for model in directory["models"] as? [Any] ?? [] {
+                _ = try AgentSettingsRecovery.object(model, keys: ["endpoint", "id", "name", "contextWindow", "maxOutputTokens", "vision", "reasoningLevels"])
+            }
+            try selection(directory["selection"])
         }
     }
 }

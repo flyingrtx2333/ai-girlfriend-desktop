@@ -158,6 +158,8 @@ final class FormDocumentView: NSView {
     private let modelDirectoryBack = AgentWorkbenchButton()
     private let modelDirectory = AgentModelDirectoryView()
     private var modelDirectoryReturnY: CGFloat?
+    private let rebaseModelDraftButton = AgentDialogButton(title: "继续使用草稿", target: nil, action: nil)
+    private var modelDraftBase: String?
     private let sidebarMenuButton = AgentDialogButton(title: "调整顺序", target: nil, action: nil)
     private let sidebarMenuBack = AgentWorkbenchButton()
     private var sidebarMenuSettings: AgentSidebarLayoutSettingsView?
@@ -1863,7 +1865,10 @@ final class FormDocumentView: NSView {
             for child in view.subviews { if let value = find(child) { return value } }; return nil
         }
         if let input = find(root), !input.isHiddenOrHasHiddenAncestor {
-            settingsEditingInput = input; settingsEditingSelection = (responder as? NSTextView)?.selectedRange()
+            let selection = (responder as? NSTextView)?.selectedRange()
+            let changed = settingsEditingInput !== input || settingsEditingSelection != selection
+            settingsEditingInput = input; settingsEditingSelection = selection
+            if changed, settingsCategory == "model", modelField(for: input) != nil { workspaceSession?.changed() }
         }
     }
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
@@ -2148,7 +2153,7 @@ final class FormDocumentView: NSView {
         settingsForm.addArrangedSubview(card); card.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
     }
     private func updateSettingsSections() {
-        defer { updateSettingsActions() }
+        defer { updateSettingsActions(); updateModelDraftControls() }
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if settingsCategory != "model" { endModelDirectory() }
@@ -2384,6 +2389,10 @@ final class FormDocumentView: NSView {
             guard let self, modelDirectoryReturnY != nil else { return }
             model.stringValue = id; invalidateModelCheck(); closeModelDirectory()
         }
+        modelDirectory.onRecoveryChange = { [weak self] in
+            guard let self, modelDirectoryReturnY != nil else { return }
+            workspaceSession?.changed()
+        }
         modelStatus.stringValue = "未检测"
         row("接口", endpoint)
         row("Token", secret(apiKey, preview: apiPreview, replace: apiReplace, copy: #selector(copyAPI), edit: #selector(replaceAPI), action: #selector(removeAPI)))
@@ -2391,12 +2400,14 @@ final class FormDocumentView: NSView {
         row("状态", modelStatus)
         group("model", "能力与预算", "模型 视觉 图片 理解 思考 上下文 tokens 回复 上限 预算")
         vision.addItems(withTitles: ["自动（未知）", "支持", "不支持"])
+        vision.target = self; vision.action = #selector(reasoningChanged)
         vision.toolTip = "自动读取服务声明；手动设置不会改变模型本身的能力。"
         reasoning.addItems(withTitles: ["默认", "关闭", "最少", "低", "中", "高", "很高", "最高"])
         reasoning.menu?.autoenablesItems = false; reasoning.target = self; reasoning.action = #selector(reasoningChanged)
         contextTokens.addItems(withObjectValues: ["自动", "4096", "8192", "16384", "32768", "65536", "131072", "262144", "524288", "1048576"])
         replyTokens.addItems(withObjectValues: ["512", "1024", "2048", "4096", "8192", "16384", "32768"])
         for value in [contextTokens, replyTokens] { field(value); value.delegate = self; value.widthAnchor.constraint(equalToConstant: 118).isActive = true }
+        contextTokens.setAccessibilityLabel("上下文预算"); replyTokens.setAccessibilityLabel("回复上限")
         contextTokens.toolTip = "Token 预算；按 UTF-8 字节保守估算，超出时裁剪较早的完整对话轮次。"
         for label in [contextMaximum, replyMaximum] { label.font = .systemFont(ofSize: 11); label.textColor = AgentWorkbenchTheme.secondaryText }
         row("视觉理解", vision); row("思考程度", reasoning)
@@ -2542,6 +2553,9 @@ final class FormDocumentView: NSView {
         AgentSettingsStyle.primaryAction(save)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
+        AgentDialogStyle.action(rebaseModelDraftButton)
+        rebaseModelDraftButton.target = self; rebaseModelDraftButton.action = #selector(rebaseModelDraft)
+        rebaseModelDraftButton.isHidden = true
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
         settingsBody.addSubview(modelDirectory); pin(modelDirectory, to: settingsBody, inset: 16)
         modelDirectory.isHidden = true
@@ -2559,7 +2573,7 @@ final class FormDocumentView: NSView {
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
         settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        let bottom = stack([savedStatus, NSView(), save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
+        let bottom = stack([savedStatus, NSView(), rebaseModelDraftButton, save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
         settingsColumn = column
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
@@ -2652,26 +2666,108 @@ final class FormDocumentView: NSView {
         screenTarget.toolTip = p.model
         updateScreenStatus(companion.screenCompanion.status)
         savedBasicSettings = basicSettingsValues()
+        modelDraftBase = AgentModelSettingsRecovery.Draft.fingerprint(p)
         savedStatus.stringValue = ""
+        updateModelDraftControls()
     }
     private func basicSettingsValues() -> [String] {
-        [endpoint.stringValue, model.stringValue, persona.stringValue, apiKey.stringValue,
+        modelSettingsForm().values + nonModelSettingsValues()
+    }
+    private func nonModelSettingsValues() -> [String] {
+        [persona.stringValue, apiKey.stringValue,
          voiceEndpoint.stringValue, voiceModel.stringValue, voiceID.stringValue, voiceKey.stringValue,
-         wakePhrase.stringValue, contextTokens.stringValue, replyTokens.stringValue,
-         String(vision.indexOfSelectedItem), String(reasoning.indexOfSelectedItem), String(pauseWait.indexOfSelectedItem),
+         wakePhrase.stringValue, String(pauseWait.indexOfSelectedItem),
          String(performance.indexOfSelectedItem), String(screenInterval.indexOfSelectedItem), String(scale.doubleValue),
          String(voiceEnabled.state.rawValue), String(onTop.state.rawValue), String(wakeEnabled.state.rawValue),
          String(screenEnabled.state.rawValue), String(removeChatKey), String(removeVoiceKey)]
     }
-    private func canLeaveBasicSettings() -> Bool {
+    private func modelSettingsForm() -> AgentModelSettingsRecovery.Form {
+        .init(endpoint: endpoint.stringValue, model: model.stringValue, context: contextTokens.stringValue, reply: replyTokens.stringValue,
+            vision: vision.indexOfSelectedItem, reasoning: reasoning.indexOfSelectedItem)
+    }
+    private func modelInput(_ field: AgentModelSettingsRecovery.Field) -> NSTextField {
+        switch field {
+        case .endpoint: return endpoint
+        case .model: return model
+        case .context: return contextTokens
+        case .reply: return replyTokens
+        }
+    }
+    private func modelField(for input: NSView) -> AgentModelSettingsRecovery.Field? {
+        AgentModelSettingsRecovery.Field.allCases.first { modelInput($0) === input }
+    }
+    private func captureModelSettings() -> AgentModelSettingsRecovery? {
+        guard selectedTab == "settings", settingsCategory == "model", let modelDraftBase else { return nil }
+        let form = modelSettingsForm(), values = form.values
+        guard form.valid, nonModelSettingsValues() == Array(savedBasicSettings.dropFirst(values.count)) else { return nil }
+        let focus = settingsEditingInput.flatMap { modelField(for: $0) }
+        let selection = focus.flatMap { field -> AgentTextViewport.Selection? in
+            guard let range = settingsEditingSelection else { return nil }
+            let selection = AgentTextViewport.Selection(location: range.location, length: range.length)
+            return selection.valid(in: form[field].utf16.count) ? selection : nil
+        }
+        let draft = values == Array(savedBasicSettings.prefix(values.count)) ? nil : AgentModelSettingsRecovery.Draft(base: modelDraftBase, form: form, focus: focus, selection: selection)
+        let directory = modelDirectoryReturnY == nil ? nil : modelDirectory.recovery(provider: form.provider)
+        let result = AgentModelSettingsRecovery(draft: draft, directory: directory?.valid == true ? directory : nil)
+        return result.valid ? result : nil
+    }
+    private var hasModelDraftConflict: Bool {
+        guard let companion, let modelDraftBase else { return false }
+        let values = modelSettingsForm().values
+        return values != Array(savedBasicSettings.prefix(values.count)) && modelDraftBase != AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences)
+    }
+    private func updateModelDraftControls() {
+        let conflict = settingsCategory == "model" && hasModelDraftConflict
+        rebaseModelDraftButton.isHidden = !conflict
+        rebaseModelDraftButton.isEnabled = conflict && captureModelSettings()?.draft != nil
+        generalSettingsSave?.isEnabled = !conflict
+    }
+    private func showModelDraftStatus() {
+        savedStatus.stringValue = hasModelDraftConflict ? "已保存的模型设置有变化，原草稿待核对" : "已恢复未保存的模型设置"
+        if hasModelDraftConflict { savedStatus.textColor = AgentDialogStyle.error }
+    }
+    private func applyModelDraft(_ draft: AgentModelSettingsRecovery.Draft, base: String) {
+        let form = draft.form
+        let changedSource = form.provider != modelSettingsForm().provider
+        for field in AgentModelSettingsRecovery.Field.allCases { modelInput(field).stringValue = form[field] }
+        vision.selectItem(at: form.vision); reasoning.selectItem(at: form.reasoning)
+        modelDraftBase = base
+        invalidateModelCheck(sourceChanged: changedSource)
+        modelDirectory.updateCurrentModel(form.model)
+        settingsEditingInput = draft.focus.map { modelInput($0) }
+        settingsEditingSelection = draft.selection?.range
+        showModelDraftStatus()
+        updateModelDraftControls()
+    }
+    private func focusModelDraftInput() {
+        guard let input = settingsEditingInput as? NSTextField, modelField(for: input) != nil,
+              !input.isHiddenOrHasHiddenAncestor else { return }
+        let range = settingsEditingSelection
+        guard window?.makeFirstResponder(input) == true else { return }
+        input.scrollToVisible(input.bounds)
+        if let range, NSMaxRange(range) <= input.stringValue.utf16.count {
+            (input.currentEditor() as? NSTextView)?.setSelectedRange(range)
+        }
+    }
+    @objc private func rebaseModelDraft() {
+        guard hasModelDraftConflict, let draft = captureModelSettings()?.draft, let companion,
+              let base = AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences) else { return }
+        refreshPreferences()
+        applyModelDraft(draft, base: base)
+        savedStatus.stringValue = "草稿待保存"
+        focusModelDraftInput()
+        workspaceSession?.changed()
+    }
+    private func canLeaveBasicSettings(preservingRecovery: Bool = false) -> Bool {
         guard !savedBasicSettings.isEmpty, basicSettingsValues() != savedBasicSettings else { return true }
+        if preservingRecovery, let draft = captureModelSettings()?.draft, workspaceSession?.hasPreservedModelDraft(draft) == true { return true }
         let input = settingsEditingInput, selection = settingsEditingSelection
         guard AgentUnsavedChanges.discard("放弃未保存的设置更改？") else {
             if let input, input.window === window, !input.isHiddenOrHasHiddenAncestor, window?.makeFirstResponder(input) == true,
                let selection, let editor = window?.firstResponder as? NSTextView, NSMaxRange(selection) <= editor.string.utf16.count { editor.setSelectedRange(selection) }
             return false
         }
-        refreshPreferences(); return true
+        refreshPreferences(); workspaceSession?.changed(); return true
     }
     private func updateScreenStatus(_ value: String) {
         screenStatus.stringValue = value; screenStatus.toolTip = value
@@ -2754,10 +2850,11 @@ final class FormDocumentView: NSView {
         let input = obj.object as? NSTextField
         invalidateModelCheck(sourceChanged: input === endpoint || input === apiKey)
         if input === model { modelDirectory.updateCurrentModel(model.stringValue) }
+        if settingsCategory == "model" { updateModelDraftControls(); workspaceSession?.changed() }
     }
     @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
-    func comboBoxSelectionDidChange(_ notification: Notification) { invalidateModelCheck() }
-    @objc private func reasoningChanged() { invalidateModelCheck() }
+    func comboBoxSelectionDidChange(_ notification: Notification) { reasoningChanged() }
+    @objc private func reasoningChanged() { invalidateModelCheck(); updateModelDraftControls(); workspaceSession?.changed() }
 
     private func chatPreferences() throws -> PetPreferences {
         guard var p = companion?.store.preferences else { throw PetError("设置不可用。") }
@@ -2778,12 +2875,15 @@ final class FormDocumentView: NSView {
         modelDirectoryReturnY = max(0, settingsScroll.contentView.bounds.minY)
         updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
         modelDirectory.focus(model: model.stringValue)
+        workspaceSession?.changed()
     }
     @objc private func closeModelDirectory() {
         guard let y = modelDirectoryReturnY else { return }
         endModelDirectory(); updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
         restoreSettingsScroll(y, to: settingsScroll)
-        window?.makeFirstResponder(model)
+        if settingsEditingInput.flatMap({ modelField(for: $0) }) != nil { focusModelDraftInput() }
+        else { window?.makeFirstResponder(model) }
+        workspaceSession?.changed()
     }
     private func endModelDirectory() {
         guard modelDirectoryReturnY != nil else { return }
@@ -2872,6 +2972,7 @@ final class FormDocumentView: NSView {
         guard selectedTab == "settings", settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               generalSettingsSave?.isHidden == false, let companion else { return }
         do {
+            if settingsCategory == "model", hasModelDraftConflict { showModelDraftStatus(); updateModelDraftControls(); return }
             var p = try chatPreferences()
             p.voiceEnabled = voiceEnabled.state == .on
             p.voiceEndpoint = voiceEndpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2903,6 +3004,7 @@ final class FormDocumentView: NSView {
             catch { companion.store.preferences = previous; throw error }
             companion.applyPreferences()
             refreshPreferences(); savedStatus.stringValue = "已保存"; savedStatus.textColor = AgentWorkbenchTheme.secondaryText
+            workspaceSession?.changed()
         } catch { savedStatus.stringValue = error.localizedDescription; savedStatus.textColor = .systemRed }
     }
     @objc private func send() {
@@ -3099,7 +3201,7 @@ final class FormDocumentView: NSView {
         finishOwnedTaskPanels(); return true
     }
     func prepareOwnedTaskPanels(preservingRecovery: Bool = false) async -> Bool {
-        guard canLeaveBasicSettings() else { return false }
+        guard canLeaveBasicSettings(preservingRecovery: preservingRecovery) else { return false }
         guard settingsPageHost.prepareToQuit(preserving: preservingRecovery ? workspaceSession?.preservedEditors ?? [] : []) else { return false }
         guard generalSettingsPanel?.prepareToClose() != false else { return false }
         guard attentionPageController?.prepareToClose() != false else { return false }
@@ -3162,7 +3264,8 @@ final class FormDocumentView: NSView {
             selection: input.selection, focus: input.focus, resultVisible: input.resultVisible,
             contentY: settingsScroll.isHidden ? (modelDirectoryReturnY ?? 0) : max(0, settingsScroll.contentView.bounds.minY),
             sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot,
-            dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil, sidebarMenu: menu)
+            dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil, sidebarMenu: menu,
+            modelSettings: captureModelSettings())
         return value.valid ? value : nil
     }
     func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
@@ -3177,6 +3280,14 @@ final class FormDocumentView: NSView {
         if let source = value.source, let id = agentTaskID, currentAgentTask?.workspacePaths.contains(source) == true { settingsSourceFolders[id] = source }
         pendingSettingsNavigation = value
         show(tab: "settings")
+        if let modelSettings = value.modelSettings {
+            if let draft = modelSettings.draft { applyModelDraft(draft, base: draft.base) }
+            if let directory = modelSettings.directory {
+                modelDirectoryReturnY = value.contentY
+                modelDirectory.restore(directory, provider: modelSettingsForm().provider)
+                updateModelOptions(); updateModelRequestControls(); updateSettingsSections()
+            }
+        }
         if sidebarMenuSettings != nil, sidebarMenuLocation != value.sidebarMenu {
             sidebarMenuLocation = value.sidebarMenu; updateSettingsSections()
         }
@@ -3207,6 +3318,10 @@ final class FormDocumentView: NSView {
                 } else if window.makeFirstResponder(settingsSearch), let range = value.selection?.range {
                     (settingsSearch.currentEditor() as? NSTextView)?.setSelectedRange(range)
                 }
+            }
+            if value.query.isEmpty, let modelSettings = value.modelSettings {
+                if let directory = modelSettings.directory { modelDirectory.restoreViewport(directory, focus: value.focus == nil) }
+                else if value.focus == nil { focusModelDraftInput() }
             }
             pendingSettingsNavigation = nil
             rememberSettingsNavigationInput()
@@ -3502,6 +3617,19 @@ final class FormDocumentView: NSView {
         checks["basicDraftIncludesCredentialInput"] = basicSettingsValues() != savedBasicSettings; apiKey.stringValue = ""
         removeChatKey = true
         checks["basicDraftIncludesCredentialRemoval"] = basicSettingsValues() != savedBasicSettings; removeChatKey = false
+        contextTokens.stringValue = "12x"
+        endpoint.stringValue = draft
+        let recovery = captureModelSettings()
+        let encoded = try JSONEncoder().encode(recovery)
+        let decoded = try JSONDecoder().decode(AgentModelSettingsRecovery.self, from: encoded)
+        try AgentModelSettingsRecovery.validateObject(JSONSerialization.jsonObject(with: encoded))
+        checks["modelDraftRoundTripsIncompleteBudgetAndEndpoint"] = recovery == decoded && decoded.valid && decoded.draft?.form.context == "12x" && decoded.draft?.form.endpoint == draft && (try? Data(contentsOf: file)) == before
+        apiKey.stringValue = "public-fixture-not-a-secret"
+        checks["tokenReplacementPrecludesDraftPersistence"] = captureModelSettings() == nil
+        apiKey.stringValue = ""
+        endpoint.stringValue = draft + "?key=public-fixture"
+        checks["endpointWithQueryPrecludesDraftPersistence"] = captureModelSettings() == nil
+        refreshPreferences()
         endpoint.stringValue = draft
         guard !FileManager.default.fileExists(atPath: backup.path) else { throw PetError("基础设置验收备份已存在") }
         if before != nil { try FileManager.default.moveItem(at: file, to: backup) }
