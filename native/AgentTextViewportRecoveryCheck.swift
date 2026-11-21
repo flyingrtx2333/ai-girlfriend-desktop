@@ -43,7 +43,7 @@ import AppKit
                     let file = try files.resolve("preview-recovery.md"), image = try files.resolve("preview-recovery.png")
                     let original = "![预览图](preview-recovery.png)\n\n原段落。\n"
                     let replacement = "在原位续写这段文字"
-                    let preview = AgentMarkdownReader(), restored = AgentMarkdownReader()
+                    let preview = AgentMarkdownReader(frame: NSRect(x: 0, y: 0, width: 400, height: 360)), restored = AgentMarkdownReader()
                     var draft = original
                     preview.canEdit = { true }; preview.onSourceChanged = { draft = $0 }
                     preview.show(original, file: file, workspace: workspace.path)
@@ -55,12 +55,54 @@ import AppKit
                                                        bytesPerRow: 0, bitsPerPixel: 0) else { throw PetError("预览续编样例不完整") }
                     bitmap.setColor(.blue, atX: 0, y: 0)
                     guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PetError("验收图片不可用") }
+                    let previewText = preview.text.string
+                    try preview.checkViewRecovery(action: "retry-images", target: "", input: nil, selection: nil, y: nil, cell: false)
+                    checks["missingImageRemainsRetryableWithStableText"] = preview.document?.canRetryImages == true &&
+                        preview.document?.images.isEmpty == true && preview.text.string == previewText
+                    let reading = AgentMarkdownReader()
+                    reading.show(original, file: file, workspace: workspace.path)
+                    guard var oldReading = try reading.captureViewRecovery(source: original),
+                          let firstBlock = reading.document?.regions.first?.display else { throw PetError("旧图片阅读位置样例不可用") }
+                    let oldText = NSMutableString(string: reading.text.string)
+                    oldText.replaceCharacters(in: firstBlock, with: "预览图 · " + POSIXError(.ENOENT).localizedDescription + "\n")
+                    let oldSelection = oldText.range(of: "原段落。"), newSelection = (reading.text.string as NSString).range(of: "原段落。")
+                    oldReading.viewport.hash = AgentFiles.hash(Data((oldText as String).utf8))
+                    oldReading.viewport.count = oldText.length
+                    oldReading.viewport.anchor = oldSelection.location
+                    oldReading.viewport.selections = [.init(location: oldSelection.location, length: oldSelection.length)]
+                    try reading.restoreViewRecovery(oldReading)
+                    let migrated = try reading.captureViewRecovery(source: original)?.viewport
+                    checks["previousImageErrorTextMigratesExactReadingAnchorAndSelection"] = newSelection.location != oldSelection.location &&
+                        migrated?.anchor == newSelection.location && migrated?.selections.first?.range == newSelection &&
+                        migrated?.hash == AgentFiles.hash(Data(reading.text.string.utf8))
                     try files.writeData(png, to: image)
+                    let beforeRetry = draft
+                    try preview.checkViewRecovery(action: "retry-images", target: "", input: nil, selection: nil, y: nil, cell: false)
+                    let resumed = try preview.captureViewRecovery(source: draft)
+                    checks["imageRetryKeepsInlineDraftSelectionAndRenderedRanges"] = preview.document?.images[image.path] != nil &&
+                        preview.document?.canRetryImages == false && preview.text.string == previewText && draft == beforeRetry && resumed?.editor == saved.editor
                     restored.canEdit = { true }; restored.show(draft, file: file, workspace: workspace.path)
                     try restored.restoreViewRecovery(saved)
                     let position = try restored.captureViewRecovery(source: draft)
-                    checks["changedImagePreviewKeepsVerifiedInlineEdit"] = position?.editor == saved.editor && position?.sourceHash == saved.sourceHash &&
-                        position?.viewport.hash != saved.viewport.hash && position?.viewport.valid == true
+                    checks["presentImageRestoresTheSamePreviewAndInlineSelection"] = position?.editor == saved.editor &&
+                        position?.sourceHash == saved.sourceHash && position?.viewport.hash == saved.viewport.hash && position?.viewport.valid == true
+                    let legacyReader = AgentMarkdownReader()
+                    legacyReader.canEdit = { true }; legacyReader.show(draft, file: file, workspace: workspace.path)
+                    var legacy = saved
+                    legacy.viewport.hash = AgentFiles.hash(Data("预览图 · The operation couldn’t be completed. No such file or directory\n\n原段落。\n".utf8))
+                    try legacyReader.restoreViewRecovery(legacy)
+                    let oldPosition = try legacyReader.captureViewRecovery(source: draft)
+                    checks["changedImagePreviewKeepsVerifiedInlineEdit"] = oldPosition?.editor == legacy.editor &&
+                        oldPosition?.sourceHash == legacy.sourceHash && oldPosition?.viewport.hash != legacy.viewport.hash && oldPosition?.viewport.valid == true
+                    let escaped = try files.resolve("late-image.png"), outsideImage = output.appendingPathComponent("outside-image.png")
+                    var protected = AgentMarkdownDocument.render("![工作区图片](late-image.png)\n![外部图片](https://example.invalid/image.png)",
+                                                                document: file, files: files, width: 400)
+                    try png.write(to: outsideImage)
+                    try FileManager.default.createSymbolicLink(at: escaped, withDestinationURL: outsideImage)
+                    let protectedText = protected.body.string
+                    let rejected = protected.retryImages(document: file, files: files)
+                    checks["imageRetryRevalidatesChangedSymlinkAndKeepsRemoteOffline"] = rejected && protected.images.isEmpty &&
+                        !protected.canRetryImages && protected.body.string == protectedText && protectedText.contains("远程图片未加载")
                 }
                 let first = tasks.create(title: "文本位置主任务", workspace: workspace.path), second = tasks.create(title: "文本位置另一任务", workspace: workspace.path)
                 for id in [first, second] { tasks.update(id) { $0.draft = "保留输入 PUBLIC_VIEWPORT_DRAFT_417" } }

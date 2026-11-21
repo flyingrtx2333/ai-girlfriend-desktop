@@ -4,6 +4,7 @@ import AppKit
     let text = AgentMarkdownTextView()
     private let outline = NSPopUpButton(), scroll = NSScrollView()
     private let addSelection = NSButton(title: "加入任务", target: nil, action: nil)
+    private let retryImages = NSButton(title: "重试图片", target: nil, action: nil)
     private let edit = NSButton(title: "编辑", target: nil, action: nil), edits = UndoManager()
     private let tableActions = NSPopUpButton(frame: .zero, pullsDown: true)
     private var tableCell: (table: Int, row: Int, column: Int)?
@@ -37,6 +38,7 @@ import AppKit
         outline.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         outline.cell?.lineBreakMode = .byTruncatingTail
         edit.target = self; edit.action = #selector(toggleEditing); edit.bezelStyle = .texturedRounded; edit.controlSize = .small; edit.setAccessibilityLabel("编辑 Markdown 预览"); edit.toolTip = "就地编辑；Command+Return 完成，Esc 取消本次修改"
+        retryImages.target = self; retryImages.action = #selector(reloadImages); retryImages.bezelStyle = .texturedRounded; retryImages.controlSize = .small
         tableActions.addItem(withTitle: "表格"); tableActions.controlSize = .small; tableActions.bezelStyle = .texturedRounded; tableActions.setAccessibilityLabel("表格操作")
         tableActions.menu?.autoenablesItems = false; tableActions.menu?.delegate = self
         for action in AgentMarkdownEditing.TableAction.allCases {
@@ -47,7 +49,7 @@ import AppKit
         scroll.documentView = text; scroll.hasVerticalScroller = true
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(viewportChanged(_:)), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-        let toolbar = NSStackView(views: [outline, NSView(), tableActions, edit, addSelection]); toolbar.spacing = 8
+        let toolbar = NSStackView(views: [outline, NSView(), retryImages, tableActions, edit, addSelection]); toolbar.spacing = 8
         for view in [toolbar, scroll] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
         NSLayoutConstraint.activate([toolbar.topAnchor.constraint(equalTo: topAnchor, constant: 4), toolbar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), toolbar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), outline.widthAnchor.constraint(lessThanOrEqualToConstant: 380), scroll.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 6), scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor)])
         selectionAction.update(); updateEditingState()
@@ -89,6 +91,7 @@ import AppKit
         let selected = outline.indexOfSelectedItem, origin = scroll.contentView.bounds.origin
         renderedWidth = bounds.width
         let result = AgentMarkdownDocument.render(source, document: file, files: files, width: max(220, bounds.width), cachedImages: cachedImages); document = result
+        retryImages.isHidden = !result.canRetryImages
         for diagram in result.diagrams { if let cached = cachedDrawings[diagram.source] { diagram.attachment.image = cached.image; drawings[diagram.range.location] = cached } }
         text.textStorage?.setAttributedString(result.body)
         AgentFileIcons.track(text)
@@ -101,7 +104,29 @@ import AppKit
     }
     private func updateEditingState() {
         edit.isHidden = onSourceChanged == nil || file == nil; edit.isEnabled = isEditing || canEdit?() == true; edit.title = isEditing ? "完成" : "编辑"; selectionAction.update()
+        retryImages.isHidden = document?.canRetryImages != true
         updateTableActions()
+    }
+    @objc private func reloadImages() {
+        guard var document, let file, let files = try? AgentFiles(workspace: workspace) else { return }
+        rememberViewportFocus()
+        let viewport = try? AgentTextViewport(text)
+        let editorWasVisible = inlineEditor.map { scroll.documentVisibleRect.intersects($0.frame) } ?? false
+        applyingViewRecovery = true
+        let changed = document.retryImages(document: file, files: files)
+        self.document = document
+        retryImages.isHidden = !document.canRetryImages
+        if changed {
+            resizeImages()
+            _ = viewport?.apply(to: text, focus: false)
+            positionEditor()
+            if editorWasVisible, let editor = inlineEditor { _ = text.scrollToVisible(editor.frame) }
+        }
+        applyingViewRecovery = false
+        if (changed || window?.firstResponder === retryImages) && (rememberedEditorFocus || rememberedPreviewFocus) {
+            activateRememberedView()
+        }
+        viewChanged()
     }
     private func updateTableActions() {
         let table = tableCell.flatMap { try? AgentMarkdownEditing.table(in: source, at: $0.table) }
@@ -349,17 +374,21 @@ import AppKit
         }
         var restored = value
         if !value.viewport.matches(text) {
-            guard value.editor != nil, let region = inlineEditor?.region else {
-                throw PetError("Markdown 预览已变化，原阅读位置已保留")
+            if let viewport = try document?.migrateImageViewport(value.viewport, to: text) {
+                restored.viewport = viewport
+            } else {
+                guard value.editor != nil, let region = inlineEditor?.region else {
+                    throw PetError("Markdown 预览已变化，原阅读位置已保留")
+                }
+                // Missing images can change the preview text while the original edit still matches.
+                var viewport = try AgentTextViewport(text)
+                viewport.anchor = region.display.location
+                viewport.offset = -16
+                viewport.x = 0
+                viewport.selections = [.init(location: viewport.anchor, length: 0)]
+                viewport.focused = value.viewport.focused && value.editor?.viewport.focused != true
+                restored.viewport = viewport
             }
-            // Missing images can change the preview text while the original edit still matches.
-            var viewport = try AgentTextViewport(text)
-            viewport.anchor = region.display.location
-            viewport.offset = -16
-            viewport.x = 0
-            viewport.selections = [.init(location: viewport.anchor, length: 0)]
-            viewport.focused = value.viewport.focused && value.editor?.viewport.focused != true
-            restored.viewport = viewport
         }
         if let heading = value.heading { guard heading < outline.numberOfItems else { throw PetError("Markdown 章节已变化，原阅读位置已保留") }; outline.selectItem(at: heading) }
         rememberedPreviewFocus = value.viewport.focused; rememberedEditorFocus = value.editor?.viewport.focused ?? false
@@ -422,6 +451,7 @@ import AppKit
     func waitForDiagrams() async { await diagramTask?.value }
     func checkViewRecovery(action: String, target: String, input: String?, selection: NSRange?, y: Double?, cell: Bool) throws {
         guard ["--workspace-text-viewport-check", "--workspace-text-viewport-ui"].contains(where: CommandLine.arguments.contains) else { return }
+        if action == "retry-images" { reloadImages(); return }
         if action == "begin" {
             guard canEdit?() == true, let region = document?.regions.first(where: { $0.isCell == cell && (try? AgentMarkdownEditing.value($0, in: source).contains(target)) == true }) else { throw PetError("未找到公开编辑段落") }
             isEditing = true; try beginEditing(region); updateEditingState()
