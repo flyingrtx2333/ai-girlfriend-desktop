@@ -110,7 +110,7 @@ import AppKit
         run { [self] in
             try await connect(); guard task != nil else { return }
             let language = selectedLanguage
-            let review = AgentKnowledgeReviewWindow(title: "导入知识卡片", action: "导入", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _ in
+            let review = AgentKnowledgeReviewWindow(title: "导入知识卡片", action: "导入", scope: language == "zh" ? "简体中文" : "English", load: { [weak self] _, _ in
                 guard let self, let original = self.task, !self.dirty else { throw PetError("任务或卡片草稿已变化，请重新预览") }
                 let readOnly = try self.store.agents.limits(original, store: self.store).readOnly
                 let value = try self.cards.previewImport(original, language: language)
@@ -136,7 +136,7 @@ import AppKit
         let versions = try cards.history(task, language: language).filter { $0.id != value?.id }
         guard !versions.isEmpty else { throw PetError("暂无其他版本") }
         let choices = versions.map { AgentKnowledgeReviewVersion(id: $0.id, title: AgentKnowledgeReviewSnapshot.versionTitle($0.created, count: "\($0.cards.count) 张"), detail: String($0.id.prefix(8))) }
-        return AgentKnowledgeReviewWindow(title: "恢复知识卡片", action: "恢复", scope: language == "zh" ? "简体中文" : "English", versions: choices, context: context, load: { [weak self] index in
+        return AgentKnowledgeReviewWindow(title: "恢复知识卡片", action: "恢复", scope: language == "zh" ? "简体中文" : "English", versions: choices, context: context, load: { [weak self] index, _ in
             guard let self, let original = self.task, !dirty, let index, versions.indices.contains(index) else { throw PetError("请选择实际存在的卡片版本") }
             try context.require(store)
             let version = versions[index], expected = try cards.book(original, language: language).1

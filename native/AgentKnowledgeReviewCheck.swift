@@ -106,7 +106,7 @@ import AppKit
             checks["stalePreviewRejectsOverwriteAndRequiresNewPreview"] = importing.checkState["closed"] as? Bool == false && importing.checkState["applyEnabled"] as? Bool == false && retainedOutside == outside
             await importing.checkReload(); await importing.checkApply()
             checks["actualWikiImportPublishesReviewedBytesAndReturns"] = try await wikiMatches("c") && host.currentController === reader
-            let guarded = AgentKnowledgeReviewWindow(title: "导入 Wiki", action: "导入", scope: "实际项目", load: { _ in
+            let guarded = AgentKnowledgeReviewWindow(title: "导入 Wiki", action: "导入", scope: "实际项目", load: { _, _ in
                 let value = try await AgentWiki.previewWikiImport(store: tasks, taskID: id, language: "zh")
                 return AgentKnowledgeReviewSnapshot(scope: AgentKnowledgeReviewSnapshot.scope(value.branch, language: "zh"), impact: "替换当前语言，原版本保留。", items: try AgentKnowledgeReviewSnapshot.wikiItems(value)) {
                     try await AgentWiki.importWiki(value, store: tasks, taskID: id)

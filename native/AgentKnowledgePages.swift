@@ -150,7 +150,7 @@ import AppKit
             }
             guard revision == recoveryRevision else { continue }
             let visibleReader = currentController is AgentRecordWindow || currentController is AgentFileConflictWindow || currentController is AgentMarkdownSourceWindow || currentController is AgentVideoWindow || currentController is AgentKnowledgeCardWindow || currentController is AgentKnowledgeWindow || currentController is AgentKnowledgeSourcePage || currentController is AgentWikiPlanWindow ||
-                (currentController as? AgentKnowledgeReviewWindow)?.isRecoverableVersionReview == true
+                (currentController as? AgentKnowledgeReviewWindow)?.hasRecoverablePosition == true
             let visibleCatalog = currentController is AgentRepoWikiWindow && catalog != nil || currentController is AgentKnowledgeLibraryWindow && library != nil
             let value = AgentWorkspaceRecovery.Knowledge(identity: identity, root: root, active: active && (visibleReader || visibleCatalog), readers: pages, library: library, wikiCatalog: catalog, libraryVideo: libraryVideo)
             return value.hasContent ? value : nil

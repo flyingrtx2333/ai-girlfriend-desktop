@@ -115,7 +115,15 @@ import AppKit
             checks["coloredDiffShowsCompleteActualCommittedPatch"] = update.checkState["showingDiff"] as? Bool == true && update.checkState["text"] as? String == actualDiff
             checks["updateTakesKeyboardFocusFromTaskSidebar"] = update.checkState["focusInReview"] as? Bool == true
             checks["openingReviewKeepsMinimumWindowSize"] = mainWindow.frame.size == narrow
+            let diffPosition = try update.captureVersionPosition()
+            checks["incrementalDiffCapturesMatchingTextAndTarget"] = diffPosition?.itemID == "diff" &&
+                diffPosition?.body?.hash == AgentFiles.hash(Data(actualDiff.utf8)) && diffPosition?.targetSignature != nil
             update.checkSelectItem(1)
+            let updateJournal = try await host.captureWorkspaceRecovery(active: true)
+            let updatePosition = try updateJournal?.readers.first.map(AgentRecordWindow.recoveryState)?.versionReview
+            checks["activeIncrementalReviewSavesProjectAndSelectedFiles"] = updateJournal?.active == true &&
+                updatePosition?.context.taskID == id && updatePosition?.context.workspace == workspace &&
+                updatePosition?.context.kind == .wikiUpdate && updatePosition?.itemID == "files"
             mainWindow.performClose(nil)
             let closeDeadline = Date().addingTimeInterval(3)
             while mainWindow.isVisible, Date() < closeDeadline { await wait(0.02) }
@@ -168,6 +176,10 @@ import AppKit
             checks["regenerationShowsCompleteActualConfiguration"] = planned.checkState["text"] as? String == plan && (planned.checkState["impact"] as? String)?.contains("Wiki · 2 页") == true
             inspect("regenerate", planned); planned.checkSelectItem(1)
             checks["regenerationListsActualCurrentDocuments"] = (planned.checkState["text"] as? String)?.components(separatedBy: "\n").count == 2
+            let planJournal = try await host.captureWorkspaceRecovery(active: true)
+            let planPosition = try planJournal?.readers.first.map(AgentRecordWindow.recoveryState)?.versionReview
+            checks["activeRegenerationReviewSavesLanguageAndSelectedDocuments"] = planJournal?.active == true &&
+                planPosition?.context.kind == .wikiRegeneration && planPosition?.context.language == "zh" && planPosition?.itemID == "documents"
             let modified = plan + "# 实际确认后的规划变化\n"; try files.writeData(Data(modified.utf8), to: planURL); let beforeRegeneration = created.count
             await planned.checkApply()
             checks["changedConfigurationRejectsRegenerationBeforeNewTask"] = created.count == beforeRegeneration && planned.checkState["applyEnabled"] as? Bool == false && planned.checkState["text"] as? String == ""

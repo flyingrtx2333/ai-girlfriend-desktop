@@ -9,7 +9,11 @@ struct AgentKnowledgeReviewVersion {
     let id: String, title: String, detail: String
 }
 @MainActor struct AgentKnowledgeVersionContext: Codable, Equatable {
-    enum Kind: String, Codable { case cards, wiki, project }
+    enum Kind: String, Codable {
+        case cards, wiki, project, wikiUpdate, wikiRegeneration
+
+        var hasVersions: Bool { self != .wikiUpdate && self != .wikiRegeneration }
+    }
     var kind: Kind, taskID: String, workspace: String, branch: String, language: String
 
     init(_ kind: Kind, store: AgentStore, taskID: String, language: String) throws {
@@ -40,7 +44,8 @@ struct AgentKnowledgeReviewVersion {
     var valid: Bool {
         func hash(_ value: String?) -> Bool { value.map { $0.count == 64 && $0.allSatisfy { $0.isHexDigit && !$0.isUppercase } } ?? true }
         return version == 1 && context.valid && versionID.map { UUID(uuidString: $0) != nil } != false &&
-            (!inPreview || versionID != nil && fingerprint != nil && targetSignature != nil) &&
+            (context.kind.hasVersions || versionID == nil && inPreview) &&
+            (!inPreview || (!context.kind.hasVersions || versionID != nil) && fingerprint != nil && targetSignature != nil) &&
             itemID.map { !$0.isEmpty && !$0.contains("\0") && $0.utf8.count <= 8192 } != false &&
             (body == nil || inPreview && itemID != nil && body?.valid == true) && hash(fingerprint) && hash(targetSignature) &&
             [versionY, itemY].allSatisfy { $0.isFinite && (0...1_000_000_000).contains($0) } &&
@@ -62,11 +67,12 @@ struct AgentKnowledgeReviewVersion {
 
     var fingerprint: String {
         let parts = items.flatMap { [$0.identity ?? "", $0.title, $0.detail, AgentFiles.hash(Data($0.text.utf8))] }
-        return AgentFiles.hash(Data(parts.joined(separator: "\0").utf8))
+        return Self.signature(parts)
     }
+    static func signature(_ parts: [String]) -> String { AgentFiles.hash(Data(parts.joined(separator: "\0").utf8)) }
     static func target(_ wiki: AgentWikiSnapshot, cardsHash: String = "") -> String {
         let parts = [wiki.pointer, wiki.root, cardsHash] + wiki.data.keys.sorted().flatMap { [$0, AgentFiles.hash(wiki.data[$0]!)] }
-        return AgentFiles.hash(Data(parts.joined(separator: "\0").utf8))
+        return signature(parts)
     }
     static func wikiItems(_ value: AgentWikiImportPreview) throws -> [AgentKnowledgeReviewItem] {
         try value.metadata.documents.map { document in
@@ -87,7 +93,7 @@ struct AgentKnowledgeReviewVersion {
 }
 
 @MainActor final class AgentKnowledgeReviewWindow: AgentSettingsPageController, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
-    private let versions: [AgentKnowledgeReviewVersion], load: (Int?) async throws -> AgentKnowledgeReviewSnapshot
+    private let versions: [AgentKnowledgeReviewVersion], load: (Int?, Bool) async throws -> AgentKnowledgeReviewSnapshot
     private let onApplied: (String) -> Void
     private let table = NSTableView(), list = NSScrollView(), viewer = NSScrollView(), text = NSTextView()
     private let body = AgentThemeView(fill: AgentWorkbenchTheme.card, stroke: AgentWorkbenchTheme.line)
@@ -104,7 +110,7 @@ struct AgentKnowledgeReviewVersion {
     private var versionY: Double = 0, loadedFingerprint: String?, expectedTargetSignature: String?
     private var pendingPosition: AgentKnowledgeVersionPosition?, positionScheduled = false
     private var restoringPosition = false, recoveryPresentationScheduled = false, targetChanged = false
-    var isRecoverableVersionReview: Bool { versionContext != nil }
+    var hasRecoverablePosition: Bool { versionContext != nil }
     var hasPendingOperation: Bool { !closed && job != nil }
     private var hasKeyboardFocus: Bool {
         guard let content = pageContentView, let focus = presentingWindow?.firstResponder as? NSView else { return false }
@@ -113,9 +119,9 @@ struct AgentKnowledgeReviewVersion {
     var onClose: (() -> Void)?
     var onWorkspaceChange: (() -> Void)?
 
-    init(title: String, action: String, scope: String, versions: [AgentKnowledgeReviewVersion] = [], context: AgentKnowledgeVersionContext? = nil, load: @escaping (Int?) async throws -> AgentKnowledgeReviewSnapshot, onApplied: @escaping (String) -> Void) {
+    init(title: String, action: String, scope: String, versions: [AgentKnowledgeReviewVersion] = [], context: AgentKnowledgeVersionContext? = nil, load: @escaping (Int?, Bool) async throws -> AgentKnowledgeReviewSnapshot, onApplied: @escaping (String) -> Void) {
         self.versions = versions; self.load = load; self.onApplied = onApplied; versionContext = context
-        choosingVersion = context != nil || !versions.isEmpty
+        choosingVersion = context?.kind.hasVersions == true || !versions.isEmpty
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.minSize = NSSize(width: 520, height: 420); window.isReleasedWhenClosed = false; window.center()
         super.init(window: window); window.delegate = self
@@ -150,11 +156,14 @@ struct AgentKnowledgeReviewVersion {
         let content = AgentThemeView(fill: AgentWorkbenchTheme.surface); window.contentView = content; content.addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
         for child in column.arrangedSubviews { child.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         NSLayoutConstraint.activate([column.leadingAnchor.constraint(equalTo: content.leadingAnchor), column.trailingAnchor.constraint(equalTo: content.trailingAnchor), column.topAnchor.constraint(equalTo: content.topAnchor), column.bottomAnchor.constraint(equalTo: content.bottomAnchor)])
-        for scroll in [list, viewer] {
-            scroll.contentView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(self, selector: #selector(positionChanged), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        let clips: [NSClipView?] = [list.contentView, viewer.contentView, diff.text.enclosingScrollView?.contentView]
+        for case let clip? in clips {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(positionChanged), name: NSView.boundsDidChangeNotification, object: clip)
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(positionChanged), name: NSTextView.didChangeSelectionNotification, object: text)
+        for bodyText in [text, diff.text] {
+            NotificationCenter.default.addObserver(self, selector: #selector(positionChanged), name: NSTextView.didChangeSelectionNotification, object: bodyText)
+        }
         body.setContentHuggingPriority(.defaultLow, for: .vertical); updatePage()
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -232,9 +241,11 @@ struct AgentKnowledgeReviewVersion {
                 }
             }
             do {
-                let value = try await load(version); try Task.checkCancellation(); guard !closed else { return }
+                let value = try await load(version, position != nil); try Task.checkCancellation(); guard !closed else { return }
                 let fingerprint = versionContext == nil ? nil : value.fingerprint
-                if let position, fingerprint != position.fingerprint { throw PetError("历史版本内容已变化，原阅读位置已保留。请重新预览。") }
+                if let position, fingerprint != position.fingerprint {
+                    throw PetError(position.context.kind.hasVersions ? "历史版本内容已变化，原阅读位置已保留。请重新预览。" : "审阅内容已变化，请重新预览")
+                }
                 focusList = hasKeyboardFocus
                 loadedFingerprint = fingerprint; expectedTargetSignature = position?.targetSignature ?? value.targetSignature
                 targetChanged = position.map { $0.targetSignature != value.targetSignature } == true
@@ -243,7 +254,10 @@ struct AgentKnowledgeReviewVersion {
                 let item = position?.itemID.flatMap { id in value.items.firstIndex { $0.identity == id } } ?? 0
                 showItem(value.items.indices.contains(item) ? value.items[item] : nil)
                 table.reloadData(); if value.items.indices.contains(item) { table.selectRowIndexes(IndexSet(integer: item), byExtendingSelection: false) }
-                state.stringValue = targetChanged ? "当前版本已变化，请重新预览后再恢复" : "\(value.items.count) 项"; updatePage()
+                if targetChanged {
+                    state.stringValue = versionContext?.kind.hasVersions == true ? "当前版本已变化，请重新预览后再恢复" : "项目或 Wiki 已变化，请重新预览"
+                } else { state.stringValue = "\(value.items.count) 项" }
+                updatePage()
             } catch { if !closed, !Task.isCancelled { state.stringValue = error.localizedDescription; state.textColor = AgentDialogStyle.error; table.reloadData() } }
         }; updatePage()
     }
@@ -277,8 +291,9 @@ struct AgentKnowledgeReviewVersion {
     func captureVersionPosition() throws -> AgentKnowledgeVersionPosition? {
         guard let context = versionContext, !closed else { return nil }
         if let pendingPosition { return pendingPosition }
+        guard context.kind.hasVersions || snapshot != nil else { return nil }
         let item = snapshot.flatMap { $0.items.indices.contains(table.selectedRow) ? $0.items[table.selectedRow] : nil }
-        let body = item == nil || showingDiff ? nil : try AgentTextViewport(text)
+        let body = item == nil ? nil : try AgentTextViewport(showingDiff ? diff.text : text)
         let value = AgentKnowledgeVersionPosition(context: context, versionID: selectedVersion.map { versions[$0].id },
             inPreview: !choosingVersion && snapshot != nil, itemID: item?.identity,
             versionY: choosingVersion ? max(0, list.contentView.bounds.minY) : versionY,
@@ -317,11 +332,11 @@ struct AgentKnowledgeReviewVersion {
         positionScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }; defer { positionScheduled = false }
-            guard isPageVisible, let value = pendingPosition, value.inPreview == !choosingVersion else { return }
+            guard isPageVisible, let value = pendingPosition, value.inPreview == !choosingVersion, !value.inPreview || snapshot != nil else { return }
             restoringPosition = true; defer { restoringPosition = false }
             presentingWindow?.contentView?.layoutSubtreeIfNeeded()
             scrollList(to: value.inPreview ? value.itemY : value.versionY)
-            if let body = value.body, !body.apply(to: text, focus: value.focus == "body") { return }
+            if let body = value.body, !body.apply(to: showingDiff ? diff.text : text, focus: value.focus == "body") { return }
             if value.focus == "list" { presentingWindow?.makeFirstResponder(table) }
             pendingPosition = nil; onWorkspaceChange?()
         }
