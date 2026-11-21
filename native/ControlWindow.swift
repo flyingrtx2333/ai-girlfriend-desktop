@@ -161,8 +161,9 @@ final class FormDocumentView: NSView {
     private let modelDirectoryBack = AgentWorkbenchButton()
     private let modelDirectory = AgentModelDirectoryView()
     private var modelDirectoryReturnY: CGFloat?
-    private let rebaseModelDraftButton = AgentDialogButton(title: "继续使用草稿", target: nil, action: nil)
+    private let rebaseBasicDraftButton = AgentDialogButton(title: "继续使用草稿", target: nil, action: nil)
     private var modelDraftBase: String?
+    private var voiceDraftBase: String?
     private let sidebarMenuButton = AgentDialogButton(title: "调整顺序", target: nil, action: nil)
     private let sidebarMenuBack = AgentWorkbenchButton()
     private var sidebarMenuSettings: AgentSidebarLayoutSettingsView?
@@ -1876,7 +1877,8 @@ final class FormDocumentView: NSView {
             let selection = (responder as? NSTextView)?.selectedRange()
             let changed = settingsEditingInput !== input || settingsEditingSelection != selection
             settingsEditingInput = input; settingsEditingSelection = selection
-            if changed, settingsCategory == "model", modelField(for: input) != nil { workspaceSession?.changed() }
+            if changed, (settingsCategory == "model" && modelField(for: input) != nil) ||
+                (settingsCategory == "voice" && voiceField(for: input) != nil) { workspaceSession?.changed() }
         }
     }
     @discardableResult internal func showSettingsCategory(_ key: String) -> Bool {
@@ -2161,7 +2163,7 @@ final class FormDocumentView: NSView {
         settingsForm.addArrangedSubview(card); card.widthAnchor.constraint(equalTo: settingsForm.widthAnchor).isActive = true
     }
     private func updateSettingsSections() {
-        defer { updateSettingsActions(); updateModelDraftControls() }
+        defer { updateSettingsActions(); updateBasicDraftControls() }
         archivedTasksView?.refresh()
         let query = settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if settingsCategory != "model" { endModelDirectory() }
@@ -2422,12 +2424,19 @@ final class FormDocumentView: NSView {
         row("上下文", stack([contextTokens, NSTextField(labelWithString: "tokens"), contextMaximum], spacing: 6), trailing: true)
         row("回复上限", stack([replyTokens, NSTextField(labelWithString: "tokens"), replyMaximum], spacing: 6), trailing: true)
         group("voice", "MiniMax", "语音 声音 回复 接口 Token 密钥 模型 音色 MiniMax API")
+        for (input, label) in [(voiceEndpoint, "语音接口"), (voiceModel, "语音模型"), (voiceID, "音色"), (wakePhrase, "唤醒词")] {
+            input.delegate = self; input.setAccessibilityLabel(label)
+        }
+        voiceKey.delegate = self; voiceKey.setAccessibilityLabel("语音 Token")
+        for control in [voiceEnabled, wakeEnabled, pauseWait] as [NSControl] {
+            control.target = self; control.action = #selector(voiceSettingsChanged)
+        }
         row("语音回复", voiceEnabled); row("接口", voiceEndpoint)
         row("Token", secret(voiceKey, preview: voicePreview, replace: voiceReplace, copy: #selector(copyVoice), edit: #selector(replaceVoice), action: #selector(removeVoice)))
         row("模型", voiceModel); row("音色", voiceID)
         group("voice", "唤醒与聆听", "语音 唤醒 关键词 麦克风 聆听 停顿 等待 状态")
         row("语音唤醒", wakeEnabled); row("唤醒词", wakePhrase)
-        pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); row("停顿等待", pauseWait)
+        pauseWait.addItems(withTitles: ["2 秒", "3 秒", "5 秒"]); pauseWait.setAccessibilityLabel("停顿等待"); row("停顿等待", pauseWait)
         wakeStatus.font = .systemFont(ofSize: 12); wakeStatus.textColor = AgentWorkbenchTheme.secondaryText; row("状态", wakeStatus)
         AgentDialogStyle.action(voiceStopButton); row("", voiceStopButton)
         group("screen", "闲置时陪你看看", "屏幕 陪伴 观察 视觉 视频 评论 自动 间隔 免打扰 授权 权限")
@@ -2561,9 +2570,9 @@ final class FormDocumentView: NSView {
         AgentSettingsStyle.primaryAction(save)
         save.keyEquivalent = "s"; save.keyEquivalentModifierMask = .command
         savedStatus.font = .systemFont(ofSize: 12); savedStatus.textColor = AgentWorkbenchTheme.secondaryText
-        AgentDialogStyle.action(rebaseModelDraftButton)
-        rebaseModelDraftButton.target = self; rebaseModelDraftButton.action = #selector(rebaseModelDraft)
-        rebaseModelDraftButton.isHidden = true
+        AgentDialogStyle.action(rebaseBasicDraftButton)
+        rebaseBasicDraftButton.target = self; rebaseBasicDraftButton.action = #selector(rebaseBasicDraft)
+        rebaseBasicDraftButton.isHidden = true
         for view in [settingsScroll, settingsPageHost] { settingsBody.addSubview(view); pin(view, to: settingsBody) }
         settingsBody.addSubview(modelDirectory); pin(modelDirectory, to: settingsBody, inset: 16)
         modelDirectory.isHidden = true
@@ -2581,7 +2590,9 @@ final class FormDocumentView: NSView {
         settingsHeading.font = .systemFont(ofSize: 20, weight: .semibold); settingsHeading.textColor = .labelColor
         settingsHeading.lineBreakMode = .byTruncatingTail; settingsHeading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        let bottom = stack([savedStatus, NSView(), rebaseModelDraftButton, save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
+        let footerSpacer = NSView()
+        savedStatus.onChange = { [weak footerSpacer] text in footerSpacer?.isHidden = !text.isEmpty }
+        let bottom = stack([savedStatus, footerSpacer, rebaseBasicDraftButton, save]), column = stack([title, settingsBody, bottom], vertical: true, spacing: 16)
         settingsColumn = column
         settingsFooter = bottom
         settings.addSubview(column); pin(column, to: settings)
@@ -2668,7 +2679,7 @@ final class FormDocumentView: NSView {
         wakeStatus.stringValue = companion.wakeStatus
         sidebarWake.stringValue = p.wakeEnabled ? companion.wakeStatus : "语音未开启"; listenButton.title = p.wakeEnabled ? "立即聆听" : "开启语音"
         stopRecordingButton.isEnabled = p.wakeEnabled; voiceStopButton.isEnabled = p.wakeEnabled
-        modelCaption.stringValue = p.model; pauseWait.selectItem(at: [2.0, 3.0, 5.0].firstIndex(of: p.voicePauseSeconds) ?? 1)
+        modelCaption.stringValue = p.model; pauseWait.selectItem(at: AgentVoiceSettingsDraft.Form.pauses.firstIndex(of: p.voicePauseSeconds) ?? 1)
         performance.selectItem(at: ["auto", "smooth", "paused"].firstIndex(of: p.performance) ?? 0)
         scale.doubleValue = p.scale
         sizeValue.stringValue = "\(Int((p.scale * 100).rounded()))%"
@@ -2679,24 +2690,94 @@ final class FormDocumentView: NSView {
         updateScreenStatus(companion.screenCompanion.status)
         savedBasicSettings = basicSettingsValues()
         modelDraftBase = AgentModelSettingsRecovery.Draft.fingerprint(p)
+        voiceDraftBase = AgentVoiceSettingsDraft.fingerprint(p)
         savedStatus.stringValue = ""
-        updateModelDraftControls()
+        updateBasicDraftControls()
     }
     private func basicSettingsValues() -> [String] {
         modelSettingsForm().values + nonModelSettingsValues()
     }
     private func syncWakeEnabled(_ enabled: Bool) {
         let state: NSControl.StateValue = enabled ? .on : .off
+        guard state != savedWakeEnabled else { return }
+        if var previous = companion?.store.preferences {
+            let current = previous
+            previous.wakeEnabled = savedWakeEnabled == .on
+            if voiceDraftBase == AgentVoiceSettingsDraft.fingerprint(previous) {
+                voiceDraftBase = AgentVoiceSettingsDraft.fingerprint(current)
+            }
+        }
         if wakeEnabled.state == savedWakeEnabled { wakeEnabled.state = state }
         savedWakeEnabled = state
+        if settingsCategory == "voice", selectedTab == "settings" { voiceSettingsChanged() }
     }
     private func nonModelSettingsValues() -> [String] {
-        [persona.stringValue, apiKey.stringValue,
-         voiceEndpoint.stringValue, voiceModel.stringValue, voiceID.stringValue, voiceKey.stringValue,
-         wakePhrase.stringValue, String(pauseWait.indexOfSelectedItem),
+        voiceSettingsForm().valuesWithoutWake + otherBasicSettingsValues()
+    }
+    private func otherBasicSettingsValues() -> [String] {
+        [persona.stringValue, apiKey.stringValue, voiceKey.stringValue,
          String(performance.indexOfSelectedItem), String(screenInterval.indexOfSelectedItem), String(scale.doubleValue),
-         String(voiceEnabled.state.rawValue), String(onTop.state.rawValue),
+         String(onTop.state.rawValue),
          String(screenEnabled.state.rawValue), String(removeChatKey), String(removeVoiceKey)]
+    }
+    private func voiceSettingsForm() -> AgentVoiceSettingsDraft.Form {
+        let pauses = AgentVoiceSettingsDraft.Form.pauses
+        let pause = pauses.indices.contains(pauseWait.indexOfSelectedItem) ? pauses[pauseWait.indexOfSelectedItem] : 3
+        return .init(endpoint: voiceEndpoint.stringValue, model: voiceModel.stringValue, voiceID: voiceID.stringValue,
+            wakePhrase: wakePhrase.stringValue, voiceEnabled: voiceEnabled.state == .on,
+            wakeEnabled: wakeEnabled.state == .on, pauseSeconds: pause)
+    }
+    private func voiceInput(_ field: AgentVoiceSettingsDraft.Field) -> NSTextField {
+        switch field {
+        case .endpoint: return voiceEndpoint
+        case .model: return voiceModel
+        case .voiceID: return voiceID
+        case .wakePhrase: return wakePhrase
+        }
+    }
+    private func voiceField(for input: NSView) -> AgentVoiceSettingsDraft.Field? {
+        AgentVoiceSettingsDraft.Field.allCases.first { voiceInput($0) === input }
+    }
+    private func voiceFormChanged(_ form: AgentVoiceSettingsDraft.Form) -> Bool {
+        let saved = savedBasicSettings.dropFirst(modelSettingsForm().values.count).prefix(form.valuesWithoutWake.count)
+        return form.valuesWithoutWake != Array(saved) || form.wakeEnabled != (savedWakeEnabled == .on)
+    }
+    private func captureVoiceDraft() -> AgentVoiceSettingsDraft? {
+        guard selectedTab == "settings", settingsCategory == "voice", let voiceDraftBase,
+              voiceKey.stringValue.isEmpty, !removeVoiceKey else { return nil }
+        let form = voiceSettingsForm(), model = modelSettingsForm().values, other = otherBasicSettingsValues()
+        guard voiceFormChanged(form), model == Array(savedBasicSettings.prefix(model.count)),
+              other == Array(savedBasicSettings.suffix(other.count)) else { return nil }
+        let focus = settingsEditingInput.flatMap { voiceField(for: $0) }
+        let selection = focus.flatMap { field -> AgentTextViewport.Selection? in
+            guard let range = settingsEditingSelection else { return nil }
+            let selected = AgentTextViewport.Selection(location: range.location, length: range.length)
+            return selected.valid(in: form[field].utf16.count) ? selected : nil
+        }
+        let draft = AgentVoiceSettingsDraft(base: voiceDraftBase, form: form, focus: focus, selection: selection)
+        return draft.valid ? draft : nil
+    }
+    private var voiceBaseChanged: Bool {
+        guard let voiceDraftBase, let companion else { return false }
+        return voiceDraftBase != AgentVoiceSettingsDraft.fingerprint(companion.store.preferences)
+    }
+    private var hasVoiceDraftConflict: Bool {
+        voiceBaseChanged && (voiceFormChanged(voiceSettingsForm()) || removeVoiceKey || !voiceKey.stringValue.isEmpty)
+    }
+    private func applyVoiceDraft(_ draft: AgentVoiceSettingsDraft, base: String) {
+        for field in AgentVoiceSettingsDraft.Field.allCases { voiceInput(field).stringValue = draft.form[field] }
+        voiceEnabled.state = draft.form.voiceEnabled ? .on : .off
+        wakeEnabled.state = draft.form.wakeEnabled ? .on : .off
+        pauseWait.selectItem(at: AgentVoiceSettingsDraft.Form.pauses.firstIndex(of: draft.form.pauseSeconds) ?? 1)
+        voiceDraftBase = base
+        settingsEditingInput = draft.focus.map { voiceInput($0) }
+        settingsEditingSelection = draft.selection?.range
+        showVoiceDraftStatus()
+        updateBasicDraftControls()
+    }
+    private func showVoiceDraftStatus() {
+        savedStatus.stringValue = hasVoiceDraftConflict ? "已保存的语音设置有变化，原草稿待核对" : "已恢复未保存的语音设置"
+        if hasVoiceDraftConflict { savedStatus.textColor = AgentDialogStyle.error }
     }
     private func modelSettingsForm() -> AgentModelSettingsRecovery.Form {
         .init(endpoint: endpoint.stringValue, model: model.stringValue, context: contextTokens.stringValue, reply: replyTokens.stringValue,
@@ -2734,10 +2815,13 @@ final class FormDocumentView: NSView {
         let values = modelSettingsForm().values
         return values != Array(savedBasicSettings.prefix(values.count)) && modelDraftBase != AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences)
     }
-    private func updateModelDraftControls() {
-        let conflict = settingsCategory == "model" && hasModelDraftConflict
-        rebaseModelDraftButton.isHidden = !conflict
-        rebaseModelDraftButton.isEnabled = conflict && captureModelSettings()?.draft != nil
+    private func updateBasicDraftControls() {
+        let modelConflict = settingsCategory == "model" && hasModelDraftConflict
+        let voiceConflict = settingsCategory == "voice" && hasVoiceDraftConflict
+        let conflict = modelConflict || voiceConflict
+        rebaseBasicDraftButton.isHidden = !conflict
+        rebaseBasicDraftButton.isEnabled = (modelConflict && captureModelSettings()?.draft != nil) ||
+            (voiceConflict && captureVoiceDraft() != nil)
         generalSettingsSave?.isEnabled = !conflict
     }
     private func showModelDraftStatus() {
@@ -2755,10 +2839,12 @@ final class FormDocumentView: NSView {
         settingsEditingInput = draft.focus.map { modelInput($0) }
         settingsEditingSelection = draft.selection?.range
         showModelDraftStatus()
-        updateModelDraftControls()
+        updateBasicDraftControls()
     }
-    private func focusModelDraftInput() {
-        guard let input = settingsEditingInput as? NSTextField, modelField(for: input) != nil,
+    private func focusBasicDraftInput() {
+        guard let input = settingsEditingInput as? NSTextField,
+              (settingsCategory == "model" && modelField(for: input) != nil) ||
+                  (settingsCategory == "voice" && voiceField(for: input) != nil),
               !input.isHiddenOrHasHiddenAncestor else { return }
         let range = settingsEditingSelection
         guard window?.makeFirstResponder(input) == true else { return }
@@ -2767,19 +2853,30 @@ final class FormDocumentView: NSView {
             (input.currentEditor() as? NSTextView)?.setSelectedRange(range)
         }
     }
-    @objc private func rebaseModelDraft() {
+    @objc private func rebaseBasicDraft() {
+        if settingsCategory == "voice" {
+            guard hasVoiceDraftConflict, let draft = captureVoiceDraft(), let companion,
+                  let base = AgentVoiceSettingsDraft.fingerprint(companion.store.preferences) else { return }
+            refreshPreferences()
+            applyVoiceDraft(draft, base: base)
+            savedStatus.stringValue = "草稿待保存"
+            focusBasicDraftInput()
+            workspaceSession?.changed()
+            return
+        }
         guard hasModelDraftConflict, let draft = captureModelSettings()?.draft, let companion,
               let base = AgentModelSettingsRecovery.Draft.fingerprint(companion.store.preferences) else { return }
         refreshPreferences()
         applyModelDraft(draft, base: base)
         savedStatus.stringValue = "草稿待保存"
-        focusModelDraftInput()
+        focusBasicDraftInput()
         workspaceSession?.changed()
     }
     private func canLeaveBasicSettings(preservingRecovery: Bool = false) -> Bool {
         guard !savedBasicSettings.isEmpty,
               basicSettingsValues() != savedBasicSettings || wakeEnabled.state != savedWakeEnabled else { return true }
         if preservingRecovery, let draft = captureModelSettings()?.draft, workspaceSession?.hasPreservedModelDraft(draft) == true { return true }
+        if preservingRecovery, let draft = captureVoiceDraft(), workspaceSession?.hasPreservedVoiceDraft(draft) == true { return true }
         let input = settingsEditingInput, selection = settingsEditingSelection
         guard AgentUnsavedChanges.discard("放弃未保存的设置更改？", owner: window) else {
             if let input, input.window === window, !input.isHiddenOrHasHiddenAncestor, window?.makeFirstResponder(input) == true,
@@ -2824,6 +2921,7 @@ final class FormDocumentView: NSView {
     @objc private func removeVoice() {
         editToken(voiceKey, preview: voicePreview, replace: voiceReplace); voiceKey.stringValue = ""
         voiceKey.placeholderString = "保存后移除"; removeVoiceKey = true
+        voiceSettingsChanged()
     }
     private var selectedModelInfo: ModelInfo? {
         let url = try? CompanionService.endpoint(endpoint.stringValue, chat: true).absoluteString
@@ -2867,13 +2965,18 @@ final class FormDocumentView: NSView {
             return
         }
         let input = obj.object as? NSTextField
+        if let input, input === voiceKey || voiceField(for: input) != nil {
+            voiceSettingsChanged()
+            return
+        }
         invalidateModelCheck(sourceChanged: input === endpoint || input === apiKey)
         if input === model { modelDirectory.updateCurrentModel(model.stringValue) }
-        if settingsCategory == "model" { updateModelDraftControls(); workspaceSession?.changed() }
+        if settingsCategory == "model" { updateBasicDraftControls(); workspaceSession?.changed() }
     }
     @objc private func scaleChanged() { sizeValue.stringValue = "\(Int((scale.doubleValue * 100).rounded()))%" }
     func comboBoxSelectionDidChange(_ notification: Notification) { reasoningChanged() }
-    @objc private func reasoningChanged() { invalidateModelCheck(); updateModelDraftControls(); workspaceSession?.changed() }
+    @objc private func reasoningChanged() { invalidateModelCheck(); updateBasicDraftControls(); workspaceSession?.changed() }
+    @objc private func voiceSettingsChanged() { updateBasicDraftControls(); workspaceSession?.changed() }
 
     private func chatPreferences() throws -> PetPreferences {
         guard var p = companion?.store.preferences else { throw PetError("设置不可用。") }
@@ -2900,7 +3003,7 @@ final class FormDocumentView: NSView {
         guard let y = modelDirectoryReturnY else { return }
         endModelDirectory(); updateSettingsSections(); window?.contentView?.layoutSubtreeIfNeeded()
         restoreSettingsScroll(y, to: settingsScroll)
-        if settingsEditingInput.flatMap({ modelField(for: $0) }) != nil { focusModelDraftInput() }
+        if settingsEditingInput.flatMap({ modelField(for: $0) }) != nil { focusBasicDraftInput() }
         else { window?.makeFirstResponder(model) }
         workspaceSession?.changed()
     }
@@ -2991,31 +3094,41 @@ final class FormDocumentView: NSView {
         guard selectedTab == "settings", settingsSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               generalSettingsSave?.isHidden == false, let companion else { return }
         do {
-            if settingsCategory == "model", hasModelDraftConflict { showModelDraftStatus(); updateModelDraftControls(); return }
-            var p = try chatPreferences()
-            p.voiceEnabled = voiceEnabled.state == .on
-            p.voiceEndpoint = voiceEndpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if settingsCategory == "model", hasModelDraftConflict { showModelDraftStatus(); updateBasicDraftControls(); return }
+            let scopedVoice = settingsCategory == "voice" && companion.usesAgent
+            if scopedVoice, voiceBaseChanged {
+                if hasVoiceDraftConflict { showVoiceDraftStatus(); updateBasicDraftControls() }
+                else { refreshPreferences(); savedStatus.stringValue = "已载入最新设置" }
+                return
+            }
+            var p = scopedVoice ? companion.store.preferences : try chatPreferences()
+            let voice = voiceSettingsForm()
+            p.voiceEnabled = voice.voiceEnabled
+            p.voiceEndpoint = voice.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try CompanionService.endpoint(p.voiceEndpoint)
-            p.voiceModel = voiceModel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.voiceID = voiceID.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.wakeEnabled = wakeEnabled.state == .on; p.wakePhrase = wakePhrase.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            p.voicePauseSeconds = [2.0, 3.0, 5.0][max(0, pauseWait.indexOfSelectedItem)]
-            p.screenObservationEnabled = screenEnabled.state == .on
-            p.screenObservationInterval = [60.0, 180.0, 300.0, 600.0, 900.0][max(0, screenInterval.indexOfSelectedItem)]
-            if p.screenObservationEnabled && p.visionSupported != true { throw PetError("请在模型页确认视觉理解能力") }
+            p.voiceModel = voice.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            p.voiceID = voice.voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            p.wakeEnabled = voice.wakeEnabled; p.wakePhrase = voice.wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
+            p.voicePauseSeconds = voice.pauseSeconds
+            if !scopedVoice {
+                p.screenObservationEnabled = screenEnabled.state == .on
+                p.screenObservationInterval = [60.0, 180.0, 300.0, 600.0, 900.0][max(0, screenInterval.indexOfSelectedItem)]
+                if p.screenObservationEnabled && p.visionSupported != true { throw PetError("请在模型页确认视觉理解能力") }
+            }
             guard (2...12).contains(p.wakePhrase.filter({ $0.isLetter || $0.isNumber }).count) else { throw PetError("唤醒词请用 2–12 个字") }
             if p.wakeEnabled, let directory = Bundle.main.resourceURL?.appendingPathComponent("wake-model") {
                 _ = try SherpaWake.tokenLine(p.wakePhrase, directory: directory)
             }
-            guard !p.model.isEmpty, p.model.count < 200, p.persona.count < 8000,
-                  !p.voiceID.isEmpty, !p.voiceModel.isEmpty else { throw PetError("请检查模型、音色和角色设置。") }
+            guard !p.voiceID.isEmpty, !p.voiceModel.isEmpty else { throw PetError("请填写语音模型和音色。") }
             if p.voiceEnabled && voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (removeVoiceKey || !companion.store.keychain.contains("voice")) {
                 throw PetError("请先填写 MiniMax 密钥。")
             }
-            p.alwaysOnTop = onTop.state == .on; p.performance = ["auto", "smooth", "paused"][max(0, performance.indexOfSelectedItem)]
-            p.scale = scale.doubleValue
-            if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }
+            if !scopedVoice {
+                p.alwaysOnTop = onTop.state == .on; p.performance = ["auto", "smooth", "paused"][max(0, performance.indexOfSelectedItem)]
+                p.scale = scale.doubleValue
+                if removeChatKey || !apiKey.stringValue.isEmpty { try companion.store.keychain.write(apiKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "chat") }
+            }
             if removeVoiceKey || !voiceKey.stringValue.isEmpty { try companion.store.keychain.write(voiceKey.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), account: "voice") }
             let previous = companion.store.preferences
             companion.store.preferences = p
@@ -3091,13 +3204,16 @@ final class FormDocumentView: NSView {
         busy = value; updateSendButton(); clearButton.isEnabled = !value
     }
     func setStatus(_ text: String, error: Bool = false) {
+        setConversationStatus(text, error: error)
+        if !settings.isHidden {
+            savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
+        }
+    }
+    private func setConversationStatus(_ text: String, error: Bool) {
         status.stringValue = text; status.textColor = error ? AgentDialogStyle.error : AgentWorkbenchTheme.secondaryText
         status.toolTip = text.isEmpty ? nil : text
         status.isHidden = text.isEmpty
         updateConversationFooter()
-        if settings.isHidden == false {
-            savedStatus.stringValue = text; savedStatus.textColor = error ? .systemRed : AgentWorkbenchTheme.secondaryText
-        }
     }
     func clearWorkspaceRecoveryStatus(_ failure: String, prefix: String = "工作区恢复未保存：") {
         let message = prefix + failure
@@ -3149,6 +3265,10 @@ final class FormDocumentView: NSView {
         companion?.updatePetWorkspaceOcclusion()
         companion?.focusedTaskControl = self
         updateWorkbenchLayout()
+        if selectedTab == "settings", settingsCategory == "voice" {
+            if hasVoiceDraftConflict { showVoiceDraftStatus() }
+            updateBasicDraftControls()
+        }
         if let task = currentAgentTask {
             if companion?.agentStore?.selectedID != task.id { companion?.agentStore?.selectedID = task.id }
             refreshBranch(task, force: true)
@@ -3302,7 +3422,7 @@ final class FormDocumentView: NSView {
             contentY: settingsScroll.isHidden ? (modelDirectoryReturnY ?? 0) : max(0, settingsScroll.contentView.bounds.minY),
             sidebarY: max(0, settingsNavigationScroll.contentView.bounds.minY), returnTab: settingsReturnTab, knowledgeRoot: settingsReturnKnowledgeRoot,
             dataImport: settingsCategory == "imports" ? dataImportView?.captureNavigation() : nil, sidebarMenu: menu,
-            modelSettings: captureModelSettings())
+            modelSettings: captureModelSettings(), voiceDraft: captureVoiceDraft())
         return value.valid ? value : nil
     }
     func materializeSettingsNavigation(_ value: AgentSettingsRecovery.Navigation) throws {
@@ -3325,6 +3445,7 @@ final class FormDocumentView: NSView {
                 updateModelOptions(); updateModelRequestControls(); updateSettingsSections()
             }
         }
+        if let draft = value.voiceDraft { applyVoiceDraft(draft, base: draft.base) }
         if sidebarMenuSettings != nil, sidebarMenuLocation != value.sidebarMenu {
             sidebarMenuLocation = value.sidebarMenu; updateSettingsSections()
         }
@@ -3342,6 +3463,7 @@ final class FormDocumentView: NSView {
             window.contentView?.layoutSubtreeIfNeeded()
             if !settingsScroll.isHidden { restoreSettingsScroll(value.contentY, to: settingsScroll) }
             restoreSettingsScroll(value.sidebarY, to: settingsNavigationScroll)
+            if value.query.isEmpty, value.category == "voice" { revealSettingsCategory() }
             if let focus = value.focus {
                 if let index = settingsResults.firstIndex(where: { $0.identity == focus }), settingsResultButtons.indices.contains(index) {
                     let result = settingsResultButtons[index]
@@ -3358,8 +3480,9 @@ final class FormDocumentView: NSView {
             }
             if value.query.isEmpty, let modelSettings = value.modelSettings {
                 if let directory = modelSettings.directory { modelDirectory.restoreViewport(directory, focus: value.focus == nil) }
-                else if value.focus == nil { focusModelDraftInput() }
+                else if value.focus == nil { focusBasicDraftInput() }
             }
+            if value.query.isEmpty, value.focus == nil, value.voiceDraft != nil { focusBasicDraftInput() }
             pendingSettingsNavigation = nil
             rememberSettingsNavigationInput()
             workspaceSession?.changed()
@@ -5117,8 +5240,8 @@ final class FormDocumentView: NSView {
         composer.isEditable = !managed; attachmentButton.isEnabled = !managed
         let queueCount = task.queuedCount
         let state = tasks.writeError ?? (task.status == .failed ? task.events.last(where: { $0.status == "failed" })?.detail ?? "执行失败" : managed && task.status == .completed ? task.statusTitle : locked ? (running && task.status == .ready ? "排队中" : task.status.title) + (queueCount > 0 ? " · \(queueCount) 条补充待处理" : "") : "")
-        setStatus(task.status == .failed || tasks.writeError != nil || queueCount > 0 ? state : tasks.hooks.backgroundTitle(task.id) ?? "", error: task.status == .failed || tasks.writeError != nil || (managed && task.statusTitle == "校验未通过"))
-        if rollbackBlocked { clearButton.isEnabled = false; setStatus(task.pendingFileRollback == nil ? "此项目有未完成的文件撤回，请在所属任务恢复" : "文件撤回未完成，请从任务操作恢复撤回前文件", error: true) }
+        setConversationStatus(task.status == .failed || tasks.writeError != nil || queueCount > 0 ? state : tasks.hooks.backgroundTitle(task.id) ?? "", error: task.status == .failed || tasks.writeError != nil || (managed && task.statusTitle == "校验未通过"))
+        if rollbackBlocked { clearButton.isEnabled = false; setConversationStatus(task.pendingFileRollback == nil ? "此项目有未完成的文件撤回，请在所属任务恢复" : "文件撤回未完成，请从任务操作恢复撤回前文件", error: true) }
         let context = task.contextSize.map { used in " · 上下文 ~\(used) / \(companion?.store.preferences.contextLimit ?? 8192)" } ?? ""
         modelCaption.stringValue = task.agent.map { $0.profile.name + context } ?? (context.hasPrefix(" · ") ? String(context.dropFirst(3)) : context)
         modelCaption.isHidden = true

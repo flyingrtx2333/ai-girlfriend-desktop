@@ -38,6 +38,7 @@ import WebKit
         if CommandLine.arguments.contains("--settings-navigation-recovery-ui") { await runSettingsNavigationRecoveryCheck(output, interactive: true); return }
         if CommandLine.arguments.contains("--settings-mcp-recovery-check") { await runMCPSettingsRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--settings-memory-recovery-check") { await runMemorySettingsRecoveryCheck(output); NSApp.terminate(nil); return }
+        if CommandLine.arguments.contains("--settings-voice-recovery-check") { await runVoiceSettingsRecoveryCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--skill-creation-check") { await runSkillCreationCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-skill-evolution-check") { await runWorkspaceSkillEvolutionCheck(output); NSApp.terminate(nil); return }
         if CommandLine.arguments.contains("--workspace-roles-check") { await runWorkspaceRolesCheck(output); NSApp.terminate(nil); return }
