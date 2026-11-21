@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import BlueFatFishTerminal
 
 @MainActor extension AppDelegate {
     func runTerminalRecoveryStorageCheck(_ output: URL) {
@@ -87,9 +88,25 @@ import Darwin
             rejected("relativeDirectoryIsRejected") { _ = try journal.saveTerminalLayout(invalid, expected: saved.hash) }
             rejected("staleWriterCannotOverwriteCurrentRecord") { _ = try journal.saveTerminalLayout(layout, expected: AgentFiles.hash(Data())) }
             checks["failedWritesKeepPrivateBytes"] = try Data(contentsOf: file) == original && files.entryMetadata(file).permissions == 0o600
+            let target = AgentTerminalLayout.Pane(number: second.number, directory: second.directory, sshDestination: "build@fixture.example")
+            var remote = layout
+            remote.tasks[0].tabs[0].active = target.id
+            remote.tasks[0].tabs[0].root = .branch(vertical: true, fraction: 0.61, first: .pane(first), second: .pane(target))
+            rejected("sshSessionCannotBeDisguisedAsLegacyLocalLayout") { _ = try journal.saveTerminalLayout(remote, expected: saved.hash) }
+            remote.version = 2
+            let remoteSaved = try journal.saveTerminalLayout(remote, expected: saved.hash)
+            checks["mixedLocalAndSSHLayoutRoundTrips"] = try journal.loadTerminalLayout(windowID: windowID)?.value == remote &&
+                files.entryMetadata(file).permissions == 0o600
+            var unsafe = target; unsafe.sshDestination = "-oInvalid"
+            var corrupt = remote
+            corrupt.tasks[0].tabs[0].root = .branch(vertical: true, fraction: 0.61, first: .pane(first), second: .pane(unsafe))
+            rejected("sshLayoutRejectsOptionLikeDestination") { _ = try journal.saveTerminalLayout(corrupt, expected: remoteSaved.hash) }
+            checks["sshDestinationAcceptsAliasesAndAddresses"] = ["macmini", "build@fixture.example", "127.0.0.1", "build@::1"].allSatisfy(TerminalSurface.validSSHDestination)
+            checks["sshDestinationRejectsExtraArgumentsAndCredentials"] = ["-F", "fixture -F file", "ssh://fixture", "build:secret@fixture", "a@b@c", "x\ny"].allSatisfy { !TerminalSurface.validSSHDestination($0) }
             layout.tasks = []
-            _ = try journal.saveTerminalLayout(layout, expected: saved.hash)
+            _ = try journal.saveTerminalLayout(layout, expected: remoteSaved.hash)
             checks["explicitClosureLeavesNoPaneToRestore"] = try journal.loadTerminalLayout(windowID: windowID)?.value.tasks.isEmpty == true
+            checks["afterClosingSSHLegacyLayoutIsStillReadable"] = try journal.loadTerminalLayout(windowID: windowID)?.value.version == 1
             let wrongWindow = UUID().uuidString
             let other = try files.literalURL("workspace-recovery/" + wrongWindow + "/terminal.json")
             try files.writeData(original, to: other, permissions: 0o600)
@@ -98,7 +115,7 @@ import Darwin
             let cwd = try AgentFiles(workspace: FileManager.default.currentDirectoryPath).root.path
             checks["kernelReadsActualWorkingDirectory"] = AgentTerminalLayout.directory(of: getpid()) == cwd
         } catch { failure = error.localizedDescription }
-        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 31 && checks.values.allSatisfy { $0 },
+        var report: [String: Any] = ["checks": checks, "success": failure == nil && checks.count == 37 && checks.values.allSatisfy { $0 },
                                      "modelRequests": 0, "pid": getpid()]
         report["error"] = failure
         try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])

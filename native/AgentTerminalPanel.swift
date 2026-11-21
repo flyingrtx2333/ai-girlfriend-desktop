@@ -105,9 +105,16 @@ import BlueFatFishTerminal
     var onClose: (() -> Void)?
     var number: Int { record.number }
     var id: UUID { record.id }
-    var name: String { "终端 \(number)" }
+    var name: String { record.sshDestination == nil ? "终端 \(number)" : "SSH \(number)" }
     var pid: pid_t { surface?.pid ?? 0 }
     var startDirectory: String { record.directory }
+    var location: String { record.sshDestination.map { "SSH · " + $0 } ?? startDirectory }
+    var status: String {
+        guard pid == 0 else { return "" }
+        let local = record.sshDestination == nil
+        if let code = record.exitCode { return (local ? "已退出" : "已断开") + "（\(code)）" }
+        return local ? "待启动" : "待连接"
+    }
     var focusView: NSView { pid > 0 ? surface?.view ?? start : start }
 
     init(_ record: AgentTerminalLayout.Pane) {
@@ -115,7 +122,7 @@ import BlueFatFishTerminal
         super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 240))
         title.stringValue = name
         title.font = .systemFont(ofSize: 11, weight: .medium)
-        title.toolTip = record.directory
+        title.toolTip = location
         state.font = .systemFont(ofSize: 11)
         state.textColor = AgentWorkbenchTheme.secondaryText
         state.lineBreakMode = .byTruncatingTail
@@ -123,7 +130,7 @@ import BlueFatFishTerminal
         AgentWorkbenchTheme.toolbar(close, title: "关闭\(name)", symbol: "xmark")
         close.target = self
         close.action = #selector(closePane)
-        AgentWorkbenchTheme.toolbar(start, title: "启动\(name)", symbol: "play.fill")
+        AgentWorkbenchTheme.toolbar(start, title: record.sshDestination == nil ? "启动\(name)" : "连接 \(name)", symbol: "play.fill")
         start.target = self; start.action = #selector(startPane)
         let row = NSStackView(views: [title, state, NSView(), start, close])
         row.spacing = 6
@@ -154,6 +161,7 @@ import BlueFatFishTerminal
     }
 
     func rememberDirectory() {
+        guard record.sshDestination == nil else { return }
         if let directory = AgentTerminalLayout.directory(of: pid) { record.directory = directory; title.toolTip = directory }
     }
     func mount(_ next: TerminalSurface) {
@@ -173,14 +181,14 @@ import BlueFatFishTerminal
     }
     private func refreshLifecycle() {
         start.isHidden = pid > 0
-        state.stringValue = pid > 0 ? "" : record.exitCode.map { "已退出（\($0)）" } ?? "待启动"
+        state.stringValue = status
     }
 }
 
 @MainActor final class AgentTerminalPanel: AgentThemeView {
     @MainActor private final class Tab {
         let number: Int
-        var title: String { "终端 \(number)" }
+        var title: String { active.record.sshDestination == nil ? "终端 \(number)" : "SSH \(number)" }
         var root: NSView
         var panes: [AgentTerminalPane]
         var active: AgentTerminalPane
@@ -226,7 +234,7 @@ import BlueFatFishTerminal
     private let tabs = NSPopUpButton(frame: .zero, pullsDown: false)
     private let body = NSView()
     private let path = NSTextField(labelWithString: "")
-    private let add = AgentWorkbenchButton(), right = AgentWorkbenchButton(), down = AgentWorkbenchButton()
+    private let add = AgentWorkbenchButton(), ssh = AgentWorkbenchButton(), right = AgentWorkbenchButton(), down = AgentWorkbenchButton()
     private let theme = AgentWorkbenchButton(), hide = AgentWorkbenchButton()
     var onHide: (() -> Void)?
     var onMonitorChange: (() -> Void)?
@@ -236,8 +244,9 @@ import BlueFatFishTerminal
     private var paneCount: Int { states.values.reduce(0) { count, state in count + state.tabs.reduce(0) { $0 + $1.panes.count } } }
     func monitorEntries(taskID: String) -> [AgentMonitorEntry] {
         (states[taskID]?.tabs ?? []).flatMap(\.panes).map { pane in
-            let status = pane.record.exitCode.map { " · 已退出（\($0)）" } ?? (pane.pid == 0 ? " · 待启动" : "")
-            return AgentMonitorEntry(id: pane.id.uuidString, title: pane.name + status, detail: pane.pid > 0 ? "PID \(pane.pid)" : pane.startDirectory)
+            let suffix = pane.status.isEmpty ? "" : " · " + pane.status
+            let detail = pane.pid > 0 && pane.record.sshDestination == nil ? "PID \(pane.pid)" : pane.location
+            return AgentMonitorEntry(id: pane.id.uuidString, title: pane.name + suffix, detail: detail)
         }
     }
     func openMonitorEntry(_ id: String, taskID: String) throws {
@@ -264,6 +273,7 @@ import BlueFatFishTerminal
         path.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for (button, label, symbol, action) in [
             (add, "新建终端", "plus", #selector(addTab)),
+            (ssh, "新建 SSH 终端", "network", #selector(showSSHDialog)),
             (right, "向右分屏", "rectangle.split.2x1", #selector(splitRight)),
             (down, "向下分屏", "rectangle.split.1x2", #selector(splitDown)),
             (theme, "终端外观", "circle.lefthalf.filled", #selector(showTheme(_:))),
@@ -273,7 +283,7 @@ import BlueFatFishTerminal
             button.target = self
             button.action = action
         }
-        let bar = NSStackView(views: [AgentSettingsPopupFrame(tabs, outlined: false), path, NSView(), add, right, down, theme, hide])
+        let bar = NSStackView(views: [AgentSettingsPopupFrame(tabs, outlined: false), path, NSView(), add, ssh, right, down, theme, hide])
         bar.alignment = .centerY
         bar.spacing = 4
         let rule = AgentWorkbenchTheme.rule()
@@ -344,9 +354,9 @@ import BlueFatFishTerminal
         if let pane = current?.selected?.active { window?.makeFirstResponder(pane.focusView) }
     }
 
-    private func makePane(for state: TaskTerminals) throws -> AgentTerminalPane {
+    private func makePane(for state: TaskTerminals, destination: String? = nil) throws -> AgentTerminalPane {
         guard paneCount < maximumPanes, nextNumber < Int.max - 1 else { throw PetError("终端数量已达上限") }
-        let pane = AgentTerminalPane(.init(number: nextNumber, directory: state.directory.path))
+        let pane = AgentTerminalPane(.init(number: nextNumber, directory: state.directory.path, sshDestination: destination))
         bind(pane, taskID: state.id)
         try launch(pane, in: state)
         nextNumber += 1
@@ -382,7 +392,10 @@ import BlueFatFishTerminal
             pane?.exited(code)
             self?.onMonitorChange?(); self?.onLayoutChange?()
         }
-        do { try surface.start(in: directory, checkHome: checkHome) }
+        do {
+            if let destination = pane.record.sshDestination { try surface.startSSH(to: destination, in: directory, checkHome: checkHome) }
+            else { try surface.start(in: directory, checkHome: checkHome) }
+        }
         catch { throw PetError("终端无法启动。\(error.localizedDescription)") }
         retention.setNativeOperation(operation, taskID: taskID, busy: true)
         surface.onFocus = { [weak self, weak pane] in
@@ -399,13 +412,28 @@ import BlueFatFishTerminal
 
     @objc private func addTab() {
         guard let state = current else { return }
-        do {
-            let pane = try makePane(for: state)
-            state.tabs.append(Tab(number: pane.number, root: pane, panes: [pane], active: pane))
-            state.index = state.tabs.count - 1
-            render()
-            focus(); onLayoutChange?()
-        } catch { showIssue(error) }
+        do { try appendTab(to: state) } catch { showIssue(error) }
+    }
+
+    private func appendTab(to state: TaskTerminals, destination: String? = nil) throws {
+        let pane = try makePane(for: state, destination: destination)
+        state.tabs.append(Tab(number: pane.number, root: pane, panes: [pane], active: pane))
+        state.index = state.tabs.count - 1
+        render()
+        focus(); onLayoutChange?()
+    }
+
+    @objc private func showSSHDialog() {
+        guard let state = current, let window, !window.hasBlockingDialog else { return }
+        let dialog = AgentNameEditor(title: "新建 SSH 终端", label: "SSH 主机", value: "", actionTitle: "连接",
+            note: "输入 SSH 别名或 用户@主机。使用系统已验证的主机。",
+            statusLabel: "SSH 主机输入错误", save: { [weak self] input in
+                guard let self, current === state else { throw PetError("请回到原任务后连接") }
+                let target = input.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard TerminalSurface.validSSHDestination(target) else { throw PetError("请输入 SSH 别名、主机名或 用户@主机") }
+                try appendTab(to: state, destination: target)
+            }, onClose: { [weak self] in self?.focus() })
+        dialog.begin(in: window)
     }
 
     @objc private func selectTab() {
@@ -427,7 +455,7 @@ import BlueFatFishTerminal
             return
         }
         do {
-            let pane = try makePane(for: state)
+            let pane = try makePane(for: state, destination: previous.record.sshDestination)
             let split = AgentTerminalPaneSplit(vertical: vertical)
             replace(previous, with: split, in: tab)
             split.addArrangedSubview(previous)
@@ -557,7 +585,7 @@ import BlueFatFishTerminal
         let active = current?.selected?.active
         active?.rememberDirectory()
         path.textColor = AgentWorkbenchTheme.secondaryText
-        path.stringValue = active?.startDirectory ?? current?.directory.path ?? ""
+        path.stringValue = active?.location ?? current?.directory.path ?? ""
         path.toolTip = path.stringValue
     }
 
@@ -580,6 +608,7 @@ import BlueFatFishTerminal
         }
         let canAdd = state != nil && paneCount < maximumPanes
         add.isEnabled = canAdd
+        ssh.isEnabled = canAdd
         right.isEnabled = canAdd
         down.isEnabled = canAdd
         if let tab = state?.selected { tab.panes.forEach { $0.select($0 === tab.active) } }
@@ -593,8 +622,13 @@ import BlueFatFishTerminal
     }
 
     func layoutToRestore(windowID: String, height: Double?) -> AgentTerminalLayout? {
+        var usesSSH = false
         func capture(_ view: NSView) -> AgentTerminalLayout.Split? {
-            if let pane = view as? AgentTerminalPane { pane.rememberDirectory(); return .pane(pane.record) }
+            if let pane = view as? AgentTerminalPane {
+                pane.rememberDirectory()
+                if pane.record.sshDestination != nil { usesSSH = true }
+                return .pane(pane.record)
+            }
             guard let split = view as? AgentTerminalPaneSplit, split.arrangedSubviews.count == 2,
                   let first = capture(split.arrangedSubviews[0]), let second = capture(split.arrangedSubviews[1]) else { return nil }
             return .branch(vertical: split.isVertical, fraction: split.fraction, first: first, second: second)
@@ -609,7 +643,8 @@ import BlueFatFishTerminal
             records.append(.init(id: state.id, workspace: state.workspace, scope: state.workspaceScope, directory: state.directory.path,
                 shown: state.shown, index: state.index, tabs: tabs))
         }
-        return AgentTerminalLayout(windowID: windowID, dark: usesDarkAppearance, height: height, nextNumber: nextNumber, tasks: records)
+        return AgentTerminalLayout(version: usesSSH ? 2 : 1, windowID: windowID, dark: usesDarkAppearance,
+                                   height: height, nextNumber: nextNumber, tasks: records)
     }
 
     func restore(_ layout: AgentTerminalLayout, appearance: AgentTerminalAppearance) {
@@ -650,6 +685,7 @@ import BlueFatFishTerminal
                  ["active": tab.active.number, "panes": tab.panes.map { pane in
                      ["number": pane.number, "id": pane.id.uuidString, "pid": pane.pid, "width": pane.bounds.width, "height": pane.bounds.height,
                       "directory": pane.startDirectory, "exitCode": pane.record.exitCode as Any? ?? NSNull(),
+                      "sshDestination": pane.record.sshDestination as Any? ?? NSNull(),
                       "dark": pane.surface.map { $0.view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua } as Any? ?? NSNull(),
                       "terminal": pane.surface?.textForVerification() ?? ""]
                  }]

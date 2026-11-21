@@ -47,14 +47,53 @@ private final class WorkbenchTerminalView: TerminalView {
     }
 
     public func start(in directory: URL, checkHome: URL? = nil) throws {
-        precondition(pid == 0 && channel == nil && !stopping)
         let configured = getpwuid(getuid()).flatMap { $0.pointee.pw_shell }.map { String(cString: $0) }
         let executable = checkHome == nil ? configured.flatMap { FileManager.default.isExecutableFile(atPath: $0) && $0.hasPrefix("/") ? $0 : nil } ?? "/bin/zsh" : "/bin/zsh"
+        let arguments = checkHome == nil ? ["-" + URL(fileURLWithPath: executable).lastPathComponent] : [executable, "-dfi"]
+        try launch(executable, arguments: arguments, directory: directory, environment: environment(shell: executable, checkHome: checkHome))
+    }
+
+    nonisolated public static func validSSHDestination(_ destination: String) -> Bool {
+        guard destination.utf8.count <= 320 else { return false }
+        let parts = destination.split(separator: "@", omittingEmptySubsequences: false)
+        func validName(_ name: Substring, limit: Int) -> Bool {
+            guard (1...limit).contains(name.utf8.count), let first = name.first, first != "-", first != "." else { return false }
+            return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) }
+        }
+        guard let host = parts.last, parts.count <= 2, parts.count == 1 || validName(parts[0], limit: 64) else { return false }
+        if host.contains(":") {
+            var address = in6_addr()
+            return String(host).withCString { inet_pton(AF_INET6, $0, &address) == 1 }
+        }
+        return validName(host, limit: 255)
+    }
+
+    public func startSSH(to destination: String, in directory: URL, checkHome: URL? = nil) throws {
+        guard Self.validSSHDestination(destination) else { throw POSIXError(.EINVAL) }
+        let executable = "/usr/bin/ssh"
+        var arguments = [executable, "-tt",
+                         "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
+                         "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+                         "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no",
+                         "-o", "ForkAfterAuthentication=no", "-o", "StdinNull=no",
+                         "-o", "PermitLocalCommand=no", "-o", "RemoteCommand=none", "-o", "SessionType=default",
+                         "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"]
+        if let checkHome {
+            let config = checkHome.appendingPathComponent("terminal-ssh-config")
+            guard FileManager.default.fileExists(atPath: config.path) else { throw POSIXError(.ENOENT) }
+            arguments += ["-F", config.path]
+        }
+        arguments += ["--", destination]
+        var environment = environment(shell: "/bin/zsh", checkHome: checkHome)
+        environment["SSH_ASKPASS_REQUIRE"] = "never"
+        try launch(executable, arguments: arguments, directory: directory, environment: environment)
+    }
+
+    private func environment(shell: String, checkHome: URL?) -> [String: String] {
         let home = checkHome?.path ?? NSHomeDirectory()
         let login = NSUserName()
-        let arguments = checkHome == nil ? ["-" + URL(fileURLWithPath: executable).lastPathComponent] : [executable, "-dfi"]
         var environment = [
-            "HOME": home, "USER": login, "LOGNAME": login, "SHELL": executable, "TERM": "xterm-256color",
+            "HOME": home, "USER": login, "LOGNAME": login, "SHELL": shell, "TERM": "xterm-256color",
             "COLORTERM": "truecolor", "TERM_PROGRAM": "BlueFatFish", "LANG": "en_US.UTF-8",
             "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "TMPDIR": checkHome?.path ?? NSTemporaryDirectory(),
@@ -66,6 +105,11 @@ private final class WorkbenchTerminalView: TerminalView {
         } else if let agent = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"], agent.hasPrefix("/") {
             environment["SSH_AUTH_SOCK"] = agent
         }
+        return environment
+    }
+
+    private func launch(_ executable: String, arguments: [String], directory: URL, environment: [String: String]) throws {
+        precondition(pid == 0 && channel == nil && !stopping)
         var argv = arguments.map { strdup($0) } + [nil]
         var envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
