@@ -36,21 +36,60 @@ struct AgentStandaloneImportPlan: Codable, Equatable, Sendable {
 }
 
 enum AgentStandaloneDataImport {
+    private struct RemoteContext: Sendable {
+        let route: AgentImportRoute, transport: AgentSSHImport
+        let origin: AgentSSHConfigurationSource.Origin
+        let issues: [String: PetError], resourceIssues: [String: PetError]
+    }
+
     private struct Location: Sendable {
         let files: AgentFiles, source: AgentImportSource, workspace: String?
         let configurationRoot: Bool, project: Bool
+        let remote: RemoteContext?
 
-        init(_ root: URL, source: AgentImportSource, workspace: String?, userRoots: Set<String>) throws {
+        init(_ root: URL, source: AgentImportSource, workspace: String?, userRoots: Set<String> = [], remote: RemoteContext? = nil) throws {
             files = try AgentFiles(workspace: root.path, followParentLinks: false)
             guard files.root.path == root.standardizedFileURL.path, !AgentFiles.sensitive(root.path) else { throw PetError("请选择普通来源目录") }
             self.source = source
             self.workspace = workspace
+            self.remote = remote
+            if let remote {
+                configurationRoot = remote.origin.configurationRoot
+                project = remote.origin.project
+                return
+            }
             configurationRoot = root.lastPathComponent == source.homeName
             let parent = root.deletingLastPathComponent()
             project = !configurationRoot || (!userRoots.contains(root.path) && (workspace == parent.path ||
                 [".git", ".bluefatfish", "AGENTS.md", "AGENTS.local.md", "AGENTS.override.md"].contains {
                     FileManager.default.fileExists(atPath: parent.appendingPathComponent($0).path)
                 }))
+        }
+
+        func logicalPath(_ file: URL) -> String {
+            guard let remote else { return file.path }
+            let root = remote.route.root
+            return (root.hasSuffix("/") ? root : root + "/") + relativePath(file)
+        }
+
+        func relativePath(_ file: URL) -> String {
+            String(file.path.dropFirst(files.root.path.count + 1))
+        }
+
+        func read(_ file: URL, plan: AgentStandaloneImportPlan) throws -> Data {
+            if let issue = remote?.issues[relativePath(file)] { throw issue }
+            return try AgentStandaloneDataImport.read(file, from: files, maximum: plan.maximumReadBytes)
+        }
+
+        func events(_ bytes: Data, file: URL) throws -> [String: Any]? {
+            try AgentStandaloneHookPackage.events(bytes, source: source, file: file, projected: remote != nil)
+        }
+
+        func originalHookDirectory(_ file: URL, mcpOnly: Bool) throws -> String? {
+            guard let remote else { return nil }
+            let path = relativePath(file.deletingLastPathComponent().appendingPathComponent("hooks"))
+            if !mcpOnly, let failure = remote.resourceIssues[path] { throw failure }
+            return remote.origin.root + "/" + path
         }
 
         func entry(_ file: URL) throws -> AgentStandaloneImportPlan? {
@@ -105,6 +144,7 @@ enum AgentStandaloneDataImport {
             for name in ["AGENTS.override.md", "AGENTS.md"] {
                 let file = try files.literalURL(prefix + name), metadata = try files.entryMetadata(file)
                 guard metadata.kind != "missing" else { continue }
+                if remote?.issues[prefix + name] != nil { return name }
                 // A present but unreadable override is surfaced as a skipped row.
                 guard metadata.kind == "file", let bytes = try? files.readData(file, maximum: 65_536),
                       let text = String(data: bytes, encoding: .utf8) else { return name }
@@ -176,6 +216,33 @@ enum AgentStandaloneDataImport {
         return try Location(root, source: source, workspace: workspace, userRoots: roots)
     }
 
+    @MainActor private static func withRemoteLocation<T>(_ route: AgentImportRoute, transport: AgentSSHImport,
+                                                        selected: String = "", _ use: (Location) async throws -> T) async throws -> T {
+        let snapshot = try await transport.readConfiguration(route, selected: selected)
+        let scratch = transport.profile.appendingPathComponent("ssh-configuration-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let location = try await Task.detached(priority: .utility) {
+            var issues: [String: PetError] = [:]
+            let files = try AgentFiles(workspace: scratch.path, followParentLinks: false)
+            for (path, result) in snapshot.files {
+                let data: Data
+                switch result {
+                case .success(let value): data = value
+                case .failure(let error): issues[path] = error; data = Data()
+                }
+                try files.writeData(data, to: files.literalURL(path), permissions: 0o600, expectedTarget: "missing")
+            }
+            for (path, asset) in snapshot.resources {
+                try files.writeData(asset.data, to: files.literalURL(path), permissions: asset.executable ? 0o700 : 0o600, expectedTarget: "missing")
+            }
+            let remote = RemoteContext(route: route, transport: transport, origin: snapshot.origin, issues: issues, resourceIssues: snapshot.resourceIssues)
+            return try Location(files.root, source: route.source, workspace: route.workspace, remote: remote)
+        }.value
+        try Task.checkCancellation()
+        return try await use(location)
+    }
+
     private static func read(_ url: URL, from files: AgentFiles, maximum: Int = 65_536) throws -> Data {
         let before = try files.entryMetadata(url)
         guard before.kind == "file" else { throw PetError("来源或引用需要普通文件") }
@@ -212,14 +279,16 @@ enum AgentStandaloneDataImport {
 
     // Compare the entire chain without copying or granting access to any referenced files.
     @MainActor private static func fingerprint(_ bytes: Data, at url: URL, files: AgentFiles, kind: AgentStandaloneImportPlan.Kind,
-                                               source: AgentImportSource) throws -> String {
+                                               source: AgentImportSource, reference: ((String, String) -> Void)? = nil) throws -> String {
         guard kind == .instruction else { return AgentFiles.hash(bytes) }
         var visited = Set<String>(), hashes: [String] = [], size = 0
         func visit(_ url: URL, _ bytes: Data, depth: Int) throws {
             guard visited.insert(url.path).inserted else { return }
             size += bytes.count
             guard depth <= 8, visited.count <= 64, size <= 262_144 else { throw PetError("指令引用超过当前支持的范围") }
-            hashes.append(AgentFiles.hash(bytes))
+            let digest = AgentFiles.hash(bytes)
+            hashes.append(digest)
+            if depth > 0 { reference?(String(url.path.dropFirst(files.root.path.count + 1)), digest) }
             for reference in AgentInstructions.imports(try text(bytes)) {
                 guard source == .qoder else { throw PetError("Codex 指令含 @ 引用，请先核对引用含义") }
                 guard !reference.hasPrefix("/"), !reference.hasPrefix("~"), !AgentFiles.sensitive(reference) else {
@@ -232,6 +301,24 @@ enum AgentStandaloneDataImport {
         }
         try visit(url, bytes, depth: 0)
         return AgentFiles.hash(Data(hashes.joined(separator: "\n").utf8))
+    }
+
+    @MainActor private static func sourceFingerprint(_ bytes: Data, file: URL, location: Location, plan: AgentStandaloneImportPlan,
+                                                     target: URL, destination: AgentFiles) async throws -> String {
+        guard let remote = location.remote, plan.kind == .instruction else {
+            return try fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: location.source)
+        }
+        // The target must already contain the matching reference tree. Only its
+        // relative names and the remote hashes are needed to compare the trees.
+        var references: [String: String] = [:]
+        let digest: String
+        do {
+            digest = try fingerprint(bytes, at: target, files: destination, kind: plan.kind, source: location.source) { references[$0] = $1 }
+        } catch {
+            throw PetError("目标范围缺少匹配的指令引用，请先核对引用文件")
+        }
+        try await remote.transport.verifyConfigurationReferences(references, route: remote.route)
+        return digest
     }
 
     @MainActor private static func destination(_ plan: AgentStandaloneImportPlan, store: AgentStore) throws -> (AgentFiles, URL) {
@@ -270,27 +357,38 @@ enum AgentStandaloneDataImport {
 
     @MainActor static func discover(_ source: AgentImportSource, root: URL, workspace: String?, store: AgentStore) async throws -> [AgentImportCandidate] {
         try AgentMCPDataImport.requireDestination(workspace, store: store)
-        let location = try location(root, source: source, workspace: workspace, store: store)
+        return try await discover(location(root, source: source, workspace: workspace, store: store), store: store)
+    }
+
+    @MainActor static func discoverRemote(_ route: AgentImportRoute, transport: AgentSSHImport, store: AgentStore) async throws -> [AgentImportCandidate] {
+        try AgentMCPDataImport.requireDestination(route.workspace, store: store)
+        return try await withRemoteLocation(route, transport: transport) { try await discover($0, store: store) }
+    }
+
+    @MainActor private static func discover(_ location: Location, store: AgentStore) async throws -> [AgentImportCandidate] {
+        let source = location.source, workspace = location.workspace
         let entries = try await Task.detached(priority: .utility) { try location.scan() }.value
         let commands = entries.contains { $0.1.kind == .command } ? try store.extensions.catalog(workspace: workspace).filter { $0.kind == .command } : []
         var rows: [AgentImportCandidate] = []
         for (file, plan) in entries {
             try Task.checkCancellation()
             let date = (try? location.files.entryMetadata(file).modified) ?? .distantPast
-            let key = "configuration:" + AgentFiles.hash(Data(file.path.utf8))
-            var record = AgentImportCandidate(source: source, sourceID: key, file: file.path, rawHash: "", sourceHash: "",
+            let path = location.logicalPath(file)
+            let key = "configuration:" + AgentFiles.hash(Data(path.utf8))
+            var record = AgentImportCandidate(source: source, sourceID: key, file: path, rawHash: "", sourceHash: "",
                                               title: file.lastPathComponent, created: date, updated: date)
             record.configuration = plan
+            record.sshHost = location.remote?.route.sshHost
             do {
                 guard plan.kind != .policy else { throw PetError("Codex 终端审批策略需要单独配置") }
-                let bytes = try read(file, from: location.files, maximum: plan.maximumReadBytes)
+                let bytes = try location.read(file, plan: plan)
                 record.rawHash = AgentFiles.hash(bytes)
                 if plan.kind == .agent {
                     if try previewExtension(&record, plan: plan, file: file, bytes: bytes, location: location, store: store) { rows.append(record) }
                     continue
                 }
                 if plan.kind == .hooks {
-                    guard let events = try AgentStandaloneHookPackage.events(bytes, source: source, file: file) else { continue }
+                    guard let events = try location.events(bytes, file: file) else { continue }
                     let types = AgentStandaloneHookPackage.handlerTypes(events)
                     var candidates: [AgentImportCandidate] = []
                     if source != .codex || types.other || !types.mcp { candidates.append(record) }
@@ -329,7 +427,7 @@ enum AgentStandaloneDataImport {
                 }
                 record.preview = String(body.prefix(1200))
                 guard !location.project || workspace != nil else { throw PetError("项目来源，请选择目标项目") }
-                if source == .qoder, sharedURL(plan, store: store)?.path == file.path,
+                if record.sshHost == nil, source == .qoder, sharedURL(plan, store: store)?.path == file.path,
                    plan.kind != .command || commands.contains(where: { $0.file.path == file.path }) {
                     record.issue = "已共享"
                 } else {
@@ -338,7 +436,8 @@ enum AgentStandaloneDataImport {
                     if plan.kind == .command, commands.contains(where: { $0.name.caseInsensitiveCompare(plan.commandName) == .orderedSame && $0.file.path != target.path }) {
                         throw PetError("同名命令已存在，保留现有配置")
                     }
-                    record.sourceHash = try commandHash ?? fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: source)
+                    if let commandHash { record.sourceHash = commandHash }
+                    else { record.sourceHash = try await sourceFingerprint(bytes, file: file, location: location, plan: plan, target: target, destination: files) }
                     if current.kind != "missing" {
                         guard current.kind == "file", try files.fileHash(target, maximum: 65_536) == installedHash(record, plan) else {
                             throw PetError(plan.kind == .command ? "同名命令已存在，保留现有配置" : "目标文件已存在，保留现有内容")
@@ -368,7 +467,8 @@ enum AgentStandaloneDataImport {
     @MainActor private static func previewExtension(_ record: inout AgentImportCandidate, plan: AgentStandaloneImportPlan, file: URL,
                                                    bytes: Data, location: Location, store: AgentStore, hookEvents: [String: Any]? = nil) throws -> Bool {
         let variant = record.standaloneMCPHooks == true ? "\0mcp-hooks" : ""
-        record.targetID = AgentPlugins.mcpUUID("standalone:" + plan.kind.rawValue + ":" + record.source.rawValue + "\0" + file.path + "\0" + (plan.workspace ?? "") + variant)
+        let host = record.sshHost.map { "ssh:" + $0 + "\0" } ?? ""
+        record.targetID = AgentPlugins.mcpUUID("standalone:" + plan.kind.rawValue + ":" + record.source.rawValue + "\0" + host + record.file + "\0" + (plan.workspace ?? "") + variant)
         guard !location.project || plan.workspace != nil else { throw PetError("项目来源，请选择目标项目") }
         guard plan.directory.isEmpty else { throw PetError("请选择对应的子目录作为来源和目标项目") }
         if plan.kind == .agent {
@@ -382,13 +482,14 @@ enum AgentStandaloneDataImport {
             if known.contains(where: { $0.id == value.id }) { record.issue = "已经导入" }
             else if known.contains(where: { $0.name.caseInsensitiveCompare(value.name) == .orderedSame }) { record.issue = "同名智能体已存在，保留现有配置" }
         } else {
-            if record.source == .qoder, sharedURL(plan, store: store)?.path == file.path {
+            if record.sshHost == nil, record.source == .qoder, sharedURL(plan, store: store)?.path == file.path {
                 record.issue = "已共享"; return true
             }
             let (files, target) = try store.hooks.importedConfiguration(record.targetID, workspace: plan.workspace)
             guard let hookEvents, let package = try AgentStandaloneHookPackage.prepare(hookEvents, source: record.source, file: file,
                 files: location.files, projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks,
-                mcpOnly: record.standaloneMCPHooks == true) else { return false }
+                mcpOnly: record.standaloneMCPHooks == true,
+                originalResourcePath: try location.originalHookDirectory(file, mcpOnly: record.standaloneMCPHooks == true)) else { return false }
             record.preview = package.events.joined(separator: "\n")
             record.warnings = package.warnings
             record.sourceHash = AgentFiles.hash(Data((record.rawHash + package.fingerprint).utf8))
@@ -408,6 +509,7 @@ enum AgentStandaloneDataImport {
     }
 
     @MainActor static func reveal(_ record: AgentImportCandidate, root: URL, store: AgentStore) throws -> URL {
+        guard record.sshHost == nil else { throw PetError("来源文件在 SSH 主机上") }
         let location = try location(root, source: record.source, workspace: record.targetWorkspace, store: store)
         let file = try location.files.literalURL(record.file)
         guard try location.entry(file) == record.configuration, try location.files.entryMetadata(file).kind == "file" else {
@@ -444,33 +546,74 @@ enum AgentStandaloneDataImport {
     }
 
     @MainActor static func install(_ record: AgentImportCandidate, root: URL, store: AgentStore) async throws {
-        guard let plan = record.configuration, record.issue == nil, !record.rawHash.isEmpty, !record.sourceHash.isEmpty else {
+        guard record.sshHost == nil else { throw PetError("缺少原 SSH 扩展配置来源") }
+        let plan = try importPlan(record)
+        if try alreadyInstalled(record, plan: plan, store: store) { return }
+        let location = try location(root, source: record.source, workspace: plan.workspace, store: store)
+        try await install(record, plan: plan, file: location.files.literalURL(record.file), location: location, store: store)
+    }
+
+    @MainActor static func installRemote(_ record: AgentImportCandidate, route: AgentImportRoute, transport: AgentSSHImport, store: AgentStore) async throws {
+        let plan = try importPlan(record)
+        let prefix = route.root.hasSuffix("/") ? route.root : route.root + "/"
+        guard route.category == .configuration, let host = route.sshHost, host == record.sshHost, record.source == route.source,
+              plan.workspace == route.workspace, record.file.hasPrefix(prefix) else { throw PetError("SSH 扩展配置与原来源不符，请重新检测") }
+        let relative = String(record.file.dropFirst(prefix.count))
+        guard AgentSSHConfigurationSource.validPath(relative) else { throw PetError("SSH 扩展配置来源无效") }
+        if try alreadyInstalled(record, plan: plan, store: store) { return }
+        try await withRemoteLocation(route, transport: transport, selected: relative) { location in
+            try await install(record, plan: plan, file: location.files.literalURL(relative), location: location, store: store)
+        }
+    }
+
+    private static func importPlan(_ record: AgentImportCandidate) throws -> AgentStandaloneImportPlan {
+        guard let plan = record.configuration, plan.kind != .policy, record.issue == nil,
+              !record.rawHash.isEmpty, !record.sourceHash.isEmpty else {
             throw PetError("扩展配置导入记录无效")
         }
-        if plan.kind == .agent || plan.kind == .hooks {
-            try installExecutionConfiguration(record, plan: plan, root: root, store: store)
-            return
+        return plan
+    }
+
+    @MainActor private static func alreadyInstalled(_ record: AgentImportCandidate, plan: AgentStandaloneImportPlan, store: AgentStore) throws -> Bool {
+        try AgentMCPDataImport.requireDestination(plan.workspace, store: store)
+        if plan.kind == .agent { return installedProfile(record, store: store) != nil }
+        if plan.kind == .hooks {
+            guard (try? installedURL(record, store: store)) != nil else { return false }
+            guard try store.hooks.importedReceipt(record.targetID, workspace: plan.workspace)?.sourceHash == record.sourceHash else {
+                throw PetError("此范围的 Hooks 导入记录已变化，请重新检测")
+            }
+            return true
         }
         let (files, target) = try destination(plan, store: store)
         let current = try files.entryMetadata(target)
-        let bytes: Data
-        if current.kind != "missing" {
-            guard current.kind == "file" else {
-                throw PetError("目标文件已存在，保留现有内容")
-            }
-            bytes = try read(target, from: files)
-            guard AgentFiles.hash(bytes) == installedHash(record, plan) else { throw PetError("目标文件已存在，保留现有内容") }
-            try validateReferences(bytes, target: target, files: files, record: record, plan: plan)
+        if current.kind == "missing" { return false }
+        guard current.kind == "file" else { throw PetError("目标文件已存在，保留现有内容") }
+        let bytes = try read(target, from: files)
+        guard AgentFiles.hash(bytes) == installedHash(record, plan) else { throw PetError("目标文件已存在，保留现有内容") }
+        try validateReferences(bytes, target: target, files: files, record: record, plan: plan)
+        return true
+    }
+
+    @MainActor private static func install(_ record: AgentImportCandidate, plan: AgentStandaloneImportPlan, file: URL,
+                                           location: Location, store: AgentStore) async throws {
+        try Task.checkCancellation()
+        guard try location.entry(file) == plan, !location.project || plan.workspace != nil else {
+            throw PetError("来源或项目已变化，请重新检测")
+        }
+        let bytes = try location.read(file, plan: plan)
+        guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("来源已变化，请重新检测") }
+        if plan.kind == .agent || plan.kind == .hooks {
+            guard plan.directory.isEmpty else { throw PetError("来源或项目已变化，请重新检测") }
+            try installExecutionConfiguration(record, plan: plan, file: file, bytes: bytes, location: location, store: store)
             return
         }
-        let location = try location(root, source: record.source, workspace: plan.workspace, store: store)
-        let file = try location.files.literalURL(record.file)
-        guard try location.entry(file) == plan, !location.project || plan.workspace != nil else { throw PetError("来源或项目已变化，请重新检测") }
-        bytes = try read(file, from: location.files)
-        guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("来源已变化，请重新检测") }
+        let (files, target) = try destination(plan, store: store)
         let payload = plan.kind == .command ? try commandPayload(bytes, text: text(bytes), plan: plan, source: record.source).data : bytes
-        let observedHash = plan.kind == .command ? AgentFiles.hash(payload) : try fingerprint(bytes, at: file, files: location.files, kind: plan.kind, source: record.source)
+        let observedHash = plan.kind == .command ? AgentFiles.hash(payload) :
+            try await sourceFingerprint(bytes, file: file, location: location, plan: plan, target: target, destination: files)
         guard observedHash == record.sourceHash else { throw PetError("来源已变化，请重新检测") }
+        try Task.checkCancellation()
+        try AgentMCPDataImport.requireDestination(plan.workspace, store: store)
         try validateReferences(bytes, target: target, files: files, record: record, plan: plan)
         var rule: AgentRuleDefinition?
         if plan.kind == .rule {
@@ -504,22 +647,8 @@ enum AgentStandaloneDataImport {
     }
 
     @MainActor private static func installExecutionConfiguration(_ record: AgentImportCandidate, plan: AgentStandaloneImportPlan,
-                                                                root: URL, store: AgentStore) throws {
-        try AgentMCPDataImport.requireDestination(plan.workspace, store: store)
-        if plan.kind == .agent, installedProfile(record, store: store) != nil { return }
-        if plan.kind == .hooks, (try? installedURL(record, store: store)) != nil {
-            guard try store.hooks.importedReceipt(record.targetID, workspace: plan.workspace)?.sourceHash == record.sourceHash else {
-                throw PetError("此范围的 Hooks 导入记录已变化，请重新检测")
-            }
-            return
-        }
-        let location = try location(root, source: record.source, workspace: plan.workspace, store: store)
-        let file = try location.files.literalURL(record.file)
-        guard try location.entry(file) == plan, plan.directory.isEmpty, !location.project || plan.workspace != nil else {
-            throw PetError("来源或项目已变化，请重新检测")
-        }
-        let bytes = try read(file, from: location.files, maximum: plan.maximumReadBytes)
-        guard AgentFiles.hash(bytes) == record.rawHash else { throw PetError("来源已变化，请重新检测") }
+                                                                file: URL, bytes: Data, location: Location, store: AgentStore) throws {
+        if try alreadyInstalled(record, plan: plan, store: store) { return }
         if plan.kind == .agent {
             let (value, _) = try AgentStandaloneRoleImport.profile(bytes, source: record.source, file: file, id: record.targetID, workspace: plan.workspace, store: store)
             guard value.name == record.title,
@@ -531,10 +660,11 @@ enum AgentStandaloneDataImport {
         }
         let (files, target) = try store.hooks.importedConfiguration(record.targetID, workspace: plan.workspace)
         guard try store.hooks.importedConfigurations(workspace: plan.workspace).count < 128 else { throw PetError("同一范围最多 128 份独立 Hooks 配置") }
-        guard let events = try AgentStandaloneHookPackage.events(bytes, source: record.source, file: file),
+        guard let events = try location.events(bytes, file: file),
               var bundle = try AgentStandaloneHookPackage.prepare(events, source: record.source, file: file, files: location.files,
                 projectSource: location.project, target: target, workspace: plan.workspace, service: store.hooks,
-                mcpOnly: record.standaloneMCPHooks == true),
+                mcpOnly: record.standaloneMCPHooks == true,
+                originalResourcePath: try location.originalHookDirectory(file, mcpOnly: record.standaloneMCPHooks == true)),
               AgentFiles.hash(Data((record.rawHash + bundle.fingerprint).utf8)) == record.sourceHash else {
             throw PetError("来源 Hooks 或资源已变化，请重新检测")
         }

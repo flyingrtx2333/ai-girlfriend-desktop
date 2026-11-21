@@ -3,7 +3,7 @@ import Foundation
 // Only names and keychain placeholders enter saved Hook definitions. Keep the
 // existing HTTP account binding so upgrades can read previously saved headers.
 @MainActor final class AgentHookCredentials {
-    static let placeholder = "${KEYCHAIN}"
+    nonisolated static let placeholder = "${KEYCHAIN}"
     private let profile: URL, keychain: PetKeychain
     init(profile: URL, keychain: PetKeychain?) {
         self.profile = profile; self.keychain = keychain ?? PetKeychain(service: "com.xjs.bluefatfish.hooks.credentials")

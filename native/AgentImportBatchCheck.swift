@@ -60,6 +60,152 @@ import AppKit
         let importer = tasks.dataImport
         let root = output.appendingPathComponent("Codex '公开样例'")
         let route = AgentImportRoute(source: .codex, category: .tasks, root: root.path, workspace: nil, sshHost: "whale-import")
+        if CommandLine.arguments.contains("--ssh-configuration-import-check") {
+            let phase = output.appendingPathComponent("ssh-configuration-paused.json")
+            let folder = output.appendingPathComponent("Qoder 会话")
+            let target = output.appendingPathComponent("本机扩展配置项目")
+            let category = AgentImportCategory.configuration
+            let unscoped = AgentImportRoute(source: .qoder, category: category, root: folder.path, workspace: nil, sshHost: route.sshHost)
+            let qoder = AgentImportRoute(source: .qoder, category: category, root: folder.path, workspace: target.path, sshHost: route.sshHost)
+            let codex = AgentImportRoute(source: .codex, category: category, root: root.appendingPathComponent(".codex").path,
+                                         workspace: nil, sshHost: route.sshHost)
+            let files = FileManager.default
+            func write(_ value: [String: Any], to url: URL) throws {
+                try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .prettyPrinted]).write(to: url, options: .atomic)
+            }
+            func records(_ path: AgentImportRoute) throws -> [AgentImportCandidate] {
+                guard let preview = importer.preview(for: path), preview.issue == nil else {
+                    throw PetError(importer.preview(for: path)?.issue ?? "缺少扩展配置预览")
+                }
+                return preview.records
+            }
+            func select(_ index: Int) throws {
+                guard let list = find(content, NSTableView.self, { $0.accessibilityLabel() == "可导入扩展配置" }) else {
+                    throw PetError("缺少扩展配置列表")
+                }
+                list.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                content.layoutSubtreeIfNeeded()
+            }
+            if !reopening {
+                try tasks.organization.register(target.path, mode: .coding)
+                try detectSSH(unscoped)
+                try await settle { importer.scanning || importer.preview(for: unscoped) == nil }
+                let unscopedRows = try records(unscoped)
+                checks["qoderProjectRequiresExplicitLocalTarget"] = unscopedRows.count > 3 &&
+                    unscopedRows.allSatisfy { $0.issue != nil } && unscopedRows.contains { $0.issue?.contains("选择目标项目") == true }
+                guard let picker = find(content, NSPopUpButton.self, { $0.accessibilityLabel() == "扩展配置目标" }),
+                      let item = picker.itemArray.first(where: { $0.representedObject as? String == target.path }),
+                      let action = picker.action else { throw PetError("缺少扩展配置项目选择") }
+                picker.select(item)
+                NSApp.sendAction(action, to: picker.target, from: picker)
+                try button("重新检测").performClick(nil)
+                try await settle { importer.scanning || importer.preview(for: qoder) == nil }
+                let rows = try records(qoder), available = rows.filter { $0.issue == nil }
+                checks["detectsFiveKindsKeepingNestedTargetAndLinkedFileSkipped"] =
+                    Set(available.compactMap { $0.configuration?.kind }) == [.rule, .instruction, .command, .agent, .hooks] &&
+                    rows.contains { $0.file.hasSuffix("/link.md") && $0.issue?.contains("无法读取远端文件") == true } &&
+                    rows.contains { $0.file.hasSuffix("AGENTS.local.md") && $0.issue?.contains("指令引用") == true } &&
+                    rows.contains { $0.configuration?.destination == "src/.bluefatfish/rules/swift.md" && $0.issue == nil }
+                guard let index = rows.firstIndex(where: { $0.configuration?.kind == .hooks && $0.issue == nil }) else { throw PetError("缺少 Hooks 预览") }
+                try select(index)
+                let detail = find(content, NSTextView.self, { $0.accessibilityLabel() == "导入预览" })
+                let confirm = try button("导入 \(available.count) 项")
+                checks["narrowPreviewKeepsHostTargetAndDisabledStatusVisible"] =
+                    detail?.string.contains("whale-import:" + folder.path) == true && detail?.string.contains(target.path) == true &&
+                    detail?.string.contains("导入后为停用状态") == true && confirm.visibleRect.height >= confirm.bounds.height - 1 &&
+                    find(content, NSButton.self, { $0.title == "来源文件" }) == nil
+                let notify = importer.onChange
+                importer.onChange = { [weak importer] in
+                    notify?()
+                    if importer?.batch?.state == "running", importer?.batch?.items.contains(where: { $0.state == "imported" }) == true {
+                        importer?.pause()
+                    }
+                }
+                defer { importer.onChange = notify }
+                confirm.performClick(nil)
+                try await settle { importer.active || importer.batch == nil }
+                guard let batch = importer.batch, batch.state == "paused" else { throw PetError("扩展配置批次没有暂停") }
+                checks["pausesAfterOneWriteAndRetainsExactScope"] = batch.items.count == available.count &&
+                    batch.items.filter { $0.state == "imported" }.count == 1 && batch.items.allSatisfy { batch.route(for: $0) == qoder }
+                let changed = folder.appendingPathComponent(".qoder/rules/changed.md")
+                try Data("---\nname: changed\ntrigger: manual\n---\nAfter preview\n".utf8).write(to: changed, options: .atomic)
+                try write(["checks": checks, "batch": batch.id, "pid": getpid(), "modelRequests": requests], to: phase)
+                try Data("{}".utf8).write(to: navigation, options: .atomic)
+                return
+            }
+            let before = try JSONSerialization.jsonObject(with: Data(contentsOf: phase)) as? [String: Any] ?? [:]
+            checks = before["checks"] as? [String: Bool] ?? [:]
+            checks["reopenedWindowRetainsOriginalPendingBatch"] = before["pid"] as? Int != Int(getpid()) &&
+                importer.batch?.id == before["batch"] as? String && importer.unfinished
+            guard control.showSettingsCategory("imports") else { throw PetError("不能恢复扩展配置批次") }
+            try button("继续导入").performClick(nil)
+            try await settle { importer.active }
+            let batch = importer.batch?.items ?? []
+            checks["changedSourceFailsWithoutOverwriteAndRemainingItemsContinue"] = importer.batch?.state == "completed" &&
+                batch.filter { $0.state == "failed" }.count == 1 && batch.contains { $0.record.title == "changed" && $0.detail.contains("来源已变化") } &&
+                !files.fileExists(atPath: target.appendingPathComponent(".bluefatfish/rules/changed.md").path)
+            checks["retainsNestedRuleAndReferencesInSelectedProject"] =
+                files.fileExists(atPath: target.appendingPathComponent("src/.bluefatfish/rules/swift.md").path) &&
+                files.fileExists(atPath: target.appendingPathComponent("AGENTS.md").path) &&
+                !files.fileExists(atPath: target.appendingPathComponent(".bluefatfish/rules/swift.md").path)
+            let roles = try tasks.agents.list(workspace: target.path).filter { $0.sourceWorkspace == target.path }
+            let hooks = try tasks.hooks.catalog(workspace: target.path).filter { $0.workspace == target.path }
+            checks["qoderAgentAndHooksStartDisabled"] = roles.count == 1 && roles.allSatisfy { !$0.enabled } &&
+                hooks.count == 1 && hooks.allSatisfy { !tasks.hooks.enabled($0) }
+            let offline = output.appendingPathComponent("暂离线的扩展配置来源")
+            try files.moveItem(at: folder, to: offline)
+            do {
+                let transport = AgentSSHImport(profile: tasks.directory.deletingLastPathComponent(), home: tasks.extensions.sharedHome)
+                for item in batch where item.state == "imported" {
+                    try await AgentStandaloneDataImport.installRemote(item.record, route: qoder, transport: transport, store: tasks)
+                }
+                checks["alreadyPublishedItemsCanResumeWithSourceOffline"] = true
+            } catch {
+                try files.moveItem(at: offline, to: folder)
+                throw error
+            }
+            try files.moveItem(at: offline, to: folder)
+            try chooseSSH(codex)
+            try button("检测可导入内容").performClick(nil)
+            try await settle { importer.scanning || importer.preview(for: codex) == nil }
+            let memory = AgentImportRoute(source: .codex, category: .memory, root: codex.root, workspace: nil, sshHost: codex.sshHost)
+            checks["oneSSHDetectionSupportsConfigurationAndMemory"] = importer.preview(for: memory)?.available.count == 1
+            try openCategory(category)
+            let rows = try records(codex), available = rows.filter { $0.issue == nil }
+            checks["codexOverridePromptsAgentsAndHookVariantsAreIdentified"] =
+                available.count == 5 && available.contains { $0.title == "AGENTS.override.md" } &&
+                available.contains { $0.title == "/prompts:review" && $0.warnings.contains(where: { $0.contains("FILE") }) } &&
+                rows.contains { $0.configuration?.kind == .policy && $0.issue?.contains("单独配置") == true } &&
+                available.contains { $0.standaloneMCPHooks == true && $0.warnings.contains(where: { $0.contains("内嵌凭据") }) }
+            let selected = available.count + 1
+            try button("导入 \(selected) 项").performClick(nil)
+            try await settle { importer.active }
+            guard let inline = available.first(where: { $0.configuration?.kind == .hooks && $0.standaloneMCPHooks != true }) else {
+                throw PetError("缺少 Codex 内联命令 Hooks")
+            }
+            let hookFile = try AgentStandaloneDataImport.installedURL(inline, store: tasks)
+            let hookText = try String(contentsOf: hookFile, encoding: .utf8)
+            let resource = hookFile.deletingLastPathComponent().appendingPathComponent("hooks/公开 '检查'.sh")
+            checks["inlineHookKeepsExecutableResourceWithCredentialPlaceholders"] = files.isExecutableFile(atPath: resource.path) &&
+                hookText.contains("QODER_HOOK_ROOT") && hookText.contains(AgentHookCredentials.placeholder) && !hookText.contains("CONFIG_TEST_SECRET")
+            let mcp = try tasks.hooks.catalog(workspace: nil).filter { $0.mcpHook != nil }
+            checks["mcpHookRemainsDisabledAndRequiresLocalConnector"] = mcp.count == 1 &&
+                mcp.first?.mcpHook?.server == "remote-test" && mcp.first?.diagnostic?.contains("配置连接器") == true &&
+                mcp.allSatisfy { !tasks.hooks.enabled($0) }
+            let globalRoles = try tasks.agents.list(workspace: nil)
+            checks["globalCodexRecordsAreInstalledAndProjectRecordsStayProjectScoped"] = importer.batch?.items.allSatisfy { $0.state == "imported" } == true &&
+                importer.batch?.items.count == selected && importer.batch?.items.contains { $0.record.category == .memory } == true &&
+                globalRoles.contains { $0.name == "codex-review" && !$0.enabled } &&
+                !globalRoles.contains { $0.sourceWorkspace == target.path }
+            checks["sourceFilesAndRemoteTransferCleanup"] = try !files.contentsOfDirectory(atPath: tasks.directory.deletingLastPathComponent().path).contains {
+                $0.hasPrefix("ssh-import-transfer-") || $0.hasPrefix("ssh-configuration-")
+            }
+            let success = checks.values.allSatisfy { $0 } && requests == 0 && before["modelRequests"] as? Int == 0
+            try write(["checks": checks, "binaryHash": binaryHash, "appPID": getpid(), "modelRequests": requests, "success": success],
+                      to: output.appendingPathComponent("ssh-configuration-report.json"))
+            guard success else { throw PetError("SSH 扩展配置导入检查失败") }
+            return
+        }
         if CommandLine.arguments.contains("--ssh-plugin-import-check") {
             let phase = output.appendingPathComponent("ssh-plugin-paused.json")
             let original = AgentImportRoute(source: .codex, category: .plugins, root: route.root, workspace: nil, sshHost: route.sshHost)
@@ -597,7 +743,7 @@ import AppKit
                 let categories = AgentImportCategory.allCases.filter { category in
                     find(content, NSButton.self, { $0.accessibilityIdentifier() == "import-category-" + category.rawValue }) != nil
                 }
-                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set([.tasks, .memory, .skills, .connectors, .automations, .plugins])
+                checks["overviewShowsSupportedSSHCategories"] = Set(categories) == Set(AgentImportCategory.allCases)
                 try button("检测可导入内容").performClick(nil)
                 try await settle { importer.scanning || importer.preview(for: memory) == nil }
                 let records = importer.preview(for: memory)?.records ?? [], valid = records.filter { $0.issue == nil }

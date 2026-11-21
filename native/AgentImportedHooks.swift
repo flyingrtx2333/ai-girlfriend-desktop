@@ -70,8 +70,8 @@ struct AgentStandaloneHookPackage {
         AgentFiles.hash(Data((AgentExtensions.digest(files) + "\n" + executable.sorted().joined(separator: "\n")).utf8))
     }
 
-    static func events(_ data: Data, source: AgentImportSource, file: URL) throws -> [String: Any]? {
-        if source == .codex, file.lastPathComponent == "config.toml" {
+    static func events(_ data: Data, source: AgentImportSource, file: URL, projected: Bool = false) throws -> [String: Any]? {
+        if !projected, source == .codex, file.lastPathComponent == "config.toml" {
             do { return try CodexInlineHooks.read(data) }
             catch { throw PetError("Codex config.toml 或内联 Hooks 格式无效") }
         }
@@ -96,11 +96,13 @@ struct AgentStandaloneHookPackage {
     }
 
     @MainActor static func prepare(_ events: [String: Any], source: AgentImportSource, file: URL, files: AgentFiles,
-                                  projectSource: Bool, target: URL, workspace: String?, service: AgentHooks, mcpOnly: Bool = false) throws -> Self? {
+                                  projectSource: Bool, target: URL, workspace: String?, service: AgentHooks, mcpOnly: Bool = false,
+                                  originalResourcePath: String? = nil) throws -> Self? {
         guard !events.isEmpty else { return nil }
         let inline = source == .codex && file.lastPathComponent == "config.toml"
         let resourceRoot = file.deletingLastPathComponent().appendingPathComponent("hooks")
-        let inlineResources = inline && !mcpOnly ? try resources(resourceRoot, files: files) : nil
+        let scriptRoot = originalResourcePath ?? resourceRoot.path
+        let relocatable = (inline || originalResourcePath != nil) && !mcpOnly ? try resources(resourceRoot, files: files) : nil
         var normalized: [String: [[String: Any]]] = [:], skipped: [String] = [], labels: [String] = []
         var count = 0, relocated = 0, hasOriginalScriptPath = false
         var handlerFields: Set<String> = ["name", "type", "command", "timeout", "shell", "args", "env", "network", "if", "allowedEnvVars",
@@ -132,6 +134,9 @@ struct AgentStandaloneHookPackage {
                         handler.removeValue(forKey: "commandWindows"); handler.removeValue(forKey: "command_windows")
                         if event != .interrupt, handler["timeout"] == nil && group["timeout"] == nil { handler["timeout"] = event == .sessionEnd ? 1 : 600 }
                     }
+                    if originalResourcePath != nil, handler["credentials"] as? Bool == true {
+                        skipped.append(key + " · 处理器含内嵌凭据"); continue
+                    }
                     guard Set(handler.keys).isSubset(of: handlerFields), handler["once"] as? Bool != true,
                           mcpOnly || ["command", "http", "prompt", "agent"].contains(type) else { skipped.append(key + " · 处理器格式"); continue }
                     if let command = handler["command"] as? String,
@@ -140,14 +145,14 @@ struct AgentStandaloneHookPackage {
                         skipped.append(key + " · 命令含内嵌凭据字段"); continue
                     }
                     var movedScript = false, originalPath = false
-                    if let inlineResources, let command = handler["command"] as? String {
-                        if let replacement = relocatedCommand(command, resourceRoot: resourceRoot, project: projectSource,
-                                                              resources: inlineResources.contents) {
+                    if let relocatable, let command = handler["command"] as? String {
+                        if let replacement = relocatedCommand(command, resourceRoot: scriptRoot, source: source, project: projectSource,
+                                                              resources: relocatable.contents) {
                             handler["command"] = replacement
                             movedScript = true
                         } else {
-                            originalPath = command.contains(".codex/hooks/") || command.contains("CODEX_HOME")
-                                || command.contains(resourceRoot.path + "/")
+                            originalPath = command.contains(source.homeName + "/hooks/") || command.contains("CODEX_HOME")
+                                || command.contains(scriptRoot + "/")
                         }
                     }
                     handler["name"] = handler["name"] ?? key + " · " + type + " " + String(count)
@@ -187,7 +192,7 @@ struct AgentStandaloneHookPackage {
         }
         let config = try JSONSerialization.data(withJSONObject: ["hooks": normalized], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         guard config.count <= 128_000 else { throw PetError("Hooks 配置超过 128KB") }
-        var payload = mcpOnly ? (contents: [String: Data](), executable: Set<String>()) : try inlineResources ?? resources(resourceRoot, files: files)
+        var payload = mcpOnly ? (contents: [String: Data](), executable: Set<String>()) : try relocatable ?? resources(resourceRoot, files: files)
         payload.contents["hooks.json"] = config
         var warnings = ["导入后为停用状态"]
         if !skipped.isEmpty { warnings.append("跳过 " + String(skipped.count) + " 项 · " + Array(Set(skipped)).sorted().prefix(5).joined(separator: "、")) }
@@ -198,7 +203,7 @@ struct AgentStandaloneHookPackage {
         return Self(files: payload.contents, executable: payload.executable, events: labels, warnings: warnings)
     }
 
-    private static func relocatedCommand(_ command: String, resourceRoot: URL, project: Bool,
+    private static func relocatedCommand(_ command: String, resourceRoot: String, source: AgentImportSource, project: Bool,
                                          resources: [String: Data]) -> String? {
         let leading = command.drop(while: \.isWhitespace)
         let executable = leading.prefix { !$0.isWhitespace }
@@ -216,13 +221,15 @@ struct AgentStandaloneHookPackage {
         } else {
             path = argument.prefix { !$0.isWhitespace }; end = path.endIndex
         }
-        var roots = [resourceRoot.path + "/"]
+        let folder = source.homeName + "/hooks/"
+        var roots = [resourceRoot + "/"]
         if project {
-            roots += [".codex/hooks/", "./.codex/hooks/"]
-            if quote == "\"" { roots += ["$(git rev-parse --show-toplevel)/.codex/hooks/"] }
+            roots += [folder, "./" + folder]
+            if quote == "\"" { roots += ["$(git rev-parse --show-toplevel)/" + folder] }
         } else if quote != "'" {
-            roots += ["$HOME/.codex/hooks/", "${HOME}/.codex/hooks/", "$CODEX_HOME/hooks/", "${CODEX_HOME}/hooks/"]
-            if quote == nil { roots.append("~/.codex/hooks/") }
+            roots += ["$HOME/" + folder, "${HOME}/" + folder]
+            if source == .codex { roots += ["$CODEX_HOME/hooks/", "${CODEX_HOME}/hooks/"] }
+            if quote == nil { roots.append("~/" + folder) }
         }
         guard let root = roots.first(where: { path.hasPrefix($0) }) else { return nil }
         let relative = String(path.dropFirst(root.count))

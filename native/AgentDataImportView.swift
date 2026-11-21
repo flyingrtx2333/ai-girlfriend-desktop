@@ -577,9 +577,10 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
         if let plan = record.configuration {
             let destination = plan.workspace.map { "目标项目 · " + $0 } ?? "目标 · 全局扩展配置"
             let title = record.standaloneMCPHooks == true ? record.title : plan.kind.title + " · " + record.title
-            var lines = [title, "来源 · " + record.file, destination]
+            var lines = [title, "来源 · " + source, destination]
             if !plan.destination.isEmpty { lines.append("目标文件 · " + (record.issue == "已共享" ? record.file : plan.destination)) }
             if let status = record.issue ?? states[record.id] { lines.append(status) }
+            else if record.sshHost != nil, plan.kind == .hooks { lines.append("导入后为停用状态") }
             lines.append(contentsOf: record.warnings)
             setDetail(lines.joined(separator: "\n") + "\n\n" + record.preview)
             if plan.kind == .command || (plan.kind == .instruction && plan.directory.isEmpty && record.issue != "已共享") {
@@ -592,7 +593,8 @@ struct AgentImportNavigation: Codable, Equatable, Sendable {
                 if plan.kind == .hooks { open.title = "打开 Hooks" }
                 open.isEnabled = (try? AgentStandaloneDataImport.installedURL(record, store: store)) != nil
             }
-            original.isEnabled = (try? AgentStandaloneDataImport.reveal(record, root: root, store: store)) != nil
+            original.isHidden = record.sshHost != nil
+            original.isEnabled = record.sshHost == nil && (try? AgentStandaloneDataImport.reveal(record, root: root, store: store)) != nil
             return
         }
         let origin = record.sshHost.map { "来源 · " + $0 + ":" + record.file + "\n" } ?? ""

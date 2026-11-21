@@ -7,7 +7,7 @@ import Darwin
 struct AgentSSHImport: Sendable {
     let profile: URL
     let home: URL?
-    static let categories: [AgentImportCategory] = [.tasks, .memory, .skills, .connectors, .automations, .plugins]
+    static let categories = AgentImportCategory.allCases
 
     static func valid(host: String, root: String) -> Bool {
         guard TerminalSurface.validSSHDestination(host), root.utf8.count <= 4096,
@@ -403,6 +403,75 @@ struct AgentSSHImport: Sendable {
         return try await response(transfer, script: AgentSSHPluginSource.script, arguments: arguments, timeout: 60, decode: decode)
     }
 
+    func readConfiguration(_ route: AgentImportRoute, selected: String = "") async throws -> AgentSSHConfigurationSource {
+        guard selected.isEmpty || AgentSSHConfigurationSource.validPath(selected) else { throw FrameError.invalid }
+        return try await configurationResponse(route, selected: selected, references: []) { input in
+            var origin: AgentSSHConfigurationSource.Origin?
+            var files: [String: Result<Data, PetError>] = [:], resourceIssues: [String: PetError] = [:]
+            var resources: [String: (data: Data, executable: Bool)] = [:]
+            var total = 0, names = Set<String>()
+            let _: [Bool] = try Self.scanFrames(input, maximum: 1_000_000, oversized: "远端扩展配置超过大小限制") { name, value in
+                if case .success(let data) = value {
+                    total += data.count
+                    guard total <= 24_000_000 else { throw FrameError.invalid }
+                }
+                if name == "M" {
+                    let metadata = try value.get()
+                    guard metadata.count <= 16_384, origin == nil else { throw FrameError.invalid }
+                    origin = try JSONDecoder().decode(AgentSSHConfigurationSource.Origin.self, from: metadata)
+                    return nil
+                }
+                let path = String(name.dropFirst(2))
+                guard AgentSSHConfigurationSource.validPath(path),
+                      names.insert(path.precomposedStringWithCanonicalMapping.lowercased()).inserted else { throw FrameError.invalid }
+                switch name.prefix(2) {
+                case "F:":
+                    guard files.count < 256 else { throw FrameError.invalid }
+                    files[path] = value
+                case "A:", "X:":
+                    guard resources.count < 2500 else { throw FrameError.invalid }
+                    resources[path] = (try value.get(), name.hasPrefix("X:"))
+                case "H:":
+                    guard case .failure = value, resourceIssues.count < 256 else { throw FrameError.invalid }
+                    resourceIssues[path] = PetError("远端 Hooks 资源包含不可读取、受保护或过大的文件")
+                default: throw FrameError.invalid
+                }
+                return nil
+            }
+            guard let origin, origin.root.hasPrefix("/"), origin.root != "/", Self.valid(host: route.sshHost ?? "", root: origin.root),
+                  !AgentFiles.sensitive(origin.root),
+                  origin.configurationRoot == ((origin.root as NSString).lastPathComponent == route.source.homeName) else { throw FrameError.invalid }
+            return .init(origin: origin, files: files, resources: resources, resourceIssues: resourceIssues)
+        }
+    }
+
+    func verifyConfigurationReferences(_ expected: [String: String], route: AgentImportRoute) async throws {
+        guard !expected.isEmpty else { return }
+        guard expected.count <= 64, expected.keys.allSatisfy(AgentSSHConfigurationSource.validPath) else {
+            throw PetError("指令引用超出所选范围或包含受保护文件")
+        }
+        let actual = try await configurationResponse(route, selected: "", references: expected.keys.sorted()) { input in
+            let frames: [[String: String]] = try Self.scanFrames(input, maximum: 128_000, oversized: "远端指令引用清单过大") { name, value in
+                guard name == "R" else { throw FrameError.invalid }
+                return try JSONDecoder().decode([String: String].self, from: value.get())
+            }
+            guard frames.count == 1, let hashes = frames.first else { throw FrameError.invalid }
+            return hashes
+        }
+        guard actual == expected else { throw PetError("远端指令引用与目标项目不同，请先核对引用文件") }
+    }
+
+    private func configurationResponse<Value>(_ route: AgentImportRoute, selected: String, references: [String],
+                                             decode: @escaping @Sendable (FileHandle) throws -> Value) async throws -> Value {
+        guard route.category == .configuration, !AgentFiles.sensitive(route.root) else { throw PetError("缺少有效的 SSH 扩展配置来源") }
+        let encoder = JSONEncoder()
+        let fields = [references, AgentFiles.sensitiveNames, AgentFiles.sensitiveExtensions, AgentMCPDataImport.credentialSuffixes]
+        let options = try fields.map { String(decoding: try encoder.encode($0), as: UTF8.self) }
+        let arguments = [route.source.rawValue, route.source.homeName, selected, references.isEmpty ? "" : options[0],
+                         options[1], options[2], AgentHookCredentials.placeholder, options[3]]
+        return try await response(route, script: AgentSSHConfigurationSource.script, arguments: arguments, timeout: 60, decode: decode)
+    }
+
     private static func prefix(_ route: AgentImportRoute) -> String {
         route.root.hasSuffix("/") ? route.root : route.root + "/"
     }
@@ -599,11 +668,18 @@ struct AgentSSHImport: Sendable {
             if result.exitCode == 44 { throw PetError("未找到远程记忆文件夹，请核对 SSH 来源目录") }
             if result.exitCode == 45 {
                 if category == .plugins { throw PetError("插件来源目录过大，请选择较小的目录") }
+                if category == .configuration { throw PetError("扩展配置来源超过 256 份文件或 5000 个目录项，请选择较小的目录") }
                 throw PetError((category == .automations ? "定时任务" : "Skill") + "来源项目过多，请选择较小的目录")
             }
             if result.exitCode == 46 { throw PetError("请为 Qoder 项目记忆选择目标项目") }
             if result.exitCode == 47, category == .connectors {
                 throw PetError("远端缺少连接器解析组件，需要 Python " + (arguments.first == "codex" ? "3.11 或更高版本" : "3.8 或更高版本"))
+            }
+            if category == .configuration {
+                if result.exitCode == 47 {
+                    throw PetError("远端读取扩展配置需要 Python " + (arguments.first == "codex" ? "3.11 或更高版本" : "3.8 或更高版本"))
+                }
+                if result.exitCode == 49 { throw PetError("远端扩展配置与资源合计超过 24 MB，请选择较小的目录") }
             }
             if category == .plugins {
                 let issues = [47: "远端读取插件需要 Python 3.8 或更高版本", 48: "插件含受保护文件、链接或特殊文件",
